@@ -2,14 +2,13 @@ import path from 'node:path'
 import { mkdtemp, rm } from 'node:fs/promises'
 
 import type { ChannelTarget } from './channel'
-import { runRetirementPowerShell } from './retirement-discovery'
+import { runChannelPowerShell, type NativeCommandResult } from './channel-native'
 import { downloadPinnedArtifact } from './artifact'
-import type { NativeCommandResult } from './retirement-native'
 
 /** Verify downloaded bytes and native metadata before App Installer can stop the backend. */
 export async function verifyPreparedChannelInstaller(
   file: string, target: ChannelTarget,
-  command: (script: string, input: string) => Promise<NativeCommandResult> = runRetirementPowerShell
+  command: (script: string, input: string) => Promise<NativeCommandResult> = runChannelPowerShell
 ): Promise<void> {
   const pkg = target.package
   if (pkg.platform !== 'win32' || !pkg.publisher) { throw new Error('Expected a publisher-bound Windows package') }

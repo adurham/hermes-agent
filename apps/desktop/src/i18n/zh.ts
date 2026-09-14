@@ -3238,8 +3238,6 @@ export const zh = defineLocale({
   },
 
   updates: {
-    retirementKeepStable: '保留稳定版现有的工作区',
-    retirementOpenPreview: '在稳定版中打开此预览版工作区',
     channels: { stable: '稳定版', canary: '预览版' },
     bundleSwapPending: '重启以完成更新',
     bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',

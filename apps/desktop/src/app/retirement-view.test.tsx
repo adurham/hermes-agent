@@ -7,7 +7,7 @@ import { I18nProvider } from '@/i18n'
 import { en } from '@/i18n/en'
 import { $updateStatus, resetUpdateApplyState } from '@/store/updates'
 
-import { DiscontinuedNotice, RetirementView } from './retirement-view'
+import { DiscontinuedNotice } from './retirement-view'
 
 afterEach((): void => {
   cleanup()
@@ -15,43 +15,6 @@ afterEach((): void => {
   $updateStatus.set(null)
   Reflect.deleteProperty(window, 'hermesDesktop')
 })
-
-test.each(['keep-stable', 'open-preview'] as const)(
-  'migration requires a workspace choice and forwards %s through the real store',
-  async (choice): Promise<void> => {
-    const retire = vi.fn().mockResolvedValue({ ok: true, handedOff: true })
-    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { updates: { retire } } })
-
-    const retirement: NonNullable<DesktopUpdateStatus['retirement']> = {
-      state: 'available',
-      destination: 'stable',
-      version: '1.0.0'
-    }
-
-    $updateStatus.set({ supported: true, retirement })
-    render(
-      <I18nProvider configClient={null} initialLocale="en">
-        <Dialog open>
-          <DialogContent>
-            <RetirementView onLater={(): void => {}} onRetry={(): void => {}} retirement={retirement} />
-          </DialogContent>
-        </Dialog>
-      </I18nProvider>
-    )
-    const action: HTMLElement = screen.getByRole('button', { name: en.updates.retirementAction })
-    fireEvent.click(screen.getByRole('checkbox'))
-    expect(action.hasAttribute('disabled')).toBe(true)
-    fireEvent.click(
-      screen.getByRole('radio', {
-        name: choice === 'keep-stable' ? 'Keep stable’s existing workspace' : 'Open this preview workspace in stable'
-      })
-    )
-    fireEvent.click(action)
-    await waitFor((): void => {
-      expect(retire).toHaveBeenCalledWith({ installStable: true, removePreview: true, workspaceChoice: choice })
-    })
-  }
-)
 
 test('discontinued retirement shows the uninstall notice and persists dismissal per revision', async (): Promise<void> => {
   const dismissed: string[] = []
@@ -80,10 +43,9 @@ test('discontinued retirement shows the uninstall notice and persists dismissal 
   )
 
   // The notice carries the "no longer supported — uninstall" copy, and offers
-  // no download, install, or migration action — only the dismissal.
+  // no download or install action — only the dismissal.
   expect(screen.getByText(en.updates.discontinuedTitle)).toBeTruthy()
   expect(screen.getByText(en.updates.discontinuedBody)).toBeTruthy()
-  expect(screen.queryByRole('button', { name: en.updates.retirementAction })).toBeNull()
   expect(screen.queryByRole('button', { name: en.updates.updateNow })).toBeNull()
   expect(screen.queryByRole('checkbox')).toBeNull()
 

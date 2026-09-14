@@ -51,29 +51,7 @@ on:
         required: false
         type: choice
         default: all
-        options: [all, both, update, installer, windows-desktop, macos-desktop, bundled, windows-bundled, macos-bundled, channel-retirement]
-      retirement-manifest:
-        description: 'HTTPS URL for one digest-pinned disposable native retirement journey.'
-        type: string
-        default: ''
-      retirement-sha256:
-        description: 'Exact SHA256 of retirement-manifest bytes.'
-        type: string
-        default: ''
-      disposable-run:
-        description: 'Existing allocation run-id-attempt; never a production namespace.'
-        type: string
-        default: ''
-      retirement-arch:
-        description: 'Native retirement host architecture.'
-        type: choice
-        options: [arm64, x64]
-        default: arm64
-      retirement-platform:
-        description: 'Native retirement OS (one fresh namespace per journey).'
-        type: choice
-        options: [darwin, win32]
-        default: darwin
+        options: [all, both, update, installer, windows-desktop, macos-desktop, bundled, windows-bundled, macos-bundled]
       windows-bundle-manifest:
         description: 'HTTPS manifest pinning signed Windows OLD/NEW msixbundles; NEW must match this ref.'
         type: string
@@ -153,87 +131,11 @@ permissions:
 # github.run_id so a parent rerun cannot kill this child mid-flight. The
 # scheduled/push runs keep ref-scoped collapse.
 concurrency:
-  group: install-e2e-${{ inputs.route == 'channel-retirement' && format('retirement-{0}', inputs.disposable-run) || inputs.release == true && github.run_id || github.ref }}
-  cancel-in-progress: ${{ inputs.release != true && inputs.route != 'channel-retirement' }}
+  group: install-e2e-${{ inputs.release == true && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true }}
 
 jobs:
-  channel-retirement:
-    name: Native bundled retirement
-    if: >-
-      inputs.route == 'channel-retirement' && github.event_name == 'workflow_dispatch'
-      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ${{ inputs.retirement-platform == 'win32' && (inputs.retirement-arch == 'arm64' && 'windows-11-arm' || 'windows-latest') || (inputs.retirement-arch == 'x64' && 'macos-15-intel' || 'macos-15') }}
-    environment: release-signing
-    timeout-minutes: 75
-    permissions:
-      contents: read
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-pm
-        with:
-          toolchain: node
-      - name: Install driver dependencies
-        run: |
-          node -e 'if (Number(process.versions.node.split(".")[0]) < 24) throw Error("Node 24+ required")'
-          npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
-      - name: Fetch pinned controller input
-        # Portable admission checks are not native acceptance.
-        # Keep them in the native job so this coordinator cannot become an orphan.
-        # The real lifecycle still runs below against signed artifacts.
-        env:
-          MANIFEST_URL: ${{ inputs.retirement-manifest }}
-          MANIFEST_SHA256: ${{ inputs.retirement-sha256 }}
-        run: |
-          python3 -c 'import os,pathlib,hashlib,urllib.request; u=os.environ["MANIFEST_URL"]; assert u.startswith("https://"); b=urllib.request.urlopen(u,timeout=30).read(4194305); assert len(b)<=4194304 and hashlib.sha256(b).hexdigest()==os.environ["MANIFEST_SHA256"]; pathlib.Path(os.environ["RUNNER_TEMP"],"retirement-input.json").write_bytes(b)'
-      - name: Check coordinator and immutable input transport
-        run: |
-          node --test tests/install/e2e-assets/channel-retirement-manifest.test.cjs
-      - uses: ./.github/actions/e2e-screen-record
-        with:
-          mode: start
-          output: ${{ runner.temp }}/retirement-recording.mkv
-      - name: Run native journey with isolated publisher credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-          R2_DISPOSABLE_RUN: ${{ inputs.disposable-run }}
-          MANIFEST_SHA256: ${{ inputs.retirement-sha256 }}
-          RETIREMENT_ARCH: ${{ inputs.retirement-arch }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          python3 tests/install/channel-retirement-controller.py \
-            --manifest "$RUNNER_TEMP/retirement-input.json" --sha256 "$MANIFEST_SHA256" \
-            --work "$RUNNER_TEMP/retirement" --arch "$RETIREMENT_ARCH"
-      - uses: ./.github/actions/e2e-screen-record
-        if: always()
-        with:
-          mode: stop
-          output: ${{ runner.temp }}/retirement-recording.mkv
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: retirement-observations-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/retirement/observations/
-            ${{ runner.temp }}/retirement-recording.mkv
-          if-no-files-found: warn
-          retention-days: 14
-
-  # Which released versions do we test updating FROM? Resolved once,
-  # annotated with what each tag's own tree supports, and shared by every
-  # OS's matrix so all combos cover the same set.
   pick-releases:
-    if: inputs.route != 'channel-retirement'
     name: Pick release tags
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -326,7 +228,6 @@ jobs:
             --format markdown >> "$GITHUB_STEP_SUMMARY"
 
   bundle-inputs:
-    if: inputs.route != 'channel-retirement'
     name: Validate pinned bundle transitions
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -506,7 +407,7 @@ jobs:
   # the per-OS aggregates.
   report:
     name: Result chart
-    if: always() && inputs.route != 'channel-retirement'
+    if: always()
     needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
     runs-on: ubuntu-latest
     timeout-minutes: 5

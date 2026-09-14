@@ -558,7 +558,6 @@ declare global {
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        retire: (consent: DesktopRetirementConsent) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
@@ -755,16 +754,10 @@ export type UpdaterMechanismClient =
   | 'posix-handoff'
   | 'manual'
 
-export interface DesktopRetirementConsent {
-  installStable: true
-  removePreview: true
-  workspaceChoice: 'keep-stable' | 'open-preview'
-}
-
 export interface DesktopUpdateStatus {
   supported: boolean
   retirement?: {
-    state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete' | 'discontinued'
+    state: 'discontinued'
     destination: string
     version: string
     message?: string

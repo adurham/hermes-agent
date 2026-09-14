@@ -2610,8 +2610,6 @@ export const ja = defineLocale({
   },
 
   updates: {
-    retirementKeepStable: '安定版の既存のワークスペースを維持する',
-    retirementOpenPreview: 'このプレビュー版のワークスペースを安定版で開く',
     channels: { stable: '安定版', canary: '先行版' },
     bundleSwapPending: '再起動して更新を完了',
     bundleSwapPendingDesc: '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',

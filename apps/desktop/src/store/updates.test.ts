@@ -1508,7 +1508,7 @@ describe('discontinued retirement notice', () => {
 
     // The generic update entry point refuses instead of dispatching an apply.
     const result = await applyUpdates()
-    expect(result).toMatchObject({ ok: false, error: 'retirement-consent-required' })
+    expect(result).toMatchObject({ ok: false, error: 'retirement-blocked' })
     expect(applyMock).not.toHaveBeenCalled()
   })
 

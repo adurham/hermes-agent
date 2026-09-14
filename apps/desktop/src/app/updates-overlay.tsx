@@ -50,7 +50,7 @@ import {
   type UpdateApplyState
 } from '@/store/updates'
 
-import { DiscontinuedNotice, RetirementView } from './retirement-view'
+import { DiscontinuedNotice } from './retirement-view'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -148,9 +148,6 @@ export function UpdatesOverlay() {
             }}
             retirement={status.retirement}
           />
-        )}
-        {phase === 'idle' && !isBackend && status?.retirement && status.retirement.state !== 'discontinued' && (
-          <RetirementView onLater={() => handleClose(false)} onRetry={() => void check()} retirement={status.retirement} />
         )}
         {phase === 'idle' && (isBackend || !status?.retirement) && (
           <IdleView

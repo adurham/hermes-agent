@@ -9,7 +9,6 @@ import { ChannelResolver } from './channel'
 import type { ChannelBuild, ChannelManifest, ChannelRecord, RetiredChannel } from './channel-protocol'
 import { decodeChannelRecord, sameChannelIdentity } from './channel-protocol'
 import { ChannelStrategy } from './channel-strategy'
-import type { RetirementConsent } from './retirement-state'
 
 const servers: Server[] = []
 afterEach(async (): Promise<void> => {
@@ -242,13 +241,7 @@ test('in-place retirement resolves with the receiver kind and routes through the
  return { supported: true, updateAvailable: true } },
       apply: async () => { nativeCalls.push('apply');
  return { ok: true, handedOff: true } }
-    }),
-    retirement: {
-      check: async () => { retirementChecks += 1;
- return { state: 'available' } },
-      apply: async () => { retirementApplies += 1;
- return { ok: true, handedOff: true } }
-    }
+    })
   })
 
   // Same surface as a stable update: available, no retirement status block.
@@ -277,13 +270,7 @@ test('discontinued retirement surfaces the notice and never downloads or applies
 
   const strategy = new ChannelStrategy({
     resolver, build: f.build, mechanism: 'electron-updater',
-    nativeFactory: (): never => { throw new Error('Discontinued retirement must never reach the native updater') },
-    retirement: {
-      check: async () => { migrationCalls.push('check');
- return { state: 'available' } },
-      apply: async () => { migrationCalls.push('apply');
- return { ok: true, handedOff: true } }
-    }
+    nativeFactory: (): never => { throw new Error('Discontinued retirement must never reach the native updater') }
   })
 
   const status = await strategy.check()
@@ -300,33 +287,19 @@ test('discontinued retirement surfaces the notice and never downloads or applies
   expect(await strategy.apply()).toMatchObject({ ok: false })
 })
 
-test('discontinued retirement never consults the migration callbacks; the consented path is refused', async (): Promise<void> => {
+test('discontinued retirement never consults the migration callbacks; the apply path is refused', async (): Promise<void> => {
   const f = await retiredFixture()
-  let applied = false
-  const consents: RetirementConsent[] = []
 
   const strategy = new ChannelStrategy({
     resolver: new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }),
     build: f.build, mechanism: 'electron-updater',
-    nativeFactory: (): never => { throw new Error('Not a same-identity update') },
-    retirement: {
-      check: async () => { throw new Error('Discontinued retirement must not reach the migration host') },
-      apply: async (_retirement, consent: RetirementConsent) => { consents.push(consent); applied = true;
-
- return { ok: true, handedOff: true } }
-    }
+    nativeFactory: (): never => { throw new Error('Not a same-identity update') }
   })
 
   const status = await strategy.check()
   expect(status.updateAvailable).toBeUndefined()
   expect(status.retirement).toMatchObject({ state: 'discontinued', destination: 'stable' })
-  expect(applied).toBe(false)
   expect(await strategy.apply()).toMatchObject({ ok: false })
-  expect(applied).toBe(false)
-  const consent: RetirementConsent = { installStable: true, removePreview: true, workspaceChoice: 'keep-stable' }
-  expect(await strategy.applyRetirement(consent)).toMatchObject({ ok: false })
-  expect(applied).toBe(false)
-  expect(consents).toEqual([])
 })
 
 test.each(['hash', 'identity', 'repository', 'signer', 'escape', 'schema', 'version'] as const)('rejects untrusted %s without falling back', async (fault): Promise<void> => {

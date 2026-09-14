@@ -446,14 +446,8 @@ import { createChannelAppInstallerStrategy } from './updater/app-installer'
 import { ChannelResolver, type ChannelTarget } from './updater/channel'
 import { ChannelStrategy } from './updater/channel-strategy'
 import { UpdateOperation } from './updater/operation'
-import { inspectRunningChannelApp } from './updater/retirement-discovery'
+import { inspectRunningChannelApp } from './updater/channel-native'
 import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
-import { RetirementHost, prepareRetirementStartup, forwardRetiredPreview, type RetirementReception } from './updater/retirement-host'
-import { retirementConnection, type RetirementConnectionSelection } from './updater/retirement-connections'
-import type { RetirementConsent } from './updater/retirement-state'
-import { confirmRetirementWorkspace } from './updater/retirement-dialog'
-import type { RetirementExistingSelection, RetirementWorkspaceConflict } from './updater/retirement-receiver'
-import { readStartupDesktopPreference } from './desktop-boot-preference'
 import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
@@ -756,25 +750,8 @@ const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), '
 // Only the lock-owning destination may adopt a workspace or start a backend.
 const isPrimaryInstance: boolean = app.requestSingleInstanceLock()
 if (!isPrimaryInstance) { app.exit(0) }
-if (INSTALL_STAMP?.channelBuild && await forwardRetiredPreview()) { app.exit(0) }
-const retirementReception: RetirementReception | null = isPrimaryInstance ? await prepareRetirementStartup({
-  argv: process.argv,
-  userData: app.getPath('userData'),
-  defaultHome: resolveDesktopHermesHome({ home: app.getPath('home'), directoryExists, readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME') }),
-  operatorOverride: Boolean(process.env.HERMES_HOME || USER_DATA_OVERRIDE),
-  payload: bundledPayload(process.resourcesPath),
-  confirmWorkspaceConflict: (conflict: RetirementWorkspaceConflict) => confirmRetirementWorkspace(conflict, {
-    ready: async (): Promise<void> => { await app.whenReady() }, showMessageBox: dialog.showMessageBox
-  })
-}).catch(async (error: Error): Promise<null> => {
-  await app.whenReady()
-  dialog.showErrorBox('Migration paused — preview preserved', error.message)
-  app.exit(1)
-  return null
-}) : null
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),
-  adoptedHome: readStartupDesktopPreference(DESKTOP_PROFILE_CONFIG_PATH, console.warn)?.home,
   directoryExists,
   readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
 })
@@ -3056,11 +3033,7 @@ async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
     return new ChannelStrategy({
       build, mechanism,
       resolver: new ChannelResolver({ build, platform: process.platform, arch: process.arch, signer: installed.signer }),
-      nativeFactory: (target: ChannelTarget): UpdaterStrategy => createNativePackagedStrategy(mechanism, target),
-      retirement: new RetirementHost({ home: HERMES_HOME, userData: app.getPath('userData'), payload,
-        profile: primaryProfileKey, connection: selectedRetirementConnection, stop: teardownBundledBackend,
-        restore: restoreBundledBackend, quit: (): void => app.quit(),
-        progress: (message: string): void => emitUpdateProgress({ stage: 'prepare', message, percent: null }) })
+      nativeFactory: (target: ChannelTarget): UpdaterStrategy => createNativePackagedStrategy(mechanism, target)
     })
   }
 
@@ -3811,16 +3784,14 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(retirementConsent?: RetirementConsent): Promise<UpdaterApplyResultWire> {
+async function applyUpdates(): Promise<UpdaterApplyResultWire> {
   return updateOperation.apply(async (): Promise<UpdaterApplyResultWire> => {
     updateInFlight = true
     let handedOff: boolean = false
 
     try {
       const strategy: UpdaterStrategy = await resolvePackagedUpdateStrategy() ?? resolveCheckoutUpdateStrategy()
-      const result: UpdaterApplyResultWire = retirementConsent
-        ? strategy instanceof ChannelStrategy ? await strategy.applyRetirement(retirementConsent) : { ok: false, error: 'No retirement offer is selected.' }
-        : await strategy.apply()
+      const result: UpdaterApplyResultWire = await strategy.apply()
       handedOff = result.handedOff === true
 
       return result
@@ -16595,14 +16566,6 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
-ipcMain.handle('hermes:updates:retire', async (_event: Electron.IpcMainInvokeEvent, consent: Partial<RetirementConsent>): Promise<UpdaterApplyResultWire> => {
-  if (consent?.installStable !== true || consent?.removePreview !== true) { return { ok: false, error: 'Explicit installation and preview-removal consent required.' } }
-  if (consent.workspaceChoice !== 'keep-stable' && consent.workspaceChoice !== 'open-preview') { return { ok: false, error: 'Choose which workspace stable should open.' } }
-
-  return applyUpdates({ installStable: true, removePreview: true, workspaceChoice: consent.workspaceChoice })
-    .catch((error: Error): UpdaterApplyResultWire => ({ ok: false, error: 'retirement-blocked', message: error.message }))
-})
-
 ipcMain.handle('hermes:updates:branch:set', async (_event: Electron.IpcMainInvokeEvent, name: unknown): Promise<{ branch: string }> => {
   assertSourceUpdateChannel(INSTALL_STAMP)
   const branch: string = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
@@ -17095,39 +17058,6 @@ ipcMain.handle('hermes:deep-link-ready', () => {
   return { ok: true }
 })
 
-function selectedRetirementConnection(): RetirementConnectionSelection {
-  const registry = readDesktopConnectionsRegistry()
-  const route = resolveDesktopRemoteRoute({ config: readDesktopConnectionConfig(), registry, profile: primaryProfileKey(),
-    env: { token: process.env.HERMES_DESKTOP_REMOTE_TOKEN, url: process.env.HERMES_DESKTOP_REMOTE_URL } })
-  if (!route) { return { id: 'local' } }
-  const entry = registry.connections.find(connection => connection.id === route.connectionId)
-  if (!entry) { throw new Error('Save the selected remote connection before migration; environment-only credentials cannot transfer') }
-  return { id: entry.id, settings: retirementConnection(entry) }
-}
-
-async function finishDesktopRetirement(reception: RetirementReception): Promise<void> {
-  const result = await reception.complete({
-    home: HERMES_HOME, profile: primaryProfileKey, connectionId: (): string => selectedRetirementConnection().id,
-    rendererMounted: (): boolean => Boolean(_rendererReadyForDeepLink && mainWindow && !mainWindow.isDestroyed()),
-    backend: async (): Promise<void> => {
-      await startHermes()
-      await handleHermesApiRequest({ path: '/api/sessions', timeoutMs: 5000 })
-      const connection = await ensureBackend(primaryProfileKey())
-      const wsUrl: string | null = await resolveTestWsUrl(connection.baseUrl, normAuthMode(connection.authMode), connection.token, {
-        mintTicket: (url: string) => mintGatewayWsTicket(url, connection.headers || {})
-      })
-      if (!wsUrl) { throw new Error('Stable connection has no authenticated WebSocket URL') }
-      const probe: { ok: boolean; reason?: string } = await probeGatewayWebSocket(wsUrl, {
-        WebSocketImpl: globalThis.WebSocket, headers: connection.headers || {}
-      })
-      if (!probe.ok) { throw new Error(probe.reason || 'Stable connection authentication is incomplete') }
-    }
-  })
-  if (result.status === 'cleanup-pending') {
-    dialog.showErrorBox('Stable ready — preview cleanup pending', `${result.error}\nYour preview and all user data are preserved. Reopen the preview and choose Move to stable to retry cleanup.`)
-  }
-}
-
 function registerDeepLinkProtocol() {
   try {
     if (process.defaultApp && process.argv.length >= 2) {
@@ -17160,20 +17090,6 @@ if (!isPrimaryInstance) {
   app.exit(0)
 } else {
   app.on('second-instance', (_event, argv) => {
-    if (argv.some((arg: string): boolean => arg.startsWith('--hermes-retirement='))) {
-      void prepareRetirementStartup({ argv, userData: app.getPath('userData'), defaultHome: HERMES_HOME,
-        operatorOverride: Boolean(process.env.HERMES_HOME || USER_DATA_OVERRIDE), payload: bundledPayload(process.resourcesPath),
-        confirmWorkspaceConflict: (conflict: RetirementWorkspaceConflict) => confirmRetirementWorkspace(conflict, {
-          ready: async (): Promise<void> => { await app.whenReady() }, showMessageBox: dialog.showMessageBox
-        }),
-        runningSelection: (): Pick<RetirementExistingSelection, 'home' | 'profile' | 'connectionId'> => ({
-          home: HERMES_HOME, profile: primaryProfileKey(), connectionId: selectedRetirementConnection().id
-        })
-      }).then(async (reception: RetirementReception | null): Promise<void> => {
-        if (reception) { await finishDesktopRetirement(reception) }
-      }).catch((error: Error): void => dialog.showErrorBox('Migration paused — preview preserved', error.message))
-      return
-    }
     const url = _extractDeepLink(argv)
 
     if (url) {
@@ -17284,7 +17200,6 @@ app.whenReady().then(() => {
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
   createWindow()
-  if (retirementReception) { void finishDesktopRetirement(retirementReception) }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

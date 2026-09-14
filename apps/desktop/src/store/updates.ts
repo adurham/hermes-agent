@@ -7,7 +7,6 @@ import { atom } from 'nanostores'
 
 import { connectionScoped, profileScoped } from '@/api/client'
 import type {
-  DesktopRetirementConsent,
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
 
@@ -513,7 +512,7 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
   if ($updateStatus.get()?.retirement) {
     openUpdateOverlayFor('client')
 
-    return { ok: false, error: 'retirement-consent-required' }
+    return { ok: false, error: 'retirement-blocked' }
   }
 
   const bridge = window.hermesDesktop?.updates
@@ -617,35 +616,6 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
     $updateApply.set({ ...$updateApply.get(), applying: false, stage: 'error', error: 'apply-failed', message })
 
     return { ok: false, error: 'apply-failed', message }
-  }
-}
-
-/** Only the dedicated consent view calls the retirement IPC; ordinary update stays separate. */
-export async function applyRetirement(workspaceChoice: DesktopRetirementConsent['workspaceChoice']): Promise<DesktopUpdateApplyResult> {
-  const bridge = window.hermesDesktop?.updates
-  const status: DesktopUpdateStatus | null = $updateStatus.get()
-
-  if (!bridge?.retire || !status?.retirement || $updateApply.get().applying) {
-    return { ok: false, error: 'retirement-unavailable' }
-  }
-
-  $updateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.retirementMoving') })
-
-  try {
-    const result: DesktopUpdateApplyResult = await bridge.retire({ installStable: true, removePreview: true, workspaceChoice })
-
-    if (result.handedOff) { return result }
-    $updateApply.set(IDLE)
-    $updateStatus.set({ ...status, retirement: { ...status.retirement, state: result.ok ? 'complete' : 'conflict',
-      message: result.message ?? result.error } })
-
-    return result
-  } catch (error) {
-    const message: string = error instanceof Error ? error.message : String(error)
-    $updateApply.set(IDLE)
-    $updateStatus.set({ ...status, retirement: { ...status.retirement, state: 'conflict', message } })
-
-    return { ok: false, error: 'retirement-blocked', message }
   }
 }
 

@@ -2657,15 +2657,6 @@ export interface Translations {
   }
 
   updates: {
-    retirementTitle: string
-    retirementBody: string
-    retirementAction: string
-    retirementConsent: string
-    retirementKeepStable: string
-    retirementOpenPreview: string
-    retirementBlocked: string
-    retirementMoving: string
-    retirementComplete: string
     discontinuedTitle: string
     discontinuedBody: string
     channels: { stable: string; canary: string }

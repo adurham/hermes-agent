@@ -287,18 +287,14 @@ def _should_exclude(rel_path: Path) -> bool:
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
 
 
-def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None, *, strict: bool = False):
+def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
     """Yield ``(abs_path, rel_path)`` for every file a full backup should hold.
 
     The one owner of the walk policy (directory pruning so os.walk never descends a multi-GB
     excluded tree, the root-only ``hermes-agent`` carve-out, root runtime trees, per-file rules),
-    shared by ``hermes backup`` and the pre-update / pre-migration path so they can never drift.
+    shared by ``hermes backup`` and the pre-update path so they can never drift.
     """
-    def walk_error(error: OSError) -> None:
-        if strict:
-            raise error
-
-    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False, onerror=walk_error):
+    for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(hermes_root)
         is_root = rel_dir == Path(".")
         kept = [
@@ -307,10 +303,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             and not _in_excluded_root_dir(rel_dir / d)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
-        if strict:
-            for name in kept:
-                yield Path(dirpath) / name, rel_dir / name
-        # Migration inventories links themselves; no walk may follow a junction.
+        # No walk may follow a junction.
         dirnames[:] = [name for name in kept if not _is_link_path(Path(dirpath) / name)]
         for fname in filenames:
             rel = rel_dir / fname
@@ -319,7 +312,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
             # copy data from outside HERMES_HOME; never archive the output zip into itself.
             if _should_exclude(rel):
                 continue
-            if not strict and _is_non_regular_path(fpath):
+            if _is_non_regular_path(fpath):
                 continue
             with suppress(OSError, ValueError):
                 if fpath.resolve() == out_path.resolve():

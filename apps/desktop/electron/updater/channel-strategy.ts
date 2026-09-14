@@ -1,28 +1,22 @@
-import type { ChannelResolver, ChannelRetirement, ChannelTarget } from './channel'
+import type { ChannelResolver, ChannelTarget } from './channel'
 import type { ChannelBuild } from './channel-protocol'
-import type { RetirementConsent } from './retirement-state'
 
 import type { UpdaterApplyResultWire, UpdaterStatusWire, UpdaterStrategy } from './index'
 
 export interface ChannelRetirementStatus {
-  state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete' | 'discontinued'
+  state: 'discontinued'
   destination: string
   version: string
   message?: string
-}
-export interface ChannelRetirementCallbacks {
-  check: (retirement: ChannelRetirement) => Promise<Pick<ChannelRetirementStatus, 'state' | 'message'>>
-  apply: (retirement: ChannelRetirement, consent: RetirementConsent) => Promise<UpdaterApplyResultWire>
 }
 export interface ChannelStrategyDeps {
   resolver: Pick<ChannelResolver, 'resolve'>
   build: ChannelBuild
   mechanism: 'electron-updater' | 'app-installer'
   nativeFactory: (target: ChannelTarget) => UpdaterStrategy
-  retirement?: ChannelRetirementCallbacks
 }
 interface NativeSelection { kind: 'native'; strategy: UpdaterStrategy; available: boolean }
-interface RetirementSelection { kind: 'retirement'; value: ChannelRetirement; state: ChannelRetirementStatus['state'] }
+interface RetirementSelection { kind: 'retirement'; value: unknown; state: ChannelRetirementStatus['state'] }
 type Selection = NativeSelection | RetirementSelection | { kind: 'empty' }
 
 /** One selection owns a check/apply operation; background checks cannot retarget it. */
@@ -112,23 +106,6 @@ export class ChannelStrategy implements UpdaterStrategy {
       if (selected?.kind === 'native' && selected.available) { return await selected.strategy.apply() }
 
       return { ok: true, mechanism: this.mechanism }
-    } finally { this.busy = false }
-  }
-
-  /** Only the explicit migration action may call this method. */
-  async applyRetirement(consent: RetirementConsent): Promise<UpdaterApplyResultWire> {
-    this.enter()
-
-    try {
-      if (this.selection?.kind !== 'retirement' || !this.deps.retirement) {
-        return { ok: false, error: 'Check the retirement offer before accepting migration.' }
-      }
-
-      if (this.selection.state !== 'available' && this.selection.state !== 'cleanup-pending') {
-        return { ok: false, error: 'Retirement is blocked; resolve the reported issue and retry.' }
-      }
-
-      return await this.deps.retirement.apply(this.selection.value, consent)
     } finally { this.busy = false }
   }
 }

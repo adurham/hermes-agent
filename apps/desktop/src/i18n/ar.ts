@@ -2243,8 +2243,6 @@ export const ar = defineLocale({
     }
   },
   updates: {
-    retirementKeepStable: 'الاحتفاظ بمساحة العمل الحالية للإصدار المستقر',
-    retirementOpenPreview: 'فتح مساحة عمل هذا الإصدار التجريبي في الإصدار المستقر',
     channels: { stable: 'مستقر', canary: 'تجريبي' },
     bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
     bundleSwapPendingDesc: 'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Hermes لتحميله. لن تتأثر المحادثات أو الإعدادات.',

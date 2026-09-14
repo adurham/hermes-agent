@@ -43,15 +43,8 @@ function retirementStatus(
   supported: boolean,
   u: Translations['updates']
 ): UpdateStatusView {
-  if (retirement.state === 'discontinued') {
-    // Suffixed-identity build: nothing to download or migrate — just the notice.
-    return { applying, supported, updateAvailable: false, tone: 'error', line: u.discontinuedTitle, error: u.discontinuedBody }
-  }
-
-  const available: boolean = retirement.state === 'available' || retirement.state === 'cleanup-pending'
-  const line: string = applying ? u.retirementMoving : retirement.state === 'complete' ? u.retirementComplete : u.retirementTitle
-
-  return { applying, supported, updateAvailable: false, tone: available ? 'available' : 'error', line, error: retirement.message }
+  // Suffixed-identity build: nothing to download or migrate — just the notice.
+  return { applying, supported, updateAvailable: false, tone: 'error', line: u.discontinuedTitle, error: u.discontinuedBody }
 }
 
 /**
@@ -228,18 +221,13 @@ export function VersionHero({
 }
 
 interface UpdateActionsProps {
-  retirement: boolean
   target: UpdateTarget
   u: Translations['updates']
   view: UpdateStatusView
 }
 
-function UpdateActions({ retirement, target, u, view }: UpdateActionsProps): ReactElement | null {
+function UpdateActions({ target, u, view }: UpdateActionsProps): ReactElement | null {
   if (view.applying) { return null }
-
-  if (retirement) {
-    return <Button onClick={() => openUpdateOverlayFor('client')} size="sm">{u.retirementAction}</Button>
-  }
 
   if (!view.updateAvailable || !view.supported) { return null }
 
@@ -321,7 +309,6 @@ export function UpdateStatusCard({
           </Button>
 
           <UpdateActions
-            retirement={!isBackend && status?.retirement?.state !== undefined && status.retirement.state !== 'discontinued'}
             target={target}
             u={u}
             view={view}
