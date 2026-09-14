@@ -54,11 +54,18 @@ def receiver_request(request: dict) -> bool:
 
 
 def admit(request: dict, env: dict[str, str]) -> dict[str, str]:
-    if (env.get("BUILD_COMMIT") or env.get("TAG") or env.get("RELEASE_PHASE")
+    if (env.get("TAG") or env.get("RELEASE_PHASE")
             or env.get("TERMUX_UPGRADE_FROM_TAG") or env.get("TERMUX_ONLY") == "true"
-            or env.get("UPLOAD_RELEASE", "false") != "false"
-            or env.get("BUNDLE_ENV_JSON", "") not in ("", "{}")):
+            or env.get("UPLOAD_RELEASE", "false") != "false"):
         raise ValueError("Channel requests cannot select one-off, release, Termux or bundle overrides")
+    # A one-dispatch disposable run inherits the allocation dispatch's own
+    # BUILD_COMMIT/BUNDLE_ENV_JSON inputs. They are not overrides when they are
+    # exactly what the digest-pinned request already says; anything else is.
+    if env.get("BUILD_COMMIT") not in ("", None, request["commit"]):
+        raise ValueError("Channel request commit differs from the dispatch that allocated it")
+    if env.get("BUNDLE_ENV_JSON", "") not in ("", "{}"):
+        if json.loads(env["BUNDLE_ENV_JSON"]) != request["bundleEnv"]:
+            raise ValueError("Channel request bundle env differs from the dispatch that allocated it")
     validate_request(request, repository=env.get("GITHUB_REPOSITORY"))
     admitted = commit_build.admit({**env, "BUILD_COMMIT": request["commit"],
                                    "BUNDLE_ENV_JSON": json.dumps(request["bundleEnv"])})
