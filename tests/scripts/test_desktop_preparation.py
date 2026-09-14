@@ -119,8 +119,18 @@ def test_source_admission_rejects_dirty_checkout_and_invalid_store_before_writes
         with pytest.raises(ValueError, match="Store.*stable"):
             BuildRequest.create(source, tag=tag, commit=selected, variant="store", work=work, cache=cache, bundle_env={})
     (source / "package.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="source|checkout"):
+    (source / "pyproject.toml").write_text('staged fixture contents', encoding="utf-8")
+    subprocess.run(["git", "add", "pyproject.toml"], cwd=source, check=True)
+    (source / "generated output").mkdir()
+    (source / "generated output" / "receipt.json").write_text('untracked fixture contents', encoding="utf-8")
+    with pytest.raises(ValueError, match="source|checkout") as rejected:
         BuildRequest.create(source, tag=None, commit=commit, variant="light", work=work, cache=cache, bundle_env={})
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=all"], cwd=source, text=True,
+    ).rstrip("\r\n")
+    assert str(rejected.value).endswith("\n" + status)
+    assert 'generated output/receipt.json' in str(rejected.value)
+    assert 'fixture contents' not in str(rejected.value)
     assert not work.exists()
     assert not cache.exists()
 

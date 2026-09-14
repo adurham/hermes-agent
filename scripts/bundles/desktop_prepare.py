@@ -17,14 +17,15 @@ if str(ROOT) not in sys.path:
 
 
 def git(source: Path, *args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=source, text=True, encoding="utf-8").strip()
+    return subprocess.check_output(["git", *args], cwd=source, text=True, encoding="utf-8").rstrip("\r\n")
 
 
 def require_source(source: Path, commit: str) -> None:
     if git(source, "rev-parse", "HEAD") != commit:
         raise ValueError("preparation source checkout changed revision; prepare again")
-    if git(source, "status", "--porcelain", "--untracked-files=normal"):
-        raise ValueError("desktop builds require a clean source checkout at the admitted revision")
+    status = git(source, "status", "--porcelain", "--untracked-files=all")
+    if status:
+        raise ValueError(f"desktop builds require a clean source checkout at the admitted revision:\n{status}")
 
 
 def fingerprint(path: Path) -> str:
