@@ -222,7 +222,9 @@ jobs:
     needs: validate
     if: inputs.platform == 'win32'
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
-    timeout-minutes: 30
+    # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
+    # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
+    timeout-minutes: 45
     cache-mode: read
     env: *smoke-env
     steps: *smoke-steps

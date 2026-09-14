@@ -340,7 +340,7 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
 
 
-def test_staged_cache_rebuilds_venv_offline_without_build_sources_or_zips(tmp_path):
+def test_staged_cache_slim_ships_built_only_and_rebuilds_online_without_compiling(tmp_path):
     from tests.pm._fixtures import _wheel
 
     uv = shutil.which("uv")
@@ -396,30 +396,42 @@ def test_staged_cache_rebuilds_venv_offline_without_build_sources_or_zips(tmp_pa
             env=env, cwd=project, capture_output=True, text=True, timeout=60,
         )
         assert warmed.returncode == 0, warmed.stderr
+
+        built_zips = list(cache.rglob("*.whl"))
+        assert built_zips, "the actual uv build must create the redundant ZIP"
+        sources = [path for bucket in cache.glob("sdists-v*") for path in bucket.rglob("src") if path.is_dir()]
+        assert sources, "the actual uv build must leave its source tree in the cache"
+        shipped = tmp_path / "payload/uv-cache"
+        native.stage_uv_cache(cache, shipped)
+        kept = native.prune_uv_cache_to_built(shipped, project)
+        assert not list(shipped.rglob("*.whl")) or kept["wheels"], "built wheels survive the slim"
+        assert all(not (shipped / path.relative_to(cache)).exists() for path in sources)
+        assert all(path.exists() for path in [*built_zips, *sources]), "the build machine's cache must not change"
+        # The slim ships only what was built: cache-proof (sdist-only) survives,
+        # wheel-proof (a downloadable wheel) is dropped as re-downloadable.
+        assert "cache-proof" in kept["sdists"]
+        assert "wheel-proof" not in kept["sdists"] and "wheel-proof" not in kept["wheels"]
+        assert not any(shipped.rglob("wheel_proof*")), "downloadable wheels leave the shipped cache"
+
+        # A fresh mutable venv rebuilds ONLINE from the slim cache: the
+        # sdist-only package installs from the shipped built content — no
+        # compiler, no source tree — while the downloadable package comes
+        # back from the index (--frozen installs the lock's baked URLs, so
+        # the rebuild must reach the same origin the lock recorded).
+        shutil.rmtree(cache, ignore_errors=True)
+        shutil.rmtree(tmp_path / "first", ignore_errors=True)
+        shutil.rmtree(project / ".venv", ignore_errors=True)
+        result = subprocess.run(
+            [uv, "sync", "--python", sys.executable, "--frozen", "--index-url", index_url],
+            env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=project,
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Building" not in result.stderr and "Built" not in result.stdout, result.stderr + result.stdout
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-    built_zips = list(cache.rglob("*.whl"))
-    assert built_zips, "the actual uv build must create the redundant ZIP"
-    sources = [path for bucket in cache.glob("sdists-v*") for path in bucket.rglob("src") if path.is_dir()]
-    assert sources, "the actual uv build must leave its source tree in the cache"
-    shipped = tmp_path / "payload/uv-cache"
-    native.stage_uv_cache(cache, shipped)
-    assert not list(shipped.rglob("*.whl"))
-    assert all(not (shipped / path.relative_to(cache)).exists() for path in sources)
-    assert all(path.exists() for path in [*built_zips, *sources]), "the build machine's cache must not change"
-
-    # Nothing outside the shipped cache can satisfy this fresh mutable venv.
-    for directory in (dist, package, cache, tmp_path / "first", project / ".venv"):
-        shutil.rmtree(directory)
-    result = subprocess.run(
-        [uv, "sync", "--python", sys.executable, "--frozen", "--offline", "--index-url", index_url],
-        env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=project,
-        capture_output=True, text=True, timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "Building" not in result.stderr
     python = project / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     probe = subprocess.run(
         [str(python), "-I", "-c",

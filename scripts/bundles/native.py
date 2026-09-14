@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,7 +54,7 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 
 def stage_uv_cache(source: Path, destination: Path) -> None:
-    """Keep offline wheel/index entries, without copying sdist build inputs.
+    """Keep offline wheel/index entries, without sdist build inputs.
 
     uv installs built wheels from extracted entries; their ZIPs and source
     trees (including Rust target/ outputs) are build-only. Scope exclusions
@@ -77,6 +78,99 @@ def stage_uv_cache(source: Path, destination: Path) -> None:
         return omitted
 
     shutil.copytree(source, destination, ignore=ignore)
+
+
+def _cache_index_dirs(cache: Path, family: str) -> list[Path]:
+    """Index roots under a cache family (wheels-v*/sdists-v*), whatever the
+    index name: PyPI materializes as `pypi`, a custom --index-url as a hashed
+    dir under `index`. Depth is fixed, the leaf dir name is not."""
+    roots: list[Path] = []
+    for family_dir in sorted(cache.glob(f"{family}-v*")):
+        for index_dir in family_dir.iterdir():
+            if index_dir.name in ("index",) or index_dir.name == "pypi":
+                roots.extend(d for d in index_dir.iterdir() if d.is_dir())
+    return roots
+
+
+def _lock_wheel_names(source_repo: Path) -> dict[str, set[str]]:
+    """Map lock package name → wheel filenames uv downloads for it."""
+    import tomllib
+
+    lock = tomllib.loads((source_repo / "uv.lock").read_text(encoding="utf-8-sig"))
+    packages: dict[str, set[str]] = {}
+    for entry in lock.get("package", []):
+        names = set()
+        for wheel in entry.get("wheels") or []:
+            url = wheel.get("url") if isinstance(wheel, dict) else wheel
+            if url:
+                names.add(url.rsplit("/", 1)[-1])
+        packages[entry["name"]] = names
+    return packages
+
+
+def prune_uv_cache_to_built(cache: Path, source_repo: Path) -> dict[str, list[str]]:
+    """Slim a staged uv cache to the packages that had no downloadable wheel.
+
+    A venv rebuild from the bundle may go online — PyPI re-serving released
+    wheels is fine — but it must never invoke a compiler for the dependency
+    graph's built-ins: packages whose wheels uv had to build on the build
+    machine (no cp314/platform wheel on the index) would need a toolchain
+    the user's machine may not have. Those packages' cache entries — sdist
+    records, built wheel zips, and extracted archive buckets — are the
+    infra-free guarantee; everything else is re-downloadable bytes.
+
+    Returns the kept package names (for the build log).
+    """
+    lock_wheels = _lock_wheel_names(source_repo)
+
+    built = {name for name, wheels in lock_wheels.items() if not wheels}
+    sdist_dirs = _cache_index_dirs(cache, "sdists")
+    wheels_dirs = _cache_index_dirs(cache, "wheels")
+    # uv records every source distribution it fetched (and compiled).
+    built |= {entry.name for directory in sdist_dirs for entry in directory.iterdir() if entry.is_dir()}
+    for pkg_dir in (entry for directory in wheels_dirs for entry in directory.iterdir() if entry.is_dir()):
+        # A cached wheel uv did not download from the index is one it
+        # built itself (platform gap, e.g. no win cp314 wheel).
+        if any(whl.name not in lock_wheels.get(pkg_dir.name, set())
+               for whl in pkg_dir.rglob("*.whl")):
+            built.add(pkg_dir.name)
+    built.discard("hermes-agent")  # installed from the payload's own tree
+
+    keep_sdist = built & {e.name for directory in sdist_dirs for e in directory.iterdir()}
+    keep_wheels = built & {e.name for directory in wheels_dirs for e in directory.iterdir()}
+
+    # archive-v0 buckets are content-addressed: keep the ones holding any
+    # built package (matched by its .dist-info directory).
+    keep_buckets: set[str] = set()
+    archive_root = cache / "archive-v0"
+    if archive_root.is_dir():
+        dist_info = re.compile(r"([a-zA-Z0-9_.]+?)-\d[^-]*\.dist-info")
+        for bucket in archive_root.iterdir():
+            if not bucket.is_dir():
+                continue
+            for dirpath, dirnames, _filenames in os.walk(bucket):
+                if Path(dirpath).relative_to(bucket).parts.__len__() > 3:
+                    dirnames[:] = []
+                    continue
+                for name in list(dirnames):
+                    match = dist_info.match(name)
+                    if match:
+                        if match.group(1).lower().replace("_", "-") in built:
+                            keep_buckets.add(bucket.name)
+                        dirnames.remove(name)
+
+    for directory, keep in (
+        *[(d, keep_sdist) for d in sdist_dirs],
+        *[(d, keep_wheels) for d in wheels_dirs],
+    ):
+        for entry in directory.iterdir():
+            if entry.name not in keep and entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+    if archive_root.is_dir():
+        for bucket in archive_root.iterdir():
+            if bucket.name not in keep_buckets and bucket.is_dir():
+                shutil.rmtree(bucket, ignore_errors=True)
+    return {"sdists": sorted(keep_sdist), "wheels": sorted(keep_wheels), "buckets": sorted(keep_buckets)}
 
 
 def stage_pm_runtime(root: Path, python: Path, repo: Path, *, offline: bool = False,
@@ -233,11 +327,11 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     write_features(features, out)
     print(f"✓ enabled-features.json ({len(features)} extras recorded)")
 
-    # Ship the uv cache: the staged venv sync just warmed the hermes-owned
-    # cache with every wheel this payload needs. Copying it in makes a
-    # mutable-venv rebuild from the bundle near-free (`uv sync --offline`
-    # from a warm cache probed at 0.4s vs 1.2s cold) — the blow-away-on-
-    # update contract depends on it.
+    # Ship a slim uv cache: the venv sync on the build machine warms the
+    # hermes-owned cache with every wheel this payload needs. A mutable-venv
+    # rebuild from the bundle re-downloads released wheels online (seconds)
+    # and reuses the shipped built-wheels for the packages that had none —
+    # no compiler, no Xcode CLT, no Rust toolchain on the user machine.
     payload_cache = out / "uv-cache"
     if payload_cache.exists():
         shutil.rmtree(payload_cache, ignore_errors=True)
@@ -245,7 +339,14 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     if src_cache.is_dir():
         print(f"  uv-cache: copying {src_cache} → payload...", flush=True)
         stage_uv_cache(src_cache, payload_cache)
-        print("✓ uv-cache (staged — warm rebuilds for the mutable venv)")
+        # Ship only what a rebuild cannot re-acquire online: the wheels uv
+        # built itself for packages with no downloadable wheel. Rebuilds go
+        # online for released wheels (seconds) but must never need a
+        # compiler; the full 2GB cache buys offline rebuilds the bundle
+        # contract does not promise.
+        kept = prune_uv_cache_to_built(payload_cache, repo_dir)
+        print(f"✓ uv-cache (slim — built-only: {len(kept['sdists'])} sdist records, "
+              f"{len(kept['wheels'])} built wheels, {len(kept['buckets'])} archive buckets)", flush=True)
     else:
         raise InstallError("uv-cache", "runtime dependency cache is missing")
 
