@@ -14,6 +14,9 @@ inputs:
   output:
     description: Path of the recording (mkv).
     required: true
+  save-cache:
+    description: Disable cache writes when the calling job has a read-only cache token.
+    default: 'true'
 
 runs:
   using: composite
@@ -69,7 +72,7 @@ runs:
     - name: Restore cached ffmpeg (windows)
       if: inputs.mode == 'start' && runner.os == 'Windows'
       id: ffmpeg-cache
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
       with:
         path: ${{ runner.temp }}\test-bins\ffmpeg
         key: e2e-ffmpeg-${{ runner.os }}-v1
@@ -82,6 +85,13 @@ runs:
         New-Item -ItemType Directory -Path $bins -Force | Out-Null
         winget install -e --id Gyan.FFmpeg --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --location "$env:RUNNER_TEMP\ffmpeg_dir"
         Copy-Item -Path "$env:RUNNER_TEMP\ffmpeg_dir\*\*" -Destination $bins -Recurse -Force
+
+    - name: Save cached ffmpeg (windows)
+      if: inputs.mode == 'start' && runner.os == 'Windows' && inputs.save-cache == 'true' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      with:
+        path: ${{ runner.temp }}\test-bins\ffmpeg
+        key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
 
     - name: Add ffmpeg to PATH (windows)
       if: inputs.mode == 'start' && runner.os == 'Windows'

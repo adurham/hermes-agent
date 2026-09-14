@@ -13,6 +13,9 @@ inputs:
   cache:
     description: Cache the verified PM tool store.
     default: 'true'
+  save-tools-cache:
+    description: Save the verified PM tools on success. Set false for restore-only jobs.
+    default: 'true'
   cache-python:
     description: Cache uv downloads and built wheels; never cache the dependency environment.
     default: 'true'
@@ -63,7 +66,7 @@ outputs:
     value: ${{ steps.prepare.outputs.target }}
   tools-cache-hit:
     description: Exact PM store cache hit.
-    value: ${{ steps.tools-cache.outputs.cache-hit }}
+    value: ${{ steps.tools-cache.outputs.cache-hit || steps.tools-cache-restore.outputs.cache-hit }}
   python-cache-hit:
     description: Exact uv dependency cache hit.
     value: ${{ steps.python-cache.outputs.cache-hit || steps.python-cache-restore.outputs.cache-hit }}
@@ -102,8 +105,16 @@ runs:
 
     - name: Cache verified PM tools
       id: tools-cache
-      if: inputs.cache == 'true'
+      if: inputs.cache == 'true' && inputs.save-tools-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.prepare.outputs.store }}
+        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}-${{ hashFiles('pm/lock.json') }}-${{ inputs.cache-suffix }}
+
+    - name: Restore verified PM tools without saving
+      id: tools-cache-restore
+      if: inputs.cache == 'true' && inputs.save-tools-cache == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.prepare.outputs.store }}
         key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}-${{ hashFiles('pm/lock.json') }}-${{ inputs.cache-suffix }}
