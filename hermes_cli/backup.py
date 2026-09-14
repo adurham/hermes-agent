@@ -22,6 +22,7 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
+    default_new_file_mode,
 )
 
 from hermes_cli.archive_safe import normalize_archive_parts
@@ -1162,7 +1163,10 @@ def _create_quick_snapshot_locked(
     snap_dir = root / snap_id
     staging_dir = root / f".{snap_id}.{os.getpid()}.partial"
     shutil.rmtree(staging_dir, ignore_errors=True)
-    staging_dir.mkdir(parents=True, exist_ok=False)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        os.chmod(root, 0o700)
+    staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
@@ -1292,6 +1296,20 @@ def _create_quick_snapshot_locked(
     }
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+
+    # Make the staged quick snapshot owner-only before it is published. The
+    # staging directory is private from creation, so copied source modes can
+    # be normalized safely before the final atomic rename exposes the
+    # snapshot. Permission failures are intentionally fatal: publishing a
+    # readable recovery bundle is worse than reporting a failed snapshot.
+    if os.name != "nt":
+        os.chmod(root, 0o700)
+        os.chmod(staging_dir, 0o700)
+        for path in staging_dir.rglob("*"):
+            if path.is_dir():
+                os.chmod(path, 0o700)
+            elif path.is_file():
+                os.chmod(path, 0o600)
 
     os.replace(staging_dir, snap_dir)
 

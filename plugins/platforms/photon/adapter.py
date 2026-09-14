@@ -35,19 +35,23 @@ else:
         HTTPX_AVAILABLE = False
         httpx = None
 
-from gateway.config import Platform, PlatformConfig, _coerce_float, _coerce_int
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms._shared import coerce_port as _coerce_port
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.platforms.helpers import MessageDeduplicator, bounded_put, cancel_task
+from utils import atomic_json_write
 
 from .auth import load_project_credentials
 # Sidecar dir resolution is lazy (never at import): it probes the filesystem and may
 # mirror files. Tests monkeypatch sidecar_paths._SIDECAR_DIR.
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _lock_newer_than_install, _npm_error_log, _sidecar_dir
 from .sidecar_paths import dir_writable as _dir_writable
-from hermes_constants import find_node_executable, with_hermes_node_path
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -90,29 +94,16 @@ def _runtime_record_path() -> Path:
 
 
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
-    """Atomically persist ``{port, token, pid}`` with owner-only perms (best-effort)."""
-    import tempfile
+    """Atomically persist ``{port, token, pid}`` 0600 from creation (best-effort)."""
     try:
-        path = _runtime_record_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".photon-sidecar.", suffix=".tmp")
-        try:
-            with contextlib.suppress(OSError):  # perms BEFORE the token hits disk (Windows / odd fs)
-                os.chmod(tmp, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"port": port, "token": token, "pid": pid}, fh)
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        atomic_json_write(_runtime_record_path(), {"port": port, "token": token, "pid": pid}, indent=None, mode=0o600)
     except Exception as e:
         logger.warning("[photon] failed to write sidecar runtime record: %s", e)
 
 
 def _read_runtime_record() -> Optional[Dict[str, Any]]:
     try:
-        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8-sig"))
+        raw = json.loads(_runtime_record_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None
@@ -208,57 +199,27 @@ def _is_timeout_error(exc: BaseException) -> bool:
     return "timeout" in type(exc).__name__.lower()
 
 
-def _first_set(*vals: Any) -> Any:
-    """First non-None value, else None (same semantic as the honcho helper)."""
-    return next((val for val in vals if val is not None), None)
-
-
-
 def check_requirements() -> bool:
-    """Report readiness or permission to prepare at connect; never provision here."""
-    from pm import lazy_installs_allowed
-
-    can_prepare = lazy_installs_allowed()
+    """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    if not (_get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node") or can_prepare):
-        logger.warning("photon: node binary not found on PATH, in the pm store, or via PHOTON_NODE_BIN")
+    node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or "node"
+    if not shutil.which(node_bin):
+        logger.warning("photon: node binary '%s' not found on PATH", node_bin)
         return False
     if not sidecar_deps_installed():
-        # spectrum-ts not installed yet, or node_modules/ was partially created
-        # by an aborted npm install (ENOSPC, network timeout, EACCES).
-        # Checking spectrum-ts presence — not just node_modules/ existence —
-        # prevents a false positive where an empty/broken node_modules/ dir
-        # causes check_requirements() to return True while the sidecar crashes
-        # at runtime with an unrelated-looking missing-module error.
-        #
-        # NS-606: if we can self-install at connect time — npm on PATH and
-        # the (resolved, possibly mirrored) sidecar dir is writable — report
-        # available so the gateway creates the adapter and ``_start_sidecar``
-        # cold-installs from the committed lockfile (on hosted images the
-        # user has no CLI to run `hermes photon setup`, so the connect path
-        # must self-heal). Otherwise keep returning False so
-        # `hermes setup` / status surface the missing-deps state.
-        if (find_node_executable("npm") or can_prepare) and _dir_writable(_sidecar_dir()):
+        # Self-install is possible at connect time (npm on PATH + writable sidecar dir):
+        # report available so _start_sidecar cold-installs — hosted images have no CLI.
+        if bool(shutil.which("npm")) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG, not WARNING: normal pre-setup state, and check_fn is polled from hot paths.
         npm_error = ""
         with contextlib.suppress(OSError):
             if _npm_error_log().exists():
-                npm_error = _npm_error_log().read_text(encoding="utf-8-sig").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
-        if npm_error:
-            logger.debug(
-                "photon: spectrum-ts not installed at %s "
-                "(last npm error: %s) — run: hermes photon setup",
-                _sidecar_dir(),
-                npm_error,
-            )
-        else:
-            logger.debug(
-                "photon: spectrum-ts not installed at %s — run: hermes photon setup",
-                _sidecar_dir(),
-            )
+                npm_error = _npm_error_log().read_text(encoding="utf-8").strip()[:_NPM_ERROR_LOG_MAX_CHARS]
+        hint = f" (last npm error: {npm_error})" if npm_error else ""
+        logger.debug("photon: spectrum-ts not installed at %s%s — run: hermes photon setup", _sidecar_dir(), hint)
         return False
     return True
 
@@ -270,33 +231,18 @@ def _sidecar_deps_stale() -> bool:
 
 
 def _reinstall_sidecar_deps() -> None:
-    """Reinstall the sidecar's node_modules from the lockfile (blocking).
-
-    Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
-    reproducible install, falling back to ``npm install`` if the lockfile is
-    missing or drifted. Runs the postinstall patch as part of the install.
-    Best-effort — a failure here just leaves the (stale) deps in place and the
-    normal ``_start_sidecar`` readiness check reports the real error.
-    """
-    import pm
-
-    try:
-        npm = find_node_executable("npm")
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm").env
-            installed = pm.installed_package("npm")
-            assert installed is not None and installed.binary is not None
-            npm = str(installed.binary)
-    except pm.InstallError as exc:
-        logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
+    """``npm ci`` (fallback ``npm install``); blocking, best-effort — on failure the stale
+    deps stay and the readiness check reports the real error."""
+    npm = shutil.which("npm")
+    if not npm:
+        logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
 
     def _run(verb: str) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
             [npm, verb], cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
+            errors="replace", check=False, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
         result = _run("ci")
         if result.returncode != 0:
@@ -325,16 +271,13 @@ def is_connected(cfg: PlatformConfig) -> bool:
 
 
 def _env_enablement() -> Optional[dict]:
-    """Seed PlatformConfig.extra from env so env-only setups appear in status
-    (``home_channel`` becomes a ``HomeChannel`` via the core plugin hook)."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` so env-only setups appear in status."""
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    seed: dict = {"project_id": project_id, "project_secret": project_secret}
-    home = _get_scoped_secret("PHOTON_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("PHOTON_HOME_CHANNEL_NAME", "Home")}
-    return seed
+    return {"project_id": project_id, "project_secret": project_secret,
+            **_seed_extra_from_env((), home_env="PHOTON_HOME_CHANNEL")}
+
 
 
 def _markdown_enabled() -> bool:
@@ -496,24 +439,6 @@ def _guess_mime(path: str) -> Optional[str]:
     return mimetypes.guess_type(path)[0] or None
 
 
-def _bounded_put(store: Dict[str, Any], key: str, value: Any, max_size: int) -> None:
-    """Insert with insertion-order refresh and a HARD size bound (evict oldest)."""
-    if key in store:
-        del store[key]
-    store[key] = value
-    if len(store) > max_size:
-        for old in list(store.keys())[: len(store) - max_size]:
-            del store[old]
-
-
-async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-    """Cancel *task* and wait for it, unless it is the current task."""
-    if task is None:
-        return
-    task.cancel()
-    if task is not asyncio.current_task():
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
 
 
 # -- Adapter -------------------------------------------------------------------
@@ -535,54 +460,21 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_port = _coerce_port(
             extra.get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
         self._sidecar_bind = _DEFAULT_SIDECAR_BIND
-        self._sidecar_token = (
-            _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
-        )
-        self._autostart_sidecar = str(
-            _get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")
-        ).lower() not in ("0", "false", "no")
-        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node")
-
-        # Presence watchdog. spectrum-ts only reconnects when its inbound
-        # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
-        # iterator hang forever (no error, no end), so inbound silently dies
-        # until the sidecar is restarted. The sidecar owns primary zombie
-        # detection (stream-staleness + upstream probe -> degraded -> exit 75;
-        # surfaced here via /healthz in _monitor_sidecar_health). This adapter-
-        # side watchdog is a conservative second layer that only respawns the
-        # sidecar when the sidecar's own HTTP loop stops responding (probe
-        # HTTP call hangs) — an "inconclusive" probe (sidecar answered but
-        # could not prove upstream liveness) NEVER counts toward a respawn:
-        # the network may simply be down, and restarting cannot fix that.
-        # Thresholds are deliberately conservative (10 min interval) — shared
-        # lines can be legitimately quiet for hours, so we never restart on
-        # silence alone.
-        # Behavioural settings -> config.yaml (extra), bridged to env.
-        # Use _first_set (not ``or``) so an explicit 0 is honored — ``0 or X``
-        # would silently fall through to the default and you could never
-        # disable the watchdog with probe_interval_seconds: 0.
-        self._probe_interval = _coerce_float(
-            _first_set(
-                extra.get("probe_interval_seconds"),
-                _get_scoped_secret("PHOTON_PROBE_INTERVAL_SECONDS"),
-            ),
-            600.0,
-        )
-        self._probe_timeout = _coerce_float(
-            _first_set(
-                extra.get("probe_timeout_seconds"),
-                _get_scoped_secret("PHOTON_PROBE_TIMEOUT_SECONDS"),
-            ),
-            10.0,
-        )
-        self._probe_max_failures = _coerce_int(
-            _first_set(
-                extra.get("probe_max_failures"),
-                _get_scoped_secret("PHOTON_PROBE_MAX_FAILURES"),
-            ),
-            3,
-        )
-        # A non-positive interval disables the watchdog entirely (escape hatch).
+        self._sidecar_token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
+        autostart = str(_get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")).lower()
+        self._autostart_sidecar = autostart not in ("0", "false", "no")
+        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or shutil.which("node") or "node"
+        # Presence watchdog (second layer behind the sidecar's own zombie-stream detection):
+        # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
+        # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
+        def _setting(key: str, env: str, default: Any, cast: Callable[[Any], Any]) -> Any:
+            try:
+                return cast(_extra_or_secret(extra, key, env, None))
+            except (TypeError, ValueError):
+                return default
+        self._probe_interval = _setting("probe_interval_seconds", "PHOTON_PROBE_INTERVAL_SECONDS", 600.0, float)
+        self._probe_timeout = _setting("probe_timeout_seconds", "PHOTON_PROBE_TIMEOUT_SECONDS", 10.0, float)
+        self._probe_max_failures = _setting("probe_max_failures", "PHOTON_PROBE_MAX_FAILURES", 3, int)
         self._probe_enabled = self._probe_interval > 0
         self.supports_code_blocks = _markdown_enabled()  # markdown on => fences pass through
         self._sidecar_proc: Optional[subprocess.Popen] = None
@@ -594,7 +486,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_health_interval = 15.0
         self._probe_failures = 0
         self._last_upstream_activity = 0.0  # monotonic; watchdog skips probe if traffic proved liveness
-        self._seen_messages: Dict[str, float] = {}  # at-least-once stream dedup
+        self._dedup = MessageDeduplicator(max_size=_DEDUP_MAX_SIZE, ttl_seconds=_DEDUP_WINDOW_SECONDS)  # at-least-once stream
         self._sent_message_ids: Dict[str, float] = {}  # only reactions targeting OUR sends are routed
         self._last_inbound_by_chat: Dict[str, str] = {}  # default target for the react action
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
@@ -684,9 +576,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self._inbound_running = False
         await self._stop_watchdog()  # first, so it can't respawn while we tear the sidecar down
         task, self._sidecar_health_task = self._sidecar_health_task, None
-        await _cancel_task(task)
+        await cancel_task(task)
         task, self._inbound_task = self._inbound_task, None
-        await _cancel_task(task)
+        await cancel_task(task)
         for _, fffc_task in list(self._pending_fffc.values()):
             if fffc_task and not fffc_task.done():
                 fffc_task.cancel()
@@ -786,20 +678,12 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.debug("[photon] skipping non-JSON inbound line")
             return
         msg_id = event.get("messageId")
-        if msg_id and self._is_duplicate(msg_id):
+        if msg_id and self._dedup.is_duplicate(msg_id):
             return
         try:
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        now = time.time()
-        t = self._seen_messages.get(msg_id)
-        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
-            return True
-        _bounded_put(self._seen_messages, msg_id, now, _DEDUP_MAX_SIZE)
-        return False
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
         await asyncio.sleep(_FFFC_WAIT_SECONDS)
@@ -996,7 +880,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 subprocess.run,  # noqa: S603
                 [self._node_bin, str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"), str(_sidecar_dir())],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
-                creationflags=hide_flags, env=with_hermes_node_path())
+                creationflags=hide_flags)
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
             if patch.stderr.strip():
@@ -1005,19 +889,9 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
 
     async def _start_sidecar(self) -> None:
-        if self._node_bin is None:
-            import pm
-
-            try:
-                await asyncio.to_thread(pm.ensure, "node")
-                installed = pm.installed_package("node")
-                assert installed is not None and installed.binary is not None
-                self._node_bin = str(installed.binary)
-            except pm.InstallError as exc:
-                raise PhotonSidecarStartupError(str(exc), code="SIDECAR_NODE_MISSING", retryable=False) from exc
         await self._ensure_sidecar_deps()
         await self._reap_stale_sidecar()
-        env = with_hermes_node_path()
+        env = os.environ.copy()
         env.update({
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
@@ -1031,21 +905,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 [self._node_bin, str(_sidecar_dir() / "index.mjs")],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 start_new_session=(sys.platform != "win32"),
-                # Windows: run the persistent sidecar headless so it does not open
-                # (or leave) a visible console window. CREATE_NO_WINDOW only (no
-                # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
-                creationflags=windows_hide_flags(),
-            )
-        except FileNotFoundError as exc:
-            # Deterministic: node isn't resolvable (pm store or PATH).
-            # Retrying can never fix a missing binary (OOF-153).
+                creationflags=windows_hide_flags())  # CREATE_NO_WINDOW only (no DETACHED_PROCESS): pipes stay usable
+        except FileNotFoundError as exc:  # deterministic: retrying can never fix a missing binary
             raise PhotonSidecarStartupError(
-                f"node binary not found ({self._node_bin!r}) — install Node.js "
-                f"18+ or run `hermes pm install`: {exc}",
-                code="SIDECAR_NODE_MISSING",
-                retryable=False,
-            ) from exc
-        # Pump sidecar stderr/stdout into our logger so users see crashes.
+                f"node binary not found ({self._node_bin!r}) — install Node.js or set PHOTON_NODE_BIN: {exc}",
+                code="SIDECAR_NODE_MISSING", retryable=False) from exc
         loop = asyncio.get_event_loop()
         self._sidecar_supervisor_task = loop.create_task(self._supervise_sidecar(self._sidecar_proc))
         deadline = time.time() + 15.0  # wait for /healthz — up to 15s on cold start
@@ -1223,7 +1087,7 @@ class PhotonAdapter(BasePlatformAdapter):
     async def _stop_watchdog(self) -> None:
         self._watchdog_running = False
         task, self._watchdog_task = self._watchdog_task, None
-        await _cancel_task(task)
+        await cancel_task(task)
 
     # -- Outbound ------------------------------------------------------------------
 
@@ -1310,7 +1174,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def _record_sent_message(self, message_id: Optional[str]) -> None:
         if message_id:
-            _bounded_put(self._sent_message_ids, message_id, time.time(), self._SENT_IDS_MAX)
+            bounded_put(self._sent_message_ids, message_id, time.time(), self._SENT_IDS_MAX)
 
     # A DM space is addressable as the chat GUID (`any;-;+1555...`) inbound events carry, or
     # the bare E.164 phone home-channel config uses; the sidecar's resolveSpace treats them
@@ -1323,7 +1187,7 @@ class PhotonAdapter(BasePlatformAdapter):
         return match.group(1) if match else chat_id
 
     def _put_by_chat(self, store: Dict[str, Any], chat_id: str, value: Any) -> None:
-        _bounded_put(store, self._normalize_chat_key(chat_id), value, self._LAST_INBOUND_CHATS_MAX)
+        bounded_put(store, self._normalize_chat_key(chat_id), value, self._LAST_INBOUND_CHATS_MAX)
 
     def _record_last_inbound(self, chat_id: Optional[str], message_id: Optional[str]) -> None:
         if chat_id and message_id:
@@ -1423,48 +1287,14 @@ class PhotonAdapter(BasePlatformAdapter):
         return (isinstance(raw, dict) and raw.get("retryable") is False
                 and raw.get("error_class") in ("auth_or_config", "target_not_allowed"))
 
-    async def _send_with_retry(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                               metadata: Any = None, max_retries: int = 1, base_delay: float = 2.0) -> SendResult:
-        """Retry sends without the generic Markdown banner (replies are markdown or
-        already-stripped plain text, so it never applies)."""
-        text = self.format_message(content)
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        return self._is_permanent_sidecar_failure(result)  # already carries the user-facing explanation
 
-        async def _send() -> SendResult:
-            return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
-        result = await _send()
-        if result.success:
-            return result
-        if self._is_permanent_sidecar_failure(result):
-            return result  # structured failure already carries the user-facing explanation
-        error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
-        if not is_network and self._is_timeout_error(error_str):
-            return result
-        if is_network:
-            for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning("[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                               attempt, max_retries, delay, error_str)
-                await asyncio.sleep(delay)
-                result = await _send()
-                if result.success:
-                    return result
-                error_str = result.error or ""
-                if self._is_permanent_sidecar_failure(result):
-                    return result
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break
-            else:
-                logger.error("[photon] Failed to deliver response after %d retries: %s", max_retries, error_str)
-                # Fall through to plain text; for URL-only responses this bypasses richlink()
-                # so a rich-link outage doesn't strand a sendable URL.
-        logger.warning("[photon] Send failed: %s - retrying plain-text message", error_str)
-        fallback_result = await self._sidecar_send(
-            chat_id, text[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
-        if not fallback_result.success:
-            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
-        return fallback_result
+    async def _send_plain_fallback(self, chat_id: str, content: str, *, reply_to: Optional[str], metadata: Any) -> SendResult:
+        """No Markdown banner (replies are markdown or already-stripped plain text); bypass
+        richlink() so a rich-link outage doesn't strand a sendable URL."""
+        return await self._sidecar_send(
+            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
@@ -1604,7 +1434,7 @@ def _standalone_error(resp: Any) -> Dict[str, Any]:
         error = f"sidecar returned {resp.status_code}: {resp.text[:200]}"
     else:
         error = str(data.get("error") or "sidecar reported failure")
-    return {"error": error, "error_class": error_class, "retryable": retryable}
+    return {**send_error(error), "error_class": error_class, "retryable": retryable}
 
 
 def _standalone_token_from_record(port: int) -> Tuple[Optional[str], int, str]:
@@ -1631,14 +1461,14 @@ async def _standalone_send(
     force_document: bool = False,  # noqa: ARG001 — iMessage auto-detects file kind
 ) -> Dict[str, Any]:
     if not HTTPX_AVAILABLE:
-        return {"error": "httpx not installed"}
+        return send_error("httpx not installed")
     port = _coerce_port(
         (pconfig.extra or {}).get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"), _DEFAULT_SIDECAR_PORT)
     token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN")
     if not token:
         token, port, error = _standalone_token_from_record(port)
         if not token:
-            return {"error": error}
+            return send_error(error)
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
     headers = {"X-Hermes-Sidecar-Token": token}
     last_message_id: Optional[str] = None
@@ -1679,7 +1509,7 @@ async def _standalone_send(
                 last_message_id = data.get("messageId") or last_message_id
         return {"success": True, "message_id": last_message_id}
     except Exception as e:
-        return {"error": f"Photon standalone send failed: {e}"}
+        return send_error(f"Photon standalone send failed: {e}")
 
 
 # -- Plugin entry point ----------------------------------------------------------

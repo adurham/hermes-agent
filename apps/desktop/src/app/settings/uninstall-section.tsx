@@ -2,6 +2,7 @@ import { type ReactElement, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import type { DesktopUninstallMode, DesktopUninstallResult, DesktopUninstallSummary } from '@/global'
+import { useI18n } from '@/i18n'
 import { AlertTriangle, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -46,6 +47,7 @@ const OPTIONS: ModeOption[] = [
 ]
 
 export function UninstallSection(): ReactElement | null {
+  const { t } = useI18n()
   const [summary, setSummary] = useState<DesktopUninstallSummary | null>(null)
   const [pending, setPending] = useState<DesktopUninstallMode | null>(null)
   const [running, setRunning] = useState<boolean>(false)
@@ -116,12 +118,12 @@ export function UninstallSection(): ReactElement | null {
 
   return (
     <div className="mx-auto mt-8 w-full max-w-2xl">
-      <SectionHeading icon={AlertTriangle} title="Danger zone" />
+      <SectionHeading icon={AlertTriangle} title={t.settings.uninstallSection.dangerZone} />
 
       <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
         {pendingOption ? (
           <div>
-            <p className="text-sm font-medium text-destructive">Confirm uninstall</p>
+            <p className="text-sm font-medium text-destructive">{t.settings.uninstallSection.confirmUninstall}</p>
             <p className="mt-1 text-xs text-muted-foreground">
               This removes {pendingOption.consequence}. This can&apos;t be undone.
             </p>
@@ -141,7 +143,7 @@ export function UninstallSection(): ReactElement | null {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Uninstall Hermes</p>
+            <p className="text-sm font-medium">{t.settings.uninstallSection.uninstallHermes}</p>
             <p className="text-xs text-muted-foreground">
               Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.
             </p>

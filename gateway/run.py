@@ -392,12 +392,51 @@ _CONNECTION_ERROR_MARKERS = (
     r"cannot\s+connect", r"failed\s+to\s+establish", r"could\s+not\s+connect")
 _GATEWAY_CONNECTION_ERROR_RE = re.compile("(" + "|".join(_CONNECTION_ERROR_MARKERS) + ")", re.IGNORECASE)
 
-_GATEWAY_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), re.compile(r"\bxapp-\d+-[A-Za-z0-9\-]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"), re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
-    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"))
+def _ensure_windows_gateway_venv_imports() -> None:
+    """Make detached Windows gateway runs see the Hermes venv packages.
+
+    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
+    if sys.platform != "win32":
+        return
+
+    project_root = Path(__file__).resolve().parent.parent
+    candidates: list[Path] = []
+    if os.environ.get("VIRTUAL_ENV"):
+        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
+    candidates.append(project_root / "venv")
+
+    seen: set[str] = set()
+    for venv_dir in candidates:
+        try:
+            resolved_venv = venv_dir.resolve()
+        except OSError:
+            resolved_venv = venv_dir
+        venv_key = str(resolved_venv).lower()
+        if venv_key in seen:
+            continue
+        seen.add(venv_key)
+
+        site_packages = resolved_venv / "Lib" / "site-packages"
+        if not site_packages.exists():
+            continue
+
+        project_entry = str(project_root)
+        site_entry = str(site_packages)
+        if project_entry not in sys.path:
+            sys.path.insert(0, project_entry)
+        # addsitedir semantics matter: pywin32 (MCP SDK on Windows) needs .pth processing for pywintypes.
+        site.addsitedir(site_entry)
+        if site_entry in sys.path:
+            sys.path.remove(site_entry)
+        insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
+        sys.path.insert(insert_at, site_entry)
+
+        os.environ["VIRTUAL_ENV"] = str(resolved_venv)
+        pythonpath = [project_entry, site_entry]
+        if os.environ.get("PYTHONPATH"):
+            pythonpath.append(os.environ["PYTHONPATH"])
+        os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
+        return
 
 
 def _gateway_platform_value(platform: Any) -> str:
@@ -497,26 +536,11 @@ def _gateway_loop_exception_handler(
 
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
-    """Secret redaction before text can leave the gateway.
+    """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
+    from agent.redact import redact_for_egress
 
-    Shared ``redact_sensitive_text`` with ``force=True`` (holds even when ``security.redact_secrets`` is off);
-    ``_GATEWAY_SECRET_PATTERNS`` is a second pass so redaction degrades gracefully if that import fails.
-
-    Delegates to the authoritative ``agent.redact.redact_sensitive_text`` — the same Tirith-grade redactor
-    already applied to logs, tool output, and approval-command prompts — so the outbound chat path masks the
-    full credential set the startup banner promises ("chat responses are scrubbed before delivery"), not a
-    divergent subset. See #23810.
-    """
-    redacted = str(text or "")
-    try:
-        from agent.redact import redact_sensitive_text
-
-        redacted = redact_sensitive_text(redacted, force=True)
-    except Exception:
-        pass  # fail-soft: the local pattern pass below still runs rather than leaking raw text to chat
-    for pattern in _GATEWAY_SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
-    return redacted
+    return redact_for_egress(text)
 
 
 def _redact_approval_command(cmd: "str | None") -> str:
@@ -1127,7 +1151,7 @@ def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None
     if raw is None:
         # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
         # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
         raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
 
@@ -1226,18 +1250,10 @@ def _build_gateway_agent_history(
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
 
-    # Strip interrupted tool-call tails so the LLM doesn't re-execute tools killed mid-flight.
-    agent_history = strip_interrupted_tool_tails(agent_history)
-
-    # Strip a dangling assistant(tool_calls) tail (SIGKILL-mid-tool-call); else the model re-issues it forever.
-    # Strip a dangling assistant(tool_calls) tail with no tool answers — the signature of a SIGKILL
-    # mid-tool-call (e.g. the tool itself ran `docker restart`/`kill` and took the gateway down before the
-    # result was persisted). Without this the model re-issues the unanswered call on resume and loops the
-    # restart forever (#49201).
-    agent_history = strip_dangling_tool_call_tail(agent_history)
-
-    # Strip expired dangerous-confirmation phrases; replayed, a follow-up could read as a fresh confirmation.
-    agent_history = strip_stale_dangerous_confirmations(agent_history, now=time.time())
+    # Keep gateway resume byte-identical to the TUI resume and send paths. The
+    # canonicalizer owns interrupted-block, dangling-tail, and stale-confirmation
+    # cleanup together so a middle-of-history rewrite cannot break the prefix cache.
+    agent_history = canonicalize_replay_history(agent_history)
 
     observed_context = "\n".join(observed_group_context).strip() or None
     return agent_history, observed_context
@@ -1310,9 +1326,9 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # Tool output may hold literal MEDIA: examples (docs, logs); only deliberate media producers may auto-append.
 _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "image_generate"}
 
-# Replay-tail sanitization lives in agent/replay_cleanup.py so every resume surface shares one implementation.
-from agent.replay_cleanup import (  # noqa: E402
-    strip_interrupted_tool_tails, strip_dangling_tool_call_tail, strip_stale_dangerous_confirmations)
+# Replay-history canonicalization lives in agent/replay_cleanup.py so every resume
+# surface and the send path share one implementation.
+from agent.replay_cleanup import canonicalize_replay_history  # noqa: E402
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
@@ -1457,16 +1473,47 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     return paths
 
 def _ensure_ssl_certs() -> None:
-    """Point TLS verification at the OS trust store.
+    """Set SSL_CERT_FILE when the system hides CA certs from Python (NixOS etc.); must run BEFORE any
+    HTTP library is imported. A set-but-missing path breaks every later httpx client: treat as unset."""
+    configured_cert = os.environ.get("SSL_CERT_FILE")
+    if configured_cert:
+        if os.path.exists(configured_cert):
+            return  # user already configured it to a real file
+        logging.getLogger(__name__).warning(
+            "Ignoring stale SSL_CERT_FILE=%r because the path does not exist", configured_cert)
+        os.environ.pop("SSL_CERT_FILE", None)
 
-    truststore's own OpenSSL backend already sweeps the distro CA-bundle
-    locations when the compiled-in paths are empty, which is the NixOS /
-    non-standard-python case this used to hand-roll.
-    """
-    from agent.ssl_verify import install_truststore
+    import ssl
 
-    install_truststore()
+    # 1. Python's compiled-in defaults
+    paths = ssl.get_default_verify_paths()
+    for candidate in (paths.cafile, paths.openssl_cafile):
+        if candidate and os.path.exists(candidate):
+            os.environ["SSL_CERT_FILE"] = candidate
+            return
 
+    # 2. certifi (ships its own Mozilla bundle)
+    try:
+        import certifi
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+        return
+    except ImportError:
+        pass
+
+    # 3. Common distro / macOS locations
+    for candidate in (
+        "/etc/ssl/certs/ca-certificates.crt",               # Debian/Ubuntu/Gentoo
+        "/etc/pki/tls/certs/ca-bundle.crt",                 # RHEL/CentOS 7
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", # RHEL/CentOS 8+
+        "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
+        "/etc/ssl/cert.pem",                                 # Alpine / macOS
+        "/etc/pki/tls/cert.pem",                             # Fedora
+        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
+        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
+    ):
+        if os.path.exists(candidate):
+            os.environ["SSL_CERT_FILE"] = candidate
+            return
 
 def _home_target_env_var(platform_name: str) -> str:
     """Home-target env var: built-in ``_HOME_TARGET_ENV_VARS``, plugin registry, then
@@ -1753,18 +1800,25 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     Under multiplex, run it once per served profile inside that profile's ``_profile_runtime_scope`` and
     carry the scope into the executor thread with ``copy_context()`` (the same shape as
     ``_run_in_executor_with_context``). See #95518.
+
+    No gateway run can complete a browser OAuth flow (nobody watches its stdout; on Windows its
+    DEVNULL stdin even passes ``isatty``), so discovery runs with interactive OAuth suppressed — the
+    same gate the CLI's background discovery uses. An expired token then parks the server with an
+    actionable ``hermes mcp login`` warning instead of opening an authorize tab.
     """
+    from tools.mcp_oauth import suppress_interactive_oauth
     from tools.mcp_tool_discovery import discover_mcp_tools
     loop = asyncio.get_running_loop()
-    if not getattr(config, "multiplex_profiles", False):
-        await loop.run_in_executor(None, discover_mcp_tools)
-        return
-    for profile_name, profile_home in _multiplex_profile_homes(config):
-        try:
-            with _profile_runtime_scope(Path(profile_home)):
-                await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
-        except Exception:
-            logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
+    with suppress_interactive_oauth():
+        if not getattr(config, "multiplex_profiles", False):
+            await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            return
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            try:
+                with _profile_runtime_scope(Path(profile_home)):
+                    await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            except Exception:
+                logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
@@ -1966,19 +2020,10 @@ def _bridge_config_to_env(_cfg: dict) -> None:
 
 
 def _load_bridge_config(config_path: Path) -> dict:
-    """Raw config read for the presence-sensitive env bridge, with the managed overlay applied. Raw (not
-    defaults-merged) so only keys the user wrote are bridged, else all of DEFAULT_CONFIG would be
-    exported; the overlay applies BEFORE bridging so pinned values win in env too."""
-    from hermes_cli.config import _expand_env_vars, read_user_config_raw
-    cfg = _expand_env_vars(read_user_config_raw(config_path))
-    if not isinstance(cfg, dict):
-        cfg = {}
-    try:
-        from hermes_cli import managed_scope
-        cfg = managed_scope.apply_managed_overlay(cfg)
-    except Exception:
-        pass
-    return cfg
+    """Effective USER config (no defaults) for the presence-sensitive env bridge: only keys the user
+    or the managed layer wrote get bridged, else all of DEFAULT_CONFIG would be exported."""
+    from hermes_cli.config_effective import load_user_config_effective
+    return load_user_config_effective(config_path)
 
 
 _config_path = _hermes_home / 'config.yaml'
@@ -2044,7 +2089,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    profile_from_session_key_namespace)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -2330,17 +2376,19 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        # Canonical loader so managed overlay / ${VAR} expansion reach the fallback chain.
-        cfg = _load_gateway_runtime_config()
+        cfg = _load_gateway_config()
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
         for entry in fb_list:
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry))
+                # Named custom entries resolve to the bare "custom" billing class; persist the configured
+                # identity so UI/billing rows match the manual-switch path (#98739).
+                runtime["provider"] = effective_runtime_provider(entry, runtime)
                 # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
                 logger.info(
                     # Log the literal `provider` key from config, not the resolved runtime category — an
@@ -2646,7 +2694,7 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
     """Derive ``(slug, declared_name)`` from a SKILL.md; ``(None, None)`` if unreadable or no ``name:``.
     Matches ``scan_skill_commands``: the slug comes from frontmatter ``name:``, NOT the directory."""
     try:
-        content = skill_md.read_text(encoding="utf-8-sig", errors="replace")
+        content = skill_md.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None, None
     content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
@@ -2736,51 +2784,18 @@ def _gateway_config_home() -> Path:
 
 
 def _load_gateway_config(config_path: "Path | None" = None) -> dict:
-    """Load and parse a gateway config.yaml, returning {} on any error (fail-open).
-    Defaults to the active gateway home (``_hermes_home`` monkeypatches apply); multiplexers pass a path.
+    """The effective user config.yaml (managed overlay, ``${VAR}`` expansion, model-key canon; no
+    DEFAULT_CONFIG merge) — ``{}`` on any error (fail-open). Defaults to the active gateway home
+    (``_hermes_home`` monkeypatches apply); multiplexers pass a path.
     """
     if config_path is None:
         config_path = _gateway_config_home() / 'config.yaml'
-    raw: dict = {}
-    used_canonical = False
     try:
-        from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path via shared cache when the path is canonical; else direct read (test monkeypatches).
-        if config_path == get_config_path():
-            raw = read_raw_config()
-            used_canonical = True
+        from hermes_cli.config_effective import load_user_config_effective
+        return load_user_config_effective(config_path)
     except Exception:
-        pass
-
-    if not used_canonical:
-        try:
-            if config_path.exists():
-                import hermes_yaml as yaml
-                with open(config_path, 'r', encoding='utf-8-sig') as f:
-                    raw = yaml.safe_load(f) or {}
-        except Exception:
-            logger.debug("Could not load gateway config from %s", config_path)
-            raw = {}
-
-    # Neither read_raw_config() nor yaml.safe_load carries the managed merge; overlay on both paths.
-    try:
-        from hermes_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
-    if not isinstance(raw, dict):
+        logger.debug("Could not load gateway config from %s", config_path, exc_info=True)
         return {}
-    # Canonicalize model-id aliases (model.name/model.model → model.default) and migrate stale root
-    # provider/base_url: the gateway bypasses load_config(), else ``model: {name: <id>}`` is empty.
-    try:
-        # The gateway bypasses load_config() (it reads raw YAML for speed), so the normalization that
-        # load_config() applies must be replayed here or the gateway would resolve an empty model for
-        # ``model: {name: <id>}`` configs while the CLI resolves it correctly. See issue #34500. Fail-open.
-        from hermes_cli.config import _normalize_root_model_keys
-        raw = _normalize_root_model_keys(raw)
-    except Exception:
-        pass
-    return raw
 
 
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
@@ -2798,18 +2813,6 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
         "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
         "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
-
-
-def _load_gateway_runtime_config() -> dict:
-    """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
-    Expansion failures are deliberately NOT swallowed: an unexpanded dict would mask the bug fixed here.
-    """
-    cfg = _load_gateway_config()
-    if not isinstance(cfg, dict) or not cfg:
-        return {}
-    from hermes_cli.config import _expand_env_vars
-    expanded = _expand_env_vars(cfg)
-    return expanded if isinstance(expanded, dict) else {}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -2870,7 +2873,8 @@ _PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
 
-    ``{ns}`` is ``main`` for the default profile or a named-profile id (profile ids match
+    ``{ns}`` is ``main`` for the default profile, ``main~`` for a profile literally named ``main``
+    (``gateway.session._session_key_namespace``), or a named-profile id (profile ids match
     ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
     is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
@@ -2880,11 +2884,11 @@ def _parse_session_key(session_key: str) -> "dict | None":
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] == "main" or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":
-            result["profile"] = parts[1]
+            result["profile"] = profile_from_session_key_namespace(parts[1])
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -3226,7 +3230,7 @@ _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
     Platform.QQBOT: ("qqbot", "QQAdapter", "check_qq_requirements",
                      "QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured"),
     Platform.YUANBAO: ("yuanbao", "YuanbaoAdapter", "WEBSOCKETS_AVAILABLE",
-                       "Yuanbao: websockets not installed. Run: hermes pm repair")}
+                       "Yuanbao: websockets not installed. Run: pip install websockets")}
 
 
 def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
@@ -3852,9 +3856,13 @@ class GatewayRunner(
         return "restarting" if self._restart_requested else "shutting down"
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
+        # ``active_work`` names each unit only while draining — that is when an observer (``hermes
+        # update``) needs to know WHAT holds the gateway open; a per-turn write would be wasted I/O.
+        active_work = self._describe_active_work() if gateway_state == "draining" else None
         _write_runtime_status_quiet(
             gateway_state=gateway_state, exit_reason=exit_reason,
-            restart_requested=self._restart_requested, active_agents=self._active_work_count())
+            restart_requested=self._restart_requested, active_agents=self._active_work_count(),
+            active_work=active_work)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
@@ -4474,16 +4482,6 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
-def _housekeeping_plugin_update_check() -> None:
-    """Plugin update-check cadence (plugins_cadence): due-gated by
-    plugins.auto_update_check_hours, read-only, receipt-surfaced; the
-    opt-in auto-apply rides the manual update pipeline. A network error
-    costs one warning and a stamped marker — never an apply."""
-    from hermes_cli.plugins_cadence import maybe_run_gateway_check
-
-    maybe_run_gateway_check(log=logger)
-
-
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
     is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
@@ -4553,6 +4551,7 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
+    from gateway.run_profile_reconcile import _mcp_config_reconciler
     chores: list[tuple[int, str, Any]] = []
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
@@ -4570,9 +4569,9 @@ def _start_gateway_housekeeping(
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
-        (1, "Plugin update check", _housekeeping_plugin_update_check),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
-        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim)]
+        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "MCP config reconcile", _mcp_config_reconciler(runner))]
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
@@ -5291,7 +5290,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")
     _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
-
+    _ensure_windows_gateway_venv_imports()
 
     # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
     try:
@@ -5393,29 +5392,6 @@ def main():
     for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
 
-    # pm startup contract (PATH provisioning for the store's tools), then
-    # the post-update bootstrap: the same one-pass record-gated maintenance
-    # registry the CLI dispatch path runs (hermes_cli/main.py) — this
-    # entrypoint bypasses that dispatch, so run it here too. Never raises.
-    try:
-        from hermes_cli.boot_bootstrap import default_project_root
-        from hermes_cli.venv_sync import check_runtime
-
-        problem = check_runtime(default_project_root())
-        if problem:
-            logger.warning(problem)
-    except Exception:
-        logger.debug("pm startup check failed", exc_info=True)
-    try:
-        from hermes_cli.boot_bootstrap import (
-            default_project_root,
-            maybe_run_boot_bootstrap,
-        )
-
-        maybe_run_boot_bootstrap(default_project_root())
-    except Exception:
-        logger.debug("boot bootstrap failed", exc_info=True)
-
     import argparse
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
     parser.add_argument("--config", "-c", help="Path to gateway config file")
@@ -5424,8 +5400,8 @@ def main():
 
     config = None
     if args.config:
-        import hermes_yaml as yaml
-        with open(args.config, encoding="utf-8-sig") as f:
+        import yaml
+        with open(args.config, encoding="utf-8") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a

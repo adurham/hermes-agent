@@ -14,9 +14,10 @@ Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 import json
 import logging
 import time
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -75,6 +76,17 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        return _plugin_compat_prev_getattr(name)
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----
+
+
 # ---------------------------------------------------------------------------
 # Install-path safety + guarded HTTP
 # ---------------------------------------------------------------------------
@@ -128,6 +140,70 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
 
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     return None
+
+
+@contextmanager
+def _guarded_http_stream(
+    url: str,
+    *,
+    params: Optional[Dict[str, str]] = None,
+    timeout: int = 20,
+) -> Iterator[Optional[httpx.Response]]:
+    """Stream one response with bounded, policy-checked redirects."""
+    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+
+    current_url = url
+    current_params = params
+    response: Optional[httpx.Response] = None
+    stack = ExitStack()
+
+    try:
+        for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+            if not is_safe_url(current_url):
+                logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
+                response = None
+                break
+
+            blocked = check_website_access(current_url)
+            if blocked:
+                logger.info(
+                    "Blocked Skills Hub fetch for %s by rule %s",
+                    blocked["host"],
+                    blocked["rule"],
+                )
+                response = None
+                break
+
+            stack.close()
+            stack = ExitStack()
+            try:
+                client = stack.enter_context(
+                    create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
+                )
+                response = stack.enter_context(
+                    client.stream("GET", current_url, params=current_params)
+                )
+            except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
+                logger.debug("Skills Hub stream failed for %s: %s", current_url, exc)
+                response = None
+                break
+
+            if response.status_code not in _REDIRECT_STATUS_CODES:
+                break
+
+            location = response.headers.get("location")
+            if not location:
+                response = None
+                break
+            current_url = urljoin(current_url, location)
+            current_params = None
+        else:
+            logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
+            response = None
+
+        yield response
+    finally:
+        stack.close()
 
 
 # ---------------------------------------------------------------------------
@@ -377,14 +453,3 @@ _PLUGIN_COMPAT_LAZY = {
 }
 
 _plugin_compat_prev_getattr = __getattr__
-
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        return _plugin_compat_prev_getattr(name)
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

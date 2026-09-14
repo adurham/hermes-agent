@@ -51,15 +51,10 @@ def _ensure_vercel_sdk() -> None:
         _lazy_ensure("vercel")
     except Exception as e:
         raise ImportError(str(e))
-
-
-_CREATE_RETRY_ATTEMPTS = 3
 _WRITE_RETRY_ATTEMPTS = 3
-_TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 _RETRY_BACKOFF_STEP = timedelta(milliseconds=100)
 _MIN_SANDBOX_TIMEOUT = timedelta(minutes=5)
 _MIN_RUNNING_WAIT = timedelta(seconds=1)
-_RUNNING_WAIT_TIMEOUT = timedelta(seconds=30)
 _RUNNING_WAIT_POLL_INTERVAL = timedelta(milliseconds=250)
 _STOP_TIMEOUT = timedelta(seconds=15)
 _STOP_POLL_INTERVAL = timedelta(milliseconds=500)
@@ -302,6 +297,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     return
                 logger.warning("Vercel: sandbox entered state %s for task %s; recreating", status, self._task_id)
             self._close_sandbox_client(sandbox)
+            self._mark_recreated()
         self._attach_fresh_sandbox(requested_cwd)
 
     def _run_checked(self, script: str, label: str) -> None:

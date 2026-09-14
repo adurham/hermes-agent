@@ -4,12 +4,13 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { HermesApiRequest, HermesConnection } from '@/global'
-import type { LocalCatalogModel, LocalModelsStatus, LocalRuntimeJob, ModelOptionsResponse } from '@/types/hermes'
+import type { ModelOptionsResult } from '@hermes/shared'
+import type { LocalCatalogModel, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 vi.mock('@/hermes', async (): Promise<object> => ({
   ...(await import('@/api/local-models')),
   getHermesConfigRecord: async (): Promise<object> => ({}),
-  getGlobalModelOptions: async (): Promise<ModelOptionsResponse> => ({ providers: [] })
+  getGlobalModelOptions: async (): Promise<ModelOptionsResult> => ({ providers: [] })
 }))
 vi.mock('@/store/profile', async (): Promise<object> => {
   const { atom } = await import('nanostores')

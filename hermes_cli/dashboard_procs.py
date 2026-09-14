@@ -421,15 +421,69 @@ def _restart_killed_backends(
     return unrecovered
 
 
+def _norm_exe(path) -> str:
+    """Canonical lower-cased executable path for comparison."""
+    try:
+        return str(Path(path).resolve()).lower()
+    except (OSError, ValueError):
+        return str(path).lower()
+
+
 def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None) -> list[tuple[int, str]]:
-    """Historical main export: stop old updaters without scanning live shims.
+    """``(pid, name)`` of other live processes whose .exe is one of our entry-point shims.
 
-    PM stages a fresh generation instead of replacing a mapped hermes.exe.
-    Returning an empty list would let old callers continue into that mutation.
+    Windows blocks DELETE/REPLACE on a running .exe, so a Desktop-spawned ``hermes.EXE`` makes
+    the update's quarantine rename fail with ``[WinError 32]``. Excludes our PID and every
+    *shim* ancestor (the setuptools launcher is a separate native process from its
+    ``python.exe``); ``proc.parents()`` at once because a per-hop loop bailed on the first
+    AccessDenied. Empty off-Windows / without psutil. Never raises.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
-    stop_for_relaunch()
+    from hermes_cli.main_install_repair import _hermes_exe_shims, _is_windows
+
+    if not _is_windows():
+        return []
+    try:
+        import psutil
+    except Exception:
+        return []
+    shim_paths = {_norm_exe(shim) for shim in _hermes_exe_shims(scripts_dir)}
+    if not shim_paths:
+        return []
+    seed = int(exclude_pid) if exclude_pid is not None else os.getpid()
+    exclude_pids: set[int] = {seed}
+    # Broad ``except Exception`` guards against partially-stubbed psutil in unit tests; this helper is
+    # documented as "never raises". Only the per-ancestor exe()/pid reads skip that ancestor; anything
+    # else aborts the whole walk (BASE semantics).
+    try:
+        for ancestor in psutil.Process(seed).parents():
+            try:
+                anc_exe = ancestor.exe()
+            except Exception:
+                continue
+            if not anc_exe:
+                continue
+            if _norm_exe(anc_exe) in shim_paths:
+                try:
+                    exclude_pids.add(int(ancestor.pid))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    matches: list[tuple[int, str]] = []
+    try:
+        proc_iter = psutil.process_iter(["pid", "exe", "name"])
+    except Exception:
+        return []
+    for proc in proc_iter:
+        try:
+            info = proc.info
+        except Exception:
+            continue
+        pid, exe = info.get("pid"), info.get("exe")
+        if exe and pid is not None and pid not in exclude_pids and _norm_exe(exe) in shim_paths:
+            matches.append((int(pid), str(info.get("name") or Path(exe).name)))
+    return matches
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:
@@ -438,12 +492,24 @@ def _is_desktop_local_serve_cmdline(command: str) -> bool:
     Long-lived headless serves (``--host <tailscale-ip> --port 9119``) must never match —
     those are operator-managed remote backends that legitimately run with ppid 1.
     """
-    cmd = command.lower()
-    if "serve" not in cmd or ("hermes" not in cmd and "hermes_cli" not in cmd):
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    # Canonical token matcher, never argv substrings: ``kanban --preserve-cache`` contains "serve" and
+    # ``vim notes about hermes serve`` contains both markers — this predicate decides a kill.
+    if _hermes_holder_subcommand(command) != "serve":
         return False
-    has_loopback = any(tok in cmd for tok in (
-        "--host 127.0.0.1", "--host=127.0.0.1", "--host localhost", "--host=localhost"))
-    return has_loopback and ("--port 0" in cmd or "--port=0" in cmd)
+    tokens = command.lower().split()
+    host = _flag_value(tokens, "--host")
+    return host in ("127.0.0.1", "localhost") and _flag_value(tokens, "--port") == "0"
+
+
+def _flag_value(tokens: list[str], flag: str) -> str | None:
+    """``--flag value`` / ``--flag=value`` from split argv, or None."""
+    for i, tok in enumerate(tokens):
+        if tok == flag and i + 1 < len(tokens):
+            return tokens[i + 1]
+        if tok.startswith(flag + "="):
+            return tok.partition("=")[2]
+    return None
 
 
 def _process_ppid(pid: int) -> int | None:
@@ -470,10 +536,10 @@ _HEX32 = set("0123456789abcdef")
 
 
 def _hermes_home_dir() -> Path:
-    """Process home for backend ownership records, independent of request scope."""
+    """The process's Hermes home: remote-backend locks are a process-level asset, so a request scoped
+    to another profile must still see the same lock dir."""
     from hermes_constants import get_process_hermes_home
-
-    return get_process_hermes_home().expanduser()
+    return get_process_hermes_home()
 
 
 def _is_hex(value: object, length: int) -> bool:

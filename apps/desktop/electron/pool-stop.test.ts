@@ -13,31 +13,25 @@ interface Child {
   killed: boolean
 }
 
-function harness(): {
-  addChild: (key: string) => Child
-  events: string[]
-  exitResolvers: Map<Child, () => void>
-  pool: Map<string, PoolStopEntry<Child>>
-  stopper: ReturnType<typeof createPoolStopper<Child>>
-} {
-  const pool = new Map<string, PoolStopEntry<Child>>()
+function harness() {
+  const pool = new Map<string, PoolStopEntry>()
   const events: string[] = []
   const exitResolvers = new Map<Child, () => void>()
 
   const stopper = createPoolStopper({
     pool,
-    stopChild: (child: Child | undefined): Promise<void> => {
+    stopChild: child => {
       ;(child as Child).killed = true
       events.push('stop')
-
-      return new Promise<void>((resolve: () => void): void => {
-        exitResolvers.set(child as Child, (): void => {
+    },
+    waitForExit: child =>
+      new Promise<void>(resolve => {
+        exitResolvers.set(child as Child, () => {
           ;(child as Child).exited = true
           events.push('exit')
           resolve()
         })
       })
-    }
   })
 
   function addChild(key: string): Child {
@@ -103,11 +97,10 @@ test('a remote pooled descriptor without a local child does not require quit def
   assert.equal(stopper.hasPending(), false)
 })
 
-test('stopAll waits for current and already-stopping backends', async () => {
+test('stopAll stops every pooled backend and resolves after all exits', async () => {
   const { addChild, exitResolvers, pool, stopper } = harness()
   const a = addChild('a')
   const b = addChild('b')
-  const priorStop = stopper.stop('a')
 
   let settled = false
 
@@ -116,19 +109,92 @@ test('stopAll waits for current and already-stopping backends', async () => {
   })
 
   assert.equal(pool.size, 0)
-  assert.equal(stopper.hasPending(), true)
   assert.equal(a.killed, true)
   assert.equal(b.killed, true)
 
-  exitResolvers.get(b)?.()
+  exitResolvers.get(a)?.()
   await Promise.resolve()
-  await new Promise(setImmediate)
   assert.equal(settled, false, 'must wait for EVERY child, not the first')
 
-  exitResolvers.get(a)?.()
-  await Promise.all([all, priorStop])
+  exitResolvers.get(b)?.()
+  await all
+  assert.equal(settled, true)
+})
+
+test('stopAll joins a stop whose pool entry was already evicted', async () => {
+  const { addChild, exitResolvers, pool, stopper } = harness()
+  const child = addChild('already-stopping')
+
+  const first = stopper.stop('already-stopping')
+
+  assert.equal(pool.size, 0)
+  assert.equal(stopper.hasPending(), true)
+
+  let settled = false
+
+  const all = stopper.stopAll().then(() => {
+    settled = true
+  })
+
+  await Promise.resolve()
+
+  assert.equal(settled, false)
+
+  exitResolvers.get(child)?.()
+  await Promise.all([first, all])
   assert.equal(settled, true)
   assert.equal(stopper.hasPending(), false)
+})
+
+test('afterStop holds inFlight until extra teardown finishes (process-less SSH)', async () => {
+  const pool = new Map<string, PoolStopEntry>()
+  const events: string[] = []
+  let releaseAfter: (() => void) | undefined
+  const afterGate = new Promise<void>(resolve => {
+    releaseAfter = resolve
+  })
+  const stopper = createPoolStopper({
+    pool,
+    stopChild: () => {
+      events.push('stop')
+    },
+    waitForExit: async () => {
+      events.push('exit')
+    },
+    afterStop: async () => {
+      events.push('after-start')
+      await afterGate
+      events.push('after-done')
+    }
+  })
+
+  pool.set('ssh', { process: null })
+  const stop = stopper.stop('ssh')
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(stopper.inFlight('ssh'), stop)
+  assert.deepEqual(events, ['stop', 'exit', 'after-start'])
+
+  let spawned = false
+  const respawn = (async () => {
+    const dying = stopper.inFlight('ssh')
+
+    if (dying) {
+      await dying
+    }
+
+    spawned = true
+  })()
+
+  await Promise.resolve()
+  assert.equal(spawned, false, 'reconnect must wait for SSH teardown, not just child exit')
+  releaseAfter?.()
+  await stop
+  await respawn
+  assert.equal(spawned, true)
+  assert.deepEqual(events, ['stop', 'exit', 'after-start', 'after-done'])
+  assert.equal(stopper.inFlight('ssh'), undefined)
 })
 
 test('a respawn can await the in-flight stop before reusing the key', async () => {
@@ -153,37 +219,4 @@ test('a respawn can await the in-flight stop before reusing the key', async () =
   await respawn
 
   assert.deepEqual(order, ['exit-signal', 'spawn'])
-})
-
-test('failed stops block respawn and retain the child for a later stop retry', async () => {
-  const child: Child = { exited: false, killed: false }
-  const pool = new Map([['profile', { process: child }]])
-  const failure = new Error('child is still alive')
-  const attempts: Child[] = []
-  let refuses = true
-
-  const stopper = createPoolStopper({
-    pool,
-    stopChild: async (current: Child | undefined): Promise<void> => {
-      attempts.push(current!)
-
-      if (refuses) {
-        throw failure
-      }
-
-      current!.exited = true
-    }
-  })
-
-  const failed = stopper.stop('profile')
-  await assert.rejects(failed, error => error === failure)
-  assert.equal(pool.has('profile'), false)
-  assert.equal(stopper.inFlight('profile'), failed)
-  await assert.rejects(stopper.inFlight('profile')!, error => error === failure)
-
-  refuses = false
-  await stopper.stopAll()
-  assert.deepEqual(attempts, [child, child])
-  assert.equal(child.exited, true)
-  assert.equal(stopper.inFlight('profile'), undefined)
 })

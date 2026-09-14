@@ -86,9 +86,8 @@ apps/
 # Test suite — not shipped in production images
 tests/
 
-# Documentation site (Docusaurus) and supplementary docs
+# Documentation site (Docusaurus)
 website/
-docs/
 
 # Keep the source artwork needed by web's icon-generation prebuild.
 assets/

@@ -262,7 +262,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp`
+# `pm.build_env --no-install-project --extra all --extra messaging --extra otlp`
 # installs the deps reachable through the composite `[all]` extra
 # (handpicked set intended for the production image — excludes `[dev]`),
 # plus gateway messaging adapters that should work in the published image
@@ -293,13 +293,17 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
+# is baked so hosted/immutable images can enable the adapter without writing
+# the sealed venv.
+#
 # Source binding is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
 RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
     --out /opt/hermes/.venv --no-install-project --sealed \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra hindsight --extra matrix
+    --extra azure-identity --extra hindsight --extra matrix --extra google-chat
 
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
@@ -319,7 +323,7 @@ COPY --link --chmod=a+rX,go-w . .
 RUN /opt/hermes/.venv/bin/python -m docker.build_agent
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
-# already root-owned (COPY, uv sync, npm install all run as root) and
+# already root-owned (COPY, dep assembly, npm install all run as root) and
 # read-only for the hermes user (go-w from the --chmod above).
 
 USER root
