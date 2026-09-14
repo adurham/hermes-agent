@@ -21,6 +21,15 @@ on:
       commit-build:
         default: false
         type: boolean
+      channel-build:
+        default: ''
+        type: string
+      channel-request-sha256:
+        default: ''
+        type: string
+      controller-sha:
+        default: ''
+        type: string
       public-base:
         required: true
         type: string
@@ -29,8 +38,24 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Require a supported native smoke target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TARGET: ${{ inputs.platform }}/${{ inputs.arch }}/${{ inputs.format }}
+    steps:
+      - name: Reject empty or unsupported native smoke jobs
+        shell: bash
+        run: |
+          case "$TARGET" in
+            darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip|win32/arm64/msix|win32/x64/msix|win32/arm64/msixbundle|win32/x64/msixbundle) ;;
+            *) echo '::error::unsupported native smoke target'; exit 1 ;;
+          esac
+
   macos:
     name: macOS install and chat
+    needs: validate
     if: inputs.platform == 'darwin'
     runs-on: ${{ inputs.arch == 'x64' && 'macos-15-intel' || 'macos-15' }}
     timeout-minutes: 30
@@ -40,6 +65,8 @@ jobs:
       RELEASE_COMMIT: ${{ inputs.sha }}
       RELEASE_TAG: ${{ inputs.tag }}
       COMMIT_BUILD: ${{ inputs.commit-build }}
+      CHANNEL_BUILD: ${{ inputs.channel-build }}
+      CHANNEL_REQUEST_SHA256: ${{ inputs.channel-request-sha256 }}
       PUBLIC_BASE: ${{ inputs.public-base }}
       PLATFORM: ${{ inputs.platform }}
       ARCH: ${{ inputs.arch }}
@@ -51,7 +78,7 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.sha }}
+          ref: ${{ inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
           persist-credentials: false
 
       - name: Set up driver tools only
@@ -74,13 +101,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$SMOKE_ROOT/out"
+          product=HermesBundled
+          if [ -n "${CHANNEL_BUILD:-}" ]; then
+            test "$COMMIT_BUILD" = false
+            test -z "$RELEASE_TAG"
+            python -m scripts.releases.channel_publish request --build-id "$CHANNEL_BUILD" \
+              --request-sha256 "$CHANNEL_REQUEST_SHA256" --public-base "$PUBLIC_BASE" \
+              --out "$SMOKE_ROOT/request.json"
+            product=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["identity"]["artifactNamePascal"])' "$SMOKE_ROOT/request.json")
+          fi
           case "$PLATFORM/$ARCH/$FORMAT" in
             darwin/arm64/dmg|darwin/x64/dmg|darwin/arm64/zip|darwin/x64/zip)
-              name="darwin-$ARCH"; pattern="HermesBundled-*-mac-$ARCH.$FORMAT" ;;
+              name="darwin-$ARCH"; pattern="$product-*-mac-$ARCH.$FORMAT" ;;
             win32/arm64/msix|win32/x64/msix)
-              name="win32-$ARCH"; pattern="HermesBundled-*-win-$ARCH.msix" ;;
+              name="win32-$ARCH"; pattern="$product-*-win-$ARCH.msix" ;;
             win32/arm64/msixbundle|win32/x64/msixbundle)
-              name=windows-universal; pattern='HermesBundled-*-win.msixbundle' ;;
+              name=windows-universal; pattern="$product-*-win.msixbundle" ;;
             *) echo '::error::unsupported native smoke target'; exit 1 ;;
           esac
           args=(--tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT")
@@ -88,6 +124,7 @@ jobs:
             test -z "$RELEASE_TAG"
             args=(--commit-build "$RELEASE_COMMIT")
           fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$SMOKE_ROOT/request.json"); fi
           python -m scripts.releases.handoff fetch --public-base "$PUBLIC_BASE" "${args[@]}" \
             --name "$name" --root "$SMOKE_ROOT/download" --include "$pattern" 2>&1 | tee "$SMOKE_ROOT/out/fetch.log"
           python - "$name" "$pattern" <<'PY'
@@ -106,7 +143,7 @@ jobs:
               raise ValueError('Downloaded artifact no longer matches its receipt')
           (root / 'out' / 'download.json').write_text(json.dumps({
               'commit': data['commit'], 'tag': data.get('tag'), 'receipt': receipt.name,
-              'receiptSha256': file_sha256(receipt), 'artifact': row,
+              'receiptSha256': file_sha256(receipt), 'artifact': row, 'request': data.get('request'),
           }, indent=2) + '\n', encoding='utf-8')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'path={artifact.resolve().as_posix()}\n')
@@ -128,6 +165,7 @@ jobs:
         run: |
           args=()
           if [ -n "$RELEASE_TAG" ]; then args+=(--tag "$RELEASE_TAG"); fi
+          if [ -n "${CHANNEL_BUILD:-}" ]; then args+=(--channel-request "$SMOKE_ROOT/request.json"); fi
           bash tests/install/macos-bundle-smoke.sh --artifact "$ARTIFACT" --arch "$ARCH" \
             --commit "$RELEASE_COMMIT" "${args[@]}" --work "$SMOKE_ROOT/work" --out "$SMOKE_ROOT/out"
 
@@ -140,6 +178,7 @@ jobs:
         run: |
           $tagArgs = @()
           if ($env:RELEASE_TAG) { $tagArgs = @('-Tag', $env:RELEASE_TAG) }
+          if ($env:CHANNEL_BUILD) { $tagArgs = @('-ChannelRequest', "$env:SMOKE_ROOT/request.json") }
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/install/windows-bundle-smoke.ps1 -Artifact $env:ARTIFACT -Arch $env:ARCH -Commit $env:RELEASE_COMMIT @tagArgs -Work "$env:SMOKE_ROOT/work" -Out "$env:SMOKE_ROOT/out"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -171,6 +210,7 @@ jobs:
 
   windows:
     name: Windows install and chat
+    needs: validate
     if: inputs.platform == 'win32'
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
     timeout-minutes: 30

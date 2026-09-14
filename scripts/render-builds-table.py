@@ -553,8 +553,29 @@ def splice(body: str, block: str) -> str:
     return body.replace(MARKER, block, 1)
 
 
+def render_channel_summary(manifest: dict) -> str:
+    request = manifest["request"]
+    rows = []
+    for platform in ("darwin", "win32"):
+        for arch in ("arm64", "x64"):
+            selected = [row for row in manifest["packages"] if row["platform"] == platform
+                        and row["arch"] == arch and row["variant"] == "bundled"]
+            label = f"{platform} {arch}"
+            if len(selected) != 1:
+                rows.append(f"| {label} | Unavailable | — |")
+                continue
+            item = selected[0]
+            url = r2.public_url_for(request["publicBase"], item["artifact"]["key"])
+            rows.append(f"| {label} | {item['version']} | [Download]({url}) |")
+    return (f"## Channel `{request['channel']}` build `{request['buildId']}`\n\n"
+            f"Source `{request['commit']}` ({request['sourceVersion']}); sequence {request['sequence']}.\n\n"
+            "| Native package | Version | Download |\n|---|---|---|\n" + "\n".join(rows) + "\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--channel-build")
+    parser.add_argument("--channel-request-sha256")
     parser.add_argument("--tag", required=False, help="Release tag to render the release-body table for")
     parser.add_argument("--candidate-manifest-sha256", default=None,
                         help="Stable promotion: render smoke admission from this pinned candidate, not RELEASE_NEEDS")
@@ -593,6 +614,19 @@ def main() -> int:
 
     if args.summary_commit and (args.tag or args.pending_run_url):
         parser.error("--summary-commit cannot be combined with release-body arguments")
+
+    if args.channel_build:
+        from hermes_cli.release_channels import ChannelReader
+        from scripts.releases.channel_publish import read_request
+        if args.tag or args.summary_commit or not args.summary_out or not args.r2_base_url:
+            parser.error("Channel summary needs --summary-out and --r2-base-url; no tag/commit mode")
+        request = read_request(args.channel_build, args.channel_request_sha256, args.r2_base_url, args.repo)
+        resolved = ChannelReader(args.r2_base_url, repository=args.repo).resolve(request["channel"])
+        if resolved.manifest is None or resolved.manifest["request"] != request:
+            raise ValueError("Channel head no longer names this build; refusing stale download summary")
+        with open(args.summary_out, "a", encoding="utf-8") as stream:
+            stream.write(render_channel_summary(resolved.manifest))
+        return 0
 
     candidate = None
     if args.candidate_manifest_sha256 is not None or args.candidate_commit is not None:

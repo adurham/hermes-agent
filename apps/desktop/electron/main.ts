@@ -168,6 +168,7 @@ import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+import { writeDesktopProfile } from './desktop-boot-preference'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
@@ -440,7 +441,15 @@ import {
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig } from './updater/feed-config'
-import { createMacStrategy } from './updater/mac-client'
+import { createMacStrategy, createChannelMacStrategy } from './updater/mac-client'
+import { createChannelAppInstallerStrategy } from './updater/app-installer'
+import { ChannelResolver, type ChannelTarget } from './updater/channel'
+import { ChannelStrategy } from './updater/channel-strategy'
+import { inspectRunningChannelApp } from './updater/retirement-discovery'
+import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
+import { RetirementHost, prepareRetirementStartup, forwardRetiredPreview, type RetirementReception } from './updater/retirement-host'
+import { completeDesktopRetirement } from './updater/retirement-readiness'
+import { readStartupDesktopPreference } from './desktop-boot-preference'
 import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
@@ -739,8 +748,26 @@ if (INSTALL_STAMP) {
   )
 }
 
+const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
+// Only the lock-owning destination may adopt a workspace or start a backend.
+const isPrimaryInstance: boolean = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) { app.exit(0) }
+if (INSTALL_STAMP?.channelBuild && await forwardRetiredPreview()) { app.exit(0) }
+const retirementReception: RetirementReception | null = isPrimaryInstance ? await prepareRetirementStartup({
+  argv: process.argv,
+  userData: app.getPath('userData'),
+  defaultHome: resolveDesktopHermesHome({ home: app.getPath('home'), directoryExists, readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME') }),
+  operatorOverride: Boolean(process.env.HERMES_HOME || USER_DATA_OVERRIDE),
+  payload: bundledPayload(process.resourcesPath)
+}).catch(async (error: Error): Promise<null> => {
+  await app.whenReady()
+  dialog.showErrorBox('Migration paused — preview preserved', error.message)
+  app.exit(1)
+  return null
+}) : null
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),
+  adoptedHome: readStartupDesktopPreference(DESKTOP_PROFILE_CONFIG_PATH, console.warn)?.home,
   directoryExists,
   readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
 })
@@ -783,7 +810,7 @@ const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'ma
 // _apply_profile_override in hermes_cli/main.py) and bypasses the sticky
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
-const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -2969,7 +2996,7 @@ async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStat
   let strategy: UpdaterStrategy | null = null
 
   try {
-    strategy = resolvePackagedUpdateStrategy()
+    strategy = await resolvePackagedUpdateStrategy()
 
     if (strategy) { return await strategy.check(opts) }
   } catch (error) {
@@ -2998,7 +3025,7 @@ let updateInFlight = false
  */
 let packagedUpdateStrategy: UpdaterStrategy | undefined
 
-function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
+async function resolvePackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
   const mechanism = resolveUpdaterMechanism({
     platform: process.platform,
     updateMechanism: INSTALL_STAMP?.updateMechanism,
@@ -3009,8 +3036,33 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
 
   if (packagedUpdateStrategy) { return packagedUpdateStrategy }
 
+  if (INSTALL_STAMP?.channelBuild && (mechanism === 'electron-updater' || mechanism === 'app-installer')) {
+    const build = INSTALL_STAMP.channelBuild
+    const installed = await inspectRunningChannelApp(build)
+    const payload = bundledPayload(process.resourcesPath)
+    if (!payload || (process.platform !== 'darwin' && process.platform !== 'win32') || (process.arch !== 'arm64' && process.arch !== 'x64')) {
+      throw new Error('Channel updates require a supported bundled application')
+    }
+    packagedUpdateStrategy = new ChannelStrategy({
+      build, mechanism,
+      resolver: new ChannelResolver({ build, platform: process.platform, arch: process.arch, signer: installed.signer }),
+      nativeFactory: (target: ChannelTarget): UpdaterStrategy => createNativePackagedStrategy(mechanism, target),
+      retirement: new RetirementHost({ home: HERMES_HOME, userData: app.getPath('userData'), payload,
+        profile: primaryProfileKey, isLocal: (): boolean => !primaryBackendIsRemote(), stop: teardownBundledBackend,
+        restore: restoreBundledBackend, quit: (): void => app.quit(),
+        progress: (message: string): void => emitUpdateProgress({ stage: 'prepare', message, percent: null }) })
+    })
+    return packagedUpdateStrategy
+  }
+
+  packagedUpdateStrategy = createNativePackagedStrategy(mechanism)
+  return packagedUpdateStrategy
+}
+
+function createNativePackagedStrategy(mechanism: UpdaterStrategy['mechanism'], target?: ChannelTarget): UpdaterStrategy {
+
   if (mechanism === 'electron-updater') {
-    packagedUpdateStrategy = createMacStrategy({
+    const deps: Parameters<typeof createMacStrategy>[0] = {
       channel: resolveUpdaterChannelFromStamp(),
       light: isLightVariant(),
       feedBaseUrl: resolveDesktopFeedBaseUrl(),
@@ -3019,15 +3071,14 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       emitProgress: emitUpdateProgress,
       beforeInstall: teardownBundledBackend,
       onInstallFailure: restoreBundledBackend
-    })
-
-    return packagedUpdateStrategy
+    }
+    return target ? createChannelMacStrategy(deps, target) : createMacStrategy(deps)
   }
 
   if (mechanism === 'app-installer') {
     const payload = bundledPayload(process.resourcesPath)!
 
-    packagedUpdateStrategy = new AppInstallerStrategy({
+    const deps: ConstructorParameters<typeof AppInstallerStrategy>[0] = {
       python: payload.storePython,
       // The checker ships inside the payload's repo snapshot (git archive of
       // the committed tree): <payload>/<repo>/apps/desktop/scripts/.
@@ -3046,7 +3097,7 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
       teardownBundledBackend,
       restoreBundledBackend,
       emitUpdateProgress,
-      appVersion: app.getVersion(),
+      appVersion: INSTALL_STAMP?.channelBuild?.windowsVersion ?? app.getVersion(),
       quit: () => app.quit(),
       registerPendingRelaunch: (fromVersion: string): Promise<RelaunchRegistration> =>
         registerUpdateRelaunch(app, fromVersion, {
@@ -3072,9 +3123,8 @@ function resolvePackagedUpdateStrategy(): UpdaterStrategy | null {
               )
             })
         })
-    })
-
-    return packagedUpdateStrategy
+    }
+    return target ? createChannelAppInstallerStrategy(deps, target, verifyPreparedChannelInstaller) : new AppInstallerStrategy(deps)
   }
 
   if (mechanism === 'microsoft-store') {
@@ -3166,7 +3216,7 @@ function resolveDesktopFeedBaseUrl(): string {
 }
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
-function resolveUpdaterChannelFromStamp(): 'stable' | 'canary' {
+function resolveUpdaterChannelFromStamp(): string {
   return packagedReleaseChannel(INSTALL_STAMP) ?? 'stable'
 }
 
@@ -3754,17 +3804,19 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
-async function applyUpdates(): Promise<UpdaterApplyResultWire> {
+async function applyUpdates(retirementConsent: boolean = false): Promise<UpdaterApplyResultWire> {
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
 
-  const strategy = resolvePackagedUpdateStrategy() ?? resolveCheckoutUpdateStrategy()
+  const strategy = await resolvePackagedUpdateStrategy() ?? resolveCheckoutUpdateStrategy()
   updateInFlight = true
   let handedOff = false
 
   try {
-    const result: UpdaterApplyResultWire = await strategy.apply()
+    const result: UpdaterApplyResultWire = retirementConsent
+      ? strategy instanceof ChannelStrategy ? await strategy.applyRetirement() : { ok: false, error: 'No retirement offer is selected.' }
+      : await strategy.apply()
     handedOff = result.handedOff === true
 
     return result
@@ -8656,17 +8708,8 @@ function readActiveDesktopProfile() {
   return null
 }
 
-function writeActiveDesktopProfile(name) {
-  const value = typeof name === 'string' ? name.trim() : ''
-
-  if (value && value !== 'default' && !PROFILE_NAME_RE.test(value)) {
-    throw new Error(`Invalid profile name: ${value}`)
-  }
-
-  fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_PROFILE_CONFIG_PATH, JSON.stringify({ profile: value || null }, null, 2))
-
-  return value || null
+function writeActiveDesktopProfile(name: string | null): string | null {
+  return writeDesktopProfile(DESKTOP_PROFILE_CONFIG_PATH, name?.trim() || null)
 }
 
 // True when the given pid belongs to a running process whose command line
@@ -16547,6 +16590,11 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
+ipcMain.handle('hermes:updates:retire', async (_event: Electron.IpcMainInvokeEvent, consent: { installStable?: boolean; removePreview?: boolean }): Promise<UpdaterApplyResultWire> => {
+  if (consent?.installStable !== true || consent?.removePreview !== true) { return { ok: false, error: 'Explicit installation and preview-removal consent required.' } }
+  return applyUpdates(true).catch((error: Error): UpdaterApplyResultWire => ({ ok: false, error: 'retirement-blocked', message: error.message }))
+})
+
 ipcMain.handle('hermes:updates:branch:set', async (_event: Electron.IpcMainInvokeEvent, name: unknown): Promise<{ branch: string }> => {
   assertSourceUpdateChannel(INSTALL_STAMP)
   const branch: string = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
@@ -17039,6 +17087,20 @@ ipcMain.handle('hermes:deep-link-ready', () => {
   return { ok: true }
 })
 
+async function finishDesktopRetirement(reception: RetirementReception): Promise<void> {
+  const result = await completeDesktopRetirement(reception, {
+    home: HERMES_HOME, profile: primaryProfileKey, isLocal: (): boolean => !primaryBackendIsRemote(),
+    rendererMounted: (): boolean => Boolean(_rendererReadyForDeepLink && mainWindow && !mainWindow.isDestroyed()),
+    backend: async (): Promise<void> => {
+      await startHermes()
+      await handleHermesApiRequest({ path: '/api/status', timeoutMs: 5000 })
+    }
+  })
+  if (result.status === 'cleanup-pending') {
+    dialog.showErrorBox('Stable ready — preview cleanup pending', `${result.error}\nYour preview and all user data are preserved. Reopen the preview and choose Move to stable to retry cleanup.`)
+  }
+}
+
 function registerDeepLinkProtocol() {
   try {
     if (process.defaultApp && process.argv.length >= 2) {
@@ -17060,9 +17122,6 @@ function registerDeepLinkProtocol() {
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
-const _gotSingleInstanceLock = app.requestSingleInstanceLock()
-const isPrimaryInstance = _gotSingleInstanceLock
-
 if (!isPrimaryInstance) {
   // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
   // plain quit (event.preventDefault + async backend shutdown), and in that
@@ -17074,6 +17133,15 @@ if (!isPrimaryInstance) {
   app.exit(0)
 } else {
   app.on('second-instance', (_event, argv) => {
+    if (argv.some((arg: string): boolean => arg.startsWith('--hermes-retirement='))) {
+      void prepareRetirementStartup({ argv, userData: app.getPath('userData'), defaultHome: HERMES_HOME,
+        operatorOverride: Boolean(process.env.HERMES_HOME || USER_DATA_OVERRIDE), payload: bundledPayload(process.resourcesPath),
+        runningSelection: { home: HERMES_HOME, profile: primaryProfileKey(), connectionId: primaryBackendIsRemote() ? 'remote' : 'local' }
+      }).then(async (reception: RetirementReception | null): Promise<void> => {
+        if (reception) { await finishDesktopRetirement(reception) }
+      }).catch((error: Error): void => dialog.showErrorBox('Migration paused — preview preserved', error.message))
+      return
+    }
     const url = _extractDeepLink(argv)
 
     if (url) {
@@ -17184,6 +17252,7 @@ app.whenReady().then(() => {
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
   createWindow()
+  if (retirementReception) { void finishDesktopRetirement(retirementReception) }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

@@ -4,33 +4,57 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { OUT_OF_STORE_PUBLISHER } from '../../../scripts/msix-shared.mjs'
-import { codesignTeam } from './mac-bundled-manifest.cjs'
+import { OUT_OF_STORE_PUBLISHER, channelBuildRequest } from '../../../scripts/msix-shared.mjs'
+import { codesignTeam, channelStampAssertions } from './mac-bundled-manifest.cjs'
 
 const identityModule = fileURLToPath(new URL('../../../apps/desktop/product-identity.cjs', import.meta.url))
 
-export function bundleIdentity(commit, tag = '') {
+function admitChannelRequest(request, commit, tag) {
+  if (tag || request?.commit !== commit) throw new Error('Channel request conflicts with commit or tag')
+  return channelBuildRequest({ ...process.env, HERMES_DESKTOP_VARIANT: 'bundled',
+    HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_TAG: '', HERMES_PAYLOAD_VERSION: '',
+    _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(request) })
+}
+
+export function bundleIdentity(commit, tag = '', channelRequest = null) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Expected exact full lowercase commit SHA')
   if (tag && !/^v\d+\.\d+\.\d+(?:-canary\.20\d{6}(?:\d{6})?)?$/.test(tag)) throw new Error('Invalid release tag')
+  if (channelRequest !== null) {
+    const request = admitChannelRequest(channelRequest, commit, tag)
+    return { appId: request.identity.appId, msixIdentity: request.identity.msixAppIdWithOrg,
+      applicationId: request.identity.appNamePascal, publisher: OUT_OF_STORE_PUBLISHER,
+      windowsVersion: request.windowsVersion }
+  }
   // The production module reads build flags at require-time. A child avoids
   // mutating the driver's environment or returning a cached variant identity.
   const identity = JSON.parse(execFileSync(process.execPath, ['-e',
     'console.log(JSON.stringify(require(process.argv[1])))', identityModule], {
     encoding: 'utf8', env: { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled',
-      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: tag ? '' : commit },
+      HERMES_PAYLOAD_TAG: tag, HERMES_BUILD_COMMIT: tag ? '' : commit, _HERMES_CHANNEL_REQUEST_JSON: '' },
   }))
   return { appId: identity.appId, msixIdentity: identity.msixAppIdWithOrg,
     applicationId: identity.appNamePascal, publisher: OUT_OF_STORE_PUBLISHER }
 }
 
-export function verifyBundleStamp(stamp, { commit, tag = '', platform }) {
+export function verifyBundleStamp(stamp, { commit, tag = '', platform, channelRequest = null }) {
   if (!['darwin', 'win32'].includes(platform)) throw new Error('Unsupported native platform')
+  const request = channelRequest === null ? null : admitChannelRequest(channelRequest, commit, tag)
   const expected = { commit, tag: tag || null, payload: 'bundled', distribution: 'desktop-app', dirty: false,
-    updateMechanism: tag ? { darwin: 'electron-updater', win32: 'app-installer' }[platform] : 'external' }
-  if (!tag) Object.assign(expected, { source: 'commit-build', branch: null })
+    updateMechanism: tag || request ? { darwin: 'electron-updater', win32: 'app-installer' }[platform] : 'external' }
+  if (!tag && !request) Object.assign(expected, { source: 'commit-build', branch: null })
   for (const [key, value] of Object.entries(expected)) {
     if (stamp?.[key] !== value) throw new Error(`stamp.${key}: ${JSON.stringify(stamp?.[key])} != ${JSON.stringify(value)}`)
   }
+  if (request) {
+    const problems = channelStampAssertions(stamp, request)
+    if (problems.length) throw new Error(problems.join('; '))
+    return platform === 'darwin' ? request.version : request.windowsVersion
+  }
+  return legacyBundleVersion(stamp, tag)
+}
+
+function legacyBundleVersion(stamp, tag) {
+  if (stamp.channelBuild != null) throw new Error('Unexpected stamp.channelBuild without an admitted request')
   const version = tag ? tag.slice(1) : stamp.displayVersion
   if (!tag && !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('stamp.displayVersion must be a commit-build semver')
   return version
@@ -42,8 +66,18 @@ function childPath(root, relative) {
   return full
 }
 
-function verifyMac(app, commit, tag, arch) {
-  const expected = bundleIdentity(commit, tag)
+export function verifyMacMetadata(plist, stamp, { commit, tag, channelRequest }) {
+  const expected = bundleIdentity(commit, tag, channelRequest)
+  if (plist.CFBundleIdentifier !== expected.appId) throw new Error('CFBundleIdentifier disagrees with product identity')
+  const version = verifyBundleStamp(stamp, { commit, tag, platform: 'darwin', channelRequest })
+  if (plist.CFBundleShortVersionString !== version) throw new Error('CFBundleShortVersionString disagrees with stamp/tag/request')
+  if (channelRequest && plist.CFBundleVersion !== channelRequest.version) throw new Error('CFBundleVersion disagrees with channel request')
+  if (!plist.CFBundleExecutable || /[/\\]/.test(plist.CFBundleExecutable)) throw new Error('Invalid CFBundleExecutable')
+  return version
+}
+
+function verifyMac(app, commit, tag, arch, channelRequest) {
+  const expected = bundleIdentity(commit, tag, channelRequest)
 
   execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', app], { stdio: 'inherit' })
   const display = spawnSync('/usr/bin/codesign', ['-dv', '--verbose=4', app], { encoding: 'utf8' })
@@ -55,11 +89,8 @@ function verifyMac(app, commit, tag, arch) {
   if (/^Identifier=(.+)$/m.exec(display.stderr)?.[1] !== expected.appId) throw new Error('Signing identifier disagrees with product identity')
   const plist = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-',
     path.join(app, 'Contents/Info.plist')], { encoding: 'utf8' }))
-  if (plist.CFBundleIdentifier !== expected.appId) throw new Error('CFBundleIdentifier disagrees with product identity')
   const stamp = JSON.parse(fs.readFileSync(childPath(app, 'Contents/Resources/install-stamp.json'), 'utf8'))
-  const version = verifyBundleStamp(stamp, { commit, tag, platform: 'darwin' })
-  if (plist.CFBundleShortVersionString !== version) throw new Error('CFBundleShortVersionString disagrees with stamp/tag')
-  if (!plist.CFBundleExecutable || /[/\\]/.test(plist.CFBundleExecutable)) throw new Error('Invalid CFBundleExecutable')
+  const version = verifyMacMetadata(plist, stamp, { commit, tag, channelRequest })
   const exe = childPath(app, `Contents/MacOS/${plist.CFBundleExecutable}`)
   fs.accessSync(exe, fs.constants.X_OK)
   const archs = execFileSync('/usr/bin/lipo', ['-archs', exe], { encoding: 'utf8' }).trim().split(/\s+/)
@@ -98,11 +129,18 @@ function prepareDirectories(work, out) {
 function main() {
   const [command, ...args] = process.argv.slice(2)
   const { values } = parseArgs({ args, options: Object.fromEntries(
-    ['commit', 'tag', 'platform', 'stamp', 'app', 'arch', 'out', 'work'].map(key => [key, { type: 'string' }])) })
+    ['commit', 'tag', 'platform', 'stamp', 'app', 'arch', 'out', 'work', 'channel-request'].map(key => [key, { type: 'string' }])) })
+  if (values['channel-request'] !== undefined) {
+    // Preserve the raw JSON for the protocol decoder's duplicate-key checks.
+    const raw = fs.readFileSync(values['channel-request'], 'utf8')
+    if (!raw) throw new Error('Empty channel request')
+    values.channelRequest = channelBuildRequest({ ...process.env, HERMES_DESKTOP_VARIANT: 'bundled',
+      HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_TAG: '', HERMES_PAYLOAD_VERSION: '', _HERMES_CHANNEL_REQUEST_JSON: raw })
+  }
   const commands = {
-    identity: () => bundleIdentity(values.commit, values.tag),
+    identity: () => bundleIdentity(values.commit, values.tag, values.channelRequest),
     stamp: () => verifyBundleStamp(JSON.parse(fs.readFileSync(values.stamp, 'utf8')), values),
-    'verify-mac': () => verifyMac(values.app, values.commit, values.tag, values.arch),
+    'verify-mac': () => verifyMac(values.app, values.commit, values.tag, values.arch, values.channelRequest),
     prepare: () => prepareDirectories(values.work, values.out),
   }
   if (!commands[command]) throw new Error(`Unknown command: ${command}`)

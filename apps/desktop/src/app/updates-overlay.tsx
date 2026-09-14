@@ -17,6 +17,7 @@ import { Loader } from '@/components/ui/loader'
 import { Progress } from '@/components/ui/progress'
 import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
+import { RetirementView } from './retirement-view'
 import type {
 
   DesktopUpdateCommit,
@@ -137,7 +138,10 @@ export function UpdatesOverlay() {
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
         ) : null}
 
-        {phase === 'idle' && (
+        {phase === 'idle' && !isBackend && status?.retirement && (
+          <RetirementView retirement={status.retirement} onLater={() => handleClose(false)} onRetry={() => void check()} />
+        )}
+        {phase === 'idle' && (isBackend || !status?.retirement) && (
           <IdleView
             behind={behind}
             checking={checking}

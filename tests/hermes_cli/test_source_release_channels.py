@@ -90,6 +90,20 @@ def releases(tmp_path, monkeypatch, request):
                         + (f"?{parsed.query}" if parsed.query else ""), *args, **kwargs)
 
     monkeypatch.setattr(urllib.request, "urlopen", local_urlopen)
+    # Legacy pointer tests below retain their HTTP/tag boundary. New CLI callers
+    # consume the protocol reader, whose complete schema is tested independently.
+    from hermes_cli import source_releases
+    def resolve_channel(name, repository):
+        record = {"name": name, "repository": repository, "state": "active",
+                  "policy": "source-branch" if name == "main" else "preview"}
+        manifest = None
+        if name == "main":
+            record["delivery"] = {"kind": "source-branch", "branch": "main"}
+        else:
+            manifest = {"request": {"commit": commits[1 if name == "stable" else 2],
+                "sourceVersion": tags[name].removeprefix("v"), "buildId": "legacy-fixture"}}
+        return SimpleNamespace(requested=record, terminal=record, manifest=manifest)
+    monkeypatch.setattr(source_releases, "_resolve_channel", resolve_channel)
     yield SimpleNamespace(root=checkout, origin=origin, commits=commits,
                           tags=tags, responses=responses, requests=requests)
     server.shutdown()

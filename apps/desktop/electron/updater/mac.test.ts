@@ -80,6 +80,18 @@ describe('macOS strategy', () => {
     expect(deps.updater.downloadUpdate).not.toHaveBeenCalled()
   })
 
+  it('refuses a substituted pinned version or artifact before native signature preparation', async (): Promise<void> => {
+    const { deps, events } = fixture()
+    deps.expectedVersion = '0.30.0'
+    await expect(new MacStrategy(deps).apply()).rejects.toThrow('pinned channel version')
+    expect(events).toEqual(['check'])
+    deps.expectedVersion = '0.29.0'
+    deps.verifyDownload = async (): Promise<void> => { throw new Error('artifact digest mismatch') }
+    await expect(new MacStrategy(deps).apply()).rejects.toThrow('artifact digest')
+    expect(events).not.toContain('verify')
+    expect(events).not.toContain('stop')
+  })
+
   it('restores the backend if install handoff throws', async () => {
     const { deps, strategy, events } = fixture()
     vi.mocked(deps.updater.quitAndInstall).mockImplementation(() => {

@@ -2963,8 +2963,14 @@ def main():
                         help="Write changelog to file instead of stdout")
     parser.add_argument("--no-changelog", action="store_true",
                         help="Skip changelog")
+    from scripts.releases.channel_build import add_arguments, validate_arguments, cmd_channel
+
+    add_arguments(parser)
     args = parser.parse_args()
 
+    if validate_arguments(parser, args):
+        cmd_channel(args)
+        return
     if (args.bundle_env or args.bundle_unset) and args.build_commit is None:
         parser.error("--bundle-env and --bundle-unset require --build-commit")
     if args.canary and args.bump:

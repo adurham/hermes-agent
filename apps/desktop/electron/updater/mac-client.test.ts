@@ -32,6 +32,16 @@ describe('macOS client wiring', () => {
     expect(client.allowPrerelease).toBe(false)
   })
 
+  it('pins a neutral immutable descriptor instead of interpolating the dynamic name', (): void => {
+    createMacStrategy({ ...deps('https://updates.example'), channel: 'unknown-preview',
+      feed: { url: 'https://updates.example/releases/channel-builds/abc/darwin/latest-mac.yml', channel: 'latest' }
+    })
+    expect(client.setFeedURL).toHaveBeenCalledWith({ provider: 'generic', url: 'https://updates.example/releases/channel-builds/abc/darwin/', channel: 'latest' })
+    expect(client.allowDowngrade).toBe(false)
+    expect(client.autoDownload).toBe(false)
+    expect((): void => { createMacStrategy({ ...deps('https://updates.example'), feed: { url: 'https://other.example/latest-mac.yml', channel: 'latest' } }) }).toThrow('authority')
+  })
+
   it('overrides the provider with the same variant/channel path as the publisher', () => {
     createMacStrategy(deps('https://updates.example/', true, 'canary'))
     expect(client.setFeedURL).toHaveBeenCalledWith({ provider: 'generic', url: 'https://updates.example/releases/darwin/light/canary/', channel: 'canary' })

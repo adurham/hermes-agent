@@ -1,8 +1,6 @@
 """Validate and conditionally publish macOS update feeds."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
 import re
 from typing import Any, Callable
 
@@ -15,12 +13,11 @@ _TAG_PATTERN = re.compile(r"^v\d+\.\d+\.\d+(?:-canary\.\d{14})?$")
 
 
 def _darwin_feed(channel: str, light: bool = False) -> dict[str, Any]:
-    """Read the same feed facts as the desktop runtime."""
-    with (Path(__file__).resolve().parents[2] / "apps/desktop/update-feed.json").open(encoding="utf-8-sig") as file:
-        feeds = json.load(file)
-    if channel not in feeds:
-        raise TypeError(f"Unknown update channel: {channel}")
-    return feeds[channel]["light" if light else "bundled"]
+    """Legacy URL shape only, not a channel existence registry."""
+    if not isinstance(channel, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", channel):
+        raise ValueError("Invalid legacy feed path component")
+    return {"directory": f"releases/darwin/{'light/' if light else ''}{channel}",
+            "channel": channel, "fileName": f"{channel}-mac.yml"}
 
 
 # ---------------------------------------------------------------------------

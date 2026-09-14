@@ -1,6 +1,7 @@
 """Resolve promoted source releases, never infer publication from a Git tag."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from html.parser import HTMLParser
 import json
 import logging
@@ -36,6 +37,132 @@ def source_repository(git_cmd=None, cwd=None) -> str:
         if result.returncode == 0 and match:
             return match[1]
     return OFFICIAL_REPOSITORY
+
+
+@dataclass(frozen=True)
+class SourceTarget:
+    """A pinned source build or an explicitly declared source-branch delivery."""
+
+    requested_channel: str
+    channel: str
+    repository: str
+    commit: str | None = None
+    branch: str | None = None
+    version: str | None = None
+    build_id: str | None = None
+
+    @property
+    def retired(self) -> bool:
+        return self.requested_channel != self.channel
+
+    @property
+    def label(self) -> str:
+        return f"{self.channel} v{self.version} ({self.commit[:12]})" if self.commit else self.channel
+
+
+def _resolve_channel(name: str, repository: str):
+    """The only adapter to the validated requested/terminal records and manifest.
+
+    ChannelReader owns HTTPS, authority and digests. The source adapter below
+    admits its retirement constraints before any checkout operation. No legacy
+    GitHub fallback is allowed when a record is unavailable.
+    """
+    from hermes_cli.release_channels import ChannelReader
+
+    return ChannelReader(_PUBLIC_BASE, repository=repository).resolve(name)
+
+
+def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=None) -> SourceTarget:
+    """Resolve every subscription, including default labels, through R2."""
+    from hermes_cli.release_channels import validate_name
+
+    validate_name(channel)
+    repository = repository or source_repository(git_cmd, cwd)
+    resolved = _resolve_channel(channel, repository)
+    terminal = resolved.terminal
+    if terminal["repository"].lower() != repository.lower():
+        raise ValueError("Channel repository does not match this source installation")
+    destination = validate_name(terminal["name"])
+    if terminal["policy"] == "source-branch":
+        if resolved.requested["state"] == "retired":
+            raise ValueError("Source retirement requires a published destination commit")
+        delivery = terminal["delivery"]
+        if delivery["kind"] != "source-branch":
+            raise ValueError("Channel has no source-branch delivery")
+        return SourceTarget(channel, destination, repository, branch=delivery["branch"])
+    if resolved.manifest is None:
+        raise ValueError(f"No build published for channel {destination}")
+    request = resolved.manifest["request"]
+    if resolved.requested["state"] == "retired":
+        # Native identity floors across intermediate channels are incomparable.
+        # Until qualified directly, refuse a chain rather than discard a floor.
+        if len(resolved.constraints) != 1:
+            raise ValueError("Source retirement requires direct destination qualification")
+        constraint = resolved.constraints[0]
+        qualification = constraint["qualification"]
+        # The reader checks the qualified manifest's digest, not today's head.
+        # Its immutable build identity must remain the migration target.
+        qualified_head = qualification.get("destinationHead")
+        expected = {"schema": 1, "source": channel, "sourceHead": resolved.requested["head"],
+                    "destination": destination, "minimumVersion": constraint["minimumVersion"]}
+        if (constraint["channel"] != channel or constraint["destination"] != destination
+                or any(qualification.get(key) != value for key, value in expected.items())
+                or not isinstance(qualified_head, dict)
+                or any(qualified_head.get(key) != request[key] for key in ("buildId", "sequence"))):
+            raise ValueError("Source retirement qualification does not cover this destination")
+        if tuple(map(int, request["sourceVersion"].split("."))) < tuple(map(int, constraint["minimumVersion"].split("."))):
+            raise ValueError("Source retirement destination does not meet the minimum version")
+    commit = request["commit"]
+    if not isinstance(commit, str) or not _SHA.fullmatch(commit):
+        raise ValueError("Channel build has no exact source commit")
+    if resolved.requested["state"] == "retired":
+        _refuse_retirement_downgrade(request, terminal, git_cmd, cwd)
+    return SourceTarget(channel, destination, repository, commit=commit,
+                        version=request["sourceVersion"], build_id=request["buildId"])
+
+
+def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) -> None:
+    """Qualification of preview data is not permission to roll back newer source."""
+    from pathlib import Path
+    import tomllib
+
+    if cwd is None:
+        return
+    version_file = Path(cwd) / "pyproject.toml"
+    if version_file.exists():
+        with version_file.open("rb") as file:
+            project = tomllib.load(file).get("project")
+        installed_version = project.get("version") if isinstance(project, dict) else None
+        if not isinstance(installed_version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", installed_version, re.ASCII):
+            raise ValueError("Source retirement cannot verify the installed source version")
+        if tuple(map(int, installed_version.split("."))) > tuple(map(int, request["sourceVersion"].split("."))):
+            raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
+    if git_cmd is not None:
+        from hermes_cli.source_check import source_git_env
+
+        result = subprocess.run(
+            [*git_cmd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"], cwd=cwd,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            stdin=subprocess.DEVNULL, env=source_git_env(),
+        )
+        # The target need not exist locally before the updater's fetch. When it
+        # does, any descendants prove that this pinned build would roll us back.
+        if result.returncode == 0 and result.stdout.strip():
+            raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
+        if terminal["head"]["sequence"] > request["sequence"]:
+            # Shallow checkouts may lack the qualified commit, even when HEAD is
+            # today's stable build. Read it with the protocol's full digest checks.
+            current_manifest = _resolve_channel(terminal["name"], request["repository"]).manifest
+            if current_manifest is None:
+                raise ValueError("Source retirement cannot verify the current destination build")
+            current = current_manifest["request"]
+            installed = subprocess.run(
+                [*git_cmd, "rev-parse", "HEAD"], cwd=cwd, check=True,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                stdin=subprocess.DEVNULL, env=source_git_env(),
+            ).stdout.strip()
+            if installed == current["commit"] and installed != request["commit"]:
+                raise ValueError("Source retirement would downgrade the newer destination build; select the destination channel explicitly")
 
 
 def _read(url: str, *, missing_ok: bool = False) -> str | None:
@@ -125,8 +252,9 @@ def _release_pointer(channel: str) -> tuple[str | None, str | None]:
 
 
 def resolve_source_release(channel: str, git_cmd=None, cwd=None, *, repository=None) -> tuple[str | None, str | None]:
-    """Return the published channel's tag and exact commit, or no target on failure.
+    """Read historical stable/canary release metadata (not channel discovery).
 
+    Runtime check/apply use ``resolve_source_target`` and never fall back here.
     Channel pointers outrank GitHub's release listing. A malformed pointer,
     draft, or tag/commit mismatch is not permission to select a different build.
     ``git_cmd`` resolves the selected tag on origin; ZIP callers omit it and

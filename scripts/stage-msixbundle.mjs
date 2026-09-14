@@ -10,7 +10,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { appIdentity } from './msix-shared.mjs'
+import { appIdentity, channelBuildRequest } from './msix-shared.mjs'
 import { ensureWindowsBundleTools } from '../apps/desktop/scripts/windows-bundle-tools.mjs'
 
 
@@ -19,7 +19,11 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const { values } = parseArgs({ options: {
   tag: { type: 'string' }, commit: { type: 'string' }, version: { type: 'string' },
   variant: { type: 'string' }, 'no-upload': { type: 'boolean' }, candidate: { type: 'boolean' },
+  'channel-request': { type: 'string' },
 } })
+const channelRequest = values['channel-request']
+  ? channelBuildRequest({ ...process.env, HERMES_DESKTOP_VARIANT: values.variant || 'bundled',
+    _HERMES_CHANNEL_REQUEST_JSON: fs.readFileSync(values['channel-request'], 'utf8') }) : null
 const tag = values.tag
 const commitBuild = values.commit || ''
 const commitVersion = values.version || ''
@@ -27,10 +31,14 @@ const noUpload = values['no-upload'] === true
 const candidate = values.candidate === true
 const variant = values.variant || process.env.HERMES_DESKTOP_VARIANT || 'bundled'
 
+if (channelRequest && (tag || commitBuild || values.version || candidate || variant !== 'bundled'
+    || process.env.HERMES_PAYLOAD_TAG || process.env.HERMES_BUILD_COMMIT)) {
+  throw new Error('Channel requests cannot select tag, commit, Store or candidate inputs')
+}
 if (commitBuild && (tag || process.env.HERMES_PAYLOAD_TAG || candidate)) {
   throw new Error('Commit builds cannot select a release tag or candidate mode')
 }
-if (!commitBuild && (values.version !== undefined || noUpload)) {
+if (!commitBuild && !channelRequest && (values.version !== undefined || noUpload)) {
   throw new Error('--version and --no-upload require --commit')
 }
 
@@ -60,7 +68,7 @@ if (commitBuild) {
   }
   process.env.HERMES_BUILD_COMMIT = commitBuild
   process.env.HERMES_PAYLOAD_VERSION = commitVersion
-} else if (!tag) {
+} else if (!tag && !channelRequest) {
   console.error('[stage-msixbundle] --tag=<vX.Y.Z> is required')
   process.exit(1)
 }
@@ -74,11 +82,13 @@ if (process.platform !== 'win32') {
 }
 
 const canary = /-canary\./.test(tag)
-if (!commitBuild && !canary && !candidate) throw new Error('Stable bundles must use the staged stable-release workflow')
+if (!commitBuild && !channelRequest && !canary && !candidate) throw new Error('Stable bundles must use the staged stable-release workflow')
 
 const desktop = path.join(REPO_ROOT, 'apps', 'desktop')
 const releaseDir = path.join(desktop, 'release')
-const { version, name, fileVersion } = appIdentity(desktop, tag)
+const { version, name, fileVersion } = channelRequest
+  ? { version: channelRequest.windowsVersion, name: channelRequest.identity.artifactNamePascal, fileVersion: channelRequest.version }
+  : appIdentity(desktop, tag)
 
 // Per-arch .msix files are found by the name electron-builder gave them
 // (appInfo.version = the 3-part or full-canary string, NOT the 4-part feed

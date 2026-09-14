@@ -59,10 +59,13 @@ def build_prepared(path: Path, builder_args: list[str], variant: str | None = No
 
 def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> None:
     prepared.validate()
-    from scripts.bundles.desktop_inputs import build_environment, packaging_environment, select_variant
+    from scripts.bundles.desktop_inputs import build_environment, packaging_environment, select_variant, validate_builder_identity
     from scripts.bundles.native import finish_native
 
     request = prepared.request
+    validate_builder_identity(request, builder_args)
+    if request.channel_request is not None and not request.target.startswith(("darwin-", "win32-")):
+        raise ValueError("channel builds require a supported native macOS or Windows target")
     variant = select_variant(prepared, variant)
     repo, node = request.source, str(prepared.node)
     env = build_environment(prepared, variant, os.environ)
@@ -97,7 +100,9 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     # Windows file-version and MSIX build-number policy remains with its packager.
     version_args = []
     if sys.platform == "win32":
-        if request.tag is None:
+        if request.channel_request is not None:
+            metadata = {"file": request.channel_request["windowsVersion"], "build": None}
+        elif request.tag is None:
             # The plain version needs no canary build-number override.
             metadata = {"file": None, "build": None}
         else:
@@ -116,10 +121,11 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=False,
-                        help="Release tag (vX.Y.Z / canary). Required unless --commit is given")
+                        help="Release tag (vX.Y.Z / canary), exclusive with --commit/--channel-request")
     parser.add_argument("--commit", dest="commit_build", default=None,
                         help="Commit-only build: exact full 40-char SHA the checkout is at; "
                              "version comes from the target pyproject, no tag is referenced")
+    parser.add_argument("--channel-request", type=Path, help="Immutable admitted channel request JSON")
     parser.add_argument("--variant", choices=["bundled", "store", "light"])
     parser.add_argument("--repo", type=Path, default=ROOT)
     parser.add_argument("--work", type=Path)
@@ -131,7 +137,7 @@ def main() -> None:
     builder_args = [v for v in args.builder_args if v != "--"]
     try:
         if args.prepared:
-            if args.tag or args.commit_build or args.prepare_only or args.work or args.cache:
+            if args.tag or args.commit_build or args.channel_request or args.prepare_only or args.work or args.cache:
                 parser.error("--prepared supplies the complete build request")
             build_prepared(args.prepared, builder_args, args.variant)
         else:
@@ -141,7 +147,9 @@ def main() -> None:
                                           variant=args.variant or "bundled",
                                           work=args.work or args.repo / ".build/desktop-job",
                                           cache=args.cache or args.repo / ".cache/desktop-inputs",
-                                          bundle_env=decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", "")))
+                                          bundle_env=decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", "")),
+                                          channel_request=json.loads(args.channel_request.read_text(encoding="utf-8-sig"))
+                                          if args.channel_request else None)
             if args.prepare_only and builder_args:
                 parser.error("builder arguments belong to the build phase")
             result = prepare(request)

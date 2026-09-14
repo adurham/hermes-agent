@@ -15,7 +15,7 @@ from urllib.parse import quote
 import urllib.request
 
 from hermes_constants import get_hermes_home
-from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_release
+from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_target
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -152,6 +152,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     from hermes_cli.config import detect_install_method, get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
     from hermes_cli.update_channel import install_id, resolve_update_channel
+    from hermes_cli.release_channels import validate_name
     from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
 
     embedded = (os.environ.get("HERMES_REVISION") or None) if install_root is None else None
@@ -172,9 +173,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     config = require_readable_config_before_write(home / "config.yaml")
     if passive and (config.get("updates") or {}).get("check") is False:
         return {**result, "reason": "disabled"}
-    channel = channel or resolve_update_channel(config, root)
-    if channel not in {"main", "stable", "canary"}:
-        raise ValueError(f"Invalid update channel: {channel}")
+    channel = resolve_update_channel(config, root) if channel is None else validate_name(channel)
     head = embedded or _git_stdout(["rev-parse", "HEAD"], cwd=root, git=git)
     current_branch = None if embedded else _git_stdout(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root, git=git)
     desktop_config = _quiet(lambda: json.loads(branch_config_path.read_text(encoding="utf-8-sig"))) if branch_config_path else None
@@ -194,7 +193,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": head, "origin": origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     cached = _quiet(lambda: json.loads(cache_file.read_text(encoding="utf-8-sig")))
     now = time.time()
@@ -206,17 +205,30 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
         if isinstance(ts, (float, int)) and 0 <= now - ts < ttl:
             return {**status, "dirty": dirty, "currentBranch": current_branch}
     result["fetchedAt"] = int(now * 1000)
+    source_target = None
     if not _is_full_sha(head):
         result.update(error="head-unavailable", message="Could not read the installed revision.")
-    elif channel in {"stable", "canary"}:
-        tag, target = resolve_source_release(channel, [git] if not embedded else None, root,
-                                             repository=repository or OFFICIAL_REPOSITORY)
-        if not tag or not target:
-            result.update(error="release-unavailable", message=f"Could not resolve the {channel} release commit.")
+    elif branch is None:
+        try:
+            source_target = resolve_source_target(channel, [git] if not embedded else None, root,
+                                                  repository=repository or OFFICIAL_REPOSITORY)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            result.update(error="release-unavailable", message=f"Could not resolve the {channel} source channel: {exc}")
         else:
-            result.update(latestTag=tag, targetSha=target, updateAvailable=head != target,
-                          behind=0 if head == target else UPDATE_AVAILABLE_NO_COUNT)
-    else:
+            if source_target.commit:
+                target = source_target.commit
+                result.pop("branch", None)
+                result.update(channel=channel, targetSha=target, updateAvailable=head != target,
+                              behind=0 if head == target else UPDATE_AVAILABLE_NO_COUNT,
+                              sourceVersion=source_target.version, buildId=source_target.build_id)
+                if source_target.retired:
+                    result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
+            else:
+                # The record supplies a default, not permission to leave the user's branch.
+                selected_branch = configured_branch or (
+                    current_branch if current_branch and current_branch != "HEAD" else source_target.branch)
+    if "error" not in result and (source_target is None or source_target.branch is not None):
+        result["branch"] = selected_branch
         official_ssh = (repository and repository.lower() == OFFICIAL_REPOSITORY.lower()
                         and origin.lower().startswith(("git@", "ssh://")))
         # The public official repo does not require the user's SSH credentials.
@@ -265,7 +277,8 @@ def main() -> None:
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--git", default="git")
     parser.add_argument("--branch")
-    parser.add_argument("--channel", choices=("main", "stable", "canary"))
+    from hermes_cli.release_channels import validate_name
+    parser.add_argument("--channel", type=validate_name)
     parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--branch-config-path", type=Path)
     parser.add_argument("--force", action="store_true")

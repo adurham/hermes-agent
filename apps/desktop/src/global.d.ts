@@ -558,6 +558,7 @@ declare global {
       updates: {
         check: (opts?: { force?: boolean }) => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
+        retire: (consent: { installStable: true; removePreview: true }) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
@@ -657,7 +658,7 @@ export interface DesktopVersionInfo {
   /** Packaged client version, or the runtime version for source installs. */
   appVersion: string
   /** Fixed release identity. Commit builds have no update channel. */
-  channel?: 'stable' | 'canary' | null
+  channel?: string | null
   electronVersion: string
   nodeVersion: string
   platform: string
@@ -756,6 +757,12 @@ export type UpdaterMechanismClient =
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  retirement?: {
+    state: 'available' | 'waiting' | 'incompatible' | 'conflict' | 'migrating' | 'cleanup-pending' | 'complete'
+    destination: string
+    version: string
+    message?: string
+  }
   /** Which mechanism owns updates for this install (see electron/updater). */
   mechanism?: UpdaterMechanismClient
   updateAvailable?: boolean
@@ -771,9 +778,8 @@ export interface DesktopUpdateStatus {
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
-  /** Release feed the check read from ('stable'/'canary'); when set, the
-   *  update is a release and `latestTag` names it instead of a commit count. */
-  channel?: 'stable' | 'canary'
+  /** The R2 channel name; independent of source branch and package version. */
+  channel?: string
   /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
   latestTag?: string | null
   targetSha?: string

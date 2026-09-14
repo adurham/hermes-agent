@@ -8,6 +8,34 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 
+/** Build-only structured bridge; never read by the installed runtime.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {import('../apps/desktop/electron/install-stamp.js').ChannelBuildRequest | null}
+ */
+export function channelBuildRequest(env = process.env) {
+  if (!env._HERMES_CHANNEL_REQUEST_JSON) return null
+  const value = JSON.parse(env._HERMES_CHANNEL_REQUEST_JSON)
+  if (env.HERMES_DESKTOP_VARIANT !== 'bundled') throw new Error('Channel builds support only bundled packaging')
+  if (env.HERMES_BUILD_COMMIT || env.HERMES_PAYLOAD_TAG) throw new Error('Channel request conflicts with commit or tag identity')
+  // The bundled toolchain already supplies Python. Reuse the authoritative
+  // validator rather than maintaining a third protocol decoder for packaging.
+  const validator = [
+    'import sys',
+    'sys.path.insert(0, sys.argv[1])',
+    'from hermes_cli.release_channels import decode_json',
+    'from scripts.bundles.desktop_prepare import validate_channel_request',
+    'validate_channel_request(decode_json(sys.stdin.buffer.read()))'
+  ].join('; ')
+  execFileSync(env.HERMES_PYTHON || 'python', ['-I', '-S', '-c', validator, path.resolve(import.meta.dirname, '..')], {
+    env, input: env._HERMES_CHANNEL_REQUEST_JSON, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 30_000
+  })
+  if (env.HERMES_PAYLOAD_VERSION && env.HERMES_PAYLOAD_VERSION !== value.version) throw new Error('Channel package version conflicts with prepared request')
+  Object.freeze(value.identity)
+  Object.freeze(value.bundleEnv)
+  return Object.freeze(value)
+}
+
+
 // The out-of-store MSIX publisher — the ATS signing cert subject, which is
 // what Windows compares against the package manifest publisher at install.
 // Mirrored from electron-builder.config.cjs so the .appinstaller and the
@@ -174,6 +202,27 @@ export function storeManifestTemplate(template, version) {
   return template.replace('${version}', version)
 }
 
+/** MsixTarget derives its quad from app semver even when shortVersion is set.
+ * Bake the admitted quad into the already staged nonstable template instead.
+ * @param {string} desktopDir
+ * @param {import('../apps/desktop/electron/install-stamp.js').ChannelBuildRequest} request
+ */
+export function stageChannelManifest(desktopDir, request) {
+  const file = path.join(desktopDir, 'build/msix-manifest.xml')
+  const template = fs.readFileSync(path.join(desktopDir, 'assets/msix-manifest.xml'), 'utf8')
+  const payload = JSON.parse(fs.readFileSync(path.join(desktopDir, 'build/agent-payload/manifest.json'), 'utf8'))
+  const { appExecutionAliasApplications } = require(path.join(desktopDir, 'scripts/before-build.mjs'))
+  const applications = appExecutionAliasApplications(payload.launchers, request.identity)
+  if (template.split('${version}').length !== 2) throw new Error('Channel MSIX template must have one version macro')
+  fs.writeFileSync(file, template.replace('${version}', request.windowsVersion)
+    .replace('</Applications>', `${applications}\n  </Applications>`), 'utf8')
+  // The legacy hook emits one multi-alias extension when artifact/app names agree.
+  // Channels always use separate applications for distinct CLI entrypoints.
+  const extensions = path.join(desktopDir, 'build/msix-extensions.xml')
+  const xml = fs.readFileSync(extensions, 'utf8')
+  fs.writeFileSync(extensions, xml.replace(/<uap5:Extension\b[^>]*Category="windows\.appExecutionAlias"[^>]*>[\s\S]*?<\/uap5:Extension>/g, ''), 'utf8')
+}
+
 /**
  * Resolve the app identity for a desktop build from the app dir: the product
  * identity + package version. Pure-ish (reads product-identity.cjs and
@@ -188,6 +237,11 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
   const identity = require(path.join(desktopDir, 'product-identity.cjs'))
   const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, 'package.json'), 'utf8'))
   const repoRoot = path.resolve(desktopDir, '..', '..')
+  const request = channelBuildRequest()
+  if (request) {
+    if (tag) throw new Error('Channel builds must not select a release tag')
+    return { identity, version: request.windowsVersion, fileVersion: request.version, name: identity.artifactNamePascal }
+  }
   // Commit artifacts retain app semver but do not advance an update channel.
   if (process.env.HERMES_BUILD_COMMIT) {
     if (tag) throw new Error('Commit-only builds must not set HERMES_PAYLOAD_TAG')

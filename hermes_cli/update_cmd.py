@@ -22,6 +22,7 @@ from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patch
 from hermes_cli.update_cmd_common import _best_effort
 # Captured BEFORE a checkout swap: parent transport/lifecycle never imports new code.
 from hermes_cli.update_completion import run_completion
+from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
@@ -524,17 +525,15 @@ def _source_update_channel(args=None, *, channel=None, branch_explicit=False) ->
     """Explicit branches win; otherwise transient channel, then this install's record."""
     if branch_explicit or getattr(args, "branch", None):
         return "main"
-    transient = channel or getattr(args, "channel", None)
-    if transient:
-        return transient
-    from hermes_cli.config import load_config
+    transient = channel if channel is not None else getattr(args, "channel", None)
+    if transient is not None:
+        from hermes_cli.release_channels import validate_name
+        return validate_name(transient)
     from hermes_cli.update_channel import resolve_update_channel
 
-    config = None
-    try:
-        config = load_config()
-    except Exception as exc:
-        logger.debug("Could not load config for channel resolution: %s", exc)
+    from hermes_cli.config import get_config_path, require_readable_config_before_write
+
+    config = require_readable_config_before_write(get_config_path())
     return resolve_update_channel(config, _m().PROJECT_ROOT)
 
 
@@ -588,23 +587,26 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
 
-    from hermes_cli.update_channel import CHANNEL_STABLE
-
     selected_channel = _source_update_channel(channel=channel, branch_explicit=branch_explicit)
-    if selected_channel in (CHANNEL_STABLE, "canary"):
-        from hermes_cli.source_releases import resolve_source_release
+    if not branch_explicit:
+        from hermes_cli.source_releases import resolve_source_target
 
-        print(f"→ Update channel: {selected_channel} (published releases)")
-        tag, tag_sha = resolve_source_release(selected_channel, git_cmd, _m().PROJECT_ROOT)
-        if tag is None:
-            print(f"✗ Could not resolve the {selected_channel} release commit.")
+        print(f"→ Update channel: {selected_channel}")
+        try:
+            target = resolve_source_target(selected_channel, git_cmd, _m().PROJECT_ROOT)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
             sys.exit(1)
-        if _capture_head_sha(git_cmd, _m().PROJECT_ROOT) == tag_sha:
-            print(f"✓ Up to date with the latest release ({tag}).")
-        else:
-            print(f"→ Selected release available: {tag}")
-            print("  Run `hermes update` to install it.")
-        return
+        if target.commit:
+            if target.retired:
+                print(f"→ {selected_channel} retired; source destination: {target.channel}")
+            if _capture_head_sha(git_cmd, _m().PROJECT_ROOT) == target.commit:
+                print(f"✓ Up to date with the latest release ({target.label}).")
+            else:
+                print(f"→ Selected release available: {target.label}")
+                print("  Run `hermes update` to install it.")
+            return
+        branch = target.branch
 
     # Fetch only the branch we compare against; prefer upstream as the canonical
     # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
@@ -830,6 +832,8 @@ def _complete_source_update(request: dict | None) -> None:
             _completion_receipt._current.reset(current.current_token)
     if result["exit_code"]:
         raise SystemExit(result["exit_code"])
+    if adopt_retired_channel(request):
+        print(f"→ Source subscription moved to {request['channel_retirement']['destination']}")
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_ref=None) -> None:
@@ -1346,7 +1350,13 @@ def _apply_pulled_update(
         _windows_gateway_resume=_windows_gateway_resume)
 
     if completion_request is not None:
-        completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha
+        observed = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or post_pull_sha
+        pinned = completion_request.get("expected_sha")
+        if pinned is not None and observed != pinned:
+            print("✗ Checkout no longer matches the selected channel commit. No completion was applied.")
+            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            sys.exit(1)
+        completion_request["expected_sha"] = pinned or observed
     _complete_source_update(completion_request)
 
 
@@ -1387,31 +1397,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
     branch = _m()._resolve_update_branch(args)
     completion_request["branch"] = branch
     target_ref = f"origin/{branch}"
-    release_tag, release_sha = None, None
+    release_sha = None
     target_repository = None
-    from hermes_cli.update_channel import CHANNEL_STABLE
-
     selected_channel = _source_update_channel(args)
-    if selected_channel in (CHANNEL_STABLE, "canary"):
-        from hermes_cli.source_releases import resolve_source_release, source_repository
+    if not getattr(args, "branch", None):
+        from hermes_cli.source_releases import resolve_source_target
 
-        print(f"→ Update channel: {selected_channel} (published releases)")
+        from copy import deepcopy
+        from hermes_cli.config import require_readable_config_before_write
+        from hermes_cli.update_channel import channel_record
+
+        original_record = deepcopy(channel_record(require_readable_config_before_write(
+            Path(completion_request["home"]) / "config.yaml"), _m().PROJECT_ROOT))
+        print(f"→ Update channel: {selected_channel}")
         try:
-            target_repository = source_repository(None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
-        except (OSError, subprocess.SubprocessError) as exc:
-            print(f"✗ Could not identify the release repository: {exc}")
+            target = resolve_source_target(
+                selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            print(f"✗ Could not resolve the {selected_channel} source channel: {exc}. No update was applied.")
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
-        release_tag, release_sha = resolve_source_release(
-            selected_channel, None if use_zip_update else git_cmd, _m().PROJECT_ROOT,
-            repository=target_repository)
-        if release_tag is None or not re.fullmatch(r"[0-9a-f]{40}", release_sha or ""):
-            print(f"✗ Could not resolve the {selected_channel} release commit. No update was applied.")
-            print("  Retry, or switch channels with: hermes update --set-channel main")
-            _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-            sys.exit(1)
-        print(f"→ Latest release: {release_tag}")
-        target_ref = release_sha
+        if target.retired:
+            print(f"→ {selected_channel} retired; source destination: {target.channel}")
+            if (not getattr(args, "channel", None)
+                    and original_record.get("channel", "main") == selected_channel):
+                completion_request["channel_retirement"] = {
+                    "original": original_record, "destination": target.channel}
+        target_repository = target.repository
+        release_sha = target.commit
+        if release_sha:
+            print(f"→ Latest release: {target.label}")
+            target_ref = release_sha
+            completion_request["expected_sha"] = release_sha
+        else:
+            branch = target.branch
+            completion_request["branch"] = branch
+            target_ref = f"origin/{branch}"
 
     if use_zip_update:
         try:
@@ -1450,18 +1471,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        if release_tag:
+        if release_sha:
             fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
-            if fetch_result.returncode != 0:
-                # Older servers require a named ref. Do not change local tags.
-                fetch_result = _git_run(
-                    git_cmd, ["fetch", "--no-tags", "origin", f"refs/tags/{release_tag}"], network=True)
-                if fetch_result.returncode == 0:
-                    fetched = _git_run(git_cmd, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"])
-                    if fetched.returncode != 0 or fetched.stdout.strip() != target_ref:
-                        print("✗ The release tag changed during this update. Retry to select its new commit.")
-                        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-                        sys.exit(1)
         else:
             fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
         if fetch_result.returncode != 0:
@@ -1482,8 +1493,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 completion_request=completion_request)
             return
 
-        if release_tag:
-            print(f"→ Switching to release {release_tag} ({release_sha[:10]})")
+        if release_sha:
+            print(f"→ Switching to source commit {release_sha[:10]}")
         elif commit_count > 0:
             print(f"→ Found {commit_count} new commit(s)")
         else:
@@ -1495,7 +1506,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
             keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
-            sync_upstream=is_fork and branch == "main" and not release_tag, assume_yes=assume_yes,
+            sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
             in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan,

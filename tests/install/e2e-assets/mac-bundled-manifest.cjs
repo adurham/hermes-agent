@@ -1,4 +1,13 @@
 // Independent native signature and installed-stamp assertions.
+const { isDeepStrictEqual } = require('node:util')
+
+function channelStampAssertions(stamp, request) {
+  const expected = { channelBuild: request, commit: request.commit, tag: null, source: 'channel-build',
+    branch: null, dirty: false, baseVersion: request.sourceVersion,
+    displayVersion: `${request.sourceVersion} (${request.channel} #${request.sequence}, ${request.commit.slice(0, 7)})` }
+  return Object.entries(expected).filter(([key, value]) => !isDeepStrictEqual(stamp?.[key], value))
+    .map(([key]) => `stamp.${key} disagrees with admitted channel request`)
+}
 /**
  * Parse the TeamIdentifier out of `codesign -dv` output. codesign prints
  * display output on STDERR, so pass stderr (or combined output) here.
@@ -32,7 +41,9 @@ function stampAssertions(stamp, side) {
   if (stamp.tag !== side.tag) {
     problems.push(`stamp.tag ${JSON.stringify(stamp.tag)} != ${side.tag}`)
   }
+  if (side.channelRequest) problems.push(...channelStampAssertions(stamp, side.channelRequest))
+  else if (stamp.channelBuild != null) problems.push('Unexpected stamp.channelBuild without an admitted request')
   return problems
 }
 
-module.exports = { codesignTeam, stampAssertions }
+module.exports = { codesignTeam, stampAssertions, channelStampAssertions }

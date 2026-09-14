@@ -2657,6 +2657,13 @@ export interface Translations {
   }
 
   updates: {
+    retirementTitle: string
+    retirementBody: string
+    retirementAction: string
+    retirementConsent: string
+    retirementBlocked: string
+    retirementMoving: string
+    retirementComplete: string
     channels: { stable: string; canary: string }
     bundleSwapPending: string
     bundleSwapPendingDesc: string

@@ -21,6 +21,9 @@ function Assert-SmokeIdentity($Identity, $Expected) {
     $version = $Identity.GetAttribute('Version')
     if ($version -cnotmatch '^\d+\.\d+\.\d+\.\d+$' -or
         @($version.Split('.') | Where-Object { [int]$_ -gt 65535 }).Count) { throw 'Invalid package version' }
+    if ($Expected.PSObject.Properties['windowsVersion'] -and $version -cne $Expected.windowsVersion) {
+        throw 'Package version disagrees with channel request'
+    }
     return $version
 }
 

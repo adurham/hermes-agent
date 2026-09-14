@@ -91,11 +91,15 @@ changes only that installation's configuration, then exits without applying an
 update. `--channel` is a one-run override. An explicit `--branch` takes precedence
 for a source checkout.
 
-Source `main` tracks the branch tip. Source `stable` and `canary` resolve the
-published release for that channel and update the checkout to its exact Git
-commit. Canary does not mean the current tip of `main`, and an unpublished tag
-is not a release. Switching a source channel does not install a desktop package.
-Per-install records live under `update.installs` in configuration, so one
+Channel names are registered in the release archive on Cloudflare R2, not in a
+fixed list shipped with Hermes. The `main` record selects source-branch delivery;
+published-build channels select an exact Git commit. Custom preview channels use
+the same source commands, for example `hermes update --set-channel pm-preview`.
+The publisher must have created that channel before an update can resolve it.
+An unavailable or invalid record reports an error rather than falling back to
+`main` or another release. Switching a source channel does not install a desktop
+package.
+Per-install subscriptions live under `update.installs` in configuration, so one
 checkout's choice does not change another installation's channel. The source-built
 desktop uses that same selection for checks and update handoffs; it does not
 replace a selected release channel with its default branch.

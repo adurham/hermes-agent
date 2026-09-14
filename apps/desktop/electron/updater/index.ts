@@ -16,6 +16,7 @@
 // or Store inference; the strategy reports its mechanism to the renderer.
 
 import type { InstallStamp } from '../install-stamp'
+import type { ChannelRetirementStatus } from './channel-strategy'
 
 export type UpdaterMechanism =
   | 'app-installer'
@@ -61,7 +62,8 @@ export interface UpdaterStatusWire {
   behind?: number | null
   currentSha?: string
   currentVersion?: string
-  channel?: 'stable' | 'canary'
+  channel?: string
+  retirement?: ChannelRetirementStatus
   latestTag?: string | null
   targetSha?: string
   commits?: { sha: string; summary: string; author: string; at: number }[]

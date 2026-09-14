@@ -61,6 +61,14 @@ export function deriveUpdateStatus({
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
 
+  if (target === 'client' && status?.retirement) {
+    const retirement = status.retirement
+    const available: boolean = retirement.state === 'available' || retirement.state === 'cleanup-pending'
+    return { applying, supported, updateAvailable: false, tone: available ? 'available' : 'error',
+      line: applying ? u.retirementMoving : retirement.state === 'complete' ? u.retirementComplete : u.retirementTitle,
+      error: retirement.message }
+  }
+
   if (!supported) {
     return { applying, line: status?.message ?? u.unsupportedMessage, supported, tone: 'unsupported', updateAvailable }
   }
@@ -152,7 +160,7 @@ export function VersionHero({
         )}
         <p className="mt-1 text-xs text-muted-foreground">
           {version?.appVersion ? u.version(version.appVersion) : u.versionUnavailable}
-          {version?.channel ? ` · ${u.channels[version.channel]}` : ''}
+          {version?.channel ? ` · ${Object.entries(u.channels).find(([name]: [string, string]): boolean => name === version.channel)?.[1] ?? version.channel}` : ''}
         </p>
       </div>
       {(version?.bundleSwapPending || version?.bundleOutOfSync) && (
@@ -267,6 +275,9 @@ export function UpdateStatusCard({
             {checking ? u.checkingShort : u.checkNow}
           </Button>
 
+          {!isBackend && status?.retirement && !view.applying && (
+            <Button onClick={() => openUpdateOverlayFor('client')} size="sm">{u.retirementAction}</Button>
+          )}
           {view.updateAvailable && view.supported && !view.applying && (
             <>
               <Button onClick={() => startActiveUpdate(target)} size="sm">

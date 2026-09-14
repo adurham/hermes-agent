@@ -41,6 +41,32 @@ def _config_for(root: Path, channel: str) -> dict:
     }
 
 
+def test_dynamic_channel_parser_and_per_install_round_trip(tmp_path, monkeypatch):
+    import argparse
+    import hermes_yaml as yaml
+    from hermes_cli.subcommands.update import build_update_parser
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    parser = argparse.ArgumentParser()
+    build_update_parser(parser.add_subparsers(), cmd_update=lambda args: None)
+    root = tmp_path / "source"
+    root.mkdir()
+    name = "new-preview-493"
+    args = parser.parse_args(["update", "--set-channel", name])
+    set_install_channel(args.set_channel, root)
+    saved = yaml.safe_load((tmp_path / "home/config.yaml").read_text())
+    assert resolve_update_channel(saved, root) == name
+    assert parser.parse_args(["update", "--channel", name]).channel == name
+    assert resolve_update_channel(saved, tmp_path / "other") == "main"
+    for invalid in (" New-preview", "PREVIEW", "preview/other", "preview--other", ""):
+        with pytest.raises(ValueError):
+            set_install_channel(invalid, root)
+        with pytest.raises(ValueError):
+            resolve_update_channel(_config_for(root, invalid), root)
+        with pytest.raises(SystemExit):
+            parser.parse_args(["update", "--channel", invalid])
+
+
 class TestInstallId:
     def test_path_derived_and_stable(self, tmp_path):
         """The id hashes the canonical PATH — same path, same id, no matter
@@ -72,6 +98,15 @@ class TestInstallId:
 
 class TestResolve:
 
+    def test_channel_bundle_keeps_baked_subscription_in_its_cli(self, tmp_path):
+        (tmp_path / 'install-stamp.json').write_text(json.dumps({
+            'payload': 'bundled', 'source': 'channel-build',
+            'updateMechanism': 'electron-updater', 'tag': None,
+            'channelBuild': {'channel': 'r2-preview'},
+        }), encoding='utf-8')
+        assert default_channel(tmp_path) == 'r2-preview'
+        assert resolve_update_channel(_config_for(tmp_path, 'stable'), tmp_path) == 'r2-preview'
+
     def test_multi_install_isolation(self, tmp_path):
         """Two installs, one config: each resolves its own record and a
         missing record falls to the mechanism default — never the sibling's."""
@@ -88,7 +123,7 @@ class TestResolve:
         ('self', 'v1.2.3-canary.20260818', None, None, 'main'),
         (None, None, None, None, 'main'),
         ('self', None, None, 'canary', 'canary'),
-        ('self', None, None, 'yolo', 'main'),
+        ('self', None, None, 'yolo', 'yolo'),
         ('electron-updater', 'v1.2.3', None, None, 'stable'),
         ('electron-updater', 'v1.2.3-canary.20260819171926', None, 'stable', 'canary'),
         ('app-installer', 'v1.2.3-canary.20260819171926', None, None, 'canary'),
@@ -108,7 +143,7 @@ class TestResolve:
             (tmp_path / 'install-stamp.json').write_text(json.dumps(stamp), encoding='utf-8')
         config = _config_for(tmp_path, record) if record else {}
         assert resolve_update_channel(config, tmp_path) == expected
-        if not (mechanism == 'self' and record == 'canary'):
+        if record is None or mechanism != 'self':
             assert default_channel(tmp_path) == expected
 
 
@@ -167,8 +202,8 @@ class TestSetChannel:
         self._home(tmp_path, monkeypatch)
         root = tmp_path / "install"
         _stamp(root, "self")
-        with pytest.raises(ValueError, match="unknown channel"):
-            set_install_channel("beta", root)
+        with pytest.raises(ValueError, match="Invalid channel name"):
+            set_install_channel("../beta", root)
 
 
 class TestSetChannelCLI:
@@ -292,7 +327,7 @@ class TestSetChannelCLI:
         before = b"# retain user comment\nmodel:\n  provider: fixture\n"
         cfg.write_bytes(before)
         for mechanism, channel, message in (
-            ("self", "bogus", "unknown channel"),
+            ("self", "../bogus", "Invalid channel name"),
             ("external", "stable", "owned by"),
             ("app-installer", "canary", "owned by"),
         ):

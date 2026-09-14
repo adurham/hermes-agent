@@ -221,7 +221,7 @@ def format_banner_version_label() -> str:
     from hermes_cli.update_channel import resolve_update_channel
 
     channel = resolve_update_channel(_quiet(load_config), get_project_root())
-    if channel in {"stable", "canary"}:
+    if channel != "main":
         head = source_check._git_stdout(["rev-parse", "HEAD"], cwd=get_project_root())
         return f"{base} · {channel}" + (f" · local {head[:12]}" if head else "")
     state = get_git_banner_state()

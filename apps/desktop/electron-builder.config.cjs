@@ -49,7 +49,8 @@ function mustStoreMsix(value) {
 // The out-of-store MSIX publisher (ATS cert subject) — single source, shared
 // with the .appinstaller generator so the manifest and the App Installer can
 // never drift (see scripts/msix-shared.mjs).
-const { OUT_OF_STORE_PUBLISHER } = require('../../scripts/msix-shared.mjs')
+const { OUT_OF_STORE_PUBLISHER, channelBuildRequest, stageChannelManifest } = require('../../scripts/msix-shared.mjs')
+const channelRequest = channelBuildRequest()
 
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
 
@@ -62,10 +63,10 @@ if (!/^\d+\.\d+\.\d+$/.test(electronVersion)) {
   throw new Error(`invalid electron version ${electronVersion} in package.json`)
 }
 
-const macFeed = feedContract.darwinFeed(channel === 'canary' || channel === 'light-canary' ? 'canary' : 'stable', light)
+const macFeed = channelRequest ? null : feedContract.darwinFeed(channel === 'canary' || channel === 'light-canary' ? 'canary' : 'stable', light)
 const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL?.replace(/\/+$/, '')
 
-/** @type {Configuration} */
+/** @satisfies {Configuration} */
 module.exports = {
   electronVersion,
   appId,
@@ -89,7 +90,7 @@ module.exports = {
   // var (local, or a fork without the R2 vars) keep the github provider, which
   // is exactly today's behavior. The store build has no feed at all (the Store
   // owns its distribution and updates).
-  publish: !channel
+  publish: channelRequest ? null : !channel
     ? null
     : [
         process.env.CLOUDFLARE_R2_PUBLIC_URL
@@ -100,14 +101,18 @@ module.exports = {
     name: appNamePascal,
     // Electron bootstrap reads package.productName before main.ts. Keep the
     // shipped stable default, but isolate nonstable userData from first access.
-    ...(appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
+    ...(channelRequest || appNamePascal !== artifactNamePascal ? { productName: displayName } : {}),
     desktopName: appId
   },
   directories: {
     output: 'release'
   },
   files: ['dist/**', 'assets/**', 'public/**', 'package.json'],
-  beforeBuild: 'scripts/before-build.mjs',
+  beforeBuild: channelRequest ? async () => {
+    await require(path.join(__dirname, 'scripts/before-build.mjs')).default()
+    stageChannelManifest(__dirname, channelRequest)
+    return false
+  } : 'scripts/before-build.mjs',
   beforePack: 'scripts/before-pack.mjs',
   afterPack: 'scripts/after-pack.mjs',
   ...(process.platform === 'darwin' ? { afterSign: 'scripts/notarize.mjs' } : {}),
@@ -131,7 +136,9 @@ module.exports = {
     // The afterSign hook owns notarization, including keychain-profile builds.
     notarize: false,
     // The packaged client reads this generated app-update.yml by default.
-    publish: publicUrl && channel
+    publish: channelRequest
+      ? [{ provider: 'generic', url: `${channelRequest.publicBase}/releases/channel-builds/${channelRequest.buildId}/darwin/`, channel: 'latest' }]
+      : publicUrl && channel && macFeed
       ? [{ provider: 'generic', url: `${publicUrl}/${macFeed.directory}/`, channel: macFeed.channel }]
       : null,
     category: 'public.app-category.developer-tools',
@@ -213,7 +220,7 @@ module.exports = {
     // stable build sets no BUILD_NUMBER and stays X.Y.Z.0, a canary build sets
     // it via scripts/bundles/desktop.py so App Installer updates over equal
     // canary-over-canary versions instead of refusing them.
-    setBuildNumber: !store,
+    setBuildNumber: !store && !channelRequest,
     // Store versions are baked into a build-time template. App semver and
     // artifact filenames stay unchanged; the Store reserves revision zero.
     // Floor Windows 11 22H2. Below build 18307 the manifest schema caps
@@ -229,7 +236,7 @@ module.exports = {
     // time, so typecheck/test imports don't touch the filesystem.
     customExtensionsPath: 'build/msix-extensions.xml',
     customManifestPath: store ? 'build/store-msix-manifest.xml'
-      : appNamePascal !== artifactNamePascal ? 'build/msix-manifest.xml' : 'assets/msix-manifest.xml',
+      : channelRequest || appNamePascal !== artifactNamePascal ? 'build/msix-manifest.xml' : 'assets/msix-manifest.xml',
     // Hermes state is deliberately shared with unpackaged CLI/gateway
     // processes. Pair the manifest's disabled virtualization properties with
     // the restricted capability that permits unvirtualized AppData/HKCU writes.
@@ -244,6 +251,19 @@ module.exports = {
       : 'Native desktop shell for Hermes Agent.',
     target: ['AppImage']
   }
+}
+
+if (channelRequest) {
+  Object.assign(module.exports, { buildVersion: channelRequest.version })
+  Object.assign(module.exports.extraMetadata, {
+    version: channelRequest.version,
+    shortVersion: channelRequest.windowsVersion,
+    shortVersionWindows: channelRequest.windowsVersion
+  })
+  Object.assign(module.exports.mac, {
+    bundleVersion: channelRequest.version,
+    bundleShortVersion: channelRequest.version
+  })
 }
 
 // MSIX build-time staging (build/appx icons + build/msix-extensions.xml)

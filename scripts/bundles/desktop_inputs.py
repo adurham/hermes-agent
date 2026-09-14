@@ -4,11 +4,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import contextmanager
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from scripts.bundles.desktop_prepare import PreparedDesktop
+    from scripts.bundles.desktop_prepare import BuildRequest, PreparedDesktop
 
 
 @contextmanager
@@ -37,13 +38,29 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
     if prepared.python != selection.entries["python"].binary or prepared.node != selection.entries["node"].binary:
         raise ValueError("prepared Python/Node paths do not match selected tools; prepare again")
     env = selection.environment(env)
+    env["HERMES_PYTHON"] = str(prepared.python)
+    return identity_environment(request, variant, env)
+
+
+def identity_environment(request: BuildRequest, variant: str, inherited: Mapping[str, str]) -> dict[str, str]:
+    """One build-only bridge shared by dependency workers, stamp and packagers."""
+    request.validate_channel()
+    if request.channel_request is not None and variant != "bundled":
+        raise ValueError("channel builds currently support only the bundled variant")
+    env = dict(inherited)
     env.update(CI="true", PYTHONUTF8="1", GITHUB_SHA=request.commit,
-               HERMES_DESKTOP_VARIANT=variant, HERMES_PYTHON=str(prepared.python),
+               HERMES_DESKTOP_VARIANT=variant,
                HERMES_PAYLOAD_VERSION=request.version,
                HERMES_BUNDLE_ENV_JSON=json.dumps(request.bundle_env, sort_keys=True))
     env.pop("BUILD_NUMBER", None)
     env.pop("GITHUB_HEAD_REF", None)
-    if request.tag is None:
+    env.pop("_HERMES_CHANNEL_REQUEST_JSON", None)
+    if request.channel_request is not None:
+        env["_HERMES_CHANNEL_REQUEST_JSON"] = json.dumps(request.channel_request, sort_keys=True)
+        env["GITHUB_REPOSITORY"] = request.channel_request["repository"]
+        for key in ("HERMES_BUILD_COMMIT", "HERMES_PAYLOAD_TAG", "GITHUB_REF_NAME"):
+            env.pop(key, None)
+    elif request.tag is None:
         env["HERMES_BUILD_COMMIT"] = request.commit
         env.pop("HERMES_PAYLOAD_TAG", None)
         env.pop("GITHUB_REF_NAME", None)
@@ -52,6 +69,14 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
         env["HERMES_PAYLOAD_TAG"] = request.tag
         env["GITHUB_REF_NAME"] = request.tag
     return env
+
+
+def validate_builder_identity(request: BuildRequest, args: list[str]) -> None:
+    if request.channel_request is not None and any(
+        re.match(r"(?:-c|--config)\.extraMetadata\.(?:version|shortVersion|shortVersionWindows)=", arg)
+        for arg in args
+    ):
+        raise ValueError("channel package versions come only from the admitted request")
 
 
 def packaging_environment(build: Mapping[str, str], inherited: Mapping[str, str],

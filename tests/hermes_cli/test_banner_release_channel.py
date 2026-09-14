@@ -6,10 +6,11 @@ from unittest.mock import Mock
 import pytest
 
 from hermes_cli import banner, source_check
+from hermes_cli.source_releases import SourceTarget
 from hermes_cli.update_channel import install_id
 
 
-@pytest.mark.parametrize("channel", ["stable", "canary"])
+@pytest.mark.parametrize("channel", ["stable", "canary", "preview-from-r2"])
 def test_release_channel_never_compares_main_or_reuses_main_cache(tmp_path, monkeypatch, channel):
     from hermes_constants import get_hermes_home
 
@@ -28,8 +29,8 @@ def test_release_channel_never_compares_main_or_reuses_main_cache(tmp_path, monk
     (get_hermes_home() / ".update_check").write_text(json.dumps({
         "rev": None, "ver": banner.VERSION, "head": head, "behind": 99, "ts": 10**12,
     }))
-    resolve = Mock(return_value=("v1.2.3" if channel == "stable" else "v1.2.4-canary.20260911", target))
-    monkeypatch.setattr(source_check, "resolve_source_release", resolve)
+    resolve = Mock(return_value=SourceTarget(channel, channel, "example/fork", commit=target, version="1.2.3"))
+    monkeypatch.setattr(source_check, "resolve_source_target", resolve)
     main = Mock(side_effect=AssertionError("release must not check a branch"))
     monkeypatch.setattr(source_check, "_branch_tip", main)
     status = source_check.check_for_updates(passive=True)

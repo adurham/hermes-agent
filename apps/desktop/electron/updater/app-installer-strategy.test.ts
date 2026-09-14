@@ -75,6 +75,23 @@ describe('AppInstallerStrategy.apply', () => {
     expect(calls).toEqual(['relaunch-marker', 'teardown', 'quit'])
   })
 
+  it('uses an exact descriptor without a Python check, and rejects unverified prepared packages before teardown', async (): Promise<void> => {
+    const { deps, calls } = makeDeps({
+      run: async (): Promise<never> => { throw new Error('Dynamic channels do not query the registered moving feed') },
+      feed: { url: 'https://updates.example/releases/channel-builds/abc/win32/update.appinstaller', version: '0.0.2.0',
+        verifyPrepared: async (): Promise<void> => { calls.push('verify'); throw new Error('wrong signature') }
+      },
+      appVersion: '0.0.1.0', feedBaseUrl: 'https://updates.example',
+      installer: { prepare: async (url: string): Promise<string> => { calls.push(url); return 'pinned.appinstaller' }, open: async (): Promise<string> => { calls.push('open'); return '' } }
+    })
+    const strategy = new AppInstallerStrategy(deps)
+    expect(await strategy.check()).toMatchObject({ updateAvailable: true })
+    await expect(strategy.apply()).rejects.toThrow('wrong signature')
+    expect(calls).toContain('https://updates.example/releases/channel-builds/abc/win32/update.appinstaller')
+    expect(calls).not.toContain('teardown')
+    expect(calls).not.toContain('open')
+  })
+
   it('no feed URL → manual card, no teardown, no quit', async () => {
     const { deps, calls } = makeDeps({ feedBaseUrl: '' })
     const result = await new AppInstallerStrategy(deps).apply()
@@ -86,11 +103,11 @@ describe('AppInstallerStrategy.apply', () => {
 it.each([
   [0, '{"available":true,"availability":"Available"}', true, undefined],
   [0, '{"available":false}', false, undefined],
-  [2, '{"available":null,"error":"winrt missing"}', false, 'winrt missing'],
-  [0, '', false, 'checker returned no availability'],
-  [1, 'boom', false, 'checker exited 1'],
-  [0, '{"available":"yes"}', false, 'checker returned no availability']
-] as const)('checker %s %s → available=%s error=%s', async (code: number, stdout: string, available: boolean, error: string | undefined): Promise<void> => {
+  [2, '{"available":null,"error":"winrt missing"}', undefined, 'winrt missing'],
+  [0, '', undefined, 'checker returned no availability'],
+  [1, 'boom', undefined, 'checker exited 1'],
+  [0, '{"available":"yes"}', undefined, 'checker returned no availability']
+] as const)('checker %s %s → available=%s error=%s', async (code: number, stdout: string, available: boolean | undefined, error: string | undefined): Promise<void> => {
   const { deps }: ReturnType<typeof makeDeps> = makeDeps({
     run: async (python: string, script: string): Promise<{ code: number; stdout: string }> => {
       expect([python, script]).toEqual(['python.exe', 'check.py'])

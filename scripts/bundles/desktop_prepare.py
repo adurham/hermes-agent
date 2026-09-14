@@ -5,6 +5,8 @@ import argparse
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import re
+from copy import deepcopy
 import os
 from pathlib import Path
 import shutil
@@ -63,6 +65,24 @@ def selected_tool_inputs(request: BuildRequest) -> list[Path]:
     return [entry.path for entry in selection.entries.values()]
 
 
+def validate_channel_request(value: dict) -> dict:
+    """Add native packaging constraints to the shared release protocol."""
+    from hermes_cli.release_channels import validate_request
+    from scripts.releases.bundle_env import validate
+
+    validate_request(value)
+    validate(value["bundleEnv"])
+    identity = value["identity"]
+    for field in ("cliName", "windowsExecutableName", "appNamePascal", "artifactNamePascal"):
+        if re.fullmatch(r"(?i:con|prn|aux|nul|com[0-9]|lpt[0-9])", identity[field].split(".")[0]):
+            raise ValueError(f"reserved channel native identity {field}")
+    if identity["windowsExecutableName"].endswith((".", " ")):
+        raise ValueError("invalid channel native identity windowsExecutableName")
+    if not value["publicBase"].startswith("https://"):
+        raise ValueError("channel publicBase must be HTTPS for packaged clients")
+    return deepcopy(value)
+
+
 @dataclass(frozen=True)
 class BuildRequest:
     source: Path
@@ -74,16 +94,28 @@ class BuildRequest:
     variant: str
     target: str
     bundle_env: dict[str, str | None]
+    channel_request: dict | None = None
 
     @classmethod
     def create(cls, source: Path, *, tag: str | None, commit: str | None, variant: str,
-               work: Path, cache: Path, bundle_env: dict[str, str | None]) -> BuildRequest:
+               work: Path, cache: Path, bundle_env: dict[str, str | None],
+               channel_request: dict | None = None) -> BuildRequest:
         from pm.store import current_target
         from scripts.bundles.desktop import release_version
         from scripts.releases.bundle_env import validate
         from scripts.releases.commit_build import require_commit, version_at
         from scripts.termux.deb_version import channel_for_tag
 
+        if channel_request is not None:
+            channel_request = validate_channel_request(channel_request)
+            if variant != "bundled":
+                raise ValueError("channel builds currently support only the bundled variant")
+            if tag or commit not in (None, channel_request["commit"]):
+                raise ValueError("channel request conflicts with tag or commit selection")
+            if bundle_env and bundle_env != channel_request["bundleEnv"]:
+                raise ValueError("bundle defaults conflict with channel request")
+            commit = channel_request["commit"]
+            bundle_env = channel_request["bundleEnv"]
         if variant == "store" and (commit or not tag or channel_for_tag(tag) != "stable"):
             raise ValueError("Store packaging requires a stable release tag")
         if variant not in {"bundled", "store", "light"}:
@@ -109,14 +141,31 @@ class BuildRequest:
             version = release_version(source, tag)
             commit = git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         require_source(source, commit)
-        return cls(source, work, cache, commit, tag, version, variant, current_target(), bundle_env)
+        if channel_request is not None:
+            if version != channel_request["sourceVersion"]:
+                raise ValueError("channel sourceVersion differs from checkout project version")
+            version = channel_request["version"]
+        return cls(source, work, cache, commit, tag, version, variant, current_target(), bundle_env, channel_request)
 
     def data(self) -> dict:
         return {**asdict(self), "source": str(self.source), "work": str(self.work), "cache": str(self.cache)}
 
     @classmethod
     def from_data(cls, data: dict) -> BuildRequest:
-        return cls(**{**data, **{name: Path(data[name]) for name in ("source", "work", "cache")}})
+        request = cls(**{**deepcopy(data), **{name: Path(data[name]) for name in ("source", "work", "cache")}})
+        request.validate_channel()
+        return request
+
+    def validate_channel(self) -> None:
+        if self.channel_request is None:
+            return
+        channel = validate_channel_request(self.channel_request)
+        if (self.variant != "bundled" or self.tag is not None or self.commit != channel["commit"]
+                or self.version != channel["version"] or self.bundle_env != channel["bundleEnv"]):
+            raise ValueError("prepared build differs from admitted channel request")
+
+    def identity_digest(self) -> str:
+        return hashlib.sha256(json.dumps(self.data(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def workspaces(self) -> list[str]:
         return ["apps/desktop"] + ([] if self.variant == "light" else ["ui-tui", "web"])
@@ -133,6 +182,7 @@ class PreparedDesktop:
     payload: Path | None
     digests: dict[str, str]
     native_toolchain: str
+    request_digest: str | None = None
 
     @classmethod
     def record(cls, request: BuildRequest, *, python: Path, node: Path, icon_python: Path,
@@ -143,7 +193,7 @@ class PreparedDesktop:
         require_owned(request, files)
         files.extend(selected_tool_inputs(request))
         return cls(request, python, node, icon_python, native, packager, payload,
-                   {str(path): fingerprint(path) for path in files}, native_toolchain)
+                   {str(path): fingerprint(path) for path in files}, native_toolchain, request.identity_digest())
 
     def write(self, path: Path) -> None:
         from pm.lock import _write
@@ -151,7 +201,8 @@ class PreparedDesktop:
                       **{name: str(value) if value is not None else None for name, value in (
                           ("python", self.python), ("node", self.node), ("icon_python", self.icon_python),
                           ("native", self.native), ("packager", self.packager), ("payload", self.payload))},
-                      "digests": self.digests, "native_toolchain": self.native_toolchain})
+                      "digests": self.digests, "native_toolchain": self.native_toolchain,
+                      "request_digest": self.request_digest})
 
     @classmethod
     def load(cls, path: Path) -> PreparedDesktop:
@@ -169,6 +220,9 @@ class PreparedDesktop:
 
     def validate(self) -> None:
         from pm.store import current_target
+        self.request.validate_channel()
+        if (self.request_digest is not None or self.request.channel_request is not None) and self.request_digest != self.request.identity_digest():
+            raise ValueError("preparation request identity changed; prepare again")
         require_source(self.request.source, self.request.commit)
         if self.request.target != current_target():
             raise ValueError("preparation target differs from this host")
@@ -187,6 +241,9 @@ class PreparedDesktop:
 def prepare(request: BuildRequest) -> Path:
     from scripts.bundles.desktop_inputs import build_lock
 
+    request.validate_channel()
+    if request.channel_request is not None and not request.target.startswith(("darwin-", "win32-")):
+        raise ValueError("channel builds require a supported native macOS or Windows target")
     require_source(request.source, request.commit)
     with build_lock(request.source):
         return _prepare(request)
@@ -227,7 +284,10 @@ def prepare_in_worker(request: BuildRequest) -> Path:
     from scripts.bundles.native import prepare_native
 
     require_source(request.source, request.commit)
+    from scripts.bundles.desktop_inputs import identity_environment
+    request.validate_channel()
     python, node, env = prepare_tools(request.source, request.work, request.cache, os.environ)
+    env = identity_environment(request, request.variant, env)
     native_toolchain = Path(env["UV_CACHE_DIR"]).name
     run([str(node), "scripts/build/node-deps.mjs", "--source", str(request.source), "--reuse",
          "--native-toolchain", native_toolchain,

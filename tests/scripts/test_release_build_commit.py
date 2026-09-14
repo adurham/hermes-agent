@@ -31,8 +31,10 @@ def fixture_repo(tmp_path):
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/fixture-owner/fixture-repo.git')
     for relative in ('scripts/release.py', 'scripts/releases/commit_build.py',
                      'scripts/releases/bundle_env.py',
+                     'scripts/releases/channel_build.py', 'scripts/releases/channels.py',
                      'scripts/releases/r2.py', 'scripts/release-content-types.json',
                      'hermes_cli/__init__.py', 'hermes_cli/update_channel.py',
+                     'hermes_cli/release_channels.py',
                      'hermes_cli/runtime_paths.py', 'hermes_constants.py'):
         dest = repo / relative
         dest.parent.mkdir(parents=True, exist_ok=True)

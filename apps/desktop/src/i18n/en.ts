@@ -3082,6 +3082,13 @@ export const en: Translations = {
   },
 
   updates: {
+    retirementTitle: 'This preview channel has closed',
+    retirementBody: 'Move to the official stable app. Your local workspace stays in place. Stable must open it successfully before this preview is removed. Saved remote credentials are not copied.',
+    retirementAction: 'Move to stable',
+    retirementConsent: 'Install or update stable and remove this preview only after stable is ready.',
+    retirementBlocked: 'Migration paused — preview preserved',
+    retirementMoving: 'Moving to stable…',
+    retirementComplete: 'Stable is ready',
     channels: { stable: 'Stable', canary: 'Canary' },
     bundleSwapPending: 'Restart to finish the update',
     bundleSwapPendingDesc: 'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',

@@ -22,7 +22,12 @@ def sha256_file(file: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def stamp_matches(stamp: dict, tag: str, commit: str) -> None:
+def stamp_matches(stamp: dict, tag: str, commit: str, *, channel_request: dict | None = None) -> None:
+    if channel_request is not None:
+        if (stamp.get("source") != "channel-build" or stamp.get("channelBuild") != channel_request
+                or stamp.get("commit") != channel_request["commit"] or stamp.get("tag")):
+            raise ValueError("Built package provenance does not match the channel request")
+        return
     if stamp.get("commit") != commit or stamp.get("tag") != tag:
         raise ValueError("Built package provenance does not match the release")
 
@@ -34,9 +39,10 @@ def single(items):
     return items[0]
 
 
-def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path) -> None:
+def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Path,
+           *, channel_request: dict | None = None) -> None:
     """Read identities from the built packages, never from the workflow matrix."""
-    row = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
+    row: dict = {"platform": platform, "arch": arch, "tag": tag, "commit": commit}
     if platform == "windows":
         package = single(p for p in root.glob(f"*-win-{arch}.msix") if not p.name.startswith("Store-"))
         with zipfile.ZipFile(package) as archive:
@@ -44,7 +50,7 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
             identity = manifest.find("{*}Identity")
             application = single(manifest.findall("{*}Applications/{*}Application"))
             stamp_name = single(n for n in archive.namelist() if n.replace("\\", "/").endswith("/resources/install-stamp.json"))
-            stamp_matches(json.loads(archive.read(stamp_name)), tag, commit)
+            stamp_matches(json.loads(archive.read(stamp_name)), tag, commit, channel_request=channel_request)
         if identity.attrib["ProcessorArchitecture"].lower() != arch:
             raise ValueError("MSIX architecture differs from release target")
         row.update(identity=identity.attrib["Name"], publisher=identity.attrib["Publisher"],
@@ -60,9 +66,9 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
         with zipfile.ZipFile(package) as archive:
             info = plistlib.loads(archive.read(single(n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Info.plist", n))))
             stamp = json.loads(archive.read(single(n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Resources/install-stamp.json", n))))
-        stamp_matches(stamp, tag, commit)
+        stamp_matches(stamp, tag, commit, channel_request=channel_request)
         row.update(identity=info["CFBundleIdentifier"], teamId=team.group(1), version=info["CFBundleShortVersionString"], filename=package.name)
-        if row["version"] != tag[1:]:
+        if row["version"] != (channel_request["version"] if channel_request else tag[1:]):
             raise ValueError("App version differs from release tag")
     elif platform == "termux":
         package = single((root / "deb").glob("*.deb"))
@@ -78,6 +84,12 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
                 raise ValueError("Termux package has no matching provenance")
     else:
         raise ValueError("Unknown platform")
+    if channel_request is not None:
+        expected = channel_request["identity"]["msixAppIdWithOrg" if platform == "windows" else "appId"]
+        version = channel_request["windowsVersion" if platform == "windows" else "version"]
+        if row["identity"] != expected or row["version"] != version:
+            raise ValueError("Native package identity/version differs from channel request")
+        row["request"] = channel_request
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(row, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
@@ -185,7 +197,7 @@ def publish(manifest: dict, root: Path, public_base: str) -> None:
 
 
 def write_appinstaller(out: Path, *, identity: str, publisher: str, version: str,
-                       self_uri: str, artifact_uri: str) -> None:
+                       self_uri: str, artifact_uri: str, update_policy: str = "automatic") -> None:
     """Serialize verified package facts; callers own channel/acceptance policy."""
     if not all((identity, publisher, version, self_uri, artifact_uri)):
         raise ValueError("Explicit identity, publisher, version, self URI and artifact URI are required")
@@ -195,8 +207,11 @@ def write_appinstaller(out: Path, *, identity: str, publisher: str, version: str
     ET.SubElement(descriptor, f"{{{ns}}}MainBundle", {
         "Name": identity, "Publisher": publisher, "Version": version, "Uri": artifact_uri,
     })
-    settings = ET.SubElement(descriptor, f"{{{ns}}}UpdateSettings")
-    ET.SubElement(settings, f"{{{ns}}}OnLaunch", {"HoursBetweenUpdateChecks": "12"})
+    if update_policy not in ("automatic", "pinned"):
+        raise ValueError("Unknown App Installer update policy")
+    if update_policy == "automatic":
+        settings = ET.SubElement(descriptor, f"{{{ns}}}UpdateSettings")
+        ET.SubElement(settings, f"{{{ns}}}OnLaunch", {"HoursBetweenUpdateChecks": "12"})
     out.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(descriptor).write(out, encoding="utf-8", xml_declaration=True)
 
@@ -263,6 +278,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("command", choices=["record", "assemble", "publish", "promote", "materialize", "appinstaller", "publish-appinstaller"])
     parser.add_argument("--platform", choices=["windows", "macos", "termux"])
     parser.add_argument("--arch")
+    parser.add_argument("--channel-request", type=Path)
+    parser.add_argument("--update-policy", choices=["automatic", "pinned"], default="automatic")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--tag", default=os.environ.get("RELEASE_TAG"))
@@ -285,10 +302,12 @@ def main(argv: list[str] | None = None) -> None:
         if not args.out:
             parser.error("appinstaller requires --out")
         write_appinstaller(args.out, identity=args.identity, publisher=args.publisher,
-                           version=args.version, self_uri=args.self_uri, artifact_uri=args.artifact_uri)
+                           version=args.version, self_uri=args.self_uri, artifact_uri=args.artifact_uri,
+                           update_policy=args.update_policy)
         return
     if args.command == "record":
-        record(args.platform, args.arch, args.root, args.tag, args.commit, args.out)
+        request = json.loads(args.channel_request.read_text(encoding="utf-8-sig")) if args.channel_request else None
+        record(args.platform, args.arch, args.root, args.tag, args.commit, args.out, channel_request=request)
     elif args.command == "assemble":
         assemble(args.root, args.tag, args.commit, args.public_base, args.out,
                  smoke_results=json.loads(os.environ.get("RELEASE_NEEDS", "{}")))

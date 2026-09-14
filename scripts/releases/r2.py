@@ -532,6 +532,10 @@ def feed_dir_for(platform: str, channel: str) -> str:
 
 def cache_control_for(key: str) -> str | None:
     """APT indexes are mutable; by-hash indexes and versioned packages are not."""
+    if key.startswith("releases/channels/"):
+        return "no-store"
+    if key.startswith(("releases/channel-builds/", "releases/channel-identities/")):
+        return "public, max-age=31536000, immutable"
     if key.endswith((".appinstaller", ".html")) or key.startswith("releases/stable/") or (key.startswith("releases/darwin/") and key.endswith("-mac.yml")):
         return "no-store"
     if not key.startswith("releases/termux/"):

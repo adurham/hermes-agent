@@ -6,7 +6,9 @@ import type { UpdaterApplyResultWire, UpdaterStatusWire, UpdaterStrategy } from 
 
 export interface MacStrategyDeps {
   updater: Pick<AppUpdater, 'checkForUpdates' | 'downloadUpdate' | 'quitAndInstall' | 'on' | 'removeListener'>
-  channel: 'stable' | 'canary'
+  channel: string
+  expectedVersion?: string
+  verifyDownload?: (files: string[]) => Promise<void>
   appVersion: string
   /** Squirrel verifies the signed app before any backend is stopped. */
   prepareInstall: () => Promise<void>
@@ -34,6 +36,10 @@ export class MacStrategy implements UpdaterStrategy {
 
     if (!result) {
       throw new Error('The macOS updater is not active for this app.')
+    }
+
+    if (this.deps.expectedVersion && result.updateInfo.version !== this.deps.expectedVersion) {
+      throw new Error('Native macOS feed does not match the pinned channel version')
     }
 
     return {
@@ -74,7 +80,8 @@ export class MacStrategy implements UpdaterStrategy {
             return { ok: true, mechanism: this.mechanism }
           }
 
-          await this.deps.updater.downloadUpdate()
+          const files = await this.deps.updater.downloadUpdate()
+          await this.deps.verifyDownload?.(files)
           this.deps.emitProgress({ stage: 'prepare', message: 'Verifying the signed macOS update.', percent: null })
           await this.deps.prepareInstall()
           await stop()

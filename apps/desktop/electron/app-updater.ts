@@ -18,6 +18,8 @@
 // The win32 helpers are pure so vitest covers them; the impure pieces
 // (electron shell, payload python) are injected.
 
+import feedContract from '../update-feed.cjs'
+
 // ─── feed hosting ───────────────────────────────────────────────────────────
 
 /**
@@ -28,9 +30,10 @@
  * packages.
  */
 export function win32AppInstallerFeedPath(
-  channel: 'stable' | 'canary',
+  channel: string,
   light: boolean
 ): string {
+  feedContract.darwinFeed(channel, light)
   const variant = light ? 'light/' : ''
 
   return `win32/${variant}${channel}/`
@@ -92,7 +95,7 @@ export function parseCheckOutput(code: number, stdout: string): AppInstallerChec
 /** Open a local descriptor. The ms-appinstaller protocol is disabled by default. */
 export async function triggerAppInstallerUpdate(
   feedBaseUrl: string,
-  channel: 'stable' | 'canary',
+  channel: string,
   light: boolean,
   installer: { prepare: (url: string) => Promise<string>; open: (file: string) => Promise<string> },
   beforeInstall?: () => void | Promise<void>,

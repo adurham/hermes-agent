@@ -41,5 +41,13 @@ try {
     Reject { Read-BundleSmokeMetadata $missing 'arm64' $expected }
     $duplicate = Archive 'duplicate.msixbundle' 'AppxMetadata/AppxBundleManifest.xml' ($bundle.Replace('Architecture="x64"', 'Architecture="arm64"')) @('x64.msix','arm64.msix')
     Reject { Read-BundleSmokeMetadata $duplicate 'arm64' $expected }
+    $channel = [pscustomobject]@{ msixIdentity=$expected.msixIdentity; publisher=$expected.publisher;
+        applicationId=$expected.applicationId; windowsVersion='0.1.1.0' }
+    $channelFile = Archive 'channel.msix' 'AppxManifest.xml' ($xml.Replace('1.2.3.0', $channel.windowsVersion))
+    if ((Read-BundleSmokeMetadata $channelFile 'arm64' $channel).Version -cne $channel.windowsVersion) { throw 'Channel version lost' }
+    Reject { Read-BundleSmokeMetadata $file 'arm64' $channel }
+    Reject { Read-SmokePackageManifest ([xml]$xml) 'arm64' $channel }
+    $channelBundle = Archive 'channel.msixbundle' 'AppxMetadata/AppxBundleManifest.xml' ($bundle.Replace('1.2.3.0', $channel.windowsVersion)) @('x64.msix','arm64.msix')
+    if ((Read-BundleSmokeMetadata $channelBundle 'arm64' $channel).Version -cne $channel.windowsVersion) { throw 'Channel bundle version lost' }
     Write-Output 'PASS: MSIX identity/executable and MSIXBUNDLE native-slice admission'
 } finally { Remove-Item -LiteralPath $temp -Recurse -Force }

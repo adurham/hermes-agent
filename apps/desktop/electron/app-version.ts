@@ -5,7 +5,9 @@ import { COMMIT_BUILD_UPDATE_MESSAGE } from './updater/external'
 export interface AppVersionInfo {
   appVersion: string
   baseVersion?: string
-  channel?: 'stable' | 'canary' | null
+  channel?: string | null
+  sequence?: number
+  buildId?: string
   distance?: number
   commit?: string | null
   branch?: string | null
@@ -16,7 +18,8 @@ export interface AppVersionInfo {
 }
 
 /** A release channel is an artifact identity, not a user preference. */
-export function packagedReleaseChannel(stamp: Readonly<InstallStamp> | null): 'stable' | 'canary' | null {
+export function packagedReleaseChannel(stamp: Readonly<InstallStamp> | null): string | null {
+  if (stamp?.channelBuild) { return stamp.channelBuild.channel }
   if (!stamp?.tag || stamp.source === 'commit-build') { return null }
 
   return isCanaryTag(stamp.tag) ? 'canary' : 'stable'
@@ -26,9 +29,13 @@ export function packagedReleaseChannel(stamp: Readonly<InstallStamp> | null): 's
 export function appVersionInfo(stamp: Readonly<InstallStamp> | null, runtimeVersion: string, packageVersion: string): AppVersionInfo {
   if (!stamp) { return { appVersion: runtimeVersion, baseVersion: packageVersion } }
 
+  const build = stamp.channelBuild
   return {
-    appVersion: stamp.payload === 'bootstrap' ? runtimeVersion : stamp.displayVersion || packageVersion,
-    baseVersion: stamp.baseVersion ?? undefined,
+    appVersion: build ? `${build.sourceVersion} (${build.channel} #${build.sequence}, ${build.commit.slice(0, 8)})` :
+      stamp.payload === 'bootstrap' ? runtimeVersion : stamp.displayVersion || packageVersion,
+    baseVersion: build?.sourceVersion ?? stamp.baseVersion ?? undefined,
+    sequence: build?.sequence,
+    buildId: build?.buildId,
     channel: packagedReleaseChannel(stamp),
     distance: stamp.distance ?? undefined,
     commit: stamp.commit,

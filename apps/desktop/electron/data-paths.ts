@@ -26,6 +26,7 @@ export function resolveDesktopUserData(defaultPath: string, env: NodeJS.ProcessE
 
 interface HermesHomeOptions {
   home: string
+  adoptedHome?: string
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   directoryExists?: (directory: string) => boolean
@@ -34,6 +35,7 @@ interface HermesHomeOptions {
 
 export function resolveDesktopHermesHome({
   home,
+  adoptedHome,
   env = process.env,
   platform = process.platform,
   directoryExists = (): boolean => false,
@@ -48,6 +50,12 @@ export function resolveDesktopHermesHome({
   // Fresh-install rehearsals must not touch the real Hermes home.
   if (env.HERMES_DESKTOP_USER_DATA_DIR) {
     return paths.join(paths.resolve(env.HERMES_DESKTOP_USER_DATA_DIR), 'hermes-home')
+  }
+
+  if (adoptedHome) {
+    if (!paths.isAbsolute(adoptedHome)) { throw new Error('Adopted Hermes home must be absolute') }
+
+    return normalizeHermesHomeRoot(adoptedHome, { pathModule: paths })
   }
 
   if (platform === 'win32' && env.HERMES_HOME === undefined) {

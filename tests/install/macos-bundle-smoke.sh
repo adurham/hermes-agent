@@ -5,12 +5,12 @@ fail() { printf '%s\n' "bundle smoke: $*" >&2; exit 1; }
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted && $(uname -s) == Darwin ]] ||
   fail 'Disposable native GitHub-hosted macOS runner required'
 
-artifact= arch= commit= tag= work= out=
+artifact= arch= commit= tag= channel_request= work= out=
 while (($#)); do
   (($# >= 2)) || fail "Missing value for $1"
   case "$1" in
     --artifact) artifact=$2;; --arch) arch=$2;; --commit) commit=$2;;
-    --tag) tag=$2;; --work) work=$2;; --out) out=$2;;
+    --channel-request) channel_request=$2;; --tag) tag=$2;; --work) work=$2;; --out) out=$2;;
     *) fail "Unknown argument: $1";;
   esac
   shift 2
@@ -31,6 +31,7 @@ node=$(command -v node)
 metadata=$assets/bundle-smoke-metadata.mjs
 identity_args=(--commit "$commit")
 if [[ -n $tag ]]; then identity_args+=(--tag "$tag"); fi
+if [[ -n $channel_request ]]; then identity_args+=(--channel-request "$channel_request"); fi
 "$node" "$metadata" identity "${identity_args[@]}" >/dev/null
 "$node" "$metadata" prepare --work "$work" --out "$out"
 exec > >(tee "$out/native-install.log") 2>&1

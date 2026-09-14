@@ -20,6 +20,8 @@ import {
 } from '../app-updater'
 
 import { applyPackagedHandoff } from './packaged-handoff'
+import { channelPublicBase } from './channel-protocol'
+import type { ChannelTarget } from './channel'
 import type { RelaunchRegistration } from './relaunch'
 
 import type { UpdaterApplyResultWire, UpdaterStatusWire } from './index'
@@ -31,7 +33,9 @@ export interface AppInstallerStrategyDeps {
   script: string
   run: PayloadPythonRunner['run']
   /** Channel + variant from the baked install stamp. */
-  channel: 'stable' | 'canary'
+  channel: string
+  /** Verification must bind descriptor, artifact digest, native identity and signer. */
+  feed?: { url: string; version: string; verifyPrepared: (file: string) => Promise<void> }
   light: boolean
   /** The App Installer feed base URL; empty when nothing configured it. */
   feedBaseUrl: string
@@ -63,11 +67,24 @@ export function appInstallerCheckToStatus(check: AppInstallerCheck, appVersion: 
     supported: true,
     mechanism: 'app-installer',
     currentVersion: appVersion,
-    updateAvailable: check.available === true,
+    updateAvailable: check.available ?? undefined,
     // null = unknown (checker unavailable) — surface honestly, never "no update".
     error: check.available === null ? check.error || 'update check unavailable' : undefined,
     fetchedAt: Date.now()
   }
+}
+
+export function createChannelAppInstallerStrategy(
+  deps: AppInstallerStrategyDeps,
+  target: ChannelTarget,
+  verifyPrepared: (file: string, target: ChannelTarget) => Promise<void>
+): AppInstallerStrategy {
+  if (target.package.platform !== 'win32') { throw new Error('Expected Windows channel target') }
+  return new AppInstallerStrategy({
+    ...deps, channel: target.channel.name, feedBaseUrl: target.manifest.request.publicBase,
+    feed: { url: target.feedUrl, version: target.package.version,
+      verifyPrepared: (file: string): Promise<void> => verifyPrepared(file, target) }
+  })
 }
 
 export class AppInstallerStrategy {
@@ -76,6 +93,10 @@ export class AppInstallerStrategy {
   constructor(private readonly deps: AppInstallerStrategyDeps) {}
 
   async check(): Promise<UpdaterStatusWire> {
+    if (this.deps.feed) {
+      return { supported: true, mechanism: this.mechanism, currentVersion: this.deps.appVersion,
+        updateAvailable: newerWindowsVersion(this.deps.feed.version, this.deps.appVersion), fetchedAt: Date.now() }
+    }
     const { code, stdout } = await this.deps.run(this.deps.python, this.deps.script)
     const check = parseCheckOutput(code, stdout)
 
@@ -84,9 +105,15 @@ export class AppInstallerStrategy {
 
   async apply(): Promise<UpdaterApplyResultWire> {
     const feedBaseUrl = this.deps.feedBaseUrl
-    let sourceUri: string | undefined
+    let sourceUri: string | undefined = this.deps.feed?.url
+    if (sourceUri) {
+      channelPublicBase(sourceUri)
+      const base = channelPublicBase(feedBaseUrl)
+      if (!sourceUri.startsWith(`${base}/`) || new URL(sourceUri).origin !== new URL(base).origin) { throw new Error('Native feed authority mismatch') }
+      if (!newerWindowsVersion(this.deps.feed!.version, this.deps.appVersion)) { return { ok: true, mechanism: this.mechanism } }
+    }
 
-    if (!feedBaseUrl) {
+    if (!feedBaseUrl && !sourceUri) {
       const { code, stdout } = await this.deps.run(this.deps.python, this.deps.script)
       sourceUri = parseCheckOutput(code, stdout).sourceUri
     }
@@ -127,7 +154,14 @@ export class AppInstallerStrategy {
           feedBaseUrl,
           this.deps.channel,
           this.deps.light,
-          this.deps.installer,
+          {
+            prepare: async (url: string): Promise<string> => {
+              const file = await this.deps.installer.prepare(url)
+              await this.deps.feed?.verifyPrepared(file)
+              return file
+            },
+            open: this.deps.installer.open
+          },
           stop,
           sourceUri
         )
@@ -137,6 +171,21 @@ export class AppInstallerStrategy {
       }
     )
   }
+}
+
+function newerWindowsVersion(target: string, current: string): boolean {
+  const parse = (version: string): number[] => {
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(version)) { throw new Error('Windows channel updates require native numeric versions') }
+    const parts = version.split('.').map(Number)
+    if (parts.some((part: number): boolean => part > 65535)) { throw new Error('Invalid Windows native version') }
+    return parts
+  }
+  const left = parse(target)
+  const right = parse(current)
+  for (let index = 0; index < 4; index += 1) {
+    if (left[index] !== right[index]) { return left[index] > right[index] }
+  }
+  return false
 }
 
 export { parseCheckOutput }

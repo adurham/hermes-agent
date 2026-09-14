@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory=$true)][ValidateSet('x64','arm64')][string]$Arch,
     [Parameter(Mandatory=$true)][string]$Commit,
     [string]$Tag = '',
+    [string]$ChannelRequest = '',
     [Parameter(Mandatory=$true)][string]$Work,
     [Parameter(Mandatory=$true)][string]$Out
 )
@@ -31,6 +32,7 @@ $nodeArch = Run-Node @('-p', 'process.arch')
 if ($nodeArch -cne $Arch) { throw 'Driver Node must also use the native architecture' }
 $identityArgs = @('--commit', $Commit)
 if ($Tag) { $identityArgs += @('--tag', $Tag) }
+if ($ChannelRequest) { $identityArgs += @('--channel-request', $ChannelRequest) }
 $Expected = (Run-Node (@($Metadata, 'identity') + $identityArgs)) | ConvertFrom-Json
 Run-Node @($Metadata, 'prepare', '--work', $Work, '--out', $Out)
 . (Join-Path $Assets 'windows-bundle-metadata.ps1')
@@ -74,9 +76,13 @@ try {
     $stampPath = Join-Path $resources 'install-stamp.json'
     $stamp = Get-Content -Raw -LiteralPath $stampPath | ConvertFrom-Json
     $displayVersion = (Run-Node (@($Metadata, 'stamp', '--platform', 'win32', '--stamp', $stampPath) + $identityArgs)) | ConvertFrom-Json
-    $semverBase = ($displayVersion -split '-')[0]
-    if (-not $pkg.Version.ToString().StartsWith($semverBase + '.', [StringComparison]::Ordinal)) { throw 'Package version disagrees with stamped semver' }
-    if (-not $Tag -and $pkg.Version.ToString() -cne ($displayVersion + '.0')) { throw 'Commit package must use stamped semver with zero revision' }
+    if ($ChannelRequest) {
+        if ($pkg.Version.ToString() -cne $displayVersion) { throw 'Package version disagrees with channel request' }
+    } else {
+        $semverBase = ($displayVersion -split '-')[0]
+        if (-not $pkg.Version.ToString().StartsWith($semverBase + '.', [StringComparison]::Ordinal)) { throw 'Package version disagrees with stamped semver' }
+        if (-not $Tag -and $pkg.Version.ToString() -cne ($displayVersion + '.0')) { throw 'Commit package must use stamped semver with zero revision' }
+    }
     @{ packageFullName=$pkg.PackageFullName; publisher=$pkg.Publisher; architecture=$pkg.Architecture.ToString();
         version=$pkg.Version.ToString(); exe=$exe; root=$root; stamp=$stamp } |
         ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Out 'installed-identity.json')

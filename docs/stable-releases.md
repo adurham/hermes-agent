@@ -115,6 +115,50 @@ or pass the release-success gate.
 Store submission retains its fixed official stable identity. Nonstable
 packages must not be submitted under that identity.
 
+## Dynamic channels in R2
+
+Channel names are R2 objects, not a repository registry. A preview channel owns
+one native application identity across exact-commit builds. The immutable build
+request records its source commit, bundle defaults, channel sequence and package
+versions separately. The existing native build and smoke jobs must all pass
+before the channel head advances.
+
+Preview a custom build, then explicitly dispatch it:
+
+```sh
+python scripts/release.py --channel pm-preview --build-commit my-branch --remote fork
+python scripts/release.py --channel pm-preview --build-commit my-branch --remote fork --publish
+python scripts/release.py --channels --remote fork
+```
+
+The first publishing invocation creates the channel. Later invocations retain
+its identity. Requests and artifacts live under
+`releases/channel-builds/BUILD_ID/`; the mutable pointer is
+`releases/channels/NAME.json`. A failed build leaves its previous head intact.
+Conditional writes reject stale publication and permanently retired channels.
+Use the printed build ID and request digest with `--resume-channel-build` and
+`--request-sha256` to retry an admitted request rather than allocate another one.
+
+Retirement names an official destination and immutable native qualification:
+
+```text
+python scripts/release.py --retire-channel pm-preview --to stable --minimum-version VERSION --compatibility-key KEY --compatibility-sha256 SHA256 --remote fork
+```
+
+Add `--publish` only after reviewing the dry run and the exact native acceptance
+evidence. This does not rebuild stable under the preview identity or silently
+uninstall clients. Protocol-aware clients offer a consented cross-application
+handoff; the destination must confirm readiness before preview removal. Keep
+the retirement object and qualified artifacts available for offline clients.
+Existing one-off builds have no retirement reader and require replacement.
+
+Before shipping R2-only source readers, seed the existing `main` source-branch
+record and published stable/canary records through the explicit protected
+bootstrap operation. Review actual accepted manifests; do not invent a native
+manifest for `main`. Production seeding, CDN cache/CAS verification and native
+signed-package qualification are release operations, not implied by a passing
+local helper suite. Never store the bootstrap output as a repo channel list.
+
 ## Signed-package baseline
 
 The last successful stable release records
