@@ -57,8 +57,8 @@ export class ChannelStrategy implements UpdaterStrategy {
     if (result.kind === 'retirement') {
       // In-place retirement IS a same-identity update to the pinned stable
       // build: run it through the native factory (app-installer/electron-updater
-      // available → download → apply), identical to a stable update. Only the
-      // suffixed-identity tier talks to the migration machinery.
+      // available → download → apply), identical to a stable update. The
+      // suffixed-identity tier never updates at all.
       if (result.retirement.receiverKind === 'in-place') {
         // Sequence counters are per-channel; a retired preview's sequence says
         // nothing about the pinned stable build. The native strategy's own
@@ -101,7 +101,7 @@ export class ChannelStrategy implements UpdaterStrategy {
       if (!this.selection) { await this.select() }
       const selected = this.selection
 
-      if (selected?.kind === 'retirement') { return { ok: false, error: 'Retirement requires explicit migration consent.' } }
+      if (selected?.kind === 'retirement') { return { ok: false, error: 'This build is discontinued; uninstall it and install an official release.' } }
 
       if (selected?.kind === 'native' && selected.available) { return await selected.strategy.apply() }
 
