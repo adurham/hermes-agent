@@ -462,11 +462,12 @@ jobs:
           producer: desktop
           key: ${{ steps.build-cache.outputs.cache-key }}
 
-      - name: Cache verified payload signatures
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore verified payload signatures
+        id: payload-signatures
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/electron-builder-payload-signatures
-          # Each run saves additions. Content and signing policy select entries.
+          # Release runs save additions. Content and signing policy select entries.
           key: payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-
@@ -519,6 +520,14 @@ jobs:
         shell: bash
         working-directory: apps/desktop
         run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
+
+      # Commit jobs share these steps but have read-only cache tokens.
+      - name: Save verified payload signatures
+        if: inputs.build_commit == ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder-payload-signatures
+          key: ${{ steps.payload-signatures.outputs.cache-primary-key }}
 
       - name: Audit bundle architecture
         shell: bash
@@ -1061,6 +1070,8 @@ jobs:
           toolchain: all
           archive-inputs: ${{ inputs.disposable_run == '' }}
           cache-python: false
+          save-tools-cache: false
+          save-node-cache: false
 
       - name: Install the locked Windows bundle tooling
         uses: ./.github/actions/retry
@@ -1093,8 +1104,8 @@ jobs:
             *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
           esac
 
-      - name: Cache electron + electron-builder toolchain
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore electron + electron-builder toolchain
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ github.workspace }}/.cache/electron-builder

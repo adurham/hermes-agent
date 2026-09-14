@@ -24,7 +24,7 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
     from types import SimpleNamespace
     from scripts.ci import setup_toolchain
 
-    monkeypatch.setattr(setup_toolchain, "packages", lambda _: ["python", "uv"])
+    monkeypatch.setattr(setup_toolchain, "packages", lambda toolchain, extra=None: ["python", "uv"])
     manager = importlib.import_module("pm.ensure")
     ensured = []
     monkeypatch.setattr(manager, "ensure", lambda name, **kwargs: ensured.append((name, kwargs["explicit"])))
@@ -45,7 +45,7 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
     files = {name: tmp_path / name for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH")}
     for name, path in files.items():
         monkeypatch.setenv(name, str(path))
-    setup_toolchain.install(SimpleNamespace(toolchain="python", home=tmp_path / "ci"))
+    setup_toolchain.install(SimpleNamespace(toolchain="python", packages=[], home=tmp_path / "ci"))
     assert ensured == [("uv", True)]  # ensure already walks uv's Python dependency.
     assert composed == [("python",)]
     outputs = dict(line.split("=", 1) for line in files["GITHUB_OUTPUT"].read_text(encoding="utf-8").splitlines())

@@ -102,13 +102,14 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          packages: ffmpeg
           cache: false
           cache-python: false
           cache-node: false
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
 
       # One recording mechanism on every OS (Xvfb gives headless linux a
       # display; the same display serves any app the driver launches).

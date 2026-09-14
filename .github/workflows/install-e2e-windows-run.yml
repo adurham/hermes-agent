@@ -105,12 +105,13 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          packages: ffmpeg
           cache: false
           cache-python: false
           cache-node: false
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Verify native helpers
         shell: pwsh
         run: |
@@ -188,16 +189,17 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
+          packages: ffmpeg
           cache: false
           cache-python: false
           cache-node: false
 
       - name: Install locked chat driver dependencies
         shell: bash
-        run: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
 
-      # One recording mechanism on every OS: the composite action installs
-      # ffmpeg (cached - winget's download is the slow part), starts the
+      # One recording mechanism on every OS: the composite action verifies
+      # ffmpeg from the PM toolchain (packages: ffmpeg above), starts the
       # capture, and record-stop fails on a zero-frame file so a silently
       # missing recording cannot go green.
       - name: Start screen recording
