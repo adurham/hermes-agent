@@ -146,6 +146,18 @@ def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_brows
     assert agent_flags, "root must inject sandbox flags for agent-browser"
     assert agent_flags <= set(browser.dock_argv("/opt/chrome", "/p/dir"))
 
+    # Same policy for the NON-root container case (the official image runs the gateway as uid 10000 in
+    # Docker): agent-browser bypasses the sandbox there, and the dock icon must too or it dies on click.
+    monkeypatch.setattr(session.os, "geteuid", lambda: 10000)
+    monkeypatch.setattr(browser.os, "geteuid", lambda: 10000)
+    monkeypatch.setattr(session._install, "_running_in_docker", lambda: True)
+    docker_env: dict = {}
+    session._apply_chromium_sandbox_args(docker_env)
+    assert set(docker_env["AGENT_BROWSER_ARGS"].split(",")) <= set(browser.dock_argv("/opt/chrome", "/p/dir"))
+    monkeypatch.setattr(session._install, "_running_in_docker", lambda: False)
+    monkeypatch.setattr(session, "apparmor_restricts_unprivileged_userns", lambda: False)
+    assert "--no-sandbox" not in browser.dock_argv("/opt/chrome", "/p/dir")  # seated non-root host: sandboxed
+
 
 def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
     """The official image ships only chromium_headless_shell: executable() is None and the dock silently

@@ -89,10 +89,13 @@ def dock_argv(exe: str, user_data_dir: str) -> list[str]:
     first-run / default-browser dialogs would sit between the human and the bot's tabs."""
     # --test-type hides the "Chrome for Testing is only for automated testing" and unsupported-flag
     # (--no-sandbox as root) infobars, which otherwise sit at the top of the human's takeover view.
-    # Root gets the same sandbox-bypass flags agent-browser starts this binary with (one policy).
-    from tools.browser_tool_session import CHROMIUM_SANDBOX_BYPASS_ARGS
+    # The same sandbox policy agent-browser starts this binary with (root, Docker, AppArmor userns): the
+    # human's Browser is the bot's browser, in the same container; a stricter rule here just made the dock
+    # icon die with 'No usable sandbox!' in the official image while the agent's own Chromium ran fine.
+    from tools.browser_tool_session import CHROMIUM_SANDBOX_BYPASS_ARGS, _needs_chromium_sandbox_bypass
     return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
-            "--no-default-browser-check", "--test-type", *(CHROMIUM_SANDBOX_BYPASS_ARGS if _is_root() else ())]
+            "--no-default-browser-check", "--test-type",
+            *(CHROMIUM_SANDBOX_BYPASS_ARGS if _needs_chromium_sandbox_bypass() else ())]
 
 
 def dock_exec_line(exe: str, user_data_dir: str) -> str:
