@@ -6,7 +6,7 @@ import path from 'node:path'
 import yaml from 'js-yaml'
 import { expect, test } from 'vitest'
 
-import { resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
+import { candidateSmokeHermesHomes, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
 
 import { assertChatCommit, newCompletedPair, readMockPrompts, type TranscriptMessage } from './desktop-chat-smoke.ts'
 import { assertBackendOrigin, localBackendProcess, readInstallationCommit } from './desktop-smoke-process.ts'
@@ -194,4 +194,37 @@ test('driver strips caller secrets and records missing executables as failure wi
       'user-data': path.join(home, 'user-data'), out: home, phase: 'installed', 'expect-commit': 'a'.repeat(40) })).rejects.toThrow()
     expect(JSON.parse(fs.readFileSync(path.join(home, 'desktop-chat-installed.json'), 'utf8'))).toMatchObject({ status: 'failed', origin: 'bundled' })
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
+
+test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the resolved home', async (): Promise<void> => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-bundle-clear-'))
+  const home = path.join(root, 'home')
+  const userData = path.join(root, 'root', 'user-data')
+  // A real-but-dummy executable: admission passes, seeding runs, and the
+  // Electron launch then fails fast because this is not an Electron app.
+  const exe = path.join(root, 'root', 'fake-desktop')
+  fs.mkdirSync(path.join(root, 'root'), { recursive: true })
+  fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n')
+  fs.chmodSync(exe, 0o755)
+  try {
+    const mock = await startMockServer()
+    try {
+      // The bundled app's banner turns HERMES_HOME=null into HERMES_HOME='', so
+      // resolveDesktopHermesHome falls to <userData>/hermes-home. The driver must
+      // have seeded THAT home, not only the --home the caller named.
+      await expect(runInstalledDesktopSmoke({ exe, root: path.join(root, 'root'), origin: 'bundled', home,
+        'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) })).rejects.toThrow()
+      for (const candidate of candidateSmokeHermesHomes(home, userData)) {
+        expect(yaml.load(fs.readFileSync(path.join(candidate, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'mock' } })
+        expect(fs.readFileSync(path.join(candidate, '.env'), 'utf8')).toMatch(/MOCK_API_KEY=/)
+      }
+      // Electron resolves shell folders before 'ready'; the sandboxed AppData/XDG
+      // dirs must exist or Windows applyDesktopIdentity crashes at launch.
+      for (const dir of ['AppData/Roaming', 'AppData/Local', '.config', '.local/share', '.cache']) {
+        expect(fs.statSync(path.join(home, '.desktop-smoke-home', ...dir.split('/'))).isDirectory()).toBe(true)
+      }
+    } finally {
+      await mock.close()
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

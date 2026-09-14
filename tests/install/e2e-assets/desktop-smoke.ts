@@ -85,6 +85,15 @@ export function smokeEnvironment(inherited: NodeJS.ProcessEnv, home: string, use
   }
 }
 
+/** The bundled app resolves its Hermes home the same way electron/data-paths.ts does:
+ * an explicit HERMES_HOME wins, but a bundle-env clear (HERMES_HOME=null) empties it before
+ * this runs, and the HERMES_DESKTOP_USER_DATA_DIR branch then resolves <userData>/hermes-home.
+ * Seed both so the driver works against baked-clear bundles and plain source launches. */
+export function candidateSmokeHermesHomes(home: string, userData: string): string[] {
+  const fallback = path.join(userData, 'hermes-home')
+  return home === fallback ? [home] : [home, fallback]
+}
+
 export function resolveSmokeLaunch(options: SmokeOptions): Launch {
   const spec = options['launch-spec'] ? launchSpecSchema.parse(JSON.parse(fs.readFileSync(options['launch-spec'], 'utf8').replace(/^\uFEFF/, ''))) : null
   const env = smokeEnvironment({ ...process.env, ...spec?.env }, options.home, options['user-data'])
@@ -169,11 +178,14 @@ function redact(text: string): string {
     .replace(/((?:authorization|api[_ -]?key|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?[^\s,"']+/gi, '$1[redacted]')
 }
 
-function captureBackendLogs(home: string, outDir: string, phase: string): void {
-  for (const name of ['desktop.log', 'errors.log', 'agent.log']) {
-    const filename = path.join(home, 'logs', name)
-    if (fs.existsSync(filename)) {
-      fs.writeFileSync(path.join(outDir, `desktop-${phase}-${name}`), redact(fs.readFileSync(filename, 'utf8')))
+function captureBackendLogs(homes: readonly string[], outDir: string, phase: string): void {
+  for (const home of homes) {
+    for (const name of ['desktop.log', 'errors.log', 'agent.log']) {
+      const filename = path.join(home, 'logs', name)
+      if (fs.existsSync(filename)) {
+        const suffix = homes.length > 1 && home !== homes[0] ? `-${path.basename(path.dirname(home))}` : ''
+        fs.writeFileSync(path.join(outDir, `desktop-${phase}-${name}${suffix}`), redact(fs.readFileSync(filename, 'utf8')))
+      }
     }
   }
 }
@@ -222,11 +234,24 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
     fs.mkdirSync(options['user-data'], { recursive: true })
     const launch = resolveSmokeLaunch(options)
     fs.mkdirSync(launch.env.HOME!, { recursive: true })
+    // Electron resolves shell folders before app 'ready': Windows SHGetFolderPath
+    // fails (and applyDesktopIdentity crashes the process) when the roaming/local
+    // AppData dirs named by the sandboxed USERPROFILE/APPDATA do not exist. The
+    // XDG dirs serve the same role for Linux/Chromium.
+    for (const dir of [launch.env.APPDATA, launch.env.LOCALAPPDATA, launch.env.XDG_CONFIG_HOME,
+      launch.env.XDG_DATA_HOME, launch.env.XDG_CACHE_HOME]) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
     selectLocal(options['user-data'])
     if (!options['mock-url']) { mock = await startMockServer() }
     const mockUrl = validateMockUrl(options['mock-url'] ?? mock!.url)
-    writeMockProviderConfig(options.home, mockUrl)
-    writeEnvFile(options.home)
+    // A bundle-env HERMES_HOME clear (see candidateSmokeHermesHomes) can make the
+    // app resolve a different home than --home, so every candidate gets the mock
+    // provider config and .env.
+    for (const home of candidateSmokeHermesHomes(options.home, options['user-data'])) {
+      writeMockProviderConfig(home, mockUrl)
+      writeEnvFile(home)
+    }
     app = await _electron.launch({ ...launch, timeout: 120_000 })
     app.process().stdout?.on('data', (chunk: Buffer): void => { consoleLines.push(redact(chunk.toString())) })
     app.process().stderr?.on('data', (chunk: Buffer): void => { consoleLines.push(redact(chunk.toString())) })
@@ -269,7 +294,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
   } finally {
     fs.writeFileSync(path.join(out, `desktop-app-${options.phase}.log`), consoleLines.join('\n'))
     try {
-      captureBackendLogs(options.home, out, options.phase)
+      captureBackendLogs(candidateSmokeHermesHomes(options.home, options['user-data']), out, options.phase)
     } finally {
       if (app) { await gracefulClose(app).catch((error: Error): void => { console.error(redact(error.message)) }) }
       if (mock) { await mock.close() }
