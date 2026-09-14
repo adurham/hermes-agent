@@ -2940,7 +2940,10 @@ def main():
                              "HEAD has no new commits since the last canary")
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
-                             "Add --publish to dispatch without a tag or release.")
+                             "Add --publish to dispatch without a tag or release. On a fork "
+                             "(any repository other than NousResearch/hermes-agent) this "
+                             "transparently dispatches a disposable channel allocation and "
+                             "prints the follow-up build command from its run.")
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
                         help="Bake a non-secret environment default into a commit desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")

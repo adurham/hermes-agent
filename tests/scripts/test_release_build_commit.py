@@ -53,10 +53,21 @@ def run(argv, *args, **kwargs):
             raise FileNotFoundError('fixture gh is absent')
         if argv[1:3] == ['repo', 'view']:
             assert '--repo' not in argv, 'gh repo view requires a positional repository'
-            assert 'fixture-owner/fixture-repo' in argv
+            assert argv[-1].count('/') == 1, argv
             value = 'main\\n'
         elif argv[1:3] == ['workflow', 'run']:
             value = 'fixture dispatch accepted\\n'
+        elif argv[1:3] == ['run', 'list']:
+            value = json.dumps([{'databaseId': 777, 'status': 'queued', 'conclusion': '',
+                                 'createdAt': __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()}]) + '\\n'
+        elif argv[1:3] == ['run', 'view'] and '--log' in argv:
+            if os.environ.get('PROBE_ALLOCATION_FAIL'):
+                return subprocess.CompletedProcess(argv, 1, stdout='', stderr='fixture log unavailable')
+            record = json.loads(os.environ.get('PROBE_ALLOCATION_LOG', '{}'))
+            line = json.dumps(record, sort_keys=True) if record else ''
+            value = 'allocate-disposable\\tProbe scoped storage\\t2026-09-14T00:00:00Z ' + line + '\\n'
+        elif argv[1:3] == ['run', 'view']:
+            value = json.dumps({'status': 'completed', 'conclusion': 'success'}) + '\\n'
         elif argv[1] == 'api':
             value = os.environ.get('PROBE_PERMISSION', 'write') + '\\n'
         else:
@@ -66,8 +77,10 @@ def run(argv, *args, **kwargs):
     assert pathlib.Path(kwargs.get('cwd') or pathlib.Path.cwd()).resolve() == root.resolve()
     if argv[1] in ('fetch', 'ls-remote'):
         # Only the transport points at a local fixture. Identity reads stay real.
-        rewrite = 'url.' + os.environ['PROBE_REMOTE'] + '.insteadOf=https://github.com/fixture-owner/fixture-repo.git'
-        argv = ['git', '-c', rewrite, *argv[1:]]
+        rewrites = ['-c', 'url.' + os.environ['PROBE_REMOTE'] + '.insteadOf=https://github.com/fixture-owner/fixture-repo.git']
+        if os.environ.get('PROBE_UPSTREAM_URL'):
+            rewrites += ['-c', 'url.' + os.environ['PROBE_REMOTE'] + '.insteadOf=' + os.environ['PROBE_UPSTREAM_URL']]
+        argv = ['git', *rewrites, *argv[1:]]
     return actual(argv, *args, **kwargs)
 subprocess.run = run
 if sys.argv[2] == 'admit':
@@ -105,13 +118,94 @@ def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(fixture_rep
         assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
     result, calls = invoke('--build-commit', tip, '--publish')
     assert result.returncode == 0, result.stderr
+    # The fixture remote is a fork: --publish now routes through the
+    # disposable allocation instead of the guarded direct dispatch.
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert dispatches == [['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
-                          '--ref', 'main', '--repo', 'fixture-owner/fixture-repo',
-                          '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
-                          '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']]
+    assert len(dispatches) == 1
+    assert f'build_commit={tip}' in dispatches[0]
+    assert any(field.startswith('disposable_channel=') for field in dispatches[0])
     assert git(repo, 'show-ref', '--heads', '--tags') == before
     assert git(upstream, 'rev-parse', 'refs/heads/main') == tip
+
+def test_commit_build_upstream_repository_keeps_direct_dispatch(fixture_repo):
+    repo, _, invoke = fixture_repo
+    tip = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'remote', 'set-url', 'origin', 'https://github.com/NousResearch/hermes-agent.git')
+    result, calls = invoke('--build-commit', tip, '--publish',
+                           extra={'PROBE_UPSTREAM_URL': 'https://github.com/NousResearch/hermes-agent.git'})
+    assert result.returncode == 0, result.stderr
+    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
+    assert dispatches == [['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
+                          '--ref', 'main', '--repo', 'NousResearch/hermes-agent',
+                          '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
+                          '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']]
+    assert 'disposable' not in result.stdout.lower()
+
+def test_fork_commit_build_routes_through_disposable_allocation(fixture_repo):
+    repo, _, invoke = fixture_repo
+    tip = git(repo, 'rev-parse', 'HEAD')
+    values = {'HERMES_GUEST_ONBOARDING': '1', 'HERMES_HOME': None}
+    flags = ['--bundle-env', 'HERMES_GUEST_ONBOARDING=1', '--bundle-unset', 'HERMES_HOME']
+    result, calls = invoke('--build-commit', tip, '--publish', *flags)
+    assert result.returncode == 0, result.stderr
+    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
+    assert len(dispatches) == 1
+    dispatch = dispatches[0]
+    assert dispatch[3:7] == ['desktop-bundled-release.yml', '--repo', 'fixture-owner/fixture-repo', '--ref']
+    assert dispatch[dispatch.index('--ref') + 1] == 'main'
+    fields = dispatch[dispatch.index('-f') + 1::2]
+    pairs = dict(value.split('=', 1) for value in fields)
+    assert pairs['build_commit'] == tip
+    assert pairs['tag'] == '' and pairs['upload_release'] == 'false'
+    assert pairs['termux_only'] == 'false' and pairs['termux_upgrade_from_tag'] == ''
+    assert pairs['disposable_receivers'] == 'false'
+    name = pairs['disposable_channel']
+    assert name.startswith('commit-') and tip[:12] in name
+    assert json.loads(pairs['bundle_env']) == values
+    # No build_commit-only direct dispatch escapes to the fork's CI guard.
+    assert not any('build_commit' in ' '.join(call) and 'disposable_channel' not in ' '.join(call)
+                   for call in calls if call[1:3] == ['workflow', 'run'])
+    result, calls = invoke('--build-commit', tip)
+    assert result.returncode == 0, result.stderr
+    assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
+    assert 'disposable' in result.stdout.lower()
+
+def test_fork_allocation_polls_extracts_and_dispatches_followup(fixture_repo):
+    repo, _, invoke = fixture_repo
+    tip = git(repo, 'rev-parse', 'HEAD')
+    follow_up = ['gh', 'workflow', 'run', 'desktop-bundled-release.yml', '--repo',
+                 'fixture-owner/fixture-repo', '--ref', 'main', '-f', 'channel_build=' + 'a' * 32,
+                 '-f', 'channel_request_sha256=' + 'b' * 64, '-f', 'disposable_run=12345-1',
+                 '-f', 'tag=', '-f', 'upload_release=false', '-f', 'termux_only=false',
+                 '-f', 'termux_upgrade_from_tag=']
+    result, calls = invoke('--build-commit', tip, '--publish',
+                           extra={'PROBE_ALLOCATION_LOG': json.dumps({'command': follow_up})})
+    assert result.returncode == 0, result.stderr
+    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
+    assert len(dispatches) == 2
+    assert 'disposable_channel=' in ' '.join(dispatches[0])
+    # The extracted follow-up is dispatched verbatim: pinned build, digest and
+    # disposable_run from the allocation, and no bundle_env re-passed.
+    assert dispatches[1] == follow_up
+    assert 'bundle_env=' not in ' '.join(dispatches[1])
+    run_lists = [call for call in calls if call[1:3] == ['run', 'list']]
+    assert run_lists and all('--repo' in call for call in run_lists)
+    run_views = [call for call in calls if call[1:3] == ['run', 'view']]
+    assert run_views and all(call[3] == '777' for call in run_views)
+    assert 'channel_build=' in result.stdout
+
+def test_fork_allocation_extraction_failure_prints_summary_pointer(fixture_repo):
+    repo, _, invoke = fixture_repo
+    tip = git(repo, 'rev-parse', 'HEAD')
+    result, calls = invoke('--build-commit', tip, '--publish',
+                           extra={'PROBE_ALLOCATION_FAIL': '1'})
+    # The allocation itself succeeded, so the command completes; the follow-up
+    # must be surfaced via a clear pointer to the run summary.
+    assert result.returncode == 0, result.stderr
+    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
+    assert len(dispatches) == 1 and 'disposable_channel=' in ' '.join(dispatches[0])
+    assert 'actions/runs/777' in result.stdout
+    assert 'Traceback' not in result.stderr
 
 def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):
     repo, _, invoke = fixture_repo
