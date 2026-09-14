@@ -18,8 +18,8 @@ Sources of truth — two axes, composed per target:
                       assets/backgrounds/squircle-mac-dark.svg    mac HIG grid
 
   The master SVGs (assets/icon-master.svg light, assets/icon-master-dark.svg
-  dark) are GENERATED artifacts — squircle background + girl nested into the
-  824px HIG content safe zone. The light master drives every squircle target;
+  dark) are GENERATED artifacts — squircle background + scaled girl artwork.
+  The light master drives every squircle target;
   the dark master drives the dark-appearance targets. macOS is the exception:
   its icns targets render from an in-memory mac master that puts the same
   squircle on Apple's 824x824 (r=185.4) grid — centered in 1024 with 100px
@@ -31,10 +31,10 @@ and a seven-character SHA badge. The girl and tile geometry do not change.
 Only apps/desktop outputs use this identity. Website, bootstrap, dashboard,
 and the shared master SVGs retain the default brand.
 
-The girl is nested via its art bbox as viewBox, so it always lands centered in
-the box (824 safe zone for squircles / height-fitted for the marks) without
-distortion. The girl art corners sit ~185px from the squircle arc centers vs
-the 245px radius, so no art touches the rounded corners on any OS mask.
+The girl's position and uniform scale are registered to the reference artwork.
+She renders in front of the border, clipped only to the outer rounded silhouette.
+Only her bottom sliver extends to the border; the fitted face and hair stay fixed.
+Standalone wordmarks remain centered and have no border.
 
 GENERATED OUTPUTS ARE NOT COMMITTED. Everything this script writes is
 gitignored and regenerated on demand by the consuming pipelines (website
@@ -93,6 +93,7 @@ import io
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PIL import Image
@@ -108,17 +109,16 @@ except ImportError:
 # The nous dark background (#0d1117) — fixed dark tile/background everywhere.
 DARK_HEX = "#0d1117"
 DARK_RGB = (13, 17, 23)
+BORDER_FRACTION = 0.0407747197
 
-# Girl placement per background: (x, y, w, h) in that background's coordinate
-# space. Full-bleed squircles put the girl in the 824px HIG content safe zone
-# (centered, 100px pad on a 1024 canvas); the mac-grid squircle is itself 824
-# on 1024, so the girl box scales by 824/1024 to keep the same relative size
-# inside the shape. Marks reuse the full-bleed squircles.
+# Portrait boxes fitted to the reference at equal visible tile width, with
+# uniform scaling about the tile center followed by an up-left translation.
+# Keep their y coordinate: bottom anchoring would undo the registration.
 GIRL_BOXES = {
-    "squircle-light.svg": (100, 100, 824, 824),
-    "squircle-dark.svg": (100, 100, 824, 824),
-    "squircle-mac-light.svg": (180.5, 180.5, 663, 663),
-    "squircle-mac-dark.svg": (180.5, 180.5, 663, 663),
+    "squircle-light.svg": (72.149433, 104.703674, 872.767801, 872.767801),
+    "squircle-dark.svg": (72.149433, 104.703674, 872.767801, 872.767801),
+    "squircle-mac-light.svg": (157.949166, 184.039504, 702.522501, 702.522501),
+    "squircle-mac-dark.svg": (157.949166, 184.039504, 702.522501, 702.522501),
 }
 # The brand-kit SVG canvas (both girl svgs share this viewBox).
 GIRL_VIEWBOX = 5487.0615
@@ -235,13 +235,17 @@ def girl_bbox(art: IconArt, girl: str) -> tuple[float, float, float, float]:
     return art.bboxes[girl]
 
 
-def girl_layer(art: IconArt, girl: str, box: tuple[float, float, float, float]) -> str:
+def girl_layer(
+    art: IconArt, girl: str, box: tuple[float, float, float, float],
+    *, align: str = "xMidYMid",
+) -> str:
     """Nested-svg layer: girl art (bbox as viewBox) placed into `box` — the
     box's aspect is preserved via 'meet', so the girl never distorts."""
     bx, by, bw, bh = girl_bbox(art, girl)
     x, y, w, h = box
     return (
-        f'<svg x="{x}" y="{y}" width="{w}" height="{h}" viewBox="{bx} {by} {bw} {bh}">\n'
+        f'<svg x="{x}" y="{y}" width="{w}" height="{h}" viewBox="{bx} {by} {bw} {bh}" '
+        f'preserveAspectRatio="{align} meet">\n'
         f"    {girl_path(art, girl)}\n"
         "  </svg>"
     )
@@ -253,11 +257,13 @@ def background_inner(art: IconArt, name: str) -> tuple[str, int, int]:
     if art.colors:
         text = text.replace('fill="#ffffff"', f'fill="{art.colors[0]}"')
         text = text.replace(f'fill="{DARK_HEX}"', f'fill="{art.colors[1]}"')
-    m = re.search(r'<svg\b[^>]*viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"[^>]*>', text)
+    root = ET.fromstring(text)
+    m = re.fullmatch(r"0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)", root.get("viewBox", ""))
     assert m, f"cannot parse viewBox of {name}"
     w, h = float(m.group(1)), float(m.group(2))
-    inner = re.sub(r"^.*?>\s*", "", text, count=1, flags=re.S)
-    inner = re.sub(r"\s*</svg>\s*$", "", inner, flags=re.S)
+    # Editor exports include XML declarations and root-scoped namespaces.
+    # Parse away the prolog and retain child namespaces when embedding.
+    inner = "".join(ET.tostring(child, encoding="unicode") for child in root)
     return inner, int(w), int(h)
 
 
@@ -304,12 +310,54 @@ def compose_svg(art: IconArt, girl: str, bg: str) -> str:
     coordinate space (resvg scales to whatever output size is requested, so
     the composition is size-agnostic — no manual box scaling)."""
     inner, w, h = background_inner(art, bg)
+    background = ET.fromstring(f"<g>{inner}</g>")
+    tile = background.find("{http://www.w3.org/2000/svg}rect")
+    assert tile is not None, f"no background rectangle in {bg}"
+    geometry = {key: float(tile.attrib[key]) for key in ("x", "y", "width", "height", "rx")}
+    thickness = geometry["width"] * BORDER_FRACTION
+    # An inward stroke keeps the outer platform geometry unchanged. Subtracting
+    # the same inset from rx (not scaling rx) keeps the corner thickness uniform.
+    inset = {"x": 1, "y": 1, "width": -2, "height": -2, "rx": -1}
+    silhouette = ET.Element("rect", {key: str(value) for key, value in geometry.items()})
+    for key, value in geometry.items():
+        tile.set(key, str(value + inset[key] * thickness / 2))
+    tile.set("stroke", "#000000" if girl == "black" else "#ffffff")
+    tile.set("stroke-width", str(thickness))
+    inner = "".join(ET.tostring(child, encoding="unicode") for child in background)
+    clip = ET.tostring(silhouette, encoding="unicode")
+    box = GIRL_BOXES[bg]
+    portrait = ET.fromstring(girl_layer(art, girl, box, align="xMidYMax"))
+    x, y, portrait_width, portrait_height = box
+    # Extrude a thin slice just above the bottom contour behind the artwork.
+    # Sampling above its antialiased tips avoids stretching transparent padding.
+    strip_height = 1
+    strip_top = y + portrait_height - portrait_height * 0.01
+    join_bottom = geometry["y"] + geometry["height"] - thickness + 4
+    stretch = (join_bottom - strip_top) / strip_height
+    bx, by, bw, bh = girl_bbox(art, girl)
+    scale = min(portrait_width / bw, portrait_height / bh)
+    tx = x + (portrait_width - bw * scale) / 2 - bx * scale
+    ty = y + portrait_height - bh * scale - by * scale
+    # Flatten the viewport transform: very thin nested SVG viewBoxes can be
+    # culled by the renderer at small icon sizes, silently losing the extension.
+    extension_path = ET.fromstring(girl_path(art, girl))
+    extension_path.attrib.pop("id", None)
+    join_clip = (
+        f'<clipPath id="icon-join"><rect x="{x}" y="{strip_top}" '
+        f'width="{portrait_width}" height="{join_bottom - strip_top}"/></clipPath>'
+    )
+    extension = (
+        '<g clip-path="url(#icon-join)">'
+        f'<g transform="matrix({scale} 0 0 {scale * stretch} {tx} {stretch * ty + (1 - stretch) * strip_top})">'
+        f'{ET.tostring(extension_path, encoding="unicode")}</g></g>'
+    )
     badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
+        f'  <defs><clipPath id="icon-silhouette">{clip}</clipPath>{join_clip}</defs>\n'
         f"  {inner.strip()}\n"
-        f"  {girl_layer(art, girl, GIRL_BOXES[bg])}\n"
         f"{badge}"
+        f'  <g clip-path="url(#icon-silhouette)">{extension}{ET.tostring(portrait, encoding="unicode")}</g>\n'
         "</svg>\n"
     )
 

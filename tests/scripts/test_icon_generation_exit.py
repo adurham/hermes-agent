@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -10,7 +11,8 @@ from PIL import Image
 
 
 @pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
-def test_svg_readers_accept_bom_without_rewriting_assets(tmp_path, monkeypatch, bom):
+@pytest.mark.parametrize("editor_export", [False, True])
+def test_svg_readers_accept_bom_without_rewriting_assets(tmp_path, monkeypatch, bom, editor_export):
     monkeypatch.setitem(sys.modules, "resvg_py", ModuleType("resvg_py"))
     script = Path(__file__).resolve().parents[2] / "scripts/generate_icons.py"
     spec = importlib.util.spec_from_file_location("icon_readers_under_test", script)
@@ -19,11 +21,20 @@ def test_svg_readers_accept_bom_without_rewriting_assets(tmp_path, monkeypatch, 
     spec.loader.exec_module(module)
     path = tmp_path / "art.svg"
     element = '<path d="M0 0 L1 1" aria-label="café 東京"/>'
-    raw = bom + f'<svg viewBox="0 0 20 30">{element}</svg>'.encode("utf-8")
+    declaration = '<?xml version="1.0" encoding="UTF-8"?>\n' if editor_export else ""
+    namespaces = ' xmlns="http://www.w3.org/2000/svg" xmlns:editor="urn:editor"'
+    metadata = '<editor:namedview editor:zoom="1"/>' if editor_export else ""
+    document = f'<svg{namespaces} viewBox="0 0 20 30">{metadata}{element}</svg>'
+    raw = bom + (declaration + document).encode("utf-8")
     path.write_bytes(raw)
     art = SimpleNamespace(girls={"black": path}, paths={}, backgrounds=tmp_path, colors=None)
     assert module.girl_path(art, "black") == element
-    assert module.background_inner(art, path.name) == (element, 20, 30)
+    inner, width, height = module.background_inner(art, path.name)
+    composed = ET.fromstring(f'<svg xmlns="http://www.w3.org/2000/svg">{inner}</svg>')
+    assert (width, height) == (20, 30)
+    assert [ET.tostring(child) for child in composed] == [
+        ET.tostring(child) for child in ET.fromstring(document)
+    ]
     assert path.read_bytes() == raw
     path.write_bytes(bom + b"<svg/>")
     art.paths.clear()
@@ -75,3 +86,66 @@ def test_write_status_includes_every_target(tmp_path, monkeypatch, capsys, failu
     output = capsys.readouterr().out
     assert "last.png: PNG (2, 2)" in output
     assert ("FAILED" in output) is (failure is not None)
+
+
+@pytest.mark.parametrize("platform", ["", "mac-"])
+@pytest.mark.parametrize("appearance,girl", [("light", "black"), ("dark", "white")])
+@pytest.mark.parametrize("colors", [None, ("#f5cc32", "#443808"), ("#e34850", "#4a1117")])
+def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, platform, appearance, girl, colors):
+    monkeypatch.setitem(sys.modules, "resvg_py", ModuleType("resvg_py"))
+    source = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("icon_geometry_under_test", source / "scripts/generate_icons.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    art = SimpleNamespace(
+        backgrounds=source / "assets/backgrounds", colors=colors, commit="0123456",
+        bboxes={girl: (0, 0, 100, 90)}, paths={girl: '<path d="M0 0H100V90H0Z"/>'},
+    )
+    name = f"squircle-{platform}{appearance}.svg"
+    ns = {"svg": "http://www.w3.org/2000/svg"}
+    original = ET.parse(art.backgrounds / name).find("svg:rect", ns)
+    result = ET.fromstring(module.compose_svg(art, girl, name))
+    tile = result.find("svg:rect", ns)
+    assert original is not None and tile is not None
+    x, y, width, height, radius = (float(original.attrib[key]) for key in ("x", "y", "width", "height", "rx"))
+    thickness = width * module.BORDER_FRACTION
+    assert float(tile.attrib["stroke-width"]) == pytest.approx(thickness)
+    assert tile.get("stroke") == ("#000000" if appearance == "light" else "#ffffff")
+    assert float(tile.attrib["x"]) - thickness / 2 == pytest.approx(x)
+    assert float(tile.attrib["y"]) - thickness / 2 == pytest.approx(y)
+    assert float(tile.attrib["width"]) + thickness == pytest.approx(width)
+    assert float(tile.attrib["height"]) + thickness == pytest.approx(height)
+    assert float(tile.attrib["rx"]) + thickness / 2 == pytest.approx(radius)
+    expected_fill = (colors or ("#ffffff", module.DARK_HEX))[appearance == "dark"]
+    assert tile.get("fill") == expected_fill
+    clip = result.find("svg:defs/svg:clipPath/svg:rect", ns)
+    assert clip is not None
+    assert tuple(float(clip.attrib[key]) for key in ("x", "y", "width", "height", "rx")) == (
+        x, y, width, height, radius,
+    )
+    group = result[-1]
+    portrait = group[-1]
+    assert portrait is not None and group is not None
+    assert portrait.get("preserveAspectRatio") == "xMidYMax meet"
+    assert tuple(float(portrait.attrib[key]) for key in ("x", "y", "width", "height")) == module.GIRL_BOXES[name]
+    clip_path = result.find("svg:defs/svg:clipPath", ns)
+    assert clip_path is not None
+    assert group.get("clip-path") == f"url(#{clip_path.attrib['id']})"
+    extension = group[0]
+    assert extension is not portrait
+    join_clip = result.find("svg:defs/svg:clipPath[@id='icon-join']/svg:rect", ns)
+    assert join_clip is not None
+    strip_x, strip_y, strip_width, strip_height = (
+        float(join_clip.attrib[key]) for key in ("x", "y", "width", "height")
+    )
+    px, py, pw, ph = module.GIRL_BOXES[name]
+    assert (strip_x, strip_width) == (px, pw)
+    assert 0 < py + ph - strip_y < ph / 50
+    assert strip_y + strip_height > y + height - thickness
+    assert strip_y + strip_height < y + height
+    assert extension.get("clip-path") == "url(#icon-join)"
+    extension_ink = extension.find("svg:g/svg:path", ns)
+    portrait_ink = portrait.find("svg:path", ns)
+    assert extension_ink is not None and portrait_ink is not None
+    assert extension_ink.get("d") == portrait_ink.get("d")
