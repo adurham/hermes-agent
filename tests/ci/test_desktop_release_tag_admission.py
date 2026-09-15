@@ -69,7 +69,7 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
             if name in {"publish-channel"} or step.get("if") == "needs.validate.outputs.channel-build != ''":
                 expected = "${{ github.sha }}"
             elif name == "validate":
-                expected = "${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}"
+                expected = "${{ (inputs.build_commit != '' || inputs.channel != '') && github.sha || inputs.tag }}"
             elif name == "assemble-win32-bundle":
                 expected = "${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}"
             assert ref == expected, (

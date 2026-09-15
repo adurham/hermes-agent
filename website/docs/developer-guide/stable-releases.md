@@ -124,11 +124,12 @@ versions separately. The existing native build and smoke jobs must all pass
 before the channel head advances.
 
 Preview a custom build, then explicitly dispatch it. Repository identity does
-not select behavior: the same direct dispatch runs from any GitHub remote, and
-the local command reads and writes the production release namespace with the
-configured R2 credentials (every caller already holds the release-signing
-secret). The `gh` user must have write, maintain or admin permission on the
-selected repository.
+not select behavior: the same direct dispatch runs from any GitHub remote, but
+`--channel` performs no R2 access locally — it resolves the exact pushed commit
+and dispatches the default-branch workflow, whose privileged allocation step
+creates the channel and mints the immutable build request in CI. The local
+command needs only a `gh` token with write, maintain or admin permission on the
+selected repository; no R2 credentials are required.
 
 ```sh
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin
@@ -146,13 +147,13 @@ inputs, not persistent application settings; the repository ID is checked
 against the selected remote before credentials are read, so a scoped namespace
 still belongs to exactly one repository.
 
-The first publishing invocation creates the channel. Later invocations retain
-its identity. Requests and artifacts live under
+The first publishing invocation creates the channel (during CI allocation), and
+later invocations retain its identity. Requests and artifacts live under
 `releases/channel-builds/BUILD_ID/`; the mutable pointer is
 `releases/channels/NAME.json`. A failed build leaves its previous head intact.
 Conditional writes reject stale publication and permanently retired channels.
-Use the printed build ID and request digest with `--resume-channel-build` and
-`--request-sha256` to retry an admitted request rather than allocate another one.
+Retrying re-dispatches `--channel NAME --build-commit SHA --publish`, which
+allocates a fresh sequence slot in CI; there is no separate resume command.
 
 Retirement pins the current official stable build as the first receiver:
 

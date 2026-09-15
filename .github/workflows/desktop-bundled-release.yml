@@ -109,16 +109,11 @@ on:
         type: boolean
         default: false
       disposable_run:
-        description: 'Allocation controller run-id-attempt; only with channel_build and its pinned digest.'
+        description: 'Disposable allocation controller run id; the allocate step derives and overwrites it.'
         type: string
         default: ''
-      channel_build:
-        description: 'Admitted immutable channel build ID (32 lowercase hex); trusted default-branch dispatch only.'
-        required: false
-        type: string
-        default: ''
-      channel_request_sha256:
-        description: 'SHA256 of the admitted immutable channel request.'
+      channel:
+        description: 'Preview channel name; this run allocates the channel and builds build_commit. Trusted default-branch dispatch only.'
         required: false
         type: string
         default: ''
@@ -157,7 +152,7 @@ permissions:
 concurrency:
   # One dispatch: a disposable run's identity is its channel name, so a
   # re-dispatch of the same channel serializes instead of racing the namespace.
-  group: desktop-bundled-release-${{ inputs.channel_build || inputs.disposable_channel || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
+  group: desktop-bundled-release-${{ inputs.channel || inputs.disposable_channel || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
   cancel-in-progress: false
 
 env:
@@ -191,20 +186,20 @@ jobs:
       receiver-candidate: ${{ steps.admission.outputs.receiver-candidate }}
       public-root: ${{ steps.admission.outputs.public-root }}
       public-base: ${{ steps.admission.outputs.public-base }}
-      channel-build: ${{ (inputs.disposable_channel != '' && steps.allocate.outputs.channel_build) || inputs.channel_build || '' }}
-      channel-request-sha256: ${{ (inputs.disposable_channel != '' && steps.allocate.outputs.channel_request_sha256) || inputs.channel_request_sha256 || '' }}
+      channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
+      channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}
+          ref: ${{ (inputs.build_commit != '' || inputs.channel != '') && github.sha || inputs.tag }}
           # Tag admission runs merge-base against origin/main and needs the
           # shared ancestry; channel admission exits before any history read,
           # so it fetches exactly one commit. Commit admission reads ancestry
           # (require_pushed) and pyproject.toml at BUILD_COMMIT, so it needs
           # the full graph.
-          fetch-depth: ${{ inputs.build_commit != '' && 0 || (inputs.channel_build != '' && 1 || 0) }}
-          fetch-tags: ${{ inputs.build_commit == '' && inputs.channel_build == '' }}
+          fetch-depth: ${{ inputs.build_commit != '' && 0 || (inputs.channel != '' && 1 || 0) }}
+          fetch-tags: ${{ inputs.build_commit == '' && inputs.channel == '' }}
 
       - name: Set up native identity reader
         if: inputs.disposable_channel != '' && inputs.disposable_receivers
@@ -213,15 +208,14 @@ jobs:
           toolchain: node
           cache-python: false
           archive-inputs: false
-      - name: Probe scoped storage and allocate the disposable channel
+      - name: Allocate the channel and build its immutable request
         id: allocate
-        if: inputs.disposable_channel != ''
+        if: inputs.disposable_channel != '' || inputs.channel != ''
         env:
           DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
+          CHANNEL: ${{ inputs.channel }}
           DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
-          CHANNEL_BUILD: ${{ inputs.channel_build }}
-          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
           TAG: ${{ inputs.tag }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           TERMUX_ONLY: ${{ inputs.termux_only }}
@@ -242,8 +236,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
-          CHANNEL_BUILD: ${{ inputs.channel_build || steps.allocate.outputs.channel_build || '' }}
-          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 || steps.allocate.outputs.channel_request_sha256 || '' }}
+          CHANNEL_BUILD: ${{ steps.allocate.outputs.channel_build || '' }}
+          CHANNEL_REQUEST_SHA256: ${{ steps.allocate.outputs.channel_request_sha256 || '' }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
           TERMUX_ONLY: ${{ inputs.termux_only }}
           BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -263,9 +257,6 @@ jobs:
             fi
             python -m scripts.releases.channel_publish admit
             exit 0
-          fi
-          if [ -n "${CHANNEL_REQUEST_SHA256:-}" ]; then
-            echo '::error::channel_request_sha256 requires channel_build'; exit 1
           fi
           if [ -n "$BUILD_COMMIT" ]; then
             # Reject mixed inputs before loading code from the checkout.
@@ -351,7 +342,7 @@ jobs:
   # Share execution via anchors, and keep the original IDs as downstream gates.
   build-win32-release:
     name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel_build == ''
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel == ''
     needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -470,7 +461,7 @@ jobs:
           python -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
 
       - name: Save dependency inputs before building
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel_build == '' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
         uses: ./.github/actions/desktop-build-cache
         with:
           phase: save
@@ -483,7 +474,7 @@ jobs:
       # Commit builds run these steps with a read-only cache token; the
       # exact-hit-skip semantics of actions/cache keep a read token harmless.
       - name: Save the electron-builder toolchain
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel_build == '' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/electron-builder
@@ -617,7 +608,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success'
       && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
       && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.build_commit != '' || inputs.channel_build != '')
+      && (inputs.build_commit != '' || inputs.channel != '')
     needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -641,8 +632,8 @@ jobs:
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel_build == '' && needs.build-win32-release.result == 'success' && needs.build-win32-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel_build != '') && needs.build-win32-commit.result == 'success' && needs.build-win32-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-win32-release.result == 'success' && needs.build-win32-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-win32-commit.result == 'success' && needs.build-win32-release.result == 'skipped') }}
     steps: &native-build-result-steps
       - name: Require exactly the selected native build to succeed
         shell: bash
@@ -665,7 +656,7 @@ jobs:
   # pointer last, whole channel green before anything publishes.
   build-darwin-release:
     name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel_build == ''
+    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel == ''
     needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -769,7 +760,7 @@ jobs:
           python3 -m scripts.ci.desktop_commands "$RUNNER_TEMP/desktop-job/prepared.json"
 
       - name: Save dependency inputs before building
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel_build == '' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
         uses: ./.github/actions/desktop-build-cache
         with:
           phase: save
@@ -782,7 +773,7 @@ jobs:
       # Commit builds run these steps with a read-only cache token; the
       # exact-hit-skip semantics of actions/cache keep a read token harmless.
       - name: Save the electron-builder toolchain
-        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel_build == '' }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ github.workspace }}/.cache/electron-builder
@@ -791,7 +782,7 @@ jobs:
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.
       - name: Require signing credentials when publishing
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != ''
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
         shell: bash
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -817,7 +808,7 @@ jobs:
         # notarytool takes a FILE PATH for --key; raw .p8 content in argv
         # dies with `Invalid option: ***`. The build step must NOT re-declare
         # APPLE_API_KEY in its env: step env shadows GITHUB_ENV.
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != ''
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
         shell: bash
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -858,7 +849,7 @@ jobs:
         # The backstop against a silent unsigned publish: assess the packed
         # app against the real Gatekeeper policy (requires a Developer ID
         # signature AND a stapled notarization ticket to pass offline).
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != ''
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
         shell: bash
         run: |
           shopt -s nullglob
@@ -946,7 +937,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success'
       && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
       && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.build_commit != '' || inputs.channel_build != '')
+      && (inputs.build_commit != '' || inputs.channel != '')
     needs: [validate, archive-inputs]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -970,8 +961,8 @@ jobs:
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel_build == '' && needs.build-darwin-release.result == 'success' && needs.build-darwin-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel_build != '') && needs.build-darwin-commit.result == 'success' && needs.build-darwin-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-darwin-release.result == 'success' && needs.build-darwin-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-commit.result == 'success' && needs.build-darwin-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
@@ -998,7 +989,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin.result == 'success' && inputs.termux_only != true
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
       contents: read
     strategy:
@@ -1028,7 +1019,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-win32.result == 'success' && inputs.termux_only != true
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
       contents: read
     strategy:
@@ -1057,7 +1048,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.assemble-win32-bundle.result == 'success' && inputs.termux_only != true
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
       contents: read
     strategy:
@@ -1087,7 +1078,7 @@ jobs:
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-win32.result == 'success' && inputs.termux_only != true
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel_build != '')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     runs-on: windows-2025
     environment: release-signing
     cache-mode: read
@@ -1298,7 +1289,7 @@ jobs:
     name: Publish the tested Windows canary bundle
     needs: [validate, assemble-win32-bundle, smoke-win32, smoke-win32-universal]
     if: >-
-      !cancelled() && inputs.build_commit == '' && inputs.channel_build == '' && inputs.upload_release == true
+      !cancelled() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true
       && inputs.release-phase == '' && inputs.termux_only != true
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.assemble-win32-bundle.result == 'success'
@@ -1376,7 +1367,7 @@ jobs:
     name: Publish the macOS updater feed
     needs: [validate, build-darwin, smoke-darwin]
     if: >-
-      !cancelled() && inputs.build_commit == '' && inputs.channel_build == '' && inputs.upload_release == true
+      !cancelled() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true
       && inputs.release-phase == '' && inputs.termux_only != true
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin.result == 'success' && needs.smoke-darwin.result == 'success'
@@ -1441,7 +1432,7 @@ jobs:
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate, archive-inputs]
-    if: inputs.channel_build == '' && inputs.disposable_channel == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    if: inputs.channel == '' && inputs.disposable_channel == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: ubuntu-24.04-arm
     environment: release-signing
     timeout-minutes: 90
@@ -1814,7 +1805,7 @@ jobs:
     # Failed builds still get a per-tag diagnostic page. The renderer only
     # advances the channel landing page when every prerequisite succeeded.
     if: |
-      always() && inputs.build_commit == '' && inputs.channel_build == '' && inputs.upload_release == true && inputs.release-phase == ''
+      always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
     runs-on: ubuntu-24.04
     environment: release-signing
@@ -2074,7 +2065,7 @@ jobs:
     needs: [validate, build-win32, build-darwin, build-linux, builds-table, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, publish-win32-updater, publish-darwin-updater]
     if: |
       always()
-      && inputs.build_commit == '' && inputs.channel_build == ''
+      && inputs.build_commit == '' && inputs.channel == ''
       && inputs.upload_release == true
       && contains(inputs.tag, '-canary.')
       && needs.build-win32.result == 'success'

@@ -186,7 +186,9 @@ class ChannelPublisher:
             if controller_commit is not None:
                 request["controllerCommit"] = controller_commit
             validate_request(request, repository=self.repository, base_url=self.public_base)
-            # Distinguish competing allocations with otherwise identical CAS bodies.
+            # Distinguish competing allocations: the build ID makes otherwise
+            # identical CAS bodies unique, so a loser's readback recovery can
+            # never mistake another allocation's write for its own.
             updated = {**record, "revision": record["revision"] + 1, "nextSequence": sequence + 1,
                        "lastAllocation": {"buildId": request["buildId"], "sequence": sequence}}
             try:
@@ -238,25 +240,12 @@ class ChannelPublisher:
                 if {k: v for k, v in pinned.items() if k != "sequence"} != {k: v for k, v in request.items() if k != "sequence"}:
                     raise ChannelError("Protected immutable request differs from accepted release")
                 return pinned
-            # Retain the request in the CAS reservation so a lost request PUT can
-            # resume with its original sequence, including after process restart.
-            last = record.get("lastAllocation", {})
-            if last.get("buildId") == build_id and last.get("request"):
-                request = last["request"]
-            else:
-                if last.get("request"):
-                    # Flush a prior interrupted reservation before replacing its
-                    # recovery slot. Otherwise retries would allocate new inputs.
-                    prior_key = build_prefix(last["buildId"]) + "request.json"
-                    self._write(prior_key, last["request"])
-                updated = {**record, "revision": record["revision"] + 1,
-                           "nextSequence": request["sequence"] + 1,
-                           "lastAllocation": {"buildId": build_id, "sequence": request["sequence"],
-                                              "request": request}}
-                try:
-                    self._write(channel_key(name), updated, etag)
-                except ChannelConflict:
-                    continue
+            updated = {**record, "revision": record["revision"] + 1,
+                       "nextSequence": request["sequence"] + 1}
+            try:
+                self._write(channel_key(name), updated, etag)
+            except ChannelConflict:
+                continue
             try:
                 self._write(key, request)
             except ChannelConflict:

@@ -312,8 +312,9 @@ def test_protected_releases_bootstrap_retry_and_refuse_late_or_ungated_promotion
                 version=version, windows_version=version + ".0", identity=identity,
                 policy="stable-release", release_gate=gate)
 
-        # A failed request PUT followed by another release allocation must still
-        # recover the original sequence, not reinterpret the same build ID.
+        # A failed request PUT is not recovered by sequence: retrying the same
+        # release adopts a fresh sequence gap, while the deterministic build ID
+        # keeps the immutable request idempotent across retries.
         original_write = pub._write
         def lose_request(key, value, etag=None):
             if key.endswith("request.json"):
@@ -322,11 +323,9 @@ def test_protected_releases_bootstrap_retry_and_refuse_late_or_ungated_promotion
         pub._write = lose_request
         with pytest.raises(OSError):
             allocate("1.0.0", "a" * 40)
-        reservation = pub._read("official")[0]["lastAllocation"]["request"]
         pub._write = original_write
         allocate("0.5.0", "e" * 40)
         first = allocate("1.0.0", "a" * 40)
-        assert first == reservation
         assert allocate("1.0.0", "a" * 40) == first
         assert len(first["buildId"]) == 32
         assert pub.reader.resolve("official").manifest is None

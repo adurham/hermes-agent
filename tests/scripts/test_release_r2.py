@@ -113,12 +113,9 @@ def test_disposable_scope_streams_lists_and_never_touches_production(r2_server, 
     with pytest.raises(ValueError):
         r2.put_object(creds, base, bucket, key, b"x", NOW, None)
     monkeypatch.delenv("R2_DISPOSABLE_RUN")
-    monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "fixture/fork")
-    with pytest.raises(ValueError, match="disposable"):
-        r2.put_object(creds, base, bucket, key, b"x", NOW, None)
+    # Scoping is opt-in via R2_DISPOSABLE_RUN alone: there is no fork isolation
+    # to assert after the fork-conditional dispatch was dropped.
     assert r2_server.requests == before
-    monkeypatch.delenv("GITHUB_ACTIONS")
     from scripts.releases.channel_disposable import probe
     from scripts.releases.channels import ChannelPublisher, R2ChannelStore
     unscoped = ChannelPublisher(R2ChannelStore(creds, base, bucket), "fixture/fork", root,
@@ -224,6 +221,18 @@ def test_public_base_url_precedence(monkeypatch):
     monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", "https://cdn.example.com")
     assert public_base_url() == "https://cdn.example.com"
     assert public_base_url("https://explicit.example.com/") == "https://explicit.example.com"
+
+
+def test_channel_public_base_defaults_to_production(monkeypatch):
+    # Unscoped channel administration names the same documented production
+    # origin the commit-build path falls back to; the public URL is not a
+    # secret, so a local command should not have to hand-set it.
+    monkeypatch.delenv("CLOUDFLARE_R2_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("R2_DISPOSABLE_RUN", raising=False)
+    assert channel_public_base() == "https://hermes-assets.nousresearch.com"
+    monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", "https://cdn.example.com")
+    assert channel_public_base() == "https://cdn.example.com"
+    assert channel_public_base("https://explicit.example.com/") == "https://explicit.example.com"
 
 
 @pytest.mark.parametrize('key,content_type,immutable', [

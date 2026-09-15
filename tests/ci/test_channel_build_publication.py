@@ -390,7 +390,7 @@ def test_disposable_controller_allocates_then_separate_admission(tmp_path):
                "GITHUB_WORKFLOW_REF": "fixture/repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main",
                "GITHUB_ACTOR": "fixture", "GITHUB_TRIGGERING_ACTOR": "fixture", "UPLOAD_RELEASE": "false",
                "GITHUB_STEP_SUMMARY": str(tmp_path / "allocation.md"), "BUNDLE_ENV_JSON": "{}"}
-        script = workflow_step("desktop-bundled-release.yml", "validate", "Probe scoped storage and allocate the disposable channel")
+        script = workflow_step("desktop-bundled-release.yml", "validate", "Allocate the channel and build its immutable request")
         objects["releases/channels/stable.json"] = b"production sentinel"
         result = run_shell(tmp_path, server, script, env, cwd=clone)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -398,8 +398,7 @@ def test_disposable_controller_allocates_then_separate_admission(tmp_path):
         request = allocation["request"]
         assert request["publicBase"] == url + "/bucket/ci-disposable/12345/98765"
         assert allocation["storagePrefix"] == "ci-disposable/12345/98765/"
-        assert "disposable_run=98765" in allocation["command"]
-        assert "channel_build=" + request["buildId"] in allocation["command"]
+        assert allocation["disposableRun"] == "98765"
         assert objects["releases/channels/stable.json"] == b"production sentinel"
         assert all(key.startswith(allocation["storagePrefix"]) for method, key in requests if method == "PUT")
         before = dict(objects)

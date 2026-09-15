@@ -91,4 +91,12 @@ def channel_public_base(explicit: str | None = None) -> str:
             raise ValueError("Disposable channel archive authority mismatch")
         return expected
     from hermes_cli.release_channels import public_base
-    return public_base(explicit if explicit is not None else configured)
+    if explicit is not None:
+        return public_base(explicit)
+    if not configured:
+        # The documented production origin is the default, exactly as the
+        # commit-build path (r2.public_base_url) does, so a local command can
+        # name the page it is about to publish without hand-setting the URL.
+        from scripts.releases.r2 import DEFAULT_PUBLIC_URL
+        configured = DEFAULT_PUBLIC_URL
+    return public_base(configured)

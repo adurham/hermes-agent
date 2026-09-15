@@ -1,15 +1,21 @@
-"""Privileged allocation: probe CAS/CDN and allocate the channel this run builds."""
+"""Privileged allocation: probe CAS/CDN and allocate the channel this run builds.
+
+The workflow's allocation step runs here for BOTH the disposable test path
+(``disposable_channel`` input, scoped to a ``ci-disposable/`` namespace) and the
+production preview path (``channel`` input, unscoped production namespace). The
+local ``release.py --channel`` command no longer touches R2: it only dispatches
+this workflow, and this privileged step creates the channel and mints the
+immutable build request that the build legs consume via job outputs.
+"""  # noqa: E501
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
 
 from hermes_cli.release_channels import canonical_json, channel_key, validate_name
 from scripts.releases import commit_build, r2
-from scripts.releases.channel_build import dispatch_command
 from scripts.releases.channels import ChannelConflict, ChannelPublisher, R2ChannelStore
 from scripts.releases.r2_scope import R2Scope, channel_public_base, require_run
 
@@ -58,7 +64,7 @@ def allocate_receivers(publisher, commit: str, source_version: str, controller: 
         raise ValueError("Receiver allocation requires a fresh disposable stable record")
     identity = product_identity("v0.0.1")
     requests = {}
-    for sequence, slot in enumerate(("S", "T"), 1):
+    for sequence, slot in enumerate((("S", "T")), 1):
         request = {"schema": 1, "channel": "stable", "repository": publisher.repository,
                    "sequence": sequence, "commit": commit, "sourceVersion": source_version,
                    "controllerCommit": controller, "version": f"0.0.{sequence}",
@@ -78,32 +84,40 @@ def allocate_receivers(publisher, commit: str, source_version: str, controller: 
 
 
 def allocate(env: dict[str, str]) -> dict:
-    name = validate_name(env.get("DISPOSABLE_CHANNEL", ""))
-    if name in {"ci-cas-probe", "stable", "canary", "main"}:
-        raise ValueError("Use a non-protected disposable preview name")
-    if env.get("CHANNEL_BUILD") or env.get("CHANNEL_REQUEST_SHA256"):
-        raise ValueError("Allocation cannot reuse a build request or select a storage scope")
-    if env.get("TERMUX_ONLY") == "true":
-        raise ValueError("Disposable allocation cannot select Termux")
-    # One dispatch now allocates AND builds, so the namespace must survive a
-    # "re-run failed jobs": lease by the run id alone (no attempt suffix), and
-    # never accept a caller-supplied path, public URL, or allocation namespace.
-    run = require_run(env.get("GITHUB_RUN_ID", ""))
+    disposable_name = env.get("DISPOSABLE_CHANNEL", "")
+    channel_name = env.get("CHANNEL", "")
+    if disposable_name and channel_name:
+        raise ValueError("Choose disposable_channel or channel, not both")
+    disposable = bool(disposable_name)
+    name = validate_name(disposable_name or channel_name)
+    if disposable:
+        if name in {"ci-cas-probe", "stable", "canary", "main"}:
+            raise ValueError("Use a non-protected disposable preview name")
+        if env.get("CHANNEL_BUILD") or env.get("CHANNEL_REQUEST_SHA256"):
+            raise ValueError("Allocation cannot reuse a build request or select a storage scope")
+        if env.get("TERMUX_ONLY") == "true":
+            raise ValueError("Disposable allocation cannot select Termux")
+        # One dispatch now allocates AND builds, so the namespace must survive a
+        # "re-run failed jobs": lease by the run id alone (no attempt suffix), and
+        # never accept a caller-supplied path, public URL, or allocation namespace.
+        run = require_run(env.get("GITHUB_RUN_ID", ""))
     admitted = commit_build.admit(env)
     controller = commit_build.require_commit(env.get("GITHUB_SHA", ""))
-    os.environ["R2_DISPOSABLE_RUN"] = run
+    if disposable:
+        os.environ["R2_DISPOSABLE_RUN"] = run
     scope = R2Scope.configured()
     base = channel_public_base()
     repository = env["GITHUB_REPOSITORY"]
 
     def authorize(action: str, record: dict) -> None:
         if action not in {"create", "allocate"} or record["policy"] != "preview":
-            raise ValueError("Disposable controller only creates and allocates previews")
+            raise ValueError("Controller only creates and allocates previews")
         commit_build.admit(env)
 
     publisher = ChannelPublisher(R2ChannelStore(*r2.credentials(), scope=scope), repository,
                                  base, authorize=authorize)
-    probe(publisher, admitted["sha"], admitted["payload-version"], controller)
+    if disposable:
+        probe(publisher, admitted["sha"], admitted["payload-version"], controller)
     publisher.create(name)
     from scripts.releases.bundle_env import decode
     request = publisher.allocate(name, admitted["sha"], admitted["payload-version"],
@@ -114,34 +128,35 @@ def allocate(env: dict[str, str]) -> dict:
                                            decode(env.get("BUNDLE_ENV_JSON", "")), controller)
         requests.update(allocate_receivers(publisher, admitted["sha"], admitted["payload-version"], controller))
     digest = hashlib.sha256(canonical_json(request)).hexdigest()
-    command = dispatch_command(request, repository, env["DEFAULT_BRANCH"], disposable_run=run)
-    return {"request": request, "requestSha256": digest, "disposableRun": run,
-            "storagePrefix": scope.prefix, "command": command, "requests": requests,
-            "commands": {slot: dispatch_command(value, repository, env["DEFAULT_BRANCH"], disposable_run=run)
-                         for slot, value in requests.items()}}
+    return {"request": request, "requestSha256": digest, "disposableRun": run if disposable else "",
+            "storagePrefix": scope.prefix, "requests": requests}
 
 
 def main() -> None:
     result = allocate(dict(os.environ))
-    # Job outputs feed the build legs of THIS run (one dispatch). The summary
-    # stays informational; the printed commands are no longer required.
+    outputs = {
+        "channel_build": result["request"]["buildId"],
+        "channel_request_sha256": result["requestSha256"],
+        "public_base": channel_public_base(),
+    }
+    if result["disposableRun"]:
+        outputs["disposable_run"] = result["disposableRun"]
+        outputs["storage_prefix"] = result["storagePrefix"]
+    # Job outputs feed the build legs of THIS run (one dispatch). The summary is
+    # informational; the request is consumed through job outputs.
     if os.environ.get("GITHUB_OUTPUT"):
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
-            stream.write("".join(f"{key}={value}\n" for key, value in {
-                "channel_build": result["request"]["buildId"],
-                "channel_request_sha256": result["requestSha256"],
-                "disposable_run": result["disposableRun"],
-                "public_base": channel_public_base(),
-                "storage_prefix": result["storagePrefix"],
-            }.items()))
-    summary = ("## Disposable channel allocation\n\n"
-               "CAS, stale-writer rejection, listing and public readback passed. "
-               "No native build or production record was published.\n\n"
-               f"Storage prefix: `{result['storagePrefix']}`\n\n"
-               "This run's build legs consume the allocation through job outputs; "
-               "no separate follow-up dispatch is needed. The command below is "
-               "informational only:\n\n" + "\n\n".join(
-                   f"### {slot}\n```sh\n{shlex.join(cmd)}\n```" for slot, cmd in result["commands"].items()) + "\n")
+            stream.write("".join(f"{key}={value}\n" for key, value in outputs.items()))
+    if result["disposableRun"]:
+        title = "## Disposable channel allocation\n\n"
+        note = ("CAS, stale-writer rejection, listing and public readback passed. "
+                "No native build or production record was published.")
+        prefix = f"Storage prefix: `{result['storagePrefix']}`"
+    else:
+        title = "## Channel allocation\n\n"
+        note = "Created the channel and allocated this build's immutable request in the production namespace."
+        prefix = f"Channel: `{result['request']['channel']}` · build `{result['request']['buildId']}`"
+    summary = (title + note + "\n\n" + prefix + "\n")
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
         stream.write(summary)
     print(json.dumps(result, sort_keys=True))
