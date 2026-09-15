@@ -391,10 +391,11 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     """Start this profile's desktop (idempotent). Blocks until the launcher publishes its env file or
     ``wait_seconds`` pass; raises ``RuntimeError`` naming the blocker.
 
-    Two locks, both held from the running-check to the launcher's publish: the per-profile ``start.lock``
-    so two start() calls for one profile spawn one launcher (the loser sees it running), and the host-wide
-    display-allocation lock so a second profile cannot pick the same number before this Xvnc has written
-    ``/tmp/.X<n>-lock`` (it would then fail and its launcher's stale-lock cleanup could remove our socket)."""
+    Two locks: the per-profile ``start.lock``, held from the running-check to the launcher's publish so two
+    start() calls for one profile spawn one launcher (the loser sees it running), and the host-wide
+    display-allocation lock, held only until this Xvnc has written ``/tmp/.X<n>-lock`` (a second profile
+    picking the same number before that would fail and its stale-lock cleanup could remove our socket).
+    Holding it for the whole Xfce bring-up serialized every profile's start behind one desktop launch."""
     if not is_supported_host():
         raise RuntimeError("Bot Desktop runs on Linux gateway hosts only")
     missing = missing_binaries()
@@ -410,57 +411,62 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
         if _launcher_pid() is None:
             _reap_orphaned_server(sd)
         _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with _flocked(_ALLOC_LOCK):
-            return _spawn_and_wait(sd, _pick_display(), wait_seconds)
+        return _spawn_and_wait(sd, wait_seconds)
 
 
-def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
-    (sd / "display").write_text(str(num), encoding="utf-8")
-    env_file = sd / "env"
-    env_file.unlink(missing_ok=True)
+def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
+    """Caller holds ``start.lock``. Takes ``_ALLOC_LOCK`` itself, from picking the number to Xvnc's claim."""
+    with contextlib.ExitStack() as alloc:
+        alloc.enter_context(_flocked(_ALLOC_LOCK))
+        num = _pick_display()
+        (sd / "display").write_text(str(num), encoding="utf-8")
+        env_file = sd / "env"
+        env_file.unlink(missing_ok=True)
 
-    child_env = {k: v for k, v in os.environ.items() if k not in {
-        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"}}
-    child_env.update({
-        "HERMES_BD_PROFILE": _profile_name(),
-        "HERMES_BD_DISPLAY_NUM": str(num),
-        "HERMES_BD_SOCKET": str(sd / "rfb.sock"),
-        "HERMES_BD_XAUTH": str(sd / "Xauthority"),
-        "HERMES_BD_ENV_FILE": str(env_file),
-        "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
-        "HERMES_BD_GEOMETRY": geometry(),
-    })
-    from tools.bot_desktop.browser import dock_exec_line, dock_launch
-    if (browser := dock_launch()) is not None:
-        # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
-        child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
-        child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
-    # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
-    log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
-    proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
-        ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-        start_new_session=True, close_fds=True)
-    log.close()
-    born = _create_time(proc.pid)
-    (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
+        child_env = {k: v for k, v in os.environ.items() if k not in {
+            "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"}}
+        child_env.update({
+            "HERMES_BD_PROFILE": _profile_name(),
+            "HERMES_BD_DISPLAY_NUM": str(num),
+            "HERMES_BD_SOCKET": str(sd / "rfb.sock"),
+            "HERMES_BD_XAUTH": str(sd / "Xauthority"),
+            "HERMES_BD_ENV_FILE": str(env_file),
+            "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
+            "HERMES_BD_GEOMETRY": geometry(),
+        })
+        from tools.bot_desktop.browser import dock_exec_line, dock_launch
+        if (browser := dock_launch()) is not None:
+            # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
+            child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
+            child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
+        # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
+        log = open(sd / "launcher.log", "wb")  # noqa: SIM115 — handed to the child, closed by it
+        proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
+            ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            start_new_session=True, close_fds=True)
+        log.close()
+        born = _create_time(proc.pid)
+        (sd / "launcher.pid").write_text(f"{proc.pid} {born if born is not None else 0}", encoding="utf-8")
 
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            tail = (sd / "launcher.log").read_bytes()[-2000:].decode("utf-8", "replace")
-            raise RuntimeError(f"Bot Desktop launcher exited with {proc.returncode}:\n{tail}")
-        if env_file.exists() and (sd / "rfb.sock").exists():
-            logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
-            return status()
-        time.sleep(0.1)
-    # Giving up must take the launch down: left alone, the launcher publishes DISPLAY and rfb.sock a moment
-    # later and a screen whose start() reported failure stays up as "running". The launcher is its own
-    # session leader, so its group is exactly this launch (Xvnc, dbus, Xfce) and nothing else.
-    _kill_group_then_wait(proc.pid, proc.pid)
-    proc.wait()
-    for name in ("launcher.pid", "env", "rfb.sock"):
-        (sd / name).unlink(missing_ok=True)
-    raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            if _x_lock_pid(num) is not None:
+                alloc.close()  # the number is Xvnc's now; other profiles may allocate (idempotent)
+            if proc.poll() is not None:
+                tail = (sd / "launcher.log").read_bytes()[-2000:].decode("utf-8", "replace")
+                raise RuntimeError(f"Bot Desktop launcher exited with {proc.returncode}:\n{tail}")
+            if env_file.exists() and (sd / "rfb.sock").exists():
+                logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
+                return status()
+            time.sleep(0.1)
+        # Giving up must take the launch down: left alone, the launcher publishes DISPLAY and rfb.sock a moment
+        # later and a screen whose start() reported failure stays up as "running". The launcher is its own
+        # session leader, so its group is exactly this launch (Xvnc, dbus, Xfce) and nothing else.
+        _kill_group_then_wait(proc.pid, proc.pid)
+        proc.wait()
+        for name in ("launcher.pid", "env", "rfb.sock"):
+            (sd / name).unlink(missing_ok=True)
+        raise RuntimeError(f"Bot Desktop did not publish its display within {wait_seconds:.0f}s (see {sd / 'launcher.log'})")
 
 
 def stop() -> bool:

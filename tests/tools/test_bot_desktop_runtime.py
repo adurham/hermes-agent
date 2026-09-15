@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import threading
+import time
 import sys
 from pathlib import Path
 
@@ -254,3 +256,41 @@ def test_readiness_timeout_terminates_the_launch_it_gave_up_on(in_process_runtim
     assert runtime.status().running is False
     for lock in (scratch / "xlocks").glob(".X*-lock"):
         assert _gone(int(lock.read_text())), "the launch's X server must die with its launcher"
+
+
+@pytest.mark.linux_only
+def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runtime):
+    """The host-wide allocation lock exists for the pick→X-lock window only. Holding it for the whole Xfce
+    bring-up serialized every profile's start behind one desktop launch (and a hung launcher blocked them
+    all for the full timeout): once /tmp/.X<n>-lock exists the number is Xvnc's and the lock must be free."""
+    import fcntl
+
+    scratch = in_process_runtime
+    # X lock at once, env file only much later: the lock must be free in between.
+    (scratch / "launcher.sh").write_text(
+        '#!/usr/bin/env bash\necho $$ > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"\n'
+        'sleep 1.5\n: > "$HERMES_BD_SOCKET"\nprintf \'DISPLAY=:%s\\n\' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"\nsleep 30\n',
+        encoding="utf-8")
+    seen: dict = {}
+
+    def probe():
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if list((scratch / "xlocks").glob(".X*-lock")):
+                time.sleep(0.2)  # let start() notice the claim
+                with open(scratch / "alloc.lock", "a+") as fh:
+                    try:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        seen["free"] = True
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                    except OSError:
+                        seen["free"] = False
+                return
+            time.sleep(0.05)
+
+    t = threading.Thread(target=probe)
+    t.start()
+    st = runtime.start(wait_seconds=10)
+    t.join()
+    assert st.running
+    assert seen.get("free") is True, "allocation lock still held after Xvnc wrote its X lock"
