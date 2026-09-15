@@ -87,6 +87,32 @@ def test_declared_extra_gates_match_dependency_selection():
                 )
 
 
+def test_faster_whisper_targets_are_gated(monkeypatch):
+    """The local-STT extra's anchor is faster-whisper, which has no win_arm64 or darwin-x64 build.
+
+    An extra whose anchor can never import there must be refused up front: without the gate,
+    ensure_import rebuilt the whole dependency environment and still failed the anchor — on every
+    status probe, forever. ``voice`` is deliberately NOT gated (its sounddevice/numpy are
+    installable on those targets; see the selection test above), so the lazy STT path asks for
+    ``stt-whisper``, the extra that carries only faster-whisper.
+    """
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
+    targets = {
+        "win32-arm64": {"sys_platform": "win32", "platform_system": "Windows",
+                        "platform_machine": "ARM64", "os_name": "nt"},
+        "darwin-x64": {"sys_platform": "darwin", "platform_system": "Darwin",
+                       "platform_machine": "x86_64", "os_name": "posix"},
+        "linux-x64": {"sys_platform": "linux", "platform_system": "Linux",
+                      "platform_machine": "x86_64", "os_name": "posix"},
+    }
+    supported = {
+        target: extras.extra_supported("stt-whisper", environment=environment,
+                                       importable=lambda _: False)
+        for target, environment in targets.items()
+    }
+    assert supported == {"win32-arm64": False, "darwin-x64": False, "linux-x64": True}
+
+
 @pytest.fixture
 def synced(monkeypatch):
     calls: list[list[str]] = []
