@@ -1207,6 +1207,10 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
 
     profile_dir = create_profile("coder", no_alias=True)
     proc = _live_bot_desktop_launcher(profile_dir)
+    # A human held the screen when the op ran. lease.json moves with a rename; left human-held it would
+    # fence the agent out of the renamed profile's next screen for a viewer that no longer exists.
+    (profile_dir / "bot-desktop" / "lease.json").write_text(
+        json.dumps({"holder": "human", "viewer_id": "gone", "since": 1.0, "epoch": 3, "reason": ""}), encoding="utf-8")
     try:
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
              patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
@@ -1220,6 +1224,9 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
         while time.monotonic() < deadline and runtime._pid_alive(proc.pid):
             time.sleep(0.05)
         assert not runtime._pid_alive(proc.pid), "the launcher was not stopped by the profile op"
+        if op == "rename":
+            moved = json.loads((profile_dir.parent / "hacker" / "bot-desktop" / "lease.json").read_text(encoding="utf-8"))
+            assert moved["holder"] == "agent", "stale human lease survived the teardown"
     finally:
         proc.kill()
 
