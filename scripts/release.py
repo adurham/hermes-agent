@@ -2940,9 +2940,9 @@ def main():
                              "HEAD has no new commits since the last canary")
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
-                             "Add --publish to dispatch without a tag or release. One dispatch: "
-                             "on a fork (any repository other than NousResearch/hermes-agent) "
-                             "the same run allocates a disposable channel and builds it.")
+                             "Add --publish to dispatch without a tag or release. The same "
+                             "direct dispatch runs from any GitHub remote; add --channel NAME "
+                             "to publish into an updatable R2 channel instead of a one-off.")
     parser.add_argument("--bundle-env", action="append", default=[], metavar="NAME=VALUE",
                         help="Bake a non-secret environment default into a commit desktop bundle. "
                              "Repeat for multiple variables. Runtime environment values win.")

@@ -123,24 +123,28 @@ request records its source commit, bundle defaults, channel sequence and package
 versions separately. The existing native build and smoke jobs must all pass
 before the channel head advances.
 
-Preview a custom build, then explicitly dispatch it:
-
-For an official release-authority remote, use the existing publisher configuration.
-Fork channel administration requires a disposable allocation first; even a local
-command refuses to read or write the unscoped release namespace. Dispatch the
-desktop workflow with `disposable_channel` and `build_commit`, then use the exact
-scoped build command in its summary. For local administration of that allocation,
-carry its `R2_DISPOSABLE_RUN` and `GITHUB_REPOSITORY_ID` in the command environment,
-with the configured public URL still at the unscoped root. These are test-run
-inputs, not persistent application settings; the repository ID is checked against
-the selected remote before credentials are read. The examples using `fork` below
-assume that allocation scope is present.
+Preview a custom build, then explicitly dispatch it. Repository identity does
+not select behavior: the same direct dispatch runs from any GitHub remote, and
+the local command reads and writes the production release namespace with the
+configured R2 credentials (every caller already holds the release-signing
+secret). The `gh` user must have write, maintain or admin permission on the
+selected repository.
 
 ```sh
-python scripts/release.py --channel pm-preview --build-commit my-branch --remote fork
-python scripts/release.py --channel pm-preview --build-commit my-branch --remote fork --publish
-python scripts/release.py --channels --remote fork
+python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin
+python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin --publish
+python scripts/release.py --channels --remote origin
 ```
+
+Disposable R2 scoping is opt-in, for test runs only. Dispatch the desktop
+workflow with `disposable_channel` and `build_commit` to allocate a namespace
+under `ci-disposable/<repository-id>/<run-id>/`, then use the exact scoped build
+command from its summary. For local administration of that allocation, carry
+its `R2_DISPOSABLE_RUN` and `GITHUB_REPOSITORY_ID` in the command environment,
+with the configured public URL still at the unscoped root. These are test-run
+inputs, not persistent application settings; the repository ID is checked
+against the selected remote before credentials are read, so a scoped namespace
+still belongs to exactly one repository.
 
 The first publishing invocation creates the channel. Later invocations retain
 its identity. Requests and artifacts live under
@@ -153,7 +157,7 @@ Use the printed build ID and request digest with `--resume-channel-build` and
 Retirement pins the current official stable build as the first receiver:
 
 ```text
-python scripts/release.py --retire-channel pm-preview --to stable --minimum-version VERSION --remote fork
+python scripts/release.py --retire-channel pm-preview --to stable --minimum-version VERSION --remote origin
 ```
 
 Add `--publish` only after reviewing the dry run and the exact native acceptance
