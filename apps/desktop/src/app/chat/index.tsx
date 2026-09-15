@@ -13,6 +13,7 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { GuideGreetingPreview } from '@/components/onboarding-chat/greeting-preview'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
@@ -31,6 +32,7 @@ import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $guideOpening, $onboardingGate } from '@/store/onboarding-gate'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
@@ -419,6 +421,8 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
+  const guideOpening = useStore($guideOpening) && isPrimary
+  const guideStarted = useStoreSelector($onboardingGate, gate => gate.guideKickoff === 'started')
   const activeSessionId = useStore(view.$runtimeId)
 
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
@@ -573,7 +577,7 @@ const ChatViewContent = memo(function ChatViewContent({
   // Hide the composer in the exhausted error state too: there's no live runtime
   // to send to until a retry rebinds one. Watch windows are pure spectators of a
   // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
+  const showChatBar = !guideOpening && !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResult>({
@@ -683,6 +687,7 @@ const ChatViewContent = memo(function ChatViewContent({
       data-chat-unfocused={surfaceFocused ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
+      data-guide-arrived={isPrimary && guideStarted ? '' : undefined}
       data-session-anchor={sessionAnchor}
     >
       <Backdrop />
@@ -716,19 +721,23 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          <Thread
-            clampToComposer={showChatBar}
-            cwd={currentCwd}
-            gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
-            loading={threadLoading}
-            onBranchInNewChat={onBranchInNewChat}
-            onCancel={haltRun}
-            onDismissError={onDismissError}
-            onRestoreToMessage={onRestoreToMessage}
-            sessionId={activeSessionId}
-            sessionKey={threadKey}
-          />
+          {guideOpening ? (
+            <GuideGreetingPreview />
+          ) : (
+            <Thread
+              clampToComposer={showChatBar}
+              cwd={currentCwd}
+              gateway={gateway}
+              intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+              loading={threadLoading}
+              onBranchInNewChat={onBranchInNewChat}
+              onCancel={haltRun}
+              onDismissError={onDismissError}
+              onRestoreToMessage={onRestoreToMessage}
+              sessionId={activeSessionId}
+              sessionKey={threadKey}
+            />
+          )}
           {resumeExhausted && routedSessionId && (
             <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
               <ErrorState

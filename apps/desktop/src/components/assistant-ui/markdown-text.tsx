@@ -448,6 +448,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
 }
 
 interface MarkdownTextSurfaceProps {
+  caret?: ComponentProps<typeof StreamdownTextPrimitive>['caret']
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
@@ -575,6 +576,7 @@ function MarkdownParagraph({
 }
 
 function MarkdownTextSurface({
+  caret,
   containerClassName,
   containerProps,
   defer,
@@ -726,6 +728,7 @@ function MarkdownTextSurface({
       label="markdown-render"
     >
       <StreamdownTextPrimitive
+        caret={caret}
         components={components}
         containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
         containerProps={containerProps}

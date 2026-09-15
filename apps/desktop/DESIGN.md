@@ -283,6 +283,12 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
+- Guide arrival shows the locally known greeting in the transcript position,
+  revealed at 18 graphemes per second with the existing markdown cursor. No
+  status copy or spinner. Composer, Skip setup, and statusbar stay unmounted
+  until the seeded session has been adopted; then controls fade in over 100ms.
+  Reduced motion shows the complete greeting immediately. Never invent a new
+  greeting on a resumed guide or delay backend readiness for the animation.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
   z-index literals. Pick a rung of the ladder in `styles.css` instead —

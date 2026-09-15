@@ -166,7 +166,10 @@ export function useOnboardingKickoff({
       // Set the title explicitly so the backend does not name the session after the hidden runbook message.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
 
-      // session.create has already persisted both seed rows, so the caller may advance the phase.
+      // Creation persists the seed but resets the renderer's transcript. Adopt
+      // it before removing the local greeting, so the handoff has no blank frame.
+      await resumeSession(storedId ?? runtimeId, true)
+
       return true
     } catch (error) {
       $newChatProfile.set(previousNewChatProfile)

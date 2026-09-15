@@ -1,12 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { takeGuideShape } from '@/components/onboarding-chat/assembly'
+import { endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { ackFreeTierNotice, type FreeTierRequester } from '@/store/free-tier'
 import { $introReveal } from '@/store/intro-reveal'
 import { clearFreeTierIntro } from '@/store/onboarding'
-import { $onboardingGate, runGuideKickoff } from '@/store/onboarding-gate'
+import { $onboardingGate, runGuideKickoff, skipGuide } from '@/store/onboarding-gate'
 
 interface OnboardingChatGateProps {
   enabled: boolean
@@ -69,7 +69,16 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
 
   useEffect(() => {
     if (enabled && gate.guideQueued && intro.phase === 'hidden') {
-      void runGuideKickoff(onKickoff)
+      const recover = () => {
+        endChatOnboardingSolo()
+        skipGuide()
+      }
+
+      void runGuideKickoff(onKickoff).then(started => {
+        if (!started) {
+          recover()
+        }
+      }, recover)
     }
   }, [enabled, gate.guideQueued, intro.phase, onKickoff])
 
