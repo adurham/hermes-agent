@@ -155,7 +155,8 @@ container, so the human's Browser and the bot's browser are one and the same.
 ```bash
 hermes computer-use screen status          # installed? running? who holds control?
 hermes computer-use screen start           # start this profile's screen
-hermes computer-use screen stop            # stop it (hands control back first)
+hermes computer-use screen stop            # stop it; refuses while a human holds control
+hermes computer-use screen stop --force    # ...unless you say so (also frees a stuck lease)
 hermes computer-use screen install [-y]    # apt/dnf/pacman the packages
 hermes -p research computer-use screen start   # another bot's screen
 ```
@@ -210,13 +211,18 @@ Xauthority, launcher log, per-profile xfconf).
   the printed install line on the gateway host (not on the machine running
   Hermes Desktop). The pane refuses a second install while one is running.
 - **Screen starts then stops** — read `<HERMES_HOME>/bot-desktop/launcher.log`.
-- **Typing produces wrong characters** — the screen uses a US keymap so RFB
-  keysyms and cua-driver agree; change it with `setxkbmap` on that `DISPLAY`
-  if you need another layout.
+- **Typing produces wrong characters during a takeover** — the screen runs a
+  US keymap so RFB keysyms and cua-driver agree, and noVNC sends raw keycodes
+  (QEMU extended key events) once Xvnc offers them, so on a non-US physical
+  keyboard layout-dependent keys (Y/Z, symbols) land as their US counterparts
+  while you hold control. Type passwords with that in mind, or change the layout
+  with `setxkbmap` on that `DISPLAY`.
 - **Bot says `human_has_control` after you left** — click **Hand back** in the
   pane (or **Hand back (force)** after a reload). From a shell,
-  `hermes computer-use screen stop` releases the lease and stops the screen;
-  `hermes computer-use screen start` brings it back with the bot in control.
+  `hermes computer-use screen stop --force` releases the lease and stops the
+  screen (without `--force` the command refuses while a human holds control, so a
+  runbook can never yank a live takeover); `hermes computer-use screen start`
+  brings it back with the bot in control.
 
 ### Testing under WSL
 
