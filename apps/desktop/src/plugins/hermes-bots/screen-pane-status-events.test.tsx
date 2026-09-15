@@ -78,7 +78,7 @@ const stopped: DisplayStatus = {
   socket: null,
   geometry: '1440x900',
   install_command: null,
-  lease: { holder: 'agent', viewer_id: null, viewer_hash: null, since: 1, reason: '' }
+  lease: { holder: 'agent', viewer_id: null, viewer_hash: null, since: 1, reason: '', epoch: 0 }
 }
 
 const running: DisplayStatus = { ...stopped, running: true, pid: 42, display: ':20' }

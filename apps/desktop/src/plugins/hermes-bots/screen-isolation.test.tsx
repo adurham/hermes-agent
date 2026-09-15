@@ -68,7 +68,7 @@ const status: DisplayStatus = {
   socket: '/tmp/rfb.sock',
   geometry: '1440x900',
   install_command: null,
-  lease: { holder: 'agent', viewer_id: null, since: 1, reason: '' }
+  lease: { holder: 'agent', viewer_id: null, viewer_hash: null, since: 1, reason: '', epoch: 0 }
 }
 
 beforeEach(() => {
@@ -87,7 +87,7 @@ afterEach(() => {
 it('applies lease events only from the owning host even when profile paths match', () => {
   setScreenStatus(botA, status)
   const view = renderHook(() => useScreenPortalState(botA))
-  const human = { ...status.lease, holder: 'human' as const, viewer_id: 'this-viewer' }
+  const human = { ...status.lease, holder: 'human' as const, viewer_hash: 'e0f9a555d558', epoch: status.lease.epoch + 1 }
 
   const emit = (connectionId: string, profileKey = status.profile_key) =>
     act(() =>

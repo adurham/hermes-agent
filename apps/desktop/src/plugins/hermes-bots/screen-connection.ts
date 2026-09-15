@@ -11,50 +11,13 @@
  */
 
 import { host, resolveSiblingWsUrl } from '@hermes/plugin-sdk'
-import type { PluginProfileRoute, RpcEvent } from '@hermes/plugin-sdk'
+import type { DisplayLease, PluginProfileRoute, RpcEvent } from '@hermes/plugin-sdk'
 
 import { botConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
-export interface DisplayLease {
-  holder: 'agent' | 'human'
-  /** Raw holder id — only older backends still broadcast it; newer ones send `viewer_hash`. */
-  viewer_id: null | string
-  /** First 12 hex of sha256(viewer_id): names the holder without leaking a usable id. */
-  viewer_hash?: null | string
-  since: number
-  reason: string
-  /** Monotonic per transition; a lower epoch is an older snapshot, never newer truth. */
-  epoch?: number
-}
-
-export interface DisplayStatus {
-  profile: string
-  profile_key: string
-  supported: boolean
-  installed: boolean
-  missing: string[]
-  running: boolean
-  pid: null | number
-  display: null | string
-  socket: null | string
-  geometry: string
-  install_command: null | string
-  lease: DisplayLease
-}
-
-export interface DisplayThumbnail {
-  data_url: string | null
-  /** Set while a human holds the screen: the frame is withheld, not missing. */
-  suppressed?: 'human_has_control' | null
-}
-
-export interface DisplayObserveResult extends DisplayStatus {
-  ticket: string
-  path: string
-  /** Server-minted per attach: the only id the lease will ever be compared against. */
-  viewer_id: string
-}
+// Wire shapes come from the generated contract (Python is the source: `tui_gateway/contracts/display.py`).
+export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult as DisplayThumbnail } from '@hermes/plugin-sdk'
 
 /** This window's identity for one attach: the minted id plus its lease-payload hash. */
 export interface ScreenViewer {
@@ -73,14 +36,14 @@ export async function viewerHash(viewerId: string): Promise<string> {
     .slice(0, VIEWER_HASH_HEX)
 }
 
-/** Does `viewer` (this window's attach) hold `lease`? Newer backends name the
- *  holder by hash only; a payload still carrying the raw id is compared raw. */
+/** Does `viewer` (this window's attach) hold `lease`? The gateway names the holder by hash only
+ *  (the raw id is a capability and never travels). */
 export function leaseHeldBy(lease: DisplayLease | null | undefined, viewer: ScreenViewer | null | undefined): boolean {
   if (!lease || !viewer || lease.holder !== 'human') {
     return false
   }
 
-  return lease.viewer_id != null ? lease.viewer_id === viewer.id : lease.viewer_hash === viewer.hash
+  return lease.viewer_hash === viewer.hash
 }
 
 /** JSON-RPC method-not-found: the bot's Hermes predates the `display.*` surface. */

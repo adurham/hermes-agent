@@ -195,8 +195,9 @@ def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monk
 
 def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
     """The sudo card is app-level: it goes to the connection that clicked Install (copy_context
-    pins the transport). Honouring params.session_id let a caller route the masked password card
-    into ANOTHER window's chat."""
+    pins the transport) with an EMPTY session. Honouring params.session_id let a caller route the
+    masked password card into ANOTHER window's chat; the wire contract now refuses the key outright
+    (4000), and the request the handler sends carries no session either way."""
     import tui_gateway.server as server
     from tools.bot_desktop import install, runtime
 
@@ -206,7 +207,7 @@ def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
     asked = threading.Event()
     blocks = []
 
-    def fake_block(event, sid, payload, timeout=300, batch_qids=None):
+    def fake_block(event, sid, payload, timeout=300):
         blocks.append((event, sid))
         asked.set()
         return ""
@@ -215,12 +216,14 @@ def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
         ask_password()
         return -1
 
-    monkeypatch.setattr(server, "_block", fake_block)
+    monkeypatch.setattr(server, "_ask", fake_block)
     monkeypatch.setattr(install, "install_packages", fake_install)
-    resp = _call(server, "display.install", {"session_id": "victim-session"})
+    refused = _call(server, "display.install", {"session_id": "victim-session"})
+    assert refused["error"]["code"] == 4000 and "session_id" in refused["error"]["message"], refused
+    resp = _call(server, "display.install", {})
     assert resp["result"]["started"], resp
     assert asked.wait(5)
-    assert blocks and all(sid != "victim-session" for _ev, sid in blocks), blocks
+    assert blocks == [("display.install.sudo", "")], blocks
 
 
 def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_lease):

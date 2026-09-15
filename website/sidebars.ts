@@ -356,6 +356,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/creative/creative-ai-presenter-video',
                     'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-archify',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
@@ -633,6 +634,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/web-development/web-development-har-derived-api-client',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
                     'user-guide/skills/optional/web-development/web-development-publish-site',
+                    'user-guide/skills/optional/web-development/web-development-scrollcraft',
                   ],
                 },
                 {

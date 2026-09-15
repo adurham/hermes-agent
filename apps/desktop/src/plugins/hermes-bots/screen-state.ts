@@ -26,10 +26,9 @@ export function screenStateFor(all: Record<string, BotScreenState>, bot: RosterR
 }
 
 /** A lease whose epoch is below the one we hold is a slower response about the
- *  past (a `display.status` reply overtaken by a `display.lease` event). Payloads
- *  without an epoch — older backends — are always applied. */
+ *  past (a `display.status` reply overtaken by a `display.lease` event). */
 function isOlderLease(prev: DisplayLease | null | undefined, next: DisplayLease): boolean {
-  return typeof next.epoch === 'number' && typeof prev?.epoch === 'number' && next.epoch < prev.epoch
+  return prev != null && next.epoch < prev.epoch
 }
 
 /**
@@ -90,7 +89,6 @@ export function setScreenLease(bot: RosterRow, lease: DisplayLease): void {
   if (
     prev?.lease &&
     prev.lease.holder === lease.holder &&
-    prev.lease.viewer_id === lease.viewer_id &&
     prev.lease.viewer_hash === lease.viewer_hash &&
     prev.lease.epoch === lease.epoch
   ) {

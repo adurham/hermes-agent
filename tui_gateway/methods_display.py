@@ -4,8 +4,8 @@
 process; ``display.observe`` mints a single-use ticket the renderer redeems on ``/api/display/ws``
 (``hermes_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
 Take over / Hand back. ``display.install`` runs the distro package install on the gateway host: sudo
-privilege is asked for through the masked ``display.install.sudo.request`` card (same ``_block`` bridge as
-the terminal tool's sudo prompt), stdout streams as ``display.install.log`` and the run ends with
+privilege is asked for through the masked ``display.install.sudo`` server→client request (same ``_ask``
+bridge as the terminal tool's sudo prompt), stdout streams as ``display.install.log`` and the run ends with
 ``display.install.done`` carrying a fresh status snapshot. Every handler is profile-scoped so a multiplexed gateway answers for the bot
 the pane is looking at. Lease transitions fan out as the global ``display.lease`` event so every
 connected client repaints (badge on the bot row, red border on the viewer, agent handoff prompt).
@@ -196,7 +196,7 @@ def _(rid, params: dict) -> dict:
         # App-level card, no session: it reaches the connection that clicked Install through the
         # transport copy_context() carries below. A client-supplied session_id could route the
         # masked password card into another window's chat, so none is accepted.
-        return _block("display.install.sudo.request", "", {"profile_key": profile_key}, timeout=300)
+        return _ask("display.install.sudo", "", {"profile_key": profile_key}, timeout=300)
 
     def _line(text: str) -> None:
         _broadcast_global_event("display.install.log", {"profile_key": profile_key, "line": text})

@@ -45,7 +45,7 @@ describe('lease epoch ordering', () => {
     expect(screenStateFor($screenState.get(), bot)?.status?.running).toBe(true)
   })
 
-  it('a lease event with an older epoch is ignored; a newer or epoch-less one applies', () => {
+  it('a lease event with an older epoch is ignored; a newer one applies', () => {
     setScreenLease(bot, human)
     setScreenLease(bot, agent)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(human)
@@ -53,10 +53,6 @@ describe('lease epoch ordering', () => {
     const released = { ...agent, epoch: 5 }
     setScreenLease(bot, released)
     expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(released)
-
-    const legacy = { ...human, epoch: undefined }
-    setScreenLease(bot, legacy)
-    expect(screenStateFor($screenState.get(), bot)?.lease).toEqual(legacy)
   })
 
   it('an unchanged-looking lease still advances the cached epoch, so a delayed older takeover is rejected', () => {

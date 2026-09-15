@@ -4,7 +4,7 @@
  *
  * `display.install` starts the distro package command on the host; sudo, when
  * needed, arrives as the same masked password card the terminal tool uses
- * (`display.install.sudo.request`), so the password never touches this pane.
+ * (the `display.install.sudo` server request), so the password never touches this pane.
  * Output streams back as `display.install.log`; `display.install.done` carries
  * a fresh status the caller uses to flip the pane to "Start screen".
  */

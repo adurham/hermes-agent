@@ -68,7 +68,7 @@ function useLiveThumbnail(bot: RosterRow, running: boolean) {
       void displayRequest<DisplayThumbnail>(bot, 'display.thumbnail')
         .then(result => {
           if (!cancelled) {
-            setDataUrl(result.data_url)
+            setDataUrl(result.data_url ?? null)
             setSuppressed(result.suppressed === 'human_has_control')
             setMisses(0)
           }
