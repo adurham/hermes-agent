@@ -317,10 +317,10 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     wheels = revision / shard
     waste = {
         revision / "src/target/release/build.exe": b"build output",
-        wheels / "cache_proof-1.0-py3-none-any.whl": b"redundant ZIP",
     }
     kept = {
         wheels / "metadata.msgpack": b"wheel metadata",
+        wheels / "cache_proof-1.0-py3-none-any.whl": b"built wheel ZIP ships for offline rebuilds",
         revision.parent / pointer: b"revision pointer",
         wheels / "cache_proof-1.0-py3-none-any/src/template.whl": b"package data",
         Path("archive-v0/entry/cache_proof/src/__init__.py"): b"archive data",
@@ -345,18 +345,59 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
 
 
-def test_staged_cache_slim_ships_built_only_and_rebuilds_online_without_compiling(tmp_path):
+SELF_BUILD_BACKEND = '''import os, zipfile
+
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    name = "cache_proof-1.0.0-py3-none-any.whl"
+    path = os.path.join(wheel_directory, name)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("cache_proof/__init__.py", "VALUE = 'installed from cached wheel'\\n")
+        info = "cache_proof-1.0.0.dist-info/"
+        zf.writestr(info + "METADATA", "Metadata-Version: 2.1\\nName: cache-proof\\nVersion: 1.0.0\\n")
+        zf.writestr(
+            info + "WHEEL",
+            "Wheel-Version: 1.0\\nGenerator: selfbuild\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
+        )
+        zf.writestr(info + "RECORD", "")
+    return name
+
+
+def build_sdist(sdist_directory, config_settings=None):
+    raise NotImplementedError
+
+
+def get_requires_for_build_wheel(config_settings=None):
+    return []
+
+
+def get_requires_for_build_sdist(config_settings=None):
+    return []
+
+
+def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
+    path = os.path.join(metadata_directory, "cache_proof-1.0.0.dist-info")
+    os.mkdir(path)
+    with open(os.path.join(path, "METADATA"), "w") as handle:
+        handle.write("Metadata-Version: 2.1\\nName: cache-proof\\nVersion: 1.0.0\\n")
+    return "cache_proof-1.0.0.dist-info"
+'''
+
+
+def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
     from tests.pm._fixtures import _wheel
 
     uv = shutil.which("uv")
     assert uv, "native bundle test requires uv"
     package = tmp_path / "package"
     package.mkdir()
+    # Self-contained PEP 517 backend (stdlib only, requires=[]): the offline
+    # rebuild below must not depend on build tools absent from the fixture.
     (package / "pyproject.toml").write_text(
-        '[project]\nname="cache-proof"\nversion="1.0.0"\n'
-        '[build-system]\nrequires=["setuptools"]\nbuild-backend="setuptools.build_meta"\n',
+        '[build-system]\nrequires=[]\nbuild-backend="selfbuild"\nbackend-path=["."]\n',
         encoding="utf-8",
     )
+    (package / "selfbuild.py").write_text(SELF_BUILD_BACKEND, encoding="utf-8")
     (package / "cache_proof.py").write_text("VALUE = 'installed from cached wheel'\n", encoding="utf-8")
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -385,14 +426,15 @@ def test_staged_cache_slim_ships_built_only_and_rebuilds_online_without_compilin
     thread.start()
     index_url = f"http://127.0.0.1:{server.server_port}/simple"
     try:
-        subprocess.run(
+        warm = subprocess.run(
             [uv, "pip", "install", "--python", sys.executable, "--target", str(tmp_path / "first"),
-             "--no-build-isolation", "--no-deps", "--index-url", index_url,
+             "--no-deps", "--index-url", index_url,
              "cache-proof==1.0.0", "wheel-proof==1.0"],
-            env=env, cwd=tmp_path, capture_output=True, text=True, check=True, timeout=60,
+            env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60,
         )
+        assert warm.returncode == 0, warm.stderr + warm.stdout
         locked = subprocess.run(
-            [uv, "lock", "--python", sys.executable, "--index-url", index_url, "--no-build-isolation"],
+            [uv, "lock", "--python", sys.executable, "--index-url", index_url],
             env=env, cwd=project, capture_output=True, text=True, timeout=60,
         )
         assert locked.returncode == 0, locked.stderr
@@ -408,26 +450,19 @@ def test_staged_cache_slim_ships_built_only_and_rebuilds_online_without_compilin
         assert sources, "the actual uv build must leave its source tree in the cache"
         shipped = tmp_path / "payload/uv-cache"
         native.stage_uv_cache(cache, shipped)
-        kept = native.prune_uv_cache_to_built(shipped, project)
-        assert not list(shipped.rglob("*.whl")) or kept["wheels"], "built wheels survive the slim"
         assert all(not (shipped / path.relative_to(cache)).exists() for path in sources)
         assert all(path.exists() for path in [*built_zips, *sources]), "the build machine's cache must not change"
-        # The slim ships only what was built: cache-proof (sdist-only) survives,
-        # wheel-proof (a downloadable wheel) is dropped as re-downloadable.
-        assert "cache-proof" in kept["sdists"]
-        assert "wheel-proof" not in kept["sdists"] and "wheel-proof" not in kept["wheels"]
-        assert not any(shipped.rglob("wheel_proof*")), "downloadable wheels leave the shipped cache"
+        # The full cache ships every wheel the build resolved, downloadable
+        # or built: a per-install venv rebuild must not depend on network
+        # reachability for any package the payload already shipped.
+        assert any(shipped.rglob("wheel_proof*")), "downloadable wheels ship in the full cache"
 
-        # A fresh mutable venv rebuilds ONLINE from the slim cache: the
-        # sdist-only package installs from the shipped built content — no
-        # compiler, no source tree — while the downloadable package comes
-        # back from the index (--frozen installs the lock's baked URLs, so
-        # the rebuild must reach the same origin the lock recorded).
+        # A fresh mutable venv rebuilds OFFLINE from the shipped cache alone.
         shutil.rmtree(cache, ignore_errors=True)
         shutil.rmtree(tmp_path / "first", ignore_errors=True)
         shutil.rmtree(project / ".venv", ignore_errors=True)
         result = subprocess.run(
-            [uv, "sync", "--python", sys.executable, "--frozen", "--index-url", index_url],
+            [uv, "sync", "--python", sys.executable, "--frozen", "--offline"],
             env={**env, "UV_CACHE_DIR": str(shipped)}, cwd=project,
             capture_output=True, text=True, timeout=60,
         )
