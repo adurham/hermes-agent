@@ -310,6 +310,71 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
         native._stage_native(args)
 
 
+def test_staged_cache_prunes_entries_the_lock_cannot_resolve(tmp_path, monkeypatch):
+    """Ship gate: a rolled CI cache snapshot carries wheels for superseded pins;
+    the staged payload cache must contain exactly what the shipped lock resolves."""
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text(
+        "[[package]]\n"
+        'name = "keep-me"\n'
+        'version = "1.0.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        "\n"
+        "[[package]]\n"
+        'name = "also-keep"\n'
+        'version = "2.0.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n',
+        encoding="utf-8",
+    )
+    cache = tmp_path / "cache"
+    buckets = {
+        "keep-me": ("keep_me-1.0.0.dist-info", True),
+        "also-keep": ("also_keep-2.0.0.dist-info", True),
+        "superseded-pin": ("superseded_pin-0.9.9.dist-info", False),
+        "old-dependency": ("old_dependency-3.2.1.dist-info", False),
+    }
+    for bucket, (dist_info, _keep) in buckets.items():
+        path = cache / "archive-v0" / bucket / dist_info
+        path.parent.mkdir(parents=True)
+        path.write_text("", encoding="utf-8")
+    # an unversioned bucket (no dist-info) must survive — it is not identifiable
+    unknown = cache / "archive-v0" / "unknownbucket"
+    unknown.mkdir(parents=True)
+    (unknown / "data.bin").write_bytes(b"x")
+    pruned = native.prune_uv_cache_to_lock(cache, lock)
+    assert pruned == 2
+    assert (cache / "archive-v0" / "keep-me").is_dir()
+    assert (cache / "archive-v0" / "also-keep").is_dir()
+    assert not (cache / "archive-v0" / "superseded-pin").exists()
+    assert not (cache / "archive-v0" / "old-dependency").exists()
+    assert (unknown / "data.bin").exists()
+
+
+def test_staged_cache_prunes_wheel_index_entries_outside_the_lock(tmp_path):
+    lock = tmp_path / "repo"
+    lock.mkdir()
+    (lock / "uv.lock").write_text(
+        "[[package]]\n"
+        'name = "keep-me"\n'
+        'version = "1.0.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n',
+        encoding="utf-8",
+    )
+    cache = tmp_path / "cache"
+    for entry in ("keep-me", "superseded-pin"):
+        path = cache / "wheels-v6" / "pypi" / entry
+        path.mkdir(parents=True)
+        (path / "metadata.msgpack").write_bytes(b"")
+    sdist = cache / "sdists-v9" / "pypi" / "old-sdist-only"
+    sdist.mkdir(parents=True)
+    (sdist / "metadata.msgpack").write_bytes(b"")
+    native.prune_uv_cache_to_lock(cache, lock)
+    assert (cache / "wheels-v6" / "pypi" / "keep-me").is_dir()
+    assert not (cache / "wheels-v6" / "pypi" / "superseded-pin").exists()
+    assert not (cache / "sdists-v9" / "pypi" / "old-sdist-only").exists()
+
+
 @pytest.mark.parametrize("pointer, shard", [("revision.http", ""), ("revision.rev", "build-settings")])
 def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, pointer, shard):
     cache = tmp_path / "cache"

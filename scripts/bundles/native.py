@@ -52,6 +52,54 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 
 
+def _lock_package_names(source_repo: Path) -> set[str]:
+    """Dist names the shipped lock can resolve; the ship contract for the cache."""
+    import tomllib
+
+    data = tomllib.loads((source_repo / "uv.lock").read_text(encoding="utf-8"))
+    return {entry["name"].lower().replace("_", "-") for entry in data["package"]}
+
+
+def prune_uv_cache_to_lock(cache: Path, source_repo: Path) -> int:
+    """Delete cache entries for dists the lock cannot resolve.
+
+    The CI cache is a rolling snapshot restored by prefix after dependency
+    changes, so it accumulates wheels for superseded pins. Shipping that
+    sediment would bloat every bundle; the lock is the ship contract.
+    Returns the pruned entry count for the build log.
+    """
+    import re
+
+    keep = _lock_package_names(source_repo)
+    dist_info = re.compile(r"([A-Za-z0-9_.]+?)-\d[^-]*\.dist-info")
+
+    def dist_name(bucket: Path) -> str | None:
+        for marker_file in bucket.glob("*.dist-info"):
+            match = dist_info.match(marker_file.name)
+            if match:
+                return match.group(1).lower().replace("_", "-")
+        return None
+
+    pruned = 0
+    archive = cache / "archive-v0"
+    if archive.is_dir():
+        for bucket in archive.iterdir():
+            if not bucket.is_dir():
+                continue
+            name = dist_name(bucket)
+            if name is not None and name not in keep:
+                shutil.rmtree(bucket, ignore_errors=True)
+                pruned += 1
+    for family_dir in (*cache.glob("wheels-v*/pypi"), *cache.glob("sdists-v*/pypi")):
+        if not family_dir.is_dir():
+            continue
+        for entry in family_dir.iterdir():
+            if entry.is_dir() and entry.name.lower().replace("_", "-") not in keep:
+                shutil.rmtree(entry, ignore_errors=True)
+                pruned += 1
+    return pruned
+
+
 def stage_uv_cache(source: Path, destination: Path) -> None:
     """Ship everything a per-install venv rebuild resolves from offline.
 
@@ -241,7 +289,8 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     if src_cache.is_dir():
         print(f"  uv-cache: copying {src_cache} → payload...", flush=True)
         stage_uv_cache(src_cache, payload_cache)
-        print("✓ uv-cache (full — offline rebuilds resolve from shipped wheels)", flush=True)
+        pruned = prune_uv_cache_to_lock(payload_cache, repo_dir)
+        print(f"✓ uv-cache (lock-scoped: pruned {pruned} stale entries; offline rebuilds resolve from shipped wheels)", flush=True)
     else:
         raise InstallError("uv-cache", "runtime dependency cache is missing")
 
