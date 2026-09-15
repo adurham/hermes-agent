@@ -13,7 +13,6 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { GuideGreetingPreview } from '@/components/onboarding-chat/greeting-preview'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
@@ -721,9 +720,7 @@ const ChatViewContent = memo(function ChatViewContent({
           data-slot="composer-bounds"
           {...dropHandlers}
         >
-          {guideOpening ? (
-            <GuideGreetingPreview />
-          ) : (
+          {!guideOpening && (
             <Thread
               clampToComposer={showChatBar}
               cwd={currentCwd}

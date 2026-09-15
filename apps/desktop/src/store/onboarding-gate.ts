@@ -48,7 +48,10 @@ let guideKickoff: GuideKickoff = { status: 'idle' }
 export const $guideOpening = computed(
   [$onboardingGate, $introReveal],
   (gate, intro) =>
-    isOnboardingEnabled() && gate.guideQueued && intro.phase === 'hidden' && gate.guideKickoff !== 'started'
+    isOnboardingEnabled() &&
+    (gate.phase === 'cinematic' || gate.phase === 'guided') &&
+    intro.phase === 'hidden' &&
+    gate.guideKickoff !== 'started'
 )
 
 function setGuideKickoff(state: GuideKickoff): void {

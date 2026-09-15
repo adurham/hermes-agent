@@ -283,12 +283,13 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
-- Guide arrival shows the locally known greeting in the transcript position,
-  revealed at 18 graphemes per second with the existing markdown cursor. No
-  status copy or spinner. Composer, Skip setup, and statusbar stay unmounted
-  until the seeded session has been adopted; then controls fade in over 100ms.
-  Reduced motion shows the complete greeting immediately. Never invent a new
-  greeting on a resumed guide or delay backend readiness for the animation.
+- Guide startup has a dedicated landing screen with the shared long-operation
+  Loader and a localized startup label. It remains active until the guide's
+  saved conversation is loaded. No greeting, composer, Skip setup, or statusbar
+  appears early. Reduced motion uses a static BrandMark and the same label.
+  On readiness, reveal the real conversation and fade controls in over 100ms.
+  Never fabricate progress, delay readiness for motion, or replace a resumed
+  conversation with a new greeting.
 - Respect `AppShell` overlay ownership. Persistent terminal/content layers,
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
   z-index literals. Pick a rung of the ladder in `styles.css` instead —
