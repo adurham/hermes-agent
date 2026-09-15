@@ -435,7 +435,11 @@ describe('quickstart', () => {
     ])
     renderPane()
 
-    expect(await screen.findByText('Qwen3.6 27B — 17.6 GB')).toBeTruthy()
+    // The hero names the model and shows the composed status line
+    // (state · bytes · speed · ETA) while the job runs; the raw backend
+    // detail is only the lead when there are no bytes to report yet.
+    expect(await screen.findByText('Qwen3.6 27B')).toBeTruthy()
+    expect(await screen.findByText(/^Downloading · /)).toBeTruthy()
     // One job, one view: no setup or model-choice buttons while it runs.
     expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
   })

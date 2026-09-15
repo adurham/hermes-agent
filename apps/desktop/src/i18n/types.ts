@@ -1165,6 +1165,9 @@ export interface Translations {
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
+      downloadStatusRunning: string
+      downloadSpeed: (rate: string) => string
+      downloadEta: (time: string) => string
       downloadPausedLabel: string
       downloadPauseAction: string
       downloadResumeAction: string

@@ -58,8 +58,8 @@ import { notify, notifyError } from '@/store/notifications'
 import type { LocalCatalogModel, LocalRuntimeJob } from '@/types/hermes'
 
 import {
+  downloadStatusText,
   gbLabel,
-  isDownloadPhase,
   LocalModelDownloadActions,
   LocalModelDownloadProgress,
   ProgressBar
@@ -315,17 +315,13 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
 
             {qJob ? (
               <>
-                {/* Byte counter only while bytes actually move: each stage
-                    recomputes percent against ITS OWN download plan, and a
-                    stage hand-off resets the counter by design — showing it
-                    across a hand-off would read as progress loss. Paused
-                    rows keep the frozen counter they parked with. */}
+                {/* The shared status line: state · bytes · speed · ETA. Each
+                    stage recomputes percent against ITS OWN download plan, so
+                    the composer drops speed/ETA when bytes aren't moving —
+                    showing a stale rate across a stage hand-off would read as
+                    progress loss. A paused job keeps its frozen counter. */}
                 <p className="mt-2 min-h-10 text-[0.8rem] leading-5 text-muted-foreground">
-                  {qJob.status === 'paused'
-                    ? copy.downloadPausedLabel
-                    : isDownloadPhase(qJob) && (qJob.detail || qJob.total_bytes)
-                      ? qJob.detail || copy.downloadProgress(gbLabel(qJob.done_bytes), gbLabel(qJob.total_bytes))
-                      : qJob.detail || copy.installing}
+                  {downloadStatusText(qJob, copy)}
                 </p>
 
                 <div className="mt-5">
@@ -674,13 +670,7 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
                     <div className="mt-2 grid gap-1">
                       <ProgressBar paused={dJob.status === 'paused'} percent={dJob.percent} />
 
-                      <p className="text-[0.68rem] text-muted-foreground">
-                        {dJob.status === 'paused'
-                          ? copy.downloadPausedLabel
-                          : !dJob.done_bytes && dJob.detail
-                            ? dJob.detail
-                            : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
-                      </p>
+                      <p className="text-[0.68rem] text-muted-foreground">{downloadStatusText(dJob, copy)}</p>
                     </div>
                   ) : undefined
                 }
@@ -1123,11 +1113,7 @@ function BrowseSection({ owner, onChanged }: { owner: LocalModelsOwner; onChange
                             <ProgressBar paused={dJob.status === 'paused'} percent={dJob.percent} />
 
                             <span className="text-[0.68rem] text-muted-foreground">
-                              {dJob.status === 'paused'
-                                ? copy.downloadPausedLabel
-                                : !dJob.done_bytes && dJob.detail
-                                  ? dJob.detail
-                                  : copy.downloadProgress(gbLabel(dJob.done_bytes), gbLabel(dJob.total_bytes))}
+                              {downloadStatusText(dJob, copy)}
                             </span>
 
                             <LocalModelDownloadActions job={dJob} owner={owner} />

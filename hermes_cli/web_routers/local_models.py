@@ -9,6 +9,7 @@ start-POST -> {job_id} -> GET poll with byte progress.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import logging
@@ -51,6 +52,11 @@ _QUICKSTART_LOCK = threading.Lock()
 _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
 _DOWNLOAD_PHASES = frozenset({"starting", "installing-runtime", "downloading-runtime", "downloading"})
+# Trailing window the transfer rate averages over. Long enough that a bursty
+# tick (a chunk flush, a mirror switch) doesn't spike the estimate, short
+# enough that the number tracks what the link is doing NOW.
+_RATE_WINDOW = 8.0
+_RATE_MIN_ELAPSED = 0.5  # below this a two-sample slope is noise, not a rate
 _SERVER_START_FAILED = "The local server could not start — check the runtime is installed"
 
 
@@ -135,6 +141,48 @@ def _job(kind: str, target: str, model_id: str | None = None) -> Dict[str, Any]:
     return job
 
 
+def _rate_and_eta(samples: "collections.deque[tuple[float, int]]", done: int,
+                  total: int | None) -> "tuple[float | None, int | None]":
+    """Transfer rate and remaining seconds from a trailing sample window.
+
+    The rate is the slope across the window, not the last two ticks, so a
+    burst reads as throughput rather than a spike. Anything that cannot be
+    turned into an honest number (one sample, a window too short to divide
+    by, a transfer that hasn't moved) reports unknown rather than a guess.
+    """
+    first_at, first_done = samples[0]
+    elapsed = samples[-1][0] - first_at
+    if elapsed < _RATE_MIN_ELAPSED or done <= first_done:
+        return None, None
+    rate = (done - first_done) / elapsed
+    if total:
+        return rate, max(0, round(max(0, total - done) / rate))
+    return rate, None
+
+
+def _record_rate(job: Dict[str, Any], done: int) -> None:
+    """Refresh the job's smoothed rate + ETA from the sample it just reported.
+
+    Samples live on the running entry, not the job, so the wire payload stays
+    the derived facts and the history dies with the transfer.
+    """
+    running = _RUNNING.get(job["job_id"])
+    if running is None:
+        return
+    now = time.monotonic()
+    samples = running.setdefault("samples", collections.deque())
+    samples.append((now, done))
+    while len(samples) > 1 and now - samples[0][0] > _RATE_WINDOW:
+        samples.popleft()
+    rate, eta = _rate_and_eta(samples, done, job.get("total_bytes"))
+    if rate is None:
+        job.pop("bytes_per_sec", None)
+        job.pop("eta_seconds", None)
+    else:
+        job["bytes_per_sec"] = rate
+        job["eta_seconds"] = eta
+
+
 def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(job)
     running = _RUNNING.get(job["job_id"], {})
@@ -145,6 +193,11 @@ def _job_view(job: Dict[str, Any]) -> Dict[str, Any]:
     out["can_resume"] = out["status"] == "paused" and "resume" in running
     if out["total_bytes"]:
         out["percent"] = min(100, round(out["done_bytes"] / out["total_bytes"] * 100))
+    # A rate and ETA describe a transfer in motion; a parked or settled job
+    # would otherwise freeze a stale speed that reads as the live one.
+    if out["status"] != "running":
+        out.pop("bytes_per_sec", None)
+        out.pop("eta_seconds", None)
     return out
 
 
@@ -207,6 +260,11 @@ def _spawn_job(job: Dict[str, Any], name: str, body: Callable[[], None], *, fail
                 guard.release()
                 return False
             pause.clear()
+            # A resume starts a fresh window: the gap parked in the queue
+            # would otherwise read as a rate of roughly zero bytes/sec.
+            running = _RUNNING.get(job["job_id"])
+            if running is not None:
+                running.pop("samples", None)
             job["status"] = "running"
             job["error"] = None
         try:
@@ -359,6 +417,7 @@ def _download_progress_hook(job: Dict[str, Any]):
     def tick(done: int, total: int, ranges: dict) -> None:
         with _JOBS_LOCK:
             job.update(done_bytes=done, total_bytes=total or None, ranges=ranges)
+            _record_rate(job, done)
     return tick
 
 
