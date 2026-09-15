@@ -288,7 +288,13 @@ def main(argv: list[str] | None = None) -> None:
         parser.error('--public-base is only supported for fetch')
     if args.channel_request:
         request = json.loads(args.channel_request.read_text(encoding="utf-8-sig"))
-        if args.tag or args.commit_build or (args.commit and args.commit != request.get("commit")):
+        # One-dispatch runs export HERMES_PAYLOAD_TAG/HERMES_BUILD_COMMIT to
+        # every leg, and argparse defaults pick them up even when the leg's
+        # explicit args name only --channel-request. A commit equal to the
+        # request's own is provenance, not selection; only a genuinely
+        # different commit (or any tag) is an override attempt.
+        if args.tag or (args.commit_build and args.commit_build != request.get("commit")) \
+                or (args.commit and args.commit != request.get("commit")):
             parser.error("Channel requests cannot select a tag or another commit")
         if args.command == "stage":
             if len(args.name) != 1 or not args.include:

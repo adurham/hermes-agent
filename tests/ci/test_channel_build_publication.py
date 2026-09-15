@@ -335,6 +335,15 @@ def test_channel_windows_record_stage_and_assembly_handoff_shell(tmp_path, r2_se
     script = workflow_step("desktop-bundled-release.yml", "build-win32-commit", "Record and stage channel windows packages")
     result = run_shell(tmp_path, r2_server, script, env)
     assert result.returncode == 0, result.stdout + result.stderr
+    # One-dispatch: the env-default commit equals the request's own, which is
+    # provenance, not selection — the channel stage must accept it.
+    for key in ("metadata-windows-x64.json", "handoff-win32-x64.json"):
+        r2_server.store.pop(prefix + key)
+    result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT=request["commit"]))
+    assert result.returncode == 0, result.stdout + result.stderr
+    # A different commit stays an override attempt (and stages nothing).
+    result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT="d" * 40))
+    assert result.returncode != 0 and "another commit" in result.stderr
     receipt_key = handoff.channel_prefix(request) + "handoff-win32-x64.json"
     receipt = json.loads(r2_server.store[receipt_key][0])
     assert receipt["request"] == request
