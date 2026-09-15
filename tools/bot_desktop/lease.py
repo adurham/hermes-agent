@@ -170,6 +170,8 @@ def acquire(viewer_id: str, *, profile_key: Optional[str] = None, reason: str = 
     """Human ``viewer_id`` takes control. Last writer wins: a second viewer evicts the first, and the
     RFB bridge closes the evicted socket so its UI drops to view-only."""
     def _m(lease: Lease) -> bool:
+        if lease.holder == HUMAN and lease.viewer_id == viewer_id:
+            return False  # already theirs: no epoch bump, `since` and the reason on screen stay put
         # The agent's ask ("please log in to X") stays as the takeover reason: the human needs it
         # on screen WHILE they act, not only before they clicked Take over.
         lease.holder, lease.viewer_id, lease.since = HUMAN, viewer_id, time.time()
@@ -193,6 +195,10 @@ def release(viewer_id: Optional[str] = None, *, profile_key: Optional[str] = Non
             # Ignored, not an error: the returned lease still shows the real holder. Logged so a
             # caller that never inspects the return value leaves a trace.
             logger.info("bot-desktop lease: release by %r ignored, another viewer holds", viewer_id)
+            return False
+        if lease.holder == AGENT:
+            # Already the agent's. Bumping the epoch here would make a legitimately admitted in-flight
+            # agent action (a double-clicked Hand back, a stray CLI stop) look overtaken and get voided.
             return False
         lease.holder, lease.viewer_id, lease.since, lease.reason = AGENT, None, time.time(), ""
         return True

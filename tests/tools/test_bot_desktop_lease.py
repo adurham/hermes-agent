@@ -193,3 +193,16 @@ def test_lease_files_are_private_even_when_the_lease_is_written_before_the_scree
     for path in (sd, sd / "lease.json", sd / "lease.lock"):
         assert path.exists(), path
         assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, f"{path.name} is {oct(path.stat().st_mode)}"
+
+
+def test_no_op_transitions_do_not_bump_the_epoch():
+    """Callers void an admitted in-flight action when the epoch moved. A release on an agent-held lease
+    (double-clicked Hand back, a stray CLI stop) or the same viewer re-acquiring changes nothing real, so
+    it must not make a legitimate agent action look overtaken."""
+    e0 = lease.get().epoch
+    assert lease.release().epoch == e0
+    got = lease.acquire("v1", reason="log in please")
+    assert got.epoch == e0 + 1
+    again = lease.acquire("v1")
+    assert again.epoch == got.epoch and again.reason == "log in please" and again.since == got.since
+    assert lease.acquire("v2").epoch == got.epoch + 1  # a different viewer IS a transition
