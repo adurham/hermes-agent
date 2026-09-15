@@ -1,5 +1,9 @@
 # Source this file to sync and apply the PM environment; deactivate restores it.
 $ErrorActionPreference = 'Stop'
+
+$OutputEncoding = [System.Console]::OutputEncoding = [System.Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$PSDefaultParameterValues['*:Encoding'] = 'utf8'
+
 $repo = $PSScriptRoot
 $bootstrapSaved = @{}
 foreach ($key in @('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV')) {
