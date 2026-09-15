@@ -427,12 +427,13 @@ jobs:
       - name: Resolve the builder toolchain versions
         id: electron-tools
         shell: bash
-        run: node -e '
+        run: |
+          node -e '
             const l = require("./package-lock.json")
             const eb = l.packages["node_modules/electron-builder"].version
             if (!eb) process.exit(1)
             console.log("eb=" + eb)
-          '
+          ' >> "$GITHUB_OUTPUT"
 
       - name: Restore the electron-builder toolchain cache
         id: electron-tools-restore
@@ -725,12 +726,13 @@ jobs:
       - name: Resolve the builder toolchain versions
         id: electron-tools
         shell: bash
-        run: node -e '
+        run: |
+          node -e '
             const l = require("./package-lock.json")
             const eb = l.packages["node_modules/electron-builder"].version
             if (!eb) process.exit(1)
             console.log("eb=" + eb)
-          '
+          ' >> "$GITHUB_OUTPUT"
 
       - name: Restore the electron-builder toolchain cache
         id: electron-tools-restore
