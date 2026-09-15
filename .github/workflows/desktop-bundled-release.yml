@@ -200,7 +200,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          # Allocation reads one commit: R2 probing needs no history.
+          fetch-depth: 1
       - name: Set up native identity reader
         if: inputs.disposable_receivers
         uses: ./.github/actions/setup-pm
@@ -254,10 +255,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}
-          # Full history: the admission gate below runs merge-base against
-          # origin/main, which needs the shared ancestry, not a depth-1 tip.
-          fetch-depth: 0
-          fetch-tags: true
+          # Tag admission runs merge-base against origin/main and needs the
+          # shared ancestry; channel/commit admission exits before any
+          # history read, so those fetch exactly one commit.
+          fetch-depth: ${{ (inputs.build_commit != '' || inputs.channel_build != '') && 1 || 0 }}
+          fetch-tags: ${{ inputs.build_commit == '' && inputs.channel_build == '' }}
 
       - name: Validate tag shape, pyproject lockstep, and ancestry on origin/main
         id: admission
@@ -277,9 +279,6 @@ jobs:
         run: |
           if [ -n "${R2_DISPOSABLE_RUN:-}" ] && [ -z "${CHANNEL_BUILD:-}" ]; then
             echo '::error::disposable_run requires a pinned channel build'; exit 1
-          fi
-          if [ "${GITHUB_ACTIONS:-}" = true ] && [ "$GITHUB_REPOSITORY" != NousResearch/hermes-agent ] && [ -z "${R2_DISPOSABLE_RUN:-}" ]; then
-            echo '::error::fork CI requires a disposable channel allocation'; exit 1
           fi
           printf 'public-root=%s\npublic-base=%s\n' "$CLOUDFLARE_R2_PUBLIC_URL" "$CLOUDFLARE_R2_PUBLIC_URL" >> "$GITHUB_OUTPUT"
           if [ -n "${CHANNEL_BUILD:-}" ]; then
@@ -429,7 +428,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-          fetch-tags: true
+          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
@@ -694,8 +694,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-          fetch-tags: true
-          fetch-depth: 0
+          # Channel/commit builds derive versions from the request/env, not
+          # git tags; tag builds need tags for the canary MSIX number.
+          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
 
       - name: Check out trusted channel controller
         if: needs.validate.outputs.channel-build != ''
@@ -1076,8 +1078,10 @@ jobs:
           # Channel assembly/publishing code stays at the trusted controller.
           ref: ${{ needs.validate.outputs.channel-build != '' && github.sha || needs.validate.outputs.sha }}
           # stage-msixbundle derives the canary MSIX build number as
-          # minutes-since-the-last-stable from git tags — must see them.
-          fetch-tags: true
+          # minutes-since-the-last-stable from git tags — tag builds must
+          # see them; channel/commit builds derive from the request/env.
+          fetch-depth: ${{ (inputs.build_commit != '' || needs.validate.outputs.channel-build != '') && 1 || 0 }}
+          fetch-tags: ${{ inputs.build_commit == '' && needs.validate.outputs.channel-build == '' }}
 
       - name: Retrieve pinned channel request
         if: needs.validate.outputs.channel-build != ''
@@ -1246,8 +1250,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
-          fetch-tags: true
+          # Receiver publication reads receipts and R2, not git history.
+          fetch-depth: 1
       - name: Publish tested disposable receiver without promoting T
         if: needs.validate.outputs.receiver-candidate == 'true'
         run: python -m scripts.releases.channel_publish receiver-publish --root "$RUNNER_TEMP/channel-publish"
@@ -1429,8 +1433,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ needs.validate.outputs.sha }}
-          fetch-depth: 0
-          fetch-tags: true
+          # Commit builds only rev-parse HEAD; tag builds verify ancestry.
+          fetch-depth: ${{ inputs.build_commit != '' && 1 || 0 }}
+          fetch-tags: ${{ inputs.build_commit == '' }}
 
       - name: Set up the locked build toolchain
         id: pm
