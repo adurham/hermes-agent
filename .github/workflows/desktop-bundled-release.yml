@@ -166,68 +166,11 @@ env:
   R2_DISPOSABLE_RUN: ${{ inputs.disposable_run || (inputs.disposable_channel != '' && github.run_id) || '' }}
 
 jobs:
-  allocate-disposable:
-    name: Allocate disposable channel and probe CAS/CDN
-    if: >-
-      inputs.disposable_channel != '' && github.event_name == 'workflow_dispatch'
-      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-      && github.workflow_ref == format('{0}/.github/workflows/desktop-bundled-release.yml@refs/heads/{1}', github.repository, github.event.repository.default_branch)
-    runs-on: ubuntu-24.04
-    environment: release-signing
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
-      DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
-      BUILD_COMMIT: ${{ inputs.build_commit }}
-      CHANNEL_BUILD: ${{ inputs.channel_build }}
-      CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
-      TAG: ${{ inputs.tag }}
-      RELEASE_PHASE: ${{ inputs.release-phase }}
-      TERMUX_ONLY: ${{ inputs.termux_only }}
-      TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
-      UPLOAD_RELEASE: ${{ inputs.upload_release }}
-      BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-      GH_TOKEN: ${{ github.token }}
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.sha }}
-          # Allocation reads one commit: R2 probing needs no history.
-          fetch-depth: 1
-      - name: Set up native identity reader
-        if: inputs.disposable_receivers
-        uses: ./.github/actions/setup-pm
-        with:
-          toolchain: node
-          cache-python: false
-          archive-inputs: false
-      - name: Probe scoped storage and allocate without dispatching
-        id: allocate
-        run: python -m scripts.releases.channel_disposable
-    outputs:
-      channel_build: ${{ steps.allocate.outputs.channel_build }}
-      channel_request_sha256: ${{ steps.allocate.outputs.channel_request_sha256 }}
-      disposable_run: ${{ steps.allocate.outputs.disposable_run }}
-      public_base: ${{ steps.allocate.outputs.public_base }}
-      storage_prefix: ${{ steps.allocate.outputs.storage_prefix }}
-
   validate:
-    name: Validate the build source
-    # One dispatch: in disposable mode the channel pin comes from this run's
-    # allocation (needs below), not a second dispatch's inputs. A failed
-    # allocation skips admission; non-disposable runs have nothing allocated.
-    if: >-
-      !cancelled() && (inputs.disposable_channel == ''
-      || needs.allocate-disposable.result == 'success')
-    needs: [allocate-disposable]
+    name: Allocate disposable channel and validate the build source
+    # One dispatch: in disposable mode the allocation steps run first (the
+    # channel pin comes from them), then admission validates the build source.
+    # A failed allocation fails this job and skips everything downstream.
     runs-on: ubuntu-24.04
     # Public root is an environment variable, not a repository variable. No
     # secret is injected into admission; downstream jobs consume its outputs.
@@ -248,8 +191,8 @@ jobs:
       receiver-candidate: ${{ steps.admission.outputs.receiver-candidate }}
       public-root: ${{ steps.admission.outputs.public-root }}
       public-base: ${{ steps.admission.outputs.public-base }}
-      channel-build: ${{ (inputs.disposable_channel != '' && needs.allocate-disposable.outputs.channel_build) || inputs.channel_build || '' }}
-      channel-request-sha256: ${{ (inputs.disposable_channel != '' && needs.allocate-disposable.outputs.channel_request_sha256) || inputs.channel_request_sha256 || '' }}
+      channel-build: ${{ (inputs.disposable_channel != '' && steps.allocate.outputs.channel_build) || inputs.channel_build || '' }}
+      channel-request-sha256: ${{ (inputs.disposable_channel != '' && steps.allocate.outputs.channel_request_sha256) || inputs.channel_request_sha256 || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -261,13 +204,44 @@ jobs:
           fetch-depth: ${{ (inputs.build_commit != '' || inputs.channel_build != '') && 1 || 0 }}
           fetch-tags: ${{ inputs.build_commit == '' && inputs.channel_build == '' }}
 
+      - name: Set up native identity reader
+        if: inputs.disposable_channel != '' && inputs.disposable_receivers
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache-python: false
+          archive-inputs: false
+      - name: Probe scoped storage and allocate the disposable channel
+        id: allocate
+        if: inputs.disposable_channel != ''
+        env:
+          DISPOSABLE_CHANNEL: ${{ inputs.disposable_channel }}
+          DISPOSABLE_RECEIVERS: ${{ inputs.disposable_receivers }}
+          BUILD_COMMIT: ${{ inputs.build_commit }}
+          CHANNEL_BUILD: ${{ inputs.channel_build }}
+          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_PHASE: ${{ inputs.release-phase }}
+          TERMUX_ONLY: ${{ inputs.termux_only }}
+          TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
+          UPLOAD_RELEASE: ${{ inputs.upload_release }}
+          BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
+        run: python -m scripts.releases.channel_disposable
+
       - name: Validate tag shape, pyproject lockstep, and ancestry on origin/main
         id: admission
         env:
           TAG: ${{ inputs.tag }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
-          CHANNEL_BUILD: ${{ inputs.channel_build || needs.allocate-disposable.outputs.channel_build || '' }}
-          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 || needs.allocate-disposable.outputs.channel_request_sha256 || '' }}
+          CHANNEL_BUILD: ${{ inputs.channel_build || steps.allocate.outputs.channel_build || '' }}
+          CHANNEL_REQUEST_SHA256: ${{ inputs.channel_request_sha256 || steps.allocate.outputs.channel_request_sha256 || '' }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
           TERMUX_ONLY: ${{ inputs.termux_only }}
           BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}

@@ -390,7 +390,7 @@ def test_disposable_controller_allocates_then_separate_admission(tmp_path):
                "GITHUB_WORKFLOW_REF": "fixture/repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main",
                "GITHUB_ACTOR": "fixture", "GITHUB_TRIGGERING_ACTOR": "fixture", "UPLOAD_RELEASE": "false",
                "GITHUB_STEP_SUMMARY": str(tmp_path / "allocation.md"), "BUNDLE_ENV_JSON": "{}"}
-        script = workflow_step("desktop-bundled-release.yml", "allocate-disposable", "Probe scoped storage and allocate without dispatching")
+        script = workflow_step("desktop-bundled-release.yml", "validate", "Probe scoped storage and allocate the disposable channel")
         objects["releases/channels/stable.json"] = b"production sentinel"
         result = run_shell(tmp_path, server, script, env, cwd=clone)
         assert result.returncode == 0, result.stdout + result.stderr

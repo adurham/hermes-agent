@@ -32,10 +32,10 @@ def _workflow() -> dict:
 
 
 def _admission_script() -> str:
-    """The validate job's run script, verbatim — the single source of truth."""
+    """The admission run script, verbatim — the single source of truth."""
     steps = _workflow()["jobs"]["validate"]["steps"]
-    scripts = [s for s in steps if isinstance(s, dict) and "run" in s]
-    assert len(scripts) == 1, "expected exactly one run step in the validate job"
+    scripts = [s for s in steps if isinstance(s, dict) and s.get("id") == "admission"]
+    assert len(scripts) == 1, "expected exactly one admission step in the validate job"
     return scripts[0]["run"]
 
 
@@ -66,7 +66,7 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
                 continue
             ref = step.get("with", {}).get("ref")
             expected = "${{ needs.validate.outputs.sha }}"
-            if name in {"publish-channel", "allocate-disposable"} or step.get("if") == "needs.validate.outputs.channel-build != ''":
+            if name in {"publish-channel"} or step.get("if") == "needs.validate.outputs.channel-build != ''":
                 expected = "${{ github.sha }}"
             elif name == "validate":
                 expected = "${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}"
@@ -76,14 +76,11 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
                 f"signing job {name!r} checks out {ref!r} — it must check out "
                 "the admitted source or explicitly selected trusted controller, never a mutable tag"
             )
-    # The allocation controller does not consume a prior admission; validate's
-    # only allowed need is this run's own allocation (the one-dispatch design).
+    # The merged validate job owns allocation and admission; it consumes no
+    # prior admission (the one-dispatch design).
     for name, job in privileged.items():
-        if name == "allocate-disposable":
-            assert not job.get("needs")
-            continue
         if name == "validate":
-            assert job.get("needs") in ([], None, ["allocate-disposable"])
+            assert job.get("needs") in ([], None)
             continue
         needs = job.get("needs") or []
         needs = [needs] if isinstance(needs, str) else needs
