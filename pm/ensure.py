@@ -588,9 +588,23 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 )
 
         package = get_package("venv")
-        from hermes_cli.runtime_state import runtime_lock, recover_publication, finish_publication
+        from hermes_cli.runtime_state import (
+            INSTALL_LOCK_TIMEOUT_SECONDS, runtime_lock, recover_publication, finish_publication)
         from pm.publication import PluginSelection, StagedPlugin, candidate_members
-        with runtime_lock(paths.repo_root()):
+        # Holding this lock means rebuilding the whole dependency environment, which takes tens of
+        # seconds on a bundle. Only an install the user asked for may queue for it; an opportunistic
+        # one (a lazy extra at first use, the only non-explicit caller) refuses instead of holding
+        # a sibling profile's backend off its port behind a rebuild it did not request.
+        lock_timeout = None if (explicit or repair) else INSTALL_LOCK_TIMEOUT_SECONDS
+        with runtime_lock(paths.repo_root(), timeout=lock_timeout) as held:
+            if not held:
+                error = InstallError(
+                    "venv",
+                    f"another Hermes process is installing dependencies (waited {INSTALL_LOCK_TIMEOUT_SECONDS:.0f}s)",
+                    "retry in a moment, or run `hermes pm install` to install explicitly",
+                )
+                receipt.record_refusal("install-busy", str(error))
+                raise error
             recover_publication(paths.repo_root())
             if sum(value is not None for value in (selection, staged_plugin, plugin_dirs)) + bool(extra_plugin_dirs) > 1:
                 raise ValueError("publication owns plugin member discovery")

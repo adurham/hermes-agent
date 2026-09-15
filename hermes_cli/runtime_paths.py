@@ -124,8 +124,12 @@ def activate_dependencies(project_root: Path) -> None:
     state = install_state_dir(project_root)
     if state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
-        with runtime_lock(project_root):
-            recover_publication(project_root)
+        # The lock's holder may be another profile's backend running a full dependency rebuild;
+        # this process only reads the committed selection, so it proceeds without waiting rather
+        # than leaving the backend unbound (see runtime_lock).
+        with runtime_lock(project_root) as held:
+            if held:
+                recover_publication(project_root)
             environment = selected_venv(project_root)
             lease_generation(environment)
             selected = site_packages(environment)

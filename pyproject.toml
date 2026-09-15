@@ -542,6 +542,12 @@ google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 mem0 = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # Match the engine dependency markers so PM refuses an unsupported install.
 wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"
+# faster-whisper's closure is prebuilt-only: ctranslate2 has no win_arm64 wheel and onnxruntime
+# none for darwin-x64. Its ANCHOR is faster_whisper, so an unsupported machine could install the
+# extra, rebuild the whole dependency environment and still fail the anchor on every retry.
+# Gate the extra that carries only faster-whisper; [voice] also has ungated deps (sounddevice,
+# numpy) and stays installable, see test_declared_extra_gates_match_dependency_selection.
+stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')"
 # NeuTTS excludes Python 3.14. KittenTTS's misaki dependency excludes 3.13+.
 neutts = "python_version < '3.14'"
 kittentts = "python_version < '3.13'"

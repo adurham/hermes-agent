@@ -3,6 +3,7 @@ live in pm/lock.json (written by `pm lock`), never here."""
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shutil
@@ -33,6 +34,8 @@ from pm.update import (
     npm_dist_tags,
     pbs_versions,
 )
+
+LOG = logging.getLogger(__name__)
 
 _RUST_TRIPLE = {
     "win32-x64": "x86_64-pc-windows-msvc",
@@ -309,32 +312,33 @@ def uv_cache_dir() -> Path:
     marker = machine_cache / ".seeded"
     if not marker.is_file():
         # Seed from a shipped bundle cache when present (payload root =
-        # store_root().parent on a sealed install).
+        # store_root().parent on a sealed install). Record completion ONLY after a clean copy: a
+        # partial seed that marked itself done would never be retried, and every later offline
+        # sync that needs the missing entries fails closed.
         try:
             from pm.paths import store_root
 
             payload_cache = store_root().parent / "uv-cache"
             if payload_cache.is_dir():
                 machine_cache.mkdir(parents=True, exist_ok=True)
-                import shutil as _shutil
-
                 for entry in payload_cache.iterdir():
                     if entry.name == ".seeded":
                         continue
                     dest = machine_cache / entry.name
                     if not dest.exists():
                         (
-                            _shutil.copytree(entry, dest)
+                            shutil.copytree(entry, dest)
                             if entry.is_dir()
-                            else _shutil.copy2(entry, dest)
+                            else shutil.copy2(entry, dest)
                         )
-        except OSError:
-            pass  # seeding is best-effort; a cold sync still works
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text("1", encoding="utf-8")
-        except OSError:
-            pass
+        except OSError as exc:
+            LOG.warning("uv cache seed incomplete, retrying on the next install: %s", exc)
+        else:
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("1", encoding="utf-8")
+            except OSError:
+                pass
     return machine_cache
 
 

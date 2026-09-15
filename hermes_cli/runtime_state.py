@@ -7,6 +7,7 @@ import base64
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -16,8 +17,20 @@ import uuid
 
 from hermes_cli.runtime_paths import dependency_home_root, install_state_dir, runtime_facts_path
 
+LOG = logging.getLogger(__name__)
 
-def _lock(fd: int, *, wait: bool) -> bool:
+# How long a process that only needs to READ the install state waits for a writer. The holder can
+# be another profile's backend rebuilding the whole dependency environment (measured: tens of
+# seconds on a bundle, minutes when a sync falls back to an sdist build), and a backend that never
+# binds its port is worse than one that binds against the previous generation. Losers skip — the
+# same rule boot_bootstrap._RecordLock states for home maintenance.
+INSTALL_LOCK_TIMEOUT_SECONDS = 10.0
+_LOCK_POLL_SECONDS = 0.05
+
+
+def _lock(fd: int, *, wait: bool, timeout: float | None = None) -> bool:
+    """Take the byte lock; ``timeout`` bounds the retry loop (None waits forever, 0 tries once)."""
+    deadline = None if timeout is None else time.monotonic() + timeout
     if os.name == "nt":
         import msvcrt
         while True:
@@ -28,26 +41,41 @@ def _lock(fd: int, *, wait: bool) -> bool:
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                     raise
-                if not wait:
-                    return False
-                time.sleep(0.05)
+            if not wait or (deadline is not None and time.monotonic() >= deadline):
+                return False
+            time.sleep(_LOCK_POLL_SECONDS)
     else:
         import fcntl
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-            return True
-        except BlockingIOError:
-            return False
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except BlockingIOError:
+                pass
+            if not wait or (deadline is not None and time.monotonic() >= deadline):
+                return False
+            time.sleep(_LOCK_POLL_SECONDS)
 
 
 @contextmanager
-def runtime_lock(project: Path):
+def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_SECONDS):
+    """Hold the per-install dependency lock; yields True when held, False when the wait expired.
+
+    Callers decide what a lost race means: readers skip the work the lock guards and carry on
+    (``activate_dependencies`` still selects and leases the committed generation), writers that
+    cannot be skipped pass ``timeout=None`` — an install the user asked for is theirs to wait on.
+    """
     state = install_state_dir(project)
     state.mkdir(parents=True, exist_ok=True)
     fd = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        _lock(fd, wait=True)
-        yield
+        if not _lock(fd, wait=True, timeout=timeout):
+            LOG.warning(
+                "dependency lock still held after %ss; continuing without it (%s)",
+                timeout, state / ".install.lock")
+            yield False
+            return
+        yield True
     finally:
         os.close(fd)
 
@@ -155,7 +183,12 @@ def finish_publication(project: Path) -> None:
 
 
 def lease_generation(environment: Path) -> None:
-    """Hold a kernel lock until process exit; call under runtime_lock at boot."""
+    """Hold a kernel lock until process exit.
+
+    Call under ``runtime_lock`` at boot; when that lock times out it is still safe to lease
+    without it, because the collector only removes generations that are NOT selected and are
+    older than a day — the generation being leased here is the selected one.
+    """
     generation = environment.parent
     if not (generation / ".lease-managed").is_file():
         return  # Generations produced before leases stay conservatively retained.
@@ -177,7 +210,9 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
     root = install_state_dir(project)
     if not root.exists():
         return removed
-    with runtime_lock(project):
+    with runtime_lock(project) as held:
+        if not held:
+            return removed  # maintenance: another process owns the install, skip rather than queue
         recover_publication(project)
         selected = selected_venv(project).parent.resolve()
         generations = root / "environments"
