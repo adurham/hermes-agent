@@ -35,21 +35,6 @@ def test_missing_bundle_tool_is_installed_in_writable_store(pm_env, tmp_path, mo
     assert env_for("faketool", base_env={}) == runner.env
 
 
-def test_adoption_records_verification_outside_shipped_payload(pm_env, monkeypatch):
-    from pm.ensure import adopt
-    from tests.pm.test_pm_authority import _bundle_payload
-
-    _bundle_payload(pm_env)
-    shipped_roots = (paths.store_root(), paths.repo_root())
-    def snapshot():
-        return {p: p.read_bytes() for root in shipped_roots for p in root.rglob("*") if p.is_file()}
-    before = snapshot()
-    assert adopt() is True
-    assert snapshot() == before
-    assert not (paths.store_root().parent / ".adopted").exists()
-    assert adopt() is False
-
-
 def test_corrupt_shipped_facts_are_only_read(tmp_path, monkeypatch):
     store = tmp_path / "payload" / "tools"
     store.mkdir(parents=True)

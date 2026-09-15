@@ -7,18 +7,16 @@ from unittest.mock import AsyncMock
 import pytest
 
 
-@pytest.mark.parametrize("boundary", ["adopt", "activate"])
-def test_gateway_main_survives_pm_failure(monkeypatch, boundary):
+def test_gateway_main_survives_pm_failure(monkeypatch):
     import pm
     import gateway.run as gateway
 
     failed = []
     def broken():
-        failed.append(boundary)
+        failed.append("activate")
         raise RuntimeError("PM unavailable")
 
-    monkeypatch.setattr(pm, "adopt", lambda: None)
-    monkeypatch.setattr(pm, boundary, broken)
+    monkeypatch.setattr(pm, "activate", broken)
     started = AsyncMock(return_value=True)
     exited = []
     monkeypatch.setattr(gateway, "start_gateway", started)
@@ -28,4 +26,4 @@ def test_gateway_main_survives_pm_failure(monkeypatch, boundary):
     gateway.main()
     started.assert_awaited_once()
     assert exited == [0]
-    assert failed == [boundary]
+    assert failed == ["activate"]

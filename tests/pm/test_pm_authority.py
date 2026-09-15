@@ -1,5 +1,5 @@
 """pm authority spine: digest-bound facts, tree_digest + doctor re-hash,
-adopt() verification gate, repair logging.
+repair logging.
 
 Same conventions as test_pm_core: real loopback server, real archives,
 real store — no mocked stores. Assertions are relationships (identity
@@ -415,65 +415,6 @@ def test_doctor_flags_tampered_entry_bytes(pm_env, capsys):
 
     binary.write_bytes(original)
     assert cmd_doctor(None) == 0
-
-
-def _bundle_payload(env) -> Path:
-    """Build a shipped payload the way cmd_bundle lays it out: a repo
-    snapshot carrying pm/lock.json, and a store whose facts.json holds
-    the installed state. adopt()'s paths point here via repo_root."""
-    from pm.ensure import ensure
-
-    monkeypatch = env["monkeypatch"]
-    tmp_path = env["tmp_path"]
-    shipped_repo = tmp_path / "shipped-repo"
-    (shipped_repo / "pm").mkdir(parents=True)
-    shutil.copy(env["lockfile_path"], shipped_repo / "pm" / "lock.json")
-    monkeypatch.setattr(paths, "repo_root", lambda: shipped_repo)
-    ensure("faketool", base_env={})
-    return shipped_repo
-
-
-def test_adopt_refuses_on_missing_staged_binary(pm_env):
-    from pm.ensure import adopt
-
-    _bundle_payload(pm_env)
-    fact = Facts(paths.facts_path()).get("faketool")
-    binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
-    binary.unlink()
-
-    marker = paths.runtime_facts_path().parent / ".adopted"
-    assert adopt() is False
-    assert not marker.is_file()
-
-
-def test_adopt_refuses_on_tampered_staged_binary(pm_env):
-    """The adversarial witness: bytes substituted AFTER install fail even
-    though facts + lock still agree — the digest is computed over the
-    actual bytes, not read from the manifest."""
-    from pm.ensure import adopt
-
-    _bundle_payload(pm_env)
-    fact = Facts(paths.facts_path()).get("faketool")
-    binary = paths.store_root() / fact["entry"] / "bin" / "faketool"
-    binary.write_bytes(b"#!substituted")
-
-    marker = paths.runtime_facts_path().parent / ".adopted"
-    assert adopt() is False
-    assert not marker.is_file()
-
-
-def test_adopt_refuses_when_fact_lacks_identity(pm_env):
-    from pm.ensure import adopt
-
-    _bundle_payload(pm_env)
-    facts_path = paths.facts_path()
-    data = json.loads(facts_path.read_text(encoding="utf-8"))
-    for key in ("target", "artifacts", "digest"):
-        data["packages"]["faketool"].pop(key, None)
-    facts_path.write_text(json.dumps(data), encoding="utf-8")
-
-    assert adopt() is False
-    assert not (paths.store_root().parent / ".adopted").is_file()
 
 
 def test_tree_digest_ignores_pycache(pm_env, monkeypatch):

@@ -13,7 +13,6 @@ packages' env without installing anything.
 
 from pm.ensure import (
     activate,
-    adopt,
     check,
     drift,
     enabled_extras,
@@ -39,7 +38,6 @@ __all__ = [
     "env_for",
     "is_installed",
     "installed_package",
-    "adopt",
     "check",
     "drift",
     "activate",

@@ -54,7 +54,6 @@ def check_runtime(project_root: Path) -> str | None:
     import pm
     from hermes_cli.steward import sealed_steward
 
-    pm.adopt()
     problems = pm.activate()
     if not problems:
         return None

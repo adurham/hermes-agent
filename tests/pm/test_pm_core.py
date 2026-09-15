@@ -538,15 +538,6 @@ def test_machine_matches_binary_elf(tmp_path):
     assert machine_matches_binary(b, "linux-x64") is False
 
 
-def test_adopt_noop_without_facts(pm_env, monkeypatch):
-    import pm
-    from pm import paths
-
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(paths.store_root() / "nowhere"))
-    assert pm.adopt() is False
-
-
-
 def test_bundle_closure_uv_stays_internal_node_npm_ship(monkeypatch, tmp_path):
     """Locks the semantics split: uv is pm's install machinery and never
     ships by closure, node/npm are runtime tools and always do."""

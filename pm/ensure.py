@@ -166,9 +166,8 @@ def is_installed(name: str) -> bool:
 
 
 def sealed() -> bool:
-    """A bundled payload is read-only: its store sits beside the bundle
-    manifest. Asking a sealed install for MORE than it shipped is a
-    Sealed = bundled LAYOUT only; adoption verification is adopt()'s job."""
+    """Sealed = bundled LAYOUT only: the store sits beside the bundle
+    manifest and is read-only as shipped."""
     return (paths.store_root().parent / "manifest.json").is_file()
 
 
@@ -662,75 +661,6 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
         raise
     finally:
         receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)
-
-
-def adopt() -> bool:
-    """First boot of a bundled install: verify the shipped payload, then
-    make it THIS machine's installed state. The payload's own shipped
-    ``pm/lock.json`` (inside the repo snapshot) is the offline authority:
-    for every package it pins, the shipped fact must record the shipped
-    identity, package.verify() must pass, and the recorded realized digest
-    must match a fresh tree_digest() over the actual bytes. Any failure:
-    log the offending package, do NOT write `.adopted`, return False —
-    adopt() refuses to vouch for bytes it could not prove.
-
-    Idempotent and cheap-ish: returns False when there is nothing to
-    adopt (no shipped facts, or already adopted)."""
-    store = _store()
-    facts = _facts()
-    if not paths.facts_path().is_file():
-        return False
-
-    from hermes_cli.runtime_paths import install_state_dir
-    marker = install_state_dir(paths.repo_root()) / ".adopted"
-    if marker.is_file():
-        return False
-
-    shipped_lock = paths.repo_root() / "pm" / "lock.json"
-    if shipped_lock.is_file():
-        lockfile = Lockfile(shipped_lock)
-        target = current_target()
-        for name in lockfile.names():
-            try:
-                package = get_package(name)
-            except KeyError:
-                continue
-            if isinstance(package, StatePackage):
-                continue
-            fact = facts.get(name)
-            if not facts.installed(
-                name, lockfile.version(name), store.root, _identity(lockfile, name, target)
-            ):
-                LOG.warning(
-                    "pm adopt: refusing %s: fact missing, legacy (no recorded "
-                    "identity), or does not match the shipped lock",
-                    name,
-                )
-                return False
-            entry = store.entry(fact["entry"])
-            reason = package.verify(entry, target)
-            if reason:
-                LOG.warning(
-                    "pm adopt: refusing %s: staged entry failed verification: %s",
-                    name, reason,
-                )
-                return False
-            if fact.get("digest") != tree_digest(entry):
-                LOG.warning(
-                    "pm adopt: refusing %s: realized bytes do not match the "
-                    "recorded digest",
-                    name,
-                )
-                return False
-
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("", encoding="utf-8")
-    except OSError:
-        LOG.warning("could not record payload verification", exc_info=True)
-        return False
-
-    return True
 
 
 def drift() -> dict[str, str]:
