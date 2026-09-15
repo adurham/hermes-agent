@@ -47,8 +47,12 @@ def _screen_start(args) -> int:
 def _screen_stop(args) -> int:
     from tools.bot_desktop import runtime
     if runtime.is_supported_host():
+        # Same door as display.stop: a human mid-takeover is never yanked by a runbook or a stray
+        # `screen stop`; the decision is taken under the lease lock so a takeover cannot race it.
         from tools.bot_desktop import lease
-        lease.release()
+        if lease.release(unless_human=not bool(getattr(args, "force", False))).holder == lease.HUMAN:
+            print("Bot Desktop: a human holds this screen; re-run with --force to take it down anyway.")
+            return 1
     print("Bot Desktop: stopped" if runtime.stop() else "Bot Desktop: was not running")
     return 0
 
@@ -108,7 +112,8 @@ def build_screen_parser(computer_use_sub, add_json_flag) -> None:
     st = sub.add_parser("status", help="Show whether this profile's screen is installed/running and who holds control")
     add_json_flag(st, "Emit the status payload as JSON.")
     sub.add_parser("start", help="Start this profile's screen")
-    sub.add_parser("stop", help="Stop this profile's screen (hands control back to the agent first)")
+    stop = sub.add_parser("stop", help="Stop this profile's screen (hands control back to the agent first)")
+    stop.add_argument("--force", action="store_true", help="Stop even while a human holds control from Hermes Desktop")
     inst = sub.add_parser("install", help="Install TigerVNC + Xfce core via the host package manager")
     inst.add_argument("-y", "--yes", action="store_true", help="Do not ask before running the package manager")
 
