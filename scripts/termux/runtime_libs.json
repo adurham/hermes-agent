@@ -126,6 +126,11 @@
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/libd/libdav1d/libdav1d_1.5.4_aarch64.deb",
       "version": "1.5.4"
     },
+    "libde265": {
+      "sha256": "3c38af85b13a638b377fab1b7389aae2aca5067e21db29c058d5746f52ea7114",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libd/libde265/libde265_1.1.3_aarch64.deb",
+      "version": "1.1.3"
+    },
     "libdvdnav": {
       "sha256": "fd8509a88b5966cdadf9925b2687e50c31d796e773cb326e651e76c0a3b16958",
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/libd/libdvdnav/libdvdnav_7.0.0_aarch64.deb",
@@ -150,6 +155,11 @@
       "sha256": "15ac85737a35150cecb9e46ecb32567ae2a4fc28071cdf58fb95e1b77d7889d9",
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/libg/libgraphite/libgraphite_1.3.15_aarch64.deb",
       "version": "1.3.15"
+    },
+    "libheif": {
+      "sha256": "78c53ef6df843f01abc65d79ea6e4253965b64b918ca6d6b0ba10ce069b56c50",
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libh/libheif/libheif_1.23.4_aarch64.deb",
+      "version": "1.23.4"
     },
     "libiconv": {
       "sha256": "b19e6f348034bb48d2a5590b5cb242769f682c476717374d134d004cc663dc84",

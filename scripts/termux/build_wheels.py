@@ -334,6 +334,11 @@ def import_native_modules(build_set: list[str]) -> None:
     modules = {
         "ruamel-yaml-clib": "_ruamel_yaml", "cffi": "_cffi_backend",
         "pillow": "PIL._imaging", "pyyaml": "yaml._yaml", "firecrawl-anydoc": "anydoc",
+        # import pillow_heif alone never fails on a dead link: its
+        # __init__ swallows the _pillow_heif ImportError into a
+        # DeferredError that only fires on first use. Import the C
+        # extension directly so the dlopen itself is what's proven.
+        "pillow-heif": "_pillow_heif",
     }
     for name in build_set:
         module = modules.get(name, name.replace("-", "_"))
