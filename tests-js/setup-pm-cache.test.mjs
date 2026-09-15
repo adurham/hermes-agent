@@ -19,10 +19,10 @@ it('restores compatible wheels without freezing a partial build under its depend
     expect(prefixes[1]).toContain(`steps.prepare.outputs.${boundary}`)
   }
   expect(prefixes[1]).toContain("inputs.cache-suffix == ''")
-  expect(prefixes[1]).toContain('inputs.prune-python-cache')
   expect(prefixes[1]).not.toContain('hashFiles')
-  expect(restored.uses.split('@')[0]).toBe('actions/cache/restore')
-  expect(cached.if).toContain("inputs.save-python-cache == 'true'")
+  // Only dependency-carrying callers save; tool-only jobs must not freeze an
+  // empty cache under the production key (a stub exact-hit blocks real saves).
+  expect(cached.if).toContain("inputs.extras != ''")
   expect(restored.if).toContain("inputs.save-python-cache == 'false'")
   expect(setup.outputs['python-cache-key'].value).toContain('steps.python-cache-restore.outputs.cache-primary-key')
 
@@ -32,19 +32,20 @@ it('restores compatible wheels without freezing a partial build under its depend
   for (const template of [cached.with.key, restored.with.key, rollingPrefix]) {
     const production = template.replace(namespace, 'production')
     const smoke = template.replace(namespace, 'smoke-42-1')
-    expect(production.startsWith('setup-pm-uv-v2-production-')).toBe(true)
-    expect(smoke.startsWith('setup-pm-uv-v2-smoke-42-1-')).toBe(true)
-    expect(smoke.startsWith('setup-pm-uv-v2-production-')).toBe(false)
-    expect(production.startsWith('setup-pm-uv-v2-smoke-42-1-')).toBe(false)
+    expect(production.startsWith('setup-pm-uv-v3-production-')).toBe(true)
+    expect(smoke.startsWith('setup-pm-uv-v3-smoke-42-1-')).toBe(true)
+    expect(smoke.startsWith('setup-pm-uv-v3-production-')).toBe(false)
+    expect(production.startsWith('setup-pm-uv-v3-smoke-42-1-')).toBe(false)
   }
 })
 
-it('explicit PM saves preserve downloaded offline wheels and do not prune during cancellation', () => {
+it('explicit PM saves prune to the lock and do not prune during cancellation', () => {
   const [prune, upload] = save.runs.steps
   expect(prune.if).toBe('${{ !cancelled() }}')
-  expect(prune.run).toBe('"$PM_PYTHON" -m pm.build_env --prune-cache --cache "$PM_CACHE"')
+  expect(prune.run).toBe('"$PM_PYTHON" -m pm.build_env --exact-lock --cache "$PM_CACHE" --lock-source "$PM_LOCK_SOURCE"')
   expect(prune.env.PM_PYTHON).toBe('${{ inputs.python }}')
   expect(prune.env.PM_CACHE).toBe('${{ inputs.path }}')
+  expect(prune.env.PM_LOCK_SOURCE).toBe('${{ github.workspace }}')
   expect(upload.if).toBe(`\${{ !cancelled() && steps.${prune.id}.outcome == 'success' }}`)
   expect(upload.uses.split('@')[0]).toBe('actions/cache/save')
   expect(upload.with).toEqual({ path: '${{ inputs.path }}', key: '${{ inputs.key }}' })
