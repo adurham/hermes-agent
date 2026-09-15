@@ -21,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import threading
+from pathlib import Path
 import time
 from typing import Callable, Optional
 
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 _install_lock = threading.Lock()
 _running: set[str] = set()
+# Installs are host-global but the gateway (Install card) and the CLI (`screen install`) are separate
+# processes: the in-process set alone let both drive dpkg for one profile at once. The slot is also a
+# non-blocking flock on a file in the profile's state dir, held for the life of the install.
+_slot_files: dict[str, object] = {}
 
 
 NO_SUDO = -2  # install_packages: unprivileged host without sudo; the on_line stream carried the command to run as root
@@ -40,10 +45,27 @@ class InstallBusy(RuntimeError):
     pass
 
 
+def _try_flock(path: Path):
+    """Open + non-blocking exclusive flock; None when another process holds it."""
+    import fcntl  # windows-footgun: ok — Linux-only runtime (is_supported_host)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+", encoding="utf-8")  # noqa: SIM115 — held open for the life of the install slot
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
 def assert_not_running() -> None:
     with _install_lock:
         if hermes_home_key() in _running:
             raise InstallBusy("an install is already running for this profile")
+    fh = _try_flock(runtime.state_dir() / "install.lock")
+    if fh is None:
+        raise InstallBusy("an install is already running for this profile (another process)")
+    fh.close()
 
 
 def claim() -> str:
@@ -55,13 +77,20 @@ def claim() -> str:
     with _install_lock:
         if key in _running:
             raise InstallBusy("an install is already running for this profile")
+        fh = _try_flock(runtime.state_dir() / "install.lock")
+        if fh is None:
+            raise InstallBusy("an install is already running for this profile (another process)")
         _running.add(key)
+        _slot_files[key] = fh
     return key
 
 
 def release(key: str) -> None:
     with _install_lock:
         _running.discard(key)
+        fh = _slot_files.pop(key, None)
+    if fh is not None:
+        fh.close()  # closing drops the flock
 
 
 def install_packages(*, ask_password: Callable[[], str], on_line: Callable[[str], None],

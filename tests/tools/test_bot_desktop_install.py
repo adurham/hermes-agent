@@ -245,3 +245,22 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def test_install_slot_is_held_across_processes(tmp_path):
+    """The gateway (Install card) and the CLI (`screen install`) are separate processes on one host: the
+    single-flight must be a file lock in the profile's state dir, not only the in-process set."""
+    import subprocess
+    import sys
+
+    key = install.claim()
+    try:
+        probe = subprocess.run([sys.executable, "-c",
+            "import fcntl,sys\nfh=open(sys.argv[1],'a+')\n"
+            "try:\n    fcntl.flock(fh.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB); print('free')\n"
+            "except OSError:\n    print('held')", str(runtime.state_dir() / "install.lock")],
+            capture_output=True, text=True)
+        assert probe.stdout.strip() == "held", probe
+    finally:
+        install.release(key)
+    install.release(install.claim())  # freed: claimable again
