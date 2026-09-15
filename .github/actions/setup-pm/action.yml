@@ -149,15 +149,18 @@ runs:
 
     - name: Cache uv dependency downloads and builds
       id: python-cache
-      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true'
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true' && inputs.extras != ''
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.install.outputs.uv-cache-path }}
-        key: setup-pm-uv-v2-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}
+        # pruned/unpruned share one namespace: the pre-save prune is now exact
+        # to the lock (keeps lock-required wheels, drops superseded pins), so
+        # both variants carry the same content contract.
+        key: setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}
 
         # Isolated writes also need a distinct prefix: production's broad
         # fallback must not restore a smoke run's partial dependency set.
-        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v2-production-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
+        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
 
     - name: Restore uv dependencies for an explicit save
       id: python-cache-restore
@@ -167,10 +170,10 @@ runs:
         path: ${{ steps.install.outputs.uv-cache-path }}
         # Caches are immutable. Each producer needs its own snapshot, even
         # when a caller run contains both PM Bundle and Desktop Release.
-        key: setup-pm-uv-v2-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        key: setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         restore-keys: |
-          setup-pm-uv-v2-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ inputs.prune-python-cache }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-
-          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v2-production-{0}-{1}-{2}-{3}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version, inputs.prune-python-cache) || '' }}
+          setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-
+          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
 
     # Post steps run in reverse registration order: prune before cache save.
     - name: Register uv cache pruning
@@ -179,6 +182,7 @@ runs:
       with:
         python: ${{ steps.install.outputs.python-path }}
         cache: ${{ steps.install.outputs.uv-cache-path }}
+        lock-source: ${{ github.workspace }}
 
     - name: Require an npm dependency lock for caching
       if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && hashFiles(inputs.node-cache-dependency-path) == ''
@@ -194,6 +198,10 @@ runs:
       with:
         path: ${{ steps.install.outputs.npm-cache-path }}
         key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
+        # A lockfile bump misses the exact key, but the previous download set
+        # is still mostly valid — npm verifies every tarball it reinstalls.
+        restore-keys: |
+          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-
 
     - name: Restore npm dependencies for an explicit save
       id: node-cache-restore

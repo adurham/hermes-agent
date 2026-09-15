@@ -16,7 +16,7 @@ def cleanup_run_caches(run_id: str, request, *, page_size: int = 100) -> list[in
         raise ValueError("cleanup requires a completed PM Toolchain run")
     pattern = re.compile(
         rf"^(?:(?:setup-pm-tools-|node-cache-).*-smoke(?:-prune|-consumers)?-{run_id}-[1-9][0-9]*"
-        rf"|setup-pm-uv-v2-smoke(?:-prune|-consumers)?-{run_id}-[1-9][0-9]*-.+)$"
+        rf"|setup-pm-uv-v[23]-smoke(?:-prune|-consumers)?-{run_id}-[1-9][0-9]*-.+)$"
     )
 
     def collect():

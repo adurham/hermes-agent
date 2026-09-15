@@ -424,6 +424,27 @@ jobs:
           CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
+      - name: Resolve the builder toolchain versions
+        id: electron-tools
+        shell: bash
+        run: node -e '
+            const l = require("./package-lock.json")
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!eb) process.exit(1)
+            console.log("eb=" + eb)
+          '
+
+      - name: Restore the electron-builder toolchain cache
+        id: electron-tools-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # winCodeSign kit, ATS dlib, dotnet runtime and rcedit land in
+          # ELECTRON_BUILDER_CACHE; the builder version selects the content.
+          path: ${{ github.workspace }}/.cache/electron-builder
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
+          restore-keys: |
+            eb3-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Restore desktop dependency inputs
         id: build-cache
         uses: ./.github/actions/desktop-build-cache
@@ -457,6 +478,15 @@ jobs:
           cache: ${{ github.workspace }}/.cache/desktop-inputs
           producer: desktop
           key: ${{ steps.build-cache.outputs.cache-key }}
+
+      # Commit builds run these steps with a read-only cache token; the
+      # exact-hit-skip semantics of actions/cache keep a read token harmless.
+      - name: Save the electron-builder toolchain
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel_build == '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
 
       - name: Restore verified payload signatures
         id: payload-signatures
@@ -692,6 +722,27 @@ jobs:
           CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
         run: python -m scripts.releases.channel_publish request --out "$RUNNER_TEMP/channel-request.json"
 
+      - name: Resolve the builder toolchain versions
+        id: electron-tools
+        shell: bash
+        run: node -e '
+            const l = require("./package-lock.json")
+            const eb = l.packages["node_modules/electron-builder"].version
+            if (!eb) process.exit(1)
+            console.log("eb=" + eb)
+          '
+
+      - name: Restore the electron-builder toolchain cache
+        id: electron-tools-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # winCodeSign kit, ATS dlib, dotnet runtime and rcedit land in
+          # ELECTRON_BUILDER_CACHE; the builder version selects the content.
+          path: ${{ github.workspace }}/.cache/electron-builder
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
+          restore-keys: |
+            eb3-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Restore desktop dependency inputs
         id: build-cache
         uses: ./.github/actions/desktop-build-cache
@@ -725,6 +776,15 @@ jobs:
           cache: ${{ github.workspace }}/.cache/desktop-inputs
           producer: desktop
           key: ${{ steps.build-cache.outputs.cache-key }}
+
+      # Commit builds run these steps with a read-only cache token; the
+      # exact-hit-skip semantics of actions/cache keep a read token harmless.
+      - name: Save the electron-builder toolchain
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel_build == '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ github.workspace }}/.cache/electron-builder
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.electron-tools.outputs.eb }}
 
       # Commit artifacts are downloadable too. Require signing for them,
       # candidates, and published tags before building any payload.
@@ -1098,25 +1158,16 @@ jobs:
       # Cache reuse is optional. Bundle scripts provision the pinned SDK
       # and signing dependencies through electron-builder on a cache miss.
       # This smaller consumer has its own cache, separate from desktop inputs.
-      - name: Resolve electron's default download cache path
-        shell: bash
-        run: |
-          case "$RUNNER_OS" in
-            Windows) echo "ELECTRON_DEFAULT_CACHE=$LOCALAPPDATA/electron/Cache" >> "$GITHUB_ENV" ;;
-            macOS)   echo "ELECTRON_DEFAULT_CACHE=$HOME/Library/Caches/electron" >> "$GITHUB_ENV" ;;
-            *)       echo "ELECTRON_DEFAULT_CACHE=$HOME/.cache/electron" >> "$GITHUB_ENV" ;;
-          esac
-
       - name: Restore electron + electron-builder toolchain
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ${{ github.workspace }}/.cache/electron-builder
-            ${{ github.workspace }}/.cache/electron
-            ${{ env.ELECTRON_DEFAULT_CACHE }}
-          key: eb2-${{ runner.os }}-${{ runner.arch }}-electron-${{ steps.toolchain.outputs.electron }}-builder-${{ steps.toolchain.outputs.builder }}
+          # ensureWindowsBundleTools resolves the winCodeSign kit, ATS dlib
+          # and dotnet runtime through electron-builder's toolset cache.
+          path: ${{ github.workspace }}/.cache/electron-builder
+          # Saved by the build-win32-release legs during preparation.
+          key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.toolchain.outputs.builder }}
           restore-keys: |
-            eb2-${{ runner.os }}-${{ runner.arch }}-
+            eb3-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Retrieve Windows packages from R2
         shell: bash
