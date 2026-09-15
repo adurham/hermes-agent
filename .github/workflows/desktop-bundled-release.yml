@@ -199,9 +199,11 @@ jobs:
         with:
           ref: ${{ (inputs.build_commit != '' || inputs.channel_build != '') && github.sha || inputs.tag }}
           # Tag admission runs merge-base against origin/main and needs the
-          # shared ancestry; channel/commit admission exits before any
-          # history read, so those fetch exactly one commit.
-          fetch-depth: ${{ (inputs.build_commit != '' || inputs.channel_build != '') && 1 || 0 }}
+          # shared ancestry; channel admission exits before any history read,
+          # so it fetches exactly one commit. Commit admission reads ancestry
+          # (require_pushed) and pyproject.toml at BUILD_COMMIT, so it needs
+          # the full graph.
+          fetch-depth: ${{ inputs.build_commit != '' && 0 || (inputs.channel_build != '' && 1 || 0) }}
           fetch-tags: ${{ inputs.build_commit == '' && inputs.channel_build == '' }}
 
       - name: Set up native identity reader
