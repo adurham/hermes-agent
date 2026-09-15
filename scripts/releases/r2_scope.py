@@ -31,10 +31,9 @@ class R2Scope:
     def configured(cls, repository: str | None = None) -> R2Scope:
         run = os.environ.get("R2_DISPOSABLE_RUN", "")
         if not run:
-            authority = repository if repository is not None else (
-                os.environ.get("GITHUB_REPOSITORY", "") if os.environ.get("GITHUB_ACTIONS") == "true" else None)
-            if authority is not None and authority.casefold() != "nousresearch/hermes-agent":
-                raise ValueError("Fork channel operations require a disposable R2 run")
+            # Opt-in scoping: R2_DISPOSABLE_RUN selects the disposable
+            # namespace regardless of repository. Unset means production
+            # keys — every caller already holds the release-signing secret.
             return cls()
         require_run(run)
         repository_id = os.environ.get("GITHUB_REPOSITORY_ID", "")

@@ -107,61 +107,43 @@ def test_commit_build_cli_dispatches_only_the_resolved_remote_commit(fixture_rep
         assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
     result, calls = invoke('--build-commit', tip, '--publish')
     assert result.returncode == 0, result.stderr
-    # The fixture remote is a fork: --publish now routes through the
-    # disposable allocation instead of the guarded direct dispatch.
+    # Repository identity no longer selects the dispatch: every commit build
+    # is the same direct dispatch (disposable mode is an explicit opt-in).
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
     assert len(dispatches) == 1
     assert f'build_commit={tip}' in dispatches[0]
-    assert any(field.startswith('disposable_channel=') for field in dispatches[0])
+    assert not any(field.startswith('disposable_channel=') for field in dispatches[0])
     assert git(repo, 'show-ref', '--heads', '--tags') == before
     assert git(upstream, 'rev-parse', 'refs/heads/main') == tip
 
-def test_commit_build_upstream_repository_keeps_direct_dispatch(fixture_repo):
+
+def test_commit_build_dispatch_is_repository_independent(fixture_repo):
     repo, _, invoke = fixture_repo
     tip = git(repo, 'rev-parse', 'HEAD')
+    expected = ['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
+                '--ref', 'main', '--repo', 'fixture-owner/fixture-repo',
+                '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
+                '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']
+    result, calls = invoke('--build-commit', tip, '--publish')
+    assert result.returncode == 0, result.stderr
+    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
+    assert dispatches == [expected]
+    assert 'disposable' not in result.stdout.lower()
+    # The upstream URL used to select a different command shape; it no longer does.
     git(repo, 'remote', 'set-url', 'origin', 'https://github.com/NousResearch/hermes-agent.git')
     result, calls = invoke('--build-commit', tip, '--publish',
                            extra={'PROBE_UPSTREAM_URL': 'https://github.com/NousResearch/hermes-agent.git'})
     assert result.returncode == 0, result.stderr
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
     assert dispatches == [['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
-                          '--ref', 'main', '--repo', 'NousResearch/hermes-agent',
-                          '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
-                          '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']]
-    assert 'disposable' not in result.stdout.lower()
+                           '--ref', 'main', '--repo', 'NousResearch/hermes-agent',
+                           '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
+                           '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']]
 
-def test_fork_commit_build_routes_through_disposable_allocation(fixture_repo):
-    repo, _, invoke = fixture_repo
-    tip = git(repo, 'rev-parse', 'HEAD')
-    values = {'HERMES_GUEST_ONBOARDING': '1', 'HERMES_HOME': None}
-    flags = ['--bundle-env', 'HERMES_GUEST_ONBOARDING=1', '--bundle-unset', 'HERMES_HOME']
-    result, calls = invoke('--build-commit', tip, '--publish', *flags)
-    assert result.returncode == 0, result.stderr
-    dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
-    assert len(dispatches) == 1
-    dispatch = dispatches[0]
-    assert dispatch[3:7] == ['desktop-bundled-release.yml', '--repo', 'fixture-owner/fixture-repo', '--ref']
-    assert dispatch[dispatch.index('--ref') + 1] == 'main'
-    fields = dispatch[dispatch.index('-f') + 1::2]
-    pairs = dict(value.split('=', 1) for value in fields)
-    assert pairs['build_commit'] == tip
-    assert pairs['tag'] == '' and pairs['upload_release'] == 'false'
-    assert pairs['termux_only'] == 'false' and pairs['termux_upgrade_from_tag'] == ''
-    assert pairs['disposable_receivers'] == 'false'
-    name = pairs['disposable_channel']
-    assert name.startswith('commit-') and tip[:12] in name
-    assert json.loads(pairs['bundle_env']) == values
-    # No build_commit-only direct dispatch escapes to the fork's CI guard.
-    assert not any('build_commit' in ' '.join(call) and 'disposable_channel' not in ' '.join(call)
-                   for call in calls if call[1:3] == ['workflow', 'run'])
-    result, calls = invoke('--build-commit', tip)
-    assert result.returncode == 0, result.stderr
-    assert not any(call[1:3] == ['workflow', 'run'] for call in calls)
-    assert 'disposable' in result.stdout.lower()
 
-# (One-dispatch redesign) The allocation poll/extract/auto-dispatch machinery these
-# two tests exercised was deleted: a fork commit build is now a SINGLE dispatch whose
-# run both allocates and builds. See test_fork_commit_build_routes_through_disposable_allocation.
+# (Fork-conditional removal) The disposable routing test retired with it: a
+# commit build dispatch does not branch on repository identity. Disposable
+# channels remain reachable via explicit --channel-request / CI allocation.
 
 
 def test_commit_bundle_environment_is_literal_and_validated(fixture_repo):

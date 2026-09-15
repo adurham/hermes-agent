@@ -566,7 +566,7 @@ def required_env(name: str) -> str:
 
 def credentials() -> tuple[dict[str, str], str, str]:
     """(creds, base, bucket) from the R2 env vars. No secrets are printed."""
-    R2Scope.configured()  # Fail closed before exposing an unscoped fork transport.
+    R2Scope.configured()  # Fail closed on a malformed disposable lease.
     creds = {
         "access_key_id": required_env("CLOUDFLARE_R2_ACCESS_KEY_ID"),
         "secret_key": required_env("CLOUDFLARE_R2_SECRET_ACCESS_KEY"),

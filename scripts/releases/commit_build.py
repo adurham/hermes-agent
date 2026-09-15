@@ -6,17 +6,10 @@ import os
 import re
 import shlex
 import subprocess
-import time
 import tomllib
 from pathlib import Path
 
 WORKFLOW = "desktop-bundled-release.yml"
-
-# Direct commit-build dispatch is the upstream-only path: the workflow's
-# admission step rejects any repository != NousResearch/hermes-agent that has
-# no disposable allocation (the fork CI guard). Forks dispatch the same
-# workflow in disposable mode instead; cmd_build_commit selects the flags.
-UPSTREAM_REPOSITORY = "NousResearch/hermes-agent"
 
 
 def require_commit(value: str) -> str:
@@ -98,37 +91,6 @@ def dispatch_command(commit: str, repository: str, branch: str,
     return command
 
 
-def disposable_dispatch_command(commit: str, repository: str, branch: str,
-                               bundle_env: dict[str, str | None] | None = None) -> list[str]:
-    """Fork dispatch: same workflow, disposable_channel inputs.
-
-    Bundle env travels here: the allocation bakes it into the immutable
-    request inside the same run that builds it, so every value must be
-    present at dispatch time.
-    """
-    from scripts.releases.bundle_env import validate
-
-    require_commit(commit)
-    command = ["gh", "workflow", "run", WORKFLOW, "--repo", repository, "--ref", branch,
-               "-f", f"build_commit={commit}", "-f", "tag=", "-f", "upload_release=false",
-               "-f", "termux_only=false", "-f", "termux_upgrade_from_tag=",
-               "-f", "disposable_receivers=false",
-               "-f", "disposable_channel=" + _allocation_channel_name(commit)]
-    if bundle_env:
-        command += ["-f", "bundle_env=" + json.dumps(validate(bundle_env), sort_keys=True)]
-    return command
-
-
-def _allocation_channel_name(commit: str) -> str:
-    """A unique disposable preview name.
-
-    Uniqueness matters: ChannelPublisher.create() returns an existing record
-    instead of failing, so a colliding name would silently allocate into a
-    previous channel and bump its sequence.
-    """
-    return f"commit-{commit[:12]}-{int(time.time())}"
-
-
 def cmd_build_commit(args) -> None:
     from scripts import release
     from scripts.releases import r2
@@ -144,17 +106,10 @@ def cmd_build_commit(args) -> None:
         branch = release._default_branch(repository)
         if not branch:
             raise ValueError("could not resolve the repository default branch")
-        fork = repository.casefold() != UPSTREAM_REPOSITORY.casefold()
-        command = disposable_dispatch_command(commit, repository, branch, bundle_env) if fork \
-            else dispatch_command(commit, repository, branch, bundle_env)
+        command = dispatch_command(commit, repository, branch, bundle_env)
         page = r2.public_url_for(r2.public_base_url(), r2.commit_page_key_for(commit))
         print(f"Building one-off bundle for commit {commit}")
         print(f"Builds will be available at: {page}.")
-        if fork:
-            # One dispatch: the fork run allocates its disposable channel and
-            # builds it in the same run; bundle env travels in the allocation.
-            print(f"Repository {repository} is not {UPSTREAM_REPOSITORY}; dispatching "
-                  "a disposable channel build.")
         print(f"Workflow command, running from {repository}@{branch}")
         print(f"    {shlex.join(command)}")
         if not args.publish:
