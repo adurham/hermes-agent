@@ -86,7 +86,7 @@ def pinned_inputs(repo: Path, *, target: str | None = None, packages: set[str] |
                     continue  # OCI digests belong to the container registry, not HTTP archives.
                 pins.append(_pin(label, row, "tool"))
     if packages is None and target in (None, TERMUX_TARGET):
-        table = json.loads((repo / "scripts/termux/runtime_libs.json").read_text(encoding="utf-8-sig"))
+        table = json.loads((repo / "pm" / "termux_runtime_libs.json").read_text(encoding="utf-8-sig"))
         pins.extend(_pin(name, row, "library") for name, row in table["libs"].items())
         if table.get("licenses") is not None:
             pins.append(_pin("termux-licenses", table["licenses"], "license"))

@@ -507,6 +507,7 @@ not substitutes for an installed application's update mechanism.
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |
 | `pm update --uv` / `--npm` | Also refresh the Python or npm dependency resolution. |
+| `pm update --termux [--check]` | Repin the termux pool archives the rolling pool has retired (the runtime-lib pin table and the bionic lock rows). `--check` reports without writing and exits 1 when a pin is retired. |
 | `pm install --target TARGET NAME...` | Stage explicit cross-target packages without recording them as the host's installed runtime. |
 | `pm bundle --out DIR [--ref REF]` | Stage a source snapshot, native tools, facts, and Python dependencies. It does not produce a signed desktop installer. |
 

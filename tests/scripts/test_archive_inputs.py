@@ -19,8 +19,7 @@ from tests.test_termux_runtime_libs import _Server, _build_deb
 def write_pins(repo, packages, libs=None):
     (repo / "pm").mkdir(parents=True, exist_ok=True)
     (repo / "pm/lock.json").write_text(json.dumps({"schema": 1, "packages": packages}), encoding="utf-8")
-    (repo / "scripts/termux").mkdir(parents=True, exist_ok=True)
-    (repo / "scripts/termux/runtime_libs.json").write_text(json.dumps(libs or {"libs": {}}), encoding="utf-8")
+    (repo / "pm/termux_runtime_libs.json").write_text(json.dumps(libs or {"libs": {}}), encoding="utf-8")
 
 
 @pytest.fixture
@@ -245,7 +244,7 @@ def test_committed_inventory_matches_every_http_pin():
             for row in artifact if isinstance(artifact, list) else [artifact]:
                 if row["url"].startswith("https://"):
                     expected.add(row["sha256"])
-    table = json.loads((repo / "scripts/termux/runtime_libs.json").read_text(encoding="utf-8"))
+    table = json.loads((repo / "pm/termux_runtime_libs.json").read_text(encoding="utf-8"))
     expected.update(row["sha256"] for row in table["libs"].values())
     expected.add(table["licenses"]["sha256"])
     assert {p.sha256 for p in inputs.pinned_inputs(repo)} == expected

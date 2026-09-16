@@ -19,8 +19,7 @@ def test_archive_reader_accepts_bom_without_changing_pin_authority(tmp_path):
 
     (tmp_path / "pm").mkdir()
     (tmp_path / "pm/lock.json").write_bytes(b'\xef\xbb\xbf{"schema":1,"packages":{}}')
-    table = tmp_path / "scripts/termux/runtime_libs.json"
-    table.parent.mkdir(parents=True)
+    table = tmp_path / "pm/termux_runtime_libs.json"
     row = {"url": "https://example.invalid/café.deb", "sha256": "a" * 64}
     table.write_bytes(b"\xef\xbb\xbf" + json.dumps({"libs": {"lib": row}}, ensure_ascii=False).encode("utf-8"))
     before = table.read_bytes()
