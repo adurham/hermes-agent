@@ -34,6 +34,14 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Exact refusals retained for older adapters/connectors without destination preflight.
+# Substring matching would also silence transient thread-resolution errors.
+_CARD_DESTINATION_REFUSALS = {
+    "No Slack thread target",
+    "slack task_card requires a thread anchor",
+    "slack task_card requires a thread anchor (Slack streams are thread replies)",
+}
+
 
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
@@ -43,6 +51,11 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
         return bool(probe())
     return getattr(adapter_cls, "send_exec_approval", None) is not None
+
+
+# Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
+# Slack click handler shows on a dead entry).
+_CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -128,6 +141,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         initial_reply_to_id=ctx.event_message_id, run_still_current=ctx._run_still_current,
                     )
                     ctx.stream_consumer_holder[0] = stream_consumer
+                    # #105341: a consumer created only for interim commentary (text streaming off)
+                    # is never fed the final reply's deltas — mark it so the duplicate-risk
+                    # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
+                    stream_consumer.stream_deltas_enabled = want_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
@@ -369,13 +386,22 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        response, answered = _clarify_send_then_wait(
+            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
         if self._approval_owner is not None:
             authority, session_id, generation = self._approval_owner
             authority.sessions[session_id].controls.snapshot(session_id, generation)
-        # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
-        # timeout/cancellation strings start with '[' and must pass through untouched.
-        if not (isinstance(response, str) and response.startswith("[")):
+        # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
+        # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
+        if not answered:
+            # No answer arrived (timeout, /new, run end): retire the native card so it stops
+            # looking answerable. Adapters without a persistent card have no such method.
+            retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)
+            if callable(retire):
+                self._schedule(
+                    retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
+                    "Clarify card retire failed to schedule")
+        else:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
             # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is
             # a no-op outside the reopen-pending native state.
@@ -404,6 +430,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _format_exec_approval_fallback, _interim_metadata, _redact_approval_command
+        from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
@@ -430,6 +457,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    # Without this, a card whose timer runs out keeps live buttons and nobody
+                    # learns the command did NOT run (only the TUI registered a settle hook).
+                    register_timeout_notice(
+                        self, approval_data, command=cmd,
+                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -485,6 +517,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             )
             if fut is not None:
                 fut.result(timeout=15)
+                # No card to edit on the text path: the prompt has no buttons to drop and carries
+                # the /approve instructions, so the timeout notice is posted as a new message.
+                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
 
@@ -890,7 +925,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
             )
         except Exception as exc:
-            return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}
+            # Model/credential resolution failed before the turn began; the raw text (URLs, status
+            # codes) belongs in the log, and the chat gets the commands that fix it.
+            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            return {
+                "final_response": (
+                    "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
+                    "Use /login to sign in again, or /model to pick a different model. If it keeps "
+                    "failing, run `hermes doctor` on the host."),
+                "messages": [], "api_calls": 0, "tools": [],
+            }
         pr = runner._provider_routing
         reasoning_config = (policy.reasoning_config if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))

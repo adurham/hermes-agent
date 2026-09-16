@@ -18,6 +18,7 @@ Cron jobs can:
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
+- fire on **external events** — a webhook route with `cron_job` set fires the job the moment something happens (a PR gets feedback, a service posts an alert) instead of waiting for the next scheduled tick. See [Event-Triggered Cron Jobs](/user-guide/messaging/webhooks#event-triggered-cron-jobs).
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
@@ -140,7 +141,7 @@ The agent-facing `cronjob` tool accepts the same action (`action=resnap job_id=<
 
 ## Skill-backed cron jobs
 
-A cron job can load one or more skills before it runs the prompt.
+A cron job can load one or more skills before it runs the prompt. Each skill loads exactly as it does from `/skill-name` in a chat session, including the `[Skill config ...]` block with its resolved `metadata.hermes.config` values from `config.yaml`.
 
 ### Single skill
 
@@ -280,6 +281,10 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+### Pausing everything: `hermes pause`
+
+`hermes pause [--reason ...]` is the global emergency stop (`hermes resume` lifts it). While it is engaged no scheduled cron fire starts, whichever door it arrives through: the built-in ticker skips its dispatch, the managed-cron (hosted scheduler) fire webhook answers `503` with `Retry-After: 60` so the scheduler redelivers the fire after you resume, and the [misfire catch-up](#misfire-catch-up) sweep stays idle instead of force-firing everything that was held back. Runs already in flight are never killed, and nothing is lost: due work catches up on the first tick or sweep after `hermes resume`. Explicit manual runs (`hermes cron run`, the dashboard's Trigger button) are an operator override and still execute while paused.
+
 ### Creating a job paused (safe canary)
 
 Create a canary without a create-then-pause scheduling race:
@@ -327,6 +332,14 @@ cadence, or run a "cron librarian" job that reconciles the whole table
   job delivers nowhere). A job created by a scheduled agent can never point
   its output at a session that no longer exists. Explicit targets
   (`local`, `all`, `telegram:<chat_id>`) are honored verbatim.
+- **A job may remove itself and still report.** The "watch for X, tell me
+  once, then stop" pattern — a recurring job whose run calls
+  `cronjob(action="remove", job_id=<its own id>)` and then answers — delivers
+  that final response and records the run as `completed`; the job record and
+  its `cron/output/<job_id>/` directory are gone afterwards and the final run
+  is not written there. Deleting the record from *outside* the run (another
+  process, or a replacement job reusing the id) still discards the stale
+  run's output, as before.
 
 Prefer prompts that update existing jobs (list first, then update by ID)
 over ones that create new jobs each run.
@@ -446,7 +459,7 @@ ledger database as the execution history.
 
 ```bash
 hermes cron incidents                 # list incidents (newest activity first)
-hermes cron incidents --state alerted # filter: detected | alerted | closed
+hermes cron incidents --state alerted # filter: detected | alerted | resolved | closed
 hermes cron incidents ack <id>        # acknowledge — stop re-pinging
 ```
 
@@ -454,11 +467,17 @@ Acknowledging an incident silences the per-run failure ping for that exact
 signature only. Nothing else changes: the run history still records every
 failure, the failure streak keeps counting, and the moment the job starts
 failing with a *different* error a new incident is minted and alerts fire
-again. A successful run doesn't touch incidents — they are per-signature, not
-per-job.
+again.
+
+A successful run marks every open incident for that job `resolved`, so the
+list reflects current health rather than every failure the job ever had. If
+the job later fails with the *same* error, the resolved incident re-opens as
+`detected` and you are alerted again. Acknowledged (`closed`) incidents are
+the exception: a success leaves them alone, and a repeat stays silent.
 
 Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
-failure ping reached delivery) → `closed` (acknowledged; terminal for that
+failure ping reached delivery) → `resolved` (the job ran OK afterwards;
+re-opens on a repeat) or `closed` (acknowledged; terminal for that
 signature). Stored error text is secret-redacted and truncated before it is
 written.
 
@@ -1102,7 +1121,9 @@ cronjob(action="create", name="weekly-news-summary",
         prompt="Summarize this week's AI news: ...")
 ```
 
-When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. If the cron-platform toolset config cannot be read at all (for example a malformed `platform_toolsets` block in `config.yaml`), the run fails with a recorded error instead of quietly running with every tool — check `hermes cron list` / `hermes cron doctor`. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+
+If the job drives a site you're logged into, the login has to be in place before the run — a scheduled tick has nobody to answer a prompt. [Scheduled and unattended runs](./browser.md#scheduled-and-unattended-runs) covers that setup.
 
 ### Skipping the agent entirely: `wakeAgent`
 

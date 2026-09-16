@@ -278,12 +278,22 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+        source: Optional[str]=None,
     ) -> None:
-        """Update totals and route attribution, ensuring the legacy missing-row backfill."""
+        """Update totals and route attribution, ensuring the legacy missing-row backfill.
+        *absolute*=False increments (per-API-call deltas, CLI path); *absolute*=True sets directly
+        (gateway path, where the cached agent holds cumulative totals). ``source`` is the session's
+        real surface for the row-existence guard; callers that don't know it leave the placeholder."""
         values = dict(locals())
         values.pop('self')
         values.pop('session_id')
-        self._insert_session_row(session_id, "unknown", model=model)
+        values.pop('source')
+        # Ensure the row exists: under concurrent load create_session() may have failed on
+        # locking, and the UPDATE would silently affect 0 rows. When this guard is the first
+        # writer it must carry the agent's real source: the turn lease treats an existing row as
+        # proof the create already happened, so the creator never returns to repair an anonymous
+        # ``unknown`` placeholder and the session stays a phantom for life (#111999).
+        self._insert_session_row(session_id, source or "unknown", model=model)
         self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, **values))
 
     def _update_token_counts_in_transaction(
@@ -386,7 +396,8 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id: same INSERT OR IGNORE guard as update_token_counts.
+        # FK to sessions.id: same guard as update_token_counts; the aux path carries no surface, so
+        # the placeholder stays repairable by the creator's upsert (_insert_session_row).
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
