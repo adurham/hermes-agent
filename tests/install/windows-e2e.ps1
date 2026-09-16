@@ -922,6 +922,155 @@ function Invoke-PreserveVerify {
     Write-Host "  plugins/** and profile plugin trees survived the upgrade intact"
 }
 
+# ----------------------------------------------------------------------------
+# User-state preservation: the user's OWN durable state, produced through the
+# ordinary CLI (never seeded by us), snapshotted before the upgrade and
+# verified after it. Complements the plugin-tree contract above, which owns
+# plugins/** only.
+# ----------------------------------------------------------------------------
+
+function Get-UserStateSessionCount {
+    # A real chat turn must actually create a session; if it silently does not,
+    # the preservation check below would be testing nothing.
+    $probe = Join-Path $WorkRoot 'user-state-session-count.py'
+    if (-not (Test-Path -LiteralPath $probe)) {
+        @'
+import sqlite3, sys
+try:
+    con = sqlite3.connect("file:" + sys.argv[1].replace("\\", "/") + "?mode=ro", uri=True)
+    print(con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+except Exception:
+    print(-1)
+'@ | Set-Content -LiteralPath $probe -Encoding ASCII
+    }
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $value = (& python $probe (Join-Path $HermesHome 'state.db') 2>$null | Out-String).Trim() }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($value -match '^-?\d+$') { return [int]$value }
+    return -1
+}
+
+function Invoke-UserStateActions {
+    # Everything here is a command a user would run against the real installed
+    # CLI with a real (mocked-inference) provider configured.
+    $hermes = Get-SourceHermes $InstallDir
+    if (-not $script:ChatMock) {
+        # Same mock + config writer the desktop chat checkpoints use, so the
+        # leg has a genuinely configured provider rather than a dummy key.
+        $script:ChatMock = Start-DesktopJourneyMock $DriverNode $AssetsDir $WorkRoot $HermesHome $ProofRoot
+    }
+    $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
+    $prevEap = $ErrorActionPreference
+    try {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = '1'
+        $ErrorActionPreference = 'Continue'
+
+        # Probe, do not assume (the harness rule for old refs).
+        $chatHelp = (& $hermes chat --help 2>&1 | Out-String)
+        if (-not ($chatHelp -match '(^|\s)-q(\s|,|$)' -or $chatHelp -match '--quiet')) {
+            throw 'the installed CLI has no one-shot chat flag; this leg cannot produce a session through the user path'
+        }
+        $before = Get-UserStateSessionCount
+        $log = Join-Path $WorkRoot 'logs\user-state-chat.log'
+        & $hermes chat -q "Reply with the single word: ok" 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        $chatExit = $LASTEXITCODE
+        Write-LogGroup 'first real chat turn' $log
+        if ($chatExit -ne 0) { throw "the first chat turn failed (exit $chatExit); see $log" }
+        $after = Get-UserStateSessionCount
+        if (-not ($before -ge 0 -and $after -gt $before)) {
+            throw "the chat turn produced no session row (state.db sessions $before -> $after)"
+        }
+        Write-Host "  a real turn created a session (state.db sessions $before -> $after)"
+
+        if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
+            & $hermes auth add mock --type api-key --api-key 'e2e-preservation-not-a-real-key' 2>&1 |
+                Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-auth.log')
+            if ($LASTEXITCODE -ne 0) { throw 'hermes auth add failed' }
+            if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
+                throw 'hermes auth add produced no auth.json'
+            }
+            Write-Host '  a pooled credential exists (auth.json)'
+        }
+
+        if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {
+            & $hermes profile create e2e-second 2>&1 |
+                Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-profile.log')
+            if ($LASTEXITCODE -ne 0) { throw 'hermes profile create failed' }
+            if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {
+                throw 'hermes profile create produced no profile dir'
+            }
+            Write-Host '  a second profile exists (profiles/e2e-second)'
+        }
+    }
+    finally {
+        $env:HERMES_DISABLE_LAZY_INSTALLS = $prevLazy
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+function Invoke-UserStateSnapshot {
+    $snap = Join-Path $WorkRoot 'user-state-snapshot.json'
+    if (Test-Path -LiteralPath $snap) { throw 'refusing to overwrite an existing user-state snapshot' }
+    & python (Join-Path $AssetsDir 'verify-user-state.py') snapshot --home $HermesHome --out $snap
+    if ($LASTEXITCODE -ne 0) { throw "user-state snapshot failed (exit $LASTEXITCODE)" }
+    Write-Host "  pre-upgrade user-state snapshot: $snap"
+}
+
+function Invoke-UserStateVerify {
+    $snap = Join-Path $WorkRoot 'user-state-snapshot.json'
+    if (-not (Test-Path -LiteralPath $snap)) {
+        throw 'no pre-upgrade user-state snapshot; cannot claim preservation'
+    }
+    $report = Join-Path $WorkRoot 'logs\user-state-report.json'
+    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        & python (Join-Path $AssetsDir 'verify-user-state.py') verify --home $HermesHome `
+            --snapshot $snap --report $report
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $prevEap }
+    if ($code -ne 0) {
+        throw "the upgrade changed the user's own state (exit $code); report at $report"
+    }
+    Write-Host "  the user's own durable state survived the upgrade"
+}
+
+function Assert-RedirectIsTransportOnly {
+    # The redirect must stay at TRANSPORT level: `hermes update` resolves its
+    # channel from the release archive and validates the record against
+    # `git config --get remote.origin.url`. If the configured URL ever looked
+    # like the rehearsal source, channel resolution would fail and this leg
+    # would be testing a fork install rather than the real user path.
+    $official = 'https://github.com/NousResearch/hermes-agent.git'
+    $configured = (Invoke-Git @('-C', $InstallDir, 'config', '--get', 'remote.origin.url') | Out-String).Trim()
+    Assert-True ($configured -eq $official) "origin stays configured as the official URL (got '$configured')"
+    $observed = (Invoke-Git @('-C', $InstallDir, 'remote', 'get-url', 'origin') | Out-String).Trim()
+    Assert-True ($observed -match 'serve\.git|^file://') "origin transport is redirected to the staged repo (got '$observed')"
+}
+
+function Assert-UserShims {
+    # A launcher left pointing at a vanished tree is the "update lost
+    # something" shape a checkout-hash assertion cannot see.
+    $hermes = Get-SourceHermes $InstallDir
+    Assert-True (Test-Path -LiteralPath $hermes) "a usable launcher still exists after the upgrade ($hermes)"
+    $userShim = Join-Path $HermesHome 'bin\hermes.exe'
+    if (-not (Test-Path -LiteralPath $userShim)) { $userShim = Join-Path $HermesHome 'bin\hermes.cmd' }
+    if (Test-Path -LiteralPath $userShim) {
+        $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+        try {
+            & $userShim --version 2>&1 | Out-Null
+            $shimExit = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $prevEap }
+        Assert-True ($shimExit -eq 0) "the $HermesHome\bin launcher still runs after the upgrade"
+    }
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath) {
+        Assert-True ($userPath -like "*$(Join-Path $HermesHome 'bin')*") `
+            "the USER PATH still exposes $(Join-Path $HermesHome 'bin')"
+    }
+}
+
 function Invoke-PhaseInstall {
     # Dispatch on the install axis. Each arm ends with the same contract:
     # checkout at OLD, hermes runs, and state carries how OLD landed so any
@@ -955,6 +1104,8 @@ function Invoke-PhaseInstall {
     if ($InstallMethod -ne 'desktop-installer@latest') {
         Invoke-DesktopCheckpoint 'old' $state.old $InstallMethod
     }
+    Assert-RedirectIsTransportOnly
+    Invoke-UserStateActions
 }
 
 function Invoke-PhaseUpdate {
@@ -973,6 +1124,9 @@ function Invoke-PhaseUpdate {
     # helper used to own this step.
     # Snapshot every plugin tree BEFORE the upgrade moves anything.
     Invoke-PreserveSnapshot
+    # ... and the user's own durable state, produced by the install phase
+    # through the ordinary CLI.
+    Invoke-UserStateSnapshot
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $state.current) | Out-Null
     Write-Host "  serve.git main advanced to $($state.current)"
 
@@ -1019,7 +1173,9 @@ function Invoke-PhaseUpdate {
 
     Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on HEAD"
     Test-HermesRuns "post-update"
+    Assert-UserShims
     Invoke-PreserveVerify
+    Invoke-UserStateVerify
     if ($Route -notin @('open-app-update', 'desktop-installer@latest')) {
         Invoke-DesktopCheckpoint 'new' $state.current $Route
     }

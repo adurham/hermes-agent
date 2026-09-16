@@ -102,6 +102,12 @@ fail() { printf 'E2E ASSERTION FAILED: %s\n' "$*" >&2; exit 1; }
 source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { cat; }
 # shellcheck source=../e2e-assets/preserve-plugins.sh
 source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
+# shellcheck source=../e2e-assets/preserve-user-state.sh
+source "$(dirname "$0")/e2e-assets/preserve-user-state.sh"
+# shellcheck source=../e2e-assets/user-state-actions.sh
+source "$(dirname "$0")/e2e-assets/user-state-actions.sh"
+# shellcheck source=../e2e-assets/mock-provider.sh
+source "$(dirname "$0")/e2e-assets/mock-provider.sh"
 # shellcheck source=e2e-assets/source-driver.sh
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
 # shellcheck source=e2e-assets/installer-common.sh
@@ -217,6 +223,43 @@ desktop_checkpoint() { # phase, expected commit, selected method
     --desktop "$EXPECT_DESKTOP" --method "$3"
 }
 
+# The redirect must stay at TRANSPORT level. `hermes update` resolves its
+# update channel from the release archive and validates the record against
+# `git config --get remote.origin.url`; if the configured URL ever looked like
+# the rehearsal source, channel resolution would fail outright and the leg
+# would be testing a fork install instead of the real user path.
+assert_redirect_is_transport_only() {
+  local official='https://github.com/NousResearch/hermes-agent.git'
+  local configured observed
+  configured="$(git -C "$INSTALL_DIR" config --get remote.origin.url)"
+  [ "$configured" = "$official" ] \
+    || fail "origin is configured as '$configured', not the official URL — the redirect is not transport-only"
+  observed="$(git -C "$INSTALL_DIR" remote get-url origin)"
+  case "$observed" in
+    file://*|*serve.git*) ;;
+    *) fail "origin transport '$observed' is not redirected to the staged repo" ;;
+  esac
+  ok "redirect is transport-only (configured: $configured, transport: $observed)"
+}
+
+# The user-visible launcher must survive the upgrade and still run. A launcher
+# left pointing at a vanished tree is exactly the "update lost something" shape
+# a checkout-hash assertion cannot see.
+assert_user_shims() {
+  local hermes user_shim
+  hermes="$(source_hermes "$INSTALL_DIR")" || fail "no usable launcher after the upgrade"
+  [ -x "$hermes" ] || fail "launcher is not executable: $hermes"
+  user_shim="$HOME/.local/bin/hermes"
+  if [ -e "$user_shim" ] || [ -L "$user_shim" ]; then
+    HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 \
+      "$user_shim" --version > "$LOG_DIR/version-path-shim.log" 2>&1 \
+      || fail "the PATH shim stopped working after the upgrade: $user_shim"
+    ok "PATH shim still runs: $user_shim"
+  else
+    ok "no PATH shim at $user_shim (nothing to check there)"
+  fi
+}
+
 # --- install OLD ---------------------------------------------------------------
 
 step "installing OLD ($INSTALL_REF) via its own scripts/install.sh ($INSTALL_METHOD)"
@@ -231,6 +274,21 @@ else
   assert_checkout "$OLD_SHA" OLD
 fi
 desktop_checkpoint old "$OLD_SHA" "$INSTALL_METHOD"
+
+# A real, chat-capable provider. An existing user HAS one configured, and the
+# durability check below needs a real turn — not a file we wrote ourselves.
+if [ -z "${HERMES_E2E_MOCK_URL:-}" ]; then
+  PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
+  trap mock_stop EXIT
+fi
+
+# Produce the user's own state through the ordinary CLI, then snapshot what
+# must survive. Done as late as possible before the update so the window
+# verify() covers contains only the upgrade.
+HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed command to drive"
+source_build_env user_state_produce "$HERMES"
+user_state_before_upgrade
+assert_redirect_is_transport_only
 preserve_before_upgrade
 
 # --- update OLD -> HEAD ----------------------------------------------------------
@@ -334,6 +392,8 @@ ls -la "$INSTALL_DIR/venv/bin" > "$ildest/venv-bin-ls.txt" 2>/dev/null || true
 ok "collected install-side logs to $ildest"
 
 assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
+assert_user_shims
+user_state_after_upgrade
 
 preserve_after_upgrade
 desktop_checkpoint new "$TARGET_SHA" "$UPDATE_METHOD"
