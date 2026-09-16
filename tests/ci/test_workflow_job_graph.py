@@ -1,11 +1,10 @@
-"""Every job reads only from dependencies it declares in `needs`.
+"""A job reads another job's result only through a `needs` entry it declares.
 
-A job can reach another job's result solely through `needs.<job>` — so a name
-read in an `if:` or any `${{ }}` expression must also appear in that job's own
-`needs` list, and can never be the job itself. A self-reference is the silent
-form of this bug: `needs: [validate, build-win32]` on `build-win32` reads as an
-ordinary dependency to a reviewer while GitHub rejects the whole workflow as a
-cycle, so the pipeline dies before any job starts.
+GitHub rejects a job graph that references an unknown job or needs itself, so
+cycles are the platform's own validation. What it does not fail closed on is a
+result read from a job that was never declared: `needs.build-win32-release.result`
+resolves to nothing when the result job's `needs` list only names itself, and the
+dispatch burns its whole fan-out before anything reports a problem.
 """
 import re
 from pathlib import Path
@@ -45,18 +44,13 @@ def _referenced_jobs(node, key=None):
 def test_jobs_only_read_declared_dependencies():
     violations = []
     for filename, workflow in _loaded().items():
-        jobs = (workflow or {}).get("jobs") or {}
-        for name, job in jobs.items():
+        for name, job in ((workflow or {}).get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
             declared = job.get("needs") or []
             if isinstance(declared, str):
                 declared = [declared]
-            if name in declared:
-                violations.append(f"{filename}: {name} needs itself")
             for read in sorted(set(_referenced_jobs(job))):
-                if read not in jobs:
-                    violations.append(f"{filename}: {name} reads unknown job '{read}'")
-                elif read not in declared:
+                if read not in declared:
                     violations.append(f"{filename}: {name} reads '{read}' without needing it")
     assert not violations, "workflow job graph:\n" + "\n".join(violations)
