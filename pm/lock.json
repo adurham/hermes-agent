@@ -566,8 +566,8 @@
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-gnu.tar.gz"
         },
         "linux-arm64-bionic": {
-          "sha256": "64f9ac688b399e7ad4fef8eb7f00000816cf7f6f5b957503e4c2485e6db2470e",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.10_aarch64.deb"
+          "sha256": "6bacc745de035ac87cb6948f495f8d82a0fe0c6e6ff2ca65e6ecf487973b09cd",
+          "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.15_aarch64.deb"
         },
         "linux-x64": {
           "sha256": "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101",
