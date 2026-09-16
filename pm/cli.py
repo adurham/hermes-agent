@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
@@ -59,28 +60,67 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / (1024 * 1024):.1f} MiB"
 
 
+def _progress_stream():
+    """Stream for in-place progress, or None off a terminal. Prefer stdout;
+    fall back to stderr because activate.ps1 pipes stdout through Out-Host
+    while stderr stays on the console."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream.isatty():
+                return stream
+        except (AttributeError, ValueError):
+            continue
+    return None
+
+
+def _interactive() -> bool:
+    return _progress_stream() is not None
+
+
 def _live_progress(name: str):
     """Per-package progress for ensure(): download as % + MiB, unpack as a
-    phase line. Throttled to ~4 MiB steps — a slow line proves it's moving
-    in a piped (CI) log without flooding it (a 1 MiB tick on a 1.5 GiB
-    model would be ~1,500 lines)."""
+    phase line. On a terminal the line redraws in place (~10 Hz); in a piped
+    (CI) log each tick prints its own line, throttled to ~4 MiB steps so a
+    slow line proves it's moving without flooding the log (a 1 MiB tick on a
+    1.5 GiB model would be ~1,500 lines). ``finish()`` returns the cursor to
+    a clean line so the caller's status glyph starts on its own row."""
     last = 0
+    last_time = 0.0
+    stream = _progress_stream()
+
+    def write(line: str) -> None:
+        if stream is not None:
+            stream.write("\r\x1b[2K" + line)
+            stream.flush()
+        else:
+            print(line, flush=True)
+
+    def finish() -> None:
+        if stream is not None:
+            stream.write("\r\x1b[2K")
+            stream.flush()
 
     def report(stage: str, done: int, total: int, label: str) -> None:
-        nonlocal last
+        nonlocal last, last_time
         if stage == "unpack":
             last = 0
-            print(f"  {name}: unpacking{(' ' + label) if label else ''}", flush=True)
+            last_time = 0.0
+            write(f"  {name}: unpacking{(' ' + label) if label else ''}")
             return
         if total <= 0:
             return
-        if done >= total or done - last >= 4 * 1024 * 1024:
-            last = done
-            print(
-                f"  {name}: {done / total * 100:5.1f}%  {_fmt_bytes(done)} / {_fmt_bytes(total)}",
-                flush=True,
-            )
+        if done < total:
+            if stream is not None:
+                now = time.monotonic()
+                if now - last_time < 0.1:
+                    return
+                last_time = now
+            elif done - last < 4 * 1024 * 1024:
+                return
+        last = done
+        write(f"  {name}: {done / total * 100:5.1f}%  {_fmt_bytes(done)} / {_fmt_bytes(total)}")
 
+    report.finish = finish  # type: ignore[attr-defined]
     return report
 
 
@@ -90,19 +130,22 @@ def _install_names(names: list[str], target: str | None = None) -> int:
     failed = 0
     with _install_operation() as operation:
         for name in names:
+            progress = _live_progress(name)
             try:
                 if target is not None:
                     # Cross-target staging: publish the entry, touch no facts.
                     entry = stage_only(name, target)
                     print(f"✓ {name} (staged for {target}: {entry.name})")
                 else:
-                    ensure(name, explicit=True, progress=_live_progress(name), _operation=operation)
+                    ensure(name, explicit=True, progress=progress, _operation=operation)
                     if name == "python":
                         from hermes_cli.venv_sync import publish_launchers
 
                         publish_launchers(repo_root(), create=False)
+                    progress.finish()
                     print(f"✓ {name}", flush=True)
             except InstallError as e:
+                progress.finish()
                 print(f"✗ {e}", flush=True)
                 failed += 1
     return failed
