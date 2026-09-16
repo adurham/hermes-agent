@@ -180,22 +180,23 @@ module.exports = {
   dmg: {
     // Avoid the failing optional APFS shrink pass; keep compressed conversion.
     shrink: false,
-    title: `Install ${displayName}`,
-    backgroundColor: '#f5f5f7',
+    title: 'Hermes Agent Installer',
+    background: 'assets/nous-dmg-2b.png',
     iconSize: 96,
+    iconTextSize: 11,
     window: {
-      width: 560,
-      height: 360
+      width: 769,
+      height: 457
     },
     contents: [
       {
-        x: 160,
-        y: 170,
+        x: 253,
+        y: 238,
         type: 'file'
       },
       {
-        x: 400,
-        y: 170,
+        x: 512,
+        y: 235,
         type: 'link',
         path: '/Applications'
       }
