@@ -403,9 +403,9 @@ def martin_riedl_versions(target: str) -> list[str]:
 
 
 def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
-    """Newest static GPL Windows asset per target/version, as (tag, name).
+    """Newest static GPL asset per target/version, as (tag, name).
 
-    Releases also contain Linux, shared and LGPL builds. Retain target
+    Releases also contain macOS, shared and LGPL builds. Retain target
     identity here so discovery and pinning select the same artifact.
     """
     out: dict[str, dict[str, tuple[str, str]]] = {}
@@ -421,12 +421,18 @@ def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
                 continue
             for asset in release.get("assets", []):
                 name = asset.get("name", "")
+                # Windows ships .zip, Linux .tar.xz. `gpl-shared`/`lgpl` differ
+                # in the segment after the arch, so requiring "-gpl-<ver>" right
+                # after it excludes both.
                 m = re.fullmatch(
-                    r"ffmpeg-n(\d+\.\d+\.\d+)-.+-win(64|arm64)-gpl-\d+\.\d+\.zip", name
+                    r"ffmpeg-n(\d+\.\d+\.\d+)-.+-"
+                    r"(win|linux)(64|arm64)-gpl-\d+\.\d+\.(?:zip|tar\.xz)",
+                    name,
                 )
                 if m:
-                    version, arch = m.groups()
-                    target = "win32-x64" if arch == "64" else "win32-arm64"
+                    version, osname, arch = m.groups()
+                    os_key = "win32" if osname == "win" else "linux"
+                    target = f"{os_key}-{'x64' if arch == '64' else 'arm64'}"
                     out.setdefault(target, {}).setdefault(version, (tag, name))
         if len(data) < 30:
             break
@@ -434,7 +440,7 @@ def btbn_index() -> dict[str, dict[str, tuple[str, str]]]:
 
 
 def btbn_versions(target: str) -> list[str]:
-    """Release versions with a supported Windows asset for this target."""
+    """Release versions with a supported BtbN asset for this target."""
     return list(btbn_index().get(target, {}))
 
 

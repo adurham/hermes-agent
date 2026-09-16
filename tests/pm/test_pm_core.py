@@ -666,17 +666,21 @@ def test_probe_args_override_used_by_verify(tmp_path):
     assert "--version" not in reason
 
 
-def test_ffmpeg_posix_layout_resolves_at_entry_root(tmp_path):
-    """martin-riedl zips are a single `ffmpeg` file at the zip root — the
-    package must resolve it there (bin/ffmpeg is the BtbN win32 layout)."""
+def test_ffmpeg_binary_rel_follows_the_build_source(tmp_path):
+    """BtbN (Windows `.zip`, Linux `.tar.xz`) ships bin/ffmpeg under one
+    top-level dir; martin-riedl's macOS zip is a single `ffmpeg` at the root."""
     from pm.registry import get_package
 
     ffmpeg = get_package("ffmpeg")
     entry = tmp_path / "entry"
     entry.mkdir()
     (entry / "ffmpeg").write_bytes(b"x")
-    assert ffmpeg.binary(entry, "linux-arm64") == entry / "ffmpeg"
+    (entry / "bin").mkdir()
+    (entry / "bin" / "ffmpeg").write_bytes(b"x")
     assert ffmpeg.binary(entry, "darwin-x64") == entry / "ffmpeg"
+    assert ffmpeg.binary(entry, "darwin-arm64") == entry / "ffmpeg"
+    assert ffmpeg.binary(entry, "linux-x64") == entry / "bin" / "ffmpeg"
+    assert ffmpeg.binary(entry, "linux-arm64") == entry / "bin" / "ffmpeg"
     assert ffmpeg.probe_args == ["-version"]
 
 

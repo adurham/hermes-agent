@@ -97,11 +97,15 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
                 f'<a href="/download/{osname}/{arch}/{generation}_{version}/ffmpeg.zip">build</a>'
                 for osname in ("linux", "macos") for arch in ("amd64", "arm64")
             )
+            btbn_assets = []
+            for arch in ("64", "arm64"):
+                btbn_assets.append(
+                    {"name": f"ffmpeg-n{version}-1-gabcdef-win{arch}-gpl-9.1.zip"})
+                # Linux comes from BtbN too (Windows .zip, Linux .tar.xz).
+                btbn_assets.append(
+                    {"name": f"ffmpeg-n{version}-1-gabcdef-linux{arch}-gpl-9.1.tar.xz"})
             payloads["/repos/BtbN/FFmpeg-Builds/releases?per_page=30&page=1"] = [{
-                "tag_name": f"autobuild-{generation}", "assets": [
-                    {"name": f"ffmpeg-n{version}-1-gabcdef-win{arch}-gpl-9.1.zip"}
-                    for arch in ("64", "arm64")
-                ],
+                "tag_name": f"autobuild-{generation}", "assets": btbn_assets,
             }]
         RangeHandler.payloads = {path: (value if isinstance(value, str) else json.dumps(value)).encode()
                                  for path, value in payloads.items()}

@@ -663,10 +663,14 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
     it baked into the payload (post_update skips provisioning sealed
     installs — the artifact is atomic); dev installs get it re-ensured by
-    step_provision_runtimes when the pin bumps. Windows: BtbN/FFmpeg-Builds
-    (dated autobuild tag; ships ffprobe too). Linux + macOS:
-    ffmpeg.martin-riedl.de (uniform ZIP, published sha256; single-binary —
-    no ffprobe)."""
+    step_provision_runtimes when the pin bumps. Windows + Linux:
+    BtbN/FFmpeg-Builds (dated autobuild tag; ships ffprobe too).
+    macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
+    single-binary — no ffprobe).
+
+    Linux deliberately does NOT use martin-riedl: that build is compiled
+    without x11grab (confirmed on the pinned 9.0.1 amd64 binary), and
+    x11grab is how screen capture on X11 works."""
 
     name = "ffmpeg"
     deb_package = "ffmpeg"
@@ -675,14 +679,20 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     def main_rel(self, target: str) -> str:
         return "bin/ffmpeg"
 
-    # The posix (martin-riedl) and win32 (BtbN) build streams have no shared
-    # release cadence — they drift in PATCH. The lockfile version label is
-    # major.minor; each target's exact patch lives in its artifact urls.
+    # macOS (martin-riedl, the only remaining posix stream) and Windows/Linux
+    # (BtbN) have no shared release cadence — they drift in PATCH. The lockfile
+    # version label is major.minor; each target's exact patch lives in its
+    # artifact urls.
     version_style = "minor"
-    # martin-riedl (posix) zips are a single `ffmpeg` file at the zip root;
-    # BtbN (win32) zips carry bin/ffmpeg.exe under one top-level dir that
-    # flatten hoists.
-    binary_rel = {"win32": "bin/ffmpeg.exe", "posix": "ffmpeg"}
+    # martin-riedl (macOS) zips are a single `ffmpeg` at the zip root; BtbN
+    # ships bin/ffmpeg (Linux, .tar.xz) and bin/ffmpeg.exe (Windows, .zip)
+    # under one top-level dir that flatten hoists.
+    binary_rel = {
+        "win32": "bin/ffmpeg.exe",
+        "linux-x64": "bin/ffmpeg",
+        "linux-arm64": "bin/ffmpeg",
+        "posix": "ffmpeg",
+    }
     flatten = True
     # BtbN autobuild n9.0.1-11-ge47273f4d9 rejects `--version`
     # ("Unrecognized option '-version'", exit 2880417800); `-version` works
@@ -693,7 +703,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
         if target == "linux-arm64-bionic":
             return f"https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_{version}_aarch64.deb"
         osname, arch = target.split("-")
-        if osname == "win32":
+        if osname in ("win32", "linux"):
             artifact = btbn_index().get(target, {}).get(version)
             if artifact is not None:
                 tag, asset = artifact
@@ -701,16 +711,15 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
         else:
             epoch = martin_riedl_index().get(target, {}).get(version)
             if epoch is not None:
-                osdir = "macos" if osname == "darwin" else "linux"
                 source_arch = "amd64" if arch == "x64" else arch
-                return f"https://ffmpeg.martin-riedl.de/download/{osdir}/{source_arch}/{epoch}_{version}/ffmpeg.zip"
+                return f"https://ffmpeg.martin-riedl.de/download/macos/{source_arch}/{epoch}_{version}/ffmpeg.zip"
         # Existing installs read exact URLs from the lockfile. Re-pinning
         # must never silently substitute a different version or target.
         raise InstallError(self.name, f"no advertised {version} artifact for {target}",
                            "retry when the upstream index is available, or keep the existing pin")
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        if target.startswith("win32"):
+        if target in ("win32-x64", "win32-arm64", "linux-x64", "linux-arm64"):
             return btbn_versions(target)
         return martin_riedl_versions(target)
 
