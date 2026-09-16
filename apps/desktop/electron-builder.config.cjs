@@ -181,7 +181,11 @@ module.exports = {
     // Avoid the failing optional APFS shrink pass; keep compressed conversion.
     shrink: false,
     title: 'Hermes Agent Installer',
-    background: 'assets/nous-dmg-2b.png',
+    // A prebuilt .tiff on purpose, not a PNG plus a @2x sibling: dmg-builder's
+    // PNG path runs `tiffutil -cathidpicheck`, which on macOS 26 rewrites both
+    // frames to 72 dpi and silently drops the 2x representation. A .tiff is
+    // handed to dmgbuild untouched (dmg-builder/dist/dmgUtil.js).
+    background: 'assets/nous-dmg-2b.tiff',
     iconSize: 96,
     iconTextSize: 11,
     window: {
