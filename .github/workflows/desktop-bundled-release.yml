@@ -630,7 +630,9 @@ jobs:
     if: >-
       always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-    needs: [validate, build-win32]
+    # The trust-branch legs are read through needs.*.result below, so they must
+    # stay in the list — the result job gates on their outcomes, not its own.
+    needs: [validate, build-win32-release, build-win32-commit]
     runs-on: ubuntu-24.04
     permissions: {}
     timeout-minutes: 5
@@ -957,7 +959,7 @@ jobs:
     if: >-
       always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-    needs: [validate, build-darwin]
+    needs: [validate, build-darwin-release, build-darwin-commit]
     runs-on: ubuntu-24.04
     permissions: {}
     timeout-minutes: 5
