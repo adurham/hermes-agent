@@ -52,7 +52,7 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
     writeEnvFile(home)
     expect(yaml.load(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8'))).toMatchObject({
       updates: feed, plugins: { witness: true },
-      model: { provider: 'mock', temperature: 0.7, context_length: 12000 },
+      model: { provider: 'custom', temperature: 0.7, context_length: 12000 },
       providers: { mock: { api: 'http://127.0.0.1:9001/v1', context_length: 64000 } },
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
     })
@@ -236,7 +236,7 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
       await expect(runInstalledDesktopSmoke({ exe, root: path.join(root, 'root'), origin: 'bundled', home,
         'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) })).rejects.toThrow()
       for (const candidate of candidateSmokeHermesHomes(home, userData)) {
-        expect(yaml.load(fs.readFileSync(path.join(candidate, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'mock' } })
+        expect(yaml.load(fs.readFileSync(path.join(candidate, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'custom' } })
         expect(fs.readFileSync(path.join(candidate, '.env'), 'utf8')).toMatch(/MOCK_API_KEY=/)
       }
       // Electron resolves shell folders before 'ready'; the sandboxed AppData/XDG

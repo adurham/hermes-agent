@@ -39,7 +39,7 @@ export function writeMockProviderConfig(
   const display = section.parse(extraDisplayConfig ? yaml.load(extraDisplayConfig) ?? {} : {})
   const merged = {
     ...config,
-    model: { ...config.model, default: 'mock-model', provider: 'mock', context_length: modelContextLength ?? 64000 },
+    model: { ...config.model, default: 'mock-model', provider: 'custom', context_length: modelContextLength ?? 64000 },
     providers: {
       ...config.providers,
       mock: { api: `${url}/v1`, name: 'Mock', api_mode: 'chat_completions', key_env: 'MOCK_API_KEY', models: { 'mock-model': {} }, context_length: 64000 },
@@ -54,15 +54,20 @@ export function writeMockProviderConfig(
   fs.writeFileSync(configPath, yaml.dump(merged), 'utf8')
 }
 
-/** Keep journey-owned entries, replacing only the inert test key. */
-export function writeEnvFile(hermesHome: string, apiKey = 'e2e-mock-key'): void {
+/** Keep journey-owned entries, replacing only the inert test keys. */
+export function writeEnvFile(hermesHome: string, apiKey = 'e2e-mock-key', mockUrl?: string): void {
   if (!/^[\w-]+$/.test(apiKey)) {
     throw new Error('Mock key must be an inert single-line test value')
   }
   const envPath = path.join(hermesHome, '.env')
   const prior = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
-  const lines = prior.split(/\r?\n/).filter((line: string): boolean => !/^\s*(?:export\s+)?MOCK_API_KEY\s*=/.test(line))
-  fs.writeFileSync(envPath, `${lines.join('\n').trimEnd()}\nMOCK_API_KEY=${apiKey}\n`, { mode: 0o600 })
+  const lines = prior.split(/\r?\n/).filter((line: string): boolean => !/^\s*(?:export\s+)?(?:MOCK_API_KEY|OPENAI_BASE_URL|OPENAI_API_KEY)\s*=/.test(line))
+  // OPENAI_BASE_URL + OPENAI_API_KEY is how EVERY vintage reaches an external
+  // OpenAI-compatible endpoint ("custom"); a bare MOCK_API_KEY only means
+  // something to a tree that knows a provider named `mock`, which older refs
+  // do not (their resolve_provider accepts only openrouter/custom/registry).
+  const portable = mockUrl ? `\nOPENAI_BASE_URL=${mockUrl}/v1\nOPENAI_API_KEY=${apiKey}` : ''
+  fs.writeFileSync(envPath, `${lines.join('\n').trimEnd()}\nMOCK_API_KEY=${apiKey}${portable}\n`, { mode: 0o600 })
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -71,5 +76,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     throw new Error('usage: node mock-provider-config.ts ABSOLUTE_HERMES_HOME MOCK_URL')
   }
   writeMockProviderConfig(home, url)
-  writeEnvFile(home)
+  writeEnvFile(home, 'e2e-mock-key', url)
 }
