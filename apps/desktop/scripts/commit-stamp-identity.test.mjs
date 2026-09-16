@@ -15,7 +15,7 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
   const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   try {
     fs.mkdirSync(scripts, { recursive: true })
-    for (const name of ['write-build-stamp.mjs', 'utils.mjs']) fs.copyFileSync(path.join(root, 'apps/desktop/scripts', name), path.join(scripts, name))
+    for (const name of ['write-build-stamp.mjs', 'utils.mjs', 'bundle-env.mjs']) fs.copyFileSync(path.join(root, 'apps/desktop/scripts', name), path.join(scripts, name))
     fs.copyFileSync(path.join(root, 'apps/desktop/product-identity.cjs'), path.join(repo, 'apps/desktop/product-identity.cjs'))
     fs.mkdirSync(path.join(repo, 'scripts'), { recursive: true })
     fs.copyFileSync(path.join(root, 'scripts/msix-shared.mjs'), path.join(repo, 'scripts/msix-shared.mjs'))
@@ -51,8 +51,14 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
     assert.equal(stamp.source, 'commit-build')
     assert.equal(stamp.tag, null)
     assert.equal(stamp.updateMechanism, 'external')
+    assert.equal(stamp.bundleEnv, undefined)
     assert.deepEqual(stamp.runtime, { ...runtime, commands: { hermes: `bin/hermes-${feature.slice(0, 7)}` } })
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(build, 'agent-payload/app/install-stamp.json'), 'utf8')), stamp)
+    // A commit bundle records its baked defaults/clears as data so the smoke
+    // driver can replay them without running the app.
+    const bundleEnv = { HERMES_HOME: null, HERMES_DATA_DIR_SUFFIX: '-suffix', HERMES_GUEST_ONBOARDING: '1' }
+    assert.equal(run({ HERMES_BUNDLE_ENV_JSON: JSON.stringify(bundleEnv) }).status, 0)
+    assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')).bundleEnv, bundleEnv)
     const before = fs.readFileSync(out)
     git('checkout', '-q', 'main')
     assert.notEqual(run({}).status, 0)

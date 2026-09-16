@@ -16648,6 +16648,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     nodeVersion: process.versions.node,
     platform: process.platform,
     hermesRoot: resolveUpdateRoot(),
+    hermesHome: HERMES_HOME,
     bundleOutOfSync: skew.outOfSync,
     bundleCommitsBehind: skew.desktopCommitsBehind,
     // The install id: sha16 of the canonical install-root path — the key of

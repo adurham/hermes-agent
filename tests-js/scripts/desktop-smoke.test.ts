@@ -6,10 +6,10 @@ import path from 'node:path'
 import yaml from 'js-yaml'
 import { expect, test } from 'vitest'
 
-import { candidateSmokeHermesHomes, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
+import { candidateSmokeHermesHomes, predictSmokeHermesHome, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
 
 import { assertChatCommit, newCompletedPair, readMockPrompts, type TranscriptMessage } from './desktop-chat-smoke.ts'
-import { assertBackendOrigin, localBackendProcess, readInstallationCommit } from './desktop-smoke-process.ts'
+import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from './desktop-smoke-process.ts'
 import { writeEnvFile, writeMockProviderConfig } from './mock-provider-config.ts'
 import { MOCK_REPLY, startMockServer } from './mock-server.ts'
 
@@ -194,6 +194,27 @@ test('driver strips caller secrets and records missing executables as failure wi
       'user-data': path.join(home, 'user-data'), out: home, phase: 'installed', 'expect-commit': 'a'.repeat(40) })).rejects.toThrow()
     expect(JSON.parse(fs.readFileSync(path.join(home, 'desktop-chat-installed.json'), 'utf8'))).toMatchObject({ status: 'failed', origin: 'bundled' })
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
+
+test('predictSmokeHermesHome replays the bundle banner through the shared resolver', (): void => {
+  const launchEnv = { HERMES_HOME: '/pinned/home', HERMES_DESKTOP_USER_DATA_DIR: '/pinned/userdata', LOCALAPPDATA: 'C:/Users/runner/AppData/Local' }
+  // No baked env: the driver's own HERMES_HOME pin wins.
+  expect(predictSmokeHermesHome(launchEnv, {}, 'linux', '/real/home')).toBe('/pinned/home')
+  // HERMES_HOME cleared -> the <userData>/hermes-home fallback.
+  expect(predictSmokeHermesHome(launchEnv, { HERMES_HOME: null }, 'linux', '/real/home')).toBe('/pinned/userdata/hermes-home')
+  // Both cleared + baked suffix -> the platform default with that suffix.
+  expect(predictSmokeHermesHome(launchEnv, { HERMES_HOME: null, HERMES_DESKTOP_USER_DATA_DIR: null, HERMES_DATA_DIR_SUFFIX: '-magic' }, 'linux', '/real/home')).toBe('/real/home/.hermes-magic')
+  // On Windows the default derives from the sandboxed LOCALAPPDATA, not the OS home.
+  expect(predictSmokeHermesHome(launchEnv, { HERMES_HOME: null, HERMES_DESKTOP_USER_DATA_DIR: null, HERMES_DATA_DIR_SUFFIX: '-magic' }, 'win32', 'C:/Users/real')).toBe('C:\\Users\\runner\\AppData\\Local\\hermes-magic')
+})
+
+test('readBundledBundleEnv reads the stamped defaults/clears and is absent when unstamped', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-bundlenv-'))
+  try {
+    expect(readBundledBundleEnv(path.join(root, 'agent-payload'))).toBeUndefined()
+    fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ payload: 'bundled', commit: 'a'.repeat(40), bundleEnv: { HERMES_HOME: null, SUFFIX: 'x' } }))
+    expect(readBundledBundleEnv(path.join(root, 'agent-payload'))).toEqual({ HERMES_HOME: null, SUFFIX: 'x' })
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
 test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the resolved home', async (): Promise<void> => {

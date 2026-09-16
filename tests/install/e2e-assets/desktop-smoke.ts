@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -7,8 +8,10 @@ import { parseArgs } from 'node:util'
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 import { z } from 'zod'
 
+import { resolveDesktopHermesHome } from '../../../apps/desktop/electron/data-paths.mjs'
+import { applyBundleEnvironment } from '../../../apps/desktop/scripts/bundle-env.mjs'
 import { readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
-import { assertBackendOrigin, localBackendProcess, readInstallationCommit, within } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit, within } from '../../../tests-js/scripts/desktop-smoke-process.ts'
 import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config.ts'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
 
@@ -92,6 +95,33 @@ export function smokeEnvironment(inherited: NodeJS.ProcessEnv, home: string, use
 export function candidateSmokeHermesHomes(home: string, userData: string): string[] {
   const fallback = path.join(userData, 'hermes-home')
   return home === fallback ? [home] : [home, fallback]
+}
+
+/** The home the app will resolve for a bundled artifact whose env defaults/clears
+ * are known from its stamp. Replays the bundle banner over the launch env, then
+ * runs the same resolver the app runs, so the driver can seed the home before
+ * boot instead of pinning HERMES_HOME and hoping the artifact honors it. */
+export function predictSmokeHermesHome(
+  launchEnv: NodeJS.ProcessEnv,
+  bundleEnv: Record<string, string | null>,
+  platform: NodeJS.Platform = process.platform,
+  home: string = platform === 'linux' ? launchEnv.HOME || os.homedir() : os.homedir(),
+): string {
+  const effective = applyBundleEnvironment(launchEnv, bundleEnv)
+  return resolveDesktopHermesHome({ home, env: effective, platform, directoryExists: (): boolean => false, readWindowsHome: (): null => null })
+}
+
+/** A predicted home must be empty before the driver seeds it: the smoke tests a
+ * fresh install, and a non-empty home means the prediction is wrong or the run
+ * is dirty. Never wipe — a wrong prediction should fail loudly, not delete data. */
+function requireEmptyHermesHome(home: string): void {
+  if (!fs.existsSync(home)) {
+    return
+  }
+  const entries = fs.readdirSync(home)
+  if (entries.length > 0) {
+    throw new Error(`Predicted Hermes home ${home} is not empty (${entries.length} entries); refusing to seed an existing profile`)
+  }
 }
 
 export function resolveSmokeLaunch(options: SmokeOptions): Launch {
@@ -201,7 +231,7 @@ async function gracefulClose(app: ElectronApplication): Promise<void> {
   }
 }
 
-async function verifyRunningDesktop(app: ElectronApplication, options: SmokeOptions, launch: Launch): Promise<RunningDesktop> {
+async function verifyRunningDesktop(app: ElectronApplication, options: SmokeOptions, launch: Launch, predictedHome?: string): Promise<RunningDesktop> {
   const running = await app.evaluate(({ app: electronApp }): RunningDesktop => {
     // SAFETY: this callback runs in Electron main, whose process includes resourcesPath.
     const runtime = process as ElectronProcess
@@ -211,11 +241,17 @@ async function verifyRunningDesktop(app: ElectronApplication, options: SmokeOpti
   // (NSHomeDirectory) and Windows (CSIDL_PROFILE) ignore it, so the home
   // equality is a contract only there. On those platforms the isolation proof
   // is the userData pin plus the seeded Hermes home the backend booted from.
-  const homeHonored = process.platform === 'linux'
-    ? fs.realpathSync(running.home) === fs.realpathSync(launch.env.HOME!)
-    : true
-  if (fs.realpathSync(running.userData) !== fs.realpathSync(options['user-data']) || !homeHonored) {
-    throw new Error('Desktop did not honor the isolated home and userData directories')
+  // When the artifact bakes its own env (bundleEnv known from the stamp), the
+  // driver's --user-data pin is not authoritative: the app may legitimately
+  // resolve a different userData, and the home the driver predicted and seeded
+  // is verified against the app's own report below instead.
+  if (!predictedHome) {
+    const homeHonored = process.platform === 'linux'
+      ? fs.realpathSync(running.home) === fs.realpathSync(launch.env.HOME!)
+      : true
+    if (fs.realpathSync(running.userData) !== fs.realpathSync(options['user-data']) || !homeHonored) {
+      throw new Error('Desktop did not honor the isolated home and userData directories')
+    }
   }
   if (fs.realpathSync(running.executable) !== fs.realpathSync(options.exe)) {
     throw new Error('Running Electron executable differs from --exe')
@@ -233,6 +269,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
   let mock: MockServer | undefined
   let app: ElectronApplication | undefined
   let page: Page | undefined
+  let predictedHome: string | undefined
   const consoleLines: string[] = []
   try {
     fs.accessSync(options.exe, fs.constants.X_OK)
@@ -254,8 +291,13 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
     const mockUrl = validateMockUrl(options['mock-url'] ?? mock!.url)
     // A bundle-env HERMES_HOME clear (see candidateSmokeHermesHomes) can make the
     // app resolve a different home than --home, so every candidate gets the mock
-    // provider config and .env.
-    for (const home of candidateSmokeHermesHomes(options.home, options['user-data'])) {
+    // provider config and .env. When the artifact's stamp carries its baked
+    // bundle env, predict the home the app will actually resolve and seed that
+    // too, refusing to seed a non-empty one.
+    const bundleEnv = options.origin === 'bundled' ? readBundledBundleEnv(options.root) : undefined
+    predictedHome = bundleEnv ? predictSmokeHermesHome(launch.env, bundleEnv) : undefined
+    for (const home of new Set([...candidateSmokeHermesHomes(options.home, options['user-data']), ...(predictedHome ? [predictedHome] : [])])) {
+      if (predictedHome && home === predictedHome) { requireEmptyHermesHome(home) }
       writeMockProviderConfig(home, mockUrl)
       writeEnvFile(home)
     }
@@ -267,7 +309,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
     page.on('pageerror', (error: Error): void => { consoleLines.push(redact(error.message)) })
     await prepareWindowForInput(app, page)
     await waitForChatReady(page)
-    const running = await verifyRunningDesktop(app, options, launch)
+    const running = await verifyRunningDesktop(app, options, launch, predictedHome)
     const connection = await backendConnection(page)
     const base = new URL(connection.baseUrl)
     if (connection.mode !== 'local' || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) {
@@ -276,6 +318,14 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
     const identity = await readChatIdentity(page)
     if (options.origin === 'source' && fs.realpathSync(identity.hermesRoot) !== fs.realpathSync(options.root)) {
       throw new Error('Desktop resolved a different source installation')
+    }
+    // A bundled artifact that bakes its own env resolves its home itself; the
+    // app must report the home the driver predicted and seeded, not some other
+    // (possibly real, pre-existing) profile.
+    if (predictedHome) {
+      if (!identity.hermesHome || fs.realpathSync(identity.hermesHome) !== fs.realpathSync(predictedHome)) {
+        throw new Error(`Desktop resolved Hermes home ${identity.hermesHome ?? '(unreported)'} instead of the predicted ${predictedHome}`)
+      }
     }
     const backend = localBackendProcess(Number(base.port), running.pid)
     assertBackendOrigin(backend, options.root, options.origin)
@@ -286,7 +336,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
     await app.context().tracing.start({ screenshots: true, snapshots: false, sources: false })
     const chat = await runDesktopChatSmoke(page, { mockUrl, phase: options.phase, outDir: out, expectCommit: options['expect-commit'], provenanceCommit })
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...chat, status: 'closing' }, null, 2)}\n`)
-    const result = { ...chat, origin: options.origin, root: options.root, executable: options.exe, running,
+    const result = { ...chat, origin: options.origin, root: options.root, executable: options.exe, running, predictedHome,
       localModeConfigured: true, backend: { ...backend, command: redact(backend.command) }, launchKind: options.phase === 'new' ? 'post-update-launch' : 'installed-launch' }
     await app.context().tracing.stop({ path: path.join(out, `desktop-chat-${options.phase}.zip`) })
     await gracefulClose(app)
@@ -301,7 +351,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
   } finally {
     fs.writeFileSync(path.join(out, `desktop-app-${options.phase}.log`), consoleLines.join('\n'))
     try {
-      captureBackendLogs(candidateSmokeHermesHomes(options.home, options['user-data']), out, options.phase)
+      captureBackendLogs([...new Set([...candidateSmokeHermesHomes(options.home, options['user-data']), ...(predictedHome ? [predictedHome] : [])])], out, options.phase)
     } finally {
       if (app) { await gracefulClose(app).catch((error: Error): void => { console.error(redact(error.message)) }) }
       if (mock) { await mock.close() }

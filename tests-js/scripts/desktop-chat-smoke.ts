@@ -24,6 +24,8 @@ export interface ChatIdentity {
   commit: string | null
   hermesRoot: string
   platform: string
+  /** The resolved Hermes home (newer desktops report it; absent on older ones). */
+  hermesHome?: string
 }
 
 interface SmokeWindow extends Window {
@@ -53,7 +55,7 @@ export interface DesktopChatReceipt {
 
 const identitySchema = z.object({
   appVersion: z.string(), commit: z.string().nullable().optional(),
-  hermesRoot: z.string(), platform: z.string(),
+  hermesRoot: z.string(), platform: z.string(), hermesHome: z.string().optional(),
 })
 
 export async function readChatIdentity(page: Page): Promise<ChatIdentity> {
