@@ -74,10 +74,6 @@ class EnvelopeRefusedError(RuntimeError):
 # ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
-# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
-# ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
-BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
-
 
 def relay_root(root: Path | str) -> Path:
     return Path(root) / RELAY_DIR_NAME
@@ -382,11 +378,6 @@ def _hermes_cli() -> str:
     """
     sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
-
-
-def local_delivery_command(profile: str, query_file: str) -> list[str]:
-    """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
 
 
 class DeliveryAuthor:
