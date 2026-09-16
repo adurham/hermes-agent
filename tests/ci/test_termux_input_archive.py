@@ -44,11 +44,20 @@ def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "${{ inputs.sha || github.sha }}"
     release = load("desktop-bundled-release.yml")["jobs"]
-    caller = release["archive-inputs"]
-    assert caller["needs"] == ["validate"]
-    assert caller["with"]["sha"] == "${{ needs.validate.outputs.sha }}"
+    # The archive lives as a validate step with the job's own gate shape —
+    # a skipped archive (disposable/termux runs) must not skip the builds.
+    validate = release["validate"]
+    (archive,) = [s for s in validate["steps"] if s.get("run") == "python3 -m scripts.ci.archive_inputs"]
+    assert archive["if"] == (
+        "inputs.disposable_run == '' && inputs.disposable_channel == ''"
+        " && (inputs.release-phase == '' || inputs.release-phase == 'candidate')"
+    )
+    assert R2_ENV <= archive["env"].keys()
+    assert validate["environment"] == "release-signing"
+    checkout = validate["steps"][0]
+    assert "actions/checkout" in checkout["uses"]
     for name in ("build-win32", "build-darwin", "termux-deb"):
-        assert "archive-inputs" in release[name]["needs"]
+        assert "archive-inputs" not in release[name].get("needs", [])
 
     action = YAML(typ="base").load((ROOT / ".github/actions/setup-pm/action.yml").read_text(encoding="utf-8"))
     assert action["inputs"]["archive-inputs"]["default"] == "false"

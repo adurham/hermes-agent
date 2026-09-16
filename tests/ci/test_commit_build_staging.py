@@ -110,9 +110,11 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
             assert 'Disabled' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
     for name in ('build-win32', 'build-darwin'):
-        execution = f'{name}-commit'
-        assert execution in jobs[name]['needs']
-        assert jobs[execution]['strategy']['fail-fast'] is False
+        # The commit/release split collapsed into one leg per platform; the
+        # result job's env still encodes exactly-which-trust-branch-succeeded.
+        result_job = jobs[name]
+        assert f"needs.{name}-commit.result" in result_job['env']['SELECTED_BUILD_SUCCEEDED']
+        assert jobs[f'{name}-commit']['strategy']['fail-fast'] is False
     step = next(step for step in jobs['commit-builds-summary']['steps'] if 'run' in step)
     assert step['env']['RUN_URL'] == '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
     assert step['env']['HERMES_BUNDLE_ENV_JSON'] == '${{ inputs.bundle_env }}'

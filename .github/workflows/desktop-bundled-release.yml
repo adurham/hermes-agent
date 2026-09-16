@@ -162,7 +162,7 @@ env:
 
 jobs:
   validate:
-    name: Allocate disposable channel and validate the build source
+    name: Pre-build setup
     # One dispatch: in disposable mode the allocation steps run first (the
     # channel pin comes from them), then admission validates the build source.
     # A failed allocation fails this job and skips everything downstream.
@@ -200,6 +200,18 @@ jobs:
           # Tag admission runs merge-base against origin/main and needs tags.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Archive every pinned input
+        # Runner Python is intentional: the toolchain's upstream may be gone.
+        # Same checkout contract the standalone archive job had: the tag ref
+        # for tag builds, the dispatch head for commit builds.
+        if: inputs.disposable_run == '' && inputs.disposable_channel == '' && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+        env:
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: python3 -m scripts.ci.archive_inputs
 
       - name: Set up native identity reader
         if: inputs.disposable_channel != '' && inputs.disposable_receivers
@@ -329,21 +341,15 @@ jobs:
 
   # ── Windows builders (REAL) ───────────────────────────────────────────────
   # Windows assembly and publication depend on these native Windows legs.
-  archive-inputs:
-    name: Archive every pinned input
-    if: inputs.disposable_run == '' && inputs.disposable_channel == '' && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
-    needs: [validate]
-    uses: ./.github/workflows/archive-inputs.yml
-    with:
-      sha: ${{ needs.validate.outputs.sha }}
-    secrets: inherit
-
+  # Pinned-input archiving runs as a validate step with the job's own gate
+  # shape, so a skipped archive must not skip the selected build legs.
+  #
   # Cache permissions are literal job-token scopes, not checkout/save-step policy.
   # Share execution via anchors, and keep the original IDs as downstream gates.
   build-win32-release:
     name: bundled ${{ matrix.target.label }}
     if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel == ''
-    needs: [validate, archive-inputs]
+    needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: write
@@ -606,10 +612,9 @@ jobs:
     name: bundled ${{ matrix.target.label }} (commit)
     if: >-
       !cancelled() && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
       && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.build_commit != '' || inputs.channel != '')
-    needs: [validate, archive-inputs]
+    needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: read
@@ -625,8 +630,7 @@ jobs:
     if: >-
       always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
-    needs: [validate, archive-inputs, build-win32-release, build-win32-commit]
+    needs: [validate, build-win32]
     runs-on: ubuntu-24.04
     permissions: {}
     timeout-minutes: 5
@@ -657,7 +661,7 @@ jobs:
   build-darwin-release:
     name: bundled ${{ matrix.target.label }}
     if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel == ''
-    needs: [validate, archive-inputs]
+    needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: write
@@ -935,10 +939,9 @@ jobs:
     name: bundled ${{ matrix.target.label }} (commit)
     if: >-
       !cancelled() && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
       && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.build_commit != '' || inputs.channel != '')
-    needs: [validate, archive-inputs]
+    needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
     cache-mode: read
@@ -954,8 +957,7 @@ jobs:
     if: >-
       always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-      && (needs.archive-inputs.result == 'success' || ((inputs.disposable_run != '' || inputs.disposable_channel != '') && needs.archive-inputs.result == 'skipped'))
-    needs: [validate, archive-inputs, build-darwin-release, build-darwin-commit]
+    needs: [validate, build-darwin]
     runs-on: ubuntu-24.04
     permissions: {}
     timeout-minutes: 5
@@ -1243,7 +1245,8 @@ jobs:
 
   publish-channel:
     name: Publish the complete native-smoked channel build
-    needs: [validate, build-darwin, build-win32, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal]
+    needs:
+      [validate, build-darwin, build-win32, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal]
     if: >-
       !cancelled() && needs.validate.outputs.channel-build != '' && needs.validate.result == 'success'
       && needs.build-darwin.result == 'success' && needs.build-win32.result == 'success'
@@ -1431,7 +1434,7 @@ jobs:
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
-    needs: [validate, archive-inputs]
+    needs: [validate]
     if: inputs.channel == '' && inputs.disposable_channel == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: ubuntu-24.04-arm
     environment: release-signing
@@ -1801,7 +1804,20 @@ jobs:
 
   builds-table:
     name: Render the release builds table
-    needs: [validate, build-win32, build-darwin, build-linux, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, publish-win32-updater, publish-darwin-updater, termux-deb]
+    needs:
+      [
+        validate,
+        build-win32,
+        build-darwin,
+        build-linux,
+        assemble-win32-bundle,
+        smoke-darwin,
+        smoke-win32,
+        smoke-win32-universal,
+        publish-win32-updater,
+        publish-darwin-updater,
+        termux-deb
+      ]
     # Failed builds still get a per-tag diagnostic page. The renderer only
     # advances the channel landing page when every prerequisite succeeded.
     if: |
@@ -1845,7 +1861,18 @@ jobs:
 
   commit-builds-summary:
     name: Upload status page to R2
-    needs: [validate, build-win32, build-darwin, build-linux, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, termux-deb]
+    needs:
+      [
+        validate,
+        build-win32,
+        build-darwin,
+        build-linux,
+        assemble-win32-bundle,
+        smoke-darwin,
+        smoke-win32,
+        smoke-win32-universal,
+        termux-deb
+      ]
     if: |
       always() && inputs.build_commit != '' && inputs.disposable_channel == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
@@ -1888,7 +1915,17 @@ jobs:
 
   candidate-manifest:
     name: Stage verified stable candidate artifacts
-    needs: [validate, build-win32, build-darwin, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, termux-deb]
+    needs:
+      [
+        validate,
+        build-win32,
+        build-darwin,
+        assemble-win32-bundle,
+        smoke-darwin,
+        smoke-win32,
+        smoke-win32-universal,
+        termux-deb
+      ]
     if: >-
       !cancelled() && inputs.release-phase == 'candidate'
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
@@ -2062,7 +2099,20 @@ jobs:
 
   publish-canary:
     name: Publish the canary release
-    needs: [validate, build-win32, build-darwin, build-linux, builds-table, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, publish-win32-updater, publish-darwin-updater]
+    needs:
+      [
+        validate,
+        build-win32,
+        build-darwin,
+        build-linux,
+        builds-table,
+        assemble-win32-bundle,
+        smoke-darwin,
+        smoke-win32,
+        smoke-win32-universal,
+        publish-win32-updater,
+        publish-darwin-updater
+      ]
     if: |
       always()
       && inputs.build_commit == '' && inputs.channel == ''

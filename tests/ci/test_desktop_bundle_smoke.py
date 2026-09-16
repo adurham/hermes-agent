@@ -103,8 +103,8 @@ def test_native_consumers_and_publication_fail_closed_across_trust_skips(tmp_pat
         for commit, release, commit_result in itertools.product(
                 ('', SHA), outcomes, outcomes):
             needs = admitted(job['needs'])
-            needs[f'build-{platform}-release']['result'] = release
-            needs[f'build-{platform}-commit']['result'] = commit_result
+            needs[f'build-{platform}-release'] = {'result': release}
+            needs[f'build-{platform}-commit'] = {'result': commit_result}
             selected = gate(job['env']['SELECTED_BUILD_SUCCEEDED'], {'build_commit': commit}, needs, job_if=False)
             expected = (commit == '' and release == 'success' and commit_result == 'skipped') or (
                 commit != '' and commit_result == 'success' and release == 'skipped')
