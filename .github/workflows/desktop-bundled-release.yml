@@ -579,7 +579,12 @@ jobs:
             --name "$TARGET" --root "$root" --include '*.msix' --include 'metadata-*.json'
 
       - name: Stage Windows packages to R2
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        # A channel dispatch carries build_commit as provenance, not as the
+        # receipt mode: its packages are staged by the pinned channel request
+        # step above, and HERMES_PAYLOAD_TAG/HERMES_BUILD_COMMIT are both
+        # empty here. Without this gate the step falls through to the tag
+        # branch and handoff refuses an empty tag.
+        if: needs.validate.outputs.channel-build == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
         shell: bash
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -908,7 +913,9 @@ jobs:
             --name "$TARGET" --root "$root" --include '*.dmg' --include '*.zip' --include '*.blockmap' --include 'metadata-*.json'
 
       - name: Stage macOS packages and feed inputs to R2
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != ''
+        # Channel dispatches stage through the pinned request step above; see
+        # the Windows leg for the empty-tag fallthrough this gate prevents.
+        if: needs.validate.outputs.channel-build == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
         shell: bash
         env:
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -1876,7 +1883,7 @@ jobs:
         termux-deb
       ]
     if: |
-      always() && inputs.build_commit != '' && inputs.disposable_channel == ''
+      always() && inputs.build_commit != '' && inputs.channel == '' && inputs.disposable_channel == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
     runs-on: ubuntu-24.04
     environment: release-signing

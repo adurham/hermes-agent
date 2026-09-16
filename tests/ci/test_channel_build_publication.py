@@ -18,7 +18,7 @@ import pytest
 from hermes_cli.release_channels import canonical_json
 from scripts.releases import channel_publish, handoff, r2
 from scripts.releases.channels import preview_identity
-from tests.ci.test_desktop_release_tag_admission import _seed_repo, _git
+from tests.ci.test_desktop_release_tag_admission import _seed_repo, _git, _workflow
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -461,3 +461,48 @@ def test_pinned_xml_retains_legacy_automatic_policy(tmp_path):
         xml = ET.parse(out).getroot()
         assert (xml.find("{*}UpdateSettings/{*}OnLaunch") is not None) == (policy == "automatic")
         assert xml.find("{*}UpdateSettings/{*}ForceUpdateFromAnyVersion") is None
+
+
+def test_tag_and_commit_staging_never_runs_for_a_pinned_channel_build():
+    """Channel dispatch carries build_commit as provenance, not as a mode.
+
+    ``channel_build.dispatch_command`` sends both ``channel`` and
+    ``build_commit``, so the tag/commit staging steps — gated on
+    ``inputs.build_commit != ''`` — would run inside a channel build, where a
+    pinned request makes both HERMES_PAYLOAD_TAG and HERMES_BUILD_COMMIT
+    empty. The step then falls through to tag mode and handoff refuses the
+    empty tag. Staging a channel build belongs to the pinned-request step
+    alone, so every other handoff staging step must be gated off whenever a
+    channel build is pinned.
+    """
+    workflow = _workflow()
+    seen = set()
+    for job in ("build-win32-commit", "build-darwin-commit"):
+        for step in workflow["jobs"][job]["steps"]:
+            run = step.get("run", "") if isinstance(step, dict) else ""
+            if "scripts.releases.handoff stage" not in run:
+                continue
+            if "--channel-request" in run:
+                continue
+            seen.add(step["name"])
+            assert "needs.validate.outputs.channel-build == ''" in (step.get("if") or ""), (
+                f"{step['name']!r} stages tag/commit receipts without excluding channel builds")
+    assert seen, "walk broken: no non-channel handoff staging steps found"
+
+
+def test_commit_only_status_page_is_not_published_for_a_channel_build():
+    """Two renderers exist; only the channel one may run for a channel build.
+
+    ``publish-channel`` renders the channel matrix from the pinned request.
+    Letting the commit-only summary run too would fetch commit-namespace
+    receipts that a channel build never wrote and publish a page claiming the
+    commit's binaries were not built.
+    """
+    workflow = _workflow()
+    channel = next(step for step in workflow["jobs"]["publish-channel"]["steps"]
+                   if "render-builds-table.py" in step.get("run", ""))
+    assert "--channel-build" in channel["run"]
+    summary = workflow["jobs"]["commit-builds-summary"]
+    assert "inputs.channel == ''" in summary["if"], (
+        "the commit-only status page must not run for a channel dispatch")
+    assert "inputs.disposable_channel == ''" in summary["if"]
