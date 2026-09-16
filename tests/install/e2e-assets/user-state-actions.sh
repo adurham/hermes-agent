@@ -58,10 +58,16 @@ user_state_produce() {
     fail "the installed CLI has no one-shot chat flag; this leg cannot produce a session through the user path"
   fi
   after="$(_user_state_db_sessions)"
-  if [ "${before:-0}" -ge 0 ] && [ "${after:-0}" -gt "${before:-0}" ]; then
-    ok "a real turn created a session (state.db sessions $before -> $after)"
+  # A fresh install has NO state.db until the first turn, so the probe's -1
+  # ("no readable db yet") is the expected starting point, not a failure. Only
+  # growth matters: the turn must have created rows.
+  local before_n after_n
+  if [ "${before:-0}" -lt 0 ]; then before_n=0; else before_n="${before:-0}"; fi
+  if [ "${after:-0}" -lt 0 ]; then after_n=0; else after_n="${after:-0}"; fi
+  if [ "$after_n" -gt "$before_n" ]; then
+    ok "a real turn created a session (state.db sessions $before_n -> $after_n)"
   else
-    fail "the chat turn produced no session row (state.db sessions $before -> $after)"
+    fail "the chat turn produced no session row (state.db sessions $before_n -> $after_n)"
   fi
 
   # --- a pooled credential -------------------------------------------------

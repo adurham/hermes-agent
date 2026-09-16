@@ -977,7 +977,11 @@ function Invoke-UserStateActions {
         Write-LogGroup 'first real chat turn' $log
         if ($chatExit -ne 0) { throw "the first chat turn failed (exit $chatExit); see $log" }
         $after = Get-UserStateSessionCount
-        if (-not ($before -ge 0 -and $after -gt $before)) {
+        # A fresh install has no state.db until the first turn: -1 means "no
+        # readable db yet", the expected starting point, not a failure.
+        if ($before -lt 0) { $before = 0 }
+        if ($after -lt 0) { $after = 0 }
+        if (-not ($after -gt $before)) {
             throw "the chat turn produced no session row (state.db sessions $before -> $after)"
         }
         Write-Host "  a real turn created a session (state.db sessions $before -> $after)"
