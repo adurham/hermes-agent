@@ -24,6 +24,12 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   executions ledger's `scheduled_instant` blocks a second fire, `cron.catch_up_missed: false`
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - File lock `~/.hermes/cron/.tick.lock` prevents duplicate ticks across processes.
+- **Headless ticks refuse, never spawn.** `hermes cron tick` (system crontab / external scheduler)
+  calls `tick(headless=True)`; `cron/scheduler_gateway_gate.py` skips agent jobs when discovery
+  says no gateway owns the home (`last_fire_error` stamped, one warning per tick, due instant
+  untouched) instead of letting `run_canonical_job → connect_gateway → ensure_gateway_runtime`
+  spawn an unmanaged daemon. Same policy as approvals (headless/cron = refuse). The in-process
+  ticker and `hermes cron run` are not headless.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

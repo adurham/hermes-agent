@@ -3802,10 +3802,13 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
 
 
 def tick(
-    verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None):
+    verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None,
+    headless: bool = False):
     """Check and run all due jobs. File-locked so only one tick runs at a time (gateway ticker vs
     standalone daemon / manual tick). ``can_dispatch``: optional gate; false leaves due jobs for the
-    next allowed tick. Returns the number of jobs executed (0 if another tick holds the lock)."""
+    next allowed tick. ``headless``: the tick runs outside any gateway (system crontab, ``hermes
+    cron tick``) and must refuse agent jobs rather than spawn one. Returns the number of jobs
+    executed (0 if another tick holds the lock)."""
     # Stale-code yield gate — BEFORE the lock race. A process whose checkout was updated under it
     # serves mixed sys.modules (jobs die on ImportErrors); if a fresher gateway holds the runtime
     # lock, ITS ticker dispatches. With no fresh holder (desktop-standalone) the tick proceeds.
@@ -3842,6 +3845,9 @@ def tick(
 
         due_jobs = get_due_jobs()
         _sweep_stale_inflight_for_tick(due_jobs)
+        if headless:
+            from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
+            due_jobs = refuse_agent_jobs_without_gateway(due_jobs)
 
         if not due_jobs:
             # Idle tick: skip config load + pool setup, but still reap crashed jobs' MCP orphans.
@@ -3943,7 +3949,7 @@ if __name__ == "__main__":
         raise SystemExit(
             0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
         )
-    tick(verbose=True)
+    tick(verbose=True, headless=True)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
