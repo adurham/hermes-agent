@@ -46,6 +46,34 @@ mock_start() {
 
   node "$ASSETS/../../../tests-js/scripts/mock-provider-config.ts" "$HERMES_HOME" "$url" || fail "mock provider config failed"
   ok "provider 'mock' configured in $HERMES_HOME (api $url/v1)"
+
+  # ...and also as a PLAIN OpenAI-compatible endpoint, which is the only way an
+  # OLD tree can see it. Pre-mock refs decide "am I configured?" from process
+  # env + .env keys + PROVIDER_REGISTRY alone -- they never read config.yaml's
+  # providers block -- so MOCK_API_KEY is invisible to them and `hermes chat`
+  # dies with "no API keys or providers found". OPENAI_BASE_URL is in every
+  # vintage's accepted set (it is how vLLM/llama.cpp local servers are used) and
+  # OPENAI_API_KEY is a plain credential for it, so this makes the install
+  # genuinely chat-capable on ANY ref without the product knowing about a mock.
+  _mock_write_portable_provider "$HERMES_HOME" "$url" || fail "mock .env write failed"
+  ok "also reachable as an OpenAI-compatible endpoint (OPENAI_BASE_URL=$url/v1)"
+}
+
+# Idempotent: replaces exactly these two keys, keeps every other line as-is.
+_mock_write_portable_provider() {
+  local home="$1" url="$2" envfile tmp
+  envfile="$home/.env"
+  tmp="$envfile.mock.$$"
+  mkdir -p "$home"
+  if [ -f "$envfile" ]; then
+    grep -vE '^[[:space:]]*(export[[:space:]]+)?(OPENAI_BASE_URL|OPENAI_API_KEY)[[:space:]]*=' \
+      "$envfile" > "$tmp" || true
+  else
+    : > "$tmp"
+  fi
+  printf 'OPENAI_BASE_URL=%s/v1\nOPENAI_API_KEY=e2e-mock-key\n' "$url" >> "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$envfile"
 }
 
 mock_stop() {
