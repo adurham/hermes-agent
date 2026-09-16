@@ -36,15 +36,34 @@ def test_apt_readers_accept_bom_and_keep_archive_bytes(tmp_path, bom):
     ("v1.234.567", "1.234.567-1", "stable"),
     ("v0.20.6-canary.20260831", "0.20.6~canary.20260831-1", "canary"),
     ("v0.20.6-canary.20260831120000", "0.20.6~canary.20260831120000-1", "canary"),
+    # The repo's CalVer line: a 4-digit major must pass BOTH the stable and
+    # the canary shape (handoff/validate_identity rejected v2026.9.15-canary
+    # while the same-minor stable passed — the major cap was canary-only).
+    ("v2026.9.14", "2026.9.14-1", "stable"),
+    ("v2026.9.15-canary.20260916120000", "2026.9.15~canary.20260916120000-1", "canary"),
 ])
 def test_tag_mapping(tag, version, channel):
     assert deb_version_for_tag(tag) == version
     assert channel_for_tag(tag) == channel
 
 
+def test_canary_shape_matches_the_stable_shape_on_every_component():
+    # scripts/releases/semver.py::is_valid_version gates release handoffs;
+    # a canary cut over the newest stable must never be rejected when the
+    # stable tag itself is accepted.
+    from hermes_cli.update_channel import _CANARY_TAG_RE
+    from scripts.releases.semver import is_valid_version
+
+    assert _CANARY_TAG_RE.fullmatch("v2026.9.15-canary.20260916120000")
+    assert is_valid_version("2026.9.15-canary.20260916120000")
+    # And the malformed-tag negatives stay malformed.
+    assert not is_valid_version("2026.9.15-canary.2026091612")
+    assert not is_valid_version("2026.9.15-canary.20260916120000123")
+
+
 @pytest.mark.parametrize("tag", [
     "", "1.2.3", "v1.2", "v1.2.3.4", "v1.2.3-", "v1.2.3-canary", "v1.2.3-canary.abc",
-    "v1.2.3-beta.1", "v1.2.x", "v-1.2.3", "v1234.1.2", "v99999.0.0",
+    "v1.2.3-beta.1", "v1.2.x", "v-1.2.3",
     "v1.2.3-canary.202608311", "v1.2.3-canary.12345678", "v1.2.3-canary.202608311200001",
 ])
 def test_malformed_tags_rejected_by_both_mappings(tag):

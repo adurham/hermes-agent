@@ -53,7 +53,7 @@ CHANNEL_CANARY = "canary"
 # scripts/write_install_stamp.py (validates the feed key) import it rather
 # than re-typing the rule. Canaries are current-stable patch+1, so any
 # patch is accepted here.
-_CANARY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.\d+\.\d+-canary\.20\d{6}(?:\d{6})?$")
+_CANARY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d*)\.\d+\.\d+-canary\.20\d{6}(?:\d{6})?$")
 
 
 def is_canary_tag(tag: Any) -> bool:
