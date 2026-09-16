@@ -170,6 +170,14 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     env.pop("PYTHONHOME", None)
     env.pop("VIRTUAL_ENV", None)
     env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
+    # The child-process sentinel. Its VALUE is the installed-state file this
+    # environment was composed against, so a consumer gets three things for
+    # free: that it inherited an activated shell, which checkout/profile that
+    # shell came from, and a staleness stamp — uv.lock / pyproject.toml /
+    # pm/lock.json newer than this file means the shell's environment predates
+    # its inputs. pm rewrites it on every real sync and no-ops otherwise, so a
+    # `-nt` comparison settles back to "current" after one re-activation.
+    env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
     return env
 
 

@@ -210,6 +210,31 @@ def test_source_activate_exports_the_pm_env(tmp_path: Path):
 
 
 @pytest.mark.platforms("windows")
+def test_activate_exports_the_sentinel_to_child_processes(tmp_path: Path):
+    """Repo scripts read activation from the environment, so the sentinel must
+    survive into an exec'd child (a plain shell variable would not), and
+    deactivate must take it back out."""
+    root = _isolated_checkout(tmp_path)
+    store, _ = _fake_store(tmp_path)
+    script = (
+        f'source "{_posix(root / "activate")}" && '
+        f'"$BASH" -c \'test -n "$__HERMES_ACTIVATED"\' && '
+        f'deactivate && '
+        f'! "$BASH" -c \'test -n "$__HERMES_ACTIVATED"\' && '
+        f'echo exported-then-cleared'
+    )
+    result = subprocess.run(
+        [_bash(), "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=_posix(tmp_path),
+        env=_bash_env(store),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "exported-then-cleared"
+
+
+@pytest.mark.platforms("windows")
 def test_deactivate_restores_the_prior_shell(tmp_path: Path):
     root = _isolated_checkout(tmp_path)
     store, _ = _fake_store(tmp_path)
