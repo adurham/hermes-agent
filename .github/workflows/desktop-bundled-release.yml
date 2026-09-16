@@ -1844,7 +1844,7 @@ jobs:
           PY
 
   commit-builds-summary:
-    name: Commit build summary (every binary, built or not)
+    name: Upload status page to R2
     needs: [validate, build-win32, build-darwin, build-linux, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal, termux-deb]
     if: |
       always() && inputs.build_commit != '' && inputs.disposable_channel == ''
