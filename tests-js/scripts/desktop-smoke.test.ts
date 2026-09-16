@@ -53,7 +53,7 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
     expect(yaml.load(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8'))).toMatchObject({
       updates: feed, plugins: { witness: true },
       model: { provider: 'custom', temperature: 0.7, context_length: 12000 },
-      providers: { mock: { api: 'http://127.0.0.1:9001/v1', context_length: 64000 } },
+      providers: {},
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
     })
     expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe('OTHER_TEST_VALUE=kept\nMOCK_API_KEY=e2e-mock-key\n')

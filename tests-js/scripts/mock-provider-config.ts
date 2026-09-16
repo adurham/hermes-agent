@@ -40,10 +40,12 @@ export function writeMockProviderConfig(
   const merged = {
     ...config,
     model: { ...config.model, default: 'mock-model', provider: 'custom', context_length: modelContextLength ?? 64000 },
-    providers: {
-      ...config.providers,
-      mock: { api: `${url}/v1`, name: 'Mock', api_mode: 'chat_completions', key_env: 'MOCK_API_KEY', models: { 'mock-model': {} }, context_length: 64000 },
-    },
+    // No named provider block: "an external OpenAI-compatible endpoint" is
+    // expressed by provider 'custom' + OPENAI_BASE_URL/OPENAI_API_KEY (written
+    // by writeEnvFile). A provider named 'mock' only resolved on trees that
+    // had registered such a profile, so older refs died with "Unknown
+    // provider 'mock'".
+    providers: { ...config.providers },
     auxiliary: { ...config.auxiliary, title_generation: { ...config.auxiliary?.title_generation, enabled: false } },
     approvals: { ...config.approvals, mode: 'off' },
     ...extra,
