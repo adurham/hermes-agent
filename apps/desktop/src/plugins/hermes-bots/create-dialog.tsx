@@ -51,6 +51,7 @@ import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
+import { setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
   durableGroupChatMembers,
@@ -59,7 +60,7 @@ import {
   liveGroupChatNames
 } from './group-membership'
 import { useBots } from './i18n'
-import { displayName, slugify } from './labels'
+import { botProfileIdentity, displayName } from './labels'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import type {
@@ -212,7 +213,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [capFilter, setCapFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<null | string>(null)
-  const slug = slugify(name)
+  const { slug, title: botTitle } = botProfileIdentity(name, title)
   const valid = slug.length > 0 && NAME_RE.test(slug)
 
   // Once the draft profile is materialized (Capabilities tab / MCP setup) it
@@ -381,7 +382,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         return null
       }
 
-      const descriptionText = [title, description].filter(Boolean).join(' — ')
+      const descriptionText = [botTitle, description].filter(Boolean).join(' — ')
       await requestForTarget('profiles.create', {
         name: slug,
         description: descriptionText,
@@ -397,7 +398,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         mirror_credentials: mirrorCredentials,
         soul: composeSoul({
           name: slug,
-          title,
+          title: botTitle,
           description,
           roster,
           customSoul: soul
@@ -452,7 +453,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           color,
           image,
           imageKind: image ? 'photo' : 'shape',
-          title: title.trim(),
+          title: botTitle,
           created: Date.now()
         }
 
@@ -480,7 +481,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           color: color ?? undefined,
           image,
           imageKind: image ? 'photo' : 'shape',
-          title: title.trim(),
+          title: botTitle,
           created: Date.now()
         })
       }
@@ -518,11 +519,11 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         message: remoteTarget
           ? `Bot "${displayName({
               name: slug,
-              title
+              title: botTitle
             })}" created on ${targetLabel}`
           : `Bot "${displayName({
               name: slug,
-              title
+              title: botTitle
             })}" created`
       })
       const wasRemote = remoteTarget
@@ -1038,7 +1039,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const groups = knownGroups(meta)
 
   const setMembership = (group: string, enabled: boolean) => {
-    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
+    void setGroupMembership(bot, group, enabled)
     host.notify({
       kind: 'info',
       message: enabled
@@ -1104,10 +1105,12 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           <Button
             className="justify-self-start"
             onClick={() =>
-              void saveBotMeta(bot, {
-                groups: [],
-                group: null
-              })
+              void (async () => {
+                // Sequential: each toggle patches groups[] from the current meta.
+                for (const group of current) {
+                  await setGroupMembership(bot, group, false)
+                }
+              })()
             }
             size="sm"
             variant="ghost"

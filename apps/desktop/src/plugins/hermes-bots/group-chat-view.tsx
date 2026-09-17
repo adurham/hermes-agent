@@ -77,6 +77,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { GroupMemberPicker } from './group-chat-view-members'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -101,7 +102,7 @@ import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
-import { displayName, slugify } from './labels'
+import { displayName, slugifyProfileName } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -361,6 +362,7 @@ interface GroupChatSettingsDialogProps {
   group: string
   members?: GroupMember[]
   onClose: () => void
+  onManageMembers?: () => void
   onRenamed?: (group: string) => void
   open: boolean
 }
@@ -368,7 +370,7 @@ interface GroupChatSettingsDialogProps {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+function GroupChatSettingsDialog({ group, members, open, onClose, onManageMembers, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
@@ -435,6 +437,20 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             value={name}
           />
         </form>
+        {onManageMembers ? (
+          <Button
+            className="w-fit"
+            onClick={() => {
+              onClose()
+              onManageMembers()
+            }}
+            size="sm"
+            variant="secondary"
+          >
+            <Codicon name="organization" />
+            {`Manage members (${(members || []).length})…`}
+          </Button>
+        ) : null}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
@@ -588,6 +604,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
@@ -761,6 +778,17 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           <Codicon name="gear" />
         </Button>
       </Tip>
+      <Tip label="Manage members">
+        <Button
+          aria-label="Manage group members"
+          className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={() => setMemberPickerOpen(true)}
+          size="sm"
+          variant="ghost"
+        >
+          <Codicon name="organization" />
+        </Button>
+      </Tip>
       <Tip label={b.group.disbandHint(group)}>
         <Button
           aria-label={b.group.disbandLabel(group)}
@@ -775,11 +803,19 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     </div>
   )
 
-  const memberDescriptors = () =>
-    members.map(b => ({
+  // Seat from the live sources at send time, not from the painted `members`
+  // prop: a roster save that lands between the last paint and Enter was seen
+  // (live) to send with the removed Bot still seated. Same derivation the
+  // main-tab wrapper paints from; the prop is the fallback when the roster
+  // has not been fetched yet.
+  const memberDescriptors = () => {
+    const seated = groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
+
+    return (seated.length ? seated : members).map(b => ({
       ...b,
       title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
     }))
+  }
 
   // Activity disclosure: quiet, collapsed by default. The collapsed row shows
   // the latest event; expanding lists the current run's events newest-first.
@@ -1290,8 +1326,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         group={group}
         members={members}
         onClose={() => setSettingsOpen(false)}
+        onManageMembers={() => setMemberPickerOpen(true)}
         open={settingsOpen}
       />
+      <GroupMemberPicker group={group} members={members} onClose={() => setMemberPickerOpen(false)} open={memberPickerOpen} />
       <ConfirmDialog
         busyLabel={b.group.disbanding}
         confirmLabel={b.group.disbandAction}
@@ -1341,12 +1379,13 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   const roster = useValue($lastRoster)
   const members = groupChatMemberBots(group, roster, allMeta)
 
+
   // Older SDKs have no paneVisibility: fall back to an always-visible atom so
   // the hook order stays stable and behavior matches the previous build.
   const $visible = useMemo(
     () =>
       typeof host.paneVisibility === 'function'
-        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugify(group)}`)
+        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugifyProfileName(group)}`)
         : atom(true),
     [group]
   )
@@ -1382,7 +1421,7 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
+      const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
         title: group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,

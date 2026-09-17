@@ -11,6 +11,9 @@ Bot Mode ships **built into the [desktop app](./desktop.md)** and is **on by def
 
 :::tip A Bot is a profile
 There is no new primitive to learn: a Bot **is** a Hermes profile — isolated config, memory, skills, credentials, and chat history under `~/.hermes/profiles/<name>/`. Bot Mode is a UI over that primitive, so everything you do in it is visible from the CLI too: `hermes -p <bot> chat` opens the same agent, and Bot routines appear in `hermes cron list`. No core patches, no background daemons, no extra storage.
+
+See [Profiles, agents, and bots](./profiles.md#profiles-agents-and-bots) for how
+Bot Mode relates to messaging bots and delegated subagents.
 :::
 
 ## The Bots pane
@@ -100,6 +103,8 @@ try again. An ambiguous submit failure is not automatically resubmitted.
 
 Right-click a local Bot → **Manage groups** to add or remove it from any number of group chats. Pick existing groups independently or create one inline. Local membership is stored in the Bot's backend-synced profile metadata, so it follows that profile across desktops; older profiles with one legacy group continue to work. Connections Bots join through the New Group Chat picker and remain source-qualified in the room's shared state.
 
+To edit an existing room as a unit, use **Manage members** — from the room header's people icon or the **Manage members…** button in **Group settings**. The checklist pre-selects the current members and lists every local and Connections Bot; add or remove several at once and **Save members** applies the new roster (still 2–6 Bots) while the room, its history and each member's room session stay in place. A removed Bot takes no further turns; an added Bot reads the recent room history on its first turn. **Cancel** changes nothing.
+
 **Rooms follow your gateways, not one Desktop.** Each room's recent transcript, members, picture, and name are mirrored into the shared profile metadata of **every** gateway your Desktop is connected to, with per-gateway versioning so two Desktops writing at once merge instead of overwriting each other. Open Hermes Desktop on another machine against the same gateway (local network, Tailscale, anywhere) and the room appears with its history; gateway-only clients see it too. Rooms carry a durable internal identity, so renaming one changes just its display name everywhere, disbanding one removes it permanently on every client — even ones that were offline at the time — and recreating a same-name group starts a genuinely fresh room. If a gateway dies or is removed, nothing is lost: every connected Desktop keeps the full room locally and re-seeds any gateway it reconnects to. (The full orchestration log stays in each Desktop's local storage; the shared mirror is a bounded recent-history projection.)
 
 A group's identity is editable, at creation and after:
@@ -120,7 +125,7 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
 - Each member keeps its own persistent room session, so room context survives like any other conversation.
 - **Not every Bot replies to every message.** Speaking is each member's own choice — a Bot replies only when it has something new to add and passes otherwise, and @-mentioning specific members scopes the round to them. Expect the members you addressed (or whoever has something to say) to speak, and the rest to stay quiet.
-- **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. Rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* still applies to them.
+- **Rooms keep running when you close the Desktop.** When every member of a room lives on the same gateway, that gateway owns turn scheduling through a durable driver: closing Hermes Desktop (or losing its connection) does not stop a room mid-discussion, and the Desktop simply catches up from the room's log when it reconnects. `groups.capabilities` on the gateway reports `driver: true` when this applies. More than one room worker may share a home — the messaging gateway (`hermes gateway run`) and the Desktop's own backend (`hermes serve`) both run one — and whichever holds the room's driver lease runs the next turn; a member's room session is held only for the duration of its turn, so the lease can move between workers without a turn being refused. Rooms whose members span several machines are different: each member's turns run on its own gateway, and the cross-connection courier described under *Bot-to-bot messaging* still applies to them.
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own room session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](/user-guide/features/hooks#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 
@@ -142,6 +147,28 @@ The backend teaches each Bot's canonical Bot Chat session the messaging protocol
 agent:
   bot_mode_protocol: true   # inject the bot-to-bot messaging protocol into canonical Bot Chats
 ```
+
+### What actually makes a chat a Bot Chat
+
+`agent.bot_mode_protocol` is only the master switch. Before the protocol section — or the `message_agent` tool — is injected, two further conditions must hold, and on a desktop install the Bots pane satisfies both for you the moment it creates a Bot:
+
+1. **The session is titled exactly `Bot Chat`.** That exact title is the canonical chat's identity (it is what the desktop plugin's createCanonicalChat uses and what `hermes -p <bot> chat -c "Bot Chat"` resumes); any other title, or an untitled scratch session, gets neither the section nor the tool.
+2. **At least one profile on the install carries a `ui_meta: { hermes-bots: … }` block in its `profile.yaml`.** This is the "Bot-Mode-managed" marker the desktop plugin writes for every Bot it owns; the gate scans every profile, so one marked profile marks the whole install. There is no CLI command that writes it.
+
+The practical consequence: on a **headless install with no desktop app** (gateway plus Telegram, say) nothing ever writes either marker, so `message_agent` is unreachable even though the docs-level switch is on — bots message each other fine over the messaging platform, but the agent-side `message_agent` tool never appears. To enable it headless, satisfy both conditions by hand:
+
+```bash
+# the canonical forever-chat, created once per Bot (later runs resume it)
+hermes -p <bot> chat -c "Bot Chat" --create-if-missing
+```
+
+```yaml
+# ~/.hermes/profiles/<any-bot>/profile.yaml — an empty block is enough to mark the install
+ui_meta:
+  hermes-bots: {}
+```
+
+From the next turn in that Bot Chat the teammate roster, the protocol section, and `message_agent` are all picked up — including over `hermes -p <bot> chat` on a purely terminal box.
 
 :::note
 Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.

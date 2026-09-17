@@ -24,6 +24,7 @@ from tools import bot_relay
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 

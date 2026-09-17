@@ -751,6 +751,7 @@ class TestWebServerEndpoints:
 
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
 
         seen = {}
 
@@ -1873,6 +1874,7 @@ class TestWebServerEndpoints:
         default_home = get_hermes_home()
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
 
         assert self.client.post(
             "/api/providers/custom-endpoints?profile=worker",

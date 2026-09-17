@@ -33,10 +33,27 @@ const releasePointer = () => {
   pointerDownTarget = null
 }
 
+/** A non-collapsed selection anchored outside the composer editor is the user
+ * selecting transcript text: focusing the composer must not clear it. */
+function selectionOutsideComposer(): boolean {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return false
+  }
+
+  const { anchorNode } = selection
+  const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null
+
+  return !anchorEl?.closest('[data-slot="composer-rich-input"]')
+}
+
+/** Every focus-follow branch (pointermove and focusin) funnels here, so the
+ * selection guard lives at this chokepoint rather than at one call site. */
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
-  if (!owner) {
+  if (!owner || selectionOutsideComposer()) {
     return
   }
 
@@ -169,6 +186,12 @@ function trackFocus(event: FocusEvent) {
   if (keyboardNavigation || (pointerDownTarget && target.contains(pointerDownTarget))) {
     flushSync(() => selectSurface(id))
   } else {
+    // A refused redirect leaves focus where it landed: that element's focusin
+    // must still reach React and other root listeners.
+    if (selectionOutsideComposer()) {
+      return
+    }
+
     event.stopImmediatePropagation()
     const owner = $floatingComposerOwner.get()
 
