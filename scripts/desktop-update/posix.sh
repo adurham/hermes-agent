@@ -83,7 +83,7 @@ RESULT="$HERMES_HOME/.hermes-update-result.json"
 STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
 STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 
-UI_SERVER_PID="" UI_BROWSER_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
+UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
 DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 
@@ -244,6 +244,21 @@ for entry in data.get("LSHandlers", []):
   esac
 }
 
+start_status_panel() { # the macOS no-browser shim: osascript AppKit panel.
+  # Best-effort by design: osascript missing or the panel exiting instantly
+  # (syntax, headless session) just means no UI, exactly as before. The panel
+  # polls $STATUS itself and self-exits after a terminal state, so this pid
+  # only needs killing on OUR early teardown paths.
+  local py="$1" panel="$SCRIPT_DIR/update-panel.applescript"
+  [ -n "$py" ] || py="/usr/bin/python3"  # unused by osascript; keeps the wrapper shape
+  "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
+    /usr/bin/osascript "$panel" "$STATUS" >>"$LOG" 2>&1 &
+  UI_PANEL_PID=$!
+  sleep 1
+  kill -0 "$UI_PANEL_PID" 2>/dev/null || { UI_PANEL_PID=""; return; }
+  log "shim: status panel pid=$UI_PANEL_PID"
+}
+
 start_ui() {
   [ "$NO_UI" -eq 1 ] && return
   local html="$SCRIPT_DIR/ui.html" py browser port="" i
@@ -253,6 +268,14 @@ start_ui() {
   if [ -n "$browser" ] && [ -n "$py" ] && ! default_browser_is_chromium "$py"; then
     log "shim: default browser is not Chromium-family; skipping UI window"
     browser=""
+  fi
+  if [ "$(uname)" = "Darwin" ] && [ -z "$browser" ] && [ -x "$SCRIPT_DIR/update-panel.applescript" ]; then
+    # No Chromium renderer may host ui.html (Safari/Firefox default, or no
+    # Chrome): draw the same progress as a native panel instead. Reads the
+    # same $STATUS JSON — no server, no browser, no other-app scripting.
+    start_status_panel "$py"
+    [ -n "$UI_PANEL_PID" ] && return
+    log "shim: status panel did not start; continuing without UI"
   fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
@@ -305,6 +328,12 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
   fi
   if [ -n "$UI_BROWSER_PID" ]; then
     { kill "$UI_BROWSER_PID" && wait "$UI_BROWSER_PID"; } 2>/dev/null
+  fi
+  if [ -n "$UI_PANEL_PID" ]; then
+    # The panel ignores TERM (SIG_IGN survives execv, same contract as the
+    # HTTP server) — KILL is its off switch. leave-window grace is the panel's
+    # own delay terminal-state sleep, so we just end it.
+    { kill -9 "$UI_PANEL_PID" && wait "$UI_PANEL_PID"; } 2>/dev/null
   fi
   if [ -n "$UI_PROFILE_DIR" ]; then
     rm -rf "$UI_PROFILE_DIR" 2>/dev/null || true
