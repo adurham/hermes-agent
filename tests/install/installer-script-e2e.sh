@@ -448,7 +448,7 @@ close_running_desktop() {
     sleep 0.5
     waited=$((waited + 1))
   done
-  log "warning: a desktop instance from this install survived 15s of termination"
+  printf 'warning: a desktop instance from this install survived 15s of termination\n' >&2
 }
 
 preserve_after_upgrade
