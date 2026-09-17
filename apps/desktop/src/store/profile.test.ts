@@ -41,7 +41,6 @@ const {
   refreshProfiles
 } = await import('./profile')
 
-const { $poolLimits } = await import('@/store/pool-limits')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 
 const { $connection } = await import('./session')
