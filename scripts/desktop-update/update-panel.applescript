@@ -53,6 +53,7 @@ on run argv
 	nsapp's activateIgnoringOtherApps:(true)
 
 	set state to "running"
+	set runloop to current application's NSRunLoop's currentRunLoop()
 	repeat
 		set stPair to my readStatus(statusFile)
 		if stPair is not missing value then
@@ -64,7 +65,9 @@ on run argv
 				exit repeat
 			end if
 		end if
-		delay 0.5
+		# Pump the main runloop: without this the window never repaints and
+		# macOS beachballs the panel (label frozen on its initial string).
+		runloop's runMode:(current application's NSDefaultRunLoopMode) beforeDate:(current application's NSDate's dateWithTimeIntervalSinceNow:0.5)
 	end repeat
 	if state is "done" then
 		# The app is coming back; the shim's job is over.
