@@ -54,6 +54,10 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
       updates: feed, plugins: { witness: true },
       model: { provider: 'custom', temperature: 0.7, context_length: 12000 },
       providers: {},
+      // Exactly one entry, repointed at the second URL: a bare `custom` resolves
+      // from this list on every vintage, and reconfiguring must not stack
+      // duplicates.
+      custom_providers: [{ name: 'Mock', base_url: 'http://127.0.0.1:9001/v1', key_env: 'OPENAI_API_KEY' }],
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
     })
     expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe('OTHER_TEST_VALUE=kept\nMOCK_API_KEY=e2e-mock-key\n')

@@ -9,10 +9,15 @@ const section = z.object({}).passthrough()
 const configSchema = z.object({
   model: section.optional(),
   providers: section.optional(),
+  custom_providers: z.array(section).optional(),
   auxiliary: z.object({ title_generation: section.optional() }).passthrough().optional(),
   approvals: section.optional(),
   display: section.optional(),
 }).passthrough()
+
+//: Entry name this writer owns in ``custom_providers``; reconfiguring replaces
+//: it rather than stacking duplicates.
+const MOCK_PROVIDER_NAME = 'Mock'
 
 export function validateMockUrl(value: string): string {
   const url = new URL(value)
@@ -40,12 +45,19 @@ export function writeMockProviderConfig(
   const merged = {
     ...config,
     model: { ...config.model, default: 'mock-model', provider: 'custom', context_length: modelContextLength ?? 64000 },
-    // No named provider block: "an external OpenAI-compatible endpoint" is
-    // expressed by provider 'custom' + OPENAI_BASE_URL/OPENAI_API_KEY (written
-    // by writeEnvFile). A provider named 'mock' only resolved on trees that
-    // had registered such a profile, so older refs died with "Unknown
-    // provider 'mock'".
+    // Two shapes, one endpoint. `providers:` stays untouched (a provider named
+    // 'mock' only resolved on trees that had registered such a profile, so
+    // older refs died with "Unknown provider 'mock'"). A bare `custom` resolves
+    // from `custom_providers:` on every vintage -- v2026.8.31's desktop
+    // readiness check reports "No usable credentials found for custom ...
+    // runtime resolution still failed" without an entry here -- while the .env
+    // OPENAI_BASE_URL/OPENAI_API_KEY pair (writeEnvFile) is how trees that
+    // resolve the endpoint from the environment reach the same URL.
     providers: { ...config.providers },
+    custom_providers: [
+      ...(config.custom_providers ?? []).filter(entry => entry?.name !== MOCK_PROVIDER_NAME),
+      { name: MOCK_PROVIDER_NAME, base_url: `${url}/v1`, key_env: 'OPENAI_API_KEY' },
+    ],
     auxiliary: { ...config.auxiliary, title_generation: { ...config.auxiliary?.title_generation, enabled: false } },
     approvals: { ...config.approvals, mode: 'off' },
     ...extra,
