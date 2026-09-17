@@ -440,6 +440,7 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     gatewayActivationEpoch: () => 0,
     host,
     SkillsView: undefined,
+    MessageTextContent: undefined,
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
     useQuery: () => ({ data: [], isLoading: false }),

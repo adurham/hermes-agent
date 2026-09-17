@@ -445,6 +445,23 @@ from cron.executions import (
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
 
+# Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
+# report that merely quotes the token cannot turn a healthy run into a failed one.
+CRON_FAILURE_MARKER = "[CRON_FAILURE]"
+
+
+def _cron_failure_marker_error(text: str) -> Optional[str]:
+    """Return failure evidence when an agent response declares a cron failure.
+
+    Only the exact, standalone first line is control text. The caller keeps the complete response
+    in the saved run output while routing this evidence through normal failure bookkeeping.
+    """
+    lines = (text or "").splitlines()
+    if not lines or lines[0].rstrip() != CRON_FAILURE_MARKER:
+        return None
+    evidence = "\n".join(lines[1:]).strip()
+    return evidence or "Cron agent reported failure."
+
 
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
@@ -2583,10 +2600,12 @@ def _classify_delivery_outcome(
 
 def _compose_run_delivery(
     job: dict, *, success: bool, error, final_response: str, output_file,
+    agent_declared: bool = False,
 ) -> tuple[str, bool, bool, bool, Optional[str]]:
     """Text to deliver for a finished run. Returns ``(deliver_content, blocked_config,
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
-    says the operator was already told, deliver nothing."""
+    says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
+    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
     err = str(error) if error else ""
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
@@ -2609,6 +2628,14 @@ def _compose_run_delivery(
         )
         if incident_acked:
             deliver_content = ""
+        elif agent_declared:
+            # The agent already diagnosed the failure in prose; the summarizer's substring
+            # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
+            # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
+            from cron.scheduler_failure_copy import generic_failure_notice
+            deliver_content = generic_failure_notice(
+                job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
+            ) + _failure_streak_nudge(job)
         else:
             deliver_content = (
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
@@ -2665,6 +2692,9 @@ class _RunDelivery:
     should_deliver: bool = False
     unresolved_origin: bool = False
     blocked_config: bool = False
+    # True when ``error`` is the agent's own ``[CRON_FAILURE]`` evidence rather than a runtime
+    # error string, so composition must not run it through the provider-error heuristics.
+    agent_declared: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
@@ -2700,7 +2730,7 @@ def _save_compose_deliver(
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
-        output_file=output_file)
+        output_file=output_file, agent_declared=d.agent_declared)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
@@ -2978,9 +3008,18 @@ def _run_one_job_body(
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
+        # An agent can finish its own turn after a delegated child has failed. Let it explicitly
+        # declare that semantic failure so the existing failure path updates status, streaks,
+        # ledger, and notification routing instead of recording a false healthy result.
+        agent_declared = False
+        if success and not job.get("no_agent"):
+            marker_error = _cron_failure_marker_error(final_response)
+            if marker_error is not None:
+                success, error, agent_declared = False, marker_error, True
+
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error)
+        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

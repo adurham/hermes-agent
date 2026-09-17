@@ -108,6 +108,13 @@ import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+// The 1:1 chat's message renderer: `MEDIA:` lines become inline players and
+// images instead of a raw path (#93728), and a fenced block gets the app's own
+// code card — stock Streamdown lays a code block's header and body out as
+// inline siblings, so the body sat shifted right and its tail was clipped with
+// no scrollbar (#91878). Feature-detected: an older shell without the export
+// keeps the raw Streamdown path.
+const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -1060,7 +1067,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         ) || null
 
     const display = isUser
-      ? 'You'
+      ? b.group.you
       : displayName(
           member || {
             name: entry.from.name
@@ -1074,7 +1081,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
-      ? 'You'
+      ? b.group.you
       : revealed
         ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display
@@ -1130,11 +1137,17 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             ) : null}
           </div>
           <div
-            className="text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
           >
-            {Streamdown ? <Streamdown>{entry.text}</Streamdown> : entry.text}
+            {MessageTextContent ? (
+              <MessageTextContent media={!member?.remoteSource} text={entry.text} />
+            ) : Streamdown ? (
+              <Streamdown>{entry.text}</Streamdown>
+            ) : (
+              entry.text
+            )}
           </div>
           {/* User attachments: what every responding bot was */
           /* shown — image previews, or a named chip for */
@@ -1266,7 +1279,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       />
       {activityPanel}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="grid gap-1.5 px-2.5 pb-2">
+        {/* minmax(0,1fr): an implicit grid track is min-content sized, so one */}
+        {/* unbreakable code line widened every entry to its own width and the */}
+        {/* log scrolled sideways as a whole instead of the code block (#91878). */}
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5 px-2.5 pb-2">
           {room.log.length
             ? logChildren
             : [

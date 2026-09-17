@@ -61,6 +61,7 @@ import {
   type BackendOutputTail,
   claimDecision,
   execText,
+  formatBackendExitLine,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
@@ -72,6 +73,7 @@ import { createBackendConnectionState } from './backend-connection-state'
 import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
+import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
@@ -105,6 +107,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
@@ -226,6 +229,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
+import { envTokenRejected, githubApiHeaders, githubTokenFromEnv } from './github-api-auth'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -407,7 +411,15 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  branchTipApiUrl,
+  cacheIsFresh,
+  compareApiUrl,
+  describeUpdateCheckFailure,
+  githubRepoSlug,
+  parseCompare,
+  rateLimitFromHeaders
+} from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -427,6 +439,7 @@ import {
 import {
   formatBlockerMessage,
   formatProbeFailedMessage,
+  resolveVenvDir,
   scanVenvBlockers,
   stopSafeVenvBlockers
 } from './venv-blocker-scan'
@@ -3134,55 +3147,50 @@ async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
   return { behind: null, updateAvailable: true, targetSha, commits: [] }
 }
 
-// One line a user can act on (or paste into a bug report) instead of the
-// generic "couldn't reach the update server": which host, which failure.
-// #105855 was a run of GitHub outages that read as a Hermes bug because the
-// UI hid the cause.
-function describeUpdateCheckFailure(error) {
-  const status = error?.statusCode
-  const code = error?.code
+// GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call
+// from the anonymous 60/hour-per-IP budget to the token's 5,000/hour one; the
+// header shape is otherwise unchanged. Read per request, never stored.
+//
+// A token GitHub rejects (401: expired, revoked, malformed) must not turn a
+// check that worked anonymously into a hard failure, so the call is retried
+// once without it; the rejection is logged once per process.
+let warnedRejectedGitHubToken = false
 
-  if (status === 403 || status === 429) {
-    return `GitHub API rate limit reached (HTTP ${status}) — try again in an hour.`
+async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const token = githubTokenFromEnv(process.env)
+
+  try {
+    return await fetchGitHubApiOnce(url, accept, token)
+  } catch (error) {
+    if (!envTokenRejected(error)) {
+      throw error
+    }
+
+    if (!warnedRejectedGitHubToken) {
+      warnedRejectedGitHubToken = true
+      rememberLog(
+        '[updates] api.github.com rejected the GITHUB_TOKEN / GH_TOKEN from the environment (HTTP 401); ' +
+          'retrying the update check anonymously'
+      )
+    }
+
+    return fetchGitHubApiOnce(url, accept, null)
   }
-
-  if (typeof status === 'number' && status >= 500) {
-    return `GitHub is having trouble (HTTP ${status} from api.github.com) — check githubstatus.com and try again later.`
-  }
-
-  if (typeof status === 'number') {
-    return `api.github.com answered HTTP ${status}.`
-  }
-
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-    return 'DNS lookup for api.github.com failed — check your connection or proxy.'
-  }
-
-  if (code === 'ETIMEDOUT' || error?.message === 'timeout') {
-    return 'api.github.com did not answer within 10 seconds.'
-  }
-
-  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-    return `Connection to api.github.com failed (${code}) — a firewall or proxy may be blocking it.`
-  }
-
-  if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
-    return `TLS handshake with api.github.com failed (${code}) — a proxy may be intercepting HTTPS.`
-  }
-
-  return `api.github.com: ${error?.message || String(error)}`
 }
 
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+function fetchGitHubApiOnce(url, accept, token) {
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
       {
-        headers: {
-          Accept: accept,
-          // GitHub requires a UA on api.github.com; requests without one 403.
-          'User-Agent': 'hermes-desktop-update-check'
-        },
+        headers: githubApiHeaders(
+          {
+            Accept: accept,
+            // GitHub requires a UA on api.github.com; requests without one 403.
+            'User-Agent': 'hermes-desktop-update-check'
+          },
+          token
+        ),
         timeout: 10_000
       },
       res => {
@@ -3193,7 +3201,13 @@ function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
           const body = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(Object.assign(new Error(`HTTP ${res.statusCode}`), { statusCode: res.statusCode }))
+            reject(
+              Object.assign(new Error(`HTTP ${res.statusCode}`), {
+                statusCode: res.statusCode,
+                ...rateLimitFromHeaders(res.headers),
+                authenticated: Boolean(token)
+              })
+            )
 
             return
           }
@@ -3278,9 +3292,11 @@ function repairMacUpdaterHelper(updater) {
 // fresh entry points. On Windows this is the file the running backend
 // `hermes.exe` holds open; on POSIX it's never mandatory-locked.
 function venvHermesShimPath(updateRoot) {
+  const venvDir = resolveVenvDir(updateRoot)
+
   return IS_WINDOWS
-    ? path.join(updateRoot, 'venv', 'Scripts', 'hermes.exe')
-    : path.join(updateRoot, 'venv', 'bin', 'hermes')
+    ? path.join(venvDir, 'Scripts', 'hermes.exe')
+    : path.join(venvDir, 'bin', 'hermes')
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -3326,7 +3342,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
     return
   }
 
-  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
+  const scriptsDir = path.join(resolveVenvDir(updateRoot), 'Scripts')
 
   let holders = []
 
@@ -3873,7 +3889,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       updaterArgs.push('--target-app', targetApp)
     }
 
-    const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+    const venvBin = path.join(resolveVenvDir(updateRoot), IS_WINDOWS ? 'Scripts' : 'bin')
 
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
@@ -4165,7 +4181,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+  const venvBin = path.join(resolveVenvDir(updateRoot), IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
   const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
 
@@ -4424,7 +4440,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
       ...process.env,
       HERMES_HOME,
       HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
+      PATH: pathWithHermesManagedNode(path.join(resolveVenvDir(updateRoot), 'bin'))
     },
     detached: true,
     stdio: 'ignore'
@@ -11105,12 +11121,20 @@ function resetHermesConnection({ soft = false } = {}) {
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
-  const hermesProcess = backendConnectionState.invalidate()
+  const hermesProcess = invalidatePrimaryConnection()
   stopBackendChild(hermesProcess)
 
   if (!soft) {
     resetBootProgressForReconnect()
   }
+}
+
+// Every deliberate emptying of the primary slot goes through here so the
+// dying child's stale exit reads as intentional (see primaryRecoverySuppressed).
+function invalidatePrimaryConnection() {
+  primaryRecoverySuppressed = true
+
+  return backendConnectionState.invalidate()
 }
 
 // Re-home the primary backend: reset connection state, then wait for the live
@@ -12464,7 +12488,7 @@ async function startHermes(requestedProfile?: string) {
       throw error
     }
 
-    const failedProcess = backendConnectionState.invalidate()
+    const failedProcess = invalidatePrimaryConnection()
     stopBackendChild(failedProcess)
 
     if (error instanceof FirstRunSetupResetError) {
@@ -17447,6 +17471,7 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+  installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()

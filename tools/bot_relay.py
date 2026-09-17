@@ -24,7 +24,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root
 from utils import atomic_json_write
