@@ -377,8 +377,18 @@ case "$UPDATE_METHOD" in
     # flow does. The app then boots genuinely configured - no onboarding
     # overlay (a fullscreen div that intercepts every click) - and the chat
     # surface is real too.
+    #
+    # That configuration already happened ABOVE (or comes from the caller's
+    # HERMES_E2E_MOCK_URL), before preserve_before_upgrade snapshotted the home.
+    # Starting a second mock HERE is what made this leg report "the upgrade
+    # changed the user's own state": a fresh instance takes a new port, so .env's
+    # OPENAI_BASE_URL is rewritten -- same byte length, different value -- after
+    # the snapshot, and the verifier blames the upgrade for the harness's own
+    # write. Reuse the live mock; if it died, fail loudly rather than silently
+    # reconfiguring provider state inside the window under verification.
     source "$ASSETS/mock-provider.sh"
-    PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
+    [ -n "${HERMES_E2E_MOCK_URL:-}" ] || [ -s "$WORK_ROOT/mock.url" ] \
+      || fail "no mock provider is configured for the app-update phase"
     trap mock_stop EXIT
 
     step "capturing the hermes desktop launch spec (build runs for real)"
