@@ -376,17 +376,30 @@ stage_python_deps() {
     bootstrap_pm
 }
 
+desktop_product_present() {
+    # Does this checkout already carry a built desktop app? A plain repair or
+    # upgrade rerun on a desktop install must REBUILD it rather than leave a
+    # bundle built from the previous code: the app is part of that install, and
+    # the artifacts live inside the tree (gitignored), so an update makes them
+    # stale instead of removing them.
+    local release="$INSTALL_DIR/apps/desktop/release"
+    [ -d "$release/linux-unpacked" ] || [ -d "$release/mac" ] \
+        || [ -d "$release/mac-arm64" ] || [ -d "$release/win-unpacked" ]
+}
+
 stage_products() {
     # The whole tail in one place, by calling the completion an update calls:
-    # publish the commands, build the products (tui/web, plus the desktop app
-    # under --include-desktop), then run the post-build maintenance that syncs
-    # bundled skills and migrates config. Node, browsers and the frontend build
-    # tools arrive through pm as the build asks for them; the bootstrap
-    # interpreter itself only re-enters the tree on PM's selected Python.
+    # publish the commands, build the products (tui/web, plus the desktop app),
+    # then run the post-build maintenance that syncs bundled skills and migrates
+    # config. Node, browsers and the frontend build tools arrive through pm as
+    # the build asks for them; the bootstrap interpreter itself only re-enters
+    # the tree on PM's selected Python.
     local boot_py
     local args=(--source "$INSTALL_DIR")
     bootstrap_python
-    [ "$INCLUDE_DESKTOP" = true ] && args+=(--desktop)
+    if [ "$INCLUDE_DESKTOP" = true ] || desktop_product_present; then
+        args+=(--desktop)
+    fi
     (cd "$INSTALL_DIR" && "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
         || fail "app products or command publication failed"
     log "app products and hermes command ready"

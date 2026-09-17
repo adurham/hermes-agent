@@ -598,10 +598,23 @@ function Publish-UserCommand {
     Log "hermes command installed at $binDir"
 }
 
+function Test-DesktopProductPresent {
+    # Does this checkout already carry a built desktop app? A plain repair or
+    # upgrade rerun on a desktop install must REBUILD it rather than leave a
+    # bundle built by the previous code: the app is part of that install and its
+    # artifacts live inside the tree, so an update makes them stale, not gone.
+    $release = Join-Path $InstallDir "apps/desktop/release"
+    foreach ($candidate in @("win-unpacked", "linux-unpacked", "mac", "mac-arm64")) {
+        if (Test-Path (Join-Path $release $candidate)) { return $true }
+    }
+    return $false
+}
+
 function Stage-Products {
-    Invoke-SourceCompletion ([bool]$IncludeDesktop)
+    $desktop = [bool]$IncludeDesktop -or [bool](Test-DesktopProductPresent)
+    Invoke-SourceCompletion $desktop
     Publish-UserCommand
-    if ($IncludeDesktop) { Confirm-DesktopArtifact }
+    if ($desktop) { Confirm-DesktopArtifact }
 }
 
 function Set-LauncherUserPath([string]$binDir) {
