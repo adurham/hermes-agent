@@ -106,11 +106,46 @@ def selected_venv(project_root: Path) -> Path:
     return environment
 
 
+def venv_python_version(venv: Path) -> tuple[int, int] | None:
+    """The interpreter version a POSIX venv actually holds, or ``None``.
+
+    ``site_packages`` must not date the tree from the CALLER's ``sys.version_info``:
+    an update can rebuild the dependency environment with a different Python than
+    the launcher that later imports it. Observed on an app-driven upgrade -- PM
+    built the environment with CPython 3.14 while the PATH shim ran 3.11, so the
+    shim composed ``lib/python3.11/site-packages`` inside a 3.14 venv, found no
+    tree, and failed *after* a successful update.
+    """
+    try:
+        for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() != "version":
+                continue
+            major, _, rest = value.strip().partition(".")
+            minor, _, _ = rest.partition(".")
+            if major.isdigit() and minor.isdigit():
+                return int(major), int(minor)
+    except OSError:
+        pass
+    try:
+        candidates = sorted((venv / "lib").glob("python3*"))
+    except OSError:
+        return None
+    for candidate in candidates:
+        major, _, rest = candidate.name.removeprefix("python").partition(".")
+        minor, _, _ = rest.partition(".")
+        if major.isdigit() and minor.isdigit():
+            return int(major), int(minor)
+    return None
+
+
 def site_packages(venv: Path) -> Path:
     import sys
 
-    return venv / ("Lib/site-packages" if os.name == "nt" else
-                   f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+    if os.name == "nt":
+        return venv / "Lib/site-packages"
+    version = venv_python_version(venv) or (sys.version_info.major, sys.version_info.minor)
+    return venv / f"lib/python{version[0]}.{version[1]}/site-packages"
 
 
 def activate_dependencies(project_root: Path) -> None:

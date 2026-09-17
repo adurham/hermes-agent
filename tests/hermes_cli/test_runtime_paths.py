@@ -1,10 +1,11 @@
 """Payload stores follow the payload, not the launching shell's home."""
 
 import json
+import os
 
 import pytest
 
-from hermes_cli.runtime_paths import store_root
+from hermes_cli.runtime_paths import site_packages, store_root, venv_python_version
 from hermes_constants import get_default_hermes_root
 
 
@@ -65,3 +66,34 @@ def test_payload_store_cannot_escape_payload(tmp_path, monkeypatch, escape):
         store_root(repo)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(outside))
     assert store_root(repo) == outside
+
+def test_site_packages_follows_the_venv_python_not_the_caller(tmp_path):
+    """Regression: the tree must be dated from the venv, not from this process.
+
+    An app-driven upgrade rebuilt the dependency environment with CPython 3.14
+    while the PATH shim ran 3.11, so site_packages() pointed at
+    lib/python3.11/site-packages inside a 3.14 venv. activate_dependencies()
+    then found no tree and failed the shim *after* a successful update -- it
+    only tolerates a missing tree when no generation was published.
+    """
+    venv = tmp_path / "venv"
+    (venv / "lib" / "python3.9" / "site-packages").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.9.20\n", encoding="utf-8")
+
+    assert venv_python_version(venv) == (3, 9)
+    if os.name != "nt":
+        # The contract: the composed path is the venv's real tree. Dated from the
+        # caller instead, it names python<this-interpreter> and misses this dir.
+        assert site_packages(venv) == venv / "lib" / "python3.9" / "site-packages"
+        assert site_packages(venv).is_dir()
+
+
+def test_venv_python_version_falls_back_to_the_lib_directory(tmp_path):
+    venv = tmp_path / "venv"
+    (venv / "lib" / "python3.12" / "site-packages").mkdir(parents=True)
+
+    assert venv_python_version(venv) == (3, 12)
+
+
+def test_venv_python_version_is_none_without_evidence(tmp_path):
+    assert venv_python_version(tmp_path / "absent") is None
