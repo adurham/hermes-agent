@@ -36,6 +36,14 @@ def test_dock_browser_advertises_a_devtools_port():
     assert "--remote-debugging-port=" in browser.dock_argv("/opt/chrome", "/p/dir")[2]
 
 
+def test_dock_browser_caps_its_disk_cache():
+    """The persistent profile lives on the gateway's disk (6 GB on a hosted instance); the HTTP cache
+    must not be allowed to grow without bound there."""
+    argv = browser.dock_argv("/opt/chrome", "/p/dir")
+    cap = next(a for a in argv if a.startswith("--disk-cache-size="))
+    assert 0 < int(cap.split("=", 1)[1]) <= 512 * 1024 * 1024
+
+
 def _fake_running_instance(user_data_dir, pid: int, port: int) -> None:
     (user_data_dir / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/abc\n", encoding="utf-8")
     os.symlink(f"host-{pid}", user_data_dir / "SingletonLock")

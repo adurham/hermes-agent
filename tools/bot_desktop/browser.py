@@ -20,6 +20,8 @@ from typing import Optional, Tuple
 
 from tools.bot_desktop import runtime
 
+DISK_CACHE_BYTES = 256 * 1024 * 1024
+
 _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 
 
@@ -93,8 +95,10 @@ def dock_argv(exe: str, user_data_dir: str) -> list[str]:
     # human's Browser is the bot's browser, in the same container; a stricter rule here just made the dock
     # icon die with 'No usable sandbox!' in the official image while the agent's own Chromium ran fine.
     from tools.browser_tool_session import CHROMIUM_SANDBOX_BYPASS_ARGS, _needs_chromium_sandbox_bypass
+    # The profile is persistent by design (logins survive handoffs); its HTTP cache is not worth a
+    # gateway's disk: uncapped it grows for months toward a hosted instance's 6 GB.
     return [exe, f"--user-data-dir={user_data_dir}", "--remote-debugging-port=0", "--no-first-run",
-            "--no-default-browser-check", "--test-type",
+            "--no-default-browser-check", "--test-type", f"--disk-cache-size={DISK_CACHE_BYTES}",
             *(CHROMIUM_SANDBOX_BYPASS_ARGS if _needs_chromium_sandbox_bypass() else ())]
 
 
