@@ -156,7 +156,9 @@ export function assertBackendOrigin(backend: NativeProcess, root: string, origin
   const importRoot = backend.sourceRoot || backend.cwd
   if (moduleLaunch && importRoot) {
     if (fs.realpathSync(importRoot) !== fs.realpathSync(root)) {
-      throw new Error('Source backend listener imports a different source tree')
+      throw new Error('Source backend listener imports a different source tree'
+        + ` (cwd=${backend.cwd ?? '(unreadable)'}, HERMES_PYTHON_SRC_ROOT=${backend.sourceRoot ?? '(unset)'},`
+        + ` expected=${root}, command=${backend.command})`)
     }
     return
   }

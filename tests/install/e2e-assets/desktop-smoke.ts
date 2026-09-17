@@ -328,6 +328,10 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
       }
     }
     const backend = localBackendProcess(Number(base.port), running.pid)
+    // Evidence before assertions: the backend's identity must be on disk when
+    // assertBackendOrigin fails, or the leg reports a mismatch with nothing to
+    // inspect.
+    fs.writeFileSync(path.join(out, `desktop-backend-${options.phase}.log`), connection.logs.map(redact).join('\n'))
     assertBackendOrigin(backend, options.root, options.origin)
     const provenanceCommit = readInstallationCommit(options.root, options.origin)
     if (provenanceCommit !== options['expect-commit']) { throw new Error('Installed commit differs from --expect-commit') }
