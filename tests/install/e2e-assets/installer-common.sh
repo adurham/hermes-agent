@@ -8,6 +8,11 @@ arm_source_redirect() {
   actual="$(git -C "$repo" remote get-url origin)"
   real_git="$(command -v git)"
   quoted_git="$(printf '%q' "$real_git")"
+  # Export the real git so later checks can observe the TRANSPORT url. After
+  # this function the shim shadows `git` and reports the official origin for
+  # `remote get-url origin` (so fork detection sees it); any check that must see
+  # the file:// redirect instead has to bypass the shim via this path.
+  export HERMES_E2E_REAL_GIT="$real_git"
   # A global file survives install.sh replacing GIT_CONFIG_COUNT/KEY_n/VALUE_n.
   printf '' > "$cfg"
   for url in "$actual" "$https" "$ssh"; do
