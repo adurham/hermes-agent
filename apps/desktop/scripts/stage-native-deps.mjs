@@ -22,6 +22,7 @@ import {
   readdirSync,
   readFileSync,
   rmdirSync,
+  rmSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
