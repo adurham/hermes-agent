@@ -31,8 +31,7 @@ same file::
 The kernel appends the invoking script as the last argument, and ``bash -c``
 binds it to ``$0`` — so the prologue finds the target relative to itself and
 the shebang stays independent of the cwd. ``$BASH`` for the second hop keeps it
-free of both the exec bit and a ``PATH`` lookup. ``scripts/_activation_demo.py``
-is a runnable example.
+free of both the exec bit and a ``PATH`` lookup.
 
 Activation is not re-run when the inherited environment is still current: the
 sentinel's value is the installed-state file the environment was composed
