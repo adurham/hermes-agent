@@ -11,6 +11,12 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     """Provision the new graph before entering its application interpreter."""
     root = Path(request["root"])
     sys.path.insert(0, str(root))
+    # The old shim's UI has been frozen since the pull; from here the new
+    # tree can publish stages (and pop the panel the old shim couldn't).
+    from hermes_cli.update_stage import ensure_panel, publish_stage
+
+    ensure_panel(root)
+    publish_stage("Updating Python dependencies (PM)")
     from pm import paths, receipt
     from pm.client import ensure, sync_venv, venv_is_current
     from pm.lock import Lockfile

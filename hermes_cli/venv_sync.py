@@ -86,6 +86,8 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
 
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
     """Report or sync dependencies. A malformed install stamp is a build error."""
+    from hermes_cli.update_stage import publish_stage
+
     root = Path(project_root) if project_root is not None else _project_root()
     if _is_sealed(root):
         return {"state": "sealed", "ok": True}
@@ -100,6 +102,7 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
             return {"state": "current", "ok": True}
         if check:
             return {"state": "would-sync", "ok": True}
+        publish_stage("Updating Python dependencies")
         pm.sync_venv(explicit=True, project_root=root)
         publish_launchers(root)
         return {"state": "synced", "ok": True}

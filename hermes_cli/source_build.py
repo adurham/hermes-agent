@@ -85,16 +85,21 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
     from hermes_cli.main_install_repair import _warn_configured_features_missing_deps
+    from hermes_cli.update_stage import publish_stage
 
     _warn_configured_features_missing_deps()
     env = source_build_env(explicit=True)
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
+    publish_stage("Updating Node dependencies")
     prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
+    publish_stage("Building the TUI")
     build_source_tui(project_root, env=env)
+    publish_stage("Building the web UI")
     build_source_web(project_root, env=env, explicit=True)
     if desktop:
         from hermes_cli.main_desktop import build_prepared_desktop
 
+        publish_stage("Building the desktop app")
         build_prepared_desktop(
             project_root / "apps/desktop", source_mode=False,
             npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root, explicit=True,

@@ -818,6 +818,11 @@ cd "$INSTALL_ROOT" || {
   log "$FINAL_MSG"; exit 3
 }
 export PYTHONUNBUFFERED=1
+# The takeover children (hermes update -> _update_takeover/update_finish and
+# the PM sync / build stages they drive) publish their stages back into the
+# shim's UI through this file; without a watching UI the variable is simply
+# absent and the helper no-ops.
+export HERMES_UPDATE_STATUS_FILE="$STATUS"
 # --keep-stash: never re-apply local source edits after the update (they stay
 # parked in git stash). Probe --help first: older installed backends don't
 # know the flag and argparse would abort with exit 2, which collides with the
