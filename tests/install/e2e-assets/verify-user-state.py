@@ -149,6 +149,43 @@ def _is_bundled_skill(rel: str, *, profiles: bool) -> bool:
     return False
 
 
+def _env_key_hashes(path: str) -> dict[str, str]:
+    """Per-key VALUE digests for a dotenv-style file: names and equality only.
+
+    ``.env`` is a secrets file, so the verifier must never carry its content --
+    but "an upgrade rewrote this file" is useless without knowing which variable
+    moved, and an equal-size rewrite is invisible in the whole-file hash. Key
+    names plus 12-char value digests name the writer and leak nothing.
+    """
+    digests: dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return digests
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if text.startswith("export "):
+            text = text[len("export "):].lstrip()
+        key, sep, value = text.partition("=")
+        key = key.strip()
+        if sep and key:
+            digests[key] = hashlib.sha256(value.strip().encode("utf-8")).hexdigest()[:12]
+    return digests
+
+
+def _env_key_diff(before: dict, after: dict) -> dict:
+    left = before.get("env_keys") or {}
+    right = after.get("env_keys") or {}
+    return {
+        "keys_added": sorted(set(right) - set(left)),
+        "keys_removed": sorted(set(left) - set(right)),
+        "keys_changed": sorted(key for key in set(left) & set(right) if left[key] != right[key]),
+    }
+
+
 def _entry_record(abs_path: str) -> dict:
     if _is_link(abs_path):
         record: dict = {"kind": "symlink", "target": os.readlink(abs_path)}
@@ -168,6 +205,8 @@ def _entry_record(abs_path: str) -> dict:
                 record["sha256"] = _sha256_file(abs_path)
         else:
             record["sha256"] = _sha256_file(abs_path)
+        if os.path.basename(abs_path) == ".env":
+            record["env_keys"] = _env_key_hashes(abs_path)
         return record
     return {"kind": "other"}
 
@@ -300,6 +339,11 @@ def verify_home(home: str, snap: dict) -> dict:
     shrank = sorted(k for k, v in judged["modified"].items()
                     if _rows_shrank(k, v["before"], v["after"]))
     tolerated_modified = sorted(set(judged["modified"]) - set(failing_modified))
+    # A rewritten .env is fatal by design; name the variables that moved, or the
+    # caller is left holding two hashes of a secrets file and no lead.
+    for rel, pair in failing_modified.items():
+        if os.path.basename(rel) == ".env":
+            pair["key_diff"] = _env_key_diff(pair["before"], pair["after"])
 
     return {
         "schema": SCHEMA_VERSION,
@@ -335,6 +379,17 @@ def _render(report: dict) -> str:
     for label, key in (("DELETED", "deleted"), ("MODIFIED", "modified")):
         for rel in report[key]:
             lines.append(f"  {label} {rel}")
+    for rel, pair in report["modified"].items():
+        detail = pair.get("key_diff")
+        if not detail:
+            continue
+        named = ", ".join(
+            f"{kind}={','.join(detail[field])}"
+            for kind, field in (("added", "keys_added"), ("removed", "keys_removed"),
+                                ("changed", "keys_changed"))
+            if detail.get(field))
+        if named:
+            lines.append(f"    {rel}: variables {named} (names only; values are never recorded)")
     for rel in report["rows_shrank"]:
         lines.append(f"  ROWS SHRANK {rel}")
     for rel in report["tolerated_modified"]:

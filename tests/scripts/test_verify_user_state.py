@@ -271,3 +271,44 @@ def test_cli_rejects_a_missing_home(tmp_path):
     result = _run(["snapshot", "--home", str(tmp_path / "nope"),
                    "--out", str(tmp_path / "s.json")])
     assert result.returncode == 2
+
+
+def test_a_rewritten_dotenv_names_the_moved_variables_and_never_their_values(tmp_path):
+    """An equal-size .env rewrite is invisible in the whole-file hash alone.
+
+    The app-driven upgrade rewrote .env at an identical byte count with a
+    different sha256, leaving the leg holding two hashes of a secrets file and no
+    lead. The report must name the variable -- and carry no value.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text(
+        "OPENAI_API_KEY=aaaa\n"
+        "OPENAI_BASE_URL=http://127.0.0.1:9001/v1\n"
+        "# a comment\n"
+        "export ANTHROPIC_API_KEY=cccc\n",
+        encoding="utf-8",
+    )
+    snap = vus.snapshot_home(str(home))
+
+    (home / ".env").write_text(
+        "OPENAI_API_KEY=bbbb\n"
+        "OPENAI_BASE_URL=http://127.0.0.1:9001/v1\n"
+        "# a comment\n"
+        "export ANTHROPIC_API_KEY=cccc\n"
+        "NEW_KEY=dddd\n",
+        encoding="utf-8",
+    )
+    report = vus.verify_home(str(home), snap)
+
+    diff = report["modified"][".env"]["key_diff"]
+    assert diff["keys_changed"] == ["OPENAI_API_KEY"]
+    assert diff["keys_added"] == ["NEW_KEY"]
+    assert diff["keys_removed"] == []
+    rendered = vus._render(report)
+    assert "changed=OPENAI_API_KEY" in rendered
+    assert "added=NEW_KEY" in rendered
+    # Names only: a secrets file's content must never reach the report.
+    for leaked in ("aaaa", "bbbb", "cccc", "dddd", "http://127.0.0.1:9001/v1"):
+        assert leaked not in rendered
+        assert leaked not in json.dumps(report)
