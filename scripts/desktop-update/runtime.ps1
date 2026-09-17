@@ -46,8 +46,10 @@ function Get-HermesRuntimeCommand {
 
     # Only an older, pre-PM checkout may use the historical interpreter.
     if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'pm') -PathType Container)) {
-        $python = Join-Path $InstallRoot 'venv\Scripts\python.exe'
-        if (Test-Path -LiteralPath $python -PathType Leaf) { return @($python, '-m', $Module) }
+        foreach ($directory in @('venv', '.venv')) {
+            $python = Join-Path $InstallRoot "$directory\Scripts\python.exe"
+            if (Test-Path -LiteralPath $python -PathType Leaf) { return @($python, '-m', $Module) }
+        }
     }
     throw "Installation launcher is missing under $InstallRoot\.hermes\bin. Repair this installation."
 }

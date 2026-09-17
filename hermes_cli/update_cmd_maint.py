@@ -1,4 +1,4 @@
-"""Post-update maintenance for ``hermes update``: pre-update backup snapshot, state-db verify/restore, curator/FTS notices, FHS path guard, completion summary, stale-module purge.
+"""Post-update maintenance for ``hermes update``: pre-update backup snapshot, state-db verify/restore, curator/FTS notices, FHS path guard, completion summary.
 
 Split out of ``update_cmd.py``, which re-imports every name so ``hermes_cli.update_cmd.<name>``
 still resolves/monkeypatches. Origin helpers are imported lazily per function (no cycle;
@@ -34,7 +34,25 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
 _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
-_SQLITE_WAL_BUG_DETAIL = "SQLite {} still has the WAL-reset corruption bug"
+#: Reinstalling through the official installer swaps in a Python whose SQLite is safe; the
+#: one-liner differs per OS (mirrors ``uninstall._REINSTALL_HINT``). windows -> command
+_REINSTALL_ONE_LINER = {
+    True: "iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
+    False: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+}
+
+
+def _sqlite_partial_completion_lines(sqlite_version: str) -> list[str]:
+    """Shared ``⚠ Update partially complete`` wording for a vulnerable post-update SQLite, so the
+    two completion banners cannot drift. The lead names the consequence, the second line the
+    exact fix command."""
+    from hermes_cli.update_cmd import _m
+    return [
+        f"⚠ Update partially complete — your Python's SQLite ({sqlite_version}) has a known "
+        "corruption bug. Hermes works, but sessions could be damaged.",
+        f"  Fix: run the installer again ({_REINSTALL_ONE_LINER[bool(_m()._is_windows())]}) "
+        "which installs a safe Python, then run `hermes doctor` to confirm.",
+    ]
 
 
 def _load_updates_cfg() -> dict:
@@ -338,8 +356,8 @@ def _print_verified_update_completion(message: str) -> bool:
         _print_update_completion(message)
         return True
     print()
-    print(f"⚠ Update partially complete — {_SQLITE_WAL_BUG_DETAIL.format(sqlite_info.sqlite_version_string)}.")
-    print("  Rebuild the Hermes venv with a uv-managed Python, restart Hermes, then verify with `hermes doctor`.")
+    for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
+        print(line)
     return False
 
 
@@ -808,6 +826,14 @@ def _refresh_cua_driver_after_update() -> None:
         pm.ensure("cua-driver", explicit=True)
 
 
+def _print_checkpoint_footprint_notice() -> None:
+    """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
+    from tools.checkpoint_manager import checkpoint_footprint_notice
+    notice = checkpoint_footprint_notice()
+    if notice:
+        print(f"\n\033[1;33mℹ  {notice}\033[0m")
+
+
 def _print_plugin_compat_notice() -> None:
     """Installed plugins importing paths that the Sep 2026 decomposition scheduled for removal."""
     from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
@@ -816,6 +842,11 @@ def _print_plugin_compat_notice() -> None:
         return
     colour = "\033[1;31m" if removal_in_effect() else "\033[1;33m"
     print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
+
+
+def _print_profiles_without_credentials_notice() -> None:
+    from hermes_cli.profile_credential_audit import print_profiles_without_credentials_notice
+    print_profiles_without_credentials_notice()
 
 
 def _print_post_update_notices_and_self_heals() -> None:
@@ -839,10 +870,22 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
+        ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
+        # Named profiles stopped inheriting the root auth.json (#111724): name every profile that
+        # now has no provider of its own so nobody finds out from a dead bot.
+        ('Profile credential notice failed: %s', _print_profiles_without_credentials_notice),
+        # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
+        # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
+        ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
     ):
         with _best_effort(message):
             step()
+
+
+def _migrate_relay_exporter_env() -> None:
+    from hermes_cli.relay_plugin_migrate import run_relay_migration_after_update
+    run_relay_migration_after_update()
 
 
 def _run_post_update_maintenance(

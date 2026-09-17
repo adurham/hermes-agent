@@ -185,6 +185,14 @@ def _complete_selected(request: dict) -> None:
     # gateway watcher's status BEFORE that operation, and demote on later failure.
     if request["gateway_mode"]:
         update_cmd._write_gateway_update_exit_code(complete)
+    if request.get("no_gateway_restart", False):
+        from hermes_cli.update_receipt import record_skip
+
+        record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+        print("→ Gateway restart deferred (--no-gateway-restart); restart gateways separately.")
+        if not complete:
+            raise SystemExit(1)
+        return
     restart = update_cmd._restart_gateway_fleet_after_update(plan, request["gateway_mode"])
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
     update_cmd._verify_fleet_after_update(

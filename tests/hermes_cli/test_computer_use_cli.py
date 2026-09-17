@@ -39,7 +39,8 @@ def test_computer_use_help_omits_browser_approve():
 def test_computer_use_rejects_removed_browser_approve_command():
     result = _run("browser-approve", "--pid", "123")
     assert result.returncode == 2
-    assert "invalid choice: 'browser-approve'" in result.stderr
+    assert "'browser-approve' is not a `hermes computer-use` command" in result.stderr
+    assert "choose from" not in result.stderr
 
 
 def test_computer_use_status_reports_pm_without_polling_vendor(monkeypatch, capsys, tmp_path):

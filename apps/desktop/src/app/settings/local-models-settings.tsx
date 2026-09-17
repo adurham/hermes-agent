@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useQuery, useQueryClient, useIsMutating } from '@tanstack/react-query'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -13,7 +13,6 @@ import {
   ejectLocalModel,
   type HFFileGroup,
   type HFSearchHit,
-  installLocalRuntime,
   listHFRepoFiles,
   quickstartLocalModels,
   searchHFModels,
@@ -52,6 +51,7 @@ import {
   useLocalModelsOwner,
   useLocalModelsStatus,
   useLocalRuntimeJobs,
+  startLocalRuntimeInstall,
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
@@ -97,6 +97,7 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
   const { t } = useI18n()
   const copy = t.settings.localModels
   const client: QueryClient = useQueryClient()
+  const installStarting: boolean = useIsMutating({ mutationKey: localModelsKey(owner, 'install') }) > 0
   const { data: status } = useLocalModelsStatus(owner)
   const { data: hardware } = useQuery(localModelsHardwareOptions(owner))
   const { data: catalog } = useQuery(localModelsCatalogOptions(owner))
@@ -114,14 +115,7 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
   const refresh = useCallback((): void => refreshLocalModels(owner, client), [owner, client])
 
   async function handleInstallRuntime(): Promise<void> {
-    try {
-      await installLocalRuntime(undefined, localModelsRequestScope(owner))
-      watchLocalRuntimeJobs(owner, client)
-    } catch (err) {
-      if (isCurrentLocalModelsOwner(owner)) {
-        notifyError(err, copy.installFailed)
-      }
-    }
+    await startLocalRuntimeInstall(owner, client)
   }
 
   async function handleQuickstart(): Promise<void> {
@@ -285,7 +279,9 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
     j => (j.kind === 'runtime-install' || j.kind === 'model-download') && isActiveStatus(j.status)
   )
 
-  if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob) {
+  const failedInstall: boolean = jobs.some((job: LocalRuntimeJob): boolean => job.kind === 'runtime-install' && job.status === 'error')
+
+  if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob && !installStarting && !failedInstall) {
     // Stage rail derived from the job phase: engine -> model -> finish.
     const phase = qJob?.phase ?? ''
 
@@ -460,7 +456,7 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
         ) : (
           <ListRow
             action={
-              <Button onClick={() => void handleInstallRuntime()} size="sm">
+              <Button disabled={installStarting} onClick={() => void startLocalRuntimeInstall()} size="sm">
                 <Download />
                 {copy.installAction}
               </Button>
@@ -473,7 +469,7 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
         {status.update_available && !rJob && (
           <ListRow
             action={
-              <Button onClick={() => void handleInstallRuntime()} size="sm">
+              <Button disabled={installStarting} onClick={() => void startLocalRuntimeInstall()} size="sm">
                 <Download />
                 {copy.updateAction}
               </Button>

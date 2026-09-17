@@ -780,9 +780,8 @@ class CheckpointManager:
             if digest is None:
                 return
             with store_lock(_resolve_checkpoint_base()):
-                working_dir = self.get_working_dir_for_path(str(path))
                 store = _store_path()
-                dir_hash = _project_hash(working_dir)
+                dir_hash = self._ledger_key(str(path))
                 ledger = _load_ledger(store, dir_hash)
                 ledger[str(path)] = {"sha256": digest, "ts": time.time()}
                 _save_ledger(store, dir_hash, ledger)
@@ -823,7 +822,8 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
-        ledger = _load_ledger(store, dir_hash)
+        # Read the same marker-walked project key as record_agent_write.
+        ledger = _load_ledger(store, self._ledger_key(abs_dir))
         if not ledger:
             # No agent-write ledger yet (pre-existing store, or Hermes has
             # not written any files here since the ledger was introduced).
@@ -1216,6 +1216,10 @@ class CheckpointManager:
         # the safety snapshot's count/size budget make that tree unreachable.
         self._prune(store, abs_dir, _ref_name(dir_hash))
         return result
+
+    def _ledger_key(self, path: str) -> str:
+        """Agent-write ledger key: hash of the marker-walked project dir, for writer and reader alike."""
+        return _project_hash(self.get_working_dir_for_path(path))
 
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory for checkpointing."""
@@ -1860,27 +1864,20 @@ def maybe_auto_prune_checkpoints(
 
         marker = base / _PRUNE_MARKER_NAME
         now = time.time()
-        if marker.exists():
-            try:
-                last_ts = float(marker.read_text(encoding="utf-8-sig").strip())
-                if now - last_ts < min_interval_hours * 3600:
-                    out["skipped"] = True
-                    return out
-            except (OSError, ValueError):
-                pass  # corrupt marker — treat as no prior run
-
-        result = prune_checkpoints(
-            retention_days=retention_days,
-            delete_orphans=delete_orphans,
-            checkpoint_base=base,
-            max_total_size_mb=max_total_size_mb,
-        )
-        out["result"] = result
-
+        try:
+            if marker.exists() and now - float(marker.read_text(encoding="utf-8-sig").strip()) < min_interval_hours * 3600:
+                out["skipped"] = True
+                return out
+        except (OSError, ValueError):
+            pass  # corrupt marker — treat as no prior run
+        # Claim the interval before pruning: callers run on a periodic tick, and a prune that
+        # dies mid-way must cost one skipped day, not a git gc every tick.
         try:
             marker.write_text(str(now), encoding="utf-8")
         except OSError as exc:
             logger.debug("Could not write checkpoint prune marker: %s", exc)
+        result = out["result"] = prune_checkpoints(retention_days=retention_days, delete_orphans=delete_orphans,
+                                                   checkpoint_base=base, max_total_size_mb=max_total_size_mb)
 
         total = result["deleted_orphan"] + result["deleted_stale"]
         if total > 0:
@@ -1897,6 +1894,52 @@ def maybe_auto_prune_checkpoints(
         out["error"] = str(exc)
 
     return out
+
+
+def auto_prune_from_config() -> Dict[str, object]:
+    """``maybe_auto_prune_checkpoints`` driven by the ``checkpoints:`` config section — the one
+    startup/housekeeping entry point for the CLI and the gateway. ``delete_orphans`` is never
+    honoured unattended: a missing workdir is ambiguous (deleted vs. unmounted share); orphan
+    cleanup is only via explicit ``hermes checkpoints prune``. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("checkpoints") or {}
+        if not cfg.get("auto_prune", False):
+            return {"skipped": True}
+        return maybe_auto_prune_checkpoints(
+            retention_days=int(cfg.get("retention_days", 7)),
+            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            delete_orphans=False,
+            max_total_size_mb=int(cfg.get("max_total_size_mb", 500)))
+    except Exception as exc:
+        logger.debug("checkpoint auto-maintenance skipped: %s", exc)
+        return {"skipped": True, "error": str(exc)}
+
+
+def checkpoint_footprint_notice() -> Optional[str]:
+    """One-line notice when ``/rollback`` checkpoints are on and their store sits at or above
+    ``checkpoints.max_total_size_mb``, else None. Checkpoints were on by default for a while
+    (Mar–May 2026) and that ``enabled: true`` persisted into user configs; many users carry a
+    GB-scale store for a feature they never invoke. The cap is a floor of one snapshot per
+    project, so a big store is expected, not broken — the notice names the opt-out. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("checkpoints") or {}
+        if not cfg.get("enabled", False):
+            return None
+        cap_mb = int(cfg.get("max_total_size_mb", 500) or 0)
+        status = store_status()
+        size = int(status["total_size_bytes"])
+        if cap_mb <= 0 or size < cap_mb * 1024 * 1024:
+            return None
+        from hermes_cli.sizefmt import format_bytes
+        return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
+                f"{status['project_count']} project(s), above the {cap_mb} MB cap (one snapshot per project is "
+                f"always kept). Not using /rollback? `hermes config set checkpoints.enabled false` then "
+                f"`hermes checkpoints clear`; or lower `checkpoints.retention_days`.")
+    except Exception as exc:
+        logger.debug("checkpoint footprint notice skipped: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -2016,12 +2059,9 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
 
 def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
-    """Delete all ``legacy-*`` archive directories.
-
-    Returns ``{"bytes_freed": N, "deleted": count}``.
-    """
+    """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
-    out = {"bytes_freed": 0, "deleted": 0}
+    out = {"bytes_freed": 0, "deleted": 0, "errors": 0}
     if not base.exists():
         return out
     from tools.checkpoint_pruning import store_lock

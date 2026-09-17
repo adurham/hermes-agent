@@ -259,6 +259,7 @@ def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
         else:
             (configured / "hermes-agent").mkdir()
     (configured / "profiles/coder").mkdir(parents=True)
+    (configured / "profiles/coder/config.yaml").write_text("{}\n", encoding="utf-8")
     unrelated = child_env / "user-tools/hermes-agent"
     unrelated.mkdir(parents=True)
     lexical_root = configured / "hermes-agent"

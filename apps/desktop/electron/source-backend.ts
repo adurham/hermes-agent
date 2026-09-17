@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
-import { execProbeSync, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
 import { resolveInstallationLauncher } from './updater-process'
 
 export interface SourceBackend {
@@ -23,11 +23,11 @@ interface SourceOptions {
 }
 
 /** Keep the validated command. PM owns interpreter and generation selection. */
-export function resolveSourceInstallationBackend(
+export async function resolveSourceInstallationBackend(
   root: string,
   args: string[],
   options: SourceOptions & { hermesHome?: string } = {}
-): SourceBackend | null {
+): Promise<SourceBackend | null> {
   if (!existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
     return null
   }
@@ -44,7 +44,7 @@ export function resolveSourceInstallationBackend(
   const env: NodeJS.ProcessEnv = buildDesktopBackendEnv({ currentEnv: options.env ?? process.env })
 
   try {
-    execProbeSync(command, ['--version'], {
+    await execProbe(command, ['--version'], {
       cwd: root,
       env: { ...process.env, ...options.env, ...env },
       shell,

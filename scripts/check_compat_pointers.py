@@ -24,7 +24,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "compat_manifest.json"
-SKIP_DIRS = {".git", "node_modules", "website", "skills", "optional-skills", "apps", "evals", "build", "MagicMock", ".worktrees", "__pycache__"}
+DEPENDENCY_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+ROOT_SKIP_DIRS = DEPENDENCY_DIRS | {
+    "website", "skills", "optional-skills", "apps", "evals", "build", "MagicMock", ".worktrees"
+}
 
 
 def _py_files():
@@ -32,7 +35,8 @@ def _py_files():
         raise error
 
     for directory, dirs, files in os.walk(ROOT, onerror=fail):
-        dirs[:] = [name for name in dirs if name not in SKIP_DIRS and not name.startswith(".")]
+        excluded = ROOT_SKIP_DIRS if Path(directory) == ROOT else DEPENDENCY_DIRS
+        dirs[:] = [name for name in dirs if name not in excluded and not name.startswith(".")]
         for name in files:
             if not name.endswith(".py") or name in {"check_compat_pointers.py", "test_compat_manifest_targets.py"}:
                 continue

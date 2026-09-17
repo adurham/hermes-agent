@@ -1024,6 +1024,15 @@ async fn install_macos_app_update(
     Ok(target_app.to_path_buf())
 }
 
+#[cfg(not(target_os = "macos"))]
+async fn install_macos_app_update(
+    _app: &AppHandle,
+    _install_root: &Path,
+    target_app: &Path,
+) -> Result<PathBuf> {
+    Ok(target_app.to_path_buf())
+}
+
 /// Move a freshly-staged bundle (`tmp`) into place at `target`, parking any
 /// existing bundle at `old` so the move can succeed (macOS `rename` won't
 /// overwrite a non-empty directory).
@@ -1058,15 +1067,6 @@ async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()>
     }
     remove_dir_if_exists(old).await;
     Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn install_macos_app_update(
-    _app: &AppHandle,
-    _install_root: &Path,
-    target_app: &Path,
-) -> Result<PathBuf> {
-    Ok(target_app.to_path_buf())
 }
 
 async fn remove_dir_if_exists(path: &Path) {
@@ -1132,6 +1132,9 @@ fn option_env_string(key: &str) -> Option<String> {
 }
 
 fn emit(app: &AppHandle, event: BootstrapEvent) {
+    // Same UI boundary as bootstrap.rs's emit_event: the update flow's log
+    // lines also reach the plain-text Live output pane (#112675).
+    let event = event.sanitized_for_ui();
     if let Err(e) = app.emit(BootstrapEvent::CHANNEL, &event) {
         tracing::warn!(?e, "failed to emit update event");
     }

@@ -94,14 +94,17 @@ checkpoints:
   max_total_size_mb: 500      # hard cap on total store size; oldest commits dropped
   max_file_size_mb: 10        # skip any single file larger than this
 
-  # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ at startup
-  # and delete project entries whose last_touch is older than retention_days.
-  # Runs at most once per min_interval_hours, tracked via a .last_prune
-  # marker. This sweep never deletes "orphan" entries (working directory not
-  # found) — a missing workdir at startup is ambiguous (deleted project vs.
-  # an unmounted external volume / network share / VPN not yet up), so
-  # orphan cleanup is only ever done via the explicit
-  # `hermes checkpoints prune` command below, with a confirmation prompt.
+  # Auto-maintenance (on by default): sweep ~/.hermes/checkpoints/ in the
+  # background — the CLI on a helper thread right after launch, the gateway
+  # on its housekeeping tick — and delete project entries whose last_touch is
+  # older than retention_days. Runs at most once per min_interval_hours,
+  # tracked via a .last_prune marker. It never blocks the prompt or gateway
+  # startup: the `git gc` that reclaims space can take tens of seconds on a
+  # large store. This sweep never deletes "orphan" entries (working directory
+  # not found) — a missing workdir is ambiguous (deleted project vs. an
+  # unmounted external volume / network share / VPN not yet up), so orphan
+  # cleanup is only ever done via the explicit `hermes checkpoints prune`
+  # command below, with a confirmation prompt.
   auto_prune: true
   retention_days: 7
   min_interval_hours: 24
@@ -236,7 +239,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 - **Repository size** — directories with more than 50,000 files are skipped.
 - **Per-file size cap** — files larger than `max_file_size_mb` (default 10 MB) are excluded from the snapshot. Prevents accidentally swallowing datasets, model weights, or generated media.
 - **Total store size cap** — when the store exceeds `max_total_size_mb` (default 500 MB), the oldest commit per project is dropped round-robin. Each drop is reclaimed before deciding whether another is necessary. Every project keeps at least one snapshot. A failed Git operation stops pruning and is reported; maintenance never discards more history to compensate for failed reclamation.
-- **Real pruning** — `max_snapshots` is enforced by rewriting the per-project ref and running `git gc --prune=now` afterwards, so loose objects don't accumulate.
+- **Real pruning, off the hot path** — `max_snapshots` and the size cap are enforced by rewriting the per-project ref at checkpoint time (cheap); the store is then marked `.gc-pending` and the periodic prune runs `git gc --prune=now` once, so loose objects don't accumulate and a tool call never waits on a full repack.
 - **Concurrent operations** — snapshots, restores, diffs and maintenance use one process-shared store lock. An operation reports a busy store rather than running GC over another process's unpublished objects. A restore applies its selected tree before pruning the safety snapshot's history.
 - **No-change snapshots** — if there are no changes since the last snapshot, the checkpoint is skipped.
 - **Non-fatal errors** — snapshot failures do not block your tools. Pruning failures are logged as warnings; explicit maintenance reports an error count.
@@ -250,6 +253,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
   │   ├── refs/hermes/<hash> # per-project branch tip
   │   ├── indexes/<hash>     # per-project git index
   │   ├── projects/<hash>.json  # workdir + created_at + last_touch
+  │   ├── .gc-pending        # refs rewritten since the last gc; cleared by the next prune
   │   └── info/exclude
   ├── .last_prune            # auto-prune idempotency marker
   └── legacy-<ts>/           # archived pre-v2 per-project shadow repos

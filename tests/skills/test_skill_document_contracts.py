@@ -64,7 +64,9 @@ def test_required_references_are_present_and_routed(skill, references):
     (PRICE, ("Setup (foreground, once)", "Tick (each scheduled run)", "cronjob(action=",
              "Do not schedule until one foreground fetch works",
              "never overwrite the last good observation", "fingerprint"), ("flight-research",)),
-    (EMAIL, ("read + draft", "does not imply permission"), ()),
+    (EMAIL, ("read + draft", "does not imply permission", "Calibrate the user's voice",
+             "sent replies", "fall back to matching the incoming thread's register",
+             "generic-professional"), ()),
     (SOCIAL, (), ("image-generation-workflow",)),
 ])
 def test_document_obligations(skill, required, forbidden):

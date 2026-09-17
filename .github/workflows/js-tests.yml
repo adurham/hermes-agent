@@ -25,6 +25,10 @@ jobs:
           # Desktop checks also run Python payload and icon build helpers.
           toolchain: all
 
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y zsh
+
       # setup-pm caches npm downloads, not the installed workspace tree.
       # The job then extracts the full workspace node_modules
       # again and runs the postinstalls again, which includes the Electron

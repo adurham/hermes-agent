@@ -72,7 +72,8 @@ def read_or_create_install_id(root: Path | None = None) -> Optional[str]:
         if existing is not None:
             return existing  # Existing identities remain readable on read-only roots.
         try:
-            root.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(root)
             with _install_id_file_lock(root):
                 existing, mint = _read_existing(path)
                 if not mint:

@@ -149,7 +149,11 @@ def _tui_node_bin(bin: str) -> str:
     from pm import ensure
     path = shutil.which(bin, path=ensure(bin).env["PATH"])
     if not path:
-        print(f"{bin} not found — install Node.js to use the TUI.")
+        print(
+            f"Node.js is required for the TUI but `{bin}` was not found. Install it from "
+            "https://nodejs.org (run `hermes doctor` for the install hint for your OS), then "
+            "retry `hermes --tui`. To keep working now, run `hermes --cli`."
+        )
         sys.exit(1)
     return path
 

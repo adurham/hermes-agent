@@ -16,12 +16,13 @@ and the syntax guard reported the update as successful.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import main as hermes_main
-from hermes_cli import update_cmd
+from hermes_cli import update_cmd, update_cmd_validation
 from hermes_constants import partial_update_hint
 
 
@@ -208,9 +209,9 @@ def test_import_guard_reports_probe_timeout(monkeypatch, tmp_path):
     import subprocess
 
     def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(["python", "-c", "probe"], 120)
+        raise subprocess.TimeoutExpired("probe", 120)
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", timeout)
+    monkeypatch.setattr(update_cmd_validation.subprocess, "run", timeout)
 
     ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
 
@@ -230,13 +231,16 @@ def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys)
     assert "Could not enumerate untracked files" in capsys.readouterr().out
 
 
-def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
-    """If we can't spawn the probe, don't block the user's update."""
 
-    def boom(*_a, **_kw):
-        raise OSError("cannot spawn")
 
-    monkeypatch.setattr(update_cmd.subprocess, "run", boom)
+@pytest.mark.platforms("posix")
+def test_import_guard_is_non_fatal_when_probe_cannot_run(tmp_path):
+    """A venv interpreter that exists but cannot be executed must not read as a hung probe:
+    spawn failure stays advisory (real ``bounded_probe_run``, real ``Popen``)."""
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/bin/sh\nexit 0\n")
+    venv_python.chmod(0o644)  # present, not executable -> Popen raises PermissionError
     assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 
@@ -336,12 +340,12 @@ def test_probe_and_hint_share_one_first_party_definition():
         captured["probe"] = cmd[-1]
         return _Result()
 
-    real_run = update_cmd.subprocess.run
-    update_cmd.subprocess.run = capture
+    real_run = update_cmd_validation.subprocess.run
+    update_cmd_validation.subprocess.run = capture
     try:
         update_cmd._validate_critical_modules_import("/tmp")
     finally:
-        update_cmd.subprocess.run = real_run
+        update_cmd_validation.subprocess.run = real_run
 
     probe_src = captured["probe"]
     # Every first-party root must appear in the probe's injected tuple.

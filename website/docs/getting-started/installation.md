@@ -33,6 +33,10 @@ A `Hermes-Setup` bootstrap installer is different: it downloads a source
 installation and builds the desktop app. Light is a remote-only build variant,
 not a bundled local runtime. See [Hermes Desktop](../user-guide/desktop.md).
 
+:::note
+The macOS installer is **Apple Silicon only**. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).
+:::
+
 ### Without Hermes Desktop:
 For a command-line only install without Hermes Desktop, run:
 

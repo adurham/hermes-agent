@@ -29,6 +29,9 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_install.add_argument(
         "--allow-removed", action="store_true",
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
+    plugins_install.add_argument(
+        "--no-deps", action="store_true",
+        help="Download without dependency consent and leave disabled; cannot replace an active plugin")
     _install_enable_group = plugins_install.add_mutually_exclusive_group()
     _install_enable_group.add_argument(
         "--enable", action="store_true",

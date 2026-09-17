@@ -144,7 +144,7 @@ def _ask_configure_new_options(*, assume_yes: bool, gateway_mode: bool) -> str:
 def _check_and_apply_config_migration(
     *, assume_yes: bool = False, gateway_mode: bool = False, pre_update_snapshot_id: str | None = None
 ) -> None:
-    """Check/apply config migrations with freshly-reloaded modules. Runs on EVERY completion path
+    """Check/apply config migrations. Runs on EVERY completion path
     (post-pull, venv-repair, Node-deps repair on ``commit_count == 0``) so an interrupted update
     that already pulled code doesn't strand an old config version.
 
@@ -157,6 +157,7 @@ def _check_and_apply_config_migration(
     from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
     # A config-check failure must not break an otherwise-successful update.
     try:
+        from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()

@@ -1,5 +1,3 @@
-
-
 """Native launch/result acceptance: real publisher, no checkout-local venv."""
 from __future__ import annotations
 

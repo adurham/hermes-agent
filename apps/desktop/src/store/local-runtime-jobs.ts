@@ -6,6 +6,7 @@ import {
   QueryObserver,
   type QueryObserverResult,
   queryOptions,
+  MutationObserver,
   useQuery,
   useQueryClient,
   type UseQueryOptions,
@@ -15,7 +16,7 @@ import { useEffect, useMemo } from 'react'
 
 import { $apiRequestScope, getApiRequestConnection, getApiRequestProfile } from '@/api/client'
 import type { LocalModelsScope } from '@/api/local-models'
-import { getLocalCatalog, getLocalHardware, getLocalModelsJobs, getLocalModelsStatus } from '@/hermes'
+import { getLocalCatalog, getLocalHardware, getLocalModelsJobs, getLocalModelsStatus, installLocalRuntime } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { useStoresSelector } from '@/lib/use-session-slice'
@@ -392,6 +393,46 @@ export function runningModelDownloads(jobs: readonly LocalRuntimeJob[]): LocalRu
 
 export function runningRuntimeInstall(jobs: readonly LocalRuntimeJob[]): LocalRuntimeJob | null {
   return jobs.find(j => j.kind === 'runtime-install' && isActive(j.status)) ?? null
+}
+
+interface RuntimeInstallResult {
+  backend: string
+  job_id: string
+  tag: string
+}
+
+export function localRuntimeInstallStarting(owner: LocalModelsOwner = localModelsOwner(), client: QueryClient = queryClient): boolean {
+  return client.isMutating({ mutationKey: localModelsKey(owner, 'install') }) > 0
+}
+
+export function localRuntimeInstallBusy(owner: LocalModelsOwner = localModelsOwner(), client: QueryClient = queryClient): boolean {
+  const jobs: readonly LocalRuntimeJob[] = client.getQueryData(localModelsKey(owner, 'jobs')) ?? EMPTY_JOBS
+
+  return localRuntimeInstallStarting(owner, client) || jobs.some((job: LocalRuntimeJob): boolean =>
+    isActive(job.status) && (job.kind === 'runtime-install' || job.kind === 'quickstart'))
+}
+
+export async function startLocalRuntimeInstall(
+  owner: LocalModelsOwner = localModelsOwner(), client: QueryClient = queryClient
+): Promise<void> {
+  if (localRuntimeInstallBusy(owner, client)) {
+    return
+  }
+
+  const observer: MutationObserver<RuntimeInstallResult, Error, void> = new MutationObserver(client, {
+    mutationKey: localModelsKey(owner, 'install'),
+    mutationFn: (): Promise<RuntimeInstallResult> => installLocalRuntime(undefined, localModelsRequestScope(owner))
+  })
+
+  try {
+    await observer.mutate()
+    watchLocalRuntimeJobs(owner, client)
+    await client.fetchQuery({ ...localModelsJobsOptions(owner), staleTime: 0 })
+  } catch (error) {
+    if (isCurrentLocalModelsOwner(owner)) {
+      notifyError(error, translateNow('settings.localModels.installFailed'))
+    }
+  }
 }
 
 const updateNotified: Set<string> = new Set()

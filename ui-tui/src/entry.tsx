@@ -5,6 +5,7 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
+import { setRpcErrorLogSink } from './app/userMessages.js'
 import { DASHBOARD_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
@@ -45,6 +46,8 @@ process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
 
 const gw = new GatewayClient()
 
+// describeRpcError replaces raw wire errors with plain copy; keep the original in /logs.
+setRpcErrorLogSink(line => gw.recordLog(line))
 gw.start()
 
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>

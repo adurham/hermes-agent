@@ -75,7 +75,10 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
     staged = tmp_path / "staged"
     staged.mkdir()
     wheel = _wheel(tmp_path, "publication_dep")
-    (staged / "plugin.yaml").write_text('name: example\npython_dependencies: [' + json.dumps(f"publication-dep @ {wheel.as_uri()}") + ']\n')
+    (staged / "plugin.yaml").write_text('name: example\npython_dependencies: ["publication-dep==1.0"]\n')
+    metadata_path = project / "pyproject.toml"
+    with metadata_path.open("a", encoding="utf-8") as stream:
+        stream.write(f'no-index=true\nfind-links=[{json.dumps(wheel.parent.as_posix())}]\n')
     (staged / "code.py").write_text('new code')
     client.sync_venv(explicit=True, staged_plugin={
         "staged": str(staged), "target": str(target), "target_digest": tree_digest(target) if target.exists() else None,

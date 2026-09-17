@@ -126,11 +126,16 @@ def _scan_on_install_enabled() -> bool:
     return bool(_config_value("plugins", "scan_on_install", default=True))
 
 
-def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_decision_cb=None):
+def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_decision_cb=None,
+                      reviewed_pin: bool = False):
     """Scan *plugin_dir* and enforce the install policy.
 
     Verdicts: safe → proceed; caution → needs confirmation (``force=True`` or a truthy
     ``scan_decision_cb(result)``); dangerous → always blocked (:class:`PluginScanBlocked`).
+    *reviewed_pin* marks a tree checked out at a curated-catalog sha: that exact tree passed
+    the same scanner at admission with a human reading the caution findings, so caution is
+    accepted without a prompt (the Desktop has none). Dangerous still blocks — a signature
+    added after review is exactly the case the backstop exists for.
     Returns the ScanResult, or None when scanning is disabled.
     """
     if not _scan_on_install_enabled():
@@ -138,6 +143,8 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
+    if allowed is None and reviewed_pin:
+        allowed, reason = True, "Caution verdict accepted: reviewed catalog pin"
 
     if allowed is None and scan_decision_cb is not None:
         try:
@@ -337,7 +344,6 @@ def _missing_env_specs(manifest: dict) -> list[dict]:
     return [s for s in env_specs if not get_env_value(s["name"])]
 
 
-# MERGE-CHECK: kept our pm-era _install_plugin_python_deps over upstream's print-only #64165 variant (pm wiring wins)
 def _install_plugin_python_deps(
     manifest: dict, target: Path, console
 ) -> tuple[bool, Optional[str]]:
@@ -355,11 +361,14 @@ def _install_plugin_python_deps(
     """
     from pm.plugin_declarations import read_python_declaration
 
-    declaration = read_python_declaration(target)
-    deps = declaration.requirements
-    has_pyproject = declaration.pyproject is not None
+    try:
+        declaration = read_python_declaration(target)
+        deps = declaration.install_requirements
+    except Exception as exc:
+        return False, f"invalid Python dependency declaration: {exc}"
+    has_python = declaration.is_member
     has_package_json = (target / "package.json").is_file()
-    if not deps and not has_pyproject and not has_package_json:
+    if not has_python and not has_package_json:
         return True, None  # no declared deps at all
 
     # Node sidecar (package.json): the npm ci executor — separate consent
@@ -386,7 +395,7 @@ def _install_plugin_python_deps(
         else:
             console.print("[dim]Skipped Node deps — run `hermes plugins install` again to retry.[/dim]\n")
 
-    if not deps and not has_pyproject:
+    if not has_python:
         return True, None
 
     plugin_name = manifest.get("name", "this plugin")
@@ -399,25 +408,23 @@ def _install_plugin_python_deps(
     else:
         console.print("  - (declared in its pyproject.toml)")
 
-    # Non-interactive (pipelines, cron) or a decline → skip the install;
-    # the plugin still works if the deps happen to be importable.
+    # A decline or non-interactive invocation leaves the new plugin disabled.
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         console.print(
             "[dim]Non-interactive install — skipping dependency install. "
-            "Run `hermes pm install` after enabling if the plugin needs "
-            "them.[/dim]\n"
+            "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
         )
         return False, "dependency install skipped (non-interactive)"
     try:
         answer = input(
-            "  Install these into the Hermes venv now? [y/N]: "
+            "  Prepare these with Hermes through PM now? [y/N]: "
         ).strip().lower()
     except (EOFError, KeyboardInterrupt):
         answer = ""
     if answer not in {"y", "yes"}:
         console.print(
-            "[dim]Skipped — run `hermes pm install` later to install "
-            "them.[/dim]\n"
+            "[dim]Skipped — run `hermes plugins enable` when ready "
+            "to prepare them.[/dim]\n"
         )
         return False, "dependency install declined"
 
@@ -425,6 +432,17 @@ def _install_plugin_python_deps(
     # admission transaction at enable-commit time (C13): env + config move
     # together or not at all.
     return True, None
+
+
+def _python_dependency_summary(target: Path, warnings: list[str]) -> list[str]:
+    """Read dashboard dependency details; publication and admission own installation."""
+    from pm.plugin_declarations import read_python_declaration
+
+    try:
+        return list(read_python_declaration(target).install_requirements)
+    except Exception as exc:
+        warnings.append(f"Could not read Python dependencies: {exc}")
+        return []
 
 
 def _prompt_plugin_env_vars(manifest: dict, console) -> None:
@@ -475,6 +493,18 @@ def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     console.print()
 
 
+def _clone_failure_message(git_url: str, git_error: str) -> str:
+    """Plain-words clone failure: what to check (address, network, private repo), raw git text last.
+
+    The text reaches ``_fail`` -> Rich ``console.print``: escape the git output so ``[...]`` in it is
+    not parsed as markup."""
+    from rich.markup import escape
+    return (f"Could not download the plugin from {git_url}. Check the address (browse the catalog "
+            "with `hermes plugins search`), check your internet connection, or, if the repository "
+            "is private, sign in first with `gh auth login` (or set GITHUB_TOKEN in your .env).\n"
+            f"Details: {escape(git_error.strip())}")
+
+
 def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     """The plugin path if it exists; else exit 1 (invalid name, or a listing of installed plugins)."""
     try:
@@ -482,9 +512,17 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     except ValueError as e:
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
-        installed = ", ".join(d.name for d in plugins_dir.iterdir() if d.is_dir()) or "(none)"
-        _fail(console, f"[red]Error:[/red] Plugin '{name}' not found in {plugins_dir}.\nInstalled plugins: {installed}")
+        _fail(console, _unknown_plugin_message(name, downloaded_only=True))
     return target
+
+
+def _unknown_plugin_message(name: str, *, downloaded_only: bool = False) -> str:
+    """``No plugin named ...`` with the exact-name rule and the two commands that resolve it."""
+    scope = (" This command only works on downloaded plugins; bundled ones can only be enabled or disabled."
+             if downloaded_only else " Bundled plugins can only be enabled or disabled.")
+    return (f"[red]No plugin named '{name}'.[/red] Run `hermes plugins list` to see the exact names "
+            f"(nested plugins use their full key, e.g. web/firecrawl).{scope} "
+            "To add one: `hermes plugins install <owner/repo>`.")
 
 
 # ── Install metadata + git plumbing ─────────────────────────────────────────────────────────
@@ -630,12 +668,7 @@ def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -
     except subprocess.TimeoutExpired as e:
         raise PluginOperationError("Git clone timed out after 60 seconds.") from e
     if result.returncode != 0:
-        error = _safe_git_error(result, git_url)
-        if re.search(r"could not read Username|Authentication failed|Repository not found", error):
-            error += (
-                "\n\nIf this repository is private, authenticate first: run `gh auth login`, set GITHUB_TOKEN "
-                "(or GH_TOKEN) in your .env, or store a credential in git's credential helper for this host.")
-        raise PluginOperationError(f"Git clone failed:\n{error}")
+        raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
     if revision:
         _checkout_exact_revision(tmp_clone, git_exe, revision, source_url=git_url)
@@ -665,6 +698,43 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
     return manifest
 
 
+def _probe_readable(path: Path) -> None:
+    """Raise ``OSError`` unless *path* can actually be listed (dir) or opened for reading (file)."""
+    if path.is_dir():
+        os.listdir(path)
+    else:
+        with open(path, "rb"):
+            pass
+
+
+def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
+    """Refuse to ship a tree Hermes cannot read back. A clone can land unreadable (Windows ACL
+    inheritance -> WinError 5, a mode-000 file) and discovery would then skip the plugin forever
+    (#111804); repair ``u+rX`` where the OS supports it, otherwise fail before anything moves."""
+    paths = [root]
+    for dirpath, dirnames, filenames in os.walk(root):
+        paths.extend(Path(dirpath) / name for name in (*dirnames, *filenames))
+    for path in paths:
+        try:
+            _probe_readable(path)
+            continue
+        except OSError:
+            if os.name != "nt":  # chmod only toggles the read-only bit on Windows; ACLs need icacls
+                try:
+                    os.chmod(path, os.stat(path).st_mode | (0o500 if path.is_dir() else 0o400))
+                except OSError:
+                    pass
+        try:
+            _probe_readable(path)
+        except OSError as exc:
+            fix = (f'icacls "{plugins_dir}" /grant:r "%USERNAME%":(OI)(CI)F /T' if os.name == "nt"
+                   else f"chmod -R u+rX {plugins_dir}")
+            raise PluginOperationError(
+                f"Installed file {path.relative_to(root)} is not readable ({exc.strerror or exc}); "
+                f"nothing was installed. Fix permissions on {plugins_dir} (e.g. `{fix}`) and retry."
+            ) from exc
+
+
 def _install_plugin_core(
     identifier: str,
     *,
@@ -672,8 +742,14 @@ def _install_plugin_core(
     ref: Optional[str] = None,
     scan_decision_cb=None,
     catalog_entry=None,
+    reviewed_pin: Optional[str] = None,
+    python_deps: bool = True,
 ) -> tuple[Path, dict, str]:
-    """Clone a Git plugin and atomically record its source and exact revision."""
+    """Clone a Git plugin and atomically record its source and exact revision.
+
+    *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
+    only when the checked-out revision is exactly that sha. *python_deps* False refuses
+    active replacements; it never bypasses PM dependency admission."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
@@ -695,6 +771,7 @@ def _install_plugin_core(
         tmp_clone = Path(tmp) / "plugin"
         installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision)
         tmp_target = _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
+        _ensure_tree_readable(tmp_target, plugins_dir)
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url))
@@ -704,7 +781,15 @@ def _install_plugin_core(
             raise PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb)
+        _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
+                          reviewed_pin=bool(reviewed_pin) and installed_revision == reviewed_pin)
+        if not python_deps:
+            from pm.workspace import enabled_plugin_dirs
+
+            if target.resolve() in enabled_plugin_dirs(installing=target):
+                raise PluginOperationError(
+                    "--no-deps cannot replace an active plugin. Retry without --no-deps; "
+                    "PM must prepare its dependencies before publication.")
 
         if target.exists() and not force:
             raise PluginOperationError(
@@ -754,6 +839,7 @@ def cmd_install(
     enable: Optional[bool] = None,
     ref: Optional[str] = None,
     allow_removed: bool = False,
+    no_deps: bool = False,
 ) -> None:
     """Install a plugin from the curated catalog (bare name), a Git URL, or owner/repo shorthand.
 
@@ -801,10 +887,12 @@ def cmd_install(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, ref=ref, allow_removed=True, scan_decision_cb=_interactive_scan_decision)
+                entry, force=force, ref=ref, allow_removed=True, scan_decision_cb=_interactive_scan_decision,
+                python_deps=not no_deps)
         else:
             target, installed_manifest, installed_name = _install_plugin_core(
-                identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision)
+                identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
+                python_deps=not no_deps)
     except PluginOperationError as e:
         _fail(console, f"[red]{'Blocked' if isinstance(e, PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _looks_like_plugin_dir(target):
@@ -818,7 +906,9 @@ def cmd_install(
     # Active replacements settled consent against the staged tree before PM
     # prepared or published it. Do not present a second, ineffective veto.
     already_active = target.resolve() in enabled_plugin_dirs()
-    should_enable = enable
+    should_enable = False if no_deps else enable
+    if no_deps:
+        console.print("[dim]--no-deps: skipping dependency consent; the plugin stays disabled.[/dim]")
     if should_enable is None and not already_active:
         should_enable = _is_tty() and _ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
     deps_ok, deps_reason = (True, None)
@@ -940,7 +1030,7 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
 
 
 def _post_pull_housekeeping(target: Path, console) -> None:
-    """After ``git pull``: drop stale ``__pycache__`` and copy any new ``.example`` files."""
+    """After publication: drop stale bytecode and copy any new example files."""
     # Same stale-bytecode class as the main checkout (#6207/#60242): the pull just changed .py files under
     # this plugin dir, so drop any __pycache__ compiled from the previous revision.
     _clear_plugin_bytecode(target)
@@ -1123,7 +1213,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
     if resolved is None:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     key, source = resolved
     _refuse_legacy_relay(key)
 
@@ -1250,7 +1340,7 @@ def cmd_capabilities(name: Optional[str] = None) -> None:
         rows.append((key, entry[3], declared, granted, effective))
 
     if name is not None and not rows:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     if not rows:
         console.print("[dim]No plugins declare or hold capabilities.[/dim]")
         return
@@ -1301,7 +1391,7 @@ def cmd_disable(name: str) -> None:
     console = _console()
     key = _resolve_plugin_key(name)
     if key is None:
-        _fail(console, f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        _fail(console, _unknown_plugin_message(name))
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
     if key not in enabled and key in disabled:
@@ -1368,10 +1458,21 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
     """Recursive directory scan matching PluginManager._scan_directory_level."""
     if not base.is_dir():
         return
-    for d in sorted(base.iterdir()):
-        if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+    try:
+        children = sorted(base.iterdir())
+    except OSError as exc:
+        logger.warning("Skipping unreadable plugin directory %s: %s", base, exc)
+        return
+    for d in children:
+        try:
+            if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+                continue
+            info = _read_manifest_info(d, prefix)
+        except (OSError, PluginOperationError) as exc:
+            # The PM declaration reader wraps unreadable manifests for install callers;
+            # listing still skips them rather than hiding every other plugin.
+            logger.warning("Skipping unreadable plugin directory %s: %s", d, exc)
             continue
-        info = _read_manifest_info(d, prefix)
         if info is None:
             if depth == 0:
                 _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen)
@@ -2049,9 +2150,11 @@ def dashboard_install_plugin(
                 "ok": False, "error": f"enable refused: {exc}",
                 "plugin_name": installed_name, "enabled": False,
             }
+    deps = _python_dependency_summary(target, warnings)
     ap = target / "after-install.md"
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
+        "python_dependencies": deps,
         "missing_env": [s["name"] for s in _missing_env_specs(installed_manifest)],
         "after_install_path": str(ap) if ap.exists() else None, "enabled": enable,
     }
@@ -2152,7 +2255,10 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     try:
         if sidecar:
             sha, changed = catalog.repin_catalog_plugin(target, sidecar)
-            return {"ok": True, "name": name, "sha": sha, "unchanged": not changed}
+            warnings: list[str] = []
+            deps = _python_dependency_summary(target, warnings) if changed else []
+            return {"ok": True, "name": name, "sha": sha, "unchanged": not changed,
+                    "python_dependencies": deps, "warnings": warnings}
         msg = _pull_plugin_update(
             target,
             lambda rec: (
@@ -2370,7 +2476,8 @@ _PLUGIN_ACTIONS = {
         force=getattr(args, "force", False),
         enable=_tri_state_flag(args, "enable", "no_enable"),
         ref=getattr(args, "ref", None),
-        allow_removed=getattr(args, "allow_removed", False)),
+        allow_removed=getattr(args, "allow_removed", False),
+        no_deps=getattr(args, "no_deps", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),

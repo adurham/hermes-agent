@@ -59,8 +59,40 @@ class PythonDeclaration:
     manifest: dict
 
     @property
+    def external(self) -> bool:
+        return str(self.manifest.get("python_runtime") or "").strip().lower() == "external"
+
+    @property
+    def install_requirements(self) -> tuple[str, ...]:
+        return () if self.external else applicable_requirements(self.requirements)
+
+    @property
     def is_member(self) -> bool:
-        return self.pyproject is not None or bool(self.requirements)
+        return not self.external and (self.pyproject is not None or bool(self.install_requirements))
+
+    def __post_init__(self) -> None:
+        if not self.external:
+            applicable_requirements(self.requirements)
+
+
+def applicable_requirements(specs: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Index requirements only; let uv evaluate markers for the target interpreter.
+
+    The application checkout supplies Hermes itself. Installing it from an index
+    would replace that checkout; direct URLs bypass the reviewed package source.
+    Markers must survive snapshots built for a different Python or platform.
+    """
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    return tuple(spec for spec in specs
+                 if not (req := Requirement(spec)).url and canonicalize_name(req.name) != "hermes-agent")
+
+
+def unsupported_requirements(specs: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    from packaging.requirements import Requirement
+
+    return tuple(spec for spec in specs if Requirement(spec).url)
 
 
 def read_python_declaration(plugin_dir: Path) -> PythonDeclaration:

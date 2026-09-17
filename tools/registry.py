@@ -171,7 +171,8 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         return
     try:
         from utils import atomic_json_write  # stdlib+yaml only; no cycle
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, cache, indent=0)
     except Exception as e:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
@@ -271,9 +272,9 @@ def check_fn_cache_scope() -> Optional[str]:
     except Exception:
         pass
     try:
-        from agent.secret_scope import is_multiplex_active
+        from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
-        if not is_multiplex_active():
+        if not serves_routed_profile():
             return None
         override = get_hermes_home_override()
         return str(Path(override).expanduser().resolve()) if override else CHECK_FN_CACHE_BYPASS
@@ -283,33 +284,34 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
-def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
+def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
-    from agent.secret_scope import UnscopedSecretError
+    from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
         return bool(fn())
     except UnscopedSecretError:
-        if unresolved_scope:
-            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before
-            # any profile secret scope exists, so get_secret raises by design. No traceback,
-            # so it isn't mistaken for a crashed check_fn.
+        # The verdict comes from the LIVE scope at the catch site, not from which registry branch
+        # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
+        # branch-derived hint misreported every boot-time uncached probe as a lost scope (#110635).
+        if current_secret_scope() is None:
+            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before any
+            # profile secret scope exists, so get_secret raises by design. No traceback, so this
+            # cannot be mistaken for a crashed check_fn (#100697).
             logger.debug(
-                # The tool re-probes on the first scoped turn — log without a traceback so this cannot be
-                # mistaken for a crashed check_fn (#100697).
                 "check_fn %s hit the multiplex fail-closed path with no "
                 "profile secret scope active; dependent tools re-probe on the first scoped turn",
                 _fn_label(fn))
         else:
-            # The scope resolved but the read still failed closed: a genuinely lost scope.
+            # The caller IS scoped but the read still failed closed: the probe dropped the scope on
+            # the way to get_secret (a bare thread/executor hop) — a spawn-site bug, kept loud.
             logger.warning(
                 "check_fn %s raised UnscopedSecretError while the profile cache "
                 "scope was resolved; dependent tools will be unavailable this turn",
                 _fn_label(fn), exc_info=True)
     except Exception:
-        detail = " while profile cache scope was unresolved" if unresolved_scope else ""
         logger.warning(
-            "check_fn %s raised%s; dependent tools will be unavailable this turn",
-            _fn_label(fn), detail, exc_info=True)
+            "check_fn %s raised; dependent tools will be unavailable this turn",
+            _fn_label(fn), exc_info=True)
     return False
 
 
@@ -320,7 +322,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         return _run_check_fn_uncached(fn)
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
-        return _run_check_fn_uncached(fn, unresolved_scope=True)
+        return _run_check_fn_uncached(fn)
     cache_key = (fn, scope)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)  # leaves only entries within TTL
@@ -350,9 +352,10 @@ def _check_fn_cached(fn: Callable) -> bool:
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # No recent success (or grace expired) — honor the failure. A False verdict is the
+        # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
+        log = logger.warning if exc_info else logger.info
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
             exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)

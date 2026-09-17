@@ -3,6 +3,22 @@ import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+/** Historical layouts still matter when uninstalling or migrating a source install. */
+export function resolveVenvDir(updateRoot: string): string {
+  for (const name of ['venv', '.venv']) {
+    const candidate: string = path.join(updateRoot, name)
+
+    try {
+      if (statSync(candidate).isDirectory()) {
+        return candidate
+      }
+    } catch {
+      // Try the other supported layout, then retain the legacy diagnostic path.
+    }
+  }
+
+  return path.join(updateRoot, 'venv')
+}
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 /** Exact installation identity; PATH may refer to another checkout. */
@@ -413,6 +429,20 @@ export interface UpdaterHandoffOutcome {
 export interface ObserveUpdaterHandoffDeps {
   setTimeoutFn?: (callback: () => void, ms: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
+}
+
+/**
+ * User-facing copy for a hand-off that did not take (spawn error or early exit).
+ * The lead sentence is plain: nothing changed and Hermes keeps running. The raw
+ * outcome message (exit code / signal / spawn error) stays on a trailing
+ * "Details:" line for logs and support.
+ */
+export function describeUpdaterHandoffFailure(outcome: Pick<UpdaterHandoffOutcome, 'message'>): string {
+  const lead =
+    "The updater couldn't start, so nothing was changed and Hermes keeps running as before. " +
+    'Try again; if it keeps failing, open the logs and send them to support.'
+
+  return outcome.message ? `${lead}\n\nDetails: ${outcome.message}` : lead
 }
 
 /**

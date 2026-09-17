@@ -16,11 +16,6 @@ def _isolate_venv_holders(monkeypatch):
     monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
 
 
-pytestmark = pytest.mark.usefixtures(
-    "isolated_update_processes", "isolated_update_checkout",
-)
-
-
 class TestGitTrampolineSelfHeal:
     """Proactive Git-for-Windows trampoline self-heal (#87876).
 

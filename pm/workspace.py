@@ -140,7 +140,8 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
     members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()]
+               for identity, source in member_sources(plugin_dirs).items()
+               if _is_member_candidate(source)]
 
     lines = [core_text.rstrip("\n")]
     if members:
@@ -207,7 +208,9 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         shutil.copytree(plugin_dir, member, symlinks=True,
                         ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
-        changed = False
+        changed = declaration.install_requirements != declaration.requirements
+        if changed:
+            document["project"]["dependencies"] = list(declaration.install_requirements)
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():
             for spec in sources if isinstance(sources, list) else [sources]:
                 if not isinstance(spec, dict) or "path" not in spec:
@@ -225,7 +228,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
 
             (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")
         return member
-    specs = declaration.requirements
+    specs = declaration.install_requirements
     member = root / "plugin-deps" / key
     member.mkdir(parents=True)
     (member / "pyproject.toml").write_text(

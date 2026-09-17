@@ -40,7 +40,7 @@ export interface CheckoutStrategyDeps {
   startHermes: () => Promise<unknown>
   stopBackendsForUpdate: () => Promise<void>
   repairMacUpdaterHelper: (updater: string) => void | Promise<void>
-  preflightStateDb: (hermesHome: string, rememberLog: (chunk: string) => void) => void
+  preflightStateDb: (hermesHome: string, rememberLog: (chunk: string) => void) => void | Promise<void>
   runningAppBundle: () => string | null
   markQuittingForHandoff: () => void
   quit: () => void
@@ -189,7 +189,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
-    deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
+    await deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
 
     if (deps.isWindows && resolveUpdateScriptHandoff(updateRoot)) {
       const message = windowsUpdatePrerequisiteError(updateRoot, deps.hermesHome)
@@ -360,7 +360,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   }
 
   // ── Pre-flight state.db integrity guard (#68474) ──
-  deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
+  await deps.preflightStateDb(deps.hermesHome, deps.rememberLog)
 
   const args: string[] = [...handoff.args, '--install-root', updateRoot, ...targetArgs, '--desktop-pid', String(process.pid)]
   const updateStartedAt = Math.floor(Date.now() / 1000)
