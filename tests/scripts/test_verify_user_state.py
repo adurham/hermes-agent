@@ -312,3 +312,30 @@ def test_a_rewritten_dotenv_names_the_moved_variables_and_never_their_values(tmp
     for leaked in ("aaaa", "bbbb", "cccc", "dddd", "http://127.0.0.1:9001/v1"):
         assert leaked not in rendered
         assert leaked not in json.dumps(report)
+
+
+def test_cron_ticker_stamps_move_but_user_cron_state_still_fails(tmp_path):
+    """A live ticker rewrites its own liveness stamps; that is not user state.
+
+    On a cold home those files appear as additions (tolerated). Once the ticker
+    exists the same files register as modifications, which used to fail the user's
+    upgrade outward for the harness's own background process.
+    """
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    (home / "profiles" / "p" / "cron").mkdir(parents=True)
+    (home / "cron" / "ticker_heartbeat").write_text("100\n", encoding="utf-8")
+    (home / "profiles" / "p" / "cron" / "ticker_last_success").write_text("100\n", encoding="utf-8")
+    (home / "cron" / "jobs.json").write_text('{"jobs": []}\n', encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+
+    (home / "cron" / "ticker_heartbeat").write_text("200\n", encoding="utf-8")
+    (home / "profiles" / "p" / "cron" / "ticker_last_success").write_text("200\n", encoding="utf-8")
+    (home / "cron" / "jobs.json").write_text('{"jobs": [1]}\n', encoding="utf-8")
+    report = vus.verify_home(str(home), snap)
+
+    assert set(report["modified"]) == {"cron/jobs.json"}
+    assert report["tolerated_modified"] == [
+        "cron/ticker_heartbeat", "profiles/p/cron/ticker_last_success"]
+    # The user's own cron DEFINITIONS are still state that must not move.
+    assert report["ok"] is False

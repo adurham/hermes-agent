@@ -313,9 +313,16 @@ def _modification_allowed(rel: str) -> bool:
     config.yaml is rewritten by config migration: additive, by design.
     state.db is a live SQLite file — its size moves whenever rows are written,
     so its real contract is the row-count check below, not byte equality.
+    The cron ticker stamps its own liveness on a schedule of its own, inside the
+    verified window or not: they are never user state. On a cold home they show up
+    as ordinary additions (tolerated); once the ticker exists, the same file moves.
     """
     name = rel.rsplit("/", 1)[-1]
-    return name in ("config.yaml", "state.db")
+    if name in ("config.yaml", "state.db"):
+        return True
+    parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+    is_cron = parent == "cron" or parent.endswith("/cron")
+    return is_cron and name in ("ticker_heartbeat", "ticker_last_success")
 
 
 def _rows_shrank(rel: str, before: dict, after: dict) -> bool:
