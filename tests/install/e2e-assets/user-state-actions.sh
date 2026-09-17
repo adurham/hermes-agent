@@ -79,11 +79,29 @@ user_state_produce() {
   if ! "$hermes" auth add --help >/dev/null 2>&1; then
     printf '  SKIP hermes auth add does not exist on this ref; auth.json is not covered by this leg\n' >&2
   elif [ ! -f "$HERMES_HOME/auth.json" ]; then
-    HERMES_DISABLE_LAZY_INSTALLS=1 \
-      "$hermes" auth add openai --type api-key --api-key "e2e-preservation-not-a-real-key" \
-      > "$LOG_DIR/user-state-auth.log" 2>&1 \
-      || fail "hermes auth add failed; see $LOG_DIR/user-state-auth.log"
-    [ -s "$HERMES_HOME/auth.json" ] || fail "hermes auth add produced no auth.json"
+    # The provider id and the flags are vintage surfaces, so probe them like the
+    # rest of this harness does. 'openai' is not a pooled-credential provider on
+    # either vintage under test (v2026.8.31 answers "Unknown provider: openai",
+    # because _is_known_provider accepts a registry provider, 'openrouter' or a
+    # custom pool only; HEAD redirects to openai-api/openai-codex), and HEAD
+    # prompts for an optional label unless --label is given, which EOFs with no
+    # tty. Take the first provider the installed CLI accepts.
+    local auth_label=() added=false provider
+    if "$hermes" auth add --help 2>&1 | grep -qF -- "--label"; then
+      auth_label=(--label e2e-preservation)
+    fi
+    for provider in openrouter anthropic; do
+      printf '=== hermes auth add %s ===\n' "$provider" >> "$LOG_DIR/user-state-auth.log"
+      HERMES_DISABLE_LAZY_INSTALLS=1 \
+        "$hermes" auth add "$provider" --type api-key \
+        --api-key "e2e-preservation-not-a-real-key" "${auth_label[@]}" \
+        >> "$LOG_DIR/user-state-auth.log" 2>&1 || true
+      if [ -s "$HERMES_HOME/auth.json" ]; then
+        added=true
+        break
+      fi
+    done
+    [ "$added" = true ] || fail "hermes auth add failed for openrouter and anthropic; see $LOG_DIR/user-state-auth.log"
     ok "a pooled credential exists (auth.json)"
   else
     ok "auth.json already present"
