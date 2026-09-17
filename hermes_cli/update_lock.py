@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -69,6 +70,35 @@ def _handoff_pid() -> int | None:
     return pid if pid > 0 else None
 
 
+def _stdlib_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` without psutil, or ``None`` when unresolvable.
+
+    The update-takeover child is spawned ``-I -S -B`` (hermes_cli/_old_updater.py) so
+    psutil cannot import there — and that grandchild is exactly the process that most
+    needs the two-hop ancestry walk to adopt the orchestrator's marker. /proc serves
+    Linux; macOS keeps /proc absent, so shell out to ps once per hop.
+    """
+    try:
+        if os.path.isdir("/proc"):
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                stat = fh.read()
+        else:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True, text=True, check=True, timeout=5,
+            ).stdout
+            value = int(out.strip() or -1)
+            return value if value > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    # Field 4 (1-indexed) is ppid, but comm may contain spaces/parens: split
+    # after the closing paren of comm instead of on whitespace.
+    try:
+        return int(stat[stat.rindex(b")") + 2:].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def _is_ancestor_pid(pid: int) -> bool:
     """True when ``pid`` is a live ancestor of this process.
 
@@ -83,6 +113,19 @@ def _is_ancestor_pid(pid: int) -> bool:
     try:
         import psutil
         return any(parent.pid == pid for parent in psutil.Process().parents())
+    except ImportError:
+        # -I -S -B takeover child: walk the same chain with stdlib probes.
+        child = os.getpid()
+        for _ in range(32):
+            parent = _stdlib_parent_pid(child)
+            if parent is None:
+                return False
+            if parent == pid:
+                return True
+            if parent == child:  # pid 1 re-parenting or a kernel loop guard
+                return False
+            child = parent
+        return False
     except Exception as exc:
         logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
         return False
