@@ -316,7 +316,13 @@ assert_redirect_is_transport_only
 # here fixes what the upgrade starts from, whatever those steps did, and nothing
 # rewrites provider state after this line.
 mock_configure_provider "${HERMES_E2E_MOCK_URL:?HERMES_E2E_MOCK_URL must be set before snapshotting}"
+env_key_names "after provider configure"
+grep -q '^OPENAI_BASE_URL=' "$HERMES_HOME/.env" \
+  || fail "provider configure did not reach $HERMES_HOME/.env"
 preserve_before_upgrade
+env_key_names "after snapshot"
+grep -q '^OPENAI_BASE_URL=' "$HERMES_HOME/.env" \
+  || fail "the snapshot phase cleared OPENAI_BASE_URL from $HERMES_HOME/.env"
 
 # --- update OLD -> HEAD ----------------------------------------------------------
 
@@ -451,6 +457,20 @@ user_state_after_upgrade
 # exit 0 -- which Playwright reports as "electron.launch: Process failed to
 # launch!" with the ws closing at code 1006 and no error text. The checkpoint
 # must own the only instance, so close anything still running from this install.
+# The user-state verifier judges .env by content, so a lost provider write shows up
+# only as "the upgrade changed the user's own state" several minutes later. Print
+# the KEY NAMES (never values) at each boundary: that is what names the step that
+# clobbers them.
+env_key_names() { # label
+  local label="$1"
+  if [ ! -s "$HERMES_HOME/.env" ]; then
+    printf '  [env] %s: (no .env)\n' "$label"
+    return 0
+  fi
+  printf '  [env] %s: %s\n' "$label" \
+    "$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$HERMES_HOME/.env" | tr -d '=' | sort | tr '\n' ' ')"
+}
+
 close_running_desktop() {
   local pattern="$INSTALL_DIR/apps/desktop/release"
   local pid waited=0
@@ -466,6 +486,7 @@ close_running_desktop() {
 }
 
 preserve_after_upgrade
+env_key_names "after update"
 close_running_desktop
 desktop_checkpoint new "$TARGET_SHA" "$UPDATE_METHOD"
 
