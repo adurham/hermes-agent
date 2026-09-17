@@ -433,7 +433,29 @@ assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
 assert_user_shims
 user_state_after_upgrade
 
+# The in-app update leaves the app that drove it running: the smoke clicks
+# "Update now" in that very window, and the updater may relaunch it. The
+# post-update checkpoint then launches its OWN instance, and Electron's
+# single-instance lock makes the second process boot, print its install stamp and
+# exit 0 -- which Playwright reports as "electron.launch: Process failed to
+# launch!" with the ws closing at code 1006 and no error text. The checkpoint
+# must own the only instance, so close anything still running from this install.
+close_running_desktop() {
+  local pattern="$INSTALL_DIR/apps/desktop/release"
+  local pid waited=0
+  for pid in $(pgrep -f "$pattern" 2>/dev/null); do
+    kill "$pid" 2>/dev/null || true
+  done
+  while [ "$waited" -lt 15 ]; do
+    pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  log "warning: a desktop instance from this install survived 15s of termination"
+}
+
 preserve_after_upgrade
+close_running_desktop
 desktop_checkpoint new "$TARGET_SHA" "$UPDATE_METHOD"
 
 step "PASS: $INSTALL_REF -> $TARGET_LABEL via $UPDATE_METHOD"
