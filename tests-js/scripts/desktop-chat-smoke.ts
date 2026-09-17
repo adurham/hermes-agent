@@ -94,12 +94,38 @@ export async function readMockPrompts(mockUrl: string): Promise<string[]> {
 }
 
 export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise<Locator> {
-  const composer = page.locator('[data-slot="composer-root"] [contenteditable="true"], [data-slot="composer-root"] textarea').filter({ visible: true }).first()
-  await composer.waitFor({ state: 'visible', timeout: timeoutMs })
-  await expect(composer).toBeEditable({ timeout: timeoutMs })
-  // Trial input checks hit testing, not merely a non-zero box behind the boot overlay.
-  await composer.click({ trial: true, timeout: timeoutMs })
+  // The visible editor is a contentEditable div. assistant-ui also renders an
+  // aria-hidden, sr-only <textarea> that carries the composer binding: it is
+  // "editable" but clipped out of the viewport, so a bare `textarea` selector
+  // latches onto it, sails through toBeEditable, and then can never be
+  // hit-tested (225 trial-click retries, then "element is outside of the
+  // viewport"). Require the editor; keep a textarea fallback only for a real,
+  // non-hidden input.
+  const root = page.locator('[data-slot="composer-root"]')
+  const composer = root
+    .locator('[contenteditable="true"]:visible, textarea:not([aria-hidden="true"]):not(.sr-only):visible')
+    .first()
+  try {
+    await composer.waitFor({ state: 'visible', timeout: timeoutMs })
+    await expect(composer).toBeEditable({ timeout: timeoutMs })
+    // Trial input checks hit testing, not merely a non-zero box behind the boot overlay.
+    await composer.click({ trial: true, timeout: timeoutMs })
+  } catch (error) {
+    throw new Error(`${(error as Error).message} -- composer not interactable `
+      + `(composer-root=${await root.count()}, contenteditable=${await root.locator('[contenteditable]').count()}): `
+      + await composerDiagnostics(root))
+  }
   return composer
+}
+
+/** What the composer actually contains, for a failure that explains itself. */
+async function composerDiagnostics(root: Locator): Promise<string> {
+  try {
+    if (await root.count() === 0) return '(no [data-slot="composer-root"] in the DOM)'
+    return (await root.first().evaluate((el: Element): string => el.outerHTML.slice(0, 1500)))
+  } catch (error) {
+    return `(diagnostics unavailable: ${(error as Error).message})`
+  }
 }
 
 async function readTranscript(page: Page): Promise<TranscriptMessage[]> {
