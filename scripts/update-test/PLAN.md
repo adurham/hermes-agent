@@ -116,7 +116,9 @@ Everything lands in `~/hermes-update-rehearsal/<UTC timestamp>/` (override with
 `--backup-root`). Keep it off the same volume if you can — the copy is the size
 of the install, and `pre` reports how long it took.
 
-1. **The entire `$HERMES_HOME`** → `hermes-home.tgz`. No excludes: the
+1. **The entire `$HERMES_HOME`** → `hermes-home.tar` (uncompressed: the backup
+   root is usually the same internal disk, so gzip costs ~5x the wall time and
+   buys nothing). No excludes: the
    `hermes-agent/` checkout, the venv/PM store, `node_modules`, `.git` and all
    runtime state come with it, so a restore is a true rollback rather than a
    re-download. SQLite sidecars (`-wal`/`-shm`/`-journal`) travel **with** their
@@ -129,7 +131,7 @@ of the install, and `pre` reports how long it took.
    `remotes.txt` (`name<TAB>url`, from `config --get`, not `remote -v`), and the
    checkout's local `.git/config`. These are *assertion* inputs for `verify`,
    not a restore mechanism — the tar already carries `.git`.
-3. **Electron userData** → `electron-userdata.tgz`.
+3. **Electron userData** → `electron-userdata.tar`.
    `HERMES_DESKTOP_USER_DATA_DIR` when set, else the platform default
    (`~/Library/Application Support/Hermes`, `%APPDATA%\Hermes`) plus
    `HERMES_DATA_DIR_SUFFIX`.
@@ -309,7 +311,7 @@ PM store and `node_modules` come back with it, not just the config.
    and restore the `hermes` launcher shims.
 4. Stop the desktop app and the gateway.
 5. Delete `$HERMES_HOME`, the Electron userData dir, and the recorded shim files.
-6. Extract `hermes-home.tgz` into `$HERMES_HOME` and `electron-userdata.tgz`
+6. Extract `hermes-home.tar` into `$HERMES_HOME` and `electron-userdata.tar`
    into the userData dir.
 7. Restore the shims (files from `shims/`, symlinks from `shims-links.txt`).
 8. Re-fingerprint and compare against the pre-`pre` fingerprints, then report

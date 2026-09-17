@@ -191,10 +191,10 @@ try {
   $r = Invoke-Rehearsal -Arguments @('pre', '-Source', $Install, '-Ref', 'main', '-BackupRoot', $Backups)
   Check 'pre exits 0' ($r.Code -eq 0)
   $Snap = (Get-ChildItem -LiteralPath $Backups -Directory | Sort-Object Name)[-1].FullName
-  foreach ($f in @('hermes-home.tgz', 'electron-userdata.tgz', 'fingerprint-before.txt', 'userdata-before.txt', 'manifest.json', 'shims.txt', 'checkout.txt', 'remotes.txt')) {
+  foreach ($f in @('hermes-home.tar', 'electron-userdata.tar', 'fingerprint-before.txt', 'userdata-before.txt', 'manifest.json', 'shims.txt', 'checkout.txt', 'remotes.txt')) {
     Check "backup artifact $f" (Test-Path -LiteralPath (Join-Path $Snap $f))
   }
-  $tarList = (& tar.exe -tzf (Join-Path $Snap 'hermes-home.tgz') | Out-String)
+  $tarList = (& tar.exe -tf (Join-Path $Snap 'hermes-home.tar') | Out-String)
   Check 'whole home: checkout .git in the tar' ($tarList -match '(?m)^\./hermes-agent/\.git/config\s*$')
   Check 'whole home: PM store in the tar' ($tarList -match '(?m)^\./hermes-agent/\.hermes-runtime/python/interpreter\.bin\s*$')
   Check 'whole home: config.yaml in the tar' ($tarList -match '(?m)^\./config\.yaml\s*$')

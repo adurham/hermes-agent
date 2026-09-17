@@ -406,13 +406,15 @@ function Invoke-Pre {
 
   Step 'copying your entire HERMES_HOME'
   $started = Get-Date
-  $homeTar = Join-Path $script:Snap 'hermes-home.tgz'
+  $homeTar = Join-Path $script:Snap 'hermes-home.tar'
   # No excludes: checkout, venv, PM store and node_modules come too, so post is
-  # a true rollback rather than a re-download.
-  & $script:Tar -czf $homeTar -C $P.Home .
+  # a true rollback rather than a re-download. No -z: the backup root is
+  # typically the same internal disk, so gzip costs ~5x the wall time for
+  # nothing (measured on an M1).
+  & $script:Tar -cf $homeTar -C $P.Home .
   if ($LASTEXITCODE -ne 0) { Fail 'backup failed (tar)' }
   $elapsed = [int]((Get-Date) - $started).TotalSeconds
-  Ok "hermes-home.tgz ($([math]::Round((Get-Item $homeTar).Length / 1MB, 1)) MB, ${elapsed}s)"
+  Ok "hermes-home.tar ($([math]::Round((Get-Item $homeTar).Length / 1MB, 1)) MB, ${elapsed}s)"
 
   Step 'recording git facts'
   $head = Invoke-Git $P @('rev-parse', 'HEAD')
@@ -428,10 +430,10 @@ function Invoke-Pre {
 
   Step "copying the desktop app's data"
   if (Test-Path -LiteralPath $P.UserData) {
-    $udTar = Join-Path $script:Snap 'electron-userdata.tgz'
-    & $script:Tar -czf $udTar -C $P.UserData .
+    $udTar = Join-Path $script:Snap 'electron-userdata.tar'
+    & $script:Tar -cf $udTar -C $P.UserData .
     if ($LASTEXITCODE -ne 0) { Fail 'userData backup failed' }
-    Ok "electron-userdata.tgz ($([math]::Round((Get-Item $udTar).Length / 1KB, 1)) KB)"
+    Ok "electron-userdata.tar ($([math]::Round((Get-Item $udTar).Length / 1KB, 1)) KB)"
   }
   else { Warn "no Electron userData at $($P.UserData) (desktop app not installed?)" }
 
@@ -650,15 +652,15 @@ function Invoke-Post {
 
   Step 'restoring your HERMES_HOME'
   New-Item -ItemType Directory -Force -Path $P.Home | Out-Null
-  & $script:Tar -xzf (Join-Path $script:Snap 'hermes-home.tgz') -C $P.Home
+  & $script:Tar -xf (Join-Path $script:Snap 'hermes-home.tar') -C $P.Home
   if ($LASTEXITCODE -ne 0) { Fail "restore failed -- your backup is intact at $($script:Snap)" }
   Ok 'restored'
 
   Step "restoring the desktop app's data"
-  $udTar = Join-Path $script:Snap 'electron-userdata.tgz'
+  $udTar = Join-Path $script:Snap 'electron-userdata.tar'
   if (Test-Path -LiteralPath $udTar) {
     New-Item -ItemType Directory -Force -Path $P.UserData | Out-Null
-    & $script:Tar -xzf $udTar -C $P.UserData
+    & $script:Tar -xf $udTar -C $P.UserData
     if ($LASTEXITCODE -ne 0) { Fail "userData restore failed (backup intact at $($script:Snap))" }
     Ok 'restored'
   }

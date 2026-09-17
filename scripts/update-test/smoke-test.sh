@@ -84,10 +84,10 @@ STATUS_BEFORE="$(git -C "$INSTALL" status --porcelain)"
 "${RUN[@]}" pre --source "$INSTALL" --ref main --backup-root "$BACKUPS" > "$ROOT/pre.log" 2>&1
 check $? "pre exits 0"
 SNAP="$(ls -1d "$BACKUPS"/*/ | head -1)"; SNAP="${SNAP%/}"
-for f in hermes-home.tgz electron-userdata.tgz fingerprint-before.txt userdata-before.txt manifest.json shims.txt checkout.txt remotes.txt; do
+for f in hermes-home.tar electron-userdata.tar fingerprint-before.txt userdata-before.txt manifest.json shims.txt checkout.txt remotes.txt; do
   [ -e "$SNAP/$f" ]; check $? "backup artifact $f"
 done
-TARLIST="$(tar -tzf "$SNAP/hermes-home.tgz" 2>&1 || true)"
+TARLIST="$(tar -tf "$SNAP/hermes-home.tar" 2>&1 || true)"
 grep -qE '^\./hermes-agent/\.git/config$' <<< "$TARLIST"; check $? "whole home: checkout .git in the tar"
 grep -qE '^\./hermes-agent/\.hermes-runtime/python/interpreter\.bin$' <<< "$TARLIST"; check $? "whole home: PM store in the tar"
 grep -qE '^\./config\.yaml$' <<< "$TARLIST"; check $? "whole home: config.yaml in the tar"
