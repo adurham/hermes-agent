@@ -71,9 +71,11 @@ user_state_produce() {
   fi
 
   # --- a pooled credential -------------------------------------------------
+  # Provider id must exist at EVERY vintage (auth add resolves it through the
+  # same registry/gate as chat), so use a built-in one, never 'mock'.
   if [ ! -f "$HERMES_HOME/auth.json" ]; then
     HERMES_DISABLE_LAZY_INSTALLS=1 \
-      "$hermes" auth add mock --type api-key --api-key "e2e-preservation-not-a-real-key" \
+      "$hermes" auth add openai --type api-key --api-key "e2e-preservation-not-a-real-key" \
       > "$LOG_DIR/user-state-auth.log" 2>&1 \
       || fail "hermes auth add failed; see $LOG_DIR/user-state-auth.log"
     [ -s "$HERMES_HOME/auth.json" ] || fail "hermes auth add produced no auth.json"

@@ -987,7 +987,9 @@ function Invoke-UserStateActions {
         Write-Host "  a real turn created a session (state.db sessions $before -> $after)"
 
         if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
-            & $hermes auth add mock --type api-key --api-key 'e2e-preservation-not-a-real-key' 2>&1 |
+            # A built-in provider id: `auth add` resolves it through the same
+            # registry gate as chat, so 'mock' would fail on any vintage.
+            & $hermes auth add openai --type api-key --api-key 'e2e-preservation-not-a-real-key' 2>&1 |
                 Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-auth.log')
             if ($LASTEXITCODE -ne 0) { throw 'hermes auth add failed' }
             if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
