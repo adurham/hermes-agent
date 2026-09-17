@@ -249,7 +249,12 @@ function Set-GitRedirect {
     # official repo as upstream?" prompt would hang a headless run. But we don't anymore :D
 
     $realGit = (Get-Command git.exe -ErrorAction Stop).Source
-    $shimDir = Join-Path $WorkRoot "shim"
+        # Export the real git so later checks can observe the TRANSPORT url. Once
+        # the shim below is on PATH, `git` reports the official origin for
+        # `remote get-url origin` (so fork detection sees it); any check that must
+        # see the file:// redirect instead has to bypass the shim via this path.
+        $env:HERMES_E2E_REAL_GIT = $realGit
+        $shimDir = Join-Path $WorkRoot "shim"
     New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
     $shimPath = Join-Path $shimDir "git.bat"
     @"
