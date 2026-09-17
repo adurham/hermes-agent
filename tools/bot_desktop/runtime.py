@@ -123,6 +123,9 @@ class DesktopStatus:
     geometry: str
     install_command: Optional[str]
     browser: Optional[str]  # headed Chromium the dock's Browser icon and agent-browser share; None = no headed browser
+    blocker: Optional[str] = None  # why start() would refuse right now (memory); None = may start
+    memory_available_mb: Optional[int] = None
+    memory_limit_mb: Optional[int] = None
 
     def as_dict(self) -> Dict[str, object]:
         return dict(self.__dict__)
@@ -303,6 +306,7 @@ def desktop_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     env = dict(os.environ if base_env is None else base_env)
     published = published_env()
     if published:
+        touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
         from tools.bot_desktop.browser import env_for_agent
@@ -315,7 +319,10 @@ def ensure_started_for_tool() -> None:
     host that has NO display and the packages installed gets its screen started on first use, so a headless
     gateway works the first time instead of answering "no DISPLAY is set". Failure is not an error here;
     the tool's own "no display" diagnosis is the right message then."""
-    if published_env() or not _should_auto_start(os.environ):
+    if published_env():
+        touch_activity()
+        return
+    if not _should_auto_start(os.environ):
         return
     try:
         start()
@@ -331,6 +338,60 @@ def _should_auto_start(env: Dict[str, str]) -> bool:
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
     return bool(cfg.get("auto_start", False))
+
+
+# ---- idle auto-stop -------------------------------------------------------------------------------
+# A desktop nobody is using still holds ~220 MiB (plus whatever browser was left open). Every use —
+# a computer_use action, a browser spawn onto the screen, a viewer attached, a human takeover — stamps
+# ``activity``; the gateway's display watcher stops a screen idle past ``bot_desktop.idle_stop_minutes``
+# unless a human holds it. The next use starts it again (auto_start or the pane's Start).
+DEFAULT_IDLE_STOP_MINUTES = 30
+
+
+def touch_activity() -> None:
+    path = state_dir() / "activity"
+    try:
+        path.touch()
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def idle_seconds() -> Optional[float]:
+    """Seconds since the last stamped use; None when the screen never recorded one (falls back to the
+    env file's publish time so a screen started and then forgotten still ages)."""
+    for name in ("activity", "env"):
+        try:
+            return max(0.0, time.time() - (state_dir() / name).stat().st_mtime)
+        except OSError:
+            continue
+    return None
+
+
+def idle_stop_seconds() -> float:
+    from hermes_cli.config import load_config_readonly
+    cfg = load_config_readonly().get("bot_desktop") or {}
+    try:
+        minutes = float(cfg.get("idle_stop_minutes", DEFAULT_IDLE_STOP_MINUTES))
+    except (TypeError, ValueError):
+        minutes = DEFAULT_IDLE_STOP_MINUTES
+    return max(0.0, minutes) * 60
+
+
+def stop_if_idle() -> bool:
+    """Stop this profile's screen when it has been idle past the limit and no human holds it. True when
+    it was stopped."""
+    limit = idle_stop_seconds()
+    if limit <= 0 or _launcher_pid() is None:
+        return False
+    idle = idle_seconds()
+    if idle is None or idle < limit:
+        return False
+    from tools.bot_desktop import lease as _bd_lease
+    if _bd_lease.get().holder == _bd_lease.HUMAN:
+        return False
+    logger.info("Bot Desktop for profile %s idle for %.0f min; stopping", _profile_name(), idle / 60)
+    return stop()
 
 
 def published_env() -> Dict[str, str]:
@@ -361,21 +422,28 @@ def geometry() -> str:
 
 def status(profile: Optional[str] = None) -> DesktopStatus:
     from tools.bot_desktop import browser as _bd_browser
+    from tools.bot_desktop import resources
     missing: list[str] = missing_binaries() if is_supported_host() else list(REQUIRED_BINARIES)
     pid = _launcher_pid()
     env = published_env()
+    running = pid is not None and bool(env.get("DISPLAY"))
+    mem = resources.memory_info() if is_supported_host() else resources.MemoryInfo(None, None)
     return DesktopStatus(
         profile=profile or _profile_name(),
         supported=is_supported_host(),
         installed=not missing,
         missing=missing,
-        running=pid is not None and bool(env.get("DISPLAY")),
+        running=running,
         pid=pid,
         display=env.get("DISPLAY"),
         socket=str(rfb_socket_path()) if rfb_socket_path() else None,
         geometry=geometry(),
         install_command=install_command() if missing else None,
         browser=_bd_browser.executable() if is_supported_host() else None,
+        # A running screen is never "blocked": the check guards the allocation, not the session.
+        blocker=None if running or missing or not is_supported_host() else resources.memory_blocker(mem),
+        memory_available_mb=mem.available_mb,
+        memory_limit_mb=mem.limit_mb,
     )
 
 
@@ -408,6 +476,9 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         if _launcher_pid() is not None and published_env().get("DISPLAY"):
             return status()
+        from tools.bot_desktop import resources
+        if (blocker := resources.memory_blocker()) is not None:
+            raise RuntimeError(blocker)
         if _launcher_pid() is None:
             _reap_orphaned_server(sd)
         _ALLOC_LOCK.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -457,6 +528,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
                 raise RuntimeError(f"Bot Desktop launcher exited with {proc.returncode}:\n{tail}")
             if env_file.exists() and (sd / "rfb.sock").exists():
                 logger.info("Bot Desktop for profile %s up on :%s", _profile_name(), num)
+                touch_activity()
                 return status()
             time.sleep(0.1)
         # Giving up must take the launch down: left alone, the launcher publishes DISPLAY and rfb.sock a moment
@@ -488,6 +560,6 @@ def _stop_locked(sd: Path) -> bool:
         return reaped
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
     _kill_group_then_wait(pid, pid, grace=5.0)
-    (sd / "launcher.pid").unlink(missing_ok=True)
-    (sd / "env").unlink(missing_ok=True)
+    for name in ("launcher.pid", "env", "activity"):
+        (sd / name).unlink(missing_ok=True)
     return True

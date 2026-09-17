@@ -344,8 +344,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       <div className="grid min-h-48 place-items-center p-6 text-center">
         <div className="flex flex-col items-center gap-2">
           <div className="text-sm font-medium">{t.screen.stoppedTitle}</div>
-          <div className="text-xs text-muted-foreground">{t.screen.stoppedBody}</div>
-          <Button disabled={busy} onClick={() => void start()} size="sm">
+          <div className="text-xs text-muted-foreground">{status.blocker ?? t.screen.stoppedBody}</div>
+          <Button disabled={busy || Boolean(status.blocker)} onClick={() => void start()} size="sm">
             {busy ? <GlyphSpinner /> : <Codicon name="play" />}
             {t.screen.start}
           </Button>

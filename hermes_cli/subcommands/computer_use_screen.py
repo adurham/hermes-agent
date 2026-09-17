@@ -29,6 +29,9 @@ def _screen_status(args) -> int:
         print(f"  control: {who}   rfb socket: {st.socket}")
         print("  View it: Hermes Desktop → Bots → this bot → Screen")
         return 0
+    if st.blocker:
+        print(f"Bot Desktop [{st.profile}]: installed, not running. {st.blocker}")
+        return 1
     print(f"Bot Desktop [{st.profile}]: installed, not running. Start: hermes computer-use screen start")
     return 1
 

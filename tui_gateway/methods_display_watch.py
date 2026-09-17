@@ -70,6 +70,27 @@ def _poll_runtime_files() -> None:
         _broadcast_global_event("display.status", payload)
 
 
+_IDLE_CHECK_S = 30.0
+_last_idle_check = 0.0
+
+
+def _poll_idle_screens() -> None:
+    """Every _IDLE_CHECK_S: stop screens idle past ``bot_desktop.idle_stop_minutes`` (runtime.stop_if_idle
+    holds the rules). The stop moves the runtime files, so _poll_runtime_files broadcasts display.status."""
+    global _last_idle_check
+    if time.monotonic() - _last_idle_check < _IDLE_CHECK_S:
+        return
+    _last_idle_check = time.monotonic()
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.bot_desktop import runtime as _bd_runtime
+    for home in _watched_lease_homes():
+        token = set_hermes_home_override(home)
+        try:
+            _bd_runtime.stop_if_idle()
+        finally:
+            reset_hermes_home_override(token)
+
+
 def _poll_lease_files() -> None:
     """One pass: read a home's lease only when its file mtime moved; broadcast when the epoch did."""
     from hermes_constants import hermes_home_key
@@ -112,6 +133,7 @@ def _ensure_lease_watcher() -> None:
         while True:
             try:
                 _poll_lease_files()
+                _poll_idle_screens()
                 _poll_runtime_files()
             except Exception:  # noqa: BLE001 - a torn read must not kill the watcher
                 logger.debug("lease watcher poll failed", exc_info=True)

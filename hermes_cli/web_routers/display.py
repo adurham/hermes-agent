@@ -31,6 +31,7 @@ from hermes_cli.web_server_chat import _ws_request_is_allowed
 _log = logging.getLogger(__name__)
 router = APIRouter()
 
+_ACTIVITY_STAMP_S = 60.0
 _READ_CHUNK = 64 * 1024
 _CLOSE_CONTROL_TAKEN = 4000
 _CLEAN_CLOSE = frozenset({1000, 1001})
@@ -140,12 +141,25 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     rfb_filter = RfbClientFilter(_may_send_input)
 
     viewer_closed = asyncio.Event()
+    activity_file = Path(profile_home) / "bot-desktop" / "activity"
+    stamped = {"at": 0.0}
+
+    def _stamp_activity() -> None:
+        # An attached viewer is use: the idle auto-stop must not take a screen someone is watching.
+        if loop.time() - stamped["at"] < _ACTIVITY_STAMP_S:
+            return
+        stamped["at"] = loop.time()
+        try:
+            activity_file.touch()
+        except OSError:
+            pass
 
     async def rfb_to_ws() -> None:
         while True:
             chunk = await reader.read(_READ_CHUNK)
             if not chunk:
                 return
+            _stamp_activity()
             await ws.send_bytes(chunk)  # awaiting the send is the backpressure toward Xvnc
 
     async def ws_to_rfb() -> None:

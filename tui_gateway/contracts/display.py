@@ -48,6 +48,9 @@ class DisplayStatus(Result):
     geometry: str
     install_command: str | None = None
     browser: str | None = None
+    blocker: str | None = None  # why display.start would refuse now (host memory); the pane shows it instead of Start
+    memory_available_mb: int | None = None
+    memory_limit_mb: int | None = None
     lease: DisplayLease
     profile_key: str
 
