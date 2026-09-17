@@ -309,6 +309,30 @@ git -C "$SERVE_REPO" update-ref refs/heads/main "$TARGET_SHA"
 ok "serve.git main = $TARGET_SHA"
 
 step "updating via $UPDATE_METHOD"
+
+# Install-side state capture, callable from inside the update branches: on
+# app-update legs the updater's transcript is streamed into the app UI (or runs
+# detached) and is otherwise lost, so snapshot every place it also lands --
+# product logs, update hand-off files, the venv's entry-point dir -- while the
+# install is still there to inspect. The assertions can `fail` out of the
+# driver, so the evidence has to be on disk BEFORE they do: the app-update
+# branch calls this the moment its observer returns, not after its rc check.
+COLLECTED_INSTALL_LOGS=0
+collect_install_side_logs() {
+  [ "$COLLECTED_INSTALL_LOGS" -eq 0 ] || return 0
+  COLLECTED_INSTALL_LOGS=1
+  ildest="$LOG_DIR/install-logs"
+  mkdir -p "$ildest"
+  cp -R "$HERMES_HOME/logs" "$ildest/hermes-logs" 2>/dev/null || true
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    cp -R "$XDG_DATA_HOME/hermes/logs" "$ildest/desktop-userdata-logs" 2>/dev/null || true
+  fi
+  cp "$HERMES_HOME/.hermes-update-result.json" "$ildest" 2>/dev/null || true
+  ls -la "$HERMES_HOME" > "$ildest/hermes-home-ls.txt" 2>/dev/null || true
+  ls -la "$INSTALL_DIR/venv/bin" > "$ildest/venv-bin-ls.txt" 2>/dev/null || true
+  ok "collected install-side logs to $ildest"
+}
+
 case "$UPDATE_METHOD" in
   hermes-update)
     # `--yes` reaches the update subcommand only in later releases, and
@@ -381,26 +405,19 @@ case "$UPDATE_METHOD" in
       --repo-dir "$INSTALL_DIR" 2>&1 \
       | ts_prefix > "$LOG_DIR/app-update.log") || rc=$?
     log_group "app update (Playwright) transcript" "$LOG_DIR/app-update.log"
+    # Evidence before the assertion: the hand-off transcript is exactly what a
+    # failing app-update leg needs, and this branch used to collect it only
+    # after `fail` had already exited the driver.
+    collect_install_side_logs
     [ "$rc" -eq 0 ] || fail "app-driven update exited $rc; transcript above"
     ;;
 esac
 
-# Install-side state BEFORE the post-update assertions: on app-update legs
-# the updater's transcript is streamed into the app UI (or runs detached)
-# and is otherwise lost, so snapshot every place it also lands — product
-# logs, update hand-off files, the venv's entry-point dir — while the
-# install is still there to inspect. The assertions below can `fail` out
-# of the driver; the evidence must already be on disk when they do.
-ildest="$LOG_DIR/install-logs"
-mkdir -p "$ildest"
-cp -R "$HERMES_HOME/logs" "$ildest/hermes-logs" 2>/dev/null || true
-if [ -n "${XDG_DATA_HOME:-}" ]; then
-  cp -R "$XDG_DATA_HOME/hermes/logs" "$ildest/desktop-userdata-logs" 2>/dev/null || true
-fi
-cp "$HERMES_HOME/.hermes-update-result.json" "$ildest" 2>/dev/null || true
-ls -la "$HERMES_HOME" > "$ildest/hermes-home-ls.txt" 2>/dev/null || true
-ls -la "$INSTALL_DIR/venv/bin" > "$ildest/venv-bin-ls.txt" 2>/dev/null || true
-ok "collected install-side logs to $ildest"
+# Install-side state BEFORE the post-update assertions: the assertions below can
+# `fail` out of the driver, so the evidence must already be on disk when they do.
+# The app-update branch collects it earlier (its own rc check can fail first);
+# the flag inside makes this second call a no-op on those legs.
+collect_install_side_logs
 
 assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
 assert_user_shims
