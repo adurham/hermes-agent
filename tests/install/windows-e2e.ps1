@@ -987,8 +987,13 @@ function Invoke-UserStateActions {
         Write-Host "  a real turn created a session (state.db sessions $before -> $after)"
 
         if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
-            # A built-in provider id: `auth add` resolves it through the same
-            # registry gate as chat, so 'mock' would fail on any vintage.
+            # A starting tag may not have this subcommand yet: a harness
+            # limitation, not a preservation failure.
+            & $hermes auth add --help *> $null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host '  SKIP hermes auth add does not exist on this ref; auth.json is not covered by this leg'
+            }
+            else {
             & $hermes auth add openai --type api-key --api-key 'e2e-preservation-not-a-real-key' 2>&1 |
                 Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-auth.log')
             if ($LASTEXITCODE -ne 0) { throw 'hermes auth add failed' }
@@ -996,6 +1001,7 @@ function Invoke-UserStateActions {
                 throw 'hermes auth add produced no auth.json'
             }
             Write-Host '  a pooled credential exists (auth.json)'
+            }
         }
 
         if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {

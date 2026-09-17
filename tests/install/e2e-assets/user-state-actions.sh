@@ -71,9 +71,14 @@ user_state_produce() {
   fi
 
   # --- a pooled credential -------------------------------------------------
-  # Provider id must exist at EVERY vintage (auth add resolves it through the
-  # same registry/gate as chat), so use a built-in one, never 'mock'.
-  if [ ! -f "$HERMES_HOME/auth.json" ]; then
+  # A starting tag may not HAVE this subcommand yet (v2026.3.12 has no
+  # `auth add` at all). That is a harness limitation, not a preservation
+  # failure, so say so loudly and keep the rest of the contract -- the chat
+  # turn above already covers sessions/ and state.db, which is the durable
+  # state that actually matters.
+  if ! "$hermes" auth add --help >/dev/null 2>&1; then
+    printf '  SKIP hermes auth add does not exist on this ref; auth.json is not covered by this leg\n' >&2
+  elif [ ! -f "$HERMES_HOME/auth.json" ]; then
     HERMES_DISABLE_LAZY_INSTALLS=1 \
       "$hermes" auth add openai --type api-key --api-key "e2e-preservation-not-a-real-key" \
       > "$LOG_DIR/user-state-auth.log" 2>&1 \
@@ -85,7 +90,9 @@ user_state_produce() {
   fi
 
   # --- a second profile ----------------------------------------------------
-  if [ ! -d "$HERMES_HOME/profiles/e2e-second" ]; then
+  if ! "$hermes" profile create --help >/dev/null 2>&1; then
+    printf '  SKIP hermes profile create does not exist on this ref; profiles/ is not covered by this leg\n' >&2
+  elif [ ! -d "$HERMES_HOME/profiles/e2e-second" ]; then
     HERMES_DISABLE_LAZY_INSTALLS=1 \
       "$hermes" profile create e2e-second > "$LOG_DIR/user-state-profile.log" 2>&1 \
       || fail "hermes profile create failed; see $LOG_DIR/user-state-profile.log"
