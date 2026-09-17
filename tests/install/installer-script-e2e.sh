@@ -240,7 +240,12 @@ assert_redirect_is_transport_only() {
     "$official_https"|"$official_ssh") ;;
     *) fail "origin is configured as '$configured', not an official URL — the redirect is not transport-only" ;;
   esac
-  observed="$(git -C "$INSTALL_DIR" remote get-url origin)"
+  # `git` on PATH is the shim here (it reports the official origin so fork
+  # detection sees it), so read the TRANSPORT url through the real git that
+  # arm_source_redirect exported — otherwise `remote get-url origin` returns
+  # the official URL and this check would always fail.
+  local real="${HERMES_E2E_REAL_GIT:-git}"
+  observed="$("$real" -C "$INSTALL_DIR" remote get-url origin)"
   case "$observed" in
     file://*|*serve.git*) ;;
     *) fail "origin transport '$observed' is not redirected to the staged repo" ;;

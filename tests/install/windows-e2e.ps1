@@ -1057,8 +1057,9 @@ function Assert-RedirectIsTransportOnly {
                   'git@github.com:NousResearch/hermes-agent.git')
     $configured = (Invoke-Git @('-C', $InstallDir, 'config', '--get', 'remote.origin.url') | Out-String).Trim()
     Assert-True ($official -contains $configured) "origin stays configured as an official URL (got '$configured')"
-    $observed = (Invoke-Git @('-C', $InstallDir, 'remote', 'get-url', 'origin') | Out-String).Trim()
-    Assert-True ($observed -match 'serve\.git|^file://') "origin transport is redirected to the staged repo (got '$observed')"
+    $real = if ($env:HERMES_E2E_REAL_GIT) { $env:HERMES_E2E_REAL_GIT } else { 'git' }
+    $observed = (& $real -C $InstallDir remote get-url origin 2>$null | Out-String).Trim()
+    Assert-True ($observed -match 'serve\.git|^file://') "git transport is redirected to the staged repo (got '$observed')"
 }
 
 function Assert-UserShims {
