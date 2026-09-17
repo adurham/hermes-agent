@@ -44,15 +44,19 @@ export function writeMockProviderConfig(
   const display = section.parse(extraDisplayConfig ? yaml.load(extraDisplayConfig) ?? {} : {})
   const merged = {
     ...config,
-    model: { ...config.model, default: 'mock-model', provider: 'custom', context_length: modelContextLength ?? 64000 },
-    // Two shapes, one endpoint. `providers:` stays untouched (a provider named
-    // 'mock' only resolved on trees that had registered such a profile, so
-    // older refs died with "Unknown provider 'mock'"). A bare `custom` resolves
-    // from `custom_providers:` on every vintage -- v2026.8.31's desktop
-    // readiness check reports "No usable credentials found for custom ...
-    // runtime resolution still failed" without an entry here -- while the .env
-    // OPENAI_BASE_URL/OPENAI_API_KEY pair (writeEnvFile) is how trees that
-    // resolve the endpoint from the environment reach the same URL.
+    // The endpoint must live in config.yaml: runtime_provider's bare-`custom`
+    // trust path reads the CONFIG base_url, and v2026.8.31 says so outright --
+    // "OPENAI_BASE_URL env var is no longer consulted -- config.yaml is the
+    // single source of truth for endpoint URLs". Without it `custom` resolves to
+    // no endpoint and the app boots on its onboarding overlay ("No usable
+    // credentials found for custom"), which is what every +desktop smoke leg
+    // hit. The `custom_providers` entry names the same endpoint for the
+    // named/`custom:<name>` form; the .env OPENAI_BASE_URL/OPENAI_API_KEY pair
+    // (writeEnvFile) stays for the trees that resolve the endpoint from the
+    // environment. `providers:` stays untouched (a provider named 'mock' only
+    // resolved on trees that had registered such a profile, so older refs died
+    // with "Unknown provider 'mock'").
+    model: { ...config.model, default: 'mock-model', provider: 'custom', base_url: `${url}/v1`, context_length: modelContextLength ?? 64000 },
     providers: { ...config.providers },
     custom_providers: [
       ...(config.custom_providers ?? []).filter(entry => entry?.name !== MOCK_PROVIDER_NAME),

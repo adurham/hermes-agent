@@ -52,11 +52,11 @@ test('provider reconfiguration preserves feed, plugins, history and explicit fix
     writeEnvFile(home)
     expect(yaml.load(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8'))).toMatchObject({
       updates: feed, plugins: { witness: true },
-      model: { provider: 'custom', temperature: 0.7, context_length: 12000 },
+      model: { provider: 'custom', base_url: 'http://127.0.0.1:9001/v1', temperature: 0.7, context_length: 12000 },
       providers: {},
-      // Exactly one entry, repointed at the second URL: a bare `custom` resolves
-      // from this list on every vintage, and reconfiguring must not stack
-      // duplicates.
+      // Exactly one entry, repointed at the second URL: reconfiguring must not
+      // stack duplicates. The readiness ladder reads model.base_url (above),
+      // not this list; the entry names the same endpoint for `custom:<name>`.
       custom_providers: [{ name: 'Mock', base_url: 'http://127.0.0.1:9001/v1', key_env: 'OPENAI_API_KEY' }],
       auxiliary: { title_generation: { enabled: false } }, approvals: { mode: 'smart' }, display: { interim_assistant_messages: true },
     })
