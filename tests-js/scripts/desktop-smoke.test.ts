@@ -269,3 +269,23 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
+
+test('writeEnvFile without a URL keeps the journey provider endpoint', (): void => {
+  // The install e2e configures the mock provider through the CLI, which writes
+  // OPENAI_BASE_URL/OPENAI_API_KEY. The desktop smoke then calls writeEnvFile with
+  // no URL, and stripping the pair there deleted the endpoint the snapshot was
+  // meant to record -- the upgrade's own .env sync later put it back, and the leg
+  // failed as "the upgrade changed the user's own state".
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-'))
+  try {
+    writeEnvFile(home, 'e2e-mock-key', 'http://127.0.0.1:9000')
+    expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toContain('OPENAI_BASE_URL=http://127.0.0.1:9000/v1')
+
+    writeEnvFile(home)
+
+    const after = fs.readFileSync(path.join(home, '.env'), 'utf8')
+    expect(after).toContain('OPENAI_BASE_URL=http://127.0.0.1:9000/v1')
+    expect(after).toContain('OPENAI_API_KEY=e2e-mock-key')
+    expect(after).toContain('MOCK_API_KEY=e2e-mock-key')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})

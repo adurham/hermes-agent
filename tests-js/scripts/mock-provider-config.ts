@@ -79,7 +79,15 @@ export function writeEnvFile(hermesHome: string, apiKey = 'e2e-mock-key', mockUr
   }
   const envPath = path.join(hermesHome, '.env')
   const prior = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
-  const lines = prior.split(/\r?\n/).filter((line: string): boolean => !/^\s*(?:export\s+)?(?:MOCK_API_KEY|OPENAI_BASE_URL|OPENAI_API_KEY)\s*=/.test(line))
+  // Only drop keys this call actually REPLACES. With no mockUrl it writes
+  // MOCK_API_KEY alone, and stripping the portable pair then would delete a
+  // journey's provider endpoint: the install e2e's snapshot missed OPENAI_BASE_URL
+  // after this smoke ran, and the upgrade's own .env sync put it back -- reported
+  // as "the upgrade changed the user's own state".
+  const replaced = mockUrl
+    ? /^\s*(?:export\s+)?(?:MOCK_API_KEY|OPENAI_BASE_URL|OPENAI_API_KEY)\s*=/
+    : /^\s*(?:export\s+)?MOCK_API_KEY\s*=/
+  const lines = prior.split(/\r?\n/).filter((line: string): boolean => !replaced.test(line))
   // OPENAI_BASE_URL + OPENAI_API_KEY is how EVERY vintage reaches an external
   // OpenAI-compatible endpoint ("custom"); a bare MOCK_API_KEY only means
   // something to a tree that knows a provider named `mock`, which older refs
