@@ -67,6 +67,36 @@ reverse proxy's access log may record an already-spent ticket.
   Deliberately **not** the `xfce4` metapackage: it pulls in the screensaver,
   power manager and polkit agent that lock or prompt a headless desktop.
 - [Computer Use](./computer-use.md) enabled for the bot (cua-driver installed).
+- Memory. Measured in the official image: the gateway idles at ~300 MB, Xvnc +
+  Xfce add ~220 MB, and the headed Chromium a human opens during a takeover adds
+  0.5–1 GB (one page: ~550 MB). Plan on **~1.1–1.5 GB per open screen with a
+  browser**; the desktop alone is cheap, the browser is the cost. CPU is not a
+  constraint (idle desktop ≈ 0.01 core, live streaming ≈ 0.03 core). The packages
+  take ~550 MB of disk on Debian.
+
+  Before starting a screen, Hermes checks that the host — or its container
+  cgroup, whichever is tighter — has `bot_desktop.min_free_memory_mb` free
+  (default 1536). Below that the pane shows why in place of **Start screen** and
+  `hermes computer-use screen start` refuses; a screen already running is never
+  taken down by this check. A screen nobody uses is stopped after
+  `bot_desktop.idle_stop_minutes` (default 30) and comes back on the next use, so
+  an instance pays for a desktop only while something is on it. Practical guidance
+  for small instances: 4 GB runs the desktop, 8 GB is where a takeover with a
+  browser is comfortable.
+
+### Baking the packages into a container image
+
+An image for a hosted or unprivileged deployment cannot install anything at run
+time, so build the packages in. The official `Dockerfile` has an opt-in build
+argument:
+
+```bash
+docker build --build-arg HERMES_BOT_DESKTOP=1 -t hermes-agent:screen .
+```
+
+It adds TigerVNC, the Xfce components and a headed `chromium` (for the dock's
+Browser icon) as one layer (~550 MB). Nothing starts at boot; an image built this
+way costs no memory until a screen is started.
 
 ## Using it
 
@@ -165,8 +195,10 @@ hermes -p research computer-use screen start   # another bot's screen
 
 ```yaml
 bot_desktop:
-  geometry: "1440x900"   # screen size; the viewer scales to fit the pane
-  auto_start: false      # set true to start on the first computer_use call
+  geometry: "1440x900"      # screen size; the viewer scales to fit the pane
+  auto_start: false         # set true to start on the first computer_use call
+  min_free_memory_mb: 1536  # refuse to start below this much free memory (0 = never check)
+  idle_stop_minutes: 30     # stop a screen nobody used for this long (0 = keep it up)
 ```
 
 `auto_start` is off by default. Start the screen from the Desktop's Screen
