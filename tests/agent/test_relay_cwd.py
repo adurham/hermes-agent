@@ -83,7 +83,13 @@ def test_gateway_session_key_uses_its_recorded_cwd(monkeypatch):
 @pytest.mark.parametrize(
     ("platform", "backend", "resolved", "expected", "uses_host"),
     [
-        ("cli", "local", Path("/workspace"), "/workspace", True),
+        (
+            "cli",
+            "local",
+            Path("/workspace"),
+            str(Path("/workspace").resolve()),
+            True,
+        ),
         ("", "local", Path("."), str(Path.cwd().resolve()), True),
         ("cli", "ssh", Path("/host"), "", False),
         ("gateway", "local", Path("/host"), "", False),
