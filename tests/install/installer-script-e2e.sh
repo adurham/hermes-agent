@@ -309,6 +309,13 @@ HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed command to drive"
 source_build_env user_state_produce "$HERMES"
 user_state_before_upgrade
 assert_redirect_is_transport_only
+# Configure the provider LAST, immediately before the snapshot. The steps above
+# drive the CLI and the app, and .env was not left where this run configured it by
+# the time they finished -- the verifier caught OPENAI_API_KEY/OPENAI_BASE_URL as
+# ADDITIONS after the snapshot, meaning the snapshot had missed them. Re-pointing
+# here fixes what the upgrade starts from, whatever those steps did, and nothing
+# rewrites provider state after this line.
+mock_configure_provider "${HERMES_E2E_MOCK_URL:?HERMES_E2E_MOCK_URL must be set before snapshotting}"
 preserve_before_upgrade
 
 # --- update OLD -> HEAD ----------------------------------------------------------
@@ -387,14 +394,12 @@ case "$UPDATE_METHOD" in
     # overlay (a fullscreen div that intercepts every click) - and the chat
     # surface is real too.
     #
-    # mock_start is idempotent: the mock started above for this run is still
-    # live, so it is reused (a new instance would take a new port and rewrite
-    # .env's OPENAI_BASE_URL after the preservation snapshot, which the verifier
-    # rightly reports as the upgrade touching user state) while the provider
-    # config is still (re)written to point at it -- that rewrite is why this
-    # call is here at all, since the app reads config.yaml/.env, not the env var.
+    # The mock the app must talk to was started and configured ABOVE, and its URL
+    # is what config.yaml/.env hold. Nothing here may touch provider state: this
+    # point is INSIDE the window the user-state verifier judges, so a rewrite (or
+    # a new mock on a new port) reads as the upgrade modifying .env. The app reads
+    # config.yaml/.env, not HERMES_E2E_MOCK_URL.
     source "$ASSETS/mock-provider.sh"
-    PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
     trap mock_stop EXIT
 
     step "capturing the hermes desktop launch spec (build runs for real)"
