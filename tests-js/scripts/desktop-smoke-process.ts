@@ -149,30 +149,47 @@ export function assertBackendOrigin(backend: NativeProcess, root: string, origin
     }
     return
   }
-  // A Python -m entry has no source path in argv. Its live import root is
-  // either the captured editable root (Nix) or the process's working directory.
-  const moduleLaunch = /(?:^|\s)"?-m"?\s+"?hermes_cli\.main"?(?:\s|$)/.test(backend.command)
-    && /^python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?$/i.test(path.basename(backend.executable))
-  const importRoot = backend.sourceRoot || backend.cwd
-  if (moduleLaunch && importRoot) {
-    if (fs.realpathSync(importRoot) !== fs.realpathSync(root)) {
-      throw new Error('Source backend listener imports a different source tree'
-        + ` (cwd=${backend.cwd ?? '(unreadable)'}, HERMES_PYTHON_SRC_ROOT=${backend.sourceRoot ?? '(unset)'},`
-        + ` expected=${root}, command=${backend.command})`)
-    }
-    return
-  }
   // PM's Windows .cmd fallback encodes the installation-bound bootstrap;
   // POSIX launchers pass that same script directly as Python's -c argument.
   const encoded = /base64\.b64decode\('([A-Za-z0-9+/=]+)'\)/.exec(backend.command)?.[1]
   const command = encoded ? Buffer.from(encoded, 'base64').toString('utf8') : backend.command
   // Source venvs may resolve to system Python; their entry script still lives in the installation.
   const spellings = [root, fs.realpathSync(root)].flatMap((value: string): string[] => [value, JSON.stringify(value).slice(1, -1)])
-  const fromInstall = spellings.some((value: string): boolean => {
+  const namesInstallRoot = spellings.some((value: string): boolean => {
     const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return new RegExp(`(?:^|[\\s"'])${escaped}(?:[/\\\\]|[\\s"']|$)`, process.platform === 'win32' ? 'i' : '').test(command)
   })
-  if (!fromInstall) {
+  const sameTree = (value?: string): boolean => {
+    if (value === undefined) return false
+    // An unreadable path is no evidence, not a crash: a process cwd can be gone.
+    try { return fs.realpathSync(value) === fs.realpathSync(root) } catch { return false }
+  }
+  // A Python -m entry has no source path in argv. Its live import root is
+  // either the captured editable root (Nix) or the process's working directory.
+  const moduleLaunch = /(?:^|\s)"?-m"?\s+"?hermes_cli\.main"?(?:\s|$)/.test(command)
+    && /^python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?$/i.test(path.basename(backend.executable))
+  if (moduleLaunch) {
+    // A captured root is authoritative: the launcher told us which tree it bound.
+    if (backend.sourceRoot !== undefined) {
+      if (!sameTree(backend.sourceRoot)) {
+        throw new Error('Source backend listener imports a different source tree'
+          + ` (HERMES_PYTHON_SRC_ROOT=${backend.sourceRoot}, expected=${root}, command=${backend.command})`)
+      }
+      return
+    }
+    // Without a captured root the backend's cwd is NOT sufficient on its own --
+    // the app hands the backend ITS OWN directory (the smoke's home), so a
+    // cwd-only inference calls a backend running the installation's own venv
+    // interpreter "a different source tree". Accept the launcher cd'ing into the
+    // tree, or a command that names it (`<root>/venv/bin/python -m hermes_cli.main`).
+    if (!sameTree(backend.cwd) && !namesInstallRoot) {
+      throw new Error('Source backend listener imports a different source tree'
+        + ` (cwd=${backend.cwd ?? '(unreadable)'}, HERMES_PYTHON_SRC_ROOT=(unset),`
+        + ` expected=${root}, command=${backend.command})`)
+    }
+    return
+  }
+  if (!namesInstallRoot) {
     throw new Error('Source backend listener command does not name the expected installed source tree')
   }
 }

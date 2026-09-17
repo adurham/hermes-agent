@@ -166,6 +166,22 @@ test.runIf(process.platform === 'linux')('module-launched source listener proves
   }
 })
 
+test('a module launch proves its tree without leaning on the app-owned cwd', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-venv-root-'))
+  try {
+    const python = path.join(root, 'venv', 'bin', 'python')
+    const launched = (executable: string, command: string): Parameters<typeof assertBackendOrigin>[0] =>
+      ({ pid: 1, parentPid: 1, executable, command, cwd: path.join(os.tmpdir(), 'app-owned-cwd') })
+    const venv = launched(python, `"${python}" "-m" "hermes_cli.main" "serve" --host 127.0.0.1 --port 0`)
+    // The app owns the backend's cwd; the installation's own venv interpreter is the evidence.
+    expect((): void => assertBackendOrigin(venv, root, 'source')).not.toThrow()
+    // A foreign interpreter whose command names no tree is still rejected.
+    expect((): void => assertBackendOrigin(launched('/usr/bin/python3', '"python3" "-m" "hermes_cli.main" "serve"'), root, 'source')).toThrow('source tree')
+    // A captured root disagrees: authoritative, even when the command names the expected tree.
+    expect((): void => assertBackendOrigin({ ...venv, sourceRoot: os.tmpdir() }, root, 'source')).toThrow('source tree')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('historical identity needs verified provenance and never overrides an app-reported mismatch', (): void => {
   const expected = 'a'.repeat(40)
   const identity = { appVersion: 'historical', commit: null, hermesRoot: '/unused', platform: process.platform }
