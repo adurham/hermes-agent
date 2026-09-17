@@ -190,8 +190,8 @@ module.exports = {
     iconSize: 96,
     iconTextSize: 11,
     window: {
-      width: 769,
-      height: 457
+      width: 660,
+      height: 400
     },
     contents: [
       {
