@@ -186,6 +186,35 @@ def test_bundled_skill_resync_is_advisory_only(tmp_path):
     assert "skills/foo/SKILL.md" in report["advisory"]["modified"]
 
 
+def test_bundled_skill_resync_inside_a_profile_is_advisory_only(tmp_path):
+    """A second profile's bundled skills re-sync on update exactly like the
+    root's, so judging them would fail every leg that owns a profile."""
+    home = _home(tmp_path)
+    skills = home / "profiles" / "work" / "skills" / "foo"
+    skills.mkdir(parents=True)
+    (skills / "SKILL.md").write_text("bundled\n", encoding="utf-8")
+    snap = _snapshot(home)
+    # The update re-syncs every profile: bundled skill content moves.
+    (skills / "SKILL.md").write_text("updated bundled\n", encoding="utf-8")
+    report = _verify(home, snap)
+    assert report["ok"] is True, "a per-profile skills sync is not a user-state change"
+    assert "profiles/work/skills/foo/SKILL.md" in report["advisory"]["modified"]
+    assert "profiles/work/skills/foo/SKILL.md" not in report["modified"]
+
+
+def test_fails_when_a_profile_skill_archive_is_lost(tmp_path):
+    """skills/.archive/** holds restorable USER skills at both roots."""
+    home = _home(tmp_path)
+    archive = home / "profiles" / "work" / "skills" / ".archive" / "mine"
+    archive.mkdir(parents=True)
+    (archive / "SKILL.md").write_text("mine\n", encoding="utf-8")
+    snap = _snapshot(home)
+    (archive / "SKILL.md").unlink()
+    report = _verify(home, snap)
+    assert report["ok"] is False
+    assert "profiles/work/skills/.archive/mine/SKILL.md" in report["deleted"]
+
+
 def test_fails_when_archived_user_skill_is_lost(tmp_path):
     home = _home(tmp_path)
     snap = _snapshot(home)

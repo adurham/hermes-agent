@@ -23,10 +23,10 @@ Two things are deliberately NOT failed on:
 * ``config.yaml`` (root and per-profile) is rewritten by config migration. The
   rewrite is additive by design, so it is reported, never judged.
 * ``skills/**`` is seeded and re-synced from the bundled library at startup and
-  after every update (``tools.skills_sync.sync_skills``). It changes on an
-  ordinary release, so it is advisory-only. The exception is
-  ``skills/.archive/**``, which holds restorable *user* skills and therefore
-  is judged like everything else.
+  after every update (``tools.skills_sync.sync_skills``) at BOTH roots -- the
+  home's own tree and every profile's. It changes on an ordinary release, so it
+  is advisory-only. The exception is ``skills/.archive/**``, which holds
+  restorable *user* skills and therefore is judged like everything else.
 
 Ownership: the ``plugins/**`` trees belong to verify-plugin-preservation.py —
 that contract (nothing deleted or modified, additions tolerated) is already
@@ -173,13 +173,19 @@ def _entry_record(abs_path: str) -> dict:
 
 
 def _walk_root(home: str, root_rel: str, *, profiles: bool, judged: bool):
-    """Yield (rel_path, abs_path) for every entry under a root, pruning the
-    trees owned elsewhere (plugins) and, for advisory roots, the judged
-    skills/.archive subtree."""
+    """Yield (rel_path, abs_path, judged) for every entry under a root, pruning
+    the trees owned elsewhere (plugins).
+
+    The third field is per ENTRY, not per root: a bundled skills tree is seeded
+    and re-synced from the library at startup and after every update at BOTH
+    roots (``tools.skills_sync``), so it is advisory-only -- except
+    ``<skills>/.archive/**``, which holds restorable USER skills and therefore
+    stays judged.
+    """
     root_abs = os.path.join(home, root_rel.replace("/", os.sep))
     if not _lexists(root_abs):
         return
-    yield root_rel, root_abs
+    yield root_rel, root_abs, judged and not _is_bundled_skill(root_rel, profiles=profiles)
     # Top-level entries include plain FILES (config.yaml, state.db): only a real
     # directory can be descended, and a symlink must never be followed.
     if _is_link(root_abs) or not os.path.isdir(root_abs):
@@ -194,23 +200,21 @@ def _walk_root(home: str, root_rel: str, *, profiles: bool, judged: bool):
         for name in names:
             abs_path = os.path.join(current, name)
             rel = os.path.relpath(abs_path, home).replace(os.sep, "/")
-            if judged:
-                if _owns_plugins(rel, profiles=profiles):
-                    continue
-            else:
-                # Advisory walk of skills/: skip .archive, which is judged.
-                if not _owns_plugins(rel, profiles=profiles) and _is_bundled_skill(rel, profiles=profiles):
-                    pass
-                elif rel.split("/")[-1] == SKILL_ARCHIVE or "/" + SKILL_ARCHIVE + "/" in rel:
-                    continue
+            if _owns_plugins(rel, profiles=profiles):
+                continue
+            # The judged skills/.archive tree is walked as its own root, so the
+            # advisory walk of skills/ must not claim it.
+            if not judged and (rel.split("/")[-1] == SKILL_ARCHIVE or "/" + SKILL_ARCHIVE + "/" in rel):
+                continue
+            entry_judged = judged and not _is_bundled_skill(rel, profiles=profiles)
             if _is_link(abs_path):
-                yield rel, abs_path
+                yield rel, abs_path, entry_judged
                 continue
             if os.path.isdir(abs_path):
-                yield rel, abs_path
+                yield rel, abs_path, entry_judged
                 stack.append(abs_path)
             else:
-                yield rel, abs_path
+                yield rel, abs_path, entry_judged
 
 
 def snapshot_home(home: str, profiles_dir: str | None = None) -> dict:
@@ -227,9 +231,8 @@ def snapshot_home(home: str, profiles_dir: str | None = None) -> dict:
         targets.append((name, False, False))
 
     for rel_root, profiles, judged in targets:
-        sink = entries if judged else advisory
-        for rel, abs_path in _walk_root(home, rel_root, profiles=profiles, judged=judged):
-            sink[rel] = _entry_record(abs_path)
+        for rel, abs_path, entry_judged in _walk_root(home, rel_root, profiles=profiles, judged=judged):
+            (entries if entry_judged else advisory)[rel] = _entry_record(abs_path)
 
     # Profiles may live somewhere else entirely (a test harness override).
     if profiles_dir and os.path.abspath(profiles_dir) != os.path.join(home, PROFILES_DIR):
@@ -241,11 +244,11 @@ def snapshot_home(home: str, profiles_dir: str | None = None) -> dict:
                 rel = f"{PROFILES_DIR}/{name}"
                 entries[rel] = _entry_record(abs_path)
                 if os.path.isdir(abs_path) and not _is_link(abs_path):
-                    for sub_rel, sub_abs in _walk_root(
+                    for sub_rel, sub_abs, sub_judged in _walk_root(
                             override_abs, name, profiles=True, judged=True):
                         if sub_rel == name:
                             continue
-                        entries[f"{PROFILES_DIR}/{sub_rel}"] = _entry_record(sub_abs)
+                        (entries if sub_judged else advisory)[f"{PROFILES_DIR}/{sub_rel}"] = _entry_record(sub_abs)
 
     return {
         "schema": SCHEMA_VERSION,
