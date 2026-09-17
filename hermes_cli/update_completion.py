@@ -160,10 +160,8 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
 def _complete_selected(request: dict) -> None:
     from hermes_cli import main, update_cmd, update_cmd_config
+    from hermes_cli.source_completion import complete_source_checkout
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-    from hermes_cli.update_cmd_maint import _run_post_update_maintenance
-    from hermes_cli.source_build import build_update_products
-    from hermes_cli.venv_sync import publish_launchers
 
     root = Path(request["source"])
     main.PROJECT_ROOT = root
@@ -172,15 +170,14 @@ def _complete_selected(request: dict) -> None:
     plan = None if plan_data is None else UpdatePlan(**{
         **plan_data, "runtimes": [RuntimeRecord(**row) for row in plan_data.get("runtimes", [])]})
     update_cmd._sweep_bytecode_after_update(request["branch"])
-    publish_launchers(root)
-    build_update_products(root, desktop=request["desktop"])
-    if not request.get("completion_message"):
-        print("\n✓ Code updated!")
-    complete = _run_post_update_maintenance(
-        assume_yes=request["assume_yes"], gateway_mode=request["gateway_mode"],
-        pre_update_snapshot_id=request["snapshot_id"],
-        had_desktop_app_before_update=request["desktop"], pre_update_version=request["pre_update_version"],
-        completion_message=request.get("completion_message"))
+    # Launchers, products and post-build maintenance live in one place so an
+    # install and an update cannot end in different states.
+    complete = complete_source_checkout(
+        root, desktop=request["desktop"], assume_yes=request["assume_yes"],
+        gateway_mode=request["gateway_mode"], pre_update_snapshot_id=request["snapshot_id"],
+        pre_update_version=request["pre_update_version"],
+        completion_message=request.get("completion_message"),
+        announce=None if request.get("completion_message") else "\n✓ Code updated!")
     # systemctl's KillMode=mixed fallback can kill this whole cgroup. Publish the
     # gateway watcher's status BEFORE that operation, and demote on later failure.
     if request["gateway_mode"]:

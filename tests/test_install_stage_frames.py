@@ -27,7 +27,7 @@ def _frame(result):
 def test_stage_result_matches_the_actual_exit(tmp_path, case):
     env = _env(tmp_path)
     stage = {"explicit-failure": "repository", "write-failure": "complete",
-             "unknown": 'unknown"\\\n\x1fstage', "skipped": "setup", "success": "node-deps"}[case]
+             "unknown": 'unknown"\\\n\x1fstage', "skipped": "setup", "success": "config"}[case]
     env["PROBE_STAGE"] = stage
     if case == "explicit-failure":
         repo = tmp_path / "install"
@@ -81,7 +81,7 @@ def test_manifest_accepts_the_desktop_home_argument(tmp_path, flag):
                             text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     manifest = json.loads(result.stdout)
-    assert any(row["name"] == "path" for row in manifest["stages"])
+    assert any(row["name"] == "products" for row in manifest["stages"])
     assert not home.exists()
     env = dict(_env(tmp_path), PROBE_FLAG=flag, PROBE_HOME=home.as_posix())
     env.pop("HERMES_INSTALL_DIR")

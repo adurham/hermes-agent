@@ -76,7 +76,7 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
-#: Stage-Path and hermes_cli/_install_repair.py.
+#: Publish-UserCommand and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 
 #: command name -> (entry module, callable) — mirrors pyproject.toml

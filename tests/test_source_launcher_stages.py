@@ -36,7 +36,7 @@ def test_powershell_stage_publishes_without_a_checkout_venv(tmp_path, monkeypatc
     wrapper.write_text('''$ErrorActionPreference = 'Stop'
 . $env:PROBE_INSTALLER -InstallDir $env:PROBE_REPO -HermesHome $env:PROBE_HOME
 Initialize-ResolvedPaths
-# Replace acquisition only; Get-BootstrapPython and Stage-Path stay real.
+# Replace acquisition only; Get-BootstrapPython and Publish-UserCommand stay real.
 function Get-Uv { return 'Invoke-FixtureUv' }
 function Invoke-FixtureUv {
     $call = $args -join ' '
@@ -59,7 +59,7 @@ function Set-LauncherUserPath([string]$binDir) {
     $script:publishedPath = $binDir
     Write-Output 'REACHED_PATH_PUBLICATION'
 }
-Stage-Path
+Publish-UserCommand
 if (-not $script:publishedPath) { throw 'registry-publication seam was bypassed' }
 exit 0
 ''', encoding='utf-8-sig')

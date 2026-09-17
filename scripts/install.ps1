@@ -476,20 +476,20 @@ function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = 
     $frame | ConvertTo-Json -Compress | Write-Output
 }
 
+$ProductTitle = if ($IncludeDesktop) { "Install command and app + desktop" } else { "Install command and app" }
 $Stages = @(
     @{ name = "prerequisites"; title = "System prerequisites"; category = "runtime"; needs_user_input = $false },
     @{ name = "repository"; title = "Download Hermes Agent"; category = "runtime"; needs_user_input = $false },
     @{ name = "venv"; title = "Create Python environment"; category = "runtime"; needs_user_input = $false },
     @{ name = "python-deps"; title = "Install Python dependencies"; category = "runtime"; needs_user_input = $false },
-    @{ name = "node-deps"; title = "Install tool dependencies"; category = "runtime"; needs_user_input = $false },
-    @{ name = "path"; title = "Install hermes command"; category = "runtime"; needs_user_input = $false },
     @{ name = "config"; title = "Prepare config and skills"; category = "configuration"; needs_user_input = $false },
+    # The shared completion tail -- the same call `hermes update` makes -- so
+    # the manifest and the run cannot disagree. -IncludeDesktop selects the
+    # desktop product inside this stage instead of adding a second build stage.
+    @{ name = "products"; title = $ProductTitle; category = "runtime"; needs_user_input = $false },
     @{ name = "setup"; title = "Configure API keys and settings"; category = "configuration"; needs_user_input = $true },
     @{ name = "gateway"; title = "Configure gateway service"; category = "configuration"; needs_user_input = $true }
 )
-if ($IncludeDesktop) {
-    $Stages += @{ name = "desktop"; title = "Build desktop app"; category = "runtime"; needs_user_input = $false }
-}
 $Stages += @{ name = "complete"; title = "Finish install"; category = "runtime"; needs_user_input = $false }
 function Stage-Prerequisites {
     if (-not (Ensure-Git)) {
@@ -558,11 +558,32 @@ function Stage-PythonDeps {
     Invoke-BootstrapPm
 }
 
-function Stage-NodeDeps {
-    Log "tool dependencies are managed by pm (hermes pm install)"
+function Invoke-SourceCompletion([bool]$Desktop) {
+    # The whole tail in one place, by calling the completion an update calls:
+    # publish the commands, build the products (tui/web, plus the desktop app
+    # when asked), then run the post-build maintenance that syncs bundled
+    # skills and migrates config. Node, browsers and the frontend build tools
+    # arrive through pm as the build asks for them; the bootstrap interpreter
+    # itself only re-enters the tree on PM's selected Python.
+    $bootPy = Get-BootstrapPython
+    $completionArgs = @('-I', '-B', '-X', 'utf8', 'hermes_cli/source_completion.py', '--source', $InstallDir)
+    if ($Desktop) { $completionArgs += '--desktop' }
+    Push-Location $InstallDir
+    try {
+        & $bootPy @completionArgs
+        $code = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($code) { Fail "app products or command publication failed (exit $code)" }
+    Log "app products and hermes command ready"
 }
 
-function Stage-Path {
+function Publish-UserCommand {
+    # PATH exposure stays installer-owned on Windows: expose_cli() answers
+    # "windows-installer-owned" rather than creating the user-facing command,
+    # so the install-scoped launchers the completion publishes are not the ones
+    # the user's PATH points at.
     $binDir = Join-Path $HermesHome "bin"
     $bootPy = Get-BootstrapPython
     Push-Location $InstallDir
@@ -575,6 +596,12 @@ function Stage-Path {
     if ($code) { Fail "launcher staging failed" }
     Set-LauncherUserPath $binDir
     Log "hermes command installed at $binDir"
+}
+
+function Stage-Products {
+    Invoke-SourceCompletion ([bool]$IncludeDesktop)
+    Publish-UserCommand
+    if ($IncludeDesktop) { Confirm-DesktopArtifact }
 }
 
 function Set-LauncherUserPath([string]$binDir) {
@@ -619,29 +646,20 @@ function Stage-Gateway {
 }
 
 function Stage-Desktop {
-    # Desktop support via the CURRENT runtime paths only. wake/voice extras
-    # ride pm's venv sync ([all] does not include them; lazy install at
-    # first use remains the fallback -- policy: Teknium, July 2026, #70509).
-    # The build is `hermes desktop --build-only`, the same authority as
-    # `hermes gui` and the update flow; the deleted installer-local
-    # npm/Electron helpers must not reappear here.
-    $bootPy = Get-BootstrapPython
+    # External-caller contract: -Stage desktop stays dispatchable on its own
+    # (see Invoke-StageByName). The work is the same completion call with the
+    # desktop product selected. Voice and wake extras are not synced here: pm
+    # lazy-installs them at first use (policy: Teknium, July 2026, #70509).
+    Invoke-SourceCompletion $true
+    Publish-UserCommand
+    Confirm-DesktopArtifact
+}
+
+function Confirm-DesktopArtifact {
+    # Probe the packaged artifact the completion just built -- the same
+    # candidates hermes_cli/main_desktop._desktop_packaged_executable resolves.
     Push-Location $InstallDir
     try {
-        Log "ensuring desktop voice/wake dependencies via pm venv sync"
-        & $bootPy -I -c "import sys; sys.path.insert(0, sys.argv[1]); from pm import sync_venv; sync_venv(['wake', 'voice'], explicit=True)" $InstallDir
-        if ($LASTEXITCODE) {
-            Write-Host "[hermes] voice/wake dependency sync failed (exit $LASTEXITCODE) -- they will lazy-install at first use" -ForegroundColor Yellow
-        }
-        Log "building desktop app (hermes desktop --build-only)"
-        Invoke-InstalledHermes @('desktop', '--build-only')
-        $code = $LASTEXITCODE
-        if ($code) { Fail "desktop build failed (hermes desktop --build-only exited $code)" }
-
-        # Probe the produced artifact -- the same candidates
-        # hermes_cli/main_desktop._desktop_packaged_executable resolves
-        # (verified: --build-only returns the packaged app under
-        # apps/desktop/release/, not the --source dist/).
         $desktopDir = Join-Path $InstallDir "apps\desktop"
         $candidates = @(
             (Join-Path $desktopDir "release\win-unpacked\Hermes.exe"),
@@ -762,8 +780,7 @@ function Invoke-StageByName([string]$name) {
         "repository" { Stage-Repository }
         "venv" { Stage-Venv }
         "python-deps" { Stage-PythonDeps }
-        "node-deps" { Stage-NodeDeps }
-        "path" { Stage-Path }
+        "products" { Stage-Products }
         "config" { Stage-Config }
         "setup" { Stage-Setup }
         "gateway" { Stage-Gateway }
@@ -805,9 +822,8 @@ if ($Stage) {
     # The $Stages table is the single authoritative list: it drives the
     # -Manifest output AND the no-flag ladder, so -IncludeDesktop affects
     # the real run exactly as the manifest advertises. "desktop" stays
-    # directly dispatchable via -Stage even without the flag (long-standing
-    # external-caller contract; the bootstrap frontend always pairs it
-    # with -IncludeDesktop when it lists the stage).
+    # directly dispatchable via -Stage even though it is never listed
+    # (long-standing external-caller contract).
     $known = @($Stages | ForEach-Object { $_.name })
     if ($known -notcontains $Stage -and $Stage -ne "desktop") {
         if ($Json) { Emit-Frame $false $Stage $false "unknown stage: $Stage" }

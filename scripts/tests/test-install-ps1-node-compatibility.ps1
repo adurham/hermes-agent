@@ -54,9 +54,8 @@ exit /b 0
     Assert-True ($recorded[1] -eq 'python find --managed-python --no-project 3.13') 'lookup ignores ambient project discovery'
     Assert-True ((Get-Content -LiteralPath $pythonArgsFile -Raw).Trim() -eq '-m pm.cli install') 'Python launches PM without a uv parent'
 
-    function Get-Uv { throw 'node stage attempted provisioning' }
-    Stage-NodeDeps
-    Write-Host 'PASS: node stage performs no separate install'
+    # The installer owns no node stage: tool and frontend provisioning belongs
+    # to pm, driven by the shared completion tail (install.ps1 "products").
 } finally {
     if (Test-Path $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
 }
