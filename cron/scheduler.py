@@ -1676,7 +1676,7 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
         job_name, _secs_ago, limit_s,
         _last_desc, _activity.get("api_call_count", 0), _activity.get("max_iterations", 0),
         _activity.get("current_tool") or "none")
-    request_hard_interrupt(agent, "Cron job timed out (inactivity)")
+    request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
     raise TimeoutError(
         f"Cron job '{job_name}' idle for "
         f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
@@ -3198,6 +3198,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
     handoff_dir = _get_hermes_home() / "cron" / "external-workers"
     payload_path = handoff_dir / f"{execution_id}.json"
     ack_path = handoff_dir / f"{execution_id}.ready"
+    # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
+    stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
         sys.executable,
         "-m",
@@ -3287,18 +3289,23 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ):
         worker_env.pop(_presence_var, None)
     try:
-        process = subprocess.Popen(
-            dispatch.argv,
-            cwd=str(Path(__file__).resolve().parent.parent),
-            env=worker_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=windows_hide_flags(),
-        )
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            process = subprocess.Popen(
+                dispatch.argv,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                env=worker_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_fd,
+                start_new_session=True,
+                creationflags=windows_hide_flags(),
+            )
+        finally:
+            os.close(stderr_fd)
     except BaseException:
         payload_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
         raise
 
     with _running_lock:
@@ -3323,7 +3330,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
-                    handoff_files=(payload_path,),
+                    handoff_files=(payload_path, stderr_path),
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3340,7 +3347,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
-                    handoff_files=(payload_path,),
+                    handoff_files=(payload_path, stderr_path),
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -3354,15 +3361,19 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 process,
                 execution_id=execution_id,
                 job_id=job_id,
-                handoff_files=(payload_path,),
+                handoff_files=(payload_path, stderr_path),
             )
         returncode = process.poll()
         if returncode is not None:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(job_id)
             payload_path.unlink(missing_ok=True)
+            from cron.scheduler_diagnostics import external_worker_stderr_tail
+            stderr_tail = external_worker_stderr_tail(stderr_path)
+            stderr_path.unlink(missing_ok=True)
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
-                # systemd-run itself failed (stderr is DEVNULL): name the cause, not the exit code.
+                # systemd-run itself failed before any worker ran, so the captured stderr
+                # holds nothing useful: name the cause, not the exit code.
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "
                     f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
@@ -3371,7 +3382,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 )
             raise RuntimeError(
                 f"cron external worker exited before ownership acknowledgement "
-                f"(exit {returncode})"
+                f"(exit {returncode}){stderr_tail}"
             )
         time.sleep(0.05)
 
@@ -3389,7 +3400,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         process,
         execution_id=execution_id,
         job_id=job_id,
-        handoff_files=(payload_path, ack_path),
+        handoff_files=(payload_path, ack_path, stderr_path),
     )
 
 
@@ -3465,6 +3476,11 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
                 else:
                     os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
+                # Post-ack the gateway never reads the stderr capture (it only
+                # serves the pre-ack death report) and may not outlive this run
+                # in the restart-safe topology, so the worker removes its own.
+                with contextlib.suppress(OSError):
+                    ack_path.with_suffix(".stderr").unlink(missing_ok=True)
     finally:
         reset_secret_scope(secret_token)
         set_multiplex_active(previous_multiplex)
@@ -3988,8 +4004,10 @@ if __name__ == "__main__":
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
-        # The gateway spawns this worker with stdout/stderr on DEVNULL; without
-        # a handler every adoption/ack failure below would be invisible.
+        # The gateway spawns this worker with stdout on DEVNULL and stderr on a
+        # capture file it only reads back if we die before the ack; without a
+        # log handler every adoption/ack failure below would otherwise be
+        # invisible to the persistent log.
         try:
             from hermes_logging import setup_logging
 

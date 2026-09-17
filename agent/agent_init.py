@@ -1077,10 +1077,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
+    # expose kanban_show interactively, and children/cron runs inherit the env var, without
+    # owning a task.
+    from agent.delegation_context import owned_kanban_task
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
     )
     if agent.quiet_mode:
         return

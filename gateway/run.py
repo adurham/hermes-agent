@@ -2588,7 +2588,12 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+# ``tool_reason`` for the inactivity timeout: attributes the stop to the gateway watchdog (#112647).
+_INTERRUPT_TOOL_REASON_TIMEOUT = "gateway inactivity watchdog"
 _INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
+# ``tool_reason`` for eviction / shutdown: these stops are system-issued, not user stops (#112647).
+_INTERRUPT_TOOL_REASON_EVICTED = "session evicted"
+_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -2683,7 +2688,7 @@ def _abandon_timed_out_gateway_turn(
     agent = agent_holder[0] if agent_holder else None
     if agent is not None:
         try:
-            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT)
+            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT, tool_reason=_INTERRUPT_TOOL_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
 

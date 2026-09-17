@@ -43,14 +43,24 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
+# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
+# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
+# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
+# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
+_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
+
+
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
         from gateway.session_context import get_session_env
-
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
     except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or platform or "cli"
+        get_session_env = os.environ.get
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+    if (source in _UI_TRANSPORT_SOURCES and get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+            and get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") != "1"):
+        source = ""
+    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
@@ -568,14 +578,19 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
+        explicit = self._stale_timeout_is_explicit()
+        # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
+        # cap below, so the floor can never outlive the run budget.
+        if self.api_mode == "codex_responses" and not explicit:
+            timeout = max(timeout, _high_effort_silence_floor(self))
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         run_budget = getattr(self, "run_budget_seconds", None)
         started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not self._stale_timeout_is_explicit():
+        if run_budget and started and not explicit:
             remaining = float(run_budget) - (time.time() - started)
             timeout = min(timeout, max(60.0, remaining * 0.5))
         return timeout
