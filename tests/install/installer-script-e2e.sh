@@ -180,6 +180,22 @@ INSTALL_DIR="$HERMES_HOME/hermes-agent"
 
 
 
+# The user-state verifier judges .env by content, so a lost provider write shows up
+# only as "the upgrade changed the user's own state" minutes later. Print the KEY
+# NAMES (never values) at each provider boundary: that is what names the step that
+# clobbers them. Declared here with the other early helpers because bash resolves
+# functions in execution order -- its first call is at the user-state snapshot,
+# hundreds of lines above close_running_desktop.
+env_key_names() { # label
+  local label="$1"
+  if [ ! -s "$HERMES_HOME/.env" ]; then
+    printf '  [env] %s: (no .env)\n' "$label"
+    return 0
+  fi
+  printf '  [env] %s: %s\n' "$label" \
+    "$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$HERMES_HOME/.env" | tr -d '=' | sort | tr '\n' ' ')"
+}
+
 assert_desktop_artifact() {
   # $1: label. After a +desktop install the built app must exist under the
   # checkout -- install.sh builds it there and registers no OS entry point.
@@ -457,20 +473,6 @@ user_state_after_upgrade
 # exit 0 -- which Playwright reports as "electron.launch: Process failed to
 # launch!" with the ws closing at code 1006 and no error text. The checkpoint
 # must own the only instance, so close anything still running from this install.
-# The user-state verifier judges .env by content, so a lost provider write shows up
-# only as "the upgrade changed the user's own state" several minutes later. Print
-# the KEY NAMES (never values) at each boundary: that is what names the step that
-# clobbers them.
-env_key_names() { # label
-  local label="$1"
-  if [ ! -s "$HERMES_HOME/.env" ]; then
-    printf '  [env] %s: (no .env)\n' "$label"
-    return 0
-  fi
-  printf '  [env] %s: %s\n' "$label" \
-    "$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$HERMES_HOME/.env" | tr -d '=' | sort | tr '\n' ' ')"
-}
-
 close_running_desktop() {
   local pattern="$INSTALL_DIR/apps/desktop/release"
   local pid waited=0
