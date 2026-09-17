@@ -1605,10 +1605,10 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
 }
-/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
+/** What was copied from the launch profile. */
 export interface ProfileMirrored {
   env?: boolean
-  auth?: boolean | 'shared'
+  auth?: boolean
   model_inherited?: boolean
   voice?: boolean
 }
@@ -2623,6 +2623,8 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  display_kind?: string | null
+  display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null
@@ -2898,7 +2900,7 @@ export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
 }
-/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds). */
+/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
 export interface SessionContextBreakdownResult {
   categories: ContextCategory[]
   context_max: number
@@ -2908,12 +2910,22 @@ export interface SessionContextBreakdownResult {
   context_estimated: boolean
   context_source: string
   model: string
+  context_files?: ContextFileSource[]
 }
 export interface ContextCategory {
   color: string
   id: string
   label: string
   tokens: number
+}
+/** One row of ``agent.context_file_sources.list_context_file_sources``. */
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
 }
 export interface SessionCompressParams {
   session_id: string
@@ -3623,7 +3635,7 @@ export interface McpServerRuntimeRow {
   disabled: boolean
   status: McpRuntimeStatus
 }
-export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'configured'
+export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
 export interface McpServersAddParams {
   profile?: string | null
@@ -3710,6 +3722,7 @@ export interface McpOauthCallbackParams {
   code?: string | null
   state?: string | null
   error?: string | null
+  iss?: string | null
 }
 export interface McpOauthCallbackResult {
   ok: boolean
@@ -3770,6 +3783,7 @@ export interface AgentPluginRow {
   catalog_tier?: string | null
   installed_sha?: string | null
   catalog_sha?: string | null
+  catalog_version?: string | null
   update_available?: boolean | null
   pinned_sha?: string | null
 }
@@ -3811,8 +3825,10 @@ export interface ApprovalResult {
   choice: ApprovalChoice
   all?: boolean | null
 }
-export interface EmptyRequestParams {
+/** Original command, redacted server-side before any password-injection rewrite. */
+export interface SudoRequestParams {
   session_id: string
+  command?: string
 }
 /** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
 export interface ValueResult {
@@ -3843,6 +3859,9 @@ export interface ReadRangeRequestParams {
   session_id: string
   start?: number | null
   count?: number | null
+}
+export interface EmptyRequestParams {
+  session_id: string
 }
 /** ``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets. */
 export interface PreviewActRequestParams {
@@ -3962,6 +3981,9 @@ export interface SetupReadyPayload {
   has_identity: boolean
   other_providers: boolean
   error?: string
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
   finished_at: number
   [key: string]: unknown
 }
@@ -4984,7 +5006,7 @@ export interface ServerRequestMap {
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
   /** Masked sudo password for the terminal tool. */
-  sudo: { params: EmptyRequestParams; result: ValueResult }
+  sudo: { params: SudoRequestParams; result: ValueResult }
   /** Read the visible in-app terminal buffer (JSON text answer). */
   'terminal.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Drive a guided tour highlight in the desktop renderer. */

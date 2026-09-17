@@ -4289,6 +4289,18 @@
             "default": null,
             "title": "Catalog Sha"
           },
+          "catalog_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Version"
+          },
           "update_available": {
             "anyOf": [
               {
@@ -9183,6 +9195,46 @@
         "title": "ContextCategory",
         "type": "object"
       },
+      "ContextFileSource": {
+        "additionalProperties": false,
+        "description": "One row of ``agent.context_file_sources.list_context_file_sources``.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "chars": {
+            "title": "Chars",
+            "type": "integer"
+          },
+          "est_tokens": {
+            "title": "Est Tokens",
+            "type": "integer"
+          },
+          "loaded": {
+            "title": "Loaded",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "path",
+          "chars",
+          "est_tokens",
+          "loaded",
+          "status"
+        ],
+        "title": "ContextFileSource",
+        "type": "object"
+      },
       "ControllerScope": {
         "additionalProperties": false,
         "properties": {
@@ -13732,6 +13784,31 @@
             "title": "User",
             "type": "string"
           },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "display_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          },
           "corrections": {
             "anyOf": [
               {
@@ -14919,6 +14996,18 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "iss": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Iss"
           }
         },
         "required": [
@@ -15207,6 +15296,7 @@
           "disabled",
           "connecting",
           "failed",
+          "lazy",
           "configured"
         ],
         "title": "McpRuntimeStatus",
@@ -20017,7 +20107,7 @@
       },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile.",
         "properties": {
           "env": {
             "default": false,
@@ -20025,17 +20115,9 @@
             "type": "boolean"
           },
           "auth": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "const": "shared",
-                "type": "string"
-              }
-            ],
             "default": false,
-            "title": "Auth"
+            "title": "Auth",
+            "type": "boolean"
           },
           "model_inherited": {
             "default": false,
@@ -25538,7 +25620,7 @@
       },
       "SessionContextBreakdownResult": {
         "additionalProperties": false,
-        "description": "``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds).",
+        "description": "``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)\nplus the per-file context manifest (empty until the agent exists).",
         "properties": {
           "categories": {
             "items": {
@@ -25574,6 +25656,14 @@
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "context_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ContextFileSource"
+            },
+            "title": "Context Files",
+            "type": "array"
           }
         },
         "required": [
@@ -28338,6 +28428,42 @@
             "title": "Error",
             "type": "string"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
+          },
           "finished_at": {
             "title": "Finished At",
             "type": "number"
@@ -31078,6 +31204,26 @@
           "ok"
         ],
         "title": "SubscriptionUpgradeResult",
+        "type": "object"
+      },
+      "SudoRequestParams": {
+        "additionalProperties": false,
+        "description": "Original command, redacted server-side before any password-injection rewrite.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SudoRequestParams",
         "type": "object"
       },
       "SystemBatteryParams": {
@@ -34581,7 +34727,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/EmptyRequestParams"
+            "$ref": "#/components/schemas/SudoRequestParams"
           }
         }
       ],
