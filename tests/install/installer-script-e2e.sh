@@ -340,6 +340,19 @@ env_key_names "after snapshot"
 grep -q '^OPENAI_BASE_URL=' "$HERMES_HOME/.env" \
   || fail "the snapshot phase cleared OPENAI_BASE_URL from $HERMES_HOME/.env"
 
+# The verifier's OWN view of every .env it judges, printed right after its
+# snapshot. When this disagrees with the probe above, the snapshot recorded a
+# different file than the run wrote -- which is what "0 deleted, 1 modified ...
+# OPENAI_BASE_URL ADDED" looked like while the probe saw the key present both
+# immediately before and immediately after the snapshot.
+env_verifier_view() {
+  local py
+  py="$(_user_state_python)"
+  printf '  [env] verifier view:\n'
+  "$py" "$USER_STATE_VERIFIER" env-keys --home "$HERMES_HOME" 2>&1 | sed 's/^/    /' || true
+}
+env_verifier_view
+
 # --- update OLD -> HEAD ----------------------------------------------------------
 
 step "advancing served main to $TARGET_LABEL ($TARGET_SHA)"

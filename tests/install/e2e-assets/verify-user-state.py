@@ -408,6 +408,27 @@ def _render(report: dict) -> str:
     return "\n".join(lines)
 
 
+def env_key_report(home: str, profiles_dir: str | None = None) -> list[str]:
+    """Every .env this verifier judges, with its key names -- names only.
+
+    Exists to be compared against the driver's own view of ``$HERMES_HOME/.env``.
+    The install e2e's probe showed OPENAI_BASE_URL present immediately before AND
+    after the snapshot while the report called it an ADDITION, which can only mean
+    the snapshot read a different file than the run wrote. Printing the paths the
+    verifier actually enumerated settles that in one run instead of three.
+    """
+    snap = snapshot_home(home, profiles_dir)
+    lines: list[str] = []
+    for label, entries in (("judged", snap["entries"]), ("advisory", snap.get("advisory", {}))):
+        for rel in sorted(entries):
+            if not rel.endswith(".env"):
+                continue
+            keys = sorted((entries[rel].get("env_keys") or {}).keys())
+            path = os.path.join(os.path.abspath(home), rel.replace("/", os.sep))
+            lines.append(f"{label} {path}: {' '.join(keys) if keys else '(no keys)'}")
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -424,11 +445,25 @@ def main(argv: list[str] | None = None) -> int:
     p_ver.add_argument("--report")
     p_ver.add_argument("--profiles-dir")
 
+    p_env = sub.add_parser("env-keys",
+                           help="print every judged .env and its key names (names only)")
+    p_env.add_argument("--home", required=True)
+    p_env.add_argument("--profiles-dir")
+
     args = ap.parse_args(argv)
 
     if not os.path.isdir(os.path.abspath(args.home)):
         print(f"error: --home is not a directory: {args.home}", file=sys.stderr)
         return 2
+
+    if args.mode == "env-keys":
+        try:
+            for line in env_key_report(args.home, args.profiles_dir):
+                print(line)
+        except (OSError, ScanError) as exc:
+            print(f"env-keys failed: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.mode == "snapshot":
         try:
