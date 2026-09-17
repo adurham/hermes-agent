@@ -284,14 +284,23 @@ else
   source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$OLD_SHA" old
   assert_checkout "$OLD_SHA" OLD
 fi
-desktop_checkpoint old "$OLD_SHA" "$INSTALL_METHOD"
 
-# A real, chat-capable provider. An existing user HAS one configured, and the
-# durability check below needs a real turn — not a file we wrote ourselves.
+# A real, chat-capable provider, started BEFORE the first desktop checkpoint. An
+# existing user HAS one configured, the durability check needs a real turn (not a
+# file we wrote ourselves), and the checkpoint's own chat smoke asserts against
+# HERMES_E2E_MOCK_URL -- so starting this later left TWO mocks per leg: the
+# checkpoint's (which the app's config pointed at and kept using) and the
+# driver's, which the smoke then waited on. That is the "The mock must receive
+# this checkpoint prompt after the send" timeout: the app was talking to 43475
+# while the smoke asserted against 46723. One mock, started here, is also
+# written into the provider config BEFORE preserve_before_upgrade snapshots the
+# home, so nothing reconfigures provider state inside the verified window.
 if [ -z "${HERMES_E2E_MOCK_URL:-}" ]; then
   PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
   trap mock_stop EXIT
 fi
+
+desktop_checkpoint old "$OLD_SHA" "$INSTALL_METHOD"
 
 # Produce the user's own state through the ordinary CLI, then snapshot what
 # must survive. Done as late as possible before the update so the window
