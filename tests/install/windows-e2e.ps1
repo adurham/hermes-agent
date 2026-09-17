@@ -1047,9 +1047,10 @@ function Assert-RedirectIsTransportOnly {
     # `git config --get remote.origin.url`. If the configured URL ever looked
     # like the rehearsal source, channel resolution would fail and this leg
     # would be testing a fork install rather than the real user path.
-    $official = 'https://github.com/NousResearch/hermes-agent.git'
+    $official = @('https://github.com/NousResearch/hermes-agent.git',
+                  'git@github.com:NousResearch/hermes-agent.git')
     $configured = (Invoke-Git @('-C', $InstallDir, 'config', '--get', 'remote.origin.url') | Out-String).Trim()
-    Assert-True ($configured -eq $official) "origin stays configured as the official URL (got '$configured')"
+    Assert-True ($official -contains $configured) "origin stays configured as an official URL (got '$configured')"
     $observed = (Invoke-Git @('-C', $InstallDir, 'remote', 'get-url', 'origin') | Out-String).Trim()
     Assert-True ($observed -match 'serve\.git|^file://') "origin transport is redirected to the staged repo (got '$observed')"
 }
