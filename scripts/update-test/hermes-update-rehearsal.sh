@@ -363,7 +363,17 @@ cmd_pre() {
   # No -z: the backup root is typically the same internal disk, so the size
   # saving buys nothing and gzip costs ~5x the wall time on a checkout-sized
   # tree (72s vs 14s measured on an M1). Rename to .tar to match the format.
-  tar -cf "$SNAP/hermes-home.tar" -C "$HERMES_HOME" . || die "backup failed (tar)"
+  # bsdtar (macOS) and GNU tar differ on progress options, so poll the growing
+  # archive instead — portable, and it doubles as a liveness signal.
+  local tar_pid
+  tar -cf "$SNAP/hermes-home.tar" -C "$HERMES_HOME" . &
+  tar_pid=$!
+  while kill -0 "$tar_pid" 2>/dev/null; do
+    printf '\r    %s written...  ' "$(du -h "$SNAP/hermes-home.tar" 2>/dev/null | cut -f1)"
+    sleep 2
+  done
+  printf '\r    \r'
+  wait "$tar_pid" || die "backup failed (tar)"
   elapsed=$((SECONDS - started))
   ok "hermes-home.tar ($(du -h "$SNAP/hermes-home.tar" | cut -f1), ${elapsed}s)"
 
