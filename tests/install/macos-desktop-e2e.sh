@@ -370,6 +370,24 @@ PYEOF
   ls -la "$INSTALL_DIR/venv" > "$ildest/venv-ls.txt" 2>/dev/null || true
   ok "collected install-side logs to $ildest"
 
+  # A pre-handoff release cannot complete inside `hermes update`: its update
+  # path reaches no retired-hook seam, so the update ends with the tree at HEAD
+  # and no published launcher. The NEXT ordinary startup completes it
+  # (hermes_bootstrap -> prepare_launch -> sync PM, publish launchers, re-exec).
+  # Drive that startup here, WITHOUT the lazy-install ban, and only when the
+  # launcher is missing -- so a healthy update is still judged by the strict
+  # check below, and `--version` probes keep their ban. A probe must never
+  # complete an unfinished update; a real startup is exactly how a user does it.
+  if ! source_hermes "$INSTALL_DIR" >/dev/null 2>&1; then
+    step "next ordinary startup after the update (completes a pre-handoff release)"
+    local startup_hermes startup_rc=0
+    startup_hermes="$(source_hermes_for_startup "$INSTALL_DIR")" \
+      || fail "no installed command to start after the update"
+    "$startup_hermes" status > "$LOG_DIR/post-update-startup.log" 2>&1 || startup_rc=$?
+    log_group "post-update startup" "$LOG_DIR/post-update-startup.log"
+    ok "first startup after the update ran (exit $startup_rc); the check below asserts the launcher it must have published"
+  fi
+
   local command
   command="$(source_hermes "$INSTALL_DIR")" || fail "no installed command after update"
   python3 -B "$ASSETS/source_driver.py" --root "$INSTALL_DIR" --launcher "$command" --desktop present \

@@ -475,6 +475,24 @@ esac
 # the flag inside makes this second call a no-op on those legs.
 collect_install_side_logs
 
+# A pre-handoff release cannot complete inside `hermes update`: its update path
+# has no retired-hook seam to reach, so the update ends with the tree at HEAD
+# and no published launcher. The NEXT ordinary startup is what completes it
+# (hermes_bootstrap -> prepare_launch -> sync PM, publish launchers, re-exec).
+# Drive that startup here, WITHOUT the lazy-install ban, and only when the
+# launcher is missing -- so a healthy update is still judged by the strict
+# checkpoint below, and `--version` probes keep their ban. A probe must never
+# complete an unfinished update; a real startup is exactly how a user does it.
+if ! source_hermes "$INSTALL_DIR" >/dev/null 2>&1; then
+  step "next ordinary startup after the update (completes a pre-handoff release)"
+  STARTUP_HERMES="$(source_hermes_for_startup "$INSTALL_DIR")" \
+    || fail "no installed command to start after the update"
+  startup_rc=0
+  "$STARTUP_HERMES" status > "$LOG_DIR/post-update-startup.log" 2>&1 || startup_rc=$?
+  log_group "post-update startup" "$LOG_DIR/post-update-startup.log"
+  ok "first startup after the update ran (exit $startup_rc); the checkpoint below asserts the launcher it must have published"
+fi
+
 assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
 assert_user_shims
 user_state_after_upgrade
