@@ -165,22 +165,24 @@ For long-lived processes: Hermes gateway, tui_gateway, a daemon, a process that'
 For Hermes, use a separate development checkout and data home, not a live
 production generation. Follow the
 [PM developer workflow](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
-first. The declared `dev` extra includes debugpy. Through `terminal`, build a
-fresh, caller-owned debug/test environment with the prepared checkout's Python:
+and activate that checkout — PowerShell: `. .\activate.ps1`. The declared `dev`
+extra includes debugpy, which PM activation does not sync (`all` excludes it).
+Through `terminal`, build a fresh, caller-owned debug/test environment with the
+prepared checkout's Python:
 
 ```bash
+source ./activate
 python -m pm.build_env --source . --out .venv --extra dev --group test
-deactivate
-source .venv/bin/activate
-python -c "import debugpy; print(debugpy.__file__)"
+.venv/bin/python -c "import debugpy; print(debugpy.__file__)"
 ```
 
 The output must not already exist. Stop its processes and intentionally remove
 only that disposable environment before rebuilding. Keep the same isolated
-`HERMES_HOME` for the debug target. The activation above is for this explicitly
-built debug environment, not a guessed application venv. Do not add debugpy to
-a running production environment; reproduce there only with an already-prepared
-debug target or arrange a restart in the development environment.
+`HERMES_HOME` for the debug target. `.venv/bin/python` is this explicitly built
+debug environment, not a guessed application venv, and the patterns below run
+through it. Do not add debugpy to a running production environment; reproduce
+there only with an already-prepared debug target or arrange a restart in the
+development environment.
 
 ### Pattern A: Source-edit — process waits for debugger at launch
 
@@ -199,13 +201,13 @@ Start the process; it blocks on `wait_for_client()`.
 ### Pattern B: No source edit — launch with `-m debugpy`
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
 ```
 
 Equivalent for module entry:
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
 ```
 
 ### Pattern C: Attach to an already-running process
@@ -213,7 +215,7 @@ python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
 Needs the PID and debugpy preinstalled in the target's environment:
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --pid <pid>
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid <pid>
 # debugpy injects itself into the process. Then attach a client as below.
 ```
 
@@ -362,7 +364,7 @@ Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client`
 
 ## Verification Checklist
 
-- [ ] In the independently built debug environment, confirm: `python -c "import debugpy; print(debugpy.__version__); print(debugpy.__file__)"`
+- [ ] In the independently built debug environment, confirm: `.venv/bin/python -c "import debugpy; print(debugpy.__version__); print(debugpy.__file__)"`
 - [ ] For remote debug, confirm the port is actually listening: `ss -tlnp | grep 5678`
 - [ ] First breakpoint actually hits (if it doesn't, you likely have `PYTHONBREAKPOINT=0`, you're under a parallel/capturing runner, or execution finished before attach)
 - [ ] `where` / `w` shows the expected call stack
@@ -386,9 +388,9 @@ breakpoint()
 **"This test passes in isolation but fails in the suite."**
 ```bash
 scripts/run_tests.sh tests/the_test.py   # confirm it fails under the isolated runner first
-# For interactive debugging, or if it only fails WITH other tests:
-source .venv/bin/activate
-python -m pytest tests/ -x --pdb
+# For interactive debugging, or if it only fails WITH other tests, use the
+# independent development/test interpreter prepared in Recipe 5:
+.venv/bin/python -m pytest tests/ -x --pdb
 # Now it pdb-traps at the exact failing test after state accumulated.
 ```
 

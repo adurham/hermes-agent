@@ -161,20 +161,21 @@ sys.excepthook = excepthook
 ### 安装
 
 使用独立开发检出和数据目录，不要修改正在运行的生产环境。
-先按照 [PM 开发流程](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
-准备 Python。`dev` extra 已包含 debugpy；通过 `terminal` 构建全新的调试/测试环境：
+按照 [PM 开发流程](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+激活该检出——PowerShell 使用 `. .\activate.ps1`。`dev` extra 已包含 debugpy，
+但 PM 激活不会同步它（`all` 不含该 extra）。通过 `terminal`，用该检出准备好的
+Python 构建全新的调试/测试环境：
 
 ```bash
+source ./activate
 python -m pm.build_env --source . --out .venv --extra dev --group test
-deactivate
-source .venv/bin/activate
-python -c "import debugpy; print(debugpy.__file__)"
+.venv/bin/python -c "import debugpy; print(debugpy.__file__)"
 ```
 
 输出目录必须不存在。重建前停止其进程，并明确删除仅用于调试的可丢弃环境。
-调试目标使用相同的独立 `HERMES_HOME`。这里激活的是刚构建的独立环境，
-不是猜测的应用 venv。不要向正在运行的生产环境安装 debugpy；请在准备好的
-调试目标复现，或安排在开发环境重启。
+调试目标使用相同的独立 `HERMES_HOME`。`.venv/bin/python` 就是刚构建的独立环境，
+不是猜测的应用 venv，下面的模式都通过它运行。不要向正在运行的生产环境安装
+debugpy；请在准备好的调试目标复现，或安排在开发环境重启。
 
 ### 模式 A：修改源码——进程在启动时等待调试器
 
@@ -193,13 +194,13 @@ debugpy.breakpoint()       # 可选：附加后立即暂停
 ### 模式 B：无需修改源码——使用 `-m debugpy` 启动
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client your_script.py arg1
 ```
 
 模块入口的等效写法：
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
 ```
 
 ### 模式 C：附加到已运行的进程
@@ -207,7 +208,7 @@ python -m debugpy --listen 127.0.0.1:5678 --wait-for-client -m your.module
 需要 PID 以及在目标环境中预装 debugpy：
 
 ```bash
-python -m debugpy --listen 127.0.0.1:5678 --pid <pid>
+.venv/bin/python -m debugpy --listen 127.0.0.1:5678 --pid <pid>
 # debugpy 注入到目标进程中，然后按以下方式连接客户端。
 ```
 
@@ -356,7 +357,7 @@ set_trace(host="127.0.0.1", port=4444)   # 在你想捕获的 RPC 处理器中
 
 ## 验证清单
 
-- [ ] 在独立构建的调试环境中确认：`python -c "import debugpy; print(debugpy.__version__); print(debugpy.__file__)"`
+- [ ] 在独立构建的调试环境中确认：`.venv/bin/python -c "import debugpy; print(debugpy.__version__); print(debugpy.__file__)"`
 - [ ] 对于远程调试，确认端口确实在监听：`ss -tlnp | grep 5678`
 - [ ] 第一个断点确实触发（如果没有，可能是 `PYTHONBREAKPOINT=0`、在并行/捕获输出的 runner 下运行，或执行在附加前已结束）
 - [ ] `where` / `w` 显示预期的调用栈
@@ -380,9 +381,8 @@ breakpoint()
 **"这个测试单独运行通过，但在测试套件中失败。"**
 ```bash
 scripts/run_tests.sh tests/the_test.py   # 先确认它在隔离 runner 下失败
-# 交互式调试，或只有与其他测试一起运行才失败时：
-source .venv/bin/activate
-python -m pytest tests/ -x --pdb
+# 交互式调试，或只有与其他测试一起运行才失败时，使用 Recipe 5 准备的独立开发/测试解释器：
+.venv/bin/python -m pytest tests/ -x --pdb
 # 现在它会在状态积累后的确切失败测试处触发 pdb。
 ```
 
