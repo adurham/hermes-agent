@@ -65,13 +65,26 @@ def check_runtime(project_root: Path) -> str | None:
 
 def publish_launchers(project_root: Path, *, create: bool = True) -> None:
     """Refresh durable commands; bootstrap repairs only existing PATH exposure."""
+    import logging
+
     from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python
     from hermes_cli.steward import read_install_stamp
 
     root = Path(project_root)
-    if (_is_sealed(root) or read_install_stamp(root).get("updateMechanism") == "external"
-            or resolve_store_python(root) is None):
+    log = logging.getLogger(__name__)
+    if _is_sealed(root):
+        log.info("launchers: sealed tree at %s keeps its own", root)
         return  # Sealed and external/Nix interpreters retain their own launchers.
+    if read_install_stamp(root).get("updateMechanism") == "external":
+        log.info("launchers: external runtime at %s keeps its own", root)
+        return
+    if resolve_store_python(root) is None:
+        # A PM tree promises its launchers (tests/install/e2e-assets/
+        # source-driver.sh refuses to let --version paper over the gap), so
+        # this skip is a half-finished update, never a quiet no-op.
+        log.warning("launchers: no managed interpreter under %s; %s not published",
+                    root, root / ".hermes" / "bin")
+        return
     written = ensure_install_launchers(root, root / ".hermes" / "bin")
     if len(written) != len(ENTRY_POINTS):
         from pm.package import InstallError
