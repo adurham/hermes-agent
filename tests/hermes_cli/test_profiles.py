@@ -284,7 +284,7 @@ class TestCreateProfile:
         from tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_clone_keeps_real_ntfs_junction(self, profile_env):
         import _winapi
         default_home, external = self._home_with_linked_skill(profile_env)

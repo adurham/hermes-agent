@@ -175,7 +175,7 @@ jobs:
         run: python scripts/check_compat_pointers.py
 
       # The OS lanes import only files carrying the matching marker, so a test that fakes
-      # macOS (is_macos -> True, sys.platform -> "darwin") without `macos_only` is green on
+      # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on
       # Linux over a faked branch and never runs on macOS (#111866, AGENTS.md § Don't fake the host OS).
       - name: Forbid unmarked macOS fakes in tests
         run: python scripts/ci/check_os_marker_fakes.py

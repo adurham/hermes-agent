@@ -143,7 +143,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     assert captured_cmd[:3] == ["hermes", "-p", "coder"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

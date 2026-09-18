@@ -748,7 +748,7 @@ class TestFailSemanticsEndToEnd:
 
 
 class TestRoutedProfileEnv:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
         """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
         stay out of its env, and the payload names the firing profile."""

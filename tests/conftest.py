@@ -1506,10 +1506,21 @@ def _reject_contradictory_platform_marks(items):
     marker: platforms("linux", arch="arm64").
     """
     offenders = []
+    retired = []
     for item in items:
         marks = list(item.iter_markers("platforms"))
         if len(marks) > 1:
             offenders.append(f"  {item.nodeid}: {len(marks)} platforms() marks")
+        for legacy in ("linux_only", "macos_only", "windows_only"):
+            if item.get_closest_marker(legacy):
+                retired.append(f"  {item.nodeid}: {legacy}")
+    if retired:
+        # An unregistered mark is a warning, so a merge that resurrects the old
+        # trio would make a host-gated test RUN on every host, unnoticed.
+        raise pytest.UsageError(
+            "linux_only/macos_only/windows_only were replaced by platforms(...); rewrite:\n"
+            + "\n".join(retired)
+        )
     if offenders:
         raise pytest.UsageError(
             "a test may carry at most one platforms() marker — combine the "

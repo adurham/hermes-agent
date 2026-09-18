@@ -2855,7 +2855,7 @@ class TestUnitAnchoredServiceIdentity:
     resolver, and only an elevated process operates the system unit.
     """
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_home_not_pinned_by_unit_keeps_its_suffix(self, tmp_path, monkeypatch):
         alice_home = tmp_path / "alice" / ".hermes"
         alice_home.mkdir(parents=True)
@@ -2875,7 +2875,7 @@ class TestUnitAnchoredServiceIdentity:
         assert name != gateway_cli._SERVICE_BASE
         assert name.startswith(gateway_cli._SERVICE_BASE + "-")
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_unprivileged_profile_command_ignores_the_system_unit(self, tmp_path, monkeypatch):
         """A bare system unit pinning ``profiles/<name>`` must not alias that profile onto the user's
         default unit when an unprivileged user-scope command resolves the name."""
@@ -2892,7 +2892,7 @@ class TestUnitAnchoredServiceIdentity:
         monkeypatch.setenv("HERMES_HOME", str(profile_home))
         assert gateway_cli.get_service_name() == "hermes-gateway-kimi"
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_bare_unit_pinning_a_named_profile_home_keeps_the_bare_name(self, tmp_path, monkeypatch):
         """``sudo ... install --system`` names the unit from root's default but pins the invoking user's
         remapped home, so the BARE unit legitimately carries a ``profiles/<name>`` home. The unit-pinned
@@ -2915,7 +2915,7 @@ class TestUnitAnchoredServiceIdentity:
         # with the readable suffix -- which is why the unit-pinned check has to be evaluated first.
         assert gateway_cli._profile_name_from_home(profile_home, profile_home.parent.parent) == profile_home.name
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_real_unit_sync_keeps_the_name_it_validated(self, tmp_path, monkeypatch):
         """Drive the production sync instead of simulating the adoption with setenv: the name resolved
         before ``_sync_hermes_home_from_systemd_unit()`` must survive the mutation it performs."""

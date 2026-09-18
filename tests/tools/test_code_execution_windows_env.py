@@ -201,7 +201,7 @@ def test_windows_child_keeps_os_local_timezone_when_timezone_is_configured(monke
     assert "TZ" not in _configured_timezone_child_env()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_live_child_offset_matches_os_zone_when_timezone_is_configured(monkeypatch):
     """The user-visible contract of #112233: with ``timezone:`` configured, a real Windows child
     must report the OS zone's UTC offset — an IANA name in ``TZ`` made the MSVC runtime derive
