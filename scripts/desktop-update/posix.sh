@@ -339,7 +339,7 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
     rm -rf "$UI_PROFILE_DIR" 2>/dev/null || true
     UI_PROFILE_DIR=""
   fi
-  UI_SERVER_PID="" UI_BROWSER_PID=""
+  UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID=""
 }
 
 # ── relaunch ────────────────────────────────────────────────────────────────

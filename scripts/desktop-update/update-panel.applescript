@@ -21,6 +21,10 @@ use framework "Foundation"
 use framework "AppKit"
 use scripting additions
 
+# Set once the status file has been seen to exist; a LATER disappearance
+# means the shim published a terminal state and cleaned up (see run handler).
+property everPublished : false
+
 on run argv
 	if (count of argv) < 1 then error "usage: osascript update-panel.applescript <status-file>"
 	set statusFile to (item 1 of argv as text)
@@ -64,6 +68,19 @@ on run argv
 				bar's stopAnimation:(missing value)
 				exit repeat
 			end if
+		else if my everPublished then
+			# The status file vanished after having existed: the shim removes
+			# it right after publishing a terminal state and tearing down the
+			# browser/panel UI. Waiting forever here stranded the panel on its
+			# last stage ("Installing the new app") — observed on a real
+			# update. Treat the disappearance as done; an error publish keeps
+			# its file alive through the 15s leave-window grace, so this
+			# cannot mask a failure.
+			set state to "done"
+			bar's stopAnimation:(missing value)
+			exit repeat
+		else
+			set everPublished to true
 		end if
 		# Pump the main runloop: without this the window never repaints and
 		# macOS beachballs the panel (label frozen on its initial string).
