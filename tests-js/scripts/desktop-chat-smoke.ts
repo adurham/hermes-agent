@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { expect, type Locator, type Page } from '@playwright/test'
+import { type ConsoleMessage, expect, type Locator, type Page } from '@playwright/test'
 import { z } from 'zod'
 
 import { validateMockUrl } from './mock-provider-config.ts'
@@ -128,6 +128,12 @@ async function composerDiagnostics(root: Locator): Promise<string> {
   }
 }
 
+/** The composer's text, whether the app rendered it as a contentEditable or a real textarea. */
+export async function composerText(composer: Locator): Promise<string> {
+  return composer.evaluate((node: HTMLElement): string =>
+    node instanceof HTMLTextAreaElement ? node.value : node.textContent ?? '')
+}
+
 async function readTranscript(page: Page): Promise<TranscriptMessage[]> {
   return page.locator('[data-slot="aui_thread-viewport"]:visible [data-message-id][data-role]').evaluateAll(
     (nodes: Element[]): TranscriptMessage[] => nodes.map((node: Element): TranscriptMessage => ({
@@ -156,14 +162,50 @@ export function newCompletedPair(
   return { user, assistant }
 }
 
+/** Evidence before assertion: what the renderer held when a checkpoint failed. */
+async function rendererEvidence(page: Page, consoleLines: readonly string[]): Promise<string> {
+  const state = await page.evaluate((): Record<string, unknown> => {
+    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+    const composer = document.querySelector('[data-slot="composer-root"]')
+    return {
+      url: location.href,
+      threadMessageCount: document.querySelectorAll('[data-message-id][data-role]').length,
+      threadText: viewport?.textContent?.slice(0, 2000) ?? null,
+      composerHtml: composer?.outerHTML?.slice(0, 2000) ?? null,
+      alerts: [...document.querySelectorAll('[role="alert"]')].map((node: Element): string => node.textContent?.slice(0, 400) ?? ''),
+    }
+  }).catch((error: Error): Record<string, unknown> => ({ error: String(error) }))
+  return ['--- renderer state ---', JSON.stringify(state, null, 2), '--- renderer console ---', ...consoleLines].join('\n')
+}
+
 /** Lifecycle belongs to the caller, so this also runs inside the OLD update window. */
 export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeOptions): Promise<DesktopChatReceipt> {
   const { phase, outDir, expectCommit } = options
   fs.mkdirSync(outDir, { recursive: true })
   const receiptPath = path.join(outDir, `desktop-chat-${phase}.json`)
+  const evidencePath = path.join(outDir, `desktop-chat-${phase}-renderer.log`)
   const screenshot = path.join(outDir, `desktop-chat-${phase}.png`)
   const prompt = `Hello, can you hear me? Desktop smoke ${phase} ${randomUUID()}`
   const observe = options.observePrompts ?? ((): Promise<string[]> => readMockPrompts(options.mockUrl))
+  // A send the app swallows and a send the app never made look identical from
+  // the mock's side; the renderer's own console is the only witness to which.
+  const consoleLines: string[] = []
+  const onConsole = (message: ConsoleMessage): void => {
+    if (consoleLines.length >= 200) {
+      return
+    }
+
+    const type = message.type()
+
+    if (type === 'debug') {
+      return
+    }
+
+    consoleLines.push(`[${type}] ${message.text().slice(0, 500)}`)
+  }
+
+  page.on('console', onConsole)
+
   try {
     const composer = await waitForChatReady(page)
     const identity = await readChatIdentity(page)
@@ -173,9 +215,14 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
     await composer.click()
     await composer.press('ControlOrMeta+A')
     await composer.pressSequentially(prompt)
+    // The composer clears on submit whether or not a turn was ever started, so
+    // the clear-poll below passes vacuously when the editor refused the input.
+    // Prove the typing landed before trusting anything downstream of Enter.
+    await expect.poll(async (): Promise<string> => composerText(composer), {
+      timeout: 15_000, message: 'The composer must hold the typed prompt before Enter (did the editor accept input?)',
+    }).toContain(prompt)
     await composer.press('Enter')
-    await expect.poll(async (): Promise<string> => composer.evaluate((node: HTMLElement): string =>
-      node instanceof HTMLTextAreaElement ? node.value : node.textContent ?? ''),
+    await expect.poll(async (): Promise<string> => composerText(composer),
     { timeout: 90_000, message: 'The submitted draft must clear before the idle control proves completion' }).toBe('')
     let witnessIndex = -1
     let receivedPrompt = ''
@@ -204,7 +251,10 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
     return receipt
   } catch (error) {
     await page.screenshot({ path: screenshot }).catch((): void => {})
+    fs.writeFileSync(evidencePath, `${await rendererEvidence(page, consoleLines)}\n`)
     fs.writeFileSync(receiptPath, `${JSON.stringify({ status: 'failed', phase, expectedCommit: expectCommit ?? null, prompt, error: String(error) }, null, 2)}\n`)
     throw error
+  } finally {
+    page.off('console', onConsole)
   }
 }
