@@ -357,7 +357,26 @@ function Save-InstallSideState([string]$Label) {
 
 function Test-HermesRuns([string]$Label) {
     Save-InstallSideState $Label
-    $hermesExe = Get-SourceHermes $InstallDir
+    $hermesExe = $null
+    try {
+        $hermesExe = Get-SourceHermes $InstallDir
+    } catch {
+        # A pre-handoff release cannot complete inside `hermes update`: its
+        # update path reaches no retired-hook seam, so the update ends with the
+        # tree at HEAD and no published launcher. The NEXT ordinary startup
+        # completes it (hermes_bootstrap -> prepare_launch -> sync PM, publish
+        # launchers, re-exec). Drive that startup here, WITHOUT the lazy-install
+        # ban, and only when the launcher is missing -- so a healthy update is
+        # still judged by the strict checks below, and `--version` probes keep
+        # their ban: a probe must never complete an unfinished update.
+        Write-Host "  no published launcher yet; running the next ordinary startup (this is what completes a pre-handoff release)"
+        $startupHermes = Get-SourceHermesForStartup $InstallDir
+        $startupLog = Join-Path $WorkRoot 'logs\post-update-startup.log'
+        New-Item -ItemType Directory -Force -Path (Split-Path $startupLog) | Out-Null
+        & $startupHermes status *> $startupLog
+        Write-Host "  first startup after the update ran (exit $LASTEXITCODE); the checks below assert the launcher it must have published"
+        $hermesExe = Get-SourceHermes $InstallDir
+    }
     & python -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
     Assert-True ($LASTEXITCODE -eq 0) "$Label -- read-only install verification (no repair)"
     $prevLazy = $env:HERMES_DISABLE_LAZY_INSTALLS
