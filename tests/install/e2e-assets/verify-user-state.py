@@ -186,6 +186,25 @@ def _env_key_diff(before: dict, after: dict) -> dict:
     }
 
 
+def _env_line_summary(path: str) -> dict:
+    """Line-level shape of a .env without any content: totals, blanks, key order.
+
+    The per-key digests deliberately ignore comments, blank lines and ordering, so
+    a file rewritten only in those ways reports as modified with nothing named --
+    which is exactly the "0 deleted, 1 modified" with no `variables ...` line.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return {"lines": 0, "comments": 0, "blanks": 0, "key_order": []}
+    comments = sum(1 for line in lines if line.strip().startswith("#"))
+    blanks = sum(1 for line in lines if not line.strip())
+    order = [line.split("=", 1)[0].strip() for line in lines
+             if "=" in line and line.strip() and not line.strip().startswith("#")]
+    return {"lines": len(lines), "comments": comments, "blanks": blanks, "key_order": order}
+
+
 def _entry_record(abs_path: str) -> dict:
     if _is_link(abs_path):
         record: dict = {"kind": "symlink", "target": os.readlink(abs_path)}
@@ -207,6 +226,7 @@ def _entry_record(abs_path: str) -> dict:
             record["sha256"] = _sha256_file(abs_path)
         if os.path.basename(abs_path) == ".env":
             record["env_keys"] = _env_key_hashes(abs_path)
+            record["env_lines"] = _env_line_summary(abs_path)
         return record
     return {"kind": "other"}
 
@@ -397,6 +417,10 @@ def _render(report: dict) -> str:
             if detail.get(field))
         if named:
             lines.append(f"    {rel}: variables {named} (names only; values are never recorded)")
+        else:
+            lines.append(f"    {rel}: no key differs -- comments/order/blanks only "
+                         f"(before {pair['before'].get('env_lines')}, after {pair['after'].get('env_lines')}; "
+                         f"counts and names, never content)")
     for rel in report["rows_shrank"]:
         lines.append(f"  ROWS SHRANK {rel}")
     for rel in report["tolerated_modified"]:

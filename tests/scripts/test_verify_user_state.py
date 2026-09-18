@@ -339,3 +339,25 @@ def test_cron_ticker_stamps_move_but_user_cron_state_still_fails(tmp_path):
         "cron/ticker_heartbeat", "profiles/p/cron/ticker_last_success"]
     # The user's own cron DEFINITIONS are still state that must not move.
     assert report["ok"] is False
+
+
+def test_a_dotenv_changed_only_in_comments_is_reported_as_such(tmp_path):
+    """The per-key digests ignore comments, order and blanks by design.
+
+    So a .env rewritten only in those parts reports as modified with no `variables`
+    line -- the real "0 deleted, 1 modified" with nothing named. The report must say
+    that explicitly, and still carry no values.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("# one\nOPENAI_BASE_URL=http://127.0.0.1:9000/v1\n", encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+
+    (home / ".env").write_text("# one\n# two\nOPENAI_BASE_URL=http://127.0.0.1:9000/v1\n", encoding="utf-8")
+    report = vus.verify_home(str(home), snap)
+
+    assert set(report["modified"]) == {".env"}
+    assert report["modified"][".env"]["key_diff"]["keys_changed"] == []
+    rendered = vus._render(report)
+    assert "no key differs" in rendered
+    assert "http://127.0.0.1:9000/v1" not in rendered
