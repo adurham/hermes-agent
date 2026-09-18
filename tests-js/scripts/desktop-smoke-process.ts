@@ -18,6 +18,12 @@ export interface NativeProcess {
   cwd?: string
 }
 
+/** What the caller already knows about the app that owns this listener. */
+export interface OriginEvidence {
+  /** The root the app itself reported resolving, from its own UI/identity channel. */
+  appReportedRoot?: string
+}
+
 export function within(root: string, candidate: string): boolean {
   const relative = path.relative(fs.realpathSync(root), fs.realpathSync(candidate))
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
@@ -154,7 +160,8 @@ export function localBackendProcess(port: number, electronPid: number): NativePr
   return backend
 }
 
-export function assertBackendOrigin(backend: NativeProcess, root: string, origin: 'source' | 'bundled'): void {
+export function assertBackendOrigin(backend: NativeProcess, root: string, origin: 'source' | 'bundled',
+  evidence: OriginEvidence = {}): void {
   if (origin === 'bundled') {
     if (path.basename(root) !== 'agent-payload' || !within(root, backend.executable)) {
       throw new Error('Bundled backend listener is not running the installed agent-payload interpreter')
@@ -205,10 +212,22 @@ export function assertBackendOrigin(backend: NativeProcess, root: string, origin
     const usesInstallEnvironment = joinsInstall(backend.pythonPath)
       || (backend.virtualEnv !== undefined && backend.virtualEnv.trim() !== ''
           && sameTree(path.dirname(backend.virtualEnv)))
-    if (!sameTree(backend.cwd) && !namesInstallRoot && !usesInstallEnvironment) {
+    // Some platforms expose no way to read another process's environment or cwd, so a
+    // module-launched backend there can never name its tree in argv (Windows: the venv
+    // launcher hands the interpreter over as a system python). The listener has already
+    // been tied to the app process that owns it, and the caller has already asserted the
+    // root that app reported resolving, so those two facts together are the evidence.
+    // Requiring the process evidence to be absent keeps this from loosening a platform
+    // that can read one.
+    const processEvidenceUnreadable = backend.cwd === undefined
+      && backend.pythonPath === undefined && backend.virtualEnv === undefined
+    const appOwnsBackend = processEvidenceUnreadable
+      && evidence.appReportedRoot !== undefined && sameTree(evidence.appReportedRoot)
+    if (!sameTree(backend.cwd) && !namesInstallRoot && !usesInstallEnvironment && !appOwnsBackend) {
       throw new Error('Source backend listener imports a different source tree'
         + ` (cwd=${backend.cwd ?? '(unreadable)'}, HERMES_PYTHON_SRC_ROOT=(unset),`
-        + ` executable=${backend.executable}, expected=${root}, command=${backend.command})`)
+        + ` executable=${backend.executable}, expected=${root},`
+        + ` appReportedRoot=${evidence.appReportedRoot ?? '(unreported)'}, command=${backend.command})`)
     }
     return
   }

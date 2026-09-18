@@ -163,6 +163,42 @@ test('a backend bound to the tree by environment needs no root in argv', (): voi
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
 
+test('a platform that cannot read the backend environment proves ownership by the app', (): void => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-owner-origin-'))
+  try {
+    const root = path.join(home, 'hermes-agent')
+    const other = path.join(home, 'other-tree')
+    fs.mkdirSync(root, { recursive: true })
+    fs.mkdirSync(other, { recursive: true })
+    // The Windows shape: the app's venv launcher hands the interpreter over as a system
+    // python, so argv never names the tree, and this platform exposes neither the
+    // backend's cwd nor its environment.
+    const backend = {
+      pid: process.pid,
+      parentPid: 1,
+      executable: path.join(home, 'python.exe'),
+      command: `"${path.join(home, 'python.exe')}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0`,
+    }
+    // Control row: with nothing readable and no report from the app, this is still a
+    // different tree.
+    expect((): void => { assertBackendOrigin(backend, root, 'source') }).toThrow('source tree')
+    // The app reported resolving this root (the driver asserts that against options.root
+    // before calling), and the listener was already tied to that same app process.
+    expect((): void => {
+      assertBackendOrigin(backend, root, 'source', { appReportedRoot: root })
+    }).not.toThrow()
+    // A report of some other tree is no evidence for this one.
+    expect((): void => {
+      assertBackendOrigin(backend, root, 'source', { appReportedRoot: other })
+    }).toThrow('source tree')
+    // Readable process evidence keeps the strict path: an environment naming another
+    // tree is not rescued by the app's own report.
+    expect((): void => {
+      assertBackendOrigin({ ...backend, cwd: other, pythonPath: other }, root, 'source', { appReportedRoot: root })
+    }).toThrow('source tree')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
+
 test('source launch restores only an explicitly captured exact editable root', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-source-'))
   const specPath = path.join(home, 'launch.json')
