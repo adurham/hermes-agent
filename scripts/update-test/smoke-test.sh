@@ -81,17 +81,22 @@ check_out() { local n="$1" m="$2"; shift 2; local out; out="$("$@" 2>&1 || true)
 echo
 echo "--- pre (source = the fixture repo, so no network) ---"
 STATUS_BEFORE="$(git -C "$INSTALL" status --porcelain)"
+# A pristine copy of both trees: post is checked against it for exactness.
+mkdir -p "$ROOT/pristine/home" "$ROOT/pristine/userdata"
+cp -a "$H/." "$ROOT/pristine/home/"
+cp -a "$HERMES_DESKTOP_USER_DATA_DIR/." "$ROOT/pristine/userdata/"
 "${RUN[@]}" pre --source "$INSTALL" --ref main --backup-root "$BACKUPS" > "$ROOT/pre.log" 2>&1
 check $? "pre exits 0"
 SNAP="$(ls -1d "$BACKUPS"/*/ | head -1)"; SNAP="${SNAP%/}"
-for f in hermes-home.tar electron-userdata.tar fingerprint-before.txt userdata-before.txt manifest.json shims.txt checkout.txt remotes.txt; do
+for f in hermes-home.tar electron-userdata.tar manifest.json hermes-home.txt target-sha; do
   [ -e "$SNAP/$f" ]; check $? "backup artifact $f"
 done
 TARLIST="$(tar -tf "$SNAP/hermes-home.tar" 2>&1 || true)"
 grep -qE '^\./hermes-agent/\.git/config$' <<< "$TARLIST"; check $? "whole home: checkout .git in the tar"
 grep -qE '^\./hermes-agent/\.hermes-runtime/python/interpreter\.bin$' <<< "$TARLIST"; check $? "whole home: PM store in the tar"
 grep -qE '^\./config\.yaml$' <<< "$TARLIST"; check $? "whole home: config.yaml in the tar"
-grep -q 'sessions=2' "$SNAP/fingerprint-before.txt"; check $? "state.db row counts fingerprinted"
+UDLIST="$(tar -tf "$SNAP/electron-userdata.tar" 2>&1 || true)"
+grep -qE '^\./Cache/data\.bin$' <<< "$UDLIST"; check $? "whole userData: nothing filtered out of the tar"
 
 echo
 echo "--- pre points the install at the rehearsal copy ---"
@@ -129,16 +134,19 @@ check $? "post exits 0"
 [ ! -f "$H/.skip_upstream_prompt" ]; check $? "upstream-prompt marker removed"
 git -C "$INSTALL" remote get-url origin | grep -q 'NousResearch'; check $? "origin resolves officially again"
 if [ "$SYMLINKS_OK" = 1 ]; then
-  [ -L "$HOME/.local/bin/hermes" ]; check $? "user-bin shim restored as a symlink"
+  [ -L "$HOME/.local/bin/hermes" ]; check $? "shim outside the two trees left untouched"
 else
   echo "  SKIP user-bin shim symlink (host cannot create symlinks)"
 fi
-grep -q 'entries match your backup' "$ROOT/post.log"; check $? "post reports an exact state restore"
-if ! grep -q 'entries match your backup' "$ROOT/post.log"; then
-  echo "    --- report section of post.log ---"
-  sed -n '/how exact was the restore/,$p' "$ROOT/post.log" | sed 's/^/    /' | head -20
-  [ -e "$SNAP/fingerprint-restore.diff" ] && sed 's/^/    /' "$SNAP/fingerprint-restore.diff" | head -30
-fi
+
+echo
+echo "--- the acceptance criterion: every file identical before/after ---"
+diff -r --no-dereference "$ROOT/pristine/home" "$H" > "$ROOT/home.diff" 2>&1
+check $? "HERMES_HOME identical to before pre"
+[ -s "$ROOT/home.diff" ] && sed 's/^/    /' "$ROOT/home.diff" | head -30
+diff -r --no-dereference "$ROOT/pristine/userdata" "$HERMES_DESKTOP_USER_DATA_DIR" > "$ROOT/userdata.diff" 2>&1
+check $? "userData identical to before pre"
+[ -s "$ROOT/userdata.diff" ] && sed 's/^/    /' "$ROOT/userdata.diff" | head -30
 
 echo
 echo "=== smoke: $pass passed, $fail failed ==="

@@ -108,6 +108,30 @@ Write-Host "fixture under $Root"
 $pass = 0; $fail = 0
 function Check { param([string]$Msg, [bool]$Ok) if ($Ok) { Write-Host "  PASS $Msg"; $script:pass++ } else { Write-Host "  FAIL $Msg"; $script:fail++ } }
 
+# Every path, file size and content hash under a tree, so post can be checked
+# for exactness against the tree as it was before pre.
+function Get-TreeListing {
+  param([string]$Root)
+  if (-not (Test-Path -LiteralPath $Root)) { return '' }
+  $lines = New-Object System.Collections.Generic.List[string]
+  $stack = New-Object System.Collections.Stack
+  $stack.Push($Root)
+  while ($stack.Count -gt 0) {
+    $cur = $stack.Pop()
+    foreach ($it in @(Get-ChildItem -LiteralPath $cur -Force -ErrorAction SilentlyContinue)) {
+      $rel = $it.FullName.Substring($Root.Length).TrimStart('\')
+      if ($it.PSIsContainer) {
+        if ($it.Attributes -band [IO.FileAttributes]::ReparsePoint) { $lines.Add("link`t$rel`t$($it.Target)") }
+        else { $lines.Add("dir`t$rel"); $stack.Push($it.FullName) }
+      }
+      else {
+        $lines.Add("file`t$rel`t$($it.Length)`t$((Get-FileHash -LiteralPath $it.FullName -Algorithm SHA256).Hash)")
+      }
+    }
+  }
+  return (($lines | Sort-Object) -join "`n")
+}
+
 function Invoke-Rehearsal {
   param([string[]]$Arguments, [switch]$AllowFailure)
   # PS 5.1 turns a child's stderr into a TERMINATING error record when EAP is
@@ -188,18 +212,21 @@ try {
 
   Write-Host "`n--- pre (source = the fixture repo, so no network) ---"
   $statusBefore = (& git -C $Install status --porcelain | Out-String)
+  # Both trees as they are right now: post is checked against this for exactness.
+  $homeBefore = Get-TreeListing $H
+  $userDataBefore = Get-TreeListing $env:HERMES_DESKTOP_USER_DATA_DIR
   $r = Invoke-Rehearsal -Arguments @('pre', '-Source', $Install, '-Ref', 'main', '-BackupRoot', $Backups)
   Check 'pre exits 0' ($r.Code -eq 0)
   $Snap = (Get-ChildItem -LiteralPath $Backups -Directory | Sort-Object Name)[-1].FullName
-  foreach ($f in @('hermes-home.tar', 'electron-userdata.tar', 'fingerprint-before.txt', 'userdata-before.txt', 'manifest.json', 'shims.txt', 'checkout.txt', 'remotes.txt')) {
+  foreach ($f in @('hermes-home.tar', 'electron-userdata.tar', 'manifest.json', 'hermes-home.txt', 'target-sha')) {
     Check "backup artifact $f" (Test-Path -LiteralPath (Join-Path $Snap $f))
   }
   $tarList = (& tar.exe -tf (Join-Path $Snap 'hermes-home.tar') | Out-String)
   Check 'whole home: checkout .git in the tar' ($tarList -match '(?m)^\./hermes-agent/\.git/config\s*$')
   Check 'whole home: PM store in the tar' ($tarList -match '(?m)^\./hermes-agent/\.hermes-runtime/python/interpreter\.bin\s*$')
   Check 'whole home: config.yaml in the tar' ($tarList -match '(?m)^\./config\.yaml\s*$')
-  $fp = Get-Content -LiteralPath (Join-Path $Snap 'fingerprint-before.txt') -Raw
-  Check 'state.db row counts fingerprinted' ($fp -match 'sessions=2')
+  $udList = (& tar.exe -tf (Join-Path $Snap 'electron-userdata.tar') | Out-String)
+  Check 'whole userData: nothing filtered out of the tar' ($udList -match '(?m)^\./Cache/data\.bin\s*$')
 
   Write-Host "`n--- pre points the install at the rehearsal copy ---"
   $served = (& git -C (Join-Path $Snap 'serve.git') rev-parse refs/heads/main | Out-String).Trim()
@@ -240,10 +267,18 @@ try {
   Check 'upstream-prompt marker removed' (-not (Test-Path -LiteralPath (Join-Path $H '.skip_upstream_prompt')))
   Check 'origin resolves officially again' (((& git -C $Install remote get-url origin | Out-String).Trim()) -match 'NousResearch')
   Check 'bin shim restored' (Test-Path -LiteralPath (Join-Path $H 'bin\hermes.cmd'))
-  Check 'post reports an exact state restore' ($r.Out -match 'entries match your backup')
-  if ($r.Out -notmatch 'entries match your backup') {
-    Write-Host '--- report section ---'
-    Write-Host (($r.Out -split "`n" | Select-String -Pattern 'how exact was the restore' -Context 0, 12 | Out-String))
+  Write-Host "`n--- the acceptance criterion: every file identical before/after ---"
+  $homeAfter = Get-TreeListing $H
+  Check 'HERMES_HOME identical to before pre' ($homeAfter -eq $homeBefore)
+  if ($homeAfter -ne $homeBefore) {
+    Compare-Object ($homeBefore -split "`n") ($homeAfter -split "`n") |
+      ForEach-Object { Write-Host "    $($_.SideIndicator) $($_.InputObject)" }
+  }
+  $userDataAfter = Get-TreeListing $env:HERMES_DESKTOP_USER_DATA_DIR
+  Check 'userData identical to before pre' ($userDataAfter -eq $userDataBefore)
+  if ($userDataAfter -ne $userDataBefore) {
+    Compare-Object ($userDataBefore -split "`n") ($userDataAfter -split "`n") |
+      ForEach-Object { Write-Host "    $($_.SideIndicator) $($_.InputObject)" }
   }
 }
 finally {
