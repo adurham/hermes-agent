@@ -360,8 +360,15 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
     Before dependency sync succeeds, create=False maintains only commands we
     already own, without loading application config or enabling new exposure.
     """
+    # Resolved before the platform branch: the Windows path needs it too.
+    root = Path(project_root or os.environ.get("HERMES_INSTALL_ROOT") or Path(__file__).resolve().parents[1]).resolve()
     if _is_windows():
-        return {"ok": True, "skipped": "windows-installer-owned"}
+        # The installer stages the user-facing commands into $HERMES_HOME\bin
+        # and registers that directory in the User PATH. An update skipped both
+        # (this used to answer "windows-installer-owned"), so a machine updated
+        # from a release predating that convention kept the old
+        # venv\Scripts entry and never converged on it. Mirror the installer.
+        return _expose_windows_user_bin(root, create=create)
     if create:
         try:
             from hermes_cli.config import load_config
@@ -373,7 +380,6 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
             return {"ok": True, "skipped": "config-disabled"}
     from hermes_cli.steward import read_install_stamp
 
-    root = Path(project_root or os.environ.get("HERMES_INSTALL_ROOT") or Path(__file__).resolve().parents[1]).resolve()
     if _is_bundled_payload(root):
         if create and sys.platform == "darwin":
             return _symlink_sealed_launchers(root.parent / "bin")
@@ -398,6 +404,80 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
             published = _publish_conveniences(root, directory, (*WINDOWS_BIN_LAUNCHERS, "hermes-agent"), create=create)
             written.extend(path.name for path, changed in published.items() if changed)
         return {"ok": True, "written": written}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _merge_user_path(existing: str, entry: str) -> str | None:
+    """``entry`` first, or None when the PATH already names it.
+
+    Windows paths are case-insensitive and may carry a trailing separator, so
+    compare that way rather than by exact string.
+    """
+    wanted = entry.rstrip("\\/")
+    parts = [part for part in (existing or "").split(";") if part]
+    if any(part.rstrip("\\/").casefold() == wanted.casefold() for part in parts):
+        return None
+    return ";".join([entry, *parts])
+
+
+def _register_windows_user_path(entry: Path) -> str:
+    """Put ``entry`` on the User PATH. Returns 'present' or 'added'.
+
+    Preserves the stored value type: install.ps1 writes expandable entries
+    (``%LOCALAPPDATA%\\...``), and rewriting the value as a plain string would
+    freeze those.
+    """
+    import winreg  # type: ignore
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
+                        winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+        try:
+            current, kind = winreg.QueryValueEx(key, "Path")
+        except FileNotFoundError:
+            current, kind = "", winreg.REG_EXPAND_SZ
+        merged = _merge_user_path(str(current), str(entry))
+        if merged is None:
+            return "present"
+        if kind not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ):
+            kind = winreg.REG_EXPAND_SZ
+        winreg.SetValueEx(key, "Path", 0, kind, merged)
+    _broadcast_environment_change()
+    return "added"
+
+
+def _broadcast_environment_change() -> None:
+    """Tell running processes the environment changed (best effort)."""
+    import ctypes
+
+    try:
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 0x0002, 5000, None)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - never fail an update over the broadcast
+        pass
+
+
+def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
+    """Windows twin of expose_cli's POSIX half.
+
+    Stage the user-facing commands into ``$HERMES_HOME\\bin`` and register that
+    directory in the User PATH -- the same two things scripts/install.ps1 does --
+    so an update converges a machine installed under the older venv\\Scripts
+    convention instead of leaving it there forever.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    directory = get_default_hermes_root() / "bin"
+    try:
+        if not create:
+            # Bootstrap: repair only commands we already own, enable nothing new.
+            published = _publish_conveniences(root, directory, WINDOWS_BIN_LAUNCHERS, create=False)
+            return {"ok": True, "written": [path.name for path, changed in published.items() if changed]}
+        directory.mkdir(parents=True, exist_ok=True)
+        written = ensure_install_launchers(root, directory)
+        if len(written) != len(WINDOWS_BIN_LAUNCHERS):
+            return {"ok": False, "error": "source launcher publication failed"}
+        return {"ok": True, "path": _register_windows_user_path(directory),
+                "written": [Path(path).name for path in written]}
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
