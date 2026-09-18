@@ -288,7 +288,27 @@ stage_repository() {
         log "updating $INSTALL_DIR"
         git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
         git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
-        git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH" || log "not fast-forwardable; keeping local state"
+        if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
+            # A release cut off the main line, a force-pushed remote, or the
+            # user's own commits cannot fast-forward. Every stage below reads
+            # files only the new tree has (pm/), so an install left on the old
+            # tree cannot finish -- match the remote the way `hermes update`
+            # does, after parking the old tip and any local work.
+            local stamp prior rescue
+            stamp="$(date -u +%Y%m%d-%H%M%S)"
+            prior="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+            rescue="refs/hermes-install-backup/$stamp-$prior"
+            if [ -n "$(git -C "$INSTALL_DIR" status --porcelain)" ]; then
+                git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
+                    && log "local changes stashed as hermes-install-autostash-$stamp" \
+                    || log "could not stash local changes; they are overwritten below"
+            fi
+            git -C "$INSTALL_DIR" update-ref "$rescue" HEAD 2>/dev/null \
+                && log "previous HEAD backed up to $rescue" \
+                || log "could not back up the previous HEAD"
+            git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" || fail "git reset failed"
+            log "not fast-forwardable; reset to origin/$BRANCH"
+        fi
     else
         log "cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
         mkdir -p "$(dirname "$INSTALL_DIR")"
