@@ -506,8 +506,9 @@ def build_art(source: Path) -> tuple[IconArt, IconArt]:
         if not re.fullmatch(r"[a-f0-9]{40}", commit):
             raise ValueError("HERMES_BUILD_COMMIT requires an exact full 40-character SHA")
         return art, IconArt(source, colors=("#e34850", "#4a1117"), commit=commit)
-    # Match the desktop/feed identity, including historical date-only tags.
-    if re.search(r"-canary\.20\d{6}(?:\d{6})?$", tag):
+    from hermes_cli.update_channel import is_canary_tag
+
+    if is_canary_tag(tag):
         return art, IconArt(source, colors=("#f5cc32", "#443808"))
     return art, art
 

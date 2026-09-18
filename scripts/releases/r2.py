@@ -441,7 +441,9 @@ def _stream_and_hash(url: str, creds: dict[str, str], now: str, algorithm: str):
 
 def channel_for_tag(tag: str) -> str:
     """'stable' for a stable tag, 'canary' for a -canary.<ts> tag."""
-    return "canary" if re.search(r"-canary\.20\d{6}(?:\d{6})?$", tag) else "stable"
+    from hermes_cli.update_channel import is_canary_tag
+
+    return "canary" if is_canary_tag(tag) else "stable"
 
 
 def staging_key_for(tag: str, filename: str) -> str:
@@ -810,10 +812,13 @@ def get_object(
 
 def canary_doomed_keys(keys: list[str], cutoff: str) -> list[str]:
     """Keys whose own canary date (YYYYMMDD in the name) is before `cutoff`."""
+    from hermes_cli.update_channel import _CANARY_TAG_RE
+
+    tag_re = re.compile(_CANARY_TAG_RE.pattern.strip("^$"))
     doomed = []
     for key in keys:
-        match = re.search(r"-canary\.(\d{8})", key)
-        if match and match.group(1) < cutoff:
+        match = tag_re.search(key)
+        if match and match.group(0).split("-canary.", 1)[1][:8] < cutoff:
             doomed.append(key)
     return doomed
 
