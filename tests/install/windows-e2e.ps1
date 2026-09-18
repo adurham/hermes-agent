@@ -989,7 +989,11 @@ function Invoke-UserStateActions {
         }
         $before = Get-UserStateSessionCount
         $log = Join-Path $WorkRoot 'logs\user-state-chat.log'
-        & $hermes chat -q "Reply with the single word: ok" 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        # A released tag prints through prompt_toolkit, whose Windows output object needs
+        # a console screen buffer: piping the CLI's stdout into the log takes that away
+        # and the turn dies with NoConsoleScreenBufferError. Run it under a real
+        # pseudoconsole (pty-run.py) and keep the capture.
+        & python -B (Join-Path $AssetsDir 'pty-run.py') --out $log --timeout 900 -- $hermes chat -q "Reply with the single word: ok"
         $chatExit = $LASTEXITCODE
         Write-LogGroup 'first real chat turn' $log
         if ($chatExit -ne 0) { throw "the first chat turn failed (exit $chatExit); see $log" }

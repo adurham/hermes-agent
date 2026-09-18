@@ -198,6 +198,16 @@ jobs:
         shell: bash
         run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
 
+      # A released tag prints its one-shot chat through prompt_toolkit, whose Windows
+      # output object needs a console screen buffer -- piping the CLI's stdout into the
+      # evidence log takes that away and the turn dies with NoConsoleScreenBufferError.
+      # The driver therefore runs that turn under e2e-assets/pty-run.py, which uses
+      # pywinpty: the same ConPTY spawner the product uses on Windows, pinned to the
+      # version pyproject.toml requires.
+      - name: Install the pseudoconsole runner's dependency
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check --quiet "pywinpty==3.0.5"
+
       # One recording mechanism on every OS: the composite action verifies
       # ffmpeg from the PM toolchain (packages: ffmpeg above), starts the
       # capture, and record-stop fails on a zero-frame file so a silently
