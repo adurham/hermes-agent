@@ -10,6 +10,11 @@ export interface NativeProcess {
   executable: string
   command: string
   sourceRoot?: string
+  // The app binds its backend to a tree by environment, not only by argv: the
+  // installation root leads PYTHONPATH and VIRTUAL_ENV names the venv. Only the
+  // platforms that can read a process environment populate these.
+  pythonPath?: string
+  virtualEnv?: string
   cwd?: string
 }
 
@@ -20,6 +25,11 @@ export function within(root: string, candidate: string): boolean {
 
 function nativeText(command: string, args: string[]): string {
   return execFileSync(command, args, { encoding: 'utf8', timeout: 30_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+}
+
+/** One NAME=value from `ps eww`'s environment tail (values may contain spaces). */
+function psEnvValue(environment: string, name: string): string | undefined {
+  return new RegExp(`(?:^|\\s)${name}=(.*?)(?=\\s+[A-Za-z_][A-Za-z_0-9]*=|$)`).exec(environment)?.[1]
 }
 
 /** Call only after binding the live listener (and bundled resources) to root. */
@@ -136,8 +146,10 @@ export function localBackendProcess(port: number, electronPid: number): NativePr
     backend.command = nativeText('ps', ['-p', String(backend.pid), '-o', 'args='])
     backend.cwd = nativeText('/usr/sbin/lsof', ['-a', '-p', String(backend.pid), '-d', 'cwd', '-Fn'])
       .split('\n').find((line: string): boolean => line.startsWith('n'))?.slice(1)
-    backend.sourceRoot = /(?:^|\s)HERMES_PYTHON_SRC_ROOT=(.*?)(?=\s+[A-Za-z_][A-Za-z_0-9]*=|$)/
-      .exec(nativeText('ps', ['eww', '-p', String(backend.pid), '-o', 'args=']))?.[1]
+    const environment = nativeText('ps', ['eww', '-p', String(backend.pid), '-o', 'args='])
+    backend.sourceRoot = psEnvValue(environment, 'HERMES_PYTHON_SRC_ROOT')
+    backend.pythonPath = psEnvValue(environment, 'PYTHONPATH')
+    backend.virtualEnv = psEnvValue(environment, 'VIRTUAL_ENV')
   }
   return backend
 }
@@ -182,10 +194,21 @@ export function assertBackendOrigin(backend: NativeProcess, root: string, origin
     // cwd-only inference calls a backend running the installation's own venv
     // interpreter "a different source tree". Accept the launcher cd'ing into the
     // tree, or a command that names it (`<root>/venv/bin/python -m hermes_cli.main`).
-    if (!sameTree(backend.cwd) && !namesInstallRoot) {
+    // The app binds the backend to the tree by environment as well as argv:
+    // `main.ts` puts the installation root first on the backend's PYTHONPATH and
+    // VIRTUAL_ENV names its venv, which is how `import hermes_cli` resolves from
+    // the installation. A platform that can read that environment needs no
+    // spelling in argv (macOS resolves the venv symlink before spawning); a
+    // platform that cannot (Windows) stays strict.
+    const joinsInstall = (value?: string): boolean => value !== undefined
+      && value.split(path.delimiter).some((entry: string): boolean => entry !== '' && sameTree(entry))
+    const usesInstallEnvironment = joinsInstall(backend.pythonPath)
+      || (backend.virtualEnv !== undefined && backend.virtualEnv.trim() !== ''
+          && sameTree(path.dirname(backend.virtualEnv)))
+    if (!sameTree(backend.cwd) && !namesInstallRoot && !usesInstallEnvironment) {
       throw new Error('Source backend listener imports a different source tree'
         + ` (cwd=${backend.cwd ?? '(unreadable)'}, HERMES_PYTHON_SRC_ROOT=(unset),`
-        + ` expected=${root}, command=${backend.command})`)
+        + ` executable=${backend.executable}, expected=${root}, command=${backend.command})`)
     }
     return
   }

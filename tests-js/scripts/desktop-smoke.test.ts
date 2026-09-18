@@ -132,6 +132,37 @@ test.runIf(process.platform === 'linux')('origin proof finds the live child list
   } finally { child.kill(); await new Promise<void>((resolve): void => { child.once('exit', (): void => resolve()) }) }
 })
 
+test('a backend bound to the tree by environment needs no root in argv', (): void => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
+  try {
+    const root = path.join(home, 'hermes-agent')
+    fs.mkdirSync(path.join(root, 'venv'), { recursive: true })
+    // The macOS shape: a venv's interpreter is a SYMLINK to the framework
+    // binary, and the app resolves it before spawning, so argv names that binary
+    // and never the installation root.
+    const resolvedPython = fs.realpathSync(process.execPath)
+    const interpreter = path.join(home, 'python3.11')
+    fs.symlinkSync(resolvedPython, interpreter)
+    const base = { pid: process.pid, parentPid: 1, executable: interpreter, cwd: home,
+      command: `"${resolvedPython}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0` }
+    // Control: with no environment evidence this is still a different tree.
+    expect((): void => { assertBackendOrigin(base, root, 'source') }).toThrow('source tree')
+    expect((): void => {
+      assertBackendOrigin({ ...base, pythonPath: `${root}${path.delimiter}/elsewhere` }, root, 'source')
+    }).not.toThrow()
+    expect((): void => {
+      assertBackendOrigin({ ...base, virtualEnv: path.join(root, 'venv') }, root, 'source')
+    }).not.toThrow()
+    // Evidence naming some OTHER tree is no evidence for this one.
+    expect((): void => {
+      assertBackendOrigin({ ...base, pythonPath: path.join(home, 'elsewhere') }, root, 'source')
+    }).toThrow('source tree')
+    expect((): void => {
+      assertBackendOrigin({ ...base, virtualEnv: path.join(home, 'other-venv') }, root, 'source')
+    }).toThrow('source tree')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
+
 test('source launch restores only an explicitly captured exact editable root', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-source-'))
   const specPath = path.join(home, 'launch.json')
