@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,46 @@ def read_handoff(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def post_swap_python() -> Path:
+    """Interpreter for the child: the project venv's python when this process runs from (or
+    under) the project's Windows console shim — the shim can never be re-executed on Windows
+    because it holds itself open for the whole process lifetime (#88838, #89599) — else the
+    running interpreter."""
+    if sys.platform != "win32":
+        return Path(sys.executable)
+    from hermes_cli._launchers import _is_windows
+    from hermes_constants import project_venv_dir, venv_python_path
+
+    venv_dir = project_venv_dir(Path(__file__).resolve().parents[1])
+    if venv_dir is not None and _is_windows():
+        candidate = venv_python_path(venv_dir, windows=True)
+        if candidate.is_file():
+            return candidate
+    return Path(sys.executable)
+
+
+def post_swap_command(handoff_path: Path, argv_tail: list[str]) -> list[str]:
+    """``python -m hermes_cli.main update <original flags> --post-swap <file>``.
+
+    Historical command shape; kept so a printed manual-continuation line reads
+    exactly as older releases expect. The takeover child this tree actually
+    spawns (see :func:`continue_update_in_fresh_interpreter`) ignores the flag.
+    """
+    return [str(post_swap_python()), "-m", "hermes_cli.main", "update", *argv_tail,
+            "--post-swap", str(handoff_path)]
+
+
+def post_swap_child_env() -> dict[str, str]:
+    """Environment for the child. ``HERMES_UPDATE_REEXEC`` marks it as already off the Windows
+    shim (no second re-exec at the sync boundary). The lock hand-off pid is only claimed when
+    nobody upstream (Tauri/Electron updater) already named theirs."""
+    from hermes_cli.update_lock import HANDOFF_PID_ENV
+
+    env = {**os.environ, POST_SWAP_ENV: "1", "HERMES_UPDATE_REEXEC": "1"}
+    env.setdefault(HANDOFF_PID_ENV, str(os.getpid()))
+    return env
+
+
 def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: list[str] | None = None) -> int | None:
     """Run the post-swap tail in a child interpreter on the pulled code.
 
@@ -51,15 +93,22 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     needs (receipt, plan, windows_resume, gateway_mode, ...); ``argv_tail`` is
     accepted and ignored because the takeover tail does not re-parse update
     flags. Returns the child's exit code, or ``None`` when no child could be
-    started.
+    started (the caller then owns the failure bookkeeping). Ctrl-C semantics
+    mirror the historical hand-off: wait for the child's cleanup instead of
+    subprocess.run's kill-on-interrupt.
     """
     from hermes_cli._old_updater import _run_child
 
-    write_handoff(payload)
+    handoff_path = write_handoff(payload)
+    cmd = post_swap_command(handoff_path, argv_tail or [])
+    print(f"→ Post-swap hand-off: completing the update in a fresh interpreter ({handoff_path})")
+    sys.stdout.flush()
+    sys.stderr.flush()
     try:
         code, _completed = _run_child(dict(payload))
         return int(code)
     except OSError as exc:
         print(f"  ⚠ Could not start the post-update interpreter: {exc}")
-        print("  The code update is applied. Finish it with: hermes update")
+        print("  The code update is applied. Finish it with:")
+        print(f"    {subprocess.list2cmdline(cmd)}")
         return None
