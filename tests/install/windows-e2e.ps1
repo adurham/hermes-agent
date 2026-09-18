@@ -411,9 +411,21 @@ function Invoke-RefInstaller {
     }
     New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     $log = Join-Path $WorkRoot "logs\install-$Label.log"
+    # uv reads the CURRENT DIRECTORY's project metadata. Run from inside this
+    # checkout and every interpreter probe in a ref's installer is resolved
+    # against HEAD's requires-python (3.14), so it refuses the version that ref
+    # pins and the install fails. A user runs the script from their own
+    # directory, so give it one that is not a project.
+    $runDir = Join-Path $WorkRoot "install-cwd"
+    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     $prevEap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script @flags 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
-    $installExit = $LASTEXITCODE
+    Push-Location $runDir
+    try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $script @flags 2>&1 | Add-TsPrefix | Out-File -Encoding UTF8 $log
+        $installExit = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
     $ErrorActionPreference = $prevEap
     Write-LogGroup "install.ps1 ($Label) transcript" $log
     Assert-True ($installExit -eq 0) "install.ps1 ($Label) exited 0"
