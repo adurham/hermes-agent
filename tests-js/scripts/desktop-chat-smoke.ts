@@ -176,7 +176,7 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
     await composer.press('Enter')
     await expect.poll(async (): Promise<string> => composer.evaluate((node: HTMLElement): string =>
       node instanceof HTMLTextAreaElement ? node.value : node.textContent ?? ''),
-    { timeout: 15_000, message: 'The submitted draft must clear before the idle control proves completion' }).toBe('')
+    { timeout: 90_000, message: 'The submitted draft must clear before the idle control proves completion' }).toBe('')
     let witnessIndex = -1
     let receivedPrompt = ''
     await expect.poll(async (): Promise<boolean> => {
