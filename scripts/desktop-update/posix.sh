@@ -244,15 +244,15 @@ for entry in data.get("LSHandlers", []):
   esac
 }
 
-start_status_panel() { # the macOS no-browser shim: osascript AppKit panel.
+start_status_panel() { # the macOS no-browser shim: osascript (JXA) panel.
   # Best-effort by design: osascript missing or the panel exiting instantly
   # (syntax, headless session) just means no UI, exactly as before. The panel
   # polls $STATUS itself and self-exits after a terminal state, so this pid
   # only needs killing on OUR early teardown paths.
-  local py="$1" panel="$SCRIPT_DIR/update-panel.applescript"
+  local py="$1" panel="$SCRIPT_DIR/update-panel.js"
   [ -n "$py" ] || py="/usr/bin/python3"  # unused by osascript; keeps the wrapper shape
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
-    /usr/bin/osascript "$panel" "$STATUS" >>"$LOG" 2>&1 &
+    /usr/bin/osascript -l JavaScript "$panel" "$STATUS" >>"$LOG" 2>&1 &
   UI_PANEL_PID=$!
   sleep 1
   kill -0 "$UI_PANEL_PID" 2>/dev/null || { UI_PANEL_PID=""; return; }
@@ -269,7 +269,7 @@ start_ui() {
     log "shim: default browser is not Chromium-family; skipping UI window"
     browser=""
   fi
-  if [ "$(uname)" = "Darwin" ] && [ -z "$browser" ] && [ -x "$SCRIPT_DIR/update-panel.applescript" ]; then
+  if [ "$(uname)" = "Darwin" ] && [ -z "$browser" ] && [ -f "$SCRIPT_DIR/update-panel.js" ]; then
     # No Chromium renderer may host ui.html (Safari/Firefox default, or no
     # Chrome): draw the same progress as a native panel instead. Reads the
     # same $STATUS JSON — no server, no browser, no other-app scripting.

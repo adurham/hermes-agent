@@ -101,7 +101,7 @@ def ensure_panel(update_root: Path) -> None:
 
     An old shim has no panel of its own and skipped its browser window on a
     non-Chromium default — its whole update then runs invisible. The freshly
-    pulled tree ships update-panel.applescript, so the takeover child can
+    pulled tree ships update-panel.js, so the takeover child can
     start it against the discovered status file. Best-effort end to end: any
     failure leaves the update running exactly as UI-less as before.
     """
@@ -109,7 +109,7 @@ def ensure_panel(update_root: Path) -> None:
         return
     if status_file() is None:
         return
-    panel = update_root / "scripts" / "desktop-update" / "update-panel.applescript"
+    panel = update_root / "scripts" / "desktop-update" / "update-panel.js"
     if not panel.is_file():
         return
     try:
@@ -123,7 +123,7 @@ def ensure_panel(update_root: Path) -> None:
         # same way the shim-spawned UI outlives the shim's stages, and it
         # self-exits when the shim publishes a terminal state.
         subprocess.Popen(
-            ["/usr/bin/osascript", str(panel), str(status_file())],
+            ["/usr/bin/osascript", "-l", "JavaScript", str(panel), str(status_file())],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
