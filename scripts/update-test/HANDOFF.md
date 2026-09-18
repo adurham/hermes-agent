@@ -11,7 +11,7 @@ instructions:
    `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- pre`
 
    windows:
-   `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) pre`
+   `& ([scriptblock]::Create((irm "ps1_url1" -Headers @{"Cache-Control"="no-cache"})))) pre`
 
    this backs up your entire hermes home and any desktop app settings. _from this point on, nothing you do in hermes will be preserved, until you restore your backup at the end._
 
@@ -29,6 +29,6 @@ instructions:
    `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- post --yes`
 
    windows:
-   `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) post --yes`
+   `& ([scriptblock]::Create((irm "ps1_url1" -Headers @{"Cache-Control"="no-cache"})))) post --yes`
 
    this puts hermes back to exactly how it was beforehand.
