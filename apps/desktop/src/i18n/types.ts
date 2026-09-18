@@ -2927,6 +2927,7 @@ export interface Translations {
     versionDetailsBuildOrigin: string
     versionDetailsDistribution: string
     versionDetailsDistributionDesktop: string
+    versionDetailsDistributionDesktopMsix: string
     versionDetailsDistributionStore: string
     versionDetailsRuntime: string
     versionDetailsRuntimeEmbedded: string

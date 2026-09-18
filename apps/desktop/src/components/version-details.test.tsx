@@ -36,7 +36,9 @@ describe('VersionDetails', () => {
     { version: { distribution: 'desktop-app', updateMechanism: 'microsoft-store' },
       visible: ['Distribution', 'Microsoft Store'], absent: ['Desktop app (MSIX)'] },
     { version: { distribution: 'desktop-app', updateMechanism: 'app-installer' },
-      visible: ['Desktop app (MSIX)'], absent: ['Microsoft Store'] }
+      visible: ['Desktop app (MSIX)'], absent: ['Microsoft Store'] },
+    { version: { distribution: 'desktop-app', updateMechanism: 'electron-updater' },
+      visible: ['Desktop app'], absent: ['Desktop app (MSIX)'] }
   ]
 
   it.each(cases)('renders $version', ({ version, visible, absent = [] }: VersionCase): void => {

@@ -26,7 +26,9 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
   const source =
     version.source === 'ci' ? 'CI' : version.source ? version.source[0].toUpperCase() + version.source.slice(1) : null
 
-  // The stamp distinguishes Store builds from sideloaded MSIX builds.
+  // The stamp distinguishes Store builds from sideloaded MSIX builds; MSIX is
+  // Windows packaging, so only the app-installer (out-of-store MSIX) mechanism
+  // earns the "(MSIX)" copy — macOS/Linux desktop builds are plain "Desktop app".
   const distribution =
     version.distribution === 'nix'
       ? 'Nix'
@@ -35,7 +37,9 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
         : version.updateMechanism === 'microsoft-store'
           ? u.versionDetailsDistributionStore
           : version.distribution === 'desktop-app'
-            ? u.versionDetailsDistributionDesktop
+            ? version.updateMechanism === 'app-installer'
+              ? u.versionDetailsDistributionDesktopMsix
+              : u.versionDetailsDistributionDesktop
             : null
 
   const runtime =

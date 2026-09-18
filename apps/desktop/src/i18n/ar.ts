@@ -2383,6 +2383,7 @@ export const ar = defineLocale({
     versionDetailsBuildOrigin: 'مصدر البناء',
     versionDetailsDistribution: 'التوزيع',
     versionDetailsDistributionDesktop: 'تطبيق سطح المكتب',
+    versionDetailsDistributionDesktopMsix: 'تطبيق سطح المكتب (MSIX)',
     versionDetailsDistributionStore: 'Microsoft Store',
     versionDetailsRuntimeEmbedded: 'وقت تشغيل مضمّن',
     versionDetailsRuntimeExternal: 'خارجي (يستخدم وقت تشغيل الجهاز)',
