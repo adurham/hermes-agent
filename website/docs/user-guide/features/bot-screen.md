@@ -23,8 +23,12 @@ and the control-lease file all belong to the gateway's OS user. Any process
 running as that user — another bot on the same host, and the bot's own
 `terminal` tool included — can reach them directly, bypassing the pane and the
 lease. The lease is a tool-level fence on `computer_use` and the browser tools,
-not an OS one. Running each bot as its own OS user is out of scope; if that
-isolation matters to you, put the bots on separate hosts. Two timing details
+not an OS one. One boundary is wider than the OS user: Chromium's DevTools
+port (the dock's Browser and every agent-browser launch advertise one on
+loopback so the agent can attach) is reachable by **any** local user on the
+host, and Chromium offers no per-user restriction for it. Running each bot as
+its own OS user is out of scope; if that isolation matters to you, or the host
+has untrusted local users, put the bots on separate hosts. Two timing details
 worth knowing: the WebSocket bridge caches its lease decision for up to 250 ms
 between re-reads of the lease file, so a takeover made by another process is
 enforced within that window (the bot's tool results are voided by the lease

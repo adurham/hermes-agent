@@ -181,3 +181,26 @@ def test_vault_page_operations_respect_the_human_lease(monkeypatch):
     assert touched == [], "no vault page access while the human holds the screen"
     lease.release("human")
     assert json.loads(vault._handle_vault_fill({"handle": "vault_x"}, task_id="default"))["success"] is True
+
+
+def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypatch):
+    """`enter_code` blocks on the user's code INSIDE the handler fence. A takeover during that wait must
+    refuse the write itself: the outer fence only discards the result afterwards, and by then the code is
+    already in the page the human is typing into."""
+    from tools import browser_tool as browser
+    from tools import browser_vault_tool as vault
+
+    browser._active_sessions["default"] = {"session_name": "review", "cdp_url": None, "features": {"local": True}}
+    evaluated = []
+
+    class Sup:
+        def evaluate_runtime(self, expr):
+            evaluated.append(expr)
+            return {"ok": True, "result": "{}"}
+
+    monkeypatch.setattr(vault, "_ensure_supervisor", lambda tid: Sup())
+    assert vault._eval_js_secret("default", "fill()")["success"] is True  # agent holds: writes
+    lease.acquire("human")  # takeover while the prompt was open
+    res = vault._eval_js_secret("default", "fill()")
+    assert res["success"] is False and res["error_type"] == "human_has_control"
+    assert evaluated == ["fill()"], "the credential must not reach the page under a human lease"

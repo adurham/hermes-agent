@@ -73,6 +73,22 @@ def test_browser_launcher_follows_the_profile_without_reseeding_the_panel(tmp_pa
     assert panel_xml.read_text(encoding="utf-8") == layout_before
 
 
+def test_browser_launcher_seeded_before_the_marker_still_follows_a_rename(tmp_path):
+    """Profiles seeded by an earlier launcher have the Browser entry but no `.hermes-browser-launcher`;
+    a rename must still reach their Exec= (the marker is recovered from our own entry), not leave them
+    opening the old profile's empty cookie jar forever."""
+    chrome = tmp_path / "bin" / "chrome"
+    cfg = _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/old name/bp")
+    (cfg / "xfce4/panel/.hermes-browser-launcher").unlink()
+    shutil.rmtree(tmp_path / "bin")
+    _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/new name/bp")
+    execs = [
+        line for d in (cfg / "xfce4/panel").glob("launcher-*/hermes.desktop")
+        for line in d.read_text(encoding="utf-8").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
+    ]
+    assert execs == [f"Exec={chrome} --user-data-dir=/new name/bp"]
+
+
 def test_look_is_seeded_with_wallpaper_and_theme(tmp_path):
     cfg = _seed(tmp_path, ["xfce4-terminal"])
     desktop = (cfg / "xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml").read_text(encoding="utf-8")
