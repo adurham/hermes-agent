@@ -79,21 +79,36 @@ export function writeEnvFile(hermesHome: string, apiKey = 'e2e-mock-key', mockUr
   }
   const envPath = path.join(hermesHome, '.env')
   const prior = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
-  // Only drop keys this call actually REPLACES. With no mockUrl it writes
-  // MOCK_API_KEY alone, and stripping the portable pair then would delete a
-  // journey's provider endpoint: the install e2e's snapshot missed OPENAI_BASE_URL
-  // after this smoke ran, and the upgrade's own .env sync put it back -- reported
-  // as "the upgrade changed the user's own state".
-  const replaced = mockUrl
-    ? /^\s*(?:export\s+)?(?:MOCK_API_KEY|OPENAI_BASE_URL|OPENAI_API_KEY)\s*=/
-    : /^\s*(?:export\s+)?MOCK_API_KEY\s*=/
-  const lines = prior.split(/\r?\n/).filter((line: string): boolean => !replaced.test(line))
-  // OPENAI_BASE_URL + OPENAI_API_KEY is how EVERY vintage reaches an external
-  // OpenAI-compatible endpoint ("custom"); a bare MOCK_API_KEY only means
-  // something to a tree that knows a provider named `mock`, which older refs
-  // do not (their resolve_provider accepts only openrouter/custom/registry).
-  const portable = mockUrl ? `\nOPENAI_BASE_URL=${mockUrl}/v1\nOPENAI_API_KEY=${apiKey}` : ''
-  fs.writeFileSync(envPath, `${lines.join('\n').trimEnd()}\nMOCK_API_KEY=${apiKey}${portable}\n`, { mode: 0o600 })
+  const reps = new Map<string, string>([['MOCK_API_KEY', `MOCK_API_KEY=${apiKey}`]])
+  if (mockUrl) {
+    reps.set('OPENAI_BASE_URL', `OPENAI_BASE_URL=${mockUrl}/v1`)
+    reps.set('OPENAI_API_KEY', `OPENAI_API_KEY=${apiKey}`)
+  }
+  // Rewrite each key IN PLACE and append only the ones that are missing. Filtering
+  // the keys out and re-appending them at the end moved a journey's own entries on
+  // every call: same keys, same values, different bytes -- which the user-state
+  // verifier reported as "0 deleted, 1 modified ... no key differs". Writing the
+  // same pair twice is byte-identical now.
+  const seen = new Set<string>()
+  const kept: string[] = []
+  for (const line of prior.split(/\r?\n/)) {
+    const key = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1]
+    if (!key || !reps.has(key)) {
+      kept.push(line)
+      continue
+    }
+    if (!seen.has(key)) {
+      kept.push(reps.get(key)!)
+      seen.add(key)
+    }
+  }
+  // Drop the prior file's trailing blank lines BEFORE appending: trimEnd() runs
+  // after the appended keys, so it cannot reach a blank line that they now follow.
+  while (kept.length > 0 && kept[kept.length - 1].trim() === '') kept.pop()
+  for (const [key, line] of reps) {
+    if (!seen.has(key)) kept.push(line)
+  }
+  fs.writeFileSync(envPath, `${kept.join('\n').trimEnd()}\n`, { mode: 0o600 })
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

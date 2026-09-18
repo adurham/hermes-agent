@@ -289,3 +289,24 @@ test('writeEnvFile without a URL keeps the journey provider endpoint', (): void 
     expect(after).toContain('MOCK_API_KEY=e2e-mock-key')
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
+
+test('re-writing the same provider config is byte-identical', (): void => {
+  // Filtering the keys out and re-appending them moved a journey's own .env
+  // entries on every call: same keys, same values, different bytes -- which the
+  // user-state verifier reported as "0 deleted, 1 modified ... no key differs".
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-order-'))
+  try {
+    // The key is deliberately NOT last, with a comment after it: filtering the
+    // managed keys out and re-appending them moved them past the journey's own
+    // entries, which is the "no key differs, comments/order/blanks only" the
+    // user-state verifier reported.
+    const before = 'OPENAI_BASE_URL=http://127.0.0.1:9000/v1\n# keep me\nOTHER_TEST_VALUE=kept\n'
+    fs.writeFileSync(path.join(home, '.env'), before)
+
+    writeEnvFile(home, 'e2e-mock-key', 'http://127.0.0.1:9000')
+
+    expect(fs.readFileSync(path.join(home, '.env'), 'utf8')).toBe(
+      'OPENAI_BASE_URL=http://127.0.0.1:9000/v1\n# keep me\nOTHER_TEST_VALUE=kept\n'
+      + 'MOCK_API_KEY=e2e-mock-key\nOPENAI_API_KEY=e2e-mock-key\n')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
