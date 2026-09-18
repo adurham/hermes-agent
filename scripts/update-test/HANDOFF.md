@@ -8,7 +8,7 @@ instructions:
    open a terminal, `cd` to the folder you downloaded this script into. then,
 
    macos/linux:
-   `curl -fsSL "sh_url=$(date +%s)" | bash -s -- pre`
+   `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- pre`
 
    windows:
    `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) pre`
@@ -26,7 +26,7 @@ instructions:
 7. restore your backup:
 
    macos/linux:
-   `curl -fsSL "sh_url=$(date +%s)" | bash -s -- post --yes`
+   `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- post --yes`
 
    windows:
    `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) post --yes`
