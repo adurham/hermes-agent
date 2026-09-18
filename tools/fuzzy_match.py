@@ -388,12 +388,52 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
 
 # ── Escape-drift guards ──────────────────────────────────────────────────
 
+_CONTROL_LITERAL_SUSPECTS = (("\\n", "\n", "newline"), ("\\r", "\r", "carriage return"))
+
+
+def _detect_control_char_literal_drift(matched_regions: str, old_string: str,
+                                       new_string: str) -> Optional[str]:
+    """Error string when new_string carries a literal two-character ``\\n``/``\\r``
+    sequence that should have been a real control character, else None.
+
+    Mirrors the quote-suspect check above exactly (present in both old_string and
+    new_string, absent from the matched file region) rather than the broader
+    _maybe_unescape_new_string rewrite, which deliberately excludes ``\\n``
+    entirely: a source file legitimately containing the literal text ``\\n``
+    (a string literal, a regex) is common, and rewriting every occurrence would
+    mangle it. Requiring the SAME literal sequence in both old_string and
+    new_string, with the file's matched region showing the real control
+    character in its place and no literal occurrence of the escape sequence
+    at all, keeps this to the same narrow "this exact tool call was JSON-escaped
+    one extra time" signature the quote check already uses -- not a general
+    text scan for ``\\n`` anywhere in the call.
+    """
+    for literal, control, name in _CONTROL_LITERAL_SUSPECTS:
+        if (literal in new_string and literal in old_string
+                and literal not in matched_regions and control in matched_regions):
+            return (
+                f"Escape-drift detected: old_string and new_string contain the "
+                f"literal sequence {literal!r} but the matched region of the file "
+                f"has a real {name} character there instead, with no backslash at "
+                f"all. This is almost always a tool-call serialization artifact "
+                f"where a real line break got doubled into its own escape "
+                f"sequence. Re-read the file with read_file and pass "
+                f"old_string/new_string with actual line breaks, not "
+                f"backslash-escaped {literal!r}.")
+    return None
+
+
 def _detect_escape_drift(content: str, matches: list[Span],
                          old_string: str, new_string: str) -> Optional[str]:
     """Error string when new_string carries tool-call escape artifacts, else None:
-    ``\\'``/``\\"`` in both strings but not the matched region, or doubled backslash runs."""
+    ``\\'``/``\\"`` in both strings but not the matched region, doubled backslash
+    runs, or a literal ``\\n``/``\\r`` standing in for a real control character."""
     has_quote_suspects = "\\'" in new_string or '\\"' in new_string
-    if not has_quote_suspects and "\\" not in old_string:
+    has_control_suspects = (
+        ("\\n" in new_string and "\\n" in old_string)
+        or ("\\r" in new_string and "\\r" in old_string)
+    )
+    if not has_quote_suspects and not has_control_suspects and "\\" not in old_string:
         return None
 
     matched_regions = _matched_regions(content, matches)
@@ -409,6 +449,10 @@ def _detect_escape_drift(content: str, matches: list[Span],
                     f"prefixed with a spurious backslash. Re-read the file with "
                     f"read_file and pass old_string/new_string without "
                     f"backslash-escaping {plain!r} characters.")
+    if has_control_suspects:
+        control_drift = _detect_control_char_literal_drift(matched_regions, old_string, new_string)
+        if control_drift:
+            return control_drift
     return _detect_backslash_doubling(matched_regions, old_string, new_string)
 
 
