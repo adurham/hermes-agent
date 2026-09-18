@@ -176,7 +176,9 @@ function Invoke-BackupTar {
 
   if ($LASTEXITCODE -eq 0) { return }
 
-  $denied = $output | Where-Object { $_ -match 'Permission denied|Access is denied' }
+  $denied = @($output | Where-Object {
+    $_ -match 'Permission denied|Access is denied'
+  })
   if ($denied) {
     $user = "$env:USERDOMAIN\$env:USERNAME"
     Warn "tar could not read $($denied.Count) path(s) under $Root`:" 
