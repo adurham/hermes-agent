@@ -1011,11 +1011,30 @@ function Invoke-UserStateActions {
                 Write-Host '  SKIP hermes auth add does not exist on this ref; auth.json is not covered by this leg'
             }
             else {
-            & $hermes auth add openai --type api-key --api-key 'e2e-preservation-not-a-real-key' 2>&1 |
-                Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-auth.log')
-            if ($LASTEXITCODE -ne 0) { throw 'hermes auth add failed' }
-            if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json'))) {
-                throw 'hermes auth add produced no auth.json'
+            # The provider id and the flags are vintage surfaces, so probe them
+            # like the rest of this harness does. v2026.8.31 answers "Unknown
+            # provider: openai" -- _is_known_provider accepts a registry provider,
+            # 'openrouter', or a custom pool -- and HEAD prompts for an optional
+            # label unless --label is given, which EOFs with no tty. Take the
+            # first provider the installed CLI accepts.
+            $authLog = Join-Path $WorkRoot 'logs\user-state-auth.log'
+            $labelFlags = @()
+            if ((& $hermes auth add --help 2>&1 | Out-String) -match '--label') {
+                $labelFlags = @('--label', 'e2e-preservation')
+            }
+            $added = $false
+            foreach ($provider in @('openrouter', 'anthropic')) {
+                Add-Content -LiteralPath $authLog -Value "=== hermes auth add $provider ==="
+                & $hermes auth add $provider --type api-key `
+                    --api-key 'e2e-preservation-not-a-real-key' @labelFlags 2>&1 |
+                    Out-File -Encoding UTF8 -Append $authLog
+                if (Test-Path -LiteralPath (Join-Path $HermesHome 'auth.json')) {
+                    $added = $true
+                    break
+                }
+            }
+            if (-not $added) {
+                throw "hermes auth add failed for openrouter and anthropic; see $authLog"
             }
             Write-Host '  a pooled credential exists (auth.json)'
             }
