@@ -416,3 +416,78 @@ def test_any_sqlite_database_is_judged_by_rows_not_bytes(tmp_path):
     report = vus.verify_home(str(home), snap)
     assert report["rows_shrank"] == ["cron/executions.db"]
     assert report["ok"] is False
+
+
+# --- retired provider vars ---------------------------------------------------
+
+def test_retired_env_vars_come_from_the_migration_source(tmp_path):
+    """The set is read from hermes_cli/config_migrations.py, not invented here.
+
+    The 12 -> 13 migration clears LLM_MODEL/OPENAI_MODEL: the old setup wizard
+    wrote them and nothing reads them now. A verifier carrying its own copy of
+    that list would silently stop following the tree the moment it changes.
+    """
+    assert vus.retired_env_vars() == {"LLM_MODEL", "OPENAI_MODEL"}
+    # Unreadable or unparseable source retires nothing, so every .env change
+    # stays fatal rather than quietly becoming tolerated.
+    assert vus.retired_env_vars(tmp_path / "absent.py") == frozenset()
+    broken = tmp_path / "broken.py"
+    broken.write_text("def (:\n", encoding="utf-8")
+    assert vus.retired_env_vars(broken) == frozenset()
+
+
+def test_a_retired_var_the_upgrade_empties_is_tolerated_and_named(tmp_path):
+    """An old release's .env holds LLM_MODEL; the migration empties it.
+
+    This verifier exists to catch an upgrade taking the user's state away. A key
+    the tree itself retires is not that, so it is reported -- by name, never by
+    value -- instead of failing the leg.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text(
+        "LLM_MODEL=anthropic/claude-opus-4.6\nOPENROUTER_API_KEY=secret-value\n",
+        encoding="utf-8",
+    )
+    snap = vus.snapshot_home(str(home))
+    # Exactly the migration's write: same key, cleared value.
+    (home / ".env").write_text(
+        "LLM_MODEL=\nOPENROUTER_API_KEY=secret-value\n", encoding="utf-8"
+    )
+
+    report = vus.verify_home(str(home), snap)
+
+    assert report["ok"] is True, vus._render(report)
+    assert report["retired_env_cleared"] == {".env": ["LLM_MODEL"]}
+    rendered = vus._render(report)
+    assert "tolerated (retired var cleared: LLM_MODEL) .env" in rendered
+    assert "secret-value" not in rendered
+    assert "claude-opus" not in rendered
+
+
+def test_a_live_key_cleared_by_an_upgrade_still_fails(tmp_path):
+    """The exception is retired keys only -- emptying a real key is still loss."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=secret-value\n", encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+    (home / ".env").write_text("OPENROUTER_API_KEY=\n", encoding="utf-8")
+
+    report = vus.verify_home(str(home), snap)
+
+    assert report["ok"] is False
+    assert report["modified"][".env"]["key_diff"]["keys_changed"] == ["OPENROUTER_API_KEY"]
+
+
+def test_a_retired_var_removed_outright_still_fails(tmp_path):
+    """Clearing a retired key is the migration; deleting the line is not it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("LLM_MODEL=anthropic/claude-opus-4.6\n", encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+    (home / ".env").write_text("", encoding="utf-8")
+
+    report = vus.verify_home(str(home), snap)
+
+    assert report["ok"] is False
+    assert report["modified"][".env"]["key_diff"]["keys_removed"] == ["LLM_MODEL"]

@@ -44,6 +44,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -67,6 +68,15 @@ JUDGED_ROOTS = ("memories", "cron", "sessions", "profiles", "photon",
                 "skills/" + SKILL_ARCHIVE)
 # Trees recorded for the report but never judged (see the module docstring).
 ADVISORY_ROOTS = (SKILLS_ROOT,)
+
+# The tree's own migrations clear dead provider vars out of .env (the old setup
+# wizard wrote LLM_MODEL/OPENAI_MODEL; config.yaml is the source of truth now).
+# A key the CURRENT tree retires is not user state, so the upgrade clearing it
+# is reported, not failed. Derived from the migration source so a newly retired
+# var cannot drift out of this set; unreadable source retires nothing, which
+# keeps every .env change fatal.
+MIGRATION_SOURCE = Path(__file__).resolve().parents[3] / "hermes_cli" / "config_migrations.py"
+EMPTY_VALUE_DIGEST = hashlib.sha256(b"").hexdigest()[:12]
 # state.db tables whose row counts stand in for "the user's data is still here".
 # Counting rows rather than hashing bytes: a live SQLite file changes for
 # benign reasons (WAL checkpoint, migration, a later turn).
@@ -184,6 +194,67 @@ def _env_key_diff(before: dict, after: dict) -> dict:
         "keys_removed": sorted(set(left) - set(right)),
         "keys_changed": sorted(key for key in set(left) & set(right) if left[key] != right[key]),
     }
+
+
+def _clears_loop_var(node: ast.AST, loop_var: str) -> bool:
+    """``save_env_value(loop_var, "")`` -- the migration's retire-this-key write."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "save_env_value"
+        and len(node.args) == 2
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == loop_var
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == ""
+    )
+
+
+def retired_env_vars(source: Path | None = None) -> frozenset[str]:
+    """Provider vars the tree's own migrations clear to empty.
+
+    Matches the loop form the 12 -> 13 migration uses
+    (``for dead in ("X", "Y"): save_env_value(dead, "")``) -- the only shape
+    that both names the keys and acts on them. A migration written another way
+    is simply not derived, which fails a leg loudly instead of silently
+    tolerating a real loss.
+    """
+    path = MIGRATION_SOURCE if source is None else source
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    except (OSError, SyntaxError, UnicodeError):
+        return frozenset()
+    retired: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.For) or not isinstance(node.target, ast.Name):
+            continue
+        if not any(_clears_loop_var(call, node.target.id) for call in ast.walk(node)):
+            continue
+        retired.update(
+            element.value for element in ast.walk(node.iter)
+            if isinstance(element, ast.Constant) and isinstance(element.value, str))
+    return frozenset(retired)
+
+
+def retired_env_clear(rel: str, pair: dict, retired: frozenset[str] | None = None) -> list[str]:
+    """Names a .env change may carry: the tree's retired vars, and emptied.
+
+    Everything else stays fatal -- an added or removed key, a live key's value,
+    or a retired key the migration did NOT clear. Values are compared as the
+    same digests the snapshot records, so "emptied" is exact.
+    """
+    known = retired_env_vars() if retired is None else retired
+    if os.path.basename(rel) != ".env" or not known:
+        return []
+    diff = _env_key_diff(pair["before"], pair["after"])
+    if diff["keys_added"] or diff["keys_removed"] or not diff["keys_changed"]:
+        return []
+    if any(key not in known for key in diff["keys_changed"]):
+        return []
+    after_keys = pair["after"].get("env_keys") or {}
+    if any(after_keys.get(key) != EMPTY_VALUE_DIGEST for key in diff["keys_changed"]):
+        return []
+    return diff["keys_changed"]
 
 
 def _env_line_summary(path: str) -> dict:
@@ -379,8 +450,17 @@ def verify_home(home: str, snap: dict) -> dict:
     shrank = sorted(k for k, v in judged["modified"].items()
                     if _rows_shrank(k, v["before"], v["after"]))
     tolerated_modified = sorted(set(judged["modified"]) - set(failing_modified))
-    # A rewritten .env is fatal by design; name the variables that moved, or the
-    # caller is left holding two hashes of a secrets file and no lead.
+    # A rewritten .env is fatal by design -- except when the tree's own migration
+    # is what rewrote it, clearing a key that tree no longer reads.
+    retired_env: dict[str, list[str]] = {}
+    for rel, pair in list(failing_modified.items()):
+        cleared = retired_env_clear(rel, pair)
+        if cleared:
+            retired_env[rel] = cleared
+            del failing_modified[rel]
+            tolerated_modified = sorted(set(tolerated_modified) | {rel})
+    # The rest still names the variables that moved, or the caller is left
+    # holding two hashes of a secrets file and no lead.
     for rel, pair in failing_modified.items():
         if os.path.basename(rel) == ".env":
             pair["key_diff"] = _env_key_diff(pair["before"], pair["after"])
@@ -404,6 +484,7 @@ def verify_home(home: str, snap: dict) -> dict:
         "modified": failing_modified,
         "added": judged["added"],
         "tolerated_modified": tolerated_modified,
+        "retired_env_cleared": retired_env,
         "rows_shrank": shrank,
         "advisory": advisory,
         "ok": not failing_deleted and not failing_modified and not shrank,
@@ -438,7 +519,11 @@ def _render(report: dict) -> str:
                          f"counts and names, never content)")
     for rel in report["rows_shrank"]:
         lines.append(f"  ROWS SHRANK {rel}")
+    for rel, names in report.get("retired_env_cleared", {}).items():
+        lines.append(f"  tolerated (retired var cleared: {','.join(names)}) {rel}")
     for rel in report["tolerated_modified"]:
+        if rel in report.get("retired_env_cleared", {}):
+            continue
         lines.append(f"  tolerated (config rewrite) {rel}")
     for rel in report.get("tolerated_deleted", []):
         lines.append(f"  tolerated (sqlite sidecar) {rel}")
