@@ -1045,6 +1045,14 @@ function Invoke-UserStateActions {
         }
 
         if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {
+            # Same vintage surface as auth add above: a starting tag may predate
+            # the profile command entirely, and that is a harness limitation,
+            # not a preservation failure.
+            & $hermes profile create --help *> $null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host '  SKIP hermes profile create does not exist on this ref; profiles/e2e-second is not covered by this leg'
+            }
+            else {
             & $hermes profile create e2e-second 2>&1 |
                 Out-File -Encoding UTF8 (Join-Path $WorkRoot 'logs\user-state-profile.log')
             if ($LASTEXITCODE -ne 0) { throw 'hermes profile create failed' }
@@ -1052,6 +1060,7 @@ function Invoke-UserStateActions {
                 throw 'hermes profile create produced no profile dir'
             }
             Write-Host '  a second profile exists (profiles/e2e-second)'
+            }
         }
     }
     finally {
