@@ -86,6 +86,23 @@ def post_swap_child_env() -> dict[str, str]:
     return env
 
 
+def _takeover_request(payload: dict[str, Any], argv_tail: list[str] | None) -> dict[str, Any]:
+    """Map a historical post-swap payload onto the takeover request schema.
+
+    Payloads written before the takeover seam (e.g. release 0.21.3) name the
+    desktop flag and the Windows resume token differently and carry no
+    assume_yes at all; `update_finish.py` reads the new names with bare
+    subscriptions, so an unmapped payload KeyErrors mid-completion with the
+    checkout already swapped. New-schema payloads pass through unchanged.
+    """
+    request = dict(payload)
+    request.setdefault("desktop", bool(payload.get("had_desktop_app_before_update", False)))
+    request.setdefault("windows_resume", payload.get("windows_gateway_resume"))
+    request.setdefault("assume_yes", "--yes" in (argv_tail or []))
+    request.setdefault("restart_update", False)
+    return request
+
+
 def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: list[str] | None = None) -> int | None:
     """Run the post-swap tail in a child interpreter on the pulled code.
 
@@ -100,12 +117,13 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     from hermes_cli._old_updater import _run_child
 
     handoff_path = write_handoff(payload)
+    request = _takeover_request(payload, argv_tail)
     cmd = post_swap_command(handoff_path, argv_tail or [])
     print(f"→ Post-swap hand-off: completing the update in a fresh interpreter ({handoff_path})")
     sys.stdout.flush()
     sys.stderr.flush()
     try:
-        code, _completed = _run_child(dict(payload))
+        code, _completed = _run_child(request)
         return int(code)
     except OSError as exc:
         print(f"  ⚠ Could not start the post-update interpreter: {exc}")

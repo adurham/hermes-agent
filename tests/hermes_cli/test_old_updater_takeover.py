@@ -11,6 +11,64 @@ import sys
 import pytest
 
 
+@pytest.mark.parametrize("desktop", [False, True])
+@pytest.mark.parametrize("resume", [None, {"resume_needed": True, "profiles": {"work": "old-pid"}}])
+def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, resume):
+    """Regression for the 0.21.3 rehearsal failure: the old post-swap payload has no
+    ``desktop``/``assume_yes``/``windows_resume`` keys, and update_finish reads them
+    with bare subscriptions — the completion died on KeyError('desktop') with the
+    checkout already swapped (post_swap_7006.json on the rehearsal host)."""
+    source = Path(__file__).resolve().parents[2]
+    root = tmp_path / "updated checkout"
+    package = root / "hermes_cli"
+    package.mkdir(parents=True)
+    shutil.copy2(source / "hermes_cli/_old_updater.py", package / "_old_updater.py")
+    (package / "_update_takeover.py").write_text(
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "request = json.loads(Path(sys.argv[1]).read_text())\n"
+        "assert request['desktop'] == " + repr(desktop) + "\n"
+        "assert request['assume_yes'] == True\n"
+        "assert request['restart_update'] == False\n"
+        "assert request['gateway_mode'] == True\n"
+        "assert request['had_desktop_app_before_update'] == " + repr(desktop) + "\n"
+        "assert request['windows_resume'] == " + repr(resume) + "\n"
+        "assert request['receipt']['update_id'] == 'old-correlation'\n"
+        "assert request['plan']['install_method'] == 'git'\n"
+        f"Path(sys.argv[2]).write_text(json.dumps({{'resume_handled': True}}), encoding='utf-8')\n"
+        "raise SystemExit(0)\n", encoding="utf-8",
+    )
+    home = tmp_path / "isolated home 日本 café"
+    home.mkdir()
+    payload = {
+        "swap": "git", "branch": "main", "pre_pull_sha": "10433003", "is_fork": True,
+        "gateway_mode": True, "had_desktop_app_before_update": desktop,
+        "pre_update_snapshot_id": "20260918-185530-pre-update", "pre_update_version": "0.21.3",
+        "active_lazy_features": ["tool.dashboard"], "active_tool_dependencies": [],
+        "plan": {"install_method": "git", "expected_sha": "old-sha"},
+        "sibling_snapshots": {},
+        "receipt": {"update_id": "old-correlation", "outcome": "running"},
+    }
+    if resume is not None:
+        payload["windows_gateway_resume"] = resume
+    program = root / "historical.py"
+    program.write_text(
+        "import os\n"
+        "from hermes_cli.update_handoff import continue_update_in_fresh_interpreter\n"
+        "code = continue_update_in_fresh_interpreter(\n"
+        f"    {payload!r}, argv_tail=['update', '--yes', '--gateway', '--branch', 'main'])\n"
+        "raise SystemExit(code)\n", encoding="utf-8",
+    )
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(('HERMES_', 'PYTHON', 'UV_'))}
+    env.update(HOME=str(home), HERMES_HOME=str(home))
+    result = subprocess.run([sys.executable, "-B", str(program)], env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    handoff = json.loads((home / "logs/update_receipts").glob("post_swap_*.json").__next__().read_text())
+    assert handoff["had_desktop_app_before_update"] is desktop
+    assert "desktop" not in handoff and "assume_yes" not in handoff
+
+
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
 def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding):
@@ -30,7 +88,7 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
         "assert request['desktop'] is True\n"
         "assert request['windows_resume']['profiles'] == {'work': 'old-pid'}\n"
         "assert request['pre_update_snapshot_id'] == 'preserve-snapshot'\n"
-        "assert request['gateway_mode'] is True\n"
+        "assert request['gateway_mode'] == True\n"
         "assert request['pre_update_version'] == 'old-version'\n"
         "assert request['home'] == os.environ['HERMES_HOME']\n"
         "with Path(request['home'], 'runs').open('a') as stream: stream.write('child\\n')\n"
