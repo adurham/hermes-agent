@@ -544,6 +544,12 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       res.setHeader('Access-Control-Allow-Headers', '*')
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
 
+      // One line per request. The driver collects this server's stdout as
+      // mock.log; without it a request that never arrived and a request to an
+      // endpoint this mock does not serve are indistinguishable after the fact
+      // (which is exactly how "the app sends nothing" got mistaken for evidence).
+      console.log(`[mock-server] ${req.method} ${req.url ?? '/'}`)
+
       if (req.method === 'OPTIONS') {
         res.writeHead(204)
         res.end()
@@ -866,6 +872,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       }
 
       // Fallback — 404 for anything else
+      console.log(`[mock-server] NOT IMPLEMENTED ${req.method} ${req.url ?? '/'} → 404`)
       res.writeHead(404, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Not found' }))
     })
