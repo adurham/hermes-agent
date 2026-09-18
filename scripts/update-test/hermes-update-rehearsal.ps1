@@ -106,26 +106,6 @@ function Resolve-Tar {
 # ---------------------------------------------------------------------------
 # paths
 # ---------------------------------------------------------------------------
-
-function Test-TreeAccess {
-  param([string]$Root, [string]$Label)
-  Step "checking permissions on $Label"
-  $user = "$env:USERDOMAIN\$env:USERNAME"
-  $denied = icacls $Root /T 2>&1 |
-    Where-Object { $_ -match ': Access is denied\.$' } |
-    ForEach-Object { ($_ -replace ': Access is denied\.$', '').Trim() }
-
-  if ($denied) {
-    Warn "$($denied.Count) path(s) under $Root are not readable by $user`:"
-    $denied | ForEach-Object { Write-Host "    $_" }
-    Say ''
-    Say 'run this in an elevated (Run as Administrator) PowerShell, then re-run pre:'
-    Say "  icacls `"$Root`" /grant `"$user`:(OI)(CI)F`" /t /c"
-    Fail "$($denied.Count) unreadable path(s) under $Root -- fix with the command above"
-  }
-  Ok "all paths under $Root are readable"
-}
-
 function Get-ResolvedPaths {
   $suffix = if ($env:HERMES_DATA_DIR_SUFFIX) { $env:HERMES_DATA_DIR_SUFFIX } else { '' }
   $userProfile = $env:USERPROFILE
@@ -395,6 +375,27 @@ function Get-UserDataFingerprint {
 # pre
 # ---------------------------------------------------------------------------
 
+function Invoke-BackupTar {
+  param([string]$TarExe, [string[]]$TarArgs, [string]$Root, [string]$Label)
+  $output = & $TarExe @TarArgs 2>&1
+  if ($LASTEXITCODE -eq 0) { return }
+
+  $denied = $output | Where-Object { $_ -match 'Permission denied|Access is denied' }
+  if ($denied) {
+    $user = "$env:USERDOMAIN\$env:USERNAME"
+    Warn "tar could not read $($denied.Count) path(s) under $Root`:"
+    $denied | ForEach-Object { Write-Host "    $_" }
+    Say ''
+    Say 'run this in an elevated (Run as Administrator) PowerShell, then re-run pre:'
+    Say "  icacls `"$Root`" /grant `"$user`:(OI)(CI)F`" /t /c"
+    Fail "permission errors backing up $Label -- fix with the command above, then re-run"
+  }
+
+  # non-permission failure: show what tar said and fail generically
+  $output | ForEach-Object { Write-Host "    $_" }
+  Fail "backup failed (tar) for $Label"
+}
+
 function Invoke-Pre {
   $P = Get-ResolvedPaths
   Step 'your install'
@@ -424,15 +425,13 @@ function Invoke-Pre {
   New-Item -ItemType Directory -Force -Path (Join-Path $script:Snap 'shims'), $script:Armed | Out-Null
 
   Step 'copying your entire HERMES_HOME'
-  Test-TreeAccess -Root $P.Home -Label 'HERMES_HOME'
   $started = Get-Date
   $homeTar = Join-Path $script:Snap 'hermes-home.tar'
   # No excludes: checkout, venv, PM store and node_modules come too, so post is
   # a true rollback rather than a re-download. No -z: the backup root is
   # typically the same internal disk, so gzip costs ~5x the wall time for
   # nothing (measured on an M1).
-  & $script:Tar -cf $homeTar -C $P.Home .
-  if ($LASTEXITCODE -ne 0) { Fail 'backup failed (tar)' }
+  Invoke-BackupTar -TarExe $script:Tar -TarArgs @('-cf', $homeTar, '-C', $P.Home, '.') -Root $P.Home -Label 'HERMES_HOME'
   $elapsed = [int]((Get-Date) - $started).TotalSeconds
   Ok "hermes-home.tar ($([math]::Round((Get-Item $homeTar).Length / 1MB, 1)) MB, ${elapsed}s)"
 
@@ -450,10 +449,8 @@ function Invoke-Pre {
 
   Step "copying the desktop app's data"
   if (Test-Path -LiteralPath $P.UserData) {
-    Test-TreeAccess -Root $P.UserData -Label 'Electron userData'
     $udTar = Join-Path $script:Snap 'electron-userdata.tar'
-    & $script:Tar -cf $udTar -C $P.UserData .
-    if ($LASTEXITCODE -ne 0) { Fail 'userData backup failed' }
+    Invoke-BackupTar -TarExe $script:Tar -TarArgs @('-cf', $udTar, '-C', $P.UserData, '.') -Root $P.UserData -Label 'Electron userData'
     Ok "electron-userdata.tar ($([math]::Round((Get-Item $udTar).Length / 1KB, 1)) KB)"
   }
   else { Warn "no Electron userData at $($P.UserData) (desktop app not installed?)" }
