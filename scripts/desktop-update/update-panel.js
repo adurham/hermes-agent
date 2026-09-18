@@ -1,30 +1,10 @@
 /*
- * update-panel.js — the renderer-free macOS shim, drawn like ui.html.
- *
- * When no Chromium-family browser may host ui.html (Safari/Firefox default,
- * or no Chrome installed), this draws the SAME visual as the browser shim:
- * the Fourier Flow curve (math ported verbatim from ui.html / loader.tsx),
- * one title, one stage line, dark/light following the OS — an AppKit window
- * polling the SAME status file serve-ui.py's HTTP page reads (write_status
- * JSON: {"status":..,"message":..}). No network, no browser, and no
- * scripting of other apps, so no TCC automation prompt. Runs in-process:
+ * Clone of ui.html for systems without chromium.
  *
  *   /usr/bin/osascript -l JavaScript update-panel.js <status-file>
  *
- * JXA over AppleScript: the curve math below is character-for-character the
- * ui.html math (real JS), and the window/animation drive the same AppKit
- * calls the previous AppleScript panel hand-rolled.
- *
- * Lifecycle mirrors the browser shim: poll until a terminal status, then
- * linger (stop_ui leave-window sleeps 15s before killing us on manual/error;
- * "done" tears down immediately, so exit on our own shortly after). A closed
- * window ends the process — the user is allowed to dismiss us. The status
- * file vanishing after having existed means the shim published a terminal
- * state and cleaned up: treat it as done (an error publish keeps its file
- * alive through the grace window, so this cannot mask a failure).
- *
- * Must remain here, next to posix.sh: the desktop spawns this directory
- * as-is (see resolvePosixScriptHandoff) and the script references it via
+ * Must remain here, next to posix.sh.
+ * The desktop spawns this directory as-is (see resolvePosixScriptHandoff) and the script references it via
  * its own path.
  */
 ObjC.import('AppKit')
@@ -153,7 +133,11 @@ function wrappedLabel (text, font, color, frame) {
   label.editable = false
   label.bordered = false
   label.drawsBackground = false
-  label.alignment = $.NSTextAlignmentCenter
+  // Alignment must reach the cell: setAlignment on the field alone does not
+  // propagate for wrapping labels, and left-aligned text inside a full-width
+  // frame reads as "centered box, left-aligned text".
+  label.alignment = 1
+  label.cell.alignment = 1
   label.frame = frame
   return label
 }
@@ -169,9 +153,21 @@ function run (argv) {
   const { bg, fg } = colors()
 
   // 280x320 like the Chrome --window-size the shim uses.
+  const styleMask =
+    $.NSWindowStyleMaskTitled |
+    $.NSWindowStyleMaskClosable
+
   const win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-    $.NSMakeRect(0, 0, 280, 320), 3, $.NSBackingStoreBuffered, false
+    $.NSMakeRect(0, 0, 280, 320),
+    styleMask,
+    $.NSBackingStoreBuffered,
+    false
   )
+
+  // Don't allow closing while Hermes is updating.
+  const closeButton = win.standardWindowButton($.NSWindowCloseButton)
+  closeButton.enabled = false
+
   win.title = 'Hermes'
   win.center
   win.releasedWhenClosed = false
@@ -179,14 +175,14 @@ function run (argv) {
   const content = win.contentView
 
   // Loader: 80x80, centered horizontally, near the top (AppKit Y-up).
-  const loaderView = $.NSImageView.alloc.initWithFrame($.NSMakeRect(100, 220, 80, 80))
+  const loaderView = $.NSImageView.alloc.initWithFrame($.NSMakeRect(100, 226, 80, 80))
   loaderView.imageScaling = $.NSImageScaleProportionallyUpOrDown
   content.addSubview(loaderView)
 
   const title = wrappedLabel('Updating Hermes', $.NSFont.systemFontOfSize(18), fg,
-    $.NSMakeRect(12, 180, 256, 26))
+    $.NSMakeRect(0, 178, 280, 26))
   const line = wrappedLabel('Hermes will open once done.', $.NSFont.systemFontOfSize(12), null,
-    $.NSMakeRect(24, 116, 232, 54))
+    $.NSMakeRect(24, 118, 232, 54))
   content.addSubview(title)
   content.addSubview(line)
 
@@ -223,12 +219,19 @@ function run (argv) {
 
     if (settled === null) {
       loaderView.image = renderLoaderFrame($.CACurrentMediaTime() * 1000 - startedAtMs, phaseOffset, fg)
-      // Pump the main runloop: without this the window never repaints and
-      // macOS beachballs the panel. The pump also drives the next poll.
-      runloop.runModeBeforeDate($.NSDefaultRunLoopMode,
-        $.NSDate.dateWithTimeIntervalSinceNow(0.03))
+      const screen = $.NSScreen.mainScreen;
+      const refreshRate = screen.maximumFramesPerSecond;
+      const frameInterval = 1.0 / refreshRate;
+
+      // Pump the main runloop at the monitor's refresh rate.
+      runloop.runModeBeforeDate(
+        $.NSDefaultRunLoopMode,
+        $.NSDate.dateWithTimeIntervalSinceNow(frameInterval)
+      );
     }
   }
+  
+  closeButton.enabled = true
 
   // Terminal states: swap the loader for the glyph; title/line verbatim
   // from ui.html's apply().
@@ -242,7 +245,7 @@ function run (argv) {
     line.stringValue = 'Run hermes debug share in a terminal to send a report.'
   }
   const glyph = wrappedLabel(settled === 'error' ? '✕' : '✓',
-    $.NSFont.systemFontOfSize(44), fg, $.NSMakeRect(100, 220, 80, 80))
+    $.NSFont.systemFontOfSize(44), fg, $.NSMakeRect(0, 226, 280, 80))
   content.addSubview(glyph)
 
   if (settled === 'done') {
@@ -256,6 +259,13 @@ function run (argv) {
 }
 
 function linger (seconds) {
-  $.NSRunLoop.currentRunLoop.runModeBeforeDate($.NSDefaultRunLoopMode,
-    $.NSDate.dateWithTimeIntervalSinceNow(seconds))
+  const runloop = $.NSRunLoop.currentRunLoop
+  const end = $.CACurrentMediaTime() + seconds
+
+  while ($.CACurrentMediaTime() < end) {
+    runloop.runModeBeforeDate(
+      $.NSDefaultRunLoopMode,
+      $.NSDate.dateWithTimeIntervalSinceNow(0.05)
+    )
+  }
 }
