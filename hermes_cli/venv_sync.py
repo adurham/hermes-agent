@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 from hermes_cli.steward import UPDATE_MECHANISMS
@@ -155,7 +156,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     import pm
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.runtime_paths import runtime_facts_path
+    from hermes_cli.runtime_paths import activation_environment, runtime_facts_path
 
     current = pm.venv_is_current(project_root=root)
     if not current:
@@ -173,6 +174,26 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # must not make early recovery immediately rebuild it a second time.
         for name in (".update-incomplete", ".lazy-refresh-incomplete"):
             (root / name).unlink(missing_ok=True)
+        # Sync commits the dependency generation, but a source update also owes
+        # the product builds and the post-build maintenance -- the tail every
+        # install and finished update shares (hermes_cli/source_completion.py).
+        # Those builds need PM's selected interpreter with its dependencies
+        # activated, so hand that file THIS interpreter and let it re-exec
+        # itself, exactly as the installers do.
+        desktop_app = root / "apps/desktop"
+        desktop = ((desktop_app / "dist/index.html").is_file()
+                   or any((desktop_app / "release").glob("*")))
+        code = subprocess.call(
+            [sys.executable, "-I", "-B", "-u",
+             str(root / "hermes_cli/source_completion.py"),
+             "--source", str(root), "--finish-update",
+             *(("--desktop",) if desktop else ())],
+            cwd=root, env=activation_environment(root),
+        )
+        if code != 0:
+            raise RuntimeError(
+                "source update completion failed; run `hermes update` to finish it"
+            )
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")

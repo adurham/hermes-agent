@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Also build the packaged desktop app.")
     parser.add_argument("--interactive", action="store_true",
                         help="Allow prompts; installers pass no flag and stay unattended.")
+    parser.add_argument("--finish-update", action="store_true",
+                        help="Complete a source UPDATE tail instead of an install: the "
+                             "same launchers/products/maintenance with update wording.")
     args = parser.parse_args([argument for argument in argv if argument != _PREPARED])
     root = args.source.resolve()
     if not (root / "hermes_cli/source_completion.py").is_file():
@@ -91,10 +94,21 @@ def main(argv: list[str] | None = None) -> int:
         from hermes_cli.runtime_paths import activate_dependencies
 
         activate_dependencies(root)
-        ok = complete_source_checkout(
-            root, desktop=args.desktop, assume_yes=not args.interactive,
-            completion_message="✓ Install complete!",
-        )
+        if args.finish_update:
+            # A source update that never reached its own completion -- a
+            # pre-handoff release cannot flip during `hermes update`, so its
+            # update ends with the tree at HEAD and nothing built -- lands here
+            # on the next ordinary startup. Same tail as an install, so the two
+            # states cannot drift apart.
+            ok = complete_source_checkout(
+                root, desktop=args.desktop, assume_yes=True,
+                completion_message=None, announce="\n✓ Code updated!",
+            )
+        else:
+            ok = complete_source_checkout(
+                root, desktop=args.desktop, assume_yes=not args.interactive,
+                completion_message="✓ Install complete!",
+            )
         return 0 if ok else 1
 
     from hermes_cli.runtime_paths import activation_environment
