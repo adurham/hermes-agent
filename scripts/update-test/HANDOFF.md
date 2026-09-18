@@ -9,6 +9,7 @@ instructions:
 
    macos/linux:
    `curl -fsSL "sh_url=$(date +%s)" | bash -s -- pre`
+
    windows:
    `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) pre`
 
@@ -26,6 +27,7 @@ instructions:
 
    macos/linux:
    `curl -fsSL "sh_url=$(date +%s)" | bash -s -- post --yes`
+
    windows:
    `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) post --yes`
 
