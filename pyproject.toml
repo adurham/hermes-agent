@@ -290,6 +290,11 @@ wake = [
   # load it. There is no native Windows ARM64 wheel either.
   "pyopen-wakeword==1.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
   "sherpa-onnx==1.13.8",
+  # uv reads sherpa-onnx metadata from its cp311-linux_armv7l wheel, which
+  # omits this pin. Every wheel the bundles install requires it. Without the
+  # pin a frozen sync installs sherpa-onnx alone, and desktop dependency
+  # preparation fails on `uv pip check`.
+  "sherpa-onnx-core==1.13.8",
   # text2token imports both tokenizers even for English phrases.
   "sentencepiece==0.2.2",
   "pypinyin==0.55.0",
@@ -319,6 +324,8 @@ wake-openwakeword = [
 ]
 wake-sherpa = [
   "sherpa-onnx==1.13.8",
+  # Required by the sherpa-onnx wheel. See [wake] for why it is explicit.
+  "sherpa-onnx-core==1.13.8",
   "sentencepiece==0.2.2",
   "pypinyin==0.55.0",
 ]
