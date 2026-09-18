@@ -583,14 +583,14 @@ def _ensure_sdk_installed() -> bool:
         print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
         return False
     print("  Installing honcho-ai...", flush=True)
-    from tools.lazy_deps import install_specs  # env-aware: sealed hosted venvs redirect to the data volume
-    result = install_specs(["honcho-ai==2.2.0"])
-    if result.ok:
+    try:
+        import pm
+        pm.sync_venv(["honcho"], explicit=True)
         print("  Installed.\n")
         return True
-    print(f"  Cannot install: {result.reason}\n" if result.blocked else
-          f"  Install failed:\n{(result.stderr or '').strip()}\n  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
-    return False
+    except Exception as exc:
+        print(f"  Install failed: {exc}\n  Run manually: hermes pm install\n")
+        return False
 
 
 def _device_login_available() -> bool:

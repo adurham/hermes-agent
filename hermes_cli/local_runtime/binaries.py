@@ -42,44 +42,6 @@ def pinned_tag(backend: str) -> str:
     if version is None:
         raise BinaryResolutionError(f"llama.cpp {backend} has no PM version pin")
     return f"b{version}"
-def manifest_verified(manifest: Path) -> bool:
-    """True when an install manifest records a verified_version (missing/damaged -> False)."""
-    try:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
-    return isinstance(data, dict) and bool(data.get("verified_version"))
-
-
-def _release_number(tag: str) -> int:
-    digits = "".join(ch for ch in tag if ch.isdigit())
-    return int(digits) if digits else 0
-
-
-def installed_tags() -> list[str]:
-    """Tags with a verified install, newest first by release number. The boot ladder and the
-    update check both read installed-ness from here — one resolver, every caller."""
-    root = runtimes_root()
-    if not root.exists():
-        return []
-    found = {entry.name for entry in root.iterdir()
-             if entry.is_dir() and entry.name != "downloads"
-             and any(manifest_verified(m) for m in entry.glob("*/manifest.json"))}
-    return sorted(found, key=_release_number, reverse=True)
-
-
-def _host_os_arch() -> tuple[str, str]:
-    """(os, arch) normalized to release-asset vocabulary. PITFALL: PROCESSOR_ARCHITECTURE lies
-    under x64 emulation on ARM64 Windows, and platform.machine() reads the same env on some
-    Pythons — so on Windows prefer PROCESSOR_IDENTIFIER's text when present."""
-    system = platform.system().lower()
-    os_name = {"windows": "win", "darwin": "macos", "linux": "ubuntu"}.get(system, system)
-    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
-    if os_name == "win":
-        ident = os.environ.get("PROCESSOR_IDENTIFIER", "").lower()
-        if "armv8" in ident or "arm " in ident:
-            arch = "arm64"
-    return os_name, arch
 
 
 def select_backend(gpu_vendor: str | None, os_name: str | None = None) -> str:

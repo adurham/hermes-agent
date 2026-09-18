@@ -27,8 +27,8 @@ _attempted: set[str] = set()
 
 def configured_provider(home: Path) -> str:
     """``memory.provider`` of *home*'s effective config, or ``""``."""
-    from hermes_cli.plugin_python_deps import _read_home_config
-    memory = _read_home_config(home).get("memory") or {}
+    from pm.plugins_state import _read_home_config
+    memory = (_read_home_config(home) or {}).get("memory") or {}
     return str(memory.get("provider") or "").strip()
 
 
@@ -93,9 +93,9 @@ def _install_into(home: Path) -> Callable[[str], dict]:
 
 def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     """``hermes update`` hook: every profile home sharing this venv. Returns installed plugin names."""
-    from hermes_cli.plugin_python_deps import dependency_homes
+    from pm.plugins_state import _all_homes
     installed: list[str] = []
-    for home in dependency_homes():
+    for home in _all_homes():
         try:
             name = migrate_home(home, install=_install_into(home), say=say)
         except Exception as exc:
@@ -112,8 +112,8 @@ def recover_at_startup(name: str) -> bool:
     if name in _attempted:
         return False
     _attempted.add(name)
-    from tools.lazy_deps import _allow_lazy_installs
-    if not _allow_lazy_installs():
+    from pm.ensure import lazy_installs_allowed
+    if not lazy_installs_allowed():
         logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
                        "run `hermes plugins install %s`.", name, name)
         return False
