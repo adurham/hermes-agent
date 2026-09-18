@@ -503,8 +503,30 @@ function Stage-Repository {
         Log "updating $InstallDir"
         git -C $InstallDir fetch origin $Branch; if ($LASTEXITCODE) { Fail "git fetch failed" }
         git -C $InstallDir checkout $Branch; if ($LASTEXITCODE) { Fail "git checkout failed" }
-        git -C $InstallDir pull --ff-only origin $Branch
-        if ($LASTEXITCODE) { Log "not fast-forwardable; keeping local state" }
+        git -C $InstallDir merge --ff-only "origin/$Branch"
+        if ($LASTEXITCODE) {
+            # A release cut off the main line, a force-pushed remote, or the
+            # user's own commits cannot fast-forward. Every stage below reads
+            # files only the new tree has (pm/), so an install left on the old
+            # tree cannot finish -- match the remote the way `hermes update`
+            # does, after parking the old tip and any local work. Mirrors
+            # scripts/install.sh; this side kept the old tree and then read a
+            # pm/ file that only the new one has.
+            $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
+            $prior = (git -C $InstallDir rev-parse --short HEAD 2>$null)
+            if (-not $prior) { $prior = 'unknown' }
+            $rescue = "refs/hermes-install-backup/$stamp-$prior"
+            if (git -C $InstallDir status --porcelain) {
+                git -C $InstallDir stash push --include-untracked -m "hermes-install-autostash-$stamp"
+                if ($LASTEXITCODE) { Log "could not stash local changes; they are overwritten below" }
+                else { Log "local changes stashed as hermes-install-autostash-$stamp" }
+            }
+            git -C $InstallDir update-ref $rescue HEAD 2>$null
+            if ($LASTEXITCODE) { Log "could not back up the previous HEAD" }
+            else { Log "previous HEAD backed up to $rescue" }
+            git -C $InstallDir reset --hard "origin/$Branch"; if ($LASTEXITCODE) { Fail "git reset failed" }
+            Log "not fast-forwardable; reset to origin/$Branch"
+        }
     } else {
         Log "cloning $RepoUrl ($Branch) into $InstallDir"
         New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir) | Out-Null
@@ -758,7 +780,7 @@ function New-DesktopShortcuts {
                 $parent = Split-Path -Parent $lnkPath
                 if (-not (Test-Path $parent)) {
                     New-Item -ItemType Directory -Force -Path $parent | Out-Null
-                }
+        }
                 $sc = $shell.CreateShortcut($lnkPath)
                 $sc.TargetPath = $TargetExe
                 $sc.WorkingDirectory = $workDir
