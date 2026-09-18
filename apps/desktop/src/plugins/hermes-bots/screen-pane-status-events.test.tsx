@@ -6,6 +6,7 @@
  */
 
 import { act, render, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { DisplayStatus } from './screen-connection'
@@ -20,6 +21,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
     Codicon: () => null,
     GlyphSpinner: () => null,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
     EmptyState: () => null,
     useValue: useStore,
     host: { onEvent: onGatewayEvent }

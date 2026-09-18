@@ -7,6 +7,7 @@
  */
 
 import { act, render, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { DisplayStatus } from './screen-connection'
@@ -21,6 +22,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props}>{children}</button>,
     Codicon: () => null,
     GlyphSpinner: () => null,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
     EmptyState: () => null,
     useValue: useStore,
     host: { onEvent: onGatewayEvent }
@@ -166,7 +168,7 @@ it('does not offer Take over while no server-minted viewer id exists, even once 
     method === 'display.observe' ? { ...status, ticket: 'test-ticket', viewer_id: MINTED } : status
   )
   await act(async () => {
-    view.getByTitle('Reconnect').click()
+    view.getByLabelText('Reconnect').click()
   })
   await waitFor(() => expect(view.getByText('Take over').closest('button')?.disabled).toBe(false))
   view.unmount()

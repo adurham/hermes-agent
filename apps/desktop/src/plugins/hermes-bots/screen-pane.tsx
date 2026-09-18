@@ -12,7 +12,7 @@
  * attaches is bounded to a few rapid retries before the error state.
  */
 
-import { Button, Codicon, EmptyState, GlyphSpinner, host, useValue } from '@hermes/plugin-sdk'
+import { Button, Codicon, EmptyState, GlyphSpinner, host, Tip, useValue } from '@hermes/plugin-sdk'
 import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -384,9 +384,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         ) : (
           <>
             {humanOther ? (
-              <Button disabled={busy} onClick={() => void handBack(true)} size="sm" title={t.screen.handBackForceHint} variant="secondary">
-                <Codicon name="debug-continue" /> {t.screen.handBackForce}
-              </Button>
+              <Tip label={t.screen.handBackForceHint}>
+                <Button disabled={busy} onClick={() => void handBack(true)} size="sm" variant="secondary">
+                  <Codicon name="debug-continue" /> {t.screen.handBackForce}
+                </Button>
+              </Tip>
             ) : null}
             {/* The lease is granted to a server-minted viewer id; until `display.observe` has
                 minted one for this attach a Take over could only send an empty id and dead-end
@@ -396,9 +398,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             </Button>
           </>
         )}
-        <Button disabled={conn === 'attaching'} onClick={() => void attach()} size="sm" title={t.screen.reconnect} variant="ghost">
-          <Codicon name="refresh" />
-        </Button>
+        <Tip label={t.screen.reconnect}>
+          <Button aria-label={t.screen.reconnect} disabled={conn === 'attaching'} onClick={() => void attach()} size="sm" variant="ghost">
+            <Codicon name="refresh" />
+          </Button>
+        </Tip>
       </div>
       <div className={iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'}>
         {/* data-terminal: the same keyboard-ownership marker the terminal pane uses, so the app's

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type { DisplayStatus } from './screen-connection'
@@ -22,6 +23,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     ),
     Codicon: () => null,
     GlyphSpinner: () => null,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
     EmptyState: () => null,
     useValue: useStore,
     host: {
@@ -170,7 +172,7 @@ it('pins the bot socket for the attach lifetime and lets go on unmount', async (
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
   expect(retention.held).toBe(1)
-  fireEvent.click(view.getByTitle('Reconnect'))
+  fireEvent.click(view.getByLabelText('Reconnect'))
   await waitFor(() => expect(sockets).toHaveLength(2))
   expect(retention.held).toBe(1)
   view.unmount()
@@ -194,7 +196,7 @@ it('does not hand back while replacing a stream to reconnect the same viewer', a
   const view = render(<BotScreenPane bot={bot} />)
   await waitFor(() => expect(sockets).toHaveLength(1))
   await act(async () => {})
-  fireEvent.click(view.getByTitle('Reconnect'))
+  fireEvent.click(view.getByLabelText('Reconnect'))
   await waitFor(() => expect(sockets).toHaveLength(2))
   expect(sockets[0].closeCodes).toEqual([1005])
   expect(sockets[1].closed).toBe(false)
@@ -241,6 +243,6 @@ it('re-attaches in watch mode after the bridge evicts us with 4000, with a bound
   await act(async () => new Promise(resolve => setTimeout(resolve, 20)))
   expect(observes()).toBe(4)
   expect(sockets.at(-1)?.closed).toBe(true)
-  expect(view.getByTitle('Reconnect').closest('button')?.disabled).toBe(false)
+  expect(view.getByLabelText('Reconnect').closest('button')?.disabled).toBe(false)
   view.unmount()
 })
