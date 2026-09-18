@@ -238,10 +238,30 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  // The blur-close timer must not outlive the composer: an unmounted editor's
+  // deferred closeTrigger() would setState after teardown (vitest reported it as
+  // an unhandled "window is not defined" from paste-url-is-text.test.tsx).
+  const blurCloseTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (blurCloseTimer.current !== null) {
+        window.clearTimeout(blurCloseTimer.current)
+      }
+    },
+    []
+  )
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
-  const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
+
+  const slash = useSlashCompletions({
+    activeSkin: themeName,
+    gateway: gateway ?? null,
+    sessionId: sessionId ?? null,
+    skinThemes: availableThemes
+  })
+
   const emoji = useEmojiCompletions()
 
   const { t } = useI18n()
@@ -1125,7 +1145,14 @@ export function ChatBar({
           // guard forever (#44135). Clear unconditionally: by the time blur
           // runs there is nothing left composing in this editor.
           composingRef.current = false
-          window.setTimeout(closeTrigger, 80)
+          if (blurCloseTimer.current !== null) {
+            window.clearTimeout(blurCloseTimer.current)
+          }
+
+          blurCloseTimer.current = window.setTimeout(() => {
+            blurCloseTimer.current = null
+            closeTrigger()
+          }, 80)
         }}
         onCompositionEnd={event => {
           composingRef.current = false
