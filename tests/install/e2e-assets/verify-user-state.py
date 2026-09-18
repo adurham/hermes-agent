@@ -345,6 +345,17 @@ def _modification_allowed(rel: str) -> bool:
     return is_cron and name in ("ticker_heartbeat", "ticker_last_success")
 
 
+def _volatile_sidecar(rel: str) -> bool:
+    """SQLite's own sidecars (-wal/-shm/-journal): hardware, not user state.
+
+    A WAL/shm pair exists only while a connection is open. A snapshot taken with one
+    live sees them; they disappear when it closes, and the report then says the
+    upgrade DELETED user state (observed: cron/executions.db-shm and -wal). The
+    database itself stays judged -- state.db by row counts -- so real loss still fails.
+    """
+    return rel.endswith(("-wal", "-shm", "-journal"))
+
+
 def _rows_shrank(rel: str, before: dict, after: dict) -> bool:
     if rel.rsplit("/", 1)[-1] != "state.db":
         return False
@@ -363,6 +374,8 @@ def verify_home(home: str, snap: dict) -> dict:
 
     failing_modified = {k: v for k, v in judged["modified"].items()
                         if not _modification_allowed(k)}
+    failing_deleted = sorted(k for k in judged["deleted"] if not _volatile_sidecar(k))
+    tolerated_deleted = sorted(k for k in judged["deleted"] if _volatile_sidecar(k))
     shrank = sorted(k for k, v in judged["modified"].items()
                     if _rows_shrank(k, v["before"], v["after"]))
     tolerated_modified = sorted(set(judged["modified"]) - set(failing_modified))
@@ -378,20 +391,22 @@ def verify_home(home: str, snap: dict) -> dict:
         "counts": {
             "before": len(snap["entries"]),
             "after": len(fresh["entries"]),
-            "deleted": len(judged["deleted"]),
+            "deleted": len(failing_deleted),
             "modified": len(failing_modified),
             "added": len(judged["added"]),
             "tolerated_modified": len(tolerated_modified),
+            "tolerated_deleted": len(tolerated_deleted),
             "advisory_changed": len(advisory["deleted"]) + len(advisory["modified"])
                                 + len(advisory["added"]),
         },
-        "deleted": judged["deleted"],
+        "deleted": failing_deleted,
+        "tolerated_deleted": tolerated_deleted,
         "modified": failing_modified,
         "added": judged["added"],
         "tolerated_modified": tolerated_modified,
         "rows_shrank": shrank,
         "advisory": advisory,
-        "ok": not judged["deleted"] and not failing_modified and not shrank,
+        "ok": not failing_deleted and not failing_modified and not shrank,
     }
 
 
@@ -425,6 +440,8 @@ def _render(report: dict) -> str:
         lines.append(f"  ROWS SHRANK {rel}")
     for rel in report["tolerated_modified"]:
         lines.append(f"  tolerated (config rewrite) {rel}")
+    for rel in report.get("tolerated_deleted", []):
+        lines.append(f"  tolerated (sqlite sidecar) {rel}")
     advisory = report["advisory"]
     for label, key in (("advisory deleted", "deleted"), ("advisory modified", "modified")):
         for rel in advisory[key]:

@@ -361,3 +361,29 @@ def test_a_dotenv_changed_only_in_comments_is_reported_as_such(tmp_path):
     rendered = vus._render(report)
     assert "no key differs" in rendered
     assert "http://127.0.0.1:9000/v1" not in rendered
+
+
+def test_sqlite_sidecars_may_vanish_but_the_database_may_not(tmp_path):
+    """A WAL/shm pair exists only while a connection is open.
+
+    A snapshot taken with one live sees them; they vanish when it closes, and the
+    report then reads as the upgrade DELETING user state (seen live on
+    cron/executions.db-shm and -wal). The database itself must still fail if lost.
+    """
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    for name in ("executions.db", "executions.db-wal", "executions.db-shm"):
+        (home / "cron" / name).write_text(f"{name}\n", encoding="utf-8")
+    snap = vus.snapshot_home(str(home))
+
+    os.remove(home / "cron" / "executions.db-wal")
+    os.remove(home / "cron" / "executions.db-shm")
+    report = vus.verify_home(str(home), snap)
+    assert report["deleted"] == []
+    assert report["tolerated_deleted"] == ["cron/executions.db-shm", "cron/executions.db-wal"]
+    assert report["ok"] is True
+
+    os.remove(home / "cron" / "executions.db")
+    report = vus.verify_home(str(home), snap)
+    assert report["deleted"] == ["cron/executions.db"]
+    assert report["ok"] is False
