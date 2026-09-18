@@ -62,14 +62,11 @@ def _resolve_repo_dir() -> Path | None:
     repo_dir = Path(__file__).parent.parent.resolve()
     if (repo_dir / ".git").exists():
         return repo_dir
-    try:
-        from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home
 
-        candidate = get_hermes_home() / "hermes-agent"
-        if (candidate / ".git").exists():
-            return candidate
-    except Exception:
-        pass
+    candidate = get_hermes_home() / "hermes-agent"
+    if (candidate / ".git").exists():
+        return candidate
     return None
 
 

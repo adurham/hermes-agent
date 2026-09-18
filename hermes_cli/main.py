@@ -3467,16 +3467,11 @@ def main():
     except Exception:
         pass
 
-    # One TLS authority: trust the OS store process-wide before any outbound
-    # call resolves a CA bundle (see agent/ssl_verify.py). Covers the CLI
-    # entrypoint, which agent_init's own install_truststore() call does not
-    # reach when the CLI never constructs an AIAgent (subcommands, help).
-    try:
-        from agent.ssl_verify import install_truststore
+    # One TLS authority: trust the OS store before any outbound call resolves a
+    # CA bundle (agent/ssl_verify.py). Never raises; False just means OpenSSL's paths.
+    from agent.ssl_verify import install_truststore
 
-        install_truststore()
-    except Exception:
-        pass
+    install_truststore()
 
     # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
     # updates. No-op elsewhere.

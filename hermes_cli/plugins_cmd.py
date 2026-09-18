@@ -1594,7 +1594,7 @@ def cmd_trust_update_url(name: str) -> None:
     plugins_dir = _plugins_dir()
     target = _require_installed_plugin(name, plugins_dir, console)
 
-    from hermes_cli.plugins_provenance import plugins_provenance, read_sidecar_rows
+    from hermes_cli.plugins_provenance import read_sidecar_rows
 
     rows = read_sidecar_rows(plugins_dir)
     row = rows.get(target.name)

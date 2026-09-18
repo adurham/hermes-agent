@@ -8,7 +8,6 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 import logging
 from contextlib import suppress
 import os
-import re
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
@@ -26,7 +25,6 @@ from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
-from hermes_constants import venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -77,16 +75,11 @@ from hermes_cli.update_cmd_stash import (  # noqa: F401
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
     _print_items, _reload_config_modules, _run_config_check_fresh, _run_migrate_config_fresh)
-from hermes_cli.update_cmd_validation import (  # historical updater imports
+from hermes_cli.update_cmd_validation import (  # noqa: F401 — frozen updater surface (tests/compat)
     _UPDATE_CRITICAL_MODULES, _critical_module_import_failures,
     _validate_critical_modules_import)
-from hermes_cli.old_updater_deps import (  # historical updater imports only
-    _capture_active_lazy_features, _npm_lockfile_changed, _path_uid,
-    _rebuild_desktop_after_update, _refresh_active_lazy_features,
-    _refresh_active_memory_provider_dependencies, _update_node_dependencies,
-    _handoff_reapable_backend_pids, _ledger_manual_serve_holders, _ledger_reapable_backend_pids,
-    _leftover_pausable_gateway_pids, _orphaned_desktop_backend_pids,
-    _relaunch_stopped_serves, _stop_process_trees)
+from hermes_cli.old_updater_deps import (  # noqa: F401 — frozen updater surface (tests/compat)
+    _path_uid, _rebuild_desktop_after_update, _update_node_dependencies)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,

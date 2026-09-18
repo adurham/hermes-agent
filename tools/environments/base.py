@@ -10,7 +10,6 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 import json
 import logging
 import os
-import re
 import shlex
 import threading
 import time

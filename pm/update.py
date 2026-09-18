@@ -35,7 +35,6 @@ from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 from pm.network import retry_network
-from pm.registry import get_package
 
 
 # The context holds no data outside a resolve/pin call, including failed calls.

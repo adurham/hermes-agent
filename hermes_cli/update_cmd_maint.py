@@ -14,7 +14,6 @@ import sys
 import time as _time
 from pathlib import Path
 from typing import Optional
-from hermes_constants import venv_python_path
 
 from hermes_cli.update_cmd_common import _best_effort
 

@@ -9,13 +9,12 @@ Siblings: ``cua_backend_driver`` (binary/contract), ``cua_backend_capture`` + ``
 from __future__ import annotations
 
 import contextlib
-import importlib
 import logging
 import os
 import subprocess
 import sys
 import uuid
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -23,8 +22,7 @@ from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
 from tools.computer_use.cua_backend_driver import (
-    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
-    resolve_cua_driver_cmd)
+    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status)
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession

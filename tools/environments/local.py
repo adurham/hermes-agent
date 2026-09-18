@@ -24,9 +24,6 @@ from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys, strip_profile_gate_env)
-from tools.environments.local_gitbash_probe import (
-    _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
-    _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 

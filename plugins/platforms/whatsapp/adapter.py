@@ -828,7 +828,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {_MAX_TEXT_INJECT_BYTES})", flush=True)
                     continue
-                # MERGE-CHECK: our utf-8-sig read fix kept (BOM-tolerant document injection).
                 content = p.read_text(encoding="utf-8-sig", errors="replace")
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"

@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import re
-import sys
 import time
 from contextlib import suppress
 from difflib import SequenceMatcher

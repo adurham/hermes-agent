@@ -14,7 +14,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -995,7 +994,6 @@ class CLICommandsMixin:
         doesn't fire for image-only clipboard content (e.g., VSCode terminal,
         Windows Terminal with WSL2).
         """
-        from cli import _DIM, _RST, _cprint
         from hermes_cli.clipboard import has_clipboard_image
         if not has_clipboard_image():
             _cp(_dim_line('(._.) No image found in clipboard'))

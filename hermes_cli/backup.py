@@ -21,10 +21,6 @@ from hermes_constants import (
     display_hermes_home,
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
-from utils import (
-    _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
-    default_new_file_mode,
-)
 
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db

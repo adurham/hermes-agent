@@ -28,8 +28,6 @@ the baked roots must have a pyc. Unparseable fixtures (deliberately
 invalid test data) are counted and skipped, not failed.
 """
 
-import os
-import py_compile
 import subprocess
 from pathlib import Path
 

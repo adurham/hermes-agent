@@ -49,8 +49,6 @@ from tools.tts_tool_plugins import (
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
 
 
-# MERGE-CHECK: pm (our branch) replaces upstream's removed tools.lazy_deps; upstream lazy_deps
-# feature ids mapped to the pm extras they install.
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
 
 # --- Lazy SDK importers -- providers import only when used (headless boxes lack PortAudio etc.) ---
@@ -62,8 +60,6 @@ def _sdk_importer(module: str, attr: Optional[str] = None, feature: Optional[str
     the raw import still raises cleanly. sounddevice also raises OSError without PortAudio."""
     def _import():
         if feature:
-            # MERGE-CHECK: upstream refactor wins; pm.ensure_import replaces the removed
-            # tools.lazy_deps feature-install (pm extras: tts.edge->edge-tts etc.)
             with contextlib.suppress(Exception):
                 from pm import ensure_import as _pm_ensure
                 _pm_ensure(_PM_FEATURE_ALIASES.get(feature, feature))
