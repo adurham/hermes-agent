@@ -216,6 +216,11 @@ def format_banner_version_label() -> str:
         if stamp.get("tag"):
             channel = "canary" if is_canary_tag(stamp["tag"]) else "stable"
             return f"{label} · {channel}"
+        if stamp.get("payload") == "bootstrap":
+            # The old installer shell's CLI backend: the shell never updates
+            # itself (`self`), the managed checkout under it does. Name the
+            # shell so it doesn't read as a plain packaged build.
+            return f"{label} · installer"
         return label
 
     base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"

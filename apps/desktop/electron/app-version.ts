@@ -14,6 +14,14 @@ export interface AppVersionInfo {
   source?: InstallStamp['source']
   distribution?: string
   updateMechanism?: InstallStamp['updateMechanism']
+  /** The artifact kind of the app carrying this version info ('bootstrap' |
+   *  'bundled' | 'light'). The Distribution label keys on it: a bootstrap
+   *  artifact is the old-style installer shell over a managed checkout. */
+  payload?: InstallStamp['payload']
+  /** True when the runtime checkout carries the bootstrap installers'
+   *  `.hermes-bootstrap-complete` receipt — install.sh / install.ps1 (or the
+   *  desktop bootstrap) created it, as opposed to a manual git clone. */
+  installedByScript?: boolean
   dirty?: boolean
 }
 
@@ -43,6 +51,7 @@ export function appVersionInfo(stamp: Readonly<InstallStamp> | null, runtimeVers
     source: stamp.source ?? undefined,
     distribution: stamp.distribution ?? undefined,
     updateMechanism: stamp.updateMechanism,
+    payload: stamp.payload,
     dirty: stamp.dirty
   }
 }

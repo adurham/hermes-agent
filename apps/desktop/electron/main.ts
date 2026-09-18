@@ -16920,10 +16920,15 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     bundleOutOfSync: skew.outOfSync,
     bundleCommitsBehind: skew.desktopCommitsBehind,
     // The install id: sha16 of the canonical install-root path — the key of
-    // this install's per-install channel record and its installs/<sha16>/ state
-    // folder. Same value `hermes update --install-id` prints; About renders it
-    // as `sha16 (path)`.
+    // this install's per-install channel record and its installs/<sha16>/
+    // state folder. Same value `hermes update --install-id` prints; About
+    // renders it as `sha16 (path)`.
     installId: installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath),
+    // The artifact kind of THIS app plus whether the runtime checkout came
+    // from a bootstrap installer script — About's Distribution row
+    // disambiguates installer shells, bundles, and script installs from these.
+    payload: INSTALL_STAMP?.payload,
+    installedByScript: isInstallerCreatedCheckout(),
     // What this build carries and where an external backend runs from.
     // Bundled artifacts always run their payload; light artifacts have no
     // runtime and only reach remote backends. External builds classify from
@@ -16985,6 +16990,21 @@ function canonicalizeInstallPath(p: string): string {
     return fs.realpathSync(p)
   } catch {
     return path.resolve(p)
+  }
+}
+
+/** True when the runtime checkout was created by a bootstrap installer
+ *  (install.sh / install.ps1 / the desktop first-launch bootstrap): those all
+ *  finish by writing `.hermes-bootstrap-complete` into the checkout root, and
+ *  `hermes update` preserves the file, so a manual clone never grows one. A
+ *  missing checkout (sealed bundled payloads, remote backends) is not
+ *  installer-created. */
+export function isInstallerCreatedCheckout(root: string | null = ACTIVE_HERMES_ROOT): boolean {
+  if (!root) { return false }
+  try {
+    return fs.existsSync(path.join(root, path.basename(BOOTSTRAP_COMPLETE_MARKER)))
+  } catch {
+    return false
   }
 }
 

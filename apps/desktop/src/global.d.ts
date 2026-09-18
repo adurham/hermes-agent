@@ -687,6 +687,14 @@ export interface DesktopVersionInfo {
    *  Store-identity build — the Settings label keys off this, never
    *  process.windowsStore (which also matches sideloaded MSIX). */
   updateMechanism?: 'self' | 'app-installer' | 'electron-updater' | 'external' | 'microsoft-store'
+  /** The artifact kind of the desktop app carrying this info ('bootstrap' |
+   *  'bundled' | 'light'). 'bootstrap' is the old-style installer shell over
+   *  a managed checkout; the Distribution label keys on it. */
+  payload?: 'bootstrap' | 'bundled' | 'light'
+  /** True when the runtime checkout carries the bootstrap installers'
+   *  `.hermes-bootstrap-complete` receipt — install.sh / install.ps1 (or the
+   *  desktop first-launch bootstrap) created it, a manual clone did not. */
+  installedByScript?: boolean
   /** sha16 of the canonical install-root path — the per-install channel key and
    *  the shape `hermes update --install-id` prints. */
   installId?: string
