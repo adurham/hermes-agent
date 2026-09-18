@@ -204,13 +204,13 @@ jobs:
       # The driver therefore runs that turn under e2e-assets/pty-run.py, which uses
       # pywinpty: the same ConPTY spawner the product uses on Windows, pinned to the
       # version pyproject.toml requires. Install it with uv (the toolchain python ships
-      # without pip), resolved out of the toolchain root because workflow steps do not
-      # get the tools on PATH; the import check proves it landed.
+      # without pip) out of HERMES_RUNTIME_DIR, which is the tools directory itself and
+      # is not on PATH for workflow steps; the import check proves it landed.
       - name: Install the pseudoconsole runner's dependency
         shell: pwsh
         run: |
-          $uvDir = Get-ChildItem (Join-Path $env:HERMES_RUNTIME_DIR 'tools') -Filter 'uv-*' -Directory | Select-Object -First 1
-          if (-not $uvDir) { throw "uv not found under $env:HERMES_RUNTIME_DIR\tools" }
+          $uvDir = Get-ChildItem $env:HERMES_RUNTIME_DIR -Filter 'uv-*' -Directory | Select-Object -First 1
+          if (-not $uvDir) { throw "uv not found under $env:HERMES_RUNTIME_DIR" }
           & (Join-Path $uvDir.FullName 'uv.exe') pip install --system --python $env:HERMES_PYTHON --quiet "pywinpty==3.0.5"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import winpty; print('pty-run dependency ready')"
