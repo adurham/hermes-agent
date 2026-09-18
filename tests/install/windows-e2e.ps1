@@ -373,8 +373,19 @@ function Test-HermesRuns([string]$Label) {
         $startupHermes = Get-SourceHermesForStartup $InstallDir
         $startupLog = Join-Path $WorkRoot 'logs\post-update-startup.log'
         New-Item -ItemType Directory -Force -Path (Split-Path $startupLog) | Out-Null
-        & $startupHermes status *> $startupLog
-        Write-Host "  first startup after the update ran (exit $LASTEXITCODE); the checks below assert the launcher it must have published"
+        # prepare_launch reports its progress on stderr, and a native command's
+        # stderr becomes a terminating NativeCommandError under the wrong
+        # preference -- which killed this step before the heal could finish.
+        # Same idiom the --version probe below already uses.
+        $prevStartupEap = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & $startupHermes status 2>&1 | Out-File -Encoding UTF8 $startupLog
+            $startupExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $prevStartupEap
+        }
+        Write-Host "  first startup after the update ran (exit $startupExit); the checks below assert the launcher it must have published"
         $hermesExe = Get-SourceHermes $InstallDir
     }
     & python -B (Join-Path $AssetsDir 'source_driver.py') --root $InstallDir --launcher $hermesExe --desktop $script:ExpectedDesktop
