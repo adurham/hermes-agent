@@ -31,6 +31,22 @@ test('one server owns inference and a fresh, per-server prompt witness', async (
       body: JSON.stringify({ messages: [{ role: 'user', content: [{ type: 'text', text: 'NEW multipart prompt' }] }] }),
     })
     expect(await readMockPrompts(first.url)).toEqual([prompt, 'NEW multipart prompt'])
+    // A body shape the witness does not recognize records nothing rather than a
+    // half-parsed string — that is the empty-witness case the desktop smoke
+    // reports as a poll timeout, so the mock logs the parsed shape on this path.
+    for (const content of [{ type: 'text', text: 'unrecognized shape' }, 42]) {
+      await fetch(`${first.url}/v1/chat/completions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content }] }),
+      })
+    }
+    // No user turn at all leaves `lastUserMessage` undefined — the shape the
+    // diagnostic must still describe without throwing.
+    await fetch(`${first.url}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'assistant', content: 'no user turn' }] }),
+    })
+    expect(await readMockPrompts(first.url)).toEqual([prompt, 'NEW multipart prompt'])
     expect(await readMockPrompts(second.url)).toEqual([])
   } finally {
     await first.close()

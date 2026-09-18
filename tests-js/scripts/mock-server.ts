@@ -517,6 +517,37 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 }
 
 /**
+ * The prompt text this mock records as the witness for a chat completion, or
+ * `null` when the body carries a shape it does not recognize. Only two shapes
+ * are recorded (`lastUserMessage.content` as a string, or content parts with
+ * `type === 'text'`); anything else makes the witness empty and the desktop
+ * smoke's `GET /__e2e__/prompts` poll time out with no clue as to why.
+ */
+function promptTextFromLastUserMessage(lastUserMessage: any): string | null {
+  if (typeof lastUserMessage?.content === 'string') {
+    return lastUserMessage.content
+  }
+
+  if (Array.isArray(lastUserMessage?.content)) {
+    const parts = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(lastUserMessage.content)
+
+    return parts.filter((part): boolean => part.type === 'text')
+      .map((part): string => part.text ?? '').join('\n')
+  }
+
+  return null
+}
+
+/** Compact a value for a single log line, truncated so a full transcript cannot flood mock.log. */
+function describeForLog(value: unknown): string {
+  // `JSON.stringify(undefined)` is `undefined`, not a string — an absent
+  // lastUserMessage is a shape this must still describe.
+  const text = (typeof value === 'string' ? value : JSON.stringify(value)) ?? String(value)
+
+  return text.length > 1000 ? `${text.slice(0, 1000)}…[${text.length} chars]` : text
+}
+
+/**
  * Start the mock server on an ephemeral port.
  *
  * @returns a handle with `port`, `url`, received user prompts, and `close()`.
@@ -603,12 +634,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             .reverse()
             .find((message: { role?: unknown }) => message?.role === 'user')
 
-          if (typeof lastUserMessage?.content === 'string') {
-            receivedPrompts.push(lastUserMessage.content)
-          } else if (Array.isArray(lastUserMessage?.content)) {
-            const parts = z.array(z.object({ type: z.string(), text: z.string().optional() })).parse(lastUserMessage.content)
-            receivedPrompts.push(parts.filter((part): boolean => part.type === 'text')
-              .map((part): string => part.text ?? '').join('\n'))
+          const recordedPrompt = promptTextFromLastUserMessage(lastUserMessage)
+
+          if (recordedPrompt === null) {
+            // The desktop smoke asserts this witness holds its checkpoint
+            // prompt; a POST that records nothing is exactly the 90 s
+            // predicate timeout it reports, with the body's shape as the
+            // only clue. Log that shape here.
+            console.log(
+              `[mock-server] POST /v1/chat/completions recorded NO prompt; ` +
+              `lastUserMessage=${describeForLog(lastUserMessage)} body=${describeForLog(body)}`,
+            )
+          } else {
+            receivedPrompts.push(recordedPrompt)
+            console.log(`[mock-server] recorded prompt: ${describeForLog(recordedPrompt)}`)
           }
 
           const stream = parsed.stream === true
