@@ -8,9 +8,9 @@ instructions:
    open a terminal, `cd` to the folder you downloaded this script into. then,
 
    macos/linux:
-   `curl -fsSL 'sh_url' | bash -s -- pre`
+   `curl -fsSL "sh_url=$(date +%s)" | bash -s -- pre`
    windows:
-   `& ([scriptblock]::Create((irm 'ps1_url'))) pre`
+   `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) pre`
 
    this backs up your entire hermes home and any desktop app settings. _from this point on, nothing you do in hermes will be preserved, until you restore your backup at the end._
 
@@ -25,8 +25,8 @@ instructions:
 7. restore your backup:
 
    macos/linux:
-   `curl -fsSL 'sh_url' | bash -s -- post --yes`
+   `curl -fsSL "sh_url=$(date +%s)" | bash -s -- post --yes`
    windows:
-   `& ([scriptblock]::Create((irm 'ps1_url'))) post --yes`
+   `& ([scriptblock]::Create((irm "ps1_url1?t=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"))) post --yes`
 
    this puts hermes back to exactly how it was beforehand.
