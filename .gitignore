@@ -139,6 +139,9 @@ apps/desktop/build/
 apps/desktop/demo/
 apps/desktop/dist/
 apps/desktop/release/
+apps/desktop/electron/**/*.d.ts
+apps/desktop/electron/**/*.js
+apps/desktop/electron/**/*.js.map
 apps/desktop/src/**/*.d.ts
 apps/desktop/src/**/*.js
 apps/desktop/src/**/*.js.map
