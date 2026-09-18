@@ -34,12 +34,16 @@ vi.mock('@/hermes', () => ({
   getLocalModelsJobs: vi.fn(),
   getLocalModelsStatus: vi.fn(),
   getLocalRuntimeJob: vi.fn(),
+  // The page imports the profile store (settings-scope chip), whose module
+  // body subscribes $activeGatewayProfile → setApiRequestProfile at load.
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
   installLocalRuntime: vi.fn(),
   listHFRepoFiles: vi.fn(),
   pauseLocalDownload: vi.fn(),
   quickstartLocalModels: vi.fn(),
   resumeLocalDownload: vi.fn(),
   searchHFModels: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   sideloadLocalModel: vi.fn()
 }))
 

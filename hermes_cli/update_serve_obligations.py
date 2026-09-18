@@ -1,54 +1,92 @@
-"""Frozen compat surface for releases that defer manual serves via update_serve_obligations.
+"""Durable manual-serve handoffs, independent of gateway restart receipts."""
 
-Releases from 2026-09-16 lazily import ``hermes_cli.update_serve_obligations``
-from the NEW tree during the update tail. This tree owns the same obligation
-through the durable fleet-restart-pending marker and the incarnation-based
-survivor sweep (``update_abort_recovery._surviving_pre_update_serve_runtimes``),
-so these names forward there instead of duplicating the write logic.
-"""
+import json
+import logging
+import math
+import os
+import sys
+import tempfile
+from pathlib import Path
 
-from __future__ import annotations
+from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 
 def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
     """Transfer an identified manual runtime to its own durable restart reminder."""
-    from hermes_cli.update_abort_recovery import _surviving_pre_update_serve_runtimes
+    from hermes_cli.process_identity import _pid_alive_matches
 
     if runtime.get("kind") not in ("serve", "dashboard") or runtime.get("supervisor") != "manual-serve" or runtime.get("restart_via") != "respawn-argv":
         return False
-    # Single-runtime write: the survivor sweep already persists the durable
-    # marker from the whole plan; one row rides along by asking with a plan
-    # shim carrying just this runtime.
-    plan = type("_SingleRuntimePlan", (), {"runtimes": [_RuntimeRow(runtime)]})()
-    _surviving_pre_update_serve_runtimes(plan)
-    return True
+    pid = runtime.get("pid")
+    detail = runtime.get("detail")
+    if not isinstance(detail, dict):
+        return False
+    created = detail.get("create_time")
+    if type(pid) is not int or pid <= 0 or type(created) not in (int, float) or not math.isfinite(created) or created <= 0:
+        return False
+    try:
+        alive = _pid_alive_matches(pid, created)
+        if require_alive and alive is not True:
+            return False
+        if alive is False:
+            return True
+        directory = get_hermes_home() / "serve_restart_pending"
+        directory.mkdir(parents=True, exist_ok=True)
+        row = {"kind": runtime["kind"], "profile": runtime.get("profile", "unknown"), "pid": pid, "create_time": created}
+        target = directory / f"{pid}-{float(created).hex()}.json"
+        # One immutable file per incarnation avoids read/merge/write races between CLI startups.
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as handle:
+                temporary = Path(handle.name)
+                json.dump(row, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return True
+    except (OSError, ValueError, TypeError) as exc:
+        logger.debug("Could not preserve manual serve obligation: %s", exc)
+        return False
 
 
 def retain_receipt_manual_serves(receipt: dict) -> list[dict]:
     """Return transfers still owed so receipt rotation cannot discard failed writes."""
-    rows = list((receipt.get("plan") or {}).get("runtimes") or []) + list(receipt.get("pending_manual_serves") or [])
+    plan = receipt.get("plan") or {}
+    rows = list(plan.get("runtimes") or []) + list(receipt.get("pending_manual_serves") or [])
     pending = []
     for row in rows:
         if not isinstance(row, dict) or row.get("kind") not in ("serve", "dashboard") or row.get("supervisor") != "manual-serve":
             continue
-        if row not in pending:
+        if not defer_manual_serve(row) and row not in pending:
             pending.append(row)
     return pending
 
 
 def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[dict] | None = None) -> None:
-    """Cheap CLI-startup hint. Never restarts; never raises."""
-    from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart
+    """Warn about manual debt independently of gateway evidence; optionally reuse a snapshot's failed transfers."""
+    from hermes_cli.process_identity import _pid_alive_matches
+    from hermes_cli.update_receipt import read_latest_receipt
 
-    _warn_pending_fleet_restart(startup=startup)
-
-
-class _RuntimeRow:
-    """Attribute view over one runtime dict, for the plan-shaped shim above."""
-
-    def __init__(self, runtime: dict):
-        self.kind = runtime.get("kind")
-        self.profile = runtime.get("profile", "")
-        self.pid = runtime.get("pid")
-        self.supervisor = runtime.get("supervisor", "")
-        self.detail = runtime.get("detail") if isinstance(runtime.get("detail"), dict) else {}
+    stream = sys.stderr if startup else sys.stdout
+    if pending_manual is None:
+        pending_manual = retain_receipt_manual_serves(read_latest_receipt() or {})
+    for row in pending_manual:
+        print(f"  ⚠ {row['kind']} [{row.get('profile', 'unknown')}] pid {row.get('pid', 'unknown')}: manual restart reminder could not be saved; restart remains pending in the update receipt.", file=stream)
+        print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard`; check reminder storage permissions and free space.", file=stream)
+    directory = get_hermes_home() / "serve_restart_pending"
+    for path in sorted(directory.glob("*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if _pid_alive_matches(row["pid"], row["create_time"]) is False:
+                path.unlink(missing_ok=True)
+                continue
+            print(f"  ⚠ {row['kind']} [{row['profile']}] pid {row['pid']}: manual restart still pending; this process may still serve pre-update code.", file=stream)
+            print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard` (reconnect Desktop for an SSH backend).", file=stream)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.debug("Could not reconcile manual serve obligation %s: %s", path, exc)
+            print(f"  ⚠ Manual serve restart reminder could not be verified: {path.name}", file=stream)

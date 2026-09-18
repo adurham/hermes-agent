@@ -57,6 +57,22 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 
 
 @pytest.fixture
+def isolated_source_completion(monkeypatch):
+    """Unit-test the completion tail in-process; real transport is tested separately."""
+    from hermes_cli import update_cmd, update_completion
+
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda *a: None)
+
+    def complete(request):
+        update_completion._complete_selected(request)
+        return {"exit_code": 0, "receipt": update_completion._read_terminal_receipt(request),
+                "windows_resume": request["windows_resume"]}
+
+    monkeypatch.setattr(update_cmd, "run_completion", complete)
+
+
+@pytest.fixture
 def isolated_update_runtime(monkeypatch, tmp_path, request):
     """Keep mocked updater flows off the host checkout and runtime fleet."""
     from hermes_cli import gateway, main, update_cmd, update_cmd_fleet

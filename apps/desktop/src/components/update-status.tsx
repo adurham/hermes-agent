@@ -88,10 +88,13 @@ function ordinaryUpdateStatus({
   }
 
   if (status?.error) {
+    // A git that never ran is a local problem; leading with "couldn't reach
+    // the update server" would misdiagnose it as a network failure.
+    const prefix = status.error === 'git-unusable' ? '' : u.cantReach
     return {
       applying,
       error: [status.message, status.error].filter(l => !!l).join('\n'),
-      line: u.cantReach,
+      line: [prefix, status.message].filter(Boolean).join(' '),
       supported,
       tone: 'error',
       updateAvailable

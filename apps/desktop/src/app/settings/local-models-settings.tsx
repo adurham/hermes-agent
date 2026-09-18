@@ -65,6 +65,7 @@ import {
   ProgressBar
 } from './local-model-download-progress'
 import { ListRow, Pill, SettingsContent, SettingsSection, SettingsSkeleton } from './primitives'
+import { ActiveProfileNote } from './profile-scope'
 
 // Catalog display order: what runs well leads. Resident (all on GPU)
 // first, then spilled (works, slower), then doesn't-fit; catalog order
@@ -390,6 +391,7 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
 
   return (
     <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
       {/* ── Runtime ── */}
       <SettingsSection
         aside={

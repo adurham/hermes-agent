@@ -76,6 +76,17 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        return _plugin_compat_prev_getattr(name)
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----
+
+
 # ---------------------------------------------------------------------------
 # Install-path safety + guarded HTTP
 # ---------------------------------------------------------------------------
@@ -84,16 +95,20 @@ _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+def _ssrf_safe_http_get(url: str, *, timeout: int = 20,
+                        headers: Optional[Dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     from tools.url_safety import create_ssrf_safe_client
 
     with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
-        return client.get(url)
+        return client.get(url, headers=headers)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
-    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked)."""
+def _guarded_http_get(url: str, *, timeout: int = 20,
+                      headers: Optional[Dict[str, str]] = None) -> Optional[httpx.Response]:
+    """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
+
+    *headers* are plain request headers (no credentials) and are sent on every hop."""
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
@@ -113,7 +128,7 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=headers)
         except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
@@ -442,14 +457,3 @@ _PLUGIN_COMPAT_LAZY = {
 }
 
 _plugin_compat_prev_getattr = __getattr__
-
-
-def __getattr__(name):  # PEP 562 — chained onto the module's own __getattr__
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        return _plugin_compat_prev_getattr(name)
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

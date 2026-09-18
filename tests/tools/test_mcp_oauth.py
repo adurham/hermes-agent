@@ -12,6 +12,11 @@ import pytest
 
 import asyncio
 
+pytest.importorskip(
+    "mcp.client.auth.oauth2",
+    reason="MCP SDK 1.26.0+ required for OAuth support",
+)
+
 from tools.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
@@ -416,6 +421,21 @@ class TestRedirectHandlerSshHint:
         assert "ssh -N -L" in err
         assert "Remote session detected" in err
 
+    def test_ssh_hint_names_the_configured_redirect_host(self, monkeypatch, capsys):
+        """A pre-registered client (Asana) registers ``http://localhost:<port>/callback`` verbatim,
+        so the remote-session hint must name the same host the provider redirects to."""
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        handler = _make_redirect_handler(27890, redirect_host="localhost")
+        self._run(handler("https://mcp.example/authorize"))
+
+        err = capsys.readouterr().err
+        assert "http://localhost:27890/callback" in err
+        assert "http://127.0.0.1:27890/callback" not in err
+
     def test_configured_redirect_uri_shows_proxy_hint_not_tunnel(self, monkeypatch, capsys):
         """With a proxy redirect_uri, the SSH hint must not push the loopback tunnel.
 
@@ -562,6 +582,7 @@ class TestCallbackPortReservation:
         assert cfg["_resolved_port"] == 49399
         assert 49399 not in mod._reserved_sockets
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")  # asserts the 2.0-only AuthorizationCodeResult.code
     def test_wait_for_callback_adopts_reserved_socket(self, monkeypatch):
         """E2E: reserve → _wait_for_callback binds the SAME socket and the
         callback round-trips through it."""
@@ -595,6 +616,7 @@ class TestCallbackPortReservation:
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")  # asserts the 2.0-only AuthorizationCodeResult.code
     def test_concurrent_flows_keep_their_own_callback_ports(self, monkeypatch):
         """#34260: flow A's waiter listens on A's port even after flow B
         overwrites the legacy module-level global.
@@ -688,6 +710,29 @@ class TestCallbackPortReservation:
         storage = self._seed_client_info(tmp_path, payload)
         assert _cached_client_info(storage) is None
         assert asyncio.run(storage.get_client_info()) is None
+
+    @pytest.mark.parametrize("payload", [
+        {"client_id": "c", "redirect_uris": ["http://127.0.0.1:abc/callback"]},  # the issue's repro
+        ["x"],                                                                    # non-dict client.json
+    ])
+    def test_malformed_client_info_flow_reserves_fresh_ephemeral_port(self, tmp_path, payload):
+        """Flow-level: the login path calls _configure_callback_port(cfg, storage) and the SDK
+        then calls storage.get_client_info(). A poisoned client.json must fall through to a
+        freshly reserved ephemeral port and read as "no registration", so the flow re-registers
+        instead of crashing on every attempt until the file is removed by hand (#112568)."""
+        import tools.mcp_oauth as mod
+
+        storage = self._seed_client_info(tmp_path, payload)
+        cfg: dict = {"cimd": False}  # keep the fresh-port branch, as the sibling tests do
+        port = mod._configure_callback_port(cfg, storage)
+        try:
+            assert port == cfg["_resolved_port"] > 0
+            assert port in mod._reserved_sockets  # only a truly fresh pick is parked
+            assert asyncio.run(storage.get_client_info()) is None
+        finally:
+            reserved = mod._reserved_sockets.pop(port, None)
+            if reserved is not None:
+                reserved.close()
 
 
 # ---------------------------------------------------------------------------

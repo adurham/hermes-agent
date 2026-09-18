@@ -97,13 +97,29 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     publish_stage("Building the web UI")
     build_source_web(project_root, env=env, explicit=True)
     if desktop:
-        from hermes_cli.main_desktop import build_prepared_desktop
+        from hermes_cli.main_desktop import _install_rebuilt_desktop_app, build_prepared_desktop
 
         publish_stage("Building the desktop app")
         build_prepared_desktop(
             project_root / "apps/desktop", source_mode=False,
             npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root, explicit=True,
         )
+        # A current release/ can still sit beside a stale installed copy (an earlier
+        # update rebuilt but never installed); healing must not wait for the next build.
+        installed, problems = _install_rebuilt_desktop_app(project_root / "apps/desktop")
+        for app in installed:
+            print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+        for problem in problems:
+            print(f"  ⚠ {problem}")
+    # A configured memory provider that no longer ships in core is installed from the
+    # catalog for every profile home sharing this venv (config, data and tool names
+    # unchanged). The update must finish even if the migration blows up.
+    try:
+        from hermes_cli.memory_provider_migration import migrate_all_homes
+
+        migrate_all_homes()
+    except Exception as exc:
+        print(f"  ⚠ Memory provider migration skipped: {exc}")
 
 
 if __name__ == "__main__":

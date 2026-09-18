@@ -63,7 +63,7 @@ describe('deriveUpdateStatus', () => {
     const view = derive({ supported: true, error: 'check-failed', message: 'ECONNREFUSED' })
 
     expect(view.tone).toBe('error')
-    expect(view.line).toBe(en.updates.cantReach)
+    expect(view.line).toBe(`${en.updates.cantReach} ECONNREFUSED`)
     expect(view.error).toBe('ECONNREFUSED\ncheck-failed')
   })
 
