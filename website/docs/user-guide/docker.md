@@ -56,7 +56,7 @@ docker run -it --rm \
 This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.hermes/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.
 
 :::tip
-Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](/integrations/nous-portal).
+Inside the container, run `hermes setup --portal` once — the refresh token persists in the mounted `~/.hermes` volume. See [Nous Portal](../integrations/nous-portal.md).
 :::
 
 ## Running in gateway mode
@@ -516,6 +516,7 @@ docker run -d \
 ## What the Dockerfile does
 
 The image uses Debian 13.4 and includes:
+
 
 - A Python 3.14 environment synchronized from the committed `uv.lock`, followed
   by a no-dependency editable install of Hermes.

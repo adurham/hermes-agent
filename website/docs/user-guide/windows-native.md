@@ -9,7 +9,7 @@ sidebar_position: 3
 
 Hermes runs natively on Windows 10 and Windows 11 — no WSL, no Cygwin, no Docker. This page is the deep dive: what works natively, what's WSL-only, what the installer actually does, and the Windows-specific knobs you might need to touch.
 
-If you just want to install, the one-liner on the [landing page](/) or [Installation page](../getting-started/installation#windows-native) is all you need. Come back here when something surprises you.
+If you just want to install, the one-liner on the [landing page](../index.mdx) or [Installation page](../getting-started/installation#windows-native) is all you need. Come back here when something surprises you.
 
 :::tip Want WSL instead?
 If you prefer a POSIX environment for `fork` semantics or Linux-style file watchers, see the **[Windows (WSL2) Guide](./windows-wsl-quickstart.md)**. Both coexist cleanly: native data lives under `%LOCALAPPDATA%\hermes`, WSL data lives under `~/.hermes`.
@@ -103,7 +103,7 @@ replacing libraries already loaded by a running process. There is no tiered
 pip fallback to silently reduce the installed feature set.
 
 :::tip Skip provider hunting on Windows
-On Windows, per-tool API key setup (Firecrawl, FAL, Browser Use, OpenAI TTS) is the highest-friction part of getting a useful agent. A [Nous Portal](/user-guide/features/tool-gateway) subscription covers the model **and** all of those tools through one OAuth login. After the installer finishes, run `hermes setup --portal` to wire everything up.
+On Windows, per-tool API key setup (Firecrawl, FAL, Browser Use, OpenAI TTS) is the highest-friction part of getting a useful agent. A [Nous Portal](./features/tool-gateway.md) subscription covers the model **and** all of those tools through one OAuth login. After the installer finishes, run `hermes setup --portal` to wire everything up.
 :::
 
 ## Feature matrix

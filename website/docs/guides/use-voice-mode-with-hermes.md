@@ -10,12 +10,12 @@ Python dependency commands on this page use a
 [PM-prepared source checkout](/reference/package-management#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
-This guide is the practical companion to the [Voice Mode feature reference](/user-guide/features/voice-mode).
+This guide is the practical companion to the [Voice Mode feature reference](../user-guide/features/voice-mode.md).
 
 If the feature page explains what voice mode can do, this guide shows how to actually use it well.
 
 :::tip
-[Nous Portal](/integrations/nous-portal) bundles both the LLM and TTS through one OAuth — voice mode works end-to-end with no extra credentials.
+[Nous Portal](../integrations/nous-portal.md) bundles both the LLM and TTS through one OAuth — voice mode works end-to-end with no extra credentials.
 :::
 
 ## What voice mode is good for
@@ -476,8 +476,8 @@ That progression keeps the debugging surface small.
 
 ## Where to read next
 
-- [Voice Mode feature reference](/user-guide/features/voice-mode)
-- [Messaging Gateway](/user-guide/messaging)
-- [Discord setup](/user-guide/messaging/discord)
-- [Telegram setup](/user-guide/messaging/telegram)
-- [Configuration](/user-guide/configuration)
+- [Voice Mode feature reference](../user-guide/features/voice-mode.md)
+- [Messaging Gateway](../user-guide/messaging/index.md)
+- [Discord setup](../user-guide/messaging/discord.md)
+- [Telegram setup](../user-guide/messaging/telegram.md)
+- [Configuration](../user-guide/configuration.md)

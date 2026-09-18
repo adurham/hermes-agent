@@ -1407,7 +1407,7 @@ def _probe_state_file(state_path: Path) -> None:
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:
                 pass
-        _probe(5, gateway_state == "running", f"gateway_state.json state={gateway_state!r}{age_str}")
+        _probe(5, gateway_state in ("running", "degraded"), f"gateway_state.json state={gateway_state!r}{age_str}")
     except Exception as exc:
         _probe(5, False, f"gateway_state.json present but unreadable: {exc}")
 
@@ -1671,7 +1671,9 @@ def restart() -> None:
                 "start a duplicate. Investigate stray PIDs before retrying."
             )
 
-    time.sleep(1.0)   # let Windows release the listening port
+    from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
+
+    _wait_for_api_server_port_free()
     start()
 
     if not _wait_for_gateway_ready(timeout_s=15.0):
