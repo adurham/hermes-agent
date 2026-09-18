@@ -213,7 +213,16 @@ export async function runDesktopChatSmoke(page: Page, options: DesktopChatSmokeO
     const beforeIds = (await readTranscript(page)).map((message: TranscriptMessage): string => message.id)
     const before = (await observe()).length
     await composer.click()
+    // The app persists its composer draft across launches, so a checkpoint that
+    // types on top of a restored draft can submit the PREVIOUS checkpoint's text
+    // (proved: the update window's turn carried the root checkpoint's prompt) and
+    // the witness never matches. Clear it deliberately and refuse to type until
+    // the composer is provably empty.
     await composer.press('ControlOrMeta+A')
+    await composer.press('Delete')
+    await expect.poll(async (): Promise<string> => composerText(composer), {
+      timeout: 15_000, message: 'The composer must be empty before the checkpoint types (a restored draft must not survive)',
+    }).toBe('')
     await composer.pressSequentially(prompt)
     // The composer clears on submit whether or not a turn was ever started, so
     // the clear-poll below passes vacuously when the editor refused the input.
