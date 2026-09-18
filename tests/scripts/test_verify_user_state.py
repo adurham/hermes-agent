@@ -387,3 +387,32 @@ def test_sqlite_sidecars_may_vanish_but_the_database_may_not(tmp_path):
     report = vus.verify_home(str(home), snap)
     assert report["deleted"] == ["cron/executions.db"]
     assert report["ok"] is False
+
+
+def test_any_sqlite_database_is_judged_by_rows_not_bytes(tmp_path):
+    """Live SQLite files churn bytes constantly; their contract is the rows.
+
+    state.db was already handled that way; cron/executions.db was not, so a run
+    writing rows mid-window would have failed the leg as a byte modification.
+    """
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    db = home / "cron" / "executions.db"
+    with sqlite3.connect(db) as conn:
+        # A table the verifier actually counts (COUNTED_TABLES), not an arbitrary one.
+        conn.execute("create table cron_jobs (id integer primary key, at text)")
+        conn.execute("insert into cron_jobs (at) values ('one')")
+    snap = vus.snapshot_home(str(home))
+
+    with sqlite3.connect(db) as conn:          # rows added: bytes move, contract holds
+        conn.execute("insert into cron_jobs (at) values ('two')")
+    report = vus.verify_home(str(home), snap)
+    assert report["modified"] == {}
+    assert report["rows_shrank"] == []
+    assert report["ok"] is True
+
+    with sqlite3.connect(db) as conn:          # rows lost: still fatal
+        conn.execute("delete from cron_jobs")
+    report = vus.verify_home(str(home), snap)
+    assert report["rows_shrank"] == ["cron/executions.db"]
+    assert report["ok"] is False

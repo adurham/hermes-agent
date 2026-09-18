@@ -215,7 +215,7 @@ def _entry_record(abs_path: str) -> dict:
     if os.path.isfile(abs_path):
         st = os.lstat(abs_path)
         record = {"kind": "file", "size": st.st_size}
-        if os.path.basename(abs_path) == "state.db":
+        if os.path.basename(abs_path).endswith(".db"):
             counts = _db_counts(abs_path)
             if counts is not None:
                 # Row counts, not bytes: a byte hash of a live db is noise.
@@ -338,7 +338,7 @@ def _modification_allowed(rel: str) -> bool:
     as ordinary additions (tolerated); once the ticker exists, the same file moves.
     """
     name = rel.rsplit("/", 1)[-1]
-    if name in ("config.yaml", "state.db"):
+    if name in ("config.yaml", "state.db") or name.endswith(".db"):
         return True
     parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
     is_cron = parent == "cron" or parent.endswith("/cron")
@@ -357,7 +357,7 @@ def _volatile_sidecar(rel: str) -> bool:
 
 
 def _rows_shrank(rel: str, before: dict, after: dict) -> bool:
-    if rel.rsplit("/", 1)[-1] != "state.db":
+    if not rel.rsplit("/", 1)[-1].endswith(".db"):
         return False
     old, new = before.get("rows"), after.get("rows")
     if not isinstance(old, dict) or not isinstance(new, dict):
