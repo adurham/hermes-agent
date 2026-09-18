@@ -113,7 +113,12 @@ def main(argv: list[str] | None = None) -> int:
 
     from hermes_cli.runtime_paths import activation_environment
 
-    command = _bootstrap_command(root, ["--desktop"] if args.desktop else [])
+    # This interpreter is a bootstrap one: the work happens in the re-exec, so
+    # every flag that decides WHICH tail runs has to survive into it. Losing
+    # --finish-update here silently reports an update as an install.
+    passthrough = (["--desktop"] if args.desktop else []) + \
+                  (["--finish-update"] if args.finish_update else [])
+    command = _bootstrap_command(root, passthrough)
     return subprocess.call(command, cwd=root, env=activation_environment(root))
 
 
