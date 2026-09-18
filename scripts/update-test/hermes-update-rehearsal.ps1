@@ -167,7 +167,13 @@ function Invoke-GitCmd {
 
 function Invoke-BackupTar {
   param([string]$TarExe, [string[]]$TarArgs, [string]$Root, [string]$Label)
+
+
+  $old = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   $output = & $TarExe @TarArgs 2>&1
+  $ErrorActionPreference = $old
+
   if ($LASTEXITCODE -eq 0) { return }
 
   $denied = $output | Where-Object { $_ -match 'Permission denied|Access is denied' }
