@@ -151,6 +151,11 @@ def install(args) -> None:
     exported = {}
     outputs = {f"{name}-path": str(binaries[name]) for name in public_names}
     if "python" in names:
+        # uv is PM-internal (never on a user's PATH), but the test suites this
+        # toolchain serves drive real uv through shutil.which("uv").
+        uv = get_package("uv").binary(store_root() / facts.get("uv")["entry"], target)
+        path.append(str(uv.parent))
+        outputs["uv-path"] = str(uv)
         # Keep third-party CI tooling out of the verified interpreter store.
         # PM prepares the empty command environment through its normal builder.
         commands = args.home.resolve() / "python" / facts.get("python")["entry"]
