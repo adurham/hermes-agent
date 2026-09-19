@@ -39,6 +39,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Optional
+from pm.paths import install_root
 
 logger = logging.getLogger(__name__)
 
@@ -75,16 +76,6 @@ def canary_tag_for_date(version: str, date_utc: str) -> str:
     return f"v{major}.{minor}.{patch + 1}-canary.{date_utc}"
 
 
-def _default_root() -> Path:
-    """This process's install root.
-
-    Mirrors version_info's stamp resolution: HERMES_INSTALL_ROOT when the
-    steward wrapper sets it (Nix points it at the sealed tree), else the
-    code root of the executing checkout.
-    """
-    root = os.environ.get("HERMES_INSTALL_ROOT")
-    return Path(root) if root else Path(__file__).parent.parent.resolve()
-
 
 def install_id(project_root: Optional[Path] = None) -> str:
     """The sha16 id of the install at ``project_root`` (default: this one).
@@ -92,7 +83,7 @@ def install_id(project_root: Optional[Path] = None) -> str:
     Same identity as the ``installs/<sha16>/`` state folder key.
     """
     if project_root is None:
-        project_root = _default_root()
+        project_root = install_root()
     return install_key(Path(project_root))
 
 
@@ -139,7 +130,7 @@ def default_channel(project_root: Optional[Path] = None) -> str:
     newest STABLE release, where that file does not exist (404), leaving
     the install unable to update at all.
     """
-    root = Path(project_root) if project_root is not None else _default_root()
+    root = Path(project_root) if project_root is not None else install_root()
     stamp = _read_stamp(root)
     if not _package_channel(stamp):
         return CHANNEL_MAIN
@@ -156,7 +147,7 @@ def resolve_update_channel(
     project_root: Optional[Path] = None,
 ) -> str:
     """Source records select releases or main; package tags fix bundle identity."""
-    root = Path(project_root) if project_root is not None else _default_root()
+    root = Path(project_root) if project_root is not None else install_root()
     if _package_channel(_read_stamp(root)):
         return default_channel(root)
     configured: Any = channel_record(config, root).get("channel")
@@ -177,7 +168,7 @@ def set_install_channel(
     """
     from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 
-    root = Path(project_root) if project_root is not None else _default_root()
+    root = Path(project_root) if project_root is not None else install_root()
     if is_commit_build(root):
         raise ValueError(COMMIT_BUILD_UPDATE_MESSAGE)
     channel = validate_name(channel)

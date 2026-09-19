@@ -22,15 +22,6 @@ RECORD_SCHEMA_VERSION = 1
 LOCK_STALE_SECONDS = 600
 
 
-def default_project_root() -> Path:
-    """The tree this code runs from: HERMES_INSTALL_ROOT for sealed
-    artifacts whose stamp lives outside the package dir (the override
-    hermes_cli.version_info honours), the code root otherwise."""
-    env = os.environ.get("HERMES_INSTALL_ROOT")
-    if env:
-        return Path(env)
-    return Path(__file__).resolve().parents[1]
-
 
 # ---------------------------------------------------------------------------
 # current identity

@@ -3495,15 +3495,16 @@ def main():
             pass
 
     if _first_positional_argv() != "update":
-        from hermes_cli.boot_bootstrap import default_project_root, maybe_run_boot_bootstrap
-        maybe_run_boot_bootstrap(default_project_root())
+        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
+        from pm.paths import install_root
+        maybe_run_boot_bootstrap(install_root())
 
     # Every dispatch, including fast chat/serve, gets one passive PM verdict.
     try:
-        from hermes_cli.boot_bootstrap import default_project_root
         from hermes_cli.venv_sync import check_runtime
+        from pm.paths import install_root
 
-        problem = check_runtime(default_project_root())
+        problem = check_runtime(install_root())
         if problem:
             print(f"⚠ {problem}", file=sys.stderr)
     except Exception:

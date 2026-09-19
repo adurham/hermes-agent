@@ -61,8 +61,9 @@ def _resident_runtime() -> tuple[Path, Path] | None:
     if payload is not None:
         runtime = payload / "pm-runtime"
     else:
-        install_root = Path(os.environ.get("HERMES_INSTALL_ROOT") or project)
-        stamp_path = install_root / "install-stamp.json"
+        from pm.paths import install_root
+
+        stamp_path = install_root() / "install-stamp.json"
         try:
             stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:

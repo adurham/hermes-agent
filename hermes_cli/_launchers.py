@@ -361,7 +361,9 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
     already own, without loading application config or enabling new exposure.
     """
     # Resolved before the platform branch: the Windows path needs it too.
-    root = Path(project_root or os.environ.get("HERMES_INSTALL_ROOT") or Path(__file__).resolve().parents[1]).resolve()
+    from pm.paths import install_root
+
+    root = Path(project_root or install_root()).resolve()
     if _is_windows():
         # The installer stages the user-facing commands into $HERMES_HOME\bin
         # and registers that directory in the User PATH. An update skipped both

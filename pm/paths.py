@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def install_root() -> Path:
+    """The tree this process runs from. ``HERMES_INSTALL_ROOT`` when a steward
+    wrapper sets it (Nix points it at the sealed tree whose install stamp lives
+    outside the package dir), else the executing checkout."""
+    env = os.environ.get("HERMES_INSTALL_ROOT")
+    return Path(env) if env else repo_root()
 
 
 def lockfile_path() -> Path:

@@ -15,7 +15,6 @@ from pathlib import Path
 
 from pm.filesystem import is_junction
 
-_UA = {"User-Agent": "hermes-pm"}
 
 
 ALL_TARGETS = (
@@ -116,7 +115,7 @@ def hash_url(url: str) -> str:
     import http.client
     import urllib.request
 
-    from pm.downloader import _OPENER
+    from pm.downloader import _OPENER, _UA
     from pm.network import retry_network
 
     def request():

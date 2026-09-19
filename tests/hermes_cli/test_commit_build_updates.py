@@ -21,7 +21,7 @@ def commit_build(tmp_path, monkeypatch):
     }))
     monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
     monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
-    monkeypatch.setattr("hermes_cli.version_info._CODE_ROOT", root)
+    monkeypatch.setattr("pm.paths.repo_root", lambda: root)
     monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
     from hermes_cli.version_info import _reset_version_info_cache
     _reset_version_info_cache()

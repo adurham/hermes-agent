@@ -57,9 +57,9 @@ def test_cli_main_runs_boot_bootstrap_once(hermes_home, boot_probe, capsys):
 
     assert len(boot_probe) == 1, "every dispatch through main() reaches the registry"
     # the root probed is THIS checkout (identity: git HEAD)
-    import hermes_cli.boot_bootstrap as bb
+    from pm.paths import install_root
 
-    assert boot_probe[0] == str(bb.default_project_root())
+    assert boot_probe[0] == str(install_root())
 
 
 def test_cli_main_skips_boot_bootstrap_during_update(hermes_home, boot_probe):

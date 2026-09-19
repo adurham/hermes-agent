@@ -15,18 +15,10 @@ from pathlib import Path
 from typing import Iterable
 
 from hermes_cli._launchers import expose_cli
+from pm.paths import install_root
 
 logger = logging.getLogger(__name__)
 
-
-def _install_root() -> Path:
-    """The tree this code runs from: HERMES_INSTALL_ROOT for sealed
-    artifacts whose stamp lives outside the package dir (the same
-    override hermes_cli.version_info honours), the code root otherwise."""
-    env = os.environ.get("HERMES_INSTALL_ROOT")
-    if env:
-        return Path(env)
-    return Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +176,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
 
     from hermes_constants import get_hermes_home
 
-    root = _install_root() if project_root is None else Path(project_root)
+    root = install_root() if project_root is None else Path(project_root)
 
     # The blessed roots: the canonical locations installers create.
     blessed = (
