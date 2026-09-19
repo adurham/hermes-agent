@@ -125,6 +125,9 @@ DEFAULT_CONFIG = {
         # turn), "cold" (first turn of a session only).
         "service_tier": "",
         "fast_auto_seconds": 60,
+        # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
+        # or low | medium | high. Responses-family transports only; chat_completions never sends it.
+        "text_verbosity": "",
         # System-prompt guidance telling the model to call tools instead of describing actions.
         # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
         # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
@@ -1047,6 +1050,9 @@ DEFAULT_CONFIG = {
             # Forwarded verbatim in the request body for OpenAI-compatible servers whose cloned
             # voices demand it (400 consent_required otherwise); "" sends nothing.
             "consent_attestation": "",
+            # Raw PCM rate for streaming playback. OpenAI emits 24 kHz; a compatible endpoint that
+            # reports its rate (X-Audio-Sample-Rate header) overrides this automatically.
+            "pcm_sample_rate": 24000,
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
@@ -2125,6 +2131,12 @@ DEFAULT_CONFIG = {
             # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
             # exhaustion from a request flood. 0 = no cap.
             "max_concurrent_runs": 10,
+            # Cap (chars) on each tool output and tool-call argument string in the stored
+            # /v1/responses conversation history used for previous_response_id chaining. The
+            # stored history is cumulative, so a few large tool outputs can make one
+            # response_store.db write several hundred KB. 0 = store tool outputs verbatim
+            # (default: the capped text is what the model is replayed on the next turn).
+            "history_tool_output_max_chars": 0,
         },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by
