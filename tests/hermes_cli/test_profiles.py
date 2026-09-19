@@ -1702,11 +1702,12 @@ class TestCloneAllExcludesRuntimeTrees:
 
     def test_runtime_trio_is_one_constant_shared_with_backup(self):
         """backup's exclusion list and the clone-all root gate must be built from the same
-        constant; two literals drifting apart is how the models/ copy of #111718 crept in."""
+        constant; two literals drifting apart is how the models/ copy of #111718 crept in.
+        backup additionally drops PM's regenerable trees; it never drops less."""
         from hermes_cli import backup, profiles
         from hermes_constants import LOCAL_RUNTIME_ROOT_DIRS
         assert LOCAL_RUNTIME_ROOT_DIRS == frozenset(self.RUNTIME_TREES)
-        assert backup._EXCLUDED_ROOT_DIRS is LOCAL_RUNTIME_ROOT_DIRS
+        assert LOCAL_RUNTIME_ROOT_DIRS <= backup._EXCLUDED_ROOT_DIRS
         assert LOCAL_RUNTIME_ROOT_DIRS <= profiles._CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
     def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):

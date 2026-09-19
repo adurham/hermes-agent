@@ -222,6 +222,10 @@ def _store_path(base: Optional[Path] = None) -> Path:
     return (base or _resolve_checkpoint_base()) / _STORE_DIRNAME
 
 
+def _store_has_head(store: Path) -> bool:
+    return (store / "HEAD").exists()
+
+
 def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
@@ -403,6 +407,29 @@ def _run_git(
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
+
+
+def _git_out(args: List[str], store: Path, working_dir: str, rc: Optional[Set[int]] = None) -> str:
+    """stdout of a successful git call, else ``""``."""
+    ok, out, _ = _run_git(args, store, working_dir, allowed_returncodes=rc)
+    return out if ok else ""
+
+
+def _ref_tip(store: Path, working_dir: str, ref: str) -> Optional[str]:
+    """Commit sha at ``ref``, or None when the ref does not exist yet."""
+    return _git_out(["rev-parse", "--verify", ref + "^{commit}"], store, working_dir, {128}) or None
+
+
+def _list_project_refs(store: Path, working_dir: str) -> List[str]:
+    out = _git_out(["for-each-ref", "--format=%(refname)", _REFS_PREFIX], store, working_dir, {128})
+    return [r for r in out.splitlines() if r.strip()]
+
+
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
