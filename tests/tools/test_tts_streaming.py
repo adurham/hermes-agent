@@ -44,6 +44,16 @@ class TestSentenceChunker:
             "A paragraph without punctuation\n\n"
         ]
 
+    def test_from_config_reads_streaming_min_len(self):
+        """tts.streaming.min_len decides whether a short CJK opener is spoken alone (#96927);
+        unset/invalid keep the English default of 20, 0 floors to 1."""
+        assert ts.SentenceChunker.from_config({}).min_len == 20
+        assert ts.SentenceChunker.from_config({"streaming": {"min_len": "abc"}}).min_len == 20
+        assert ts.SentenceChunker.from_config({"streaming": {"min_len": 0}}).min_len == 1
+        c = ts.SentenceChunker.from_config({"streaming": {"min_len": 6}})
+        assert c.feed("记得，叫团团. ") == ["记得，叫团团. "]
+        assert ts.SentenceChunker().feed("记得，叫团团. ") == []
+
 
 # ── Interruption latch ───────────────────────────────────────────────────
 
