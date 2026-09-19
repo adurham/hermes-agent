@@ -17,7 +17,7 @@ interface RuntimeFixture {
   dependencies: string
 }
 
-test('the real bootstrap supplies ruamel-only dependencies and rejects foreign-path rescue', (): void => {
+test('the real bootstrap supplies ruamel-only dependencies and rejects foreign-path rescue', async (): Promise<void> => {
   const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-runtime-'))
   const home: string = path.join(temp, 'home')
 
@@ -65,8 +65,8 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
       cwd: temp, env, encoding: 'utf8', timeout: 90_000, windowsHide: true
     })) as RuntimeFixture
 
-    assert.equal(canImportHermesCli(fixture.python, { cwd: REPO, env }), true)
-    assert.equal(canImportHermesCli(fixture.python, {
+    assert.equal(await canImportHermesCli(fixture.python, { cwd: REPO, env }), true)
+    assert.equal(await canImportHermesCli(fixture.python, {
       cwd: REPO,
       env: { ...env, PYTHONHOME: path.join(temp, 'foreign-home') }
     }), true, 'Python home overrides must be scrubbed before the interpreter starts')
@@ -74,11 +74,11 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
     fs.unlinkSync(path.join(fixture.site, 'selected-dependencies.pth'))
     const foreign: string = path.join(temp, 'foreign-packages')
     fs.symlinkSync(fixture.dependencies, foreign, process.platform === 'win32' ? 'junction' : 'dir')
-    assert.equal(canImportHermesCli(fixture.python, {
+    assert.equal(await canImportHermesCli(fixture.python, {
       cwd: REPO,
       env: { ...env, PYTHONPATH: foreign }
     }), false, 'foreign dependencies must not conceal an empty selected environment')
-    assert.equal(canImportHermesCli(fixture.python, {
+    assert.equal(await canImportHermesCli(fixture.python, {
       cwd: REPO,
       env: { ...env, PYTHONHOME: path.join(temp, 'foreign-home') }
     }), false)
@@ -86,3 +86,4 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 3 })
   }
 }, 120_000)
+

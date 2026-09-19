@@ -1,7 +1,11 @@
 vi.mock('@/store/profile', async (): Promise<object> => {
   const { atom } = await import('nanostores')
 
-  return { $activeGatewayProfile: atom<string>('default') }
+  return {
+    $activeGatewayProfile: atom<string>('default'),
+    $profiles: atom<Array<{ name: string; is_default?: boolean }>>([]),
+    normalizeProfileKey: (profile: string | null): string => profile || 'default'
+  }
 })
 vi.mock('@/store/session', async (): Promise<object> => {
   const { atom } = await import('nanostores')

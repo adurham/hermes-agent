@@ -37,12 +37,12 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         restart.incomplete = True
     if condition != "alive":
         with pytest.raises(SystemExit) as exc:
-            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
+            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
         assert exc.value.code == 1
         assert fleet._fleet_restart_pending_marker_path().exists()
         assert update_receipt.read_latest_receipt()["outcome"] == "partial"
         return
-    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
+    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
     receipt = update_receipt.read_latest_receipt()
     assert receipt["runtime_outcomes"][0]["outcome"] == "deferred"
     assert not fleet._fleet_restart_pending_marker_path().exists()

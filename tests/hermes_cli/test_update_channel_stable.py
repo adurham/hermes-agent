@@ -64,5 +64,5 @@ class TestSourceUpdateChannel:
     def test_config_failure_never_changes_the_subscription(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text("update: [broken", encoding="utf-8")
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             _source_update_channel(_Args())

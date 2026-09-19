@@ -189,20 +189,25 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
                 assert git(t.clone, 'remote') == 'origin'
 
 
-@pytest.mark.parametrize('server', ['sha', 'tag-fallback', 'moved-sha', 'moved-fallback',
-                                  'at-release', 'ahead-release', 'explicit-branch'])
+@pytest.mark.parametrize('server', ['sha', 'fetch-refused', 'at-release', 'ahead-release', 'explicit-branch'])
 def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, monkeypatch, server):
+    """A stable update is pinned to the channel's exact commit: no tag lookup on
+    origin, the stale local ``v1.1.0`` never moves, and an explicit --branch
+    bypasses the channel."""
     from hermes_cli import source_releases
+    from hermes_cli.release_channels import ChannelResolution
 
     t = update_tree
-    responses = {
-        '/releases/stable/release-candidates.json': {'tag': 'v1.1.0', 'commit': t.wanted},
-        '/repos/NousResearch/hermes-agent/releases/tags/v1.1.0': {
-            'tag_name': 'v1.1.0', 'draft': False, 'prerelease': False,
-        },
-        '/repos/NousResearch/hermes-agent/commits/v1.1.0': {'sha': t.wanted},
-    }
-    monkeypatch.setattr(source_releases, '_read', lambda url, **_: json.dumps(responses[urlsplit(url).path]))
+    # The stable channel is an R2 record whose published build pins t.wanted
+    # (the documented reader seam; see test_source_channel_integration).
+    record = {"schema": 1, "name": "stable", "repository": "NousResearch/hermes-agent",
+              "policy": "stable-release", "state": "active", "identity": {}, "nextSequence": 2,
+              "head": {"buildId": "build-fixture", "sequence": 1}}
+    manifest = {"schema": 1, "request": {"buildId": "build-fixture", "channel": "stable", "sequence": 1,
+                "repository": "NousResearch/hermes-agent", "commit": t.wanted, "sourceVersion": "1.1.0",
+                "version": "0.0.1", "identity": {}, "bundleEnv": {}}, "packages": []}
+    monkeypatch.setattr(source_releases, '_resolve_channel',
+                        lambda name, repository: ChannelResolution(record, record, manifest))
     expected = t.wanted
     if server in {'at-release', 'ahead-release'}:
         git(t.clone, 'fetch', '--no-tags', 'origin', t.wanted)
@@ -211,35 +216,26 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
             (t.clone / 'local.txt').write_text('local commit\n', encoding='utf-8')
             git(t.clone, 'add', 'local.txt')
             git(t.clone, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'local')
-        expected = t.wanted
     if server == 'explicit-branch':
         git(t.origin, 'branch', 'retained-branch', t.newer)
         t.args.branch = 'retained-branch'
         expected = t.newer
     run = subprocess.run
     calls = []
-    resolved = False
 
     def guarded_run(command, *args, **kwargs):
-        nonlocal resolved
         command = list(map(str, command))
         assert Path(command[0]).name.lower() in {'git', 'git.exe'}, command
         cwd = Path(kwargs.get('cwd', os.getcwd())).resolve()
         assert cwd in {t.clone, t.origin}, (command, cwd)
-        assert 'push' not in command and 'pull' not in command, command
+        assert 'push' not in command and 'pull' not in command and 'ls-remote' not in command, command
         calls.append(command)
-        if 'fetch' in command and t.wanted in command and server.endswith('fallback'):
+        if 'fetch' in command and t.wanted in command and server == 'fetch-refused':
             return subprocess.CompletedProcess(command, 128, stdout='', stderr='fixture: raw SHA wants disabled')
-        result = run(command, *args, **kwargs)
-        if 'ls-remote' in command and not resolved:
-            resolved = True
-            if server.startswith('moved'):
-                run(['git', '-c', 'tag.gpgSign=false', 'tag', '-fa', 'v1.1.0', t.newer, '-m', 'moved'],
-                    cwd=t.origin, check=True, capture_output=True)
-        return result
+        return run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, 'run', guarded_run)
-    if server == 'moved-fallback':
+    if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)
         assert error.value.code == 1
@@ -265,10 +261,8 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         assert (t.clone / 'content.txt').read_text(encoding='utf-8-sig') == content
         branch = 'retained-branch' if server in {'at-release', 'explicit-branch'} else ''
         assert git(t.clone, 'branch', '--show-current') == branch
-    assert resolved == (server != 'explicit-branch')
     assert git(t.clone, 'rev-parse', 'v1.1.0') == t.base
     assert not git(t.clone, 'status', '--porcelain')
-    assert len([cmd for cmd in calls if 'ls-remote' in cmd]) == (0 if server == 'explicit-branch' else 1)
 
 
 @pytest.mark.platforms('windows')
@@ -447,3 +441,4 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
         assert local.read_bytes() == unstaged
         assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
         assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
+

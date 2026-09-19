@@ -13,6 +13,9 @@ from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.update_channel import channel_record, set_install_channel
 from hermes_cli.config import require_readable_config_before_write
 
+# These tests model channel archives and the reader's own transport.
+pytestmark = pytest.mark.real_release_channels
+
 
 def git(root, *args):
     return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,

@@ -10,6 +10,8 @@ import venv
 
 import pytest
 
+from hermes_cli import update_completion
+
 
 @pytest.fixture
 def transition(tmp_path):
@@ -75,6 +77,9 @@ def transition(tmp_path):
         "from hermes_cli.probe import event\n"
         "def build_update_products(root, *, desktop): event('build', desktop=desktop)\n"
     )
+    # The shared completion tail is part of the NEW tree the child runs from.
+    shutil.copy2(Path(update_completion.__file__).with_name("source_completion.py"),
+                 package / "source_completion.py")
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(

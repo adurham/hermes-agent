@@ -56,6 +56,28 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _source_channels_resolve_locally(request, monkeypatch):
+    """Every unflagged ``hermes update`` resolves its channel through R2; tests must
+    not reach the network for that. Default every channel to a ``source-branch``
+    record delivering ``origin/<name>`` through the documented seam. Channel tests
+    that model records themselves re-patch ``_resolve_channel`` after this runs;
+    the marker opts out entirely for tests of the reader's own network path.
+    """
+    if request.node.get_closest_marker("real_release_channels"):
+        return
+    from hermes_cli import source_releases
+    from hermes_cli.release_channels import ChannelResolution
+
+    def resolve(name, repository):
+        record = {"schema": 1, "name": name, "repository": repository, "policy": "source-branch",
+                  "state": "active", "identity": None, "nextSequence": 1, "head": None,
+                  "delivery": {"kind": "source-branch", "branch": name}}
+        return ChannelResolution(record, record, None)
+
+    monkeypatch.setattr(source_releases, "_resolve_channel", resolve)
+
+
 @pytest.fixture
 def isolated_source_completion(monkeypatch):
     """Unit-test the completion tail in-process; real transport is tested separately."""

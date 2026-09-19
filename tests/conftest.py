@@ -1398,6 +1398,9 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "markers", "allow_real_home_io: explicitly bypass the test-only home I/O guard."
     )
     config.addinivalue_line(
+        "markers", "real_release_channels: keep the real R2 channel reader (no local source-branch stub)."
+    )
+    config.addinivalue_line(
         "markers",
         f"{_GATEWAY_LOOKALIKE_MARK}: the test spawns and reaps its own stub "
         "child whose argv matches the gateway runtime matcher; only the "

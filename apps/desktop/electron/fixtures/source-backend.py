@@ -60,7 +60,12 @@ def main() -> None:
     from pm.environments import selected_venv
     from hermes_cli._launchers import ensure_install_launchers
 
+    # PM's worker runs on PM's own staged runtime (truststore, ruamel), never on
+    # the application interpreter; only the tool acquisition is substituted.
+    from pm.runtime_stage import stage_runtime
+
     worker = root / "pm" / "worker.py"
+    worker_python = stage_runtime(Path(uv), Path(sys.executable), temp / "pm-runtime")
     worker_code = (
         "import runpy, sys; from pathlib import Path; "
         f"sys.path.insert(0, {str(root)!r}); import pm._uv; "
@@ -68,7 +73,7 @@ def main() -> None:
         f"runpy.run_path({str(worker)!r}, run_name='__main__')"
     )
     client = importlib.import_module("pm.client")
-    setattr(client, "runtime_command", lambda *args, **kwargs: [sys.executable, "-I", "-c", worker_code])
+    setattr(client, "runtime_command", lambda *args, **kwargs: [str(worker_python), "-I", "-c", worker_code])
     pm.sync_venv(explicit=True, project_root=root)
     selected = selected_venv(root)
     assert selected and selected.is_relative_to(Path(os.environ["HERMES_HOME"]))

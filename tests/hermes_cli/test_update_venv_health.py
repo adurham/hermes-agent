@@ -96,7 +96,7 @@ def test_detect_venv_python_matches_uv_default_dotvenv(_winp, tmp_path):
     (tmp_path / ".venv").mkdir()
 
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(sys.modules, {"psutil": fake_psutil}):
-        matches = cli_main._detect_venv_python_processes()
+        matches = update_cmd_windows._detect_venv_python_processes()
 
     assert [match[0] for match in matches] == [104]
 
