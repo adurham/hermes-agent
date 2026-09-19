@@ -15,8 +15,10 @@ def test_bootstrap_lease_survives_selection_change(tmp_path, monkeypatch):
     state = install_state_dir(repo)
     for name in ("first", "second", "unused"):
         venv = state / "environments" / name / "venv"
-        site_packages(venv).mkdir(parents=True)
+        venv.mkdir(parents=True)
+        # pyvenv.cfg first: the layout keys its site-packages path off the recorded version.
         (venv / "pyvenv.cfg").write_text("version = 3.11")
+        site_packages(venv).mkdir(parents=True)
         (venv.parent / ".lease-managed").touch()
     legacy = state / "environments" / "old-unleased"
     legacy.mkdir()

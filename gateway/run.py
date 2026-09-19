@@ -4531,6 +4531,16 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
+def _housekeeping_plugin_update_check() -> None:
+    """Plugin update-check cadence (plugins_cadence): due-gated by
+    plugins.auto_update_check_hours, read-only, receipt-surfaced; the
+    opt-in auto-apply rides the manual update pipeline. A network error
+    costs one warning and a stamped marker — never an apply."""
+    from hermes_cli.plugins_cadence import maybe_run_gateway_check
+
+    maybe_run_gateway_check(log=logger)
+
+
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
     is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
@@ -4636,6 +4646,8 @@ def _start_gateway_housekeeping(
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
+        # Due-gated inside: the first tick after startup runs an overdue check, not tick 60.
+        (1, "Plugin update check", _housekeeping_plugin_update_check),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
@@ -5466,6 +5478,27 @@ def main():
 
     for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
+
+    # pm startup contract (PATH provisioning for the store's tools), then
+    # the post-update bootstrap: the same one-pass record-gated maintenance
+    # registry the CLI dispatch path runs (hermes_cli/main.py) — this
+    # entrypoint bypasses that dispatch, so run it here too. Never raises.
+    try:
+        from hermes_cli.venv_sync import check_runtime
+        from pm.paths import install_root
+
+        problem = check_runtime(install_root())
+        if problem:
+            logger.warning(problem)
+    except Exception:
+        logger.debug("pm startup check failed", exc_info=True)
+    try:
+        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
+        from pm.paths import install_root
+
+        maybe_run_boot_bootstrap(install_root())
+    except Exception:
+        logger.debug("boot bootstrap failed", exc_info=True)
 
     import argparse
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")
