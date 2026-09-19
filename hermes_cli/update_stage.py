@@ -115,7 +115,7 @@ def ensure_panel(update_root: Path) -> None:
     try:
         home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
         log = Path(home) / "logs" / "desktop-update-handoff.log"
-        if log.is_file() and _ui_present_in_log(log.read_text(encoding="utf-8", errors="replace")[-8000:]):
+        if log.is_file() and _ui_present_in_log(log.read_text(encoding="utf-8-sig", errors="replace")[-8000:]):
             return
         import subprocess
 

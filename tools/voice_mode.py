@@ -980,7 +980,7 @@ def _is_wsl2_env() -> bool:
     """True inside WSL (Microsoft kernel signature in /proc/version); False on any error.
     Module-level so tests can patch it instead of ``builtins.open``."""
     try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
+        with open("/proc/version", encoding="utf-8-sig", errors="replace") as _fv:
             return "microsoft" in _fv.read().lower()
     except OSError:
         return False

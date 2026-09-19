@@ -149,7 +149,7 @@ def _next_sequence(root: Path) -> int:
     """
     counter = root / _SEQUENCE_FILE
     try:
-        persisted = int(counter.read_text(encoding="utf-8"))
+        persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
     scanned = max((record.get("sequence", record["created_at"])

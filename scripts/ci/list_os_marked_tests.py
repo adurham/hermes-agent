@@ -55,7 +55,7 @@ def find_marked_files(platform: str, root: Path) -> list[Path]:
                 continue
             path = Path(dirpath) / fname
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
             except OSError:
                 continue
             if pattern.search(text):

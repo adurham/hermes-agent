@@ -221,7 +221,7 @@ def _marker_only_restart_obsolete() -> bool:
 
     try:
         fields = {}
-        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
+        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8-sig").splitlines():
             key, value = line.split("=", 1)
             if key in fields:
                 return False
