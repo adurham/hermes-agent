@@ -541,8 +541,12 @@ generic error toast. The card offers recovery actions matched to the failure:
   When a rate-limit or usage-limit response names when the limit lifts
   (`Retry-After` header or a `resets_at` field), the card shows **Limit resets
   at HH:mm (in 1h 05m)** next to Retry so you know when a retry will work; the
-  CLI/TUI print the same line under the error. The hint is informational — the
-  turn is not retried automatically.
+  CLI/TUI print the same line under the error. The hint itself is
+  informational, but the card also offers **Retry when the limit resets
+  (HH:mm)**: click it and the app retries that turn once at the reset time
+  with a live countdown and a **Cancel** control. The schedule lives only in
+  the open window — switching sessions, sending another message, or closing
+  the app drops it, and nothing retries unattended.
 - **Switch provider** — for provider, endpoint, auth, and billing failures,
   opens the composer's live model menu so you can move **this chat** to another
   provider/model right away (Settings → Models only changes the default for new
