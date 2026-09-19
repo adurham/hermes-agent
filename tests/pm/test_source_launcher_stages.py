@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_powershell_stage_publishes_without_a_checkout_venv(tmp_path, monkeypatch, shell):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     # Exercise the real pin reader, including the nested artifact objects.
-    (repo / 'pm').mkdir()
+    # fixture_tree already populated pm/ with the boot modules.
     shutil.copy2(ROOT / 'pm/lock.json', repo / 'pm/lock.json')
     pin = Lockfile(repo / 'pm/lock.json').version('python')
     assert pin
