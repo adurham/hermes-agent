@@ -1324,6 +1324,8 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'available\s+tokens[:\s]+(\d+)',
         # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
         r'output limit (?:of|is)\s*(\d+)',
+        # Azure OpenAI: "max_tokens is too large: 65536. This model supports at most 32768 completion tokens."
+        r'supports at most\s+(\d+)\s*(?:completion\s+)?tokens',
         # Scaleway: "max_completion_tokens is limited to 16384 for glm-5.2".
         r'(?:max_tokens|max_completion_tokens) is limited to\s*(\d+)',
         r'=\s*(\d+)\s*$',
@@ -1348,6 +1350,12 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx_tok.group(1)) - (int(_m_chars.group(1)) + 2) // 3
         if _available >= 1:
             return _available
+    # SGLang: "maximum context length of 131072 tokens. You requested a total of 132528 tokens: 66992 tokens
+    # from the input messages and 65536 tokens for the completion" -> window - input (None when the input
+    # alone overflows -> compress).
+    _m_sglang = _sglang_window_and_input(error_lower)
+    if _m_sglang and _m_sglang[0] - _m_sglang[1] >= 1:
+        return _m_sglang[0] - _m_sglang[1]
     # vLLM: window and prompt both in TOKENS; available = window - input (None when the input alone
     # overflows -> compress). When max_tokens is the BINDING constraint vLLM reports "at least N input
     # tokens" with N == window + 1 - requested_output, so window - N == requested_output - 1 and each
@@ -1374,6 +1382,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("maximum allowed number of output tokens",),
+    ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
 )
 _INPUT_OVERFLOW_SIGNALS = (
@@ -1391,8 +1400,16 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("maximum context length", "in the completion"), ("maximum context length", "for the completion"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
+    ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),
 )
+
+
+def _sglang_window_and_input(error_lower: str) -> Optional[Tuple[int, int]]:
+    """``(window, input_tokens)`` from SGLang's wording, else None; both figures are explicit there."""
+    _m_ctx = re.search(r'maximum context length of (\d+)\s*token', error_lower)
+    _m_in = re.search(r'(\d+)\s*tokens from the input messages', error_lower)
+    return (int(_m_ctx.group(1)), int(_m_in.group(1))) if _m_ctx and _m_in else None
 
 
 def _any_phrase_group(text: str, groups: tuple) -> bool:
@@ -1409,10 +1426,13 @@ def is_output_cap_error(error_msg: str) -> bool:
     if _completion_split_budget(error_lower) is not None:
         return True
     # An error that ALSO describes an oversized INPUT is a genuine overflow — compression can fix it.
+    # SGLang states both figures: input >= window is that same genuine overflow.
+    _m_sglang = _sglang_window_and_input(error_lower)
     return (
-        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens"))
+        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens", "tokens for the completion"))
         and _any_phrase_group(error_lower, _OUTPUT_CAP_SIGNALS)
         and not any(p in error_lower for p in _INPUT_OVERFLOW_SIGNALS)
+        and not (_m_sglang and _m_sglang[1] >= _m_sglang[0])
     )
 
 
