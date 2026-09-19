@@ -2572,6 +2572,7 @@ export const ar = defineLocale({
       medium: 'متوسط',
       high: 'عالٍ',
       max: 'أقصى',
+      sendsOnRoute: (level: string) => `يُرسل ${level} على هذا المسار`,
       updateFailed: 'فشل تحديث خيار النموذج',
       fastFailed: 'فشل تحديث الوضع السريع'
     },
