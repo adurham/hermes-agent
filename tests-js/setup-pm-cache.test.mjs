@@ -68,7 +68,7 @@ it('explicit npm snapshots remain replaceable and isolated from toolchain-only p
 // the caller seam: a cache hit never replaces preparation.
 const desktop = action('../.github/workflows/desktop-bundled-release.yml')
 const payload = action('../.github/workflows/pm-bundle.yml')
-const desktopSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' }}"
+const desktopSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' && inputs.build_commit == '' && inputs.channel == '' }}"
 const payloadSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.ref == '' || inputs.ref == github.sha) }}"
 
 it.each([
@@ -82,7 +82,7 @@ it.each([
   expect(job).toBeDefined()
   if (cacheMode) {
     expect(job['cache-mode']).toBe(cacheMode)
-    expect(job.needs).toEqual(['validate', 'archive-inputs'])
+    expect(job.needs).toEqual(['validate'])
     expect(job.if).toContain(`inputs.build_commit ${cacheMode === 'read' ? '!=' : '=='} ''`)
   }
   const cacheSteps = job.steps.filter(step => step.uses === './.github/actions/desktop-build-cache')
@@ -120,10 +120,15 @@ it.each([
 
 it.each(['win32', 'darwin'])('%s publication requires the selected build to succeed, not merely skip', platform => {
   const gate = desktop.jobs[`build-${platform}`]
-  expect(gate.needs).toEqual(['validate', 'archive-inputs', `build-${platform}-release`, `build-${platform}-commit`])
-  expect(gate.if).toContain("needs.validate.result == 'success' && needs.archive-inputs.result == 'success'")
+  expect(gate.needs).toEqual(['validate', `build-${platform}-release`, `build-${platform}-commit`])
+  expect(gate.if).toContain("needs.validate.result == 'success'")
   expect(gate.env.SELECTED_BUILD_SUCCEEDED.replace(/\s+/g, ' ').trim()).toBe(
-    `\${{ (inputs.build_commit == '' && needs.build-${platform}-release.result == 'success' && needs.build-${platform}-commit.result == 'skipped') || (inputs.build_commit != '' && needs.build-${platform}-commit.result == 'success' && needs.build-${platform}-release.result == 'skipped') }}`,
+    `\${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-${platform}-release.result == 'success' && needs.build-${platform}-commit.result == 'skipped') || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-${platform}-commit.result == 'success' && needs.build-${platform}-release.result == 'skipped') }}`,
   )
-  expect(desktop.jobs[`publish-${platform}-updater`].needs).toContain(`build-${platform}`)
+  // Publication sits downstream of the gate, directly or through the bundle
+  // assembly job.
+  const upstream = new Set()
+  const walk = id => { for (const need of desktop.jobs[id].needs ?? []) { if (!upstream.has(need)) { upstream.add(need); walk(need) } } }
+  walk(`publish-${platform}-updater`)
+  expect(upstream).toContain(`build-${platform}`)
 })

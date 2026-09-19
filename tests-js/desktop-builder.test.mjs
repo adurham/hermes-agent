@@ -35,7 +35,13 @@ function fixture() {
   put(join(app, 'src/index.js'), 'document.getElementById("app").textContent = "built renderer"')
   put(join(app, 'electron/main.ts'), 'console.log(JSON.stringify({ stamp: __HERMES_INSTALL_STAMP__, identity: __HERMES_PRODUCT_IDENTITY__ }))')
   put(join(app, 'electron/preload.ts'), 'globalThis.fixturePreload = "compiled preload"')
+  put(join(app, 'electron/preview-guest-preload-entry.ts'), 'globalThis.fixtureGuestPreload = "compiled guest preload"')
   cpSync(join(repo, 'apps/desktop/product-identity.cjs'), join(app, 'product-identity.cjs'))
+  // product-identity.cjs resolves the channel request through the in-tree
+  // packaging helper (and its content-types table) by relative path.
+  for (const helper of ['scripts/msix-shared.mjs', 'scripts/release-content-types.json']) {
+    cpSync(join(repo, helper), join(source, helper))
+  }
   symlinkSync(join(repo, 'node_modules'), join(app, 'node_modules'), 'junction')
   const icons = join(root, 'icons')
   put(join(icons, 'apps/desktop/public/apple-touch-icon.png'), 'fresh icon')
