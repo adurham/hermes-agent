@@ -11,7 +11,7 @@ from tests.pm.test_pm_authority import core_env, pm_env, served  # noqa: F401 â€
 
 @pytest.mark.parametrize("sealed_install", [True, False])
 def test_missing_bundle_tool_is_installed_in_writable_store(pm_env, tmp_path, monkeypatch, sealed_install):
-    from pm.ensure import ensure, env_for, is_installed
+    from pm.install import ensure, env_for, is_installed
     import importlib
 
     fixture = pm_env
@@ -21,7 +21,7 @@ def test_missing_bundle_tool_is_installed_in_writable_store(pm_env, tmp_path, mo
     monkeypatch.setattr(paths, "store_root", lambda: shipped)
     monkeypatch.setattr(paths, "facts_path", lambda: shipped / "facts.json")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    ensure_module = importlib.import_module("pm.ensure")
+    ensure_module = importlib.import_module("pm.install")
     monkeypatch.setattr(ensure_module, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(ensure_module, "sealed", lambda: sealed_install)
     before = sorted(p.relative_to(shipped).as_posix() for p in shipped.rglob("*"))

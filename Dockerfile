@@ -187,7 +187,7 @@ COPY hermes_constants.py hermes_constants.py
 COPY hermes_cli/__init__.py hermes_cli/runtime_paths.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -c 'from pm.ensure import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm")]'; \
+    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm")]'; \
     python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"))]'; \
     python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
     node --version; npm --version; \

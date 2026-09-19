@@ -21,12 +21,12 @@ class Operation:
 
 
 OPERATIONS = {
-    "ensure": Operation("pm.ensure", None, "state"),
-    "stage_only": Operation("pm.ensure", None, "always"),
+    "ensure": Operation("pm.install", None, "state"),
+    "stage_only": Operation("pm.install", None, "always"),
     "stage_tools": Operation("pm.build_operations", None, "never"),
     "prepare_tools": Operation("pm.build_operations", None, "always"),
-    "sync_venv": Operation("pm.ensure", ("venv",), "policy"),
-    "venv_is_current": Operation("pm.ensure", ("venv",), "never"),
+    "sync_venv": Operation("pm.install", ("venv",), "policy"),
+    "venv_is_current": Operation("pm.install", ("venv",), "never"),
     "build_environment": Operation("pm.operations", ("uv",), "policy"),
     "lock_project": Operation("pm.operations", ("uv",), "policy"),
     "ensure_environment": Operation("pm.operations", ("uv",), "policy"),

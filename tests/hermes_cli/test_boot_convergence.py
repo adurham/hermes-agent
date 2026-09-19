@@ -41,7 +41,7 @@ def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatc
     def no_install(*args, **kwargs):
         pytest.fail("startup must not install or sync")
 
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "check", check)
+    monkeypatch.setattr(importlib.import_module("pm.install"), "check", check)
     monkeypatch.setattr(pm, "ensure", no_install)
     monkeypatch.setattr(pm, "sync_venv", no_install)
     dispatched = []

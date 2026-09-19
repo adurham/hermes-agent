@@ -75,7 +75,7 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     before_lock = lock.path.read_bytes()
     parent_env = dict(os.environ)
     syncs = []
-    ensure = importlib.import_module('pm.ensure')
+    ensure = importlib.import_module('pm.install')
     monkeypatch.setattr(ensure, 'sync_venv', lambda **kw: syncs.append(kw))
     args = Namespace(names=['manual-fixture'], target=None, check=True, uv=True, npm=False, termux=False)
     assert cli.cmd_update(args) == 0

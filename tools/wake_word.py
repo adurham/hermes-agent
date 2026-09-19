@@ -324,7 +324,7 @@ def _tts_ready() -> bool:
     if feature is not None:
         try:
             import pm
-            from pm.ensure import lazy_installs_allowed
+            from pm.install import lazy_installs_allowed
 
             if not pm.available(feature):
                 # Not installed: ready iff it can install at first speak.
@@ -345,7 +345,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     """Report whether wake-word detection can run, with a remediation hint."""
     cfg = cfg if cfg is not None else load_wake_word_config()
     import pm
-    from pm.ensure import lazy_installs_allowed
+    from pm.install import lazy_installs_allowed
     from pm.extras import extra_supported
 
     supported = supported or extra_supported

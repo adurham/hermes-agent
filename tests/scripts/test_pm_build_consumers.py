@@ -25,7 +25,7 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
     from scripts.ci import setup_toolchain
 
     monkeypatch.setattr(setup_toolchain, "packages", lambda toolchain, extra=None: ["python", "uv"])
-    manager = importlib.import_module("pm.ensure")
+    manager = importlib.import_module("pm.install")
     ensured = []
     monkeypatch.setattr(manager, "ensure", lambda name, **kwargs: ensured.append((name, kwargs["explicit"])))
     composed = []

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pm
 from pm import paths
-from pm.ensure import ensure
+from pm.install import ensure
 from pm.lock import Lockfile
 from tests.pm.test_pm_authority import core_env, pm_env, served  # noqa: F401
 
@@ -36,7 +36,7 @@ def test_state_fact_in_shared_facts_file_is_not_a_store_install(pm_env):
     the same facts.json as tool facts. Reading the composed env over every
     registered package must skip it, not KeyError on ``fact["entry"]`` —
     that crashed ``activate`` (``pm.environments``) after a sync."""
-    from pm.ensure import env_for
+    from pm.install import env_for
     from pm.lock import Facts
     from pm.registry import all_packages
 

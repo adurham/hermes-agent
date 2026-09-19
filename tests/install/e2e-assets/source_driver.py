@@ -64,7 +64,7 @@ def probe_pm(root: Path, desktop: str, command: list[str]) -> None:
     if any((root / marker).exists() for marker in (".update-incomplete", ".lazy-refresh-incomplete")):
         raise RuntimeError("source update left an incomplete marker; refusing launch-time recovery")
     sys.path.insert(1, str(site_packages(selected_venv(root))))
-    from pm.ensure import installed_package, venv_is_current
+    from pm.install import installed_package, venv_is_current
 
     if not venv_is_current(project_root=root):
         raise RuntimeError("installed dependency generation is not current")

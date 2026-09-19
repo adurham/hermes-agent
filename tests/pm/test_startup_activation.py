@@ -16,7 +16,7 @@ from tests.pm._fixtures import make_tar, served as served
 
 @pytest.fixture
 def checked_store(tmp_path, monkeypatch, served):
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))

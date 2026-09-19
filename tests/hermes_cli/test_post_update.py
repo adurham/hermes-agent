@@ -149,7 +149,7 @@ def test_provisioning_does_not_use_human_diagnostics(tmp_path, monkeypatch):
     import pm
     from pm import paths
 
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     runtime = tmp_path / "tools"
     runtime.mkdir()
     (runtime / "facts.json").write_text(json.dumps({"schema": 1, "packages": {}}))
@@ -182,7 +182,7 @@ def test_provision_runtimes_reensures_only_what_pm_names(monkeypatch):
     # pm/__init__ rebinds the name `pm.ensure` to the FUNCTION; the module
     # object (whose attrs step_provision_runtimes imports at call time)
     # comes from sys.modules.
-    pm_ensure = importlib.import_module("pm.ensure")
+    pm_ensure = importlib.import_module("pm.install")
 
     ensured = []
     monkeypatch.setattr(pm, "drift", lambda: {"node": "outdated", "venv": "out of sync"})
@@ -202,7 +202,7 @@ def test_provision_runtimes_respects_the_lazy_install_policy(monkeypatch):
 
     import pm
 
-    pm_ensure = importlib.import_module("pm.ensure")
+    pm_ensure = importlib.import_module("pm.install")
 
     monkeypatch.setattr(pm, "drift", lambda: {"node": "outdated"})
     monkeypatch.setattr(pm_ensure, "sealed", lambda: False)

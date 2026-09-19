@@ -40,7 +40,7 @@ def test_sync_refuses_python_gated_extra_before_touching_environment(monkeypatch
     from pathlib import Path
     from packaging.markers import default_environment
 
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     version = default_environment()["python_full_version"]
     monkeypatch.setattr(extras, "_PLATFORM_GATES", {

@@ -36,10 +36,10 @@ def test_same_version_different_sha_is_not_installed_and_repaired(pm_env, caplog
     """The witness: same version, different artifact sha. Version/path
     matching cannot see this; identity matching must — check() reports
     it and ensure() replaces the entry bytes."""
-    from pm.ensure import check, ensure, is_installed
+    from pm.install import check, ensure, is_installed
 
     env = pm_env
-    from pm.ensure import stage_only
+    from pm.install import stage_only
     realize = (lambda: ensure("faketool", explicit=True, base_env={})) if route == "install" else (
         lambda: stage_only("faketool", "linux-arm64-bionic"))
     realize()
@@ -70,7 +70,7 @@ def test_same_version_different_sha_is_not_installed_and_repaired(pm_env, caplog
     assert not is_installed("faketool")
     assert check() == ["faketool: not installed or outdated"]
 
-    with caplog.at_level(logging.INFO, logger="pm.ensure"):
+    with caplog.at_level(logging.INFO, logger="pm.install"):
         realize()
     assert any("1.0" in r.message and env["digest"][:12] in r.message for r in caplog.records)
     assert is_installed("faketool")
@@ -89,7 +89,7 @@ def test_same_version_different_sha_is_not_installed_and_repaired(pm_env, caplog
 @pytest.mark.parametrize("damage", ["missing-binary", "changed-bytes", "entry-is-file", "missing-entry"])
 def test_install_repairs_corrupt_entry_from_verified_archive(pm_env, matching_fact, damage, caplog):
     from pm.cli import cmd_doctor
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     ensure("faketool", base_env={})
     facts_path = paths.facts_path()
@@ -109,7 +109,7 @@ def test_install_repairs_corrupt_entry_from_verified_archive(pm_env, matching_fa
         data["packages"]["faketool"].pop("artifacts")
         facts_path.write_text(json.dumps(data))
 
-    with caplog.at_level(logging.INFO, logger="pm.ensure"):
+    with caplog.at_level(logging.INFO, logger="pm.install"):
         ensure("faketool", explicit=True, base_env={})
     assert any("repair: faketool re-realized" in r.message for r in caplog.records)
     assert binary.read_bytes() == b"#!x"
@@ -125,7 +125,7 @@ def test_install_repairs_corrupt_entry_from_verified_archive(pm_env, matching_fa
 @pytest.mark.parametrize("initial", [False, True], ids=["replacement", "first-install"])
 def test_failed_replacement_preserves_entry_and_facts(pm_env, monkeypatch, route, initial, failure):
     from functools import partial
-    from pm.ensure import ensure, stage_only
+    from pm.install import ensure, stage_only
     from pm.package import InstallError
 
     env = pm_env
@@ -216,7 +216,7 @@ def test_killed_replacement_recovers_on_next_install(pm_env, route, interruption
     import textwrap
     from functools import partial
 
-    from pm.ensure import ensure, stage_only
+    from pm.install import ensure, stage_only
 
     env = pm_env
     target = current_target() if route == "install" else "linux-arm64-bionic"
@@ -239,7 +239,7 @@ def test_killed_replacement_recovers_on_next_install(pm_env, route, interruption
         import pm.registry as registry
         from pm.store import Store
         from tests.pm.test_pm_authority import FakeTool
-        from pm.ensure import ensure, stage_only
+        from pm.install import ensure, stage_only
         paths.lockfile_path = lambda: Path(sys.argv[1])
         registry._packages[FakeTool.name] = FakeTool()
         publish = Store.publish
@@ -275,7 +275,7 @@ def test_killed_replacement_recovers_on_next_install(pm_env, route, interruption
 
 
 def test_failed_restore_preserves_both_interrupted_versions(pm_env, monkeypatch):
-    from pm.ensure import ensure
+    from pm.install import ensure
     from pm.package import InstallError
 
     ensure("faketool", base_env={})
@@ -329,7 +329,7 @@ def test_legacy_fact_without_identity_is_not_installed(pm_env, capsys):
     """Facts written before identity existed read back fine but are NOT
     vouchable: installed() with identity returns False and forces one
     reinstall."""
-    from pm.ensure import ensure, is_installed
+    from pm.install import ensure, is_installed
 
     env = pm_env
     ensure("faketool", base_env={})
@@ -355,7 +355,7 @@ def test_legacy_fact_without_identity_is_not_installed(pm_env, capsys):
 
 
 def test_unproven_entry_without_facts_is_rebuilt(pm_env):
-    from pm.ensure import ensure
+    from pm.install import ensure
     entry = paths.store_root() / FakeTool().store_entry("1.0", current_target())
     (entry / "bin").mkdir(parents=True)
     (entry / "bin/faketool").write_bytes(b"unproven")
@@ -401,7 +401,7 @@ def test_doctor_flags_tampered_entry_bytes(pm_env, capsys):
     """Post-install tampering: doctor re-hashes the realized tree against
     the recorded digest and flags it; restoring the bytes clears it."""
     from pm.cli import cmd_doctor
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     ensure("faketool", base_env={})
     assert cmd_doctor(None) == 0

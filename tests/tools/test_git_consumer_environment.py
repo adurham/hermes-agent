@@ -69,7 +69,7 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
 
     # Fail at the PM boundary reached by both ensure and env_for, without
     # pretending this interpreter is running on a different host OS/CPU.
-    resolver = importlib.import_module("pm.ensure")
+    resolver = importlib.import_module("pm.install")
     calls = []
 
     def unavailable(*args, **kwargs):

@@ -92,7 +92,7 @@ def test_real_cli_miss_hit_and_staging_use_the_same_archived_bytes(tmp_path, ups
     assert inputs.main(["--target", "linux-arm64-bionic", "--store", str(store.root), "--payload", str(payload)]) == 0
     assert not any(r[0] == "PUT" for r in r2_server.requests)
     assert (stage(payload, {"lib": row}) / "libarchive-proof.so").read_bytes().endswith(b"pinned library")
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, "_store", lambda: store)
     monkeypatch.setattr(engine, "get_package", lambda _: _FakePackage())
     entry = engine.stage_only("stage-test", "linux-arm64-bionic")

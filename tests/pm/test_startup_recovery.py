@@ -36,7 +36,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     import pm.paths as paths
     from pm.environments import selected_venv, site_packages
 
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     repo = Path(__file__).resolve().parents[2]
     core = tmp_path / "app"
     core.mkdir()

@@ -124,7 +124,7 @@ POST_SWAP_HELPER_MODULES = (
     # not extend the historical cutoff: files absent there are skipped.
     "pm/__init__.py",
     "pm/cli.py",
-    "pm/ensure.py",
+    "pm/install.py",
     "pm/extras.py",
     "pm/lock.py",
     "pm/package.py",

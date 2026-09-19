@@ -70,7 +70,7 @@ def test_install_recovers_from_transient_http_failure(tmp_path, dl_server, monke
         "url": url(dl_server, "/tool.zip"),
         "sha256": hashlib.sha256(body).hexdigest(),
     }})
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     if install_path == "install":
         ensure._install(package, lock, facts, store, current_target())
         entry = store.entry(facts.get(package.name)["entry"])

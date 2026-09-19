@@ -546,7 +546,7 @@ def _ready_after_first_use_install(provider: str) -> bool:
     if key_env and not _resolve_provider_key(key_env, provider):
         return False
     try:
-        from pm.ensure import lazy_installs_allowed
+        from pm.install import lazy_installs_allowed
         from pm.extras import extra_supported
     except Exception:
         return False

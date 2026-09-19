@@ -10,7 +10,7 @@ import argparse
 from dataclasses import asdict
 from pathlib import Path
 
-from pm.ensure import _lockfile
+from pm.install import _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target

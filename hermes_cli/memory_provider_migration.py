@@ -112,7 +112,7 @@ def recover_at_startup(name: str) -> bool:
     if name in _attempted:
         return False
     _attempted.add(name)
-    from pm.ensure import lazy_installs_allowed
+    from pm.install import lazy_installs_allowed
     if not lazy_installs_allowed():
         logger.warning("Memory provider '%s' is not installed; security.allow_lazy_installs is off — "
                        "run `hermes plugins install %s`.", name, name)

@@ -114,7 +114,7 @@ class BinaryPackage(Package):
         must find the node it extends on PATH."""
         if not self.deps:
             return dict(os.environ)
-        from pm.ensure import env_for
+        from pm.install import env_for
 
         return env_for(*self.deps)
 
@@ -537,7 +537,7 @@ class Npm(BinaryPackage):
                 )
                 wrapper.chmod(0o755)
             return
-        from pm.ensure import _installed_location, _lockfile
+        from pm.install import _installed_location, _lockfile
         from pm.registry import get_package
 
         node = get_package("node")

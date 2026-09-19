@@ -23,7 +23,7 @@ from tests.pm._fixtures import (
 
 
 def test_isolated_worker_preserves_install_error(client, monkeypatch):
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, "ensure", lambda *a, **kw: pytest.fail("engine ran in caller"))
     with pytest.raises(InstallError) as caught:
         client.ensure("node", explicit=True)
@@ -101,7 +101,7 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
 
     monkeypatch.setattr("pm.runtime.runtime_python", ready_runtime)
     if route != "direct":
-        engine = importlib.import_module("pm.ensure")
+        engine = importlib.import_module("pm.install")
         monkeypatch.setattr(engine, "venv_is_current", lambda **kw: pytest.fail("probe ran in caller"))
     def snapshot():
         return {path.relative_to(tmp_path): (path.read_bytes() if path.is_file() else None)

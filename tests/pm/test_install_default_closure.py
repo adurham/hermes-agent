@@ -34,7 +34,7 @@ def install_spy(monkeypatch):
         return None
 
     monkeypatch.setattr(pm.cli, "_install_names", fake_install_names)
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", fake_sync_venv)
+    monkeypatch.setattr(importlib.import_module("pm.install"), "sync_venv", fake_sync_venv)
     return calls
 
 

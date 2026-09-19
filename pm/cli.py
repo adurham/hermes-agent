@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from pm import termux_libs
-from pm.ensure import _facts, _lockfile, _store, ensure, stage_only
+from pm.install import _facts, _lockfile, _store, ensure, stage_only
 from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
@@ -125,7 +125,7 @@ def _live_progress(name: str):
 
 
 def _install_names(names: list[str], target: str | None = None) -> int:
-    from pm.ensure import _install_operation
+    from pm.install import _install_operation
 
     failed = 0
     with _install_operation() as operation:
@@ -167,7 +167,7 @@ def cmd_install(args) -> int:
     names = args.names or source_install_packages(_lockfile().names())
     failed = _install_names(names, target=cross_target)
     if not args.names:
-        from pm.ensure import sync_venv
+        from pm.install import sync_venv
 
         try:
             # Default the venv to the [all] feature set — the same thing
@@ -184,7 +184,7 @@ def cmd_install(args) -> int:
 
 
 def cmd_env(args) -> int:
-    from pm.ensure import env_for
+    from pm.install import env_for
 
     names = args.names or _lockfile().names()
     print(json.dumps(env_for(*names), indent=2, sort_keys=True))
@@ -192,7 +192,7 @@ def cmd_env(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from pm.ensure import _identity, _installed_location
+    from pm.install import _identity, _installed_location
     from pm.store import tree_digest
 
     lockfile = _lockfile()
@@ -380,7 +380,7 @@ def cmd_update(args) -> int:
         if failed:
             return 1
         try:
-            from pm.ensure import sync_venv
+            from pm.install import sync_venv
             sync_venv(explicit=True)
             print("✓ venv")
         except InstallError as e:
@@ -397,14 +397,14 @@ def cmd_update(args) -> int:
             return 1
         print("✓ uv.lock refreshed")
         try:
-            from pm.ensure import sync_venv
+            from pm.install import sync_venv
             sync_venv(explicit=True)
             print("✓ venv")
         except InstallError as e:
             print(f"✗ {e}")
             return 1
     if args.npm:
-        from pm.ensure import env_for, installed_package
+        from pm.install import env_for, installed_package
         from pm.packages import npm_env
         from pm.paths import writable_store_root
 

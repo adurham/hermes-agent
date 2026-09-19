@@ -65,7 +65,7 @@ def test_registered_package_installs_archive_in_real_worker(tmp_path, monkeypatc
         "url": url(dl_server, "/plugin.tar.gz"), "sha256": hashlib.sha256(data).hexdigest(),
     }})
     lock.save()
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, operation, lambda *a, **kw: pytest.fail("install ran in caller"))
     if operation == "ensure":
         pm.ensure("registry-worker-archive", explicit=True)

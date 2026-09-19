@@ -24,7 +24,7 @@ def _members(value):
 
 
 def _missing_or_refuse(name):
-    from pm.ensure import _refuse_lazy, is_installed, lazy_installs_allowed
+    from pm.install import _refuse_lazy, is_installed, lazy_installs_allowed
     from pm.registry import walk
 
     missing = [package.name for package in walk([name]) if not is_installed(package.name)]
@@ -35,7 +35,7 @@ def _missing_or_refuse(name):
 
 def _request(operation, arguments, *, callbacks=None, pause_event=None, project_root=None):
     from pm import receipt
-    from pm.ensure import lazy_installs_allowed
+    from pm.install import lazy_installs_allowed
     from pm.registry import get_package, package_definitions
 
     request_id = uuid.uuid4().hex
@@ -158,11 +158,11 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
 
 
 def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=None, download_progress=None) -> Runner:
-    from pm.ensure import env_for
+    from pm.install import env_for
     from pm.registry import get_package
 
     if is_runtime():
-        from pm.ensure import ensure as direct
+        from pm.install import ensure as direct
         return direct(name, base_env=base_env, explicit=explicit, progress=progress,
                       pause_event=pause_event, download_progress=download_progress)
     if not explicit and not isinstance(get_package(name), StatePackage):
@@ -188,7 +188,7 @@ def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dir
         selection = {**selection, "expected_config": _digest(Path(selection["home"]) / "config.yaml") or "missing"}
     foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
     if is_runtime() and not foreign:
-        from pm.ensure import sync_venv as direct
+        from pm.install import sync_venv as direct
         return direct(extras, explicit=explicit, plugin_dirs=plugin_dirs,
                       selection=selection, staged_plugin=staged_plugin, extra_plugin_dirs=extra_plugin_dirs, repair=repair)
     _request("sync_venv", {"extras": extras, "explicit": explicit, "repair": repair,
@@ -198,7 +198,7 @@ def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dir
 
 def stage_only(name, target, *, progress=None) -> Path:
     if is_runtime():
-        from pm.ensure import stage_only as direct
+        from pm.install import stage_only as direct
         return direct(name, target, progress=progress)
     callbacks = {"progress": progress} if progress is not None else {}
     return Path(_request("stage_only", {"name": name, "target": target}, callbacks=callbacks))
@@ -284,7 +284,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_
                     project_root: Path | None = None) -> bool:
     """Check through a ready PM, never bootstrap dependencies for a probe."""
     if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
-        from pm.ensure import venv_is_current as direct
+        from pm.install import venv_is_current as direct
         return direct(extras=extras, plugin_dirs=plugin_dirs, extra_plugin_dirs=extra_plugin_dirs, project_root=project_root)
     members = plugin_dirs
     try:

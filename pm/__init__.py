@@ -17,10 +17,10 @@ machinery in with it.
 
 from __future__ import annotations
 
-import importlib
+import sys
 
 _EXPORTS = {
-    "pm.ensure": (
+    "pm.install": (
         "activate", "check", "drift", "enabled_extras", "env_for", "is_installed",
         "installed_package", "lazy_installs_allowed",
     ),
@@ -46,7 +46,9 @@ def __getattr__(name: str):
     module = _HOME.get(name)
     if module is None:
         raise AttributeError(f"module 'pm' has no attribute {name!r}")
-    value = getattr(importlib.import_module(module), name)
+    # Not importlib.import_module: tests patch that globally and the facade must keep resolving.
+    __import__(module)
+    value = getattr(sys.modules[module], name)
     globals()[name] = value
     return value
 

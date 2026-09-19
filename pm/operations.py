@@ -19,7 +19,7 @@ from pm.package import InstallError
 
 
 def _require_install_allowed(explicit: bool) -> None:
-    from pm.ensure import _refuse_lazy, lazy_installs_allowed
+    from pm.install import _refuse_lazy, lazy_installs_allowed
 
     if not explicit and not lazy_installs_allowed():
         raise _refuse_lazy("venv", "Python dependency operation requires an explicit request")
@@ -189,7 +189,7 @@ def ensure_environment(
     An optional tool entrypoint is validated before publication, not afterwards.
     """
     from hermes_cli.runtime_state import _lock
-    from pm.ensure import _refuse_lazy, lazy_installs_allowed
+    from pm.install import _refuse_lazy, lazy_installs_allowed
     from pm.lock import Lockfile, _write
     from pm import paths
     from pm.store import current_target

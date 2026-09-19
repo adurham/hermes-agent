@@ -14,7 +14,7 @@ import pytest
 import pm
 from pm import paths, registry
 from pm.downloader import DownloadPaused
-from pm.ensure import ensure, stage_only
+from pm.install import ensure, stage_only
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.store import tree_digest

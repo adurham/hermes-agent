@@ -694,7 +694,7 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
     source, uv, env = locked_project
     monkeypatch.setattr(paths, "repo_root", lambda: source)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (uv, Path(sys.executable)))
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
     engine.sync_venv(["chosen"], plugin_dirs=[], explicit=True)
     old = selected_venv(source)

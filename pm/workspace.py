@@ -255,7 +255,7 @@ def install_node_sidecar(
         return None  # nothing to install
 
     import pm
-    from pm.ensure import lazy_installs_allowed
+    from pm.install import lazy_installs_allowed
 
     # Tool availability does not authorize mutation of the sidecar itself.
     if not explicit and not lazy_installs_allowed():

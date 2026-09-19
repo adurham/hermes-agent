@@ -29,7 +29,7 @@ from tests.pm._fixtures import isolated_python  # noqa: F401
 @pytest.fixture
 def source_launch(tmp_path, monkeypatch, isolated_python):
     client = importlib.import_module("pm.client")
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -150,7 +150,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
         # CLI must still pin, ensure, synchronize and publish through its owners.
         monkeypatch.setattr(cli, "resolve_package", lambda *a, **k: Resolved("python", "A", "semver", "B"))
         monkeypatch.setattr(cli, "_pin_artifacts", lambda *a: {})
-        monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", pm.sync_venv)
+        monkeypatch.setattr(importlib.import_module("pm.install"), "sync_venv", pm.sync_venv)
         assert cli.cmd_update(SimpleNamespace(names=["python"], target=None, check=False, uv=False, npm=False, termux=False)) == 0
         assert Lockfile(paths.lockfile_path()).version("python") == "B"
     assert pm.venv_is_current(project_root=root)

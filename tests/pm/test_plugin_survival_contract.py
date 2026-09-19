@@ -132,7 +132,7 @@ def _local_conflict_members(home: Path) -> tuple[Path, Path, Path, Path]:
 
 @pytest.fixture
 def admission_env(tmp_path, monkeypatch):
-    """Fake core repo + temp HERMES_HOME so the REAL pm.ensure.sync_venv
+    """Fake core repo + temp HERMES_HOME so the REAL pm.install.sync_venv
     transaction (lock, receipts, config publication) runs entirely under
     tmp — the production path, temp homes."""
     core = tmp_path / "core"
@@ -154,7 +154,7 @@ def admission_env(tmp_path, monkeypatch):
 
     import importlib
 
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     import pm.paths
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

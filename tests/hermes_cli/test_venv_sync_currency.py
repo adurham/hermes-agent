@@ -18,7 +18,7 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     root, home = admission_env
     core = root / 'core'
-    ensure = importlib.import_module('pm.ensure')
+    ensure = importlib.import_module('pm.install')
     pin_path = root / 'pins.json'
     pins = Lockfile(pin_path)
     pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'a' * 64}})

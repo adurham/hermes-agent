@@ -85,7 +85,7 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     import pm.workspace as workspace
     from pm.environments import selected_venv, site_packages
 
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     uv = shutil.which("uv")
     assert uv, "recovery integration requires real uv"
     core, plugin = recovery_graph
@@ -165,7 +165,7 @@ def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_pa
     from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
     from pm.environments import install_state_dir, selected_venv, site_packages
 
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     # Use the same engine for admission and repair with the offline uv fixture.
     monkeypatch.setattr("pm.client.sync_venv", engine.sync_venv)
     uv = shutil.which("uv")

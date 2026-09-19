@@ -16,12 +16,12 @@ def _lazy_installs(monkeypatch, allowed: bool) -> None:
     """Stand in for ``security.allow_lazy_installs``.
 
     The submodule must be fetched through ``import_module``: ``pm.ensure`` on the pm PACKAGE is the
-    ``ensure()`` function, so ``pm.ensure.lazy_installs_allowed`` is not the seam the production
+    ``ensure()`` function, so ``pm.install.lazy_installs_allowed`` is not the seam the production
     import reads.
     """
     import importlib
 
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "lazy_installs_allowed", lambda: allowed)
+    monkeypatch.setattr(importlib.import_module("pm.install"), "lazy_installs_allowed", lambda: allowed)
 
 
 def _no_extra(monkeypatch) -> None:

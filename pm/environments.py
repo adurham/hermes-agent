@@ -218,7 +218,7 @@ def activate_dependencies(project_root: Path) -> None:
 
 def activation_environment(project_root: Path) -> dict[str, str]:
     """Read the installed PM environment; do not provision or switch imports."""
-    from pm.ensure import env_for
+    from pm.install import env_for
     from pm.registry import all_packages
 
     env = env_for(*all_packages())

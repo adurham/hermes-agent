@@ -128,7 +128,7 @@ def install(args) -> None:
 
     from pm import build_requirements_environment
     from pm.cli import _live_progress
-    from pm.ensure import ensure, env_for
+    from pm.install import ensure, env_for
     from pm.lock import Facts
     from pm.package import compose_env
     from pm.packages import uv_cache_dir

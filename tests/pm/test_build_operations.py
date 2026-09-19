@@ -395,7 +395,7 @@ def test_ready_tools_do_not_bypass_disabled_lazy_operations(locked_source, tmp_p
     import importlib
     from pm import build_requirements_environment, check_project_lock, export_requirements
 
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "lazy_installs_allowed", lambda: False)
+    monkeypatch.setattr(importlib.import_module("pm.install"), "lazy_installs_allowed", lambda: False)
     out = tmp_path / "blocked-output"
     before = {p.name: p.read_bytes() for p in locked_source.iterdir() if p.is_file()}
     actions = {
@@ -422,7 +422,7 @@ def test_prune_cache_does_not_acquire_a_missing_toolchain(tmp_path, monkeypatch)
     monkeypatch.setattr(pm.paths, "store_root", lambda: store)
     monkeypatch.setattr(pm.paths, "writable_store_root", lambda: store)
     monkeypatch.setattr(pm.paths, "facts_path", lambda: store / "facts.json")
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "ensure",
+    monkeypatch.setattr(importlib.import_module("pm.install"), "ensure",
                         lambda *args, **kwargs: pytest.fail("cache pruning must not acquire tools"))
     with pytest.raises(InstallError, match="pinned toolchain is unavailable"):
         prune_cache(tmp_path / "cache")

@@ -83,7 +83,7 @@ def test_node_sidecar_retains_output_and_exit_status(
     if install_cmd == "ci":
         (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        importlib.import_module("pm.ensure"), "lazy_installs_allowed", lambda: True
+        importlib.import_module("pm.install"), "lazy_installs_allowed", lambda: True
     )
     diagnostic = "🔍 node-gyp: build toolchain unavailable"
     raw = diagnostic.encode("utf-8") + b"\xff\n"

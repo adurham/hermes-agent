@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from types import MappingProxyType
 
-from pm.ensure import InstalledPackage
+from pm.install import InstalledPackage
 from pm.lock import Lockfile
 from pm.package import InstallError
 
@@ -91,7 +91,7 @@ def build_requirements_environment(
 def prepare_tools(names: Sequence[str], *, out: Path, target: str,
                   cache: Path | None = None) -> Path:
     """Realize an explicit tool closure in a build-owned store, not live state."""
-    from pm.ensure import _install, _lockfile
+    from pm.install import _install, _lockfile
     from pm.lock import Facts
     from pm.package import StatePackage
     from pm.registry import walk
@@ -143,7 +143,7 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
     digest to the canonical entry, lock and declared environment; it does not
     rerun arbitrary version probes just to read a previously published tool.
     """
-    from pm.ensure import _identity, _lockfile
+    from pm.install import _identity, _lockfile
     from pm.lock import Facts
     from pm.package import StatePackage
     from pm.registry import walk
@@ -193,7 +193,7 @@ def stage_tools(names: Sequence[str], *, source_store: Path, out: Path, target: 
     the ordinary installer owns verification, independent copies and fresh facts.
     """
     from contextlib import ExitStack
-    from pm.ensure import _entry_verified, _install, _lockfile
+    from pm.install import _entry_verified, _install, _lockfile
     from pm.lock import Facts
     from pm.package import StatePackage
     from pm.registry import walk

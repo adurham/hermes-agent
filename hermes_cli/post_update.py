@@ -235,7 +235,7 @@ def step_provision_runtimes() -> dict:
     ensure/sync operations own freshness checks and publication under lock.
     """
     import pm
-    from pm.ensure import lazy_installs_allowed, sealed
+    from pm.install import lazy_installs_allowed, sealed
 
     problems = pm.drift()
     if not problems:

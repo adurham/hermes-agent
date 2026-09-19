@@ -19,7 +19,7 @@ import pytest
 import pm
 import importlib
 
-pm_ensure = importlib.import_module("pm.ensure")
+pm_ensure = importlib.import_module("pm.install")
 import tools.wake_word as ww
 
 

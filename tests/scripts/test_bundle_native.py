@@ -126,7 +126,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     monkeypatch.setattr("pm.paths.repo_root", lambda: repo)
     (repo / "untracked").write_text("must not ship", encoding="utf-8")
     monkeypatch.setattr(native, "_bundle_package_names", lambda: ["agent-browser", "uv"])
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "_prepare_artifacts",
+    monkeypatch.setattr(importlib.import_module("pm.install"), "_prepare_artifacts",
                         lambda *args, **kwargs: pytest.fail("prepared tools reached acquisition"))
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))

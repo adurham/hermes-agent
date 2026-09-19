@@ -44,7 +44,7 @@ def test_sync_venv_refuses_outside_frozen_extras(rooted, monkeypatch):
 
     import sys
 
-    ensure_mod = sys.modules["pm.ensure"]
+    ensure_mod = sys.modules["pm.install"]
     from pm.package import InstallError
 
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
@@ -68,7 +68,7 @@ def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     from pm.lock import Facts
     from pm.environments import install_state_dir, runtime_facts_path
 
-    ensure_mod = sys.modules["pm.ensure"]
+    ensure_mod = sys.modules["pm.install"]
 
     # Matching stamp alone cannot certify a vanished environment. Reuse only
     # the recorded selection while retaining the disabled acquisition policy.

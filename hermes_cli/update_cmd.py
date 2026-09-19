@@ -78,8 +78,10 @@ from hermes_cli.update_cmd_config import (  # noqa: F401
 from hermes_cli.update_cmd_validation import (  # noqa: F401 — frozen updater surface (tests/compat)
     _UPDATE_CRITICAL_MODULES, _critical_module_import_failures,
     _validate_critical_modules_import)
-from hermes_cli.old_updater_deps import (  # noqa: F401 — frozen updater surface (tests/compat)
-    _path_uid, _rebuild_desktop_after_update, _update_node_dependencies)
+from hermes_cli.old_updater_deps import (  # noqa: F401 — frozen updater surface (tests/compat + test_old_updater_shims)
+    _capture_active_lazy_features, _npm_lockfile_changed, _path_uid,
+    _rebuild_desktop_after_update, _refresh_active_lazy_features,
+    _refresh_active_memory_provider_dependencies, _update_node_dependencies)
 from hermes_cli.update_cmd_git import (  # noqa: F401
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,

@@ -24,7 +24,7 @@ def test_no_package_json_never_acquires_npm(tmp_path, monkeypatch):
 def test_acquisition_receives_consent_and_reports_refusal(tmp_path, monkeypatch, explicit):
     import importlib
 
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(importlib.import_module("pm.install"), "lazy_installs_allowed", lambda: True)
     (tmp_path / "package.json").write_text('{}')
     calls = []
     def refused(name, **kwargs):

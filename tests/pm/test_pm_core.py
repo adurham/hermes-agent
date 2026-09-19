@@ -68,7 +68,7 @@ def pm_env(tmp_path, served, monkeypatch):
     # Policy is pinned open here; the disabled-path tests pin it closed.
     import importlib
 
-    ensure_mod = importlib.import_module("pm.ensure")
+    ensure_mod = importlib.import_module("pm.install")
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
 
     saved = dict(registry._packages)
@@ -106,7 +106,7 @@ def _pin(lockfile_path: Path, name: str, version: str, digest: str) -> None:
 
 
 def test_bad_hash_rejected(pm_env):
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     lockfile_path, *_ = pm_env
     _pin(lockfile_path, "faketool", "1.0", "0" * 64)
@@ -119,7 +119,7 @@ def test_multi_archive_merges_into_one_entry(pm_env, capsys):
     """A package split across two archives lands in ONE store entry: a
     second entry would put the DLLs where a loading executable can never
     find them. No per-archive entries, no leftover scratch."""
-    from pm.ensure import ensure, is_installed
+    from pm.install import ensure, is_installed
 
     lockfile_path, runtime, docroot, _ = pm_env
     _, digest_a = make_tar(docroot, "multitool-1.0-a.tar.gz",
@@ -168,7 +168,7 @@ def test_multi_archive_merges_into_one_entry(pm_env, capsys):
 
 
 def test_deps_compose_dependents_win(pm_env):
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     lockfile_path, _, docroot, _ = pm_env
     name, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
@@ -189,7 +189,7 @@ def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monke
     from hermes_cli.runtime_state import _lock
     from pm.cli import _install_names
 
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     lockfile_path, runtime, docroot, _ = pm_env
     for name in ("deptool", "toptool"):
         _, digest = make_tar(docroot, f"{name}-1.0.tar.gz", {"bin/faketool": name})
@@ -225,7 +225,7 @@ def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monke
 
 def test_standalone_warm_ensure_does_not_wait_for_unrelated_writer(pm_env):
     from concurrent.futures import ThreadPoolExecutor
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     _, runtime, _, _ = pm_env
     ensure("faketool", explicit=True)
@@ -245,7 +245,7 @@ def test_install_forgets_verification_when_state_operation_releases_lock(pm_env,
     from pm.cli import _install_names
     from pm.packages import Venv
 
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     lockfile_path, runtime, docroot, _ = pm_env
     for name in ("deptool", "toptool"):
         _, digest = make_tar(docroot, f"{name}-1.0.tar.gz", {"bin/faketool": name})
@@ -272,7 +272,7 @@ def test_install_forgets_verification_when_state_operation_releases_lock(pm_env,
 
 
 def test_version_bump_selects_the_new_tool(pm_env):
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     lockfile_path, _, docroot, _ = pm_env
 
@@ -286,14 +286,14 @@ def test_version_bump_selects_the_new_tool(pm_env):
 def test_lazy_installs_disabled(pm_env, monkeypatch):
     import importlib
 
-    ensure_mod = importlib.import_module("pm.ensure")
+    ensure_mod = importlib.import_module("pm.install")
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
     with pytest.raises(InstallError, match="lazy installs are disabled"):
         ensure_mod.ensure("faketool", base_env={})
 
 
 def test_missing_platform_is_declared(pm_env):
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     lockfile_path, *_ = pm_env
     pkg = registry._packages["faketool"]
@@ -306,7 +306,7 @@ def test_missing_platform_is_declared(pm_env):
 
 
 def test_corrupt_facts_degrades_to_empty(pm_env):
-    from pm.ensure import ensure, is_installed
+    from pm.install import ensure, is_installed
 
     _, runtime, *_ = pm_env
     ensure("faketool", base_env={})
@@ -318,7 +318,7 @@ def test_corrupt_facts_degrades_to_empty(pm_env):
 
 
 def test_concurrent_installs_do_not_clobber(pm_env):
-    from pm.ensure import ensure, is_installed
+    from pm.install import ensure, is_installed
 
     lockfile_path, _, docroot, _ = pm_env
     name, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
@@ -348,7 +348,7 @@ def test_single_flight_one_store_entry(pm_env, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from contextlib import contextmanager
     from http.server import SimpleHTTPRequestHandler
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     _, runtime, *_ = pm_env
     contenders = threading.Barrier(6)
@@ -394,7 +394,7 @@ def test_single_flight_one_store_entry(pm_env, monkeypatch):
 
 def test_gc_keeps_used_removes_orphans(pm_env):
     from pm.cli import cmd_gc
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     _, runtime, *_ = pm_env
     ensure("faketool", base_env={})
@@ -410,7 +410,7 @@ def test_gc_removes_fetch_cache_archives(pm_env):
     drop them so a staged payload (and the CI cache that stores it) doesn't
     carry the raw archives. The live package entry survives."""
     from pm.cli import cmd_gc
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     lock_path, runtime, *_ = pm_env
     ensure("faketool", base_env={})
@@ -707,7 +707,7 @@ def test_install_verify_failure_reports_reason(pm_env):
     name, digest = make_tar(docroot, "faketool-2.0.tar.gz", {"nope/x": "y"})
     _pin(lockfile_path, "faketool", "2.0", digest)
 
-    from pm.ensure import ensure
+    from pm.install import ensure
 
     with pytest.raises(InstallError) as exc:
         ensure("faketool", explicit=True)
@@ -723,7 +723,7 @@ def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
     installed store packages (non-internal), their dirs enter the
     provisioned PATH. Regression test for the flag flip."""
     from pm import paths
-    from pm.ensure import _store_path_dirs
+    from pm.install import _store_path_dirs
     from pm.lock import Facts, Lockfile
 
     runtime = tmp_path / "runtime"

@@ -106,7 +106,7 @@ def test_all_uv_commands_keep_the_pm_interpreter(installed_uv, monkeypatch):
 
 def test_uv_refuses_discovery_when_pm_python_is_missing(installed_uv, monkeypatch):
     root, _, facts, target, digest = installed_uv
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: False)
     monkeypatch.setenv("UV_PYTHON", str(root / "ambient-python"))
     assert _toolchain(realize=False) is None
@@ -133,7 +133,7 @@ def test_bundled_uv_uses_a_verified_writable_python_without_changing_runtime(ins
     from pm.store import Store, tree_digest
 
     root, uv_binary, facts, target, digest = installed_uv
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     shipped = uv_binary.parent.parent
     writable = root / "writable-tools"
     monkeypatch.setattr(paths, "writable_store_root", lambda: writable)
@@ -202,7 +202,7 @@ def test_copy_failure_preserves_previous_python(installed_uv, monkeypatch, damag
     from pm.store import Store, tree_digest
 
     root, _, facts, target, digest = installed_uv
-    ensure = importlib.import_module("pm.ensure")
+    ensure = importlib.import_module("pm.install")
     shipped = facts.path.parent
     writable = root / "writable-tools"
     writable.mkdir()

@@ -12,7 +12,7 @@ from pm.package import InstallError, Package
 from pm.lock import Lockfile
 from pm.store import Store
 
-ensure_mod = importlib.import_module("pm.ensure")
+ensure_mod = importlib.import_module("pm.install")
 
 
 class _FakePackage(Package):

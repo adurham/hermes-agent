@@ -17,7 +17,7 @@ from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 def test_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monkeypatch, mode):
     from pm import artifact_mirror
 
-    engine = importlib.import_module("pm.ensure")
+    engine = importlib.import_module("pm.install")
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w") as archive:
         archive.writestr("tool.txt", b"pinned and preserved")

@@ -42,7 +42,7 @@ def prepare(tmp_path, monkeypatch, packages):
 
     for name in ("_pin_artifacts", "_install_names", "_run_live", "lock_project"):
         monkeypatch.setattr(cli, name, forbidden)
-    monkeypatch.setattr(importlib.import_module("pm.ensure"), "sync_venv", forbidden)
+    monkeypatch.setattr(importlib.import_module("pm.install"), "sync_venv", forbidden)
     return lock
 
 
