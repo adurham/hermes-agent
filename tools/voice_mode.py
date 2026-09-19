@@ -1,7 +1,8 @@
 """Voice Mode -- push-to-talk recording and playback for the CLI.
 
 Capture via sounddevice, WAV via stdlib wave, STT via tools.transcription_tools,
-playback via sounddevice or system players. Optional deps: ``uv sync --extra voice``.
+playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``stt-whisper``
+extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
 
 import logging
@@ -113,18 +114,11 @@ def _default_input_samplerate(sd) -> int:
 
 # ── Environment detection ──
 def _voice_capture_install_hint() -> str:
-    # sounddevice imports but PortAudio's shared library is missing — a pip install can't fix that; point at
-    # the system package instead of misreporting missing Python packages (#18432).
+    # On Termux PortAudio is a system package a pip install can't provide (#18432); everywhere
+    # else the audio-io extra goes through PM so the install lands in the venv Hermes runs.
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
-    # Inside a venv a bare `pip install` may hit whichever Python the shell
-    # resolves first (macOS: often a Rosetta system Python) — use the venv's pip.
-    with suppress(Exception):
-        if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
-            pip_in_venv = Path(sys.prefix) / "bin" / "pip"
-            if pip_in_venv.exists():
-                return f"{pip_in_venv} install sounddevice numpy"
-    return "pip install sounddevice numpy"
+    return "python -c \"from pm import sync_venv; sync_venv(['audio-io'], explicit=True)\""
 
 
 def _portaudio_missing_message() -> str:
@@ -760,7 +754,7 @@ class AudioRecorder(_RecorderBase):
         except ImportError as e:
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy") from e
+                f"Install with: {_voice_capture_install_hint()}") from e
         with self._lock:
             if self._recording:
                 return
@@ -1490,9 +1484,8 @@ def check_voice_requirements() -> Dict[str, Any]:
         else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
-        else ("STT provider: MISSING (uv pip install faster-whisper — "
-              "`pip install faster-whisper` also works if pip is on PATH, "
-              "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"),
+        else ("STT provider: MISSING (run `hermes tools` and configure "
+              "Speech-to-Text: Local Whisper or a cloud provider)"),
     ]
     details += [f"Environment: {w}" for w in env_check["warnings"]]
     details += [f"Environment: {n}" for n in env_check.get("notices", [])]
