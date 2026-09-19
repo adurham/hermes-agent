@@ -88,28 +88,6 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
-_TRANSCRIPT_IDENTITY_KEYS = ("role", "content", "tool_calls", "tool_call_id")
-
-
-def _same_transcript_prefix(agent_messages: List[Any], prefix: List[Any]) -> bool:
-    """True when ``agent_messages`` starts with ``prefix`` by what each message *says*.
-
-    The API layer builds bare ``{"role", "content"}`` dicts while the agent stamps its copies
-    with ``timestamp`` / ``_db_persisted`` / ``reasoning`` / ``finish_reason``; whole-dict
-    equality therefore never matched and every chained turn re-appended the full prior
-    transcript (#95137, #101644, #82513)."""
-    if len(agent_messages) < len(prefix):
-        return False
-    for got, want in zip(agent_messages, prefix):
-        if not isinstance(got, dict) or not isinstance(want, dict):
-            if got != want:
-                return False
-            continue
-        if any(got.get(k) != want.get(k) for k in _TRANSCRIPT_IDENTITY_KEYS):
-            return False
-    return True
-
-
 def _cap_text(text: str, keep: int) -> str:
     """Head of ``text`` plus a marker saying how much was cut (the Responses truncation rule)."""
     return text[:keep] + "...[" + str(len(text) - keep) + " more chars]"
@@ -1182,17 +1160,9 @@ class OpenAICompatRoutesMixin:
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
-        agent_messages = result.get("messages") if isinstance(result, dict) else None
-        if not isinstance(agent_messages, list) or not agent_messages:
-            return 0
-        prior = list(conversation_history)
-        expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if _same_transcript_prefix(agent_messages, expected_prefix):
-            return len(expected_prefix)
-        if prior and _same_transcript_prefix(agent_messages, prior):
-            return len(prior)
-        return 0
+        """Index where this turn starts in a transcript-shaped result["messages"] (0 = all)."""
+        from gateway.platforms.api_server_turn_boundary import response_turn_start_index
+        return response_turn_start_index(conversation_history, user_message, result)
 
     @classmethod
     def _turn_transcript_messages(
