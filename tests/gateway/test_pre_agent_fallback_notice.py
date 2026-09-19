@@ -54,7 +54,10 @@ def _runner_with_real_runtime_resolution():
     runner._sessions_map.return_value = {}
     runner._resolve_session_agent_runtime = types.MethodType(GatewayTurnMixin._resolve_session_agent_runtime, runner)
     # Pass the resolved runtime straight through so the kwargs handed to AIAgent are the resolved ones.
-    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt: {"model": model, "runtime": rt}
+    # (Production pops ``request_overrides`` out of the runtime into the route; mirror that so the
+    # resolved kwargs never carry it twice.)
+    runner._resolve_turn_agent_config.side_effect = lambda _msg, model, rt: {
+        "model": model, "runtime": {k: v for k, v in rt.items() if k != "request_overrides"}}
     return runner
 
 
@@ -69,10 +72,16 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
         AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
         _hooks_ref=SimpleNamespace(loaded_hooks=False),
     )
-    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=AuthError("expired")), \
+    def primary_auth_fails(**kw):
+        if kw.get("requested") is None:  # the primary, resolved from config.yaml
+            raise AuthError("expired")
+        return dict(fb)  # the fallback entry, walked by resolve_runtime_with_fallback
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=primary_auth_fails), \
          patch("hermes_cli.runtime_provider._get_model_config",
                return_value={"provider": "openai-codex", "default": "gpt-5.6-sol"}), \
-         patch("gateway.run._try_resolve_fallback_provider", return_value=dict(fb)), \
+         patch("gateway.run._load_gateway_config",
+               return_value={"fallback_providers": [{"provider": "anthropic", "model": "claude-sonnet-5"}]}), \
          patch("gateway.run._resolve_gateway_model", return_value="gpt-5.6-sol"), \
          patch("gateway.run._get_channel_override", return_value=None):
         result = TurnRunner(runner, ctx).run_sync()
