@@ -9,14 +9,13 @@ from unittest.mock import Mock
 import pytest
 
 from hermes_cli import main, update_cmd, update_cmd_windows
+from tests.compat.old_updater_support import fresh_child as fresh_child, no_external_work as no_external_work  # noqa: F401
 
 
 @pytest.mark.real_concurrent_gate
 @pytest.mark.parametrize(
     "module,name,args,kwargs",
     [
-        (update_cmd, "_refuse_gateway_ancestor_tree_kill", ([123, 456],), {"gateway_mode": False}),
-        (update_cmd, "_refuse_gateway_ancestor_tree_kill", ([123, 456],), {"gateway_mode": True}),
         (main, "_filter_non_gateway_concurrent_instances", ([(123, "hermes.exe")],), {}),
         (main, "_detect_concurrent_hermes_instances", (Path("Scripts"),), {"exclude_pid": 123}),
         (main, "_leftover_pausable_gateway_pids", ([(123, "python.exe", "hermes serve")],), {}),
@@ -24,13 +23,14 @@ from hermes_cli import main, update_cmd, update_cmd_windows
         (main, "_ledger_reapable_backend_pids", ([(123, "python.exe", "hermes serve")],), {}),
         (main, "_orphaned_desktop_backend_pids", ([(123, "python.exe", "hermes serve")],), {}),
         (main, "_handoff_reapable_backend_pids", ([(123, "python.exe", "hermes serve")],), {}),
-        (main, "_relaunch_stopped_serves", ({"pending": True, "entries": [{"pid": 123, "port": 9000}]},), {}),
         (main, "_stop_process_trees", ([123, (456, 789)],), {}),
     ],
 )
-def test_historical_holder_hooks_stop_without_inspecting_or_killing(
-    monkeypatch, capsys, module, name, args, kwargs,
+def test_historical_holder_hooks_hand_off_without_inspecting_or_killing(
+    monkeypatch, module, name, args, kwargs, fresh_child,
 ):
+    """A historical main's holder gates hand the update to the fresh child and exit with its
+    status; the old parent never classifies, inspects or kills processes itself."""
     import hermes_cli.gateway as gateway
     from hermes_cli import process_identity
     import psutil
@@ -41,16 +41,36 @@ def test_historical_holder_hooks_stop_without_inspecting_or_killing(
     monkeypatch.setattr(process_identity, "ledger_entries", forbidden)
     monkeypatch.setattr(psutil, "process_iter", forbidden)
     monkeypatch.setattr(psutil, "Process", forbidden)
+    before = deepcopy((args, kwargs))
+    with fresh_child.exits():
+        getattr(module, name)(*args, **kwargs)
+    assert (args, kwargs) == before
+    forbidden.assert_not_called()
+
+
+def test_relaunch_stopped_serves_is_separate_work_not_an_update(monkeypatch, fresh_child, capsys):
+    """The historical atexit token restarts stopped serves through the child and returns."""
+    token = {"pending": True, "entries": [{"pid": 123, "port": 9000}]}
+    fresh_child.returncode = 0
+    fresh_child.result = {"serves_handled": True}
+    main._relaunch_stopped_serves(token)
+    assert token["pending"] is False
+    assert fresh_child.requests[-1]["stopped_serves"]["entries"] == token["entries"]
+    assert "did not complete" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("gateway_mode", [False, True])
+def test_gateway_ancestor_refusal_never_kills_unknown_ancestry(monkeypatch, gateway_mode):
+    """The live guard only refuses a tree-kill when a nominated gateway is positively an ancestor."""
+    import hermes_cli.gateway as gateway
+    import psutil
+
+    forbidden = Mock(side_effect=AssertionError("refusal probe performed work"))
+    monkeypatch.setattr(gateway, "_is_pid_ancestor_of_current_process", lambda pid: False)
+    monkeypatch.setattr(psutil, "Process", forbidden)
     monkeypatch.setattr(update_cmd_windows.subprocess, "run", forbidden)
     monkeypatch.setattr(os, "kill", forbidden)
-    before = deepcopy((args, kwargs))
-    with pytest.raises(SystemExit) as stopped:
-        # Frozen and historical main addresses must not return into the old
-        # updater's destructive ladder, even when asked for a read-only probe.
-        getattr(module, name)(*args, **kwargs)
-    assert stopped.value.code == 0
-    assert "run `hermes` again" in capsys.readouterr().err.lower()
-    assert (args, kwargs) == before
+    assert update_cmd._refuse_gateway_ancestor_tree_kill([123, 456], gateway_mode=gateway_mode) is False
     forbidden.assert_not_called()
 
 
@@ -90,3 +110,4 @@ def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, 
         main.cmd_update(SimpleNamespace(gateway=False, check=False, yes=True, force=False, force_venv=False))
     assert reached == ["backup", "pause", "checkout"]
     forbidden.assert_not_called()
+

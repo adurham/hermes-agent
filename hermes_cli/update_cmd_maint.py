@@ -276,13 +276,26 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
 
     See #83595.
     """
-    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_cmd import _m, _record_update_step
     from hermes_constants import get_hermes_home
 
-    stop_result = _m()._kill_stale_dashboard_processes(
-        restart_managed=True, already_restarted_units=already_restarted_units,
-        scope_home=str(get_hermes_home()),
-    )
+    try:
+        stop_result = _m()._kill_stale_dashboard_processes(
+            restart_managed=True, already_restarted_units=already_restarted_units,
+            scope_home=str(get_hermes_home()),
+        )
+    except Exception as exc:
+        # Isolated like every sibling post-update step: a failure here (#112604) used to abort
+        # the fleet matrix, reconciliation and the inner receipt finalize that follow it. A
+        # dashboard/serve left on pre-update code is still caught by the survivor probe →
+        # reconciliation (exit 1).
+        logger.warning("Post-update dashboard cleanup failed: %s", exc)
+        _record_update_step("dashboard_cleanup", False, f"{type(exc).__name__}: {exc}")
+        print()
+        print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
+        print("  If one is still running, restart it so it serves the updated code:")
+        print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
+        return
     if not stop_result.get("unrecovered"):
         return
 

@@ -867,7 +867,7 @@ class TestPostUpdateDashboardCleanupIsolation:
         tail (matrix, reconciliation, inner receipt finalize): contained, visible, recorded as
         a failed step on the open receipt."""
         import hermes_cli.update_receipt as ur
-        from hermes_cli import update_cmd
+        from hermes_cli import update_cmd_maint
 
         ur._current.set(None)
         try:
@@ -878,7 +878,7 @@ class TestPostUpdateDashboardCleanupIsolation:
                     "module 'hermes_cli.main_dashboard' has no attribute '_loaded_launchd_backend_jobs'"
                 ),
             ):
-                update_cmd._finish_dashboard_update_cleanup([])  # must not raise
+                update_cmd_maint._refresh_dashboard_after_update()  # must not raise
 
             steps = {s["name"]: s for s in ur._current.get().data["steps"]}
         finally:

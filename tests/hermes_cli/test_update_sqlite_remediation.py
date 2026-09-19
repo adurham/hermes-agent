@@ -27,7 +27,7 @@ def test_selected_sqlite_controls_completion_and_action_receipt(tmp_path, monkey
     assert (message in output) is (verdict != 'unsafe')
     assert ('=== hermes-update completed' in output) is (verdict != 'unsafe' and action_id != 'invalid')
     if verdict == 'unsafe':
-        for text in ('SQLite 3.46.1', 'WAL-reset', 'uv-managed Python', 'hermes doctor'):
+        for text in ('SQLite (3.46.1)', 'corruption bug', 'run the installer again', 'hermes doctor'):
             assert text in output
     elif action_id != 'invalid':
         assert f'=== hermes-update completed {action_id} ===' in output
@@ -39,5 +39,7 @@ def test_dashboard_refresh_preserves_restart_bookkeeping(already_restarted_units
     monkeypatch.setattr(update_cmd, '_m', lambda: SimpleNamespace(
         _kill_stale_dashboard_processes=lambda **kwargs: calls.append(kwargs) or {'unrecovered': [1234]}))
     update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=already_restarted_units)
-    assert calls == [{'restart_managed': True, 'already_restarted_units': already_restarted_units}]
+    from hermes_constants import get_hermes_home
+    assert calls == [{'restart_managed': True, 'already_restarted_units': already_restarted_units,
+                      'scope_home': str(get_hermes_home())}]
     assert 'could not be auto-restarted' in capsys.readouterr().out
