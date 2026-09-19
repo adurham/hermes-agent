@@ -666,14 +666,17 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
 
 def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
-    before the server runs (selection starts it via the runtime_provider seam)."""
+    before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
+    the provider registry's own definition, never a local literal: a row the resolver can't resolve is
+    the bug this row's offline-first contract depends on not having."""
     try:
         from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
 
         staged = staged_model_ids()
         if not staged:
             return None
-        current = (ctx.current_provider or "").strip().lower() in ("llamacpp", "llama.cpp", "llama-cpp")
+        current = (ctx.current_provider or "").strip().lower() in LLAMACPP_ALIASES
         if not current:
             # A LIVE session on the managed server reports provider "custom" with the managed base_url;
             # match on the endpoint so the session being chatted in still shows a selection.
@@ -686,7 +689,7 @@ def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
             except Exception:
                 current = False
         # Bare "Local" user-facing (engine name is an implementation detail); authenticated = reachability.
-        return _row("llamacpp", "Local", current, models=staged, total_models=len(staged),
+        return _row(LLAMACPP_PROVIDER_ID, "Local", current, models=staged, total_models=len(staged),
                     source="local-runtime", authenticated=True, auth_type="local", warning=None)
     except Exception:
         return None

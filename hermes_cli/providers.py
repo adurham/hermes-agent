@@ -475,20 +475,40 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
     return None
 
 
+# The local llama.cpp runtime's provider id + aliases: ONE definition, shared by the resolver rung
+# below and the picker's Local row (``hermes_cli/inventory.py``) — the two drifting apart is what
+# made the row's own id unresolvable.
+LLAMACPP_PROVIDER_ID = "llamacpp"
+LLAMACPP_ALIASES: Tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
+
+
+def _has_staged_local_models() -> bool:
+    """True when GGUFs are staged under the Hermes home's ``models/`` — the model the picker's Local
+    row offers, which the runtime seam serves by booting/attaching a server on selection."""
+    try:
+        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        return bool(staged_model_ids())
+    except Exception:
+        return False
+
+
 def _llamacpp_pdef() -> Optional[ProviderDef]:
     """The llamacpp aliases are a real provider whenever the managed server (or a detected external
-    one) resolves — reachability is the credential. Without this rung model-switch rejected the very
-    provider the Local Models 'Use' flow writes to config."""
+    one) resolves — reachability is the credential — OR a model is staged for the runtime to serve.
+    The picker's Local row is built from staged GGUFs and is deliberately offline-first (selection
+    starts the server through the runtime seam), so requiring a live endpoint before admitting the id
+    made that row offer a provider the resolver rejected ("Unknown provider 'llamacpp'"). Without
+    this rung model-switch rejected the very provider the Local Models 'Use' flow writes to config."""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
         endpoint = resolve_llamacpp_endpoint(load_config_readonly(), wait_for_boot_s=0)
     except Exception:
         endpoint = None
-    if not endpoint:
+    if not endpoint and not _has_staged_local_models():
         return None
-    return ProviderDef(id="llamacpp", name="Local", transport="openai_chat", api_key_env_vars=(), base_url=endpoint["base_url"],
-                       source="local-runtime")
+    return ProviderDef(id=LLAMACPP_PROVIDER_ID, name="Local", transport="openai_chat", api_key_env_vars=(),
+                       base_url=(endpoint or {}).get("base_url", ""), source="local-runtime")
 
 
 def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = None,
@@ -523,7 +543,7 @@ def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = 
     custom_pdef = resolve_custom_provider(name, custom_providers)
     if custom_pdef is not None:
         return custom_pdef
-    if raw in ("llamacpp", "llama.cpp", "llama-cpp"):
+    if raw in LLAMACPP_ALIASES:
         pdef = _llamacpp_pdef()
         if pdef is not None:
             return pdef

@@ -88,6 +88,12 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
 
     from hermes_cli.local_runtime.detect import detect_server
 
+    # ``local_runtime.detect_ports`` is the documented knob for an external llama-server on a
+    # non-default port, but every provider-resolution caller invokes this bare — without loading the
+    # config here the knob was dead on the only paths that need it, so a server on e.g. :8010 stayed
+    # undetected and `provider: llamacpp` resolved to nothing.
+    with suppress(Exception):
+        config = _load_config_if_none(config)
     ports = ((config or {}).get("local_runtime") or {}).get("detect_ports") or []
     hit = detect_server(extra_ports=tuple(int(p) for p in ports))
     if hit and not hit.auth_required:

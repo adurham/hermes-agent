@@ -862,6 +862,72 @@ def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):
     assert runtime["source"] != "local-runtime"
 
 
+def _stage_local_model(home, model_id):
+    models = home / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    (models / f"{model_id}.gguf").write_bytes(b"GGUF")
+
+
+def test_staged_local_model_resolves_without_a_running_server(tmp_path, monkeypatch):
+    """The picker's Local row exists from staged GGUFs alone (contract: selectable before the server
+    runs — selection starts it through the runtime seam). Selecting one must reach that seam instead
+    of dying at the provider gate with "Unknown provider 'llamacpp'": the row's id and the resolver's
+    are one definition, so an id the picker offers always resolves."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _stage_local_model(tmp_path / ".hermes", "Qwen3.8-27B-IQ3_S-mtp")
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+
+    from hermes_cli.providers import LLAMACPP_PROVIDER_ID, resolve_provider_full
+
+    pdef = resolve_provider_full(LLAMACPP_PROVIDER_ID, {}, [])
+    assert pdef is not None, "staged model, but the picker's own provider id does not resolve"
+    assert pdef.id == LLAMACPP_PROVIDER_ID
+
+    from hermes_cli.model_switch import switch_model
+
+    result = switch_model("Qwen3.8-27B-IQ3_S-mtp", current_provider="nous",
+                          current_model="Hermes-4.5", current_base_url="",
+                          explicit_provider=LLAMACPP_PROVIDER_ID)
+    assert result.success is False  # no server anywhere; the seam reports it
+    error = result.error_message or ""
+    assert "Unknown provider" not in error
+    assert "local model server" in error.lower(), error
+
+
+def test_llamacpp_id_stays_unresolved_without_models_or_server(tmp_path, monkeypatch):
+    """Nothing staged and nothing running: the alias is still unknown — admitting it unconditionally
+    would offer a provider with neither a model nor an endpoint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+
+    from hermes_cli.providers import resolve_provider_full
+
+    assert resolve_provider_full("llamacpp", {}, []) is None
+
+
+def test_external_server_on_a_configured_detect_port_is_used(tmp_path, monkeypatch, stub_server):
+    """A llama-server the user runs on a fixed non-default port is what `provider: llamacpp` resolves
+    to when that port is declared in local_runtime.detect_ports — the knob is documented for exactly
+    this, and every provider path calls the endpoint resolver without a config."""
+    port, handler = stub_server
+    handler.props = {"build_info": "b10964-test", "model_path": "/models/ext-model.gguf",
+                     "default_generation_settings": {"n_ctx": 4096}}
+    handler.models = {"data": [{"id": "ext-model", "owned_by": "llamacpp"}]}
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _stage_local_model(home, "ext-model")
+    (home / "config.yaml").write_text(
+        f"local_runtime:\n  enabled: false\n  detect_ports: [{port}]\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+
+    from hermes_cli.model_switch import switch_model
+
+    result = switch_model("ext-model", current_provider="nous", current_model="Hermes-4.5",
+                          current_base_url="", explicit_provider="llamacpp")
+    assert result.success, result.error_message
+    assert result.base_url == f"http://127.0.0.1:{port}/v1"
+
+
 def test_local_runtime_config_defaults_shape():
     """Contract: the section exists, is off by default, and carries no
     context/VRAM knobs (design: constants, not knobs)."""
