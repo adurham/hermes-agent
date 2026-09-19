@@ -2147,7 +2147,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, gateway_session_key: Optional[str] = None,
+        tool_complete_callback=None, interim_assistant_callback=None,
+        gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None, requested_provider: Optional[str] = None,
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
@@ -2200,6 +2201,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "tool_progress_callback": tool_progress_callback,
             "tool_start_callback": tool_start_callback,
             "tool_complete_callback": tool_complete_callback,
+            "interim_assistant_callback": interim_assistant_callback,
             "session_db": self._ensure_session_db(),
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
@@ -3223,6 +3225,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
                 events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _commentary(text: str, *, already_streamed: bool = False) -> None:
+            # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)
+            # as its own typed event — never folded into ``assistant.completed`` (#67580).
+            if isinstance(text, str) and text.strip():
+                events.enqueue("assistant.commentary", {
+                    "message_id": message_id, "text": text, "already_streamed": bool(already_streamed)})
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3233,7 +3242,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                    tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
+                    active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3731,7 +3741,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, user_message: str, conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
-        tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
+        tool_complete_callback=None, interim_assistant_callback=None,
+        agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
@@ -3771,6 +3782,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                         stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                        interim_assistant_callback=interim_assistant_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
                         session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
