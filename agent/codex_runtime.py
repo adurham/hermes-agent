@@ -497,12 +497,20 @@ def _ensure_codex_session(agent) -> None:
     # thread as developerInstructions. A retired/recreated session re-sends the current composition;
     # conversation history is still not projected into the codex thread (#74712, #26035).
     agent._codex_session_prompt = developer_instructions
+    # A named custom provider (``providers.<name>``) maps onto codex's own ``[model_providers.<name>]``
+    # table: send the stable id plus the active model and let codex resolve base_url/env_key itself, so
+    # Hermes' credential never enters the JSON-RPC payload (#75186). openai/openai-codex keep codex's defaults.
+    model_provider = None
+    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
+        from hermes_cli.runtime_provider_custom import codex_model_provider_id
+        model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
+        model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
     )
 
 
