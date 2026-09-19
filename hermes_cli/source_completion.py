@@ -63,10 +63,9 @@ def complete_source_checkout(
 
 def _bootstrap_command(root: Path, argv: list[str]) -> list[str]:
     """Re-enter the checkout on PM's selected interpreter with its environment."""
-    from hermes_cli.runtime_paths import selected_venv
-    from hermes_constants import venv_python_path
+    from pm.environments import project_python
 
-    return [str(venv_python_path(selected_venv(root))), "-I", "-B", "-u",
+    return [str(project_python(root)), "-I", "-B", "-u",
             str(Path(__file__).resolve()), "--source", str(root), *argv, _PREPARED]
 
 
@@ -91,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     if prepared:
         # Dependencies are selected before any application import: this is the
         # same ordering the update completion guarantees.
-        from hermes_cli.runtime_paths import activate_dependencies
+        from pm.environments import activate_dependencies
 
         activate_dependencies(root)
         if args.finish_update:
@@ -111,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0 if ok else 1
 
-    from hermes_cli.runtime_paths import activation_environment
+    from pm.environments import activation_environment
 
     # This interpreter is a bootstrap one: the work happens in the re-exec, so
     # every flag that decides WHICH tail runs has to survive into it. Losing

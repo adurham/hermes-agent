@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from hermes_cli import venv_sync
-from hermes_cli.runtime_paths import runtime_facts_path
+from pm.environments import runtime_facts_path
 
 
 def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, monkeypatch):

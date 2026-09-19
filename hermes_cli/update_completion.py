@@ -135,8 +135,7 @@ def _read_terminal_receipt(request: dict) -> dict | None:
 def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     import pm
     from pm import receipt
-    from hermes_cli.runtime_paths import activation_environment, selected_venv
-    from hermes_constants import venv_python_path
+    from pm.environments import activation_environment, project_python
 
     root = Path(request["source"])
     update_id = request["receipt"]["update_id"]
@@ -146,7 +145,7 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)
-    command = [str(venv_python_path(selected_venv(root))),
+    command = [str(project_python(root)),
                "-I", "-S", "-u", "-X", f"pycache_prefix={request['bytecode_cache']}",
                str(root / "hermes_cli/update_completion.py"),
                str(request_path), str(result_path), "--prepared"]
@@ -262,7 +261,7 @@ def main() -> int:
     if "--prepared" in sys.argv[3:]:
         # Claim the selected generation's lease and process its .pth files only
         # after PM selection, before importing any application dependencies.
-        from hermes_cli.runtime_paths import activate_dependencies
+        from pm.environments import activate_dependencies
         activate_dependencies(root)
         return _finish(request, result_path)
     try:

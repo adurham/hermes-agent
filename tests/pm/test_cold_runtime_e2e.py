@@ -187,7 +187,7 @@ assert importlib.util.find_spec('idna') is None
     report_code = """
 import json
 from pathlib import Path
-from hermes_cli.runtime_paths import install_state_dir, selected_venv, runtime_facts_path
+from pm.environments import install_state_dir, selected_venv, runtime_facts_path
 root = Path(sys.path[0])
 state = install_state_dir(root)
 print(json.dumps({'state': str(state), 'app': str(selected_venv(root)),
@@ -225,7 +225,7 @@ print(json.dumps({{'yaml': ruamel.yaml.__file__, 'prefix': sys.prefix}}))
     app_code = """
 import json
 from pathlib import Path
-from hermes_cli.runtime_paths import activate_dependencies, selected_venv
+from pm.environments import activate_dependencies, selected_venv
 root = Path(sys.path[0])
 activate_dependencies(root)
 import ruamel.yaml, idna

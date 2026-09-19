@@ -41,7 +41,7 @@ def layout(tmp_path, monkeypatch):
 @pytest.mark.parametrize("mode", ["confirmed", "cancel", "dry-run"])
 def test_data_only_preserves_runtime_and_sibling_homes(layout, monkeypatch, mode):
     import json
-    from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, selected_venv
+    from pm.environments import install_state_dir, runtime_facts_path, selected_venv
 
     monkeypatch.delattr(Path, "is_junction", raising=False)
     home, witnesses, data = layout

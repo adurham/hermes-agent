@@ -1286,7 +1286,7 @@ def _seed_pm_environment(tmp_path, monkeypatch, with_venv_fact=True):
     facts.json whose venv fact names a committed environment generation under
     the install state (pyvenv.cfg included). Returns
     ``(project_root, environment_dir)``."""
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # installs_root() under the test root
     project_root = tmp_path / "payload" / "hermes-agent"

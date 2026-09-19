@@ -64,7 +64,7 @@ def test_candidate_member_dirs_preserves_proposed_home_order_and_extras(isolated
 
 @pytest.fixture
 def publication(isolated_home, tmp_path):
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
 
     project = tmp_path / "checkout"
     project.mkdir()
@@ -115,7 +115,7 @@ plugins_transaction.recover_plugin_publication(
 
 @pytest.mark.parametrize("commit", ["rollback", "explicit", "facts-changed"])
 def test_old_publication_recovers_in_stdlib_using_supplied_row_and_journal(publication, commit):
-    from hermes_cli.runtime_paths import runtime_facts_path
+    from pm.environments import runtime_facts_path
 
     project, row, journal, canonical = publication
     target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))

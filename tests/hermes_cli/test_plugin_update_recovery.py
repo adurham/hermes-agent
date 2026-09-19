@@ -30,7 +30,7 @@ from pathlib import Path
 import os,sys
 from pm.publication import StagedPlugin
 from pm.store import tree_digest
-from hermes_cli.runtime_paths import runtime_facts_path
+from pm.environments import runtime_facts_path
 from pm.lock import Facts
 project,staged,target = map(Path,sys.argv[1:4])
 StagedPlugin({"staged": str(staged), "target": str(target), "target_digest": tree_digest(target),

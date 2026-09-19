@@ -496,7 +496,7 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
 def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None = None) -> bool:
     if not isinstance(fact, dict) or fact.get("stamp") != stamp:
         return False
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
 
     try:
         environment = selected_venv(paths.repo_root() if project_root is None else project_root)
@@ -511,7 +511,7 @@ def _runtime_state_matches(fact: dict, stamp: str, *, project_root: Path | None 
 def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_plugin_dirs=(),
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
-    from hermes_cli.runtime_paths import runtime_facts_path
+    from pm.environments import runtime_facts_path
     from pm.packages import Venv
 
     root = paths.repo_root() if project_root is None else Path(project_root).absolute()

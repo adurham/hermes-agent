@@ -120,7 +120,9 @@ def _environment_root(name: str, root: Path | None) -> Path:
 
 
 def _python(environment: Path) -> Path:
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    from pm.environments import venv_python
+
+    return venv_python(environment)
 
 
 def _selection(root: Path) -> dict:

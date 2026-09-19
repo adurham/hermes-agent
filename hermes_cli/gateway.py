@@ -6811,7 +6811,7 @@ def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:
     selection raises — fail closed, never a silently wrong venv.
     """
     root = Path(project_root) if project_root is not None else PROJECT_ROOT
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
 
     venv = selected_venv(root)  # a malformed committed selection raises: fail closed
     return venv if venv.is_dir() else None

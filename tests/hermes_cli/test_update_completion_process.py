@@ -20,8 +20,9 @@ def transition(tmp_path):
     package = root / "hermes_cli"
     package.mkdir()
     (package / "__init__.py").write_text("")
-    (root / "pm").mkdir()
-    (root / "pm/__init__.py").write_text("OLD_API = True\n")
+    pm_package = root / "pm"
+    pm_package.mkdir()
+    (pm_package / "__init__.py").write_text("OLD_API = True\n")
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=True).stdout.strip()
@@ -52,21 +53,20 @@ def transition(tmp_path):
         "    with pathlib.Path('events.jsonl').open('a') as f:\n"
         "        f.write(json.dumps(dict(name=name, pid=os.getpid(), python=sys.executable, **values)) + '\\n')\n"
     )
-    (package / "runtime_paths.py").write_text(
+    selected = tmp_path / "selected-python"
+    venv.EnvBuilder(with_pip=False).create(selected)
+    selected_python = selected / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    (pm_package / "environments.py").write_text(
         "import os, sys\n"
         "from pathlib import Path\n"
         "selected_venv = lambda root: Path(sys.executable).parent.parent\n"
+        f"project_python = lambda root: Path({str(selected_python)!r})\n"
         "activation_environment = lambda root: {**os.environ, 'PYTHONPATH': str(root)}\n"
         "def activate_dependencies(root):\n"
         "    from hermes_cli.probe import event\n"
         "    event('activate')\n"
     )
-    selected = tmp_path / "selected-python"
-    venv.EnvBuilder(with_pip=False).create(selected)
-    selected_python = selected / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    (root / "hermes_constants.py").write_text(
-        f"venv_python_path = lambda root: {str(selected_python)!r}\n"
-    )
+    (root / "hermes_constants.py").write_text("")
     (package / "venv_sync.py").write_text(
         "from hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"

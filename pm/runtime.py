@@ -31,7 +31,9 @@ def runtime_environment() -> dict[str, str]:
 
 
 def _python(environment: Path) -> Path:
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    from pm.environments import venv_python
+
+    return venv_python(environment)
 
 
 def _inputs(project: Path, python: Path) -> str:
@@ -147,7 +149,7 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
     """Resolve PM without selecting, repairing, or importing the app environment."""
     if is_runtime():
         return Path(sys.executable)
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     from pm._uv import _toolchain
     from pm.paths import repo_root
 

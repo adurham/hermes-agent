@@ -156,7 +156,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     import pm
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.runtime_paths import activation_environment, runtime_facts_path
+    from pm.environments import activation_environment, runtime_facts_path
 
     current = pm.venv_is_current(project_root=root)
     if not current:

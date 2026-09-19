@@ -66,7 +66,7 @@ def test_fresh_takeover_prepares_generation_and_runs_selected_python(tmp_path):
         "import json, sys\nfrom pathlib import Path\n"
         "request=json.loads(Path(sys.argv[1]).read_text())\n"
         "sys.path.insert(0,request['root'])\n"
-        "from hermes_cli.runtime_paths import activate_dependencies\n"
+        "from pm.environments import activate_dependencies\n"
         "activate_dependencies(Path(request['root']))\nimport takeover_dep\n"
         "assert request['pm_receipt']['update_id']==request['update_id']\n"
         "Path(sys.argv[2]).write_text(json.dumps({'python':sys.executable,'dep':takeover_dep.__file__}))\n",

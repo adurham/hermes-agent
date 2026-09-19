@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from hermes_cli.runtime_paths import site_packages, store_root, venv_python_version
+from pm.environments import site_packages, store_root, venv_python_version
 from hermes_constants import get_default_hermes_root
 
 

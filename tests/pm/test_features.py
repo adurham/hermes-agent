@@ -66,7 +66,7 @@ def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     import sys
     from pm import paths
     from pm.lock import Facts
-    from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
+    from pm.environments import install_state_dir, runtime_facts_path
 
     ensure_mod = sys.modules["pm.ensure"]
 

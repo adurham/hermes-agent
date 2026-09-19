@@ -131,7 +131,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             interpreter = sibling
 
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.runtime_paths import selected_venv, site_packages as dependency_site
+    from pm.environments import selected_venv, site_packages as dependency_site
 
     repo = Path(__file__).resolve().parents[1]
     managed_python = resolve_store_python(repo)

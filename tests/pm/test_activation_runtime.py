@@ -22,7 +22,7 @@ def _sync_checkout(tmp_path: Path):
     # no-op and activation must still call it, rather than cache its own answer.
     (root / "sync.py").write_text(textwrap.dedent('''\
         import json, os, pathlib, shutil, sys
-        from hermes_cli.runtime_paths import runtime_facts_path, site_packages
+        from pm.environments import runtime_facts_path, site_packages
         root = pathlib.Path(__file__).parent
         record = {"argv": sys.argv[1:], "python_env": {
             key: os.environ.get(key) for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")}}

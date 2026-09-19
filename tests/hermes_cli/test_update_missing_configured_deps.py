@@ -15,8 +15,8 @@ import subprocess
 import pytest
 
 import pm
-from hermes_cli.runtime_paths import activation_environment, runtime_facts_path, selected_venv, site_packages
-from hermes_constants import venv_python_path
+from pm.environments import activation_environment, runtime_facts_path, selected_venv, site_packages
+from pm.environments import venv_python
 from tests.pm._fixtures import isolated_python  # noqa: F401
 from tests.pm.test_source_update_launch import source_launch  # noqa: F401
 
@@ -52,7 +52,7 @@ def configured_update(source_launch, tmp_path, monkeypatch):
             f"source_build.build_update_products(Path({str(root)!r}), desktop=False)\n"
             "print('TARGET=' + json.dumps({'prefix': sys.prefix, 'python': sys.executable}))\n"
         )
-        subprocess.run([str(venv_python_path(selected)), "-c", script],
+        subprocess.run([str(venv_python(selected)), "-c", script],
                        cwd=root, env=activation_environment(root), check=True)
     home = tmp_path / "home"
     config = home / "config.yaml"

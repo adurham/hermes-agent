@@ -56,7 +56,7 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
     assert result.stdout.strip() == str("dev" in extras)
     assert Path(outputs["venv"]).is_relative_to(home)
     assert not (core / ".venv").exists()
-    from hermes_cli.runtime_paths import runtime_facts_path
+    from pm.environments import runtime_facts_path
     assert runtime_facts_path(core).exists() == ("dev" not in extras)
 
 

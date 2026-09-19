@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 def _profiles_root() -> Path:
     # Plugin discovery and dependency publication must use the same home root.
-    from hermes_cli.runtime_paths import dependency_home_root
+    from pm.environments import dependency_home_root
 
     return dependency_home_root() / "profiles"
 
@@ -88,7 +88,7 @@ def _is_directory(path: Path) -> bool:
 
 def _all_homes() -> list[Path]:
     """Enumerate the complete union or refuse; a partial scan cannot remove members."""
-    from hermes_cli.runtime_paths import dependency_home_root
+    from pm.environments import dependency_home_root
 
     homes = [dependency_home_root()]
     root = _profiles_root()

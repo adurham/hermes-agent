@@ -6,7 +6,7 @@ import sys
 
 
 def test_bootstrap_lease_survives_selection_change(tmp_path, monkeypatch):
-    from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, site_packages
+    from pm.environments import install_state_dir, runtime_facts_path, site_packages
     from hermes_cli.runtime_state import collect_generations
 
     repo = tmp_path / "repo"
@@ -30,7 +30,7 @@ def test_bootstrap_lease_survives_selection_change(tmp_path, monkeypatch):
     code = '''
 import sys
 from pathlib import Path
-from hermes_cli.runtime_paths import activate_dependencies
+from pm.environments import activate_dependencies
 activate_dependencies(Path(sys.argv[1]))
 print("ready", flush=True)
 sys.stdin.readline()

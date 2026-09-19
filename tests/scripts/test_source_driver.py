@@ -146,7 +146,7 @@ root, store, node, deps = map(Path, sys.argv[1:])
 sys.path.insert(0, str(root))
 from pm.lock import Facts, Lockfile
 from pm.packages import Venv
-from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, site_packages
+from pm.environments import install_state_dir, runtime_facts_path, site_packages
 from hermes_cli._launchers import ensure_install_launchers
 lock = Lockfile(root / 'pm/lock.json')
 lock.set_pin('node', 'fixture', {})

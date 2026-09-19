@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, site_packages
+from pm.environments import install_state_dir, runtime_facts_path, site_packages
 
 _HOLDER = """
 import sys
@@ -69,7 +69,7 @@ def test_runtime_lock_reports_a_lost_race(locked_install):
 def test_boot_activation_proceeds_while_the_install_is_locked(locked_install, monkeypatch):
     """The issue's symptom, inverted: the backend reaches its dependency environment and can bind
     while a sibling holds the lock. Recovery belongs to whoever holds it, so it is skipped."""
-    import hermes_cli.runtime_paths as runtime_paths
+    import pm.environments as runtime_paths
     import hermes_cli.runtime_state as runtime_state
 
     repo, site = locked_install

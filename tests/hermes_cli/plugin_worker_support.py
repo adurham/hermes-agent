@@ -92,7 +92,7 @@ class PluginWorld:
         plugins_command(parser.parse_args(argv))
 
     def selected(self) -> Path:
-        from hermes_cli.runtime_paths import selected_venv
+        from pm.environments import selected_venv
         return selected_venv(self.core)
 
     def enabled(self) -> list[str]:

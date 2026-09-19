@@ -34,7 +34,7 @@ def isolated_machine_home(tmp_path, monkeypatch):
 @pytest.mark.parametrize("marker_name", [".update-incomplete", ".lazy-refresh-incomplete", None, "manual", "baseline"])
 def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, marker_name):
     import pm.paths as paths
-    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.environments import selected_venv, site_packages
 
     engine = importlib.import_module("pm.ensure")
     repo = Path(__file__).resolve().parents[2]
@@ -49,7 +49,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
     cli.mkdir()
     # Include the real preimport protocol, including its ownership check. Do
     # not stub prepare_launch: the same files are also saved in PM's workspace.
-    for name in ("__init__.py", "runtime_paths.py", "runtime_state.py", "_early_recovery.py",
+    for name in ("__init__.py", "runtime_state.py", "_early_recovery.py",
                  "_parser.py", "venv_sync.py", "steward.py"):
         shutil.copy2(repo / "hermes_cli" / name, cli / name)
     wheels = tmp_path / "wheels"

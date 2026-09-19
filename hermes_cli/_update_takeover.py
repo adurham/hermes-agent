@@ -21,7 +21,7 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from pm.client import ensure, sync_venv, venv_is_current
     from pm.lock import Lockfile
     from pm.registry import source_install_packages
-    from hermes_cli.runtime_paths import activation_environment, install_state_dir, runtime_facts_path
+    from pm.environments import activation_environment, install_state_dir, runtime_facts_path
     from hermes_cli._launchers import resolve_store_python
     from hermes_cli.venv_sync import publish_launchers
 
@@ -68,7 +68,7 @@ def main() -> int:
         # Historical atexit cleanup may run after the update's result is fixed.
         # It must reuse that installation, never start a second update/repair.
         from hermes_cli._launchers import resolve_store_python
-        from hermes_cli.runtime_paths import activation_environment
+        from pm.environments import activation_environment
 
         root = Path(request["root"])
         python = resolve_store_python(root)

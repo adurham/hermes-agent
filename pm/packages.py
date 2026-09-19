@@ -358,7 +358,7 @@ class Venv(StatePackage):
         return repo_root() if self._project_root is None else self._project_root
 
     def venv_dir(self) -> Path:
-        from hermes_cli.runtime_paths import selected_venv
+        from pm.environments import selected_venv
 
         return selected_venv(self.project_root())
 
@@ -387,7 +387,7 @@ class Venv(StatePackage):
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False) -> dict:
         """Prepare one complete environment; the caller commits its selection."""
         import uuid
-        from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path
+        from pm.environments import install_state_dir, runtime_facts_path
         from pm.environment import managed_environment
         from pm.lock import Facts
         from pm.workspace import enabled_member_dirs, lock_and_sync

@@ -182,7 +182,7 @@ class TestRunJobScript:
         monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
         # The supplied payload launcher is older than the committed extension
         # generation. It must not override the installation's current selection.
-        from hermes_cli.runtime_paths import install_state_dir, site_packages as dependency_site
+        from pm.environments import install_state_dir, site_packages as dependency_site
         repo = Path(sched_script.__file__).resolve().parents[1]
         state = install_state_dir(repo)
         selected = state / "environments" / "selected" / "venv"

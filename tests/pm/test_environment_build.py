@@ -146,7 +146,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     assert executable.parent.parent == tmp_path / "native environment"
     assert not (tmp_path / "wrong-environment").exists()
     assert "root_app" not in sys.modules
-    from hermes_cli.runtime_paths import site_packages
+    from pm.environments import site_packages
 
     site = site_packages(executable.parent.parent)
     assert (site / "_virtualenv.pth").exists() is not sealed
@@ -203,7 +203,7 @@ def test_group_only_build_excludes_application_dependencies(locked_project, tmp_
 @pytest.mark.parametrize("lazy", [False, True])
 def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_worker, tmp_path, monkeypatch, lazy):
     import pm
-    from hermes_cli.runtime_paths import selected_venv, runtime_facts_path
+    from pm.environments import selected_venv, runtime_facts_path
     from pm import paths
     from pm.features import write_features
     from pm.lock import Facts
@@ -258,7 +258,7 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
 
 def test_worker_sync_reuses_unions_and_reports_real_lock_drift(locked_project, build_worker, tmp_path, monkeypatch):
     import pm
-    from hermes_cli.runtime_paths import selected_venv, runtime_facts_path
+    from pm.environments import selected_venv, runtime_facts_path
     from pm.lock import Facts, Lockfile
     from pm import paths
 
@@ -689,7 +689,7 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
     import pm.extras as extras
     from pm import paths
     from pm.lock import Facts
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
 
     source, uv, env = locked_project
     monkeypatch.setattr(paths, "repo_root", lambda: source)
@@ -729,7 +729,7 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
 
 
 def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, monkeypatch):
-    from hermes_cli.runtime_paths import runtime_facts_path, selected_venv
+    from pm.environments import runtime_facts_path, selected_venv
     from pm.lock import Facts
     from pm.packages import Venv
     import pm.paths

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hermes_constants import get_hermes_home
-from hermes_cli.runtime_paths import dependency_home_root, store_root
+from pm.environments import dependency_home_root, store_root
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",

@@ -123,7 +123,7 @@ def test_warm_sdk_uses_pm_availability_and_refuses_inactive_generation(tmp_path,
     import pm.client
     import pm.paths
     import pm.extras
-    from hermes_cli.runtime_paths import runtime_facts_path
+    from pm.environments import runtime_facts_path
 
     calls = []
     root = tmp_path / "repo"

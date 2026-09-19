@@ -16,7 +16,7 @@ def main(context: Path, result: Path) -> int:
             handled = True
             return 0
         sys.path.insert(0, str(root))
-        from hermes_cli.runtime_paths import activate_dependencies
+        from pm.environments import activate_dependencies
         activate_dependencies(root)
         from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
         from hermes_cli.main_dashboard import _respawn_dashboard_processes

@@ -38,7 +38,7 @@ import json, os, re, shutil, subprocess, sys, tomllib, venv
 from pathlib import Path
 root, temp = map(Path, sys.argv[1:])
 sys.path.insert(0, str(root))
-from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, site_packages
+from pm.environments import install_state_dir, runtime_facts_path, site_packages
 seed = temp / 'seed'
 venv.EnvBuilder(with_pip=False).create(seed)
 dependencies = temp / 'dependencies'

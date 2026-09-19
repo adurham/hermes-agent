@@ -19,7 +19,7 @@ import pytest
 
 import pm
 from hermes_cli import venv_sync
-from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, selected_venv, site_packages
+from pm.environments import install_state_dir, runtime_facts_path, selected_venv, site_packages
 from pm import paths
 from pm.lock import Facts
 from pm.package import InstallError
@@ -313,7 +313,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
         "import hermes_bootstrap\n"
         "import json, sys\n"
         "from pathlib import Path\n"
-        "from hermes_cli.runtime_paths import selected_venv, site_packages\n"
+        "from pm.environments import selected_venv, site_packages\n"
         "from hermes_cli.venv_sync import prepare_launch\n"
         "root = Path(__file__).parent\n"
         "selected = selected_venv(root)\n"
@@ -342,7 +342,7 @@ def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isol
         activation_probe = subprocess.run(
             [str(isolated_python), "-I", "-c",
              f"import sys; sys.path.insert(0, {str(repository)!r}); "
-             "from pathlib import Path; from hermes_cli.runtime_paths import activate_dependencies; "
+             "from pathlib import Path; from pm.environments import activate_dependencies; "
              f"activate_dependencies(Path({str(root)!r}))"],
             capture_output=True, text=True, timeout=30,
         )

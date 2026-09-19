@@ -31,7 +31,7 @@ def _put(root, name, content):
 @pytest.fixture
 def completion(tmp_path, monkeypatch):
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.runtime_paths import install_state_dir, runtime_facts_path, site_packages
+    from pm.environments import install_state_dir, runtime_facts_path, site_packages
 
     home = tmp_path / "home"
     home.mkdir()
@@ -215,7 +215,7 @@ def test_failure_preserves_original_receipt_before_build(completion, fault):
     context.write_text(json.dumps(request), encoding="utf-8")
     message = "application import failed before build"
     if fault == "activation":
-        from hermes_cli.runtime_paths import selected_venv, site_packages
+        from pm.environments import selected_venv, site_packages
 
         shutil.rmtree(site_packages(selected_venv(source)))
         message = "dependency environment has no site-packages"

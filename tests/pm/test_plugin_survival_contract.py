@@ -189,7 +189,7 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
     plug_a, plug_b, *_ = _local_conflict_members(home)
     _write_enabled(home, [], provider="plug-a")
     admission.admit_plugin_set_change(set(), set(), active_plugins_dir=home / "plugins")
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
     working = selected_venv(tmp_path / "core")
     config_before = (home / "config.yaml").read_bytes()
     tree_before = {p: sorted(str(f) for f in p.rglob("*")) for p in (plug_a, plug_b)}
@@ -250,7 +250,7 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
     assert marker.read_bytes() == before
     child = subprocess.run([str(sidecar_python), "-c", "import sys; print(sys.prefix)"], check=True, capture_output=True, text=True, timeout=30)
     assert Path(child.stdout.strip()) == sidecar
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
     selected = selected_venv(tmp_path / "core")
     assert selected.is_dir() and selected != sidecar
     # A declared version range remains a member across the next managed rebuild.

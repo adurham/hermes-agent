@@ -85,7 +85,7 @@ def prepare_memory_provider_dependencies(provider_name: str) -> tuple[dict, str 
     if not inputs:
         return meta, None
     pm.sync_venv(explicit=True, **inputs)
-    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.environments import selected_venv, site_packages
     from pm.paths import repo_root
 
     selected = site_packages(selected_venv(repo_root())).resolve()

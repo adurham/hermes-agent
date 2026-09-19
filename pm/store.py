@@ -105,13 +105,9 @@ def current_target() -> str:
 
 
 def sha256_file(path: Path) -> str:
-    import hashlib
+    from pm.downloader import _sha256_file
 
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return _sha256_file(path)
 
 
 def hash_url(url: str) -> str:

@@ -8,7 +8,7 @@ import subprocess
 import hermes_yaml as yaml
 
 from hermes_cli import venv_sync
-from hermes_cli.runtime_paths import install_state_dir, selected_venv
+from pm.environments import install_state_dir, selected_venv
 from pm import paths
 from pm.lock import Lockfile
 from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401

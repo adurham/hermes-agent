@@ -93,7 +93,8 @@ def _is_windows() -> bool:
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
     from hermes_cli.main import PROJECT_ROOT
-    from hermes_constants import project_venv_dir, venv_bin_dir
+    from hermes_constants import project_venv_dir
+    from pm.environments import venv_bin_dir
     venv_dir = project_venv_dir(PROJECT_ROOT)
     if venv_dir is None:
         return None

@@ -172,7 +172,9 @@ class PythonEnvironment:
 
     @property
     def executable(self) -> Path:
-        return self.destination / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        from pm.environments import venv_python
+
+        return venv_python(self.destination)
 
     def _run(self, args: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess:
         # Explicit index credentials survive, but cannot redirect the project,

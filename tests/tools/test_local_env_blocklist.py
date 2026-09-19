@@ -282,7 +282,7 @@ def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
 
 @pytest.mark.parametrize("has_facts", [True, False])
 def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env, monkeypatch, has_facts):
-    from hermes_cli.runtime_paths import runtime_facts_path
+    from pm.environments import runtime_facts_path
     payload = child_env / "payload"
     runtime = payload / "state/environments/candidate/venv"
     site = runtime / ("Lib/site-packages" if os.name == "nt" else
@@ -291,7 +291,7 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
     (runtime / "pyvenv.cfg").write_text("version = 3.14\n", encoding="utf-8")
     (payload / "tools").mkdir()
     (payload / "manifest.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.runtime_paths.install_state_dir", lambda repo: payload / "state")
+    monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: payload / "state")
     if has_facts:
         facts = runtime_facts_path(Path(__file__).resolve().parents[2])
         facts.parent.mkdir(parents=True, exist_ok=True)

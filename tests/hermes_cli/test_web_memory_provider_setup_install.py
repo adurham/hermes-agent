@@ -15,8 +15,8 @@ from hermes_cli.web_routers import memory_providers as mp
 @pytest.mark.parametrize("declaration", ["pyproject", "python_dependencies", "pip_dependencies"])
 def test_setup_admits_real_provider_union_and_keeps_selection_on_failure(tmp_path, monkeypatch, surface, declaration):
     import pm
-    from hermes_constants import venv_python_path
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import venv_python
+    from pm.environments import selected_venv
     from tests.pm._fixtures import _wheel
     from hermes_cli import memory_setup
     from hermes_cli.web_server_memory import _memory_provider_setup_info
@@ -89,7 +89,7 @@ def test_setup_admits_real_provider_union_and_keeps_selection_on_failure(tmp_pat
     success = prepare()
     if surface == "dashboard":
         assert success[0]["status"] == "restart_required", success
-    python = venv_python_path(selected_venv(core))
+    python = venv_python(selected_venv(core))
     result = subprocess.run([str(python), "-I", "-c", "import existing_dep, provider_dep; print('both')"],
                             check=True, capture_output=True, text=True, timeout=30)
     assert result.stdout.strip() == "both"

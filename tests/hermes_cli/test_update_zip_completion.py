@@ -308,9 +308,9 @@ def test_zip_refuses_non_main_before_transport(zip_update, monkeypatch, capsys):
 @pytest.mark.parametrize("windows,folder,executable", [(True, "Scripts", "python.exe"), (False, "bin", "python")])
 def test_venv_layout_explicit_and_native(tmp_path, windows, folder, executable):
     import os
-    from hermes_constants import venv_bin_dir, venv_python_path
+    from pm.environments import venv_bin_dir, venv_python
 
     assert venv_bin_dir(tmp_path, windows=windows) == tmp_path / folder
-    assert venv_python_path(str(tmp_path), windows=windows) == tmp_path / folder / executable
+    assert venv_python(str(tmp_path), windows=windows) == tmp_path / folder / executable
     if windows == (os.name == "nt"):
-        assert venv_python_path(tmp_path) == tmp_path / folder / executable
+        assert venv_python(tmp_path) == tmp_path / folder / executable

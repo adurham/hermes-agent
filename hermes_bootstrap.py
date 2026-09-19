@@ -311,7 +311,7 @@ suppress_platform_ver_console()
 
 # Every entry point imports this module before its dependency graph.
 from pathlib import Path
-from hermes_cli.runtime_paths import activate_dependencies
+from pm.environments import activate_dependencies
 from hermes_cli._early_recovery import recover_if_needed
 
 from hermes_cli._parser import command_argv

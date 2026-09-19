@@ -15,7 +15,7 @@ import tempfile
 import time
 import uuid
 
-from hermes_cli.runtime_paths import dependency_home_root, install_state_dir, runtime_facts_path
+from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
 
 LOG = logging.getLogger(__name__)
 
@@ -205,7 +205,7 @@ def lease_generation(environment: Path) -> None:
 
 def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
     """Remove unselected lease-managed generations after their readers exit."""
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
     removed = []
     root = install_state_dir(project)
     if not root.exists():

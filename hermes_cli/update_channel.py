@@ -31,7 +31,7 @@ installers and boot paths read it before the full config machinery loads.
 
 from __future__ import annotations
 
-from hermes_cli.runtime_paths import install_key, installs_root
+from pm.environments import install_key, installs_root
 from hermes_cli.release_channels import validate_name
 from contextlib import contextmanager
 import logging

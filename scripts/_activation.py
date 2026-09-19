@@ -35,7 +35,7 @@ free of both the exec bit and a ``PATH`` lookup.
 
 Activation is not re-run when the inherited environment is still current: the
 sentinel's value is the installed-state file the environment was composed
-against (see ``hermes_cli.runtime_paths.activation_environment``), so the
+against (see ``pm.environments.activation_environment``), so the
 prologue compares it against the inputs that decide the dependency set. Any of
 ``uv.lock``, ``pyproject.toml`` or ``pm/lock.json`` being newer than that file
 means the inherited environment predates its inputs, and the prologue

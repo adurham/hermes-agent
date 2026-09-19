@@ -1,6 +1,6 @@
 """Context-only homes use the same dependency state as their own process."""
 
-from hermes_cli import runtime_paths
+from pm import environments as runtime_paths
 from pm.publication import PluginSelection
 from hermes_cli.runtime_state import recover_publication, runtime_lock
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override

@@ -49,7 +49,7 @@ def test_refused_or_already_paused_install_does_not_acquire_runtime(client, monk
 
 
 def _current_environment(tmp_path, monkeypatch, members):
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     from pm.lock import Facts
     from pm.packages import Venv
 
@@ -71,7 +71,7 @@ def _current_environment(tmp_path, monkeypatch, members):
 def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, monkeypatch, isolated_python,
                                                             member_shape, route):
     import json
-    from hermes_cli.runtime_paths import runtime_facts_path, selected_venv
+    from pm.environments import runtime_facts_path, selected_venv
     from pm.lock import Facts
     from pm.packages import Venv
 
@@ -158,7 +158,7 @@ def test_currency_probe_preserves_union_and_candidate_inputs(client, tmp_path, m
 
 
 def _assert_worker_holds_lock(repo):
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     from hermes_cli.runtime_state import _lock
 
     with (install_state_dir(repo) / ".install.lock").open("a+b") as lock:
@@ -237,7 +237,7 @@ def test_lazy_disabled_sync_does_not_bootstrap_tools(client, tmp_path, monkeypat
 
 def test_invalid_selection_waits_for_failed_receipt_and_lock_release(client, tmp_path, monkeypatch):
     import json
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     from hermes_cli.runtime_state import _lock
 
     repo = _current_environment(tmp_path, monkeypatch, [])
@@ -463,7 +463,7 @@ def test_resolution_conflict_survives_worker_and_receipt(client, tmp_path, monke
 
 def test_failed_facts_write_restores_exact_config_before_reporting(client, tmp_path, monkeypatch, isolated_python):
     from tests.pm._fixtures import worker_toolchain
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
 
     repo = _current_environment(tmp_path, monkeypatch, [])
     home = tmp_path / "home"
@@ -502,7 +502,7 @@ def test_worker_death_reports_transport_failure(client, monkeypatch, isolated_py
 
 def test_foreign_checkout_sync_uses_its_own_pm_generation(client, tmp_path, monkeypatch, isolated_python):
     from pm import venv_is_current
-    from hermes_cli.runtime_paths import selected_venv, runtime_facts_path
+    from pm.environments import selected_venv, runtime_facts_path
 
     from tests.pm._fixtures import worker_toolchain
     worker_toolchain(client, monkeypatch, isolated_python)

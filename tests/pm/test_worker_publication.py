@@ -15,7 +15,7 @@ from tests.pm._fixtures import worker_toolchain
 
 
 def test_worker_publishes_selection_even_when_dependencies_are_current(client, tmp_path, monkeypatch):
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     from pm import receipt
 
     home = tmp_path / "home"
@@ -47,7 +47,7 @@ def test_worker_publishes_selection_even_when_dependencies_are_current(client, t
 def test_staged_plugin_publication_uses_installed_identity_and_local_dependencies(
     client, tmp_path, monkeypatch, isolated_python, active, missing,
 ):
-    from hermes_cli.runtime_paths import install_state_dir, selected_venv
+    from pm.environments import install_state_dir, selected_venv
     from pm.store import tree_digest
     from tests.pm.test_environment_build import _wheel
     from pm import paths
@@ -105,7 +105,7 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
 
 @pytest.mark.parametrize("mutation", ["sibling", "active"])
 def test_selection_refuses_config_edits_during_preparation(client, tmp_path, monkeypatch, isolated_python, mutation):
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     home = tmp_path / "home"
     home.mkdir()
     config = home / "config.yaml"
@@ -178,7 +178,7 @@ def test_memory_setup_sends_candidate_paths_instead_of_discovery_callbacks(tmp_p
 def test_worker_death_recovers_at_each_durable_publication_boundary(
     client, tmp_path, monkeypatch, isolated_python, kind, rebuild, phase,
 ):
-    from hermes_cli.runtime_paths import install_state_dir, selected_venv
+    from pm.environments import install_state_dir, selected_venv
     from pm import paths
     from pm.package import InstallError
     from pm.store import tree_digest
@@ -243,7 +243,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
     assert (state / "publication.json").exists()
     source = Path(client.__file__).resolve().parent.parent
     program = (f"import sys; sys.path.insert(0, {str(source)!r}); from pathlib import Path; "
-               "from hermes_cli.runtime_paths import activate_dependencies; "
+               "from pm.environments import activate_dependencies; "
                f"project = Path({str(project)!r})\n"
                "activate_dependencies(project)\nactivate_dependencies(project)\n")
     recovery = subprocess.run([sys.executable, "-I", "-S", "-c", program], capture_output=True, text=True,
@@ -266,7 +266,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
 
 @pytest.mark.parametrize("mutation", ["metadata", "target", "staged", "sibling-manifest"])
 def test_staged_publication_refuses_concurrent_input_edits(client, tmp_path, monkeypatch, isolated_python, mutation):
-    from hermes_cli.runtime_paths import install_state_dir
+    from pm.environments import install_state_dir
     from pm.store import tree_digest
     repo = _current_environment(tmp_path, monkeypatch, [])
     home = tmp_path / "home"
@@ -342,7 +342,7 @@ def test_selection_preserves_yaml11_values_and_quotes_plugin_names(client, tmp_p
 
 def test_explicit_publication_keeps_its_intent_through_tool_acquisition(client, tmp_path, monkeypatch, isolated_python):
     from pm import paths
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setattr(paths, "repo_root", lambda: project)

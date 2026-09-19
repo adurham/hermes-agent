@@ -35,7 +35,7 @@ def test_state_fact_in_shared_facts_file_is_not_a_store_install(pm_env):
     """``venv`` is recorded via ``record_state`` (stamp + extras, no entry) into
     the same facts.json as tool facts. Reading the composed env over every
     registered package must skip it, not KeyError on ``fact["entry"]`` —
-    that crashed ``activate`` (``hermes_cli.runtime_paths``) after a sync."""
+    that crashed ``activate`` (``pm.environments``) after a sync."""
     from pm.ensure import env_for
     from pm.lock import Facts
     from pm.registry import all_packages

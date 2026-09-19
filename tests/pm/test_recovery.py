@@ -29,7 +29,7 @@ def test_startup_validation_checks_real_ruamel_dependency(tmp_path, failure):
 
     import ruamel.yaml
 
-    from hermes_cli.runtime_paths import site_packages
+    from pm.environments import site_packages
     from pm.package import InstallError
     from pm.recovery import validate_environment
 
@@ -86,7 +86,7 @@ def recovery_graph(tmp_path):
 def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, monkeypatch, recovery_graph, failure):
     import pm.paths as paths
     import pm.workspace as workspace
-    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.environments import selected_venv, site_packages
 
     engine = importlib.import_module("pm.ensure")
     uv = shutil.which("uv")
@@ -166,7 +166,7 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
 def test_uncertain_profile_selection_refuses_sync_but_not_recorded_repair(tmp_path, monkeypatch, recovery_graph):
     import pm.paths as paths
     from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
-    from hermes_cli.runtime_paths import install_state_dir, selected_venv, site_packages
+    from pm.environments import install_state_dir, selected_venv, site_packages
 
     engine = importlib.import_module("pm.ensure")
     # Use the same engine for admission and repair with the offline uv fixture.

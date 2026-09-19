@@ -14,7 +14,7 @@ def lockfile_path() -> Path:
 
 
 def store_root() -> Path:
-    from hermes_cli.runtime_paths import store_root as resolve
+    from pm.environments import store_root as resolve
 
     return resolve(repo_root())
 
@@ -47,6 +47,6 @@ def writable_store_root() -> Path:
 
 
 def runtime_facts_path() -> Path:
-    from hermes_cli.runtime_paths import runtime_facts_path as resolve
+    from pm.environments import runtime_facts_path as resolve
 
     return resolve(repo_root())

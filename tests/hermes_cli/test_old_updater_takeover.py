@@ -317,7 +317,10 @@ def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, enc
     # request without importing PM or launching any completed backend twice.
     (package / "_launchers.py").write_text(
         "import sys\nresolve_store_python = lambda root: sys.executable\n", encoding="utf-8")
-    (package / "runtime_paths.py").write_text(
+    pm_package = root / "pm"
+    pm_package.mkdir()
+    (pm_package / "__init__.py").write_text("", encoding="utf-8")
+    (pm_package / "environments.py").write_text(
         "import os\nactivation_environment = lambda root: dict(os.environ)\n", encoding="utf-8")
     context, result_path = tmp_path / "request.json", tmp_path / "result.json"
     context.write_text(json.dumps({"root": str(root), "stopped_serves": {"pending": False}},

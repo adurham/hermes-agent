@@ -11,7 +11,7 @@ import io
 import json
 from pathlib import Path
 
-from hermes_cli.runtime_paths import dependency_home_root, install_state_dir, runtime_facts_path
+from pm.environments import dependency_home_root, install_state_dir, runtime_facts_path
 from hermes_cli.runtime_state import _atomic_bytes, _bytes, _digest
 from pm.workspace import enabled_plugin_dirs, _is_member_candidate
 

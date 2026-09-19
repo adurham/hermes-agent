@@ -182,7 +182,7 @@ def dependencies(args) -> None:
         return
     import tomllib
 
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
     from pm import build_environment, check_project_lock, sync_venv
     from pm.paths import repo_root
 

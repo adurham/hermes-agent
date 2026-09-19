@@ -57,7 +57,7 @@ def probe_pm(root: Path, desktop: str, command: list[str]) -> None:
     # bootstrap: that would complete dependencies or recover markers for it.
     sys.path.insert(0, str(root))
     from hermes_cli._launchers import runtime_command
-    from hermes_cli.runtime_paths import selected_venv, site_packages
+    from pm.environments import selected_venv, site_packages
 
     if command != runtime_command(root):
         raise RuntimeError("published launcher belongs to another installation or Python")

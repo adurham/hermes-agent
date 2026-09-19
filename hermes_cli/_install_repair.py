@@ -281,7 +281,8 @@ def migrate_windows_bin_path(
     root = Path(root)
 
     # Same per-machine anchor as ensure_windows_bin_launchers (see there).
-    from hermes_constants import get_default_hermes_root, venv_bin_dir
+    from hermes_constants import get_default_hermes_root
+    from pm.environments import venv_bin_dir
 
     try:
         home = Path(get_default_hermes_root())

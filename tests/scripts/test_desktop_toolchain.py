@@ -139,7 +139,7 @@ def test_bootstrap_real_pm_resolves_only_build_owned_state(tmp_path):
     probe = (
         "import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
         "from pm import paths; from pm.packages import uv_cache_dir; "
-        "from hermes_cli.runtime_paths import install_state_dir; "
+        "from pm.environments import install_state_dir; "
         "print(json.dumps([str(paths.store_root()), str(paths.partials_root()), "
         "str(uv_cache_dir()), str(install_state_dir(Path(sys.argv[1])))]))"
     )

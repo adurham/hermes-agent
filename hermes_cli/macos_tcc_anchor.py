@@ -23,7 +23,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from hermes_constants import venv_python_path
+from pm.environments import venv_python
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def _is_uv_macos_store(path: str) -> bool:
 
 def _venv_dir(project_root: Path | None = None) -> Path | None:
     root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
-    return next((root / n for n in ("venv", ".venv") if _present(venv_python_path(root / n))), None)
+    return next((root / n for n in ("venv", ".venv") if _present(venv_python(root / n))), None)
 
 
 def _present(path: Path) -> bool:
@@ -85,7 +85,7 @@ def _interpreter_file(src: str | Path) -> Path | None:
 
 def _interpreter_source(venv_dir: Path) -> str | None:
     """Return the interpreter file the venv currently resolves to (symlink target or pyvenv.cfg home)."""
-    venv_py = venv_python_path(venv_dir)
+    venv_py = venv_python(venv_dir)
     if venv_py.is_symlink():
         try:
             return str(venv_py.resolve(strict=False))
@@ -113,7 +113,7 @@ def _managed_venv(project_root: Path | None) -> tuple[Path, Path, str] | str:
     source = _interpreter_source(venv_dir)
     if source is None or not _is_uv_macos_store(source):
         return "interpreter not uv-managed (stable path)"
-    return venv_dir, venv_python_path(venv_dir), source
+    return venv_dir, venv_python(venv_dir), source
 
 
 def _anchor_marker(venv_bin: Path) -> Path:
@@ -283,7 +283,7 @@ def _install_anchor(venv_dir: Path, source_file: Path) -> None:
     """Replace ``bin/python`` with a signed copy, gated on a real boot."""
     from hermes_cli.macos_signing import sign_managed_python
 
-    venv_py = venv_python_path(venv_dir)
+    venv_py = venv_python(venv_dir)
     venv_bin = venv_py.parent
     venv_bin.mkdir(parents=True, exist_ok=True)
 

@@ -12,7 +12,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli import memory_setup
-from hermes_cli.runtime_paths import selected_venv
+from pm.environments import selected_venv
 from pm import paths
 from tests.pm._fixtures import _wheel
 

@@ -54,11 +54,12 @@ def post_swap_python() -> Path:
     if sys.platform != "win32":
         return Path(sys.executable)
     from hermes_cli._launchers import _is_windows
-    from hermes_constants import project_venv_dir, venv_python_path
+    from hermes_constants import project_venv_dir
+    from pm.environments import venv_python
 
     venv_dir = project_venv_dir(Path(__file__).resolve().parents[1])
     if venv_dir is not None and _is_windows():
-        candidate = venv_python_path(venv_dir, windows=True)
+        candidate = venv_python(venv_dir, windows=True)
         if candidate.is_file():
             return candidate
     return Path(sys.executable)

@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli.runtime_paths import install_state_dir, site_packages
+from pm.environments import install_state_dir, site_packages
 from pm.lock import Lockfile
 from tests.hermes_cli.test_source_launcher_publication import fixture_tree
 

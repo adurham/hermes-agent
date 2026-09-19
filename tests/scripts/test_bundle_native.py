@@ -23,7 +23,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     import importlib
     import inspect
 
-    from hermes_cli.runtime_paths import site_packages
+    from pm.environments import site_packages
     from pm.lock import Facts
     from pm.registry import get_package
     from pm.store import tree_digest
@@ -55,7 +55,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     source = Path(__file__).resolve().parents[2]
     shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     (repo / "hermes_cli").mkdir()
-    for name in ("__init__.py", "runtime_paths.py", "runtime_state.py"):
+    for name in ("__init__.py", "runtime_state.py"):
         shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
     shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
     wheels = repo / "wheels"

@@ -67,7 +67,7 @@ def payload_tree(tmp_path: Path):
 
     # Exercise the real bootstrap before the fixture entry point.
     for relative in ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py",
-                     "hermes_cli/runtime_paths.py", "hermes_cli/runtime_state.py",
+                     "pm/environments.py", "hermes_cli/runtime_state.py",
                      "hermes_cli/_early_recovery.py", "hermes_cli/_parser.py"):
         shutil.copy2(_REPO / relative, repo / relative)
     (repo / "hermes_cli" / "main.py").write_text(

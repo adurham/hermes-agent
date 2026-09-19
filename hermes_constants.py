@@ -973,19 +973,10 @@ AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 
 def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
-    """Venv executable dir (``Scripts``/``bin``); *windows* lets tests exercise Windows paths on Linux.
+    """Frozen updater surface: pre-PM updaters import this name; pm.environments owns it."""
+    from pm.environments import venv_bin_dir as resolve
 
-    Returned unconditionally — callers differ on whether a missing venv is an error.
-
-    Canonical helper for venv layout. This was open-coded in seven places across four ``hermes_cli`` modules
-    using three different Windows predicates (``platform.system()``, ``is_windows()``, ``_is_windows()``);
-    each new call site had to re-derive it, and #76091 shipped an eighth copy because the correct behaviour
-    lived 2400 lines away in another function. A few sites outside ``hermes_cli``
-    (``tools/code_execution_tool.py``, ``agent/lsp/install.py``, ``agent/lsp/servers.py``) still hand-roll
-    it — convert them as they are touched.
-    """
-    windows = sys.platform == "win32" if windows is None else windows
-    return Path(venv_dir) / ("Scripts" if windows else "bin")
+    return resolve(venv_dir, windows=windows)
 
 
 def project_venv_dir(project_root) -> Path | None:
@@ -1001,9 +992,10 @@ def project_venv_dir(project_root) -> Path | None:
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
-    """Path to the Python interpreter inside *venv_dir* (may not exist)."""
-    bin_dir = venv_bin_dir(venv_dir, windows=windows)
-    return bin_dir / ("python.exe" if bin_dir.name == "Scripts" else "python")
+    """Frozen updater surface: pre-PM updaters import this name; pm.environments owns it."""
+    from pm.environments import venv_python
+
+    return venv_python(venv_dir, windows=windows)
 
 
 # First-party roots: an ImportError naming one means our own tree is inconsistent. The

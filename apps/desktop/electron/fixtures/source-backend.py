@@ -57,7 +57,7 @@ def main() -> None:
     from pm import paths
     from pm.lock import Facts
     from pm.store import current_target, tree_digest
-    from hermes_cli.runtime_paths import selected_venv
+    from pm.environments import selected_venv
     from hermes_cli._launchers import ensure_install_launchers
 
     worker = root / "pm" / "worker.py"

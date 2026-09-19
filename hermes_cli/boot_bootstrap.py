@@ -8,7 +8,7 @@ an explicit post-update run). PM owns runtime diagnosis, not this record.
 """
 from __future__ import annotations
 
-from hermes_cli.runtime_paths import install_state_dir
+from pm.environments import install_state_dir
 import json
 import logging
 import os

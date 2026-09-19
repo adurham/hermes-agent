@@ -24,9 +24,9 @@ def side_root(tmp_path, monkeypatch):
 
 def test_ensure_sideenv_uses_pm_selected_python(side_root, monkeypatch):
     import pm
-    from hermes_constants import venv_python_path
+    from pm.environments import venv_python
 
-    python = venv_python_path(side_root / "selected")
+    python = venv_python(side_root / "selected")
     seen = {}
 
     def ensure(name, requirements, **kwargs):
@@ -44,9 +44,9 @@ def test_ensure_sideenv_uses_pm_selected_python(side_root, monkeypatch):
 
 def test_sideenv_python_is_pm_passive_selection(side_root, monkeypatch):
     import pm
-    from hermes_constants import venv_python_path
+    from pm.environments import venv_python
 
-    python = venv_python_path(side_root / "selected")
+    python = venv_python(side_root / "selected")
     seen = []
     monkeypatch.setattr(pm, "environment_python",
                         lambda name, **kw: seen.append((name, kw)) or python)
@@ -61,8 +61,8 @@ def side_python(side_root, monkeypatch, tmp_path):
 
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(side_root)],
                    check=True, capture_output=True, timeout=30)
-    from hermes_constants import venv_python_path
-    python = venv_python_path(side_root)
+    from pm.environments import venv_python
+    python = venv_python(side_root)
     site = Path(subprocess.check_output(
         [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
         text=True, timeout=10,
