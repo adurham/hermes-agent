@@ -650,15 +650,27 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
             return _err(f"Delivery to {label} failed to start: no process id returned")
         # From here the background runner owns the file (removed after the consumer finishes).
         transferred = True
+        if parsed.get("notify_on_complete") is False:
+            # terminal_tool refused the completion promise: this session (api_server, one-shot
+            # runner) cannot receive an async completion, so the recipient's reply would never
+            # be injected here (#101142). Say so and name the return path the surface supports.
+            detail = (f"Message handed to a background delivery process for {label}, but THIS session "
+                      "cannot receive completion notifications, so the reply will NOT arrive on its own. "
+                      f"Before ending your turn, retrieve the outcome with process(action='wait', "
+                      f"session_id='{proc_id}') — its output is the reply (relay it, attributed to that "
+                      "agent) or the delivery failure (report it; the message was NOT delivered).")
+        else:
+            detail = (f"Message queued for {label}: this acknowledges the hand-off to a "
+                      "background delivery process, not a delivery receipt — do NOT wait or poll. "
+                      "Finish your turn now; that process's completion notification carries the "
+                      "delivery outcome — the reply (relay it then, attributed to that agent) or "
+                      "the delivery failure (report it; the message was NOT delivered).")
         return json.dumps({
             "status": "queued",
             "delivery_id": delivery_id or (_dm_delivery_id(dm_file) if dm_file else ""),
             "to": label,
-            "detail": (f"Message queued for {label}: this acknowledges the hand-off to a "
-                       "background delivery process, not a delivery receipt — do NOT wait or poll. "
-                       "Finish your turn now; that process's completion notification carries the "
-                       "delivery outcome — the reply (relay it then, attributed to that agent) or "
-                       "the delivery failure (report it; the message was NOT delivered)."),
+            "reply_delivery": "poll" if parsed.get("notify_on_complete") is False else "notification",
+            "detail": detail,
             "process_id": proc_id,
             "queued_at": int(time.time()),
         })
