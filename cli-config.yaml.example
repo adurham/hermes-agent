@@ -2069,6 +2069,23 @@ telemetry:
 
 
 # =============================================================================
+# Login Policy (credentials themselves live in auth.json / .env)
+# =============================================================================
+auth:
+  # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code logins when Hermes has
+  # no usable login of its own. Their refresh tokens are single-use, so two programs on one login
+  # can log each other out; set false to make Hermes use only its own logins.
+  adopt_external_logins: true
+  # How `hermes auth add openai-codex` / `hermes model` sign in to OpenAI Codex.
+  #   device_code (default) — open a URL and enter a code.
+  #   browser — authorization-code + PKCE on http://localhost:1455/auth/callback (the redirect
+  #             OpenAI registered for the Codex client) for organizations that disable the
+  #             device-code grant; falls back to device code when that port is busy.
+  # `hermes auth add openai-codex --browser` opts in for a single login without changing this.
+  codex_login_flow: device_code
+
+
+# =============================================================================
 # Update Behavior
 # =============================================================================
 updates:

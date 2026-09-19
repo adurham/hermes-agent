@@ -1688,6 +1688,13 @@ DEFAULT_CONFIG = {
         # its own logins (`hermes auth add <provider>`). `hermes auth add openai-codex` still offers the import
         # interactively.
         "adopt_external_logins": True,
+        # How `hermes auth add openai-codex` / `hermes model` sign in to OpenAI Codex.
+        # "device_code" (default): open a URL, enter a code. "browser": authorization-code + PKCE on
+        # the loopback listener http://localhost:1455/auth/callback (the redirect OpenAI registered
+        # for the Codex client) — for organizations that disable the device-code grant. Falls back
+        # to device code when that port is busy. `hermes auth add openai-codex --browser` opts in
+        # for one login without changing this key.
+        "codex_login_flow": "device_code",
     },
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
