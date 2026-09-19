@@ -251,9 +251,11 @@ class OpenAIStreamer(StreamingTTSProvider):
         client = OpenAI(
             api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
             base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
+        from tools.tts_tool_openai import _openai_extra_body
+        extra = {"extra_body": body} if (body := _openai_extra_body(self.section)) else {}
         with client.audio.speech.with_streaming_response.create(
             model=self.section.get("model", "gpt-4o-mini-tts"), voice=self.section.get("voice", "alloy"),
-            input=text, response_format="pcm",
+            input=text, response_format="pcm", **extra,
         ) as response:
             # Runs on the first next(), before any audio is yielded, so consumers reading
             # ``sample_rate`` after the first chunk open their device at the endpoint's rate.
