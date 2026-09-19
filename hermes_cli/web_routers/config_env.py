@@ -18,7 +18,7 @@ from hermes_cli.web_server_config import (
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries, _parse_model_ids,
+    _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
@@ -772,19 +772,67 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     try:
         async with _endpoint_probe_client(url, 8.0) as client:
             resp = await client.get(url, headers=headers)
+            if resp.status_code in (401, 403):
+                return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
+            if not resp.is_success:
+                return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
+            # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
+            # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
+            entries = _parse_model_entries(resp)
+            ids = [e["id"] for e in entries]
+            # /models answering proves nothing about the transport the runtime will POST to:
+            # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
+            # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses.
+            mode = _canonical_api_mode(body.api_mode or "").lower() or _auto_api_mode(base_url)
+            probe_model = (body.model or "").strip() or (ids[0] if ids else "")
+            missing = await _probe_transport_route(client, base_url, mode, probe_model, headers)
     except Exception:
         return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
 
-    if resp.status_code in (401, 403):
-        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
-    if not resp.is_success:
-        return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
+    result = {"ok": True, "reachable": True, "message": "", "models": ids, "model_details": entries,
+              "transport_checked": mode}
+    if missing:
+        result.update(ok=False, message=missing)
+    return result
 
-    # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
-    # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
-    entries = _parse_model_entries(resp)
-    return {"ok": True, "reachable": True, "message": "", "models": [e["id"] for e in entries],
-            "model_details": entries}
+
+_TRANSPORT_ROUTES = {"chat_completions": "/chat/completions", "codex_responses": "/responses",
+                     "anthropic_messages": "/messages"}
+_TRANSPORT_LABELS = {"chat_completions": "Chat Completions", "codex_responses": "Responses API",
+                     "anthropic_messages": "Anthropic Messages"}
+
+
+def _auto_api_mode(base_url: str) -> str:
+    """The transport the runtime falls back to for an endpoint without a pinned ``api_mode``
+    (same resolver as ``runtime_provider_custom._custom_runtime``)."""
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    return _detect_api_mode_for_url(base_url) or "chat_completions"
+
+
+async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: Dict[str, str]) -> str:
+    """POST a 1-token request to ``mode``'s route; return a failure message when the host does
+    not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
+    422, 429 — means the route exists, which is all the check needs to know; a network error or
+    timeout (a local server still loading the model) is inconclusive and does not block."""
+    route = _TRANSPORT_ROUTES.get(mode)
+    if route is None:
+        return ""
+    if mode == "anthropic_messages":
+        payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+        token = headers.get("Authorization", "").removeprefix("Bearer ")
+        headers = {**headers, "anthropic-version": "2023-06-01", **({"x-api-key": token} if token else {})}
+    elif mode == "codex_responses":
+        payload = {"model": model, "input": "hi", "max_output_tokens": 16}
+    else:
+        payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+    try:
+        resp = await client.post(base_url + route, json=payload, headers=headers)
+    except Exception:
+        return ""
+    if resp.status_code not in (404, 405, 501):
+        return ""
+    return (f"{base_url}/models answered, but POST {route} returned HTTP {resp.status_code}: this host "
+            f"does not serve the {_TRANSPORT_LABELS[mode]} API. Pick the API mode it does serve.")
 
 
 def _endpoint_probe_client(url: str, timeout: float):
@@ -828,12 +876,13 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
                 resp = await client.get(url, headers=headers)
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
-        models = _parse_model_ids(resp)
+        entries = _parse_model_entries(resp)
+        models = [e["id"] for e in entries]
         if not models and not resp.is_success:
             # A proxy/gateway error page parses as "no models"; name the status instead so the
             # GUI does not tell the user to "start a model" on a server that answered.
             return {"ok": False, "reachable": True, "message": f"{url} answered HTTP {resp.status_code}.", "models": []}
-        return {"ok": True, "reachable": True, "message": "", "models": models}
+        return {"ok": True, "reachable": True, "message": "", "models": models, "model_details": entries}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:

@@ -280,6 +280,8 @@ export interface CustomEndpointValidationResponse {
   models: string[]
   ok: boolean
   reachable: boolean
+  /** The transport whose route the backend probed (pinned api_mode, or the runtime's URL auto-detect). */
+  transport_checked?: CustomEndpointApiMode
 }
 
 export interface MessagingEnvVarInfo {

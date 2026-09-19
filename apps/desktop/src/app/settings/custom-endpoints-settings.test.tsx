@@ -65,7 +65,8 @@ describe('CustomEndpointsSettings', () => {
       ],
       models: ['gpt-5.6-sol', 'gpt-5.6-sol-high'],
       ok: true,
-      reachable: true
+      reachable: true,
+      transport_checked: 'codex_responses'
     })
     saveCustomEndpoint.mockResolvedValue(savedResponse)
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
@@ -85,6 +86,10 @@ describe('CustomEndpointsSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(validateCustomEndpoint).toHaveBeenCalledWith(expect.objectContaining({ api_mode: 'codex_responses' }))
+    expect(notify).toHaveBeenCalledWith({
+      kind: 'success',
+      message: 'Endpoint is reachable (Responses API route served). Found 2 models.'
+    })
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({
         api_mode: 'codex_responses',

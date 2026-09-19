@@ -213,11 +213,13 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
           setForm(current => ({ ...current, model: response.models[0] }))
         }
 
+        // The backend also POSTed the transport the runtime will use; name it so an
+        // auto-detected mode is visible before Save (#93622).
+        const transport = API_MODE_OPTIONS.find(option => option.id === response.transport_checked)?.label
+        const reachable = transport ? `Endpoint is reachable (${transport} route served).` : 'Endpoint is reachable.'
         notify({
           kind: 'success',
-          message: response.models.length
-            ? `Endpoint is reachable. Found ${response.models.length} models.`
-            : 'Endpoint is reachable.'
+          message: response.models.length ? `${reachable} Found ${response.models.length} models.` : reachable
         })
       } else {
         notify({

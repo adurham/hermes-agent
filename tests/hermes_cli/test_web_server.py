@@ -2130,6 +2130,9 @@ class TestWebServerEndpoints:
             async def get(self, url, headers=None):
                 return FakeResp()
 
+            async def post(self, url, json=None, headers=None):
+                return FakeResp()
+
         @contextlib.asynccontextmanager
         async def fake_probe_client(url, timeout):
             yield FakeClient()
@@ -2143,6 +2146,60 @@ class TestWebServerEndpoints:
             {"id": "gpt-5.6-sol"},
             {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
         ]
+
+    @staticmethod
+    def _responses_only_host(monkeypatch, posted):
+        """A gateway that lists models on GET /models and serves POST /responses but 404s
+        POST /chat/completions — the #93622 reporter's host."""
+        import contextlib
+
+        from hermes_cli.web_routers import config_env
+
+        class Resp:
+            def __init__(self, status):
+                self.status_code, self.is_success = status, status < 400
+
+            def json(self):
+                return {"data": [{"id": "gpt-5.6-sol"}]}
+
+        class Client:
+            async def get(self, url, headers=None):
+                return Resp(200)
+
+            async def post(self, url, json=None, headers=None):
+                posted.append((url, json))
+                return Resp(400 if url.endswith("/responses") else 404)
+
+        @contextlib.asynccontextmanager
+        async def probe_client(url, timeout):
+            yield Client()
+
+        monkeypatch.setattr(config_env, "_endpoint_probe_client", probe_client)
+
+    def test_custom_endpoint_validate_fails_when_the_transport_route_is_missing(self, monkeypatch):
+        """Test must exercise the leg the runtime will use: a Responses-only host answers /models
+        fine, so validation also POSTs the resolved transport's route and fails on 404 (#93622)."""
+        posted = []
+        self._responses_only_host(monkeypatch, posted)
+        for api_mode in ("", "chat_completions"):  # auto-detect resolves to chat_completions here
+            body = self.client.post("/api/providers/custom-endpoints/validate", json={
+                "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": api_mode}).json()
+            assert body["ok"] is False and body["reachable"] is True
+            assert body["transport_checked"] == "chat_completions"
+            assert "/chat/completions" in body["message"] and "Chat Completions" in body["message"]
+            assert body["models"] == ["gpt-5.6-sol"], "discovered models still returned so the user can re-pick"
+        assert posted[-1][0] == "https://gw.example.com/v1/chat/completions"
+        assert posted[-1][1]["model"] == "gpt-5.6-sol" and posted[-1][1]["max_tokens"] == 1
+
+    def test_custom_endpoint_validate_passes_when_the_pinned_transport_is_served(self, monkeypatch):
+        posted = []
+        self._responses_only_host(monkeypatch, posted)
+        body = self.client.post("/api/providers/custom-endpoints/validate", json={
+            "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": "codex_responses"}).json()
+        assert body["ok"] is True and body["message"] == ""
+        assert body["transport_checked"] == "codex_responses"
+        assert posted == [("https://gw.example.com/v1/responses",
+                           {"model": "gpt-5.6-sol", "input": "hi", "max_output_tokens": 16})]
 
     def test_custom_endpoint_save_leaves_a_hand_written_env_ref_alone(self, monkeypatch):
         """``api_key: ${MY_KEY}`` is already safe — don't copy it elsewhere.
@@ -5309,6 +5366,10 @@ class TestValidateProviderCredential:
                 captured["headers"] = headers
                 return _Resp()
 
+            async def post(self, url, *args, json=None, headers=None, **kwargs):
+                captured["posted"] = url
+                return _Resp()
+
         monkeypatch.setattr("httpx.AsyncClient", _Client)
 
         response = self.client.post(
@@ -5327,6 +5388,7 @@ class TestValidateProviderCredential:
             "message": "",
             "models": ["local-model"],
             "model_details": [{"id": "local-model"}],
+            "transport_checked": "chat_completions",
         }
         assert captured == {
             "url": "http://localhost:8000/v1/models",
@@ -5334,6 +5396,7 @@ class TestValidateProviderCredential:
                 "Accept": "application/json",
                 "Authorization": "Bearer local-secret",
             },
+            "posted": "http://localhost:8000/v1/chat/completions",
         }
 
 
