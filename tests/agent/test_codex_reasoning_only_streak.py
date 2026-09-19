@@ -11,8 +11,9 @@ Codex-only nudge from the wire.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import run_agent
-from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 from agent.error_classifier import FailoverReason
 from tests.agent.test_run_agent_codex_responses import (
@@ -89,20 +90,48 @@ def test_visible_partial_resets_reasoning_only_streak(monkeypatch):
     assert calls == [FailoverReason.incomplete_response]
 
 
-def test_cross_protocol_wire_drops_codex_nudge_and_keeps_alternation():
-    messages = [
-        {"role": "user", "content": "do it"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
-                                                              "function": {"name": "terminal", "arguments": "{}"}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
-        {"role": "assistant", "content": "", "finish_reason": "incomplete",
-         "codex_reasoning_items": [{"type": "reasoning", "id": "rs_1", "encrypted_content": "x"}]},
-        {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE},
-    ]
+def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeypatch):
+    """The nudge and encrypted reasoning are Codex-only: once the stall falls over to a
+    Chat Completions provider the assembled request must carry neither, with roles alternating."""
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 6
+    agent.iteration_budget = run_agent.IterationBudget(6)
 
-    wire = drop_thinking_only_and_merge_users(
-        messages, drop_codex_reasoning_items=True, drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE,
+    def _flip_to_chat(reason=None):
+        agent.api_mode = "chat_completions"
+        agent._disable_streaming = True  # the stub answer is a plain object, not a stream
+        return True
+
+    monkeypatch.setattr(agent, "_try_activate_fallback", _flip_to_chat)
+    chat_answer = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="Fallback answered.", tool_calls=None),
+                                 finish_reason="stop")],
+        model="fallback/model", usage=None,
     )
+    responses = [
+        _codex_reasoning_only_response(encrypted_content="enc_a"),
+        _codex_reasoning_only_response(encrypted_content="enc_b"),
+        _codex_reasoning_only_response(encrypted_content="enc_c"),
+        chat_answer,
+    ]
+    wires = []
 
-    assert [m["role"] for m in wire] == ["user", "assistant", "tool"]
+    def _fake_api_call(api_kwargs):
+        wires.append((agent.api_mode, api_kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("do it")
+
+    assert result["final_response"] == "Fallback answered."
+    assert [mode for mode, _ in wires] == ["codex_responses"] * 3 + ["chat_completions"]
+    # The pre-fallback transcript did carry the nudge (replay + nudge before the third stall).
+    assert any(m.get("content") == _CODEX_INCOMPLETE_NUDGE for m in agent._session_messages)
+    wire = [m for m in wires[-1][1]["messages"] if m["role"] not in ("system", "developer")]
+    # Thinking-only rows are dropped and adjacent users merged, so the nudge would
+    # survive as a fragment of the merged user row rather than as its own row.
+    assert not any(_CODEX_INCOMPLETE_NUDGE in str(m.get("content") or "") for m in wire)
     assert not any(m.get("codex_reasoning_items") for m in wire)
+    roles = [m["role"] for m in wire]
+    assert roles and all(a != b for a, b in zip(roles, roles[1:]))
