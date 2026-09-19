@@ -25217,6 +25217,11 @@
             "title": "Reasoning Effort",
             "type": "string"
           },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
+            "type": "string"
+          },
           "service_tier": {
             "default": "",
             "title": "Service Tier",
@@ -26065,6 +26070,11 @@
           "reasoning_effort": {
             "default": "",
             "title": "Reasoning Effort",
+            "type": "string"
+          },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
             "type": "string"
           },
           "service_tier": {
