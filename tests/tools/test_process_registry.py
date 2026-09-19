@@ -1747,11 +1747,11 @@ class TestTerminateHostPidPosix:
         # Child logs a registry-delivered TERM; the parent kills it with KILL
         # (logs nothing) and reaps it, then exits 0 — like a browser reaping its zygote.
         child_sh.write_text(
-            "#!/bin/bash\n"
+            "#!/usr/bin/env bash\n"
             f"trap 'echo child-TERM >> {log}; exit 0' TERM\n"
             f"echo up >> {log}\nwhile :; do sleep 0.1; done\n")
         parent_sh.write_text(
-            "#!/bin/bash\n"
+            "#!/usr/bin/env bash\n"
             f"bash {child_sh} & kid=$!\n"
             f"trap 'echo parent-TERM >> {log}; kill -KILL $kid; wait $kid; exit 0' TERM\n"
             "while :; do sleep 0.1; done\n")
