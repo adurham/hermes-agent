@@ -1430,11 +1430,15 @@ class GatewayAdapterLifecycleMixin:
         except IdentityUnresolved:
             return None
 
-    def _stamp_routed_profile(self, source) -> bool:
-        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
+    def _stamp_routed_profile(self, source, adapter_profile: Optional[str] = None) -> bool:
+        """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected.
+
+        ``adapter_profile`` owns the receiving bot: routes are scoped to it and it is the
+        fallback when none matches, so re-stamping a source never crosses a bot boundary.
+        """
         from gateway.profile_routing import ProfileRouteRejected
         try:
-            source.profile = self._profile_name_for_source(source)
+            source.profile = self._profile_name_for_source(source, adapter_profile=adapter_profile) or adapter_profile
         except ProfileRouteRejected:
             return False
         return True
