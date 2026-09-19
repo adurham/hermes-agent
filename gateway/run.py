@@ -40,7 +40,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_chain, pre_agent_fallback_notice
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
 _AGENT_CACHE_MAX_SIZE = 128
@@ -2224,13 +2224,10 @@ def _resolve_runtime_agent_kwargs() -> dict:
             # Carry fallback notice metadata so the gateway can surface a
             # user-visible provider switch (#74349).  The caller must pop
             # ``_fallback_notice`` before forwarding kwargs to AIAgent.
-            fb_provider = fb_config.get("provider") or fb_config.get("requested_provider") or "unknown"
-            fb_model = fb_config.get("model") or "default"
-            primary_desc = "/".join(filter(None, [_primary_provider, _primary_model])) or "primary"
-            fallback_desc = "/".join(filter(None, [fb_provider, fb_model]))
-            fb_config["_fallback_notice"] = (
-                f"⚠️ Provider fallback: {primary_desc} unavailable; "
-                f"using {fallback_desc} for this response."
+            fb_config["_fallback_notice"] = pre_agent_fallback_notice(
+                _primary_provider, _primary_model,
+                fb_config.get("provider") or fb_config.get("requested_provider") or "unknown",
+                fb_config.get("model") or "default",
             )
             return fb_config
         raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
