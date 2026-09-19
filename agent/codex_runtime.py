@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
+from agent.stream_diag import buffer_connect_exhausted_notice
 from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -1040,6 +1041,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                        "exception_chain=%s model=%s attempt=%s", "unknown" if request_body_bytes is None else request_body_bytes,
                        str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"),
                        f"{attempt + 1}/{max_stream_retries + 1}")
+        if writer_token["value"] is None:
+            # No stream ever opened: the user gets one line naming host/attempts/size (#97548).
+            buffer_connect_exhausted_notice(
+                agent, exc, attempts=attempt + 1,
+                base_url=getattr(active_client, "base_url", None) or getattr(agent, "base_url", ""))
 
     def _codex_stream_created(_raw_stream: Any) -> None:
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
