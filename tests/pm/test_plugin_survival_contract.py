@@ -164,8 +164,14 @@ def admission_env(tmp_path, monkeypatch):
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     # Exercise the real dependency transaction in-process so the local uv
-    # fixture owns provisioning; worker transport is covered separately.
-    monkeypatch.setattr("pm.client.sync_venv", ensure.sync_venv)
+    # fixture owns provisioning; worker transport is covered separately. The
+    # facade's project_root selects a foreign checkout for the worker; this
+    # fixture's repo_root already IS the core under test.
+    def in_process_sync(*args, project_root=None, **kwargs):
+        assert project_root is None or Path(project_root).resolve() == core.resolve()
+        return ensure.sync_venv(*args, **kwargs)
+
+    monkeypatch.setattr("pm.client.sync_venv", in_process_sync)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(shutil.which("uv")), Path(sys.executable)))
     return tmp_path, home
 
