@@ -78,11 +78,9 @@ class SentenceChunker:
         """Chunker honouring ``tts.streaming.min_len``. 20 suits English; a CJK opener of 5–7
         characters is a whole clause, so voice setups lower it to speak the first sentence
         alone instead of buffering it behind the second. Floor 1: 0 would emit every boundary."""
-        streaming = tts_config.get("streaming") if isinstance(tts_config, dict) else None
-        raw = streaming.get("min_len", 20) if isinstance(streaming, dict) else 20
         try:
-            return cls(min_len=max(1, int(raw)))
-        except (TypeError, ValueError):
+            return cls(min_len=max(1, int((tts_config.get("streaming") or {}).get("min_len", 20))))
+        except (AttributeError, TypeError, ValueError):  # non-mapping / non-numeric → default
             return cls()
 
     def feed(self, delta: str) -> List[str]:
