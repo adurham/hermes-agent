@@ -157,6 +157,7 @@ class CodexAppServerSession:
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
         model: Optional[str] = None, model_provider: Optional[str] = None,
+        developer_instructions: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -165,6 +166,11 @@ class CodexAppServerSession:
         # ``[model_providers.<id>]`` table. Only the id travels; codex reads base_url/env_key itself.
         self._model = (model or "").strip() or None
         self._model_provider = (model_provider or "").strip() or None
+        # Hermes' composed system prompt (SOUL.md, memory, channel overrides). Sent ONCE per thread as
+        # ``thread/start.developerInstructions``: codex keeps its own base instructions (tool guidance) and
+        # inserts this as the first developer message of every model request. ``baseInstructions`` would
+        # REPLACE codex's base and ``instructions`` is accepted but ignored (verified against codex 0.147).
+        self._developer_instructions = developer_instructions
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
@@ -192,7 +198,11 @@ class CodexAppServerSession:
         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
-        params: dict[str, Any] = {"cwd": self._cwd}
+        # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
+        # codex's built-in "# Personality" section from the base instructions so it cannot compete (#72104).
+        params: dict[str, Any] = {"cwd": self._cwd, "personality": "none"}
+        if self._developer_instructions and self._developer_instructions.strip():
+            params["developerInstructions"] = self._developer_instructions
         if self._model_provider:
             params["modelProvider"] = self._model_provider
         if self._model:
