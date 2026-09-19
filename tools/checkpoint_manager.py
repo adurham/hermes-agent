@@ -1457,14 +1457,16 @@ class CheckpointManager:
             )
 
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:
-        """Apply both budgets through one checked pruning owner."""
+        """Checkpoint-take path: snapshot-count budget plus one size round, gc deferred to the
+        periodic prune — a repack here held the tool call for the whole gc on a large store."""
         from tools.checkpoint_pruning import Pruner, PruneError
 
         pruner = Pruner(_run_git, store, working_dir, _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
             pruner.trim(ref, self.max_snapshots)
-            if not pruner.enforce_size(self.max_total_size_mb * 1024 * 1024):
-                logger.warning("Checkpoint store remains over its size cap; minimum history retained")
+            if pruner.drop_one_round(self.max_total_size_mb * 1024 * 1024):
+                logger.info("Checkpoint store exceeded %d MB — dropped the oldest snapshot per project; "
+                            "space is reclaimed by the next prune", self.max_total_size_mb)
         except (PruneError, OSError) as exc:
             logger.warning("Checkpoint pruning stopped: %s", exc)
 
@@ -1835,7 +1837,8 @@ def _prune_checkpoints(
 
         pruner = Pruner(_run_git, store, str(base), _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
-            pruner.reclaim()
+            if result["deleted_orphan"] + result["deleted_stale"] or pruner.gc_pending():
+                pruner.reclaim()
             if not pruner.enforce_size(max_total_size_mb * 1024 * 1024):
                 result["errors"] += 1
                 logger.warning("Checkpoint store remains over its size cap; minimum history retained")
@@ -2091,7 +2094,9 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
                     out["bytes_freed"] += size
                     out["deleted"] += 1
                 except OSError as exc:
+                    out["errors"] += 1
                     logger.warning("Could not delete legacy archive %s: %s", child, exc)
     except (OSError, RuntimeError) as exc:
+        out["errors"] += 1
         logger.warning("Could not clear legacy archives: %s", exc)
     return out
