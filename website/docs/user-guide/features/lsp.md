@@ -193,6 +193,20 @@ lsp:
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
+  # Node package manager for the npm-based servers: npm (default), pnpm
+  # or yarn. Installs still land in <HERMES_HOME>/lsp/node_modules; a
+  # manager that is configured but not installed — or a value outside
+  # npm|pnpm|yarn — skips the install with a warning instead of silently
+  # using npm, so a pnpm/yarn supply-chain policy (minimumReleaseAge,
+  # allowBuilds, …) is never bypassed. Yarn Berry (2+): its default PnP
+  # linker writes no node_modules/.bin, so set `nodeLinker: node-modules`
+  # in <HERMES_HOME>/lsp/.yarnrc.yml. pnpm 11 blocks git-hosted transitive
+  # deps by default (ERR_PNPM_EXOTIC_SUBDEP); @vue/language-server 2.x pulls
+  # one in, so under pnpm that server is skipped with the pnpm error in the
+  # log — install it once with npm, or relax block-exotic-subdeps in
+  # <HERMES_HOME>/lsp/.npmrc if your policy allows it.
+  package_manager: npm
+
   # How long an unused language-server client stays alive (seconds).
   # Idle servers are shut down automatically and respawned on the next
   # relevant file operation. Set to 0 to disable idle reaping and keep

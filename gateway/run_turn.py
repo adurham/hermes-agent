@@ -45,6 +45,33 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+_tool_call_logger_lock = threading.Lock()
+
+
+def _tool_call_logger() -> logging.Logger:
+    """Process-wide ``hermes.tool_calls`` Logger + one RotatingFileHandler on logs/tool_calls.log.
+    Named Loggers live in ``logging.Logger.manager.loggerDict`` forever, so the former per-turn name
+    (``hermes.tool_calls.<id(log_queue)>``) leaked one Logger per logged turn (#62950); a single
+    shared handler also keeps concurrent turns from double-writing lines."""
+    tool_logger = logging.getLogger("hermes.tool_calls")
+    with _tool_call_logger_lock:
+        if not tool_logger.handlers:
+            from logging.handlers import RotatingFileHandler
+            from agent.redact import RedactingFormatter
+            from gateway.run import _hermes_home
+
+            log_dir = _hermes_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            handler = RotatingFileHandler(
+                log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
+            )
+            handler.setFormatter(RedactingFormatter("%(message)s"))
+            tool_logger.setLevel(logging.INFO)
+            tool_logger.propagate = False
+            tool_logger.addHandler(handler)
+    return tool_logger
+
+
 
 _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "context length", "context size", "context window",
@@ -110,6 +137,30 @@ def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[An
            and history[tail_start].get("role") == "tool"):
         tail_start += 1
     return history[:head_end] + history[tail_start:]
+
+
+def hygiene_no_commit_reason(agent) -> str:
+    """Name WHY a hygiene compression left the session id unchanged with no in-place commit.
+    The terminal ``else`` used to blame "no session_db on the hygiene agent" for every route into it,
+    but that is one of several causes (#71097): an attempt that ABORTED before any commit boundary
+    (lock skip, transient cooldown, summary timeout, codex thread interrupted) leaves
+    ``_last_compression_attempt_in_place`` at ``None``; a DB-less agent is only the case when
+    ``_session_db`` really is missing. Read the per-attempt signals the compressor sets, in that order."""
+    if not bool(getattr(agent, "_last_compression_attempt_recorded", False)):
+        return "compression did not run"
+    lock_skip = getattr(agent, "_compression_skipped_due_to_lock", None)
+    if lock_skip is True or isinstance(lock_skip, str):
+        return "attempt skipped: compression lease held by another process"
+    blocked = getattr(agent, "_compression_blocked_transient", None)
+    if blocked:
+        return f"attempt blocked: {blocked}"
+    if getattr(agent, "_last_compression_attempt_in_place", None) is None:
+        detail = "summary timed out" if getattr(agent, "_last_compression_timed_out", False) else "aborted before commit"
+        warning = getattr(agent, "_last_compression_summary_warning", None)
+        return f"attempt {detail}" + (f": {warning}" if warning else "")
+    if getattr(agent, "_session_db", None) is None:
+        return "no session_db on the hygiene agent"
+    return "in-place commit did not complete"
 
 
 class GatewayTurnMixin:
@@ -1074,9 +1125,9 @@ class GatewayTurnMixin:
             _new_count = plan.msg_count
             _new_tokens = plan.approx_tokens
             logger.warning(
-                "Gateway hygiene compression for session %s did not rotate or compact in place (no "
-                "session_db on the hygiene agent) — preserving the original transcript instead "
-                "of overwriting it with the summary (#21301).", session_entry.session_id,
+                "Gateway hygiene compression for session %s did not rotate or compact in place (%s) — "
+                "preserving the original transcript instead of overwriting it with the summary (#21301).",
+                session_entry.session_id, hygiene_no_commit_reason(_hyg_agent),
             )
 
         logger.info(
@@ -1576,6 +1627,8 @@ class GatewayTurnMixin:
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                requested_model=agent_result.get("requested_model"),
+                served_model=agent_result.get("served_model"),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -3097,22 +3150,9 @@ class GatewayTurnMixin:
         """Drain log_queue and append tool-call lines to tool_calls.log (tool_progress=log).
 
         RotatingFileHandler (5MB × 3) bounds the log; RedactingFormatter keeps secrets off disk."""
-        from gateway.run import _hermes_home
         if log_queue is None:
             return
-        from logging.handlers import RotatingFileHandler
-        from agent.redact import RedactingFormatter
-
-        log_dir = _hermes_home / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
-        )
-        file_handler.setFormatter(RedactingFormatter("%(message)s"))
-        tool_logger = logging.getLogger(f"hermes.tool_calls.{id(log_queue)}")
-        tool_logger.setLevel(logging.INFO)
-        tool_logger.propagate = False
-        tool_logger.addHandler(file_handler)
+        tool_logger = _tool_call_logger()
         try:
             while True:
                 try:
@@ -3129,10 +3169,9 @@ class GatewayTurnMixin:
             with suppress(Exception):
                 while True:
                     tool_logger.info("%s", log_queue.get_nowait())
-            tool_logger.removeHandler(file_handler)
             with suppress(Exception):
-                file_handler.flush()
-                file_handler.close()
+                for handler in tool_logger.handlers:
+                    handler.flush()
 
     def _run_agent_start_streaming_tts(
         self, source: SessionSource, message_type: Optional[str],
@@ -3307,13 +3346,19 @@ class GatewayTurnMixin:
                     if matcher(final_text) is False:
                         return False
             return True
-        if previewed:
-            has_delivered_text = getattr(consumer, "has_delivered_text", None)
-            if callable(has_delivered_text):
-                try:
-                    return bool(has_delivered_text(final_text))
-                except Exception:
-                    return False
+        # Exact-text match against what the consumer DURABLY delivered (commentary, segments, and the
+        # visible prefix only once a real send landed) — safe without the ``previewed`` flag. The codex
+        # app-server bridge delivers the final agentMessage through the commentary path and never sets
+        # response_previewed (#74248 / #80519); gating on the flag re-sent every such reply. Mismatching
+        # commentary still returns False, so a distinct final answer is never suppressed (#65919). Draft
+        # frames are ephemeral and must not count: after draft streaming + a failed finalize send this
+        # predicate must stay False so the fallback final send still fires (#51828 / #33793).
+        has_delivered_text = getattr(consumer, "has_durably_delivered_text", None)
+        if callable(has_delivered_text):
+            try:
+                return bool(has_delivered_text(final_text))
+            except Exception:
+                return False
         return False
 
     def _run_agent_start_turn_worker(self, turn_ctx: TurnContext, run_sync: Callable[[], Any]) -> "GatewayRunner._RunAgentWorker":
