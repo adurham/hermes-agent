@@ -1034,6 +1034,11 @@ DEFAULT_CONFIG = {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        "streaming": {
+            # Shortest first sentence (chars) spoken on its own by streaming TTS; shorter openers
+            # ride with the next sentence. 20 suits English; CJK voice setups use ~6.
+            "min_len": 20,
+        },
         "edge": {
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
             "voice": "en-US-AriaNeural",
