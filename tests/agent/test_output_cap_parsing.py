@@ -234,3 +234,26 @@ class TestParseAdvertisedCeilingWordings:
                "a total of 150000 tokens: 120000 tokens from the input messages and 30000 tokens for the completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert is_output_cap_error(msg) is False
+
+
+class TestParseOpenAiCompletionSplit:
+    """OpenAI's original overflow wording, copied by vLLM / llama-cpp-python, splits the request
+    as "(A in the messages, B in the completion)" and never names max_tokens (#90607)."""
+
+    @pytest.mark.parametrize("msg, budget", [
+        ("This model's maximum context length is 102400 tokens. However, you requested 102401 tokens "
+         "(36865 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.",
+         102400 - 36865),
+        ("This model's maximum context length is 4097 tokens, however you requested 4771 tokens "
+         "(771 in your prompt; 4000 for the completion). Please reduce your prompt; or completion length.",
+         4097 - 771),
+    ])
+    def test_split_is_output_cap_with_window_minus_measured_prompt(self, msg, budget):
+        assert parse_available_output_tokens_from_error(msg) == budget
+        assert is_output_cap_error(msg)
+
+    def test_split_with_prompt_filling_window_stays_on_compression(self):
+        msg = ("This model's maximum context length is 4097 tokens. However, you requested 6000 tokens "
+               "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert not is_output_cap_error(msg)
