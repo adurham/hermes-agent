@@ -2121,6 +2121,31 @@ def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(mon
     }
 
 
+def test_app_server_bridge_commentary_then_final_agent_messages_are_each_already_streamed(monkeypatch):
+    """#74248 boundary 2: codex app-server emits commentary deltas + completed, then final deltas +
+    completed. The completed final must compare against ITS OWN deltas, not "commentary + final", or
+    it is re-delivered with already_streamed=False and the gateway posts a second copy."""
+    from agent.codex_runtime import make_codex_app_server_event_bridge
+
+    agent = _build_agent(monkeypatch)
+    agent.stream_delta_callback = lambda text: None
+    deliveries = []
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: deliveries.append(
+        (text, already_streamed)
+    )
+    on_event = make_codex_app_server_event_bridge(agent)
+
+    def _agent_message(item_id, text, phase):
+        on_event({"method": "item/agentMessage/delta", "params": {"itemId": item_id, "delta": text}})
+        on_event({"method": "item/completed", "params": {
+            "item": {"id": item_id, "type": "agentMessage", "text": text, "phase": phase}}})
+
+    _agent_message("m1", "Checking the config.", "commentary")
+    _agent_message("m2", "Native compaction is active.", "final_answer")
+
+    assert deliveries == [("Checking the config.", True), ("Native compaction is active.", True)]
+    assert agent._current_streamed_assistant_text == ""
+
 
 
 def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
@@ -2323,6 +2348,26 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
 
     payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
+
+
+def test_dump_api_request_debug_reads_the_anthropic_client_and_messages_url(monkeypatch, tmp_path):
+    """anthropic_messages keeps its SDK client on ``_anthropic_client`` (``client`` is None):
+    the dump must show the masked key and /messages, not 'Bearer None' + /chat/completions (#24293)."""
+    import json
+    from types import SimpleNamespace
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "anthropic_messages"
+    agent.base_url = "https://relay.example.com/anthropic"
+    agent.client = None
+    agent._anthropic_client = SimpleNamespace(api_key="sk-ant-api03-abcdefghijklmnopqrstuvwxyz")
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug({"model": "claude", "messages": []}, reason="preflight")
+
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
+    assert payload["request"]["url"] == "https://relay.example.com/anthropic/messages"
+    assert "None" not in payload["request"]["headers"]["Authorization"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in payload["request"]["headers"]["Authorization"]
 
 
 
@@ -2911,3 +2956,57 @@ def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
     assert "stream_opened=false" in message
     assert "APIConnectionError <- ReadError <- ReadError" in message
     assert "attempt=2/2" in message
+
+
+def _codex_truncated_tool_call_response():
+    """``status=incomplete`` (max_output_tokens) whose function_call item was cut mid-arguments
+    and settled as ``completed`` — the self-hosted /v1/responses shape from #91770."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal",
+                arguments='{"command": "echo hel', status="completed",
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=50, output_tokens=8, total_tokens=58),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5.4",
+    )
+
+
+def test_codex_truncated_tool_call_is_retried_with_boosted_output_budget(monkeypatch):
+    """A tool call cut off by max_output_tokens on the Responses wire gets the same
+    budget-boost retry as chat modes instead of a refused partial turn (#91770)."""
+    agent = _build_copilot_agent(monkeypatch)
+    agent.max_tokens = 1000
+    responses = [_codex_truncated_tool_call_response(), _codex_message_response("Done.")]
+    seen_caps: list = []
+
+    def _fake_call(api_kwargs):
+        seen_caps.append(api_kwargs.get("max_output_tokens"))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_call)
+
+    result = agent.run_conversation("run it")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Done."
+    assert seen_caps == [1000, 2000]
+    # The retry re-issues the same call: no interim assistant row, no continuation nudge.
+    assert [m["role"] for m in result["messages"] if m["role"] != "system"] == ["user", "assistant"]
+
+
+def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypatch):
+    """Text truncation is not rerouted: it stays on the Codex incomplete continuation and
+    never takes the length path's nudge (no double continuation, #91770)."""
+    agent = _build_copilot_agent(monkeypatch)
+    responses = [_codex_max_output_incomplete_response("Partial"), _codex_message_response("rest.")]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("write")
+
+    assert result["completed"] is True
+    assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
+    assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")
