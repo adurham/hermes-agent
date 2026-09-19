@@ -42,7 +42,7 @@ jobs:
           assert m["protocol_version"] == 1, m
           names = [s["name"] for s in m["stages"]]
           expected = ["prerequisites", "repository", "venv", "python-deps",
-                      "node-deps", "path", "config", "setup", "gateway", "complete"]
+                      "config", "products", "setup", "gateway", "complete"]
           assert names == expected, names
           assert m["stages"][-1]["name"] == "complete"
           print("stage manifest ok:", " -> ".join(names))
