@@ -28,6 +28,7 @@ from hermes_cli.profiles import _get_profiles_root, _get_active_profile_path, re
 root = get_default_hermes_root()
 profile = root / 'profiles' / 'coder'
 profile.mkdir(parents=True)
+(profile / 'config.yaml').write_text('', encoding='utf-8')
 result = [str(get_hermes_home()), str(get_process_hermes_home()), str(root),
           str(_get_profiles_root()), str(_get_active_profile_path()), resolve_profile_env('coder')]
 os.environ['HERMES_HOME'] = str(profile)
