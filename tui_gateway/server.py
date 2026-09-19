@@ -2270,7 +2270,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         # Live supervisor beat any persisted loopback URL for this identity.
         overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
-    if overrides:
+    if any(overrides.values()):
         _rederive_per_model_route(model, resolution.runtime)
     return model, resolution.runtime
 
