@@ -1087,6 +1087,16 @@ class _ProviderAuthResolutionError(RuntimeError):
     """Provider credential resolution failed. Typed so callers never mislabel other
     RuntimeErrors from run_conversation() (e.g. a closed OpenAI client) as auth failures."""
 
+    def user_text(self) -> str:
+        """Raw-surface failure line. A quota/429 cap with valid credentials must not be labelled an
+        authentication failure — the cause chain (RuntimeError -> AuthError) tells them apart (#89401)."""
+        from hermes_cli.auth import is_rate_limited_auth_error
+
+        cause = self.__cause__
+        cause = getattr(cause, "__cause__", None) if isinstance(cause, RuntimeError) else cause
+        label = "Provider rate-limited" if is_rate_limited_auth_error(cause) else "Provider authentication failed"
+        return f"⚠️ {label}: {self}"
+
 
 class _SessionEventQueue:
     """Ordered SSE event queue for one /api/sessions/{id}/chat/stream run. ``payload`` stamps
@@ -1310,7 +1320,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         profile_name = ""
         with suppress(Exception):
             from hermes_cli.profiles import get_active_profile_name
-            profile = get_active_profile_name()
+            profile = get_active_profile_name()  # launch profile, pre-identity (advertised model name)
             if profile and profile not in {"default", "custom"}:
                 profile_name = profile
         return resolve_effective_model(explicit, profile_name, "hermes-agent")
@@ -3836,10 +3846,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 except _ProviderAuthResolutionError as exc:
                     # Typed provider-auth failure only, handled once for every caller in
                     # run.py's response shape (text, no HTTP error).
-                    logger.warning("Provider authentication failed for session=%s: %s",
+                    logger.warning("Provider resolution failed for session=%s: %s",
                                    session_id or "", exc)
                     return (
-                        {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [],
+                        {"final_response": exc.user_text(), "messages": [],
                          "api_calls": 0, "tools": [],
                          **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
