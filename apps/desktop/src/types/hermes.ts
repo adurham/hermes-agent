@@ -221,8 +221,21 @@ export interface MemoryProviderConfig {
   name: string
 }
 
+/** Transport pinned on a custom endpoint; `''` = let the runtime auto-detect. Same
+ * choices as `hermes model`'s custom-provider setup (#93622). */
+export type CustomEndpointApiMode = '' | 'anthropic_messages' | 'chat_completions' | 'codex_responses'
+
+/** One `/v1/models` row; a gateway may advertise a reasoning alias
+ * (`gpt-5.6-sol-high` → `gpt-5.6-sol` @ `high`) that the bare id list flattens. */
+export interface CustomEndpointModelDetail {
+  canonical_model?: null | string
+  id: string
+  reasoning_effort?: null | string
+}
+
 export interface CustomEndpoint {
   api_key_preview?: null | string
+  api_mode?: CustomEndpointApiMode
   base_url: string
   context_length?: null | number
   discover_models: boolean
@@ -248,18 +261,22 @@ export interface CustomEndpointsResponse {
 
 export interface CustomEndpointUpdate {
   api_key?: string
+  api_mode?: CustomEndpointApiMode
   base_url: string
   context_length?: number
   discover_models?: boolean
   id?: string
   make_default?: boolean
   model: string
+  model_details?: CustomEndpointModelDetail[]
   models?: string[]
   name: string
 }
 
 export interface CustomEndpointValidationResponse {
   message: string
+  /** Older backends send only `models`. */
+  model_details?: CustomEndpointModelDetail[]
   models: string[]
   ok: boolean
   reachable: boolean

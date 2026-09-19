@@ -2061,6 +2061,89 @@ class TestWebServerEndpoints:
         assert "sk-super-secret" not in yaml.safe_dump(cfg)
 
 
+    def test_custom_endpoint_save_pins_api_mode_and_resolves_reasoning_alias(self):
+        """Desktop's Custom Endpoints form pins the transport and keeps alias metadata (#93622).
+
+        A Responses-only host 404s on the runtime's Chat Completions default, so the chosen
+        ``api_mode`` must land on the providers entry and read back; a discovered reasoning
+        alias resolves to its canonical model + ``agent.reasoning_overrides`` instead of being
+        saved as a literal upstream model id.
+        """
+        from hermes_cli.config import load_config
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "custom-responses", "name": "custom-responses",
+                "base_url": "https://responses-gateway.example.com/v1",
+                "model": "gpt-5.6-sol-high", "api_mode": "codex_responses", "make_default": True,
+                "models": ["gpt-5.6-sol", "gpt-5.6-sol-high"],
+                "model_details": [
+                    {"id": "gpt-5.6-sol"},
+                    {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        row = next(e for e in response.json()["endpoints"] if e["id"] == "custom-responses")
+        assert row["api_mode"] == "codex_responses"
+        assert row["model"] == "gpt-5.6-sol"
+
+        cfg = load_config()
+        entry = cfg["providers"]["custom-responses"]
+        assert entry["api_mode"] == "codex_responses"
+        assert entry["model"] == "gpt-5.6-sol"
+        assert entry["models"]["gpt-5.6-sol-high"] == {"canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        assert cfg["model"]["default"] == "gpt-5.6-sol"
+        assert cfg["agent"]["reasoning_overrides"]["gpt-5.6-sol"] == "high"
+
+        # An older UI payload (no api_mode) leaves the pinned transport alone; "" clears it.
+        self.client.post("/api/providers/custom-endpoints", json={
+            "id": "custom-responses", "name": "custom-responses",
+            "base_url": "https://responses-gateway.example.com/v1", "model": "gpt-5.6-sol"})
+        assert load_config()["providers"]["custom-responses"]["api_mode"] == "codex_responses"
+        self.client.post("/api/providers/custom-endpoints", json={
+            "id": "custom-responses", "name": "custom-responses", "api_mode": "",
+            "base_url": "https://responses-gateway.example.com/v1", "model": "gpt-5.6-sol"})
+        listed = self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+        assert next(e for e in listed if e["id"] == "custom-responses")["api_mode"] == ""
+        assert "api_mode" not in load_config()["providers"]["custom-responses"]
+
+    def test_custom_endpoint_validate_keeps_model_alias_metadata(self, monkeypatch):
+        """``validate`` returns the bare id list older clients read AND ``model_details`` with
+        the ``canonical_model`` / ``reasoning_effort`` a gateway advertises (#93622)."""
+        import contextlib
+
+        from hermes_cli.web_routers import config_env
+
+        class FakeResp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [
+                    {"id": "gpt-5.6-sol", "object": "model"},
+                    {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                ]}
+
+        class FakeClient:
+            async def get(self, url, headers=None):
+                return FakeResp()
+
+        @contextlib.asynccontextmanager
+        async def fake_probe_client(url, timeout):
+            yield FakeClient()
+
+        monkeypatch.setattr(config_env, "_endpoint_probe_client", fake_probe_client)
+        body = self.client.post("/api/providers/custom-endpoints/validate", json={
+            "name": "x", "base_url": "https://responses-gateway.example.com/v1", "model": ""}).json()
+        assert body["ok"] is True
+        assert body["models"] == ["gpt-5.6-sol", "gpt-5.6-sol-high"]
+        assert body["model_details"] == [
+            {"id": "gpt-5.6-sol"},
+            {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+        ]
+
     def test_custom_endpoint_save_leaves_a_hand_written_env_ref_alone(self, monkeypatch):
         """``api_key: ${MY_KEY}`` is already safe — don't copy it elsewhere.
 
@@ -5243,6 +5326,7 @@ class TestValidateProviderCredential:
             "reachable": True,
             "message": "",
             "models": ["local-model"],
+            "model_details": [{"id": "local-model"}],
         }
         assert captured == {
             "url": "http://localhost:8000/v1/models",

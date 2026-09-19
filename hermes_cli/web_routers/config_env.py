@@ -18,11 +18,11 @@ from hermes_cli.web_server_config import (
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
+    _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries, _parse_model_ids,
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
-from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -382,6 +382,18 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
     return bool(isinstance(raw_key, str) and re.search(r"\$\{[^}]+\}", raw_key))
 
 
+_DESKTOP_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
+
+
+def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
+    """The transport a providers entry pins (``api_mode``, or the v12 migration's ``transport``
+    spelling), canonicalized; ``""`` = runtime auto-detect. Mirrors the read order of
+    ``runtime_provider_custom._get_named_custom_provider``."""
+    raw = str(entry.get("api_mode") or entry.get("transport") or "")
+    mode = _canonical_api_mode(raw).lower()
+    return mode if mode in _DESKTOP_API_MODES else ""
+
+
 def _endpoint_row(
     endpoint_id: str, name: str, base_url: str, model: str, models: List[str], context_length,
     discover_models: bool, key_entry: Dict[str, Any], is_current: bool, source: str,
@@ -389,6 +401,7 @@ def _endpoint_row(
     has_api_key, api_key_preview = _api_key_display(key_entry)
     return {
         "id": endpoint_id, "name": name, "base_url": base_url, "model": model, "models": models,
+        "api_mode": _endpoint_api_mode(key_entry),
         "context_length": context_length, "discover_models": discover_models,
         "has_api_key": has_api_key, "api_key_preview": api_key_preview,
         "is_current": is_current, "source": source,
@@ -534,28 +547,65 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
 
     # Merge onto the existing entry rather than replacing it: a providers.<name>
     # block can carry hand-written keys the dashboard has no field for
-    # (``api_mode``, ``key_env``/``api_key_env``, ``extra_headers`` — possibly
-    # with credentials — ``request_overrides``); rebuilding from scratch
-    # silently dropped them on an unrelated edit.
+    # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
+    # credentials — ``request_overrides``); rebuilding from scratch silently
+    # dropped them on an unrelated edit.
     entry: Dict[str, Any] = dict(existing)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
     })
+    # A Responses-only or Anthropic-compatible host 404s on the runtime's
+    # Chat Completions default, so the panel pins the transport the same way
+    # ``hermes model`` does (``api_mode``; the runtime also reads the v12
+    # ``transport`` spelling, so drop it rather than let the two disagree).
+    # ``None`` = older UI payload: keep whatever is hand-written. See #93622.
+    if body.api_mode is not None:
+        entry.pop("transport", None)
+        if body.api_mode:
+            entry["api_mode"] = body.api_mode
+        else:
+            entry.pop("api_mode", None)
     # Same for the model map, so existing models keep their context lengths.
     # ``body.models`` is the catalogue the panel's Test button discovered;
     # without it only the hand-typed model survived Save. A payload with no
     # ``models`` (older UI) still ensures the named default is present.
     # See #69988.
+    details = {d.id.strip(): d for d in (body.model_details or ()) if d.id.strip()}
     existing_models = entry.get("models")
     models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
-    for candidate in (*(body.models or ()), model):
+    for candidate in (*(body.models or ()), *details, model):
         model_id = str(candidate).strip()
         if not model_id:
             continue
         current = models_map.get(model_id)
-        models_map[model_id] = dict(current) if isinstance(current, dict) else {}
+        row = dict(current) if isinstance(current, dict) else {}
+        detail = details.get(model_id)
+        if detail is not None:
+            # Keep the alias metadata ``/v1/models`` advertised so the catalogue
+            # still says what ``gpt-5.6-sol-high`` stands for after Save.
+            row.update({k: v.strip() for k, v in (("canonical_model", detail.canonical_model),
+                                                  ("reasoning_effort", detail.reasoning_effort)) if v and v.strip()})
+        models_map[model_id] = row
     entry["models"] = models_map
+    # A reasoning alias is not a model the inference route accepts literally:
+    # persist the canonical model and pin its effort through the one runtime
+    # chokepoint (``agent.reasoning_overrides`` → ``resolve_reasoning_config``).
+    alias = details.get(model)
+    canonical = (alias.canonical_model or "").strip() if alias is not None else ""
+    if canonical and canonical != model:
+        from hermes_constants import parse_reasoning_effort
+        effort = (alias.reasoning_effort or "").strip().lower()
+        if parse_reasoning_effort(effort) is not None:
+            agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+            overrides = agent_cfg.get("reasoning_overrides")
+            overrides = dict(overrides) if isinstance(overrides, dict) else {}
+            overrides[canonical] = effort
+            agent_cfg["reasoning_overrides"] = overrides
+            cfg["agent"] = agent_cfg
+        model = canonical
+        entry["model"] = model
+        models_map.setdefault(model, {})
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
@@ -730,7 +780,11 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not resp.is_success:
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
 
-    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+    # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
+    # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
+    entries = _parse_model_entries(resp)
+    return {"ok": True, "reachable": True, "message": "", "models": [e["id"] for e in entries],
+            "model_details": entries}
 
 
 def _endpoint_probe_client(url: str, timeout: float):
