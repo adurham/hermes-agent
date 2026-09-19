@@ -17,7 +17,7 @@ class HomeIOGuard:
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
-    def check(self, value, *, dir_fd=None):
+    def check(self, value, *, dir_fd=None, metadata=False):
         if value is None or isinstance(value, int) or getattr(self.checking, "active", False):
             return
         self.checking.active = True
@@ -30,11 +30,17 @@ class HomeIOGuard:
                 candidate = parent / candidate
             absolute = Path(os.path.abspath(candidate))
             roots = self.roots()
+            # Resolving the root itself (get_default_hermes_root's relative_to
+            # probe) reads no state; only its contents are guarded.
+            if metadata and absolute in roots:
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             if any(absolute.is_relative_to(root) for root in roots):
                 self.refuse(value)
             resolved = absolute.resolve()
+            if metadata and resolved in roots:
+                return
             if any(resolved.is_relative_to(root) for root in roots):
                 self.refuse(value)
         finally:
@@ -48,22 +54,24 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
-        def wrap(module, name, parameters):
+        def wrap(module, name, parameters, *, metadata=False):
             original = getattr(module, name)
 
             @wraps(original)
             def guarded(*args, **kwargs):
                 for index, (parameter, descriptor) in enumerate(parameters):
                     value = args[index] if index < len(args) else kwargs.get(parameter)
-                    self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None)
+                    self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata)
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
 
         for module in (builtins, io):
             wrap(module, "open", (("file", None),))
-        for name in ("mkdir", "stat", "lstat", "unlink", "remove", "rmdir", "chmod", "utime", "readlink", "access"):
+        for name in ("mkdir", "unlink", "remove", "rmdir", "chmod", "utime"):
             wrap(os, name, (("path", "dir_fd"),))
+        for name in ("stat", "lstat", "readlink", "access"):
+            wrap(os, name, (("path", "dir_fd"),), metadata=True)
         for name in ("makedirs", "listdir", "scandir"):
             wrap(os, name, (("name" if name == "makedirs" else "path", None),))
         for name in ("rename", "replace"):
