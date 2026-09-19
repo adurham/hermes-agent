@@ -869,7 +869,7 @@ class TestPostUpdateDashboardCleanupIsolation:
         import hermes_cli.update_receipt as ur
         from hermes_cli import update_cmd
 
-        ur._current = None
+        ur._current.set(None)
         try:
             ur.begin_update_receipt()
             with patch(
@@ -880,9 +880,9 @@ class TestPostUpdateDashboardCleanupIsolation:
             ):
                 update_cmd._finish_dashboard_update_cleanup([])  # must not raise
 
-            steps = {s["name"]: s for s in ur._current.data["steps"]}
+            steps = {s["name"]: s for s in ur._current.get().data["steps"]}
         finally:
-            ur._current = None
+            ur._current.set(None)
 
         assert steps["dashboard_cleanup"]["ok"] is False
         assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]

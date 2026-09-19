@@ -1097,6 +1097,19 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
                 if (alias.asname or alias.name.split(".")[0]) == symbol:
                     return True, ""
 
+    # A PEP 562 facade (``pm/__init__.py``) publishes names from a module-scope
+    # ``_EXPORTS = {"pm.install": ("ensure", ...)}`` table; resolve through it.
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "_EXPORTS" for t in node.targets):
+            try:
+                exports = ast.literal_eval(node.value)
+            except ValueError:
+                break
+            for target_module, names in exports.items():
+                if symbol in names:
+                    return resolve_in_tree(target_module, symbol, root)
+
     return False, f"{module}.{symbol} not found"
 
 
