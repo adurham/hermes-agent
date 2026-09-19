@@ -323,7 +323,7 @@ class TestTzdataDependencyDeclared:
         # specifier in between (==X.Y.Z, >=X.Y.Z,<W, etc.) and either quote
         # style on the marker.
         pattern = re.compile(
-            r'"tzdata[^"]*;\s*sys_platform\s*==\s*[\'"]win32[\'"]\s*"'
+            r'"tzdata[^"]*;\s*sys_platform\s*==\s*[\'"]win32[\'"][^"]*"'
         )
         assert pattern.search(source), (
             "tzdata must be a Windows-only dep in pyproject.toml dependencies "
