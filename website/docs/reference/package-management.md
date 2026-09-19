@@ -7,7 +7,7 @@ description: "PM tool pins, Python environments, optional dependencies, and inst
 
 `hermes pm` manages Hermes tool binaries and Python dependency environments.
 It is not the application updater. Use the installation's
-[update method](/getting-started/updating) to update Hermes itself.
+[update method](../getting-started/updating.md) to update Hermes itself.
 
 ## Pins, installed state, and runtime selection
 
@@ -97,8 +97,8 @@ use the recorded extra selection as their baseline.
 Termux uses a separate bionic build and a sealed APT package. Docker bakes its
 runtime into the image and disables on-demand dependency installation. Nix
 provides its runtime through derivations. See the
-[Termux](/getting-started/termux), [Docker](/user-guide/docker), and
-[Nix](/getting-started/nix-setup) guides for their limits.
+[Termux](../getting-started/termux.md), [Docker](../user-guide/docker.md), and
+[Nix](../getting-started/nix-setup.md) guides for their limits.
 
 ## Writable state
 
@@ -166,7 +166,7 @@ Ordinary Hermes application updates preserve user plugin directories. Explicit
 plugin updates can change the selected plugin's files. A wrapper with no Python
 dependency declaration does not join the shared environment. Its external
 sidecar remains separately owned. See the
-[plugin guide](/developer-guide/plugins).
+[plugin guide](../developer-guide/plugins/index.md).
 
 ### Lazy-install policy
 
@@ -418,7 +418,7 @@ workspaces, and do not install packages directly into a selected generation.
 PM's `dev` extra does not make a bare store Python suitable for the canonical
 test runner. The runner clears `PYTHONPATH` and needs an interpreter with pytest
 installed in its own environment. Use the contributor guide's
-[independent test environment](/developer-guide/contributing#manual-development-and-test-environment)
+[independent test environment](../developer-guide/contributing.md#manual-development-and-test-environment)
 with this command from the prepared checkout:
 
 ```bash

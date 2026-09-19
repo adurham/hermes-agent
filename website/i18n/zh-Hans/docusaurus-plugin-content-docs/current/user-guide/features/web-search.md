@@ -7,7 +7,7 @@ sidebar_position: 6
 
 # 网页搜索与提取
 
-本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
 依赖变更后，请重新激活该 checkout 并重启 Hermes。
 
 Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商支持：
@@ -358,7 +358,7 @@ xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或�
 ✅ Web Search & Extract (searxng)
 ```
 
-源码检出也可以在 [PM 激活](/reference/package-management#developer-workflow)后检查模块。
+源码检出也可以在 [PM 激活](../../reference/package-management.md#developer-workflow)后检查模块。
 使用你打算检查网页配置的 Hermes 数据目录：
 
 ```bash

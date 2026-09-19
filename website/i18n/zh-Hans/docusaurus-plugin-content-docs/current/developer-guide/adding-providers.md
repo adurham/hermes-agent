@@ -338,7 +338,7 @@ Prompt（提示词）缓存和 provider 专属的调节项很容易出现回归�
 - `provider:model` 解析
 - 任何适配器专属的消息转换
 
-先准备[独立测试环境](/developer-guide/contributing#manual-development-and-test-environment)，
+先准备[独立测试环境](./contributing.md#manual-development-and-test-environment)，
 再使用标准运行器；它会隔离每个测试文件并清除凭据环境变量：
 
 ```bash
@@ -353,7 +353,7 @@ scripts/run_tests.sh tests/ -q
 
 ## 第 9 步：实时验证
 
-测试通过后，按照 [PM 开发流程](/reference/package-management#developer-workflow)
+测试通过后，按照 [PM 开发流程](../reference/package-management.md#developer-workflow)
 使用独立开发数据目录，从源码检出运行真实冒烟测试。先退出测试 venv，再激活 PM。
 
 ```bash

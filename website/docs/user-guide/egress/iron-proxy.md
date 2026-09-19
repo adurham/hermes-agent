@@ -281,7 +281,7 @@ PM owns the managed binary. Hermes honors an `iron-proxy` executable on
 `PATH` before checking PM selection. If neither exists, `auto_install` requests the pinned package, subject
 to PM's lazy-install policy. Explicit installation checks and repairs managed
 entries without forcing a new download of valid files. See
-[PM security tools](/reference/package-management#optional-security-tools) for hash and signature checks.
+[PM security tools](../../reference/package-management.md#optional-security-tools) for hash and signature checks.
 
 Daemon configuration, credentials, and logs remain profile-scoped under
 `$HERMES_HOME/proxy/` (`~/.hermes/proxy/` by default):

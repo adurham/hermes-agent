@@ -7,7 +7,7 @@ description: "Authoritative reference for Hermes terminal commands and command f
 # CLI Commands Reference
 
 Python dependency commands on this page use a
-[PM-prepared source checkout](/reference/package-management#developer-workflow).
+[PM-prepared source checkout](./package-management.md#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
 This page covers the **terminal commands** you run from your shell.
@@ -1899,7 +1899,7 @@ hermes pm install chromium
 For source development, run the setup script once, then activate the installed
 environment with `source ./activate` or PowerShell `. .\activate.ps1`.
 Use `deactivate` to restore the previous shell environment. See the
-[developer workflow](/reference/package-management#developer-workflow) for preparation,
+[developer workflow](./package-management.md#developer-workflow) for preparation,
 daily commands, dependency refresh, and test environments.
 
 See [Package management](./package-management.md) for every subcommand,

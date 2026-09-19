@@ -95,7 +95,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI 语音转文字和文字转语音提供商的首选 OpenAI 密钥 |
 | `HERMES_LOCAL_STT_COMMAND` | 可选的本地语音转文字命令模板。支持 `{input_path}`、`{output_dir}`、`{language}` 和 `{model}` 占位符 |
 | `HERMES_LOCAL_STT_LANGUAGE` | 传递给 `HERMES_LOCAL_STT_COMMAND` 或自动检测的本地 `whisper` CLI 回退的默认语言（默认：`en`） |
-| `HERMES_HOME` | 选择配置和用户数据目录。POSIX 默认为 `~/.hermes`，Windows 默认为 `%LOCALAPPDATA%\hermes`。源码位置和 PM 工具存储单独管理，详见[包管理](/reference/package-management)。 |
+| `HERMES_HOME` | 选择配置和用户数据目录。POSIX 默认为 `~/.hermes`，Windows 默认为 `%LOCALAPPDATA%\hermes`。源码位置和 PM 工具存储单独管理，详见[包管理](./package-management.md)。 |
 | `HERMES_DISABLE_WINDOWS_UTF8` | **仅 Windows。** 设为 `1` 可禁用 UTF-8 stdio shim（`configure_windows_stdio()`），回退到控制台的本地代码页。用于排查编码问题；正常操作中极少需要 |
 | `HERMES_KANBAN_HOME` | 覆盖锚定 kanban 看板（数据库 + 工作区 + 工作日志）的共享 Hermes 根目录。回退到 `get_default_hermes_root()`（任意活动 profile 的父目录）。适用于测试和非常规部署 |
 | `HERMES_KANBAN_BOARD` | 为当前进程固定活动 kanban 看板。优先于 `~/.hermes/kanban/current`；调度器将其注入工作进程子进程环境，使工作进程无法看到其他看板上的任务。默认为 `default`。slug 验证：小写字母数字 + 连字符 + 下划线，1-64 字符 |

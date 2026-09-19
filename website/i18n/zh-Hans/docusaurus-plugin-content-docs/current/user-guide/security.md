@@ -677,4 +677,4 @@ hermes config set security.allow_lazy_installs false
 官方 Docker 镜像还通过内部策略关闭按需安装，仅更改配置不能覆盖它。
 
 用 `hermes tools` 和 `hermes doctor` 检查缺失需求。
-不要向签名载荷或系统 Python 执行 pip 安装。详见[包管理](/reference/package-management)。
+不要向签名载荷或系统 Python 执行 pip 安装。详见[包管理](../reference/package-management.md)。

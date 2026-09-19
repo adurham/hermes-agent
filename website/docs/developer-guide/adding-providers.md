@@ -343,7 +343,7 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 - provider:model parsing
 - any adapter-specific message conversion
 
-Prepare the [independent test environment](/developer-guide/contributing#manual-development-and-test-environment),
+Prepare the [independent test environment](./contributing.md#manual-development-and-test-environment),
 then use the canonical runner, which isolates each file and scrubs credentials:
 
 ```bash
@@ -360,7 +360,7 @@ scripts/run_tests.sh tests/ -q
 ## Step 9: Live verification
 
 After tests, run a real smoke test from the checkout using the
-[PM developer workflow](/reference/package-management#developer-workflow) and
+[PM developer workflow](../reference/package-management.md#developer-workflow) and
 its isolated development home. Leave any test venv before PM activation.
 
 ```bash

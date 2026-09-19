@@ -11,7 +11,7 @@ Pull API keys from [Bitwarden Secrets Manager](https://bitwarden.com/products/se
 
 Hermes honors a `bws` executable on `PATH` before checking PM selection.
 If neither exists, first use requests the pinned package from
-[PM](/reference/package-management#optional-security-tools), subject to the lazy-install policy.
+[PM](../../reference/package-management.md#optional-security-tools), subject to the lazy-install policy.
 
 ## Why machine accounts (and why no 2FA prompt)
 

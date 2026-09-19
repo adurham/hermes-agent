@@ -809,7 +809,7 @@ Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level
 - Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
 - Terminal injection attacks
 
-Tirith requests a pinned [PM package](/reference/package-management#optional-security-tools)
+Tirith requests a pinned [PM package](../reference/package-management.md#optional-security-tools)
 when enabled and absent. PM checks artifact hashes from `pm/lock.json` and
 calls the cosign checker when available. An explicit provenance rejection aborts
 installation. Startup requests installation in the background, subject to the

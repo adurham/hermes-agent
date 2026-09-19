@@ -601,7 +601,7 @@ bootstrap marker does not force installation when that launcher works.
 If Python dependencies are damaged, run the installation's `hermes pm repair`.
 Then restart Desktop. Do not delete guessed `venv` paths or PM facts. For
 damaged application files, repair through the
-[installation owner](/reference/package-management#source-installs-and-packaged-builds).
+[installation owner](../reference/package-management.md#source-installs-and-packaged-builds).
 
 ```bash
 # Reset a stuck macOS microphone prompt

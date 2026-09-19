@@ -8,7 +8,7 @@ sidebar_position: 6
 # Web Search & Extract
 
 Python dependency commands on this page use a
-[PM-prepared source checkout](/reference/package-management#developer-workflow).
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
 Hermes Agent includes two model-callable web tools backed by multiple providers:
@@ -444,7 +444,7 @@ Run `hermes setup` to see which web backend is detected:
 ```
 
 For a source checkout, you can also check the module after
-[PM activation](/reference/package-management#developer-workflow). Use the home
+[PM activation](../../reference/package-management.md#developer-workflow). Use the home
 whose web configuration you intend to inspect:
 
 ```bash

@@ -158,7 +158,7 @@ install the SDK into the selected environment with pip.
 
 **Setup (manual):**
 
-For a source checkout, first follow the [PM developer workflow](/reference/package-management#developer-workflow)
+For a source checkout, first follow the [PM developer workflow](../../reference/package-management.md#developer-workflow)
 with the intended Hermes home. Use the checkout's prepared Python:
 
 ```bash

@@ -21,8 +21,8 @@ Hermes 有多种不同的可插拔接口——有些使用 Python `register_*` A
 | **图像生成后端** | [图像生成提供商插件](../image-gen-provider-plugin.md) |
 | **视频生成后端** | [视频生成提供商插件](../video-gen-provider-plugin.md) |
 | **网页搜索/提取后端** | [网页搜索提供商插件](../web-search-provider-plugin.md) |
-| **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](/developer-guide/browser-provider-plugin) |
-| **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](/developer-guide/secret-source-plugin) |
+| **云浏览器后端**（Browserbase 类 CDP 会话提供商） | [浏览器提供商插件](../browser-provider-plugin.md) |
+| **密钥管理器后端**（保险库 / 密码管理器 / 系统钥匙串） | [密钥源插件](../secret-source-plugin.md) |
 | **仪表盘 OIDC/认证提供商** | [Web 仪表盘 — 自定义提供商](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | **TTS 后端**（任意 CLI——Piper、VoxCPM、Kokoro、声音克隆等） | [TTS 自定义命令提供商](../../user-guide/features/tts.md#自定义命令提供商)——配置驱动，无需 Python |
 | **STT 后端**（自定义 whisper / ASR CLI） | [语音消息转录](../../user-guide/features/tts.md#语音消息转录stt)——将 `HERMES_LOCAL_STT_COMMAND` 设置为 shell 模板 |
@@ -488,7 +488,7 @@ PM 在启用插件前统一准备核心依赖和插件依赖，不改写已发�
 成功准备后，环境选择与启用配置通过同一准入事务发布；失败保留原选择和启用列表。
 解析冲突会拒绝准入并保留原环境，不会自动禁用其他插件。
 手动 pip 安装不等于持久的 PM 依赖声明，后续环境替换不保证保留它们。
-详见[包管理](/reference/package-management)。
+详见[包管理](../../reference/package-management.md)。
 
 ### 条件工具可用性
 

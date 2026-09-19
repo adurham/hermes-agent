@@ -130,7 +130,7 @@ hermes tools  # → Langfuse Observability → Cloud 或 Self-Hosted
 向导收集凭据，按需通过 PM 准备已声明的 `langfuse` extra，并启用插件。
 完成后重启 Hermes；准备失败时通过 `hermes tools` 重试，不要直接 pip 安装到选中的环境。
 
-源码检出的手动设置：先按照 [PM 开发流程](/reference/package-management#developer-workflow)
+源码检出的手动设置：先按照 [PM 开发流程](../../reference/package-management.md#developer-workflow)
 激活目标检出并选择正确的 Hermes 数据目录，然后执行：
 
 ```bash

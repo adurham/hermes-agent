@@ -6,7 +6,7 @@ description: "Hermes 终端命令及命令族的权威参考"
 
 # CLI 命令参考
 
-本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+本页的 Python 依赖命令使用 [PM 准备的源码环境](./package-management.md#developer-workflow)。
 依赖变更后，请重新激活该 checkout 并重启 Hermes。
 
 本页介绍从 shell 运行的**终端命令**。
@@ -1230,7 +1230,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 PM 管理工具和 Python 依赖，不负责替换应用发布包。
 源码开发先运行一次 setup 脚本，然后用 Bash `source ./activate` 或 PowerShell `. .\activate.ps1` 激活已有环境。
 使用 `deactivate` 恢复激活前的环境。
-详见[PM 开发工作流](/reference/package-management#developer-workflow)，包括依赖更新和测试环境。
+详见[PM 开发工作流](./package-management.md#developer-workflow)，包括依赖更新和测试环境。
 
 ## `hermes update`
 

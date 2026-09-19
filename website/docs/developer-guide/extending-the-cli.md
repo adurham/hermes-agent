@@ -74,7 +74,7 @@ if __name__ == "__main__":
 ```
 
 Run it from your source checkout after selecting an isolated development home
-with the [PM developer workflow](/reference/package-management#developer-workflow):
+with the [PM developer workflow](../reference/package-management.md#developer-workflow):
 
 ```bash
 source ./activate
