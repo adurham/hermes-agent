@@ -73,6 +73,10 @@ let
       "scripts/build/desktop.mjs"
       "scripts/build/freshness.mjs"
       "scripts/build/frontend-common.mjs"
+      # product-identity.cjs resolves the channel request through the
+      # packaging helper (and its content-types table).
+      "scripts/msix-shared.mjs"
+      "scripts/release-content-types.json"
     ];
     pname = "hermes-desktop-renderer";
 
