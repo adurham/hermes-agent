@@ -129,6 +129,26 @@ def hash_url(url: str) -> str:
     return retry_network(request)
 
 
+def _tar_filter(member, dest: str):
+    """The stdlib 'data' filter, with symlink targets resolved from the link's own
+    directory. Bootstrap interpreters (Ubuntu 22.04 ships 3.10) resolve them from
+    the archive root and reject python-build-standalone's terminfo links."""
+    import tarfile
+
+    if member.issym():
+        if os.path.isabs(member.linkname):
+            raise tarfile.AbsoluteLinkError(member)
+        name = member.name.rstrip("/")
+        placed = os.path.realpath(os.path.join(dest, name))
+        link_dir = os.path.dirname(name)
+        target = os.path.realpath(os.path.join(dest, link_dir, member.linkname))
+        for path in (placed, target):
+            if os.path.commonpath([path, dest]) != dest:
+                raise tarfile.LinkOutsideDestinationError(member, path)
+        return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
+    return tarfile.data_filter(member, dest)
+
+
 def extract(archive: Path, dest: Path) -> None:
     import tarfile
 
@@ -136,8 +156,9 @@ def extract(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     name = archive.name.lower()
     if name.endswith((".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2")):
+        real_dest = os.path.realpath(dest)
         with tarfile.open(archive) as tf:
-            tf.extractall(dest, filter="data")
+            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
     elif name.endswith(".zip"):
         _extract_zip(archive, dest)
     else:
