@@ -862,19 +862,37 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if watchdog_state is not None
         else getattr(agent, "_active_codex_stream_request_token", None)
     )
-    # Delta-sink claim for the CURRENT physical attempt (None until the stream opens).
-    writer_token = {"value": None}
+    # Delta-sink claim for the CURRENT physical attempt (None until the stream opens). A newer attempt that
+    # claims the sink supersedes this token; that only silences OUR live callbacks — consumption continues,
+    # because stopping here handed the gateway a "completed" response missing its tail (#69486).
+    writer_token = {"value": None, "superseded_logged": False}
 
     def _request_is_current() -> bool:
         return request_token is None or getattr(agent, "_active_codex_stream_request_token", None) is request_token
+
+    def _writer_is_current() -> bool:
+        token = writer_token["value"]
+        if token is None or stream_writer_is_current(agent, token):
+            return True
+        if not writer_token["superseded_logged"]:
+            writer_token["superseded_logged"] = True
+            logger.warning("Codex streaming attempt superseded by a newer stream; suppressing its live deltas while "
+                           "consuming to completion so the final response is not truncated (model=%s).",
+                           api_kwargs.get("model", "unknown"))
+        return False
 
     def _fenced(fn: Callable[[Any], None]) -> Callable[[Any], None]:
         """Wrap a callback so a retired request's late frames never reach the agent."""
         return lambda value: fn(value) if _request_is_current() else None
 
+    def _live(fn: Callable[..., None]) -> Callable[..., None]:
+        """Wrap a live-display callback so a superseded writer's frames never reach the sink (retired ones neither)."""
+        return lambda *args: fn(*args) if _request_is_current() and _writer_is_current() else None
+
     def _on_text_delta(text: str) -> None:
         agent._codex_streamed_text_parts.append(text)
-        agent._fire_stream_delta(text)
+        if _writer_is_current():
+            agent._fire_stream_delta(text)
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
@@ -920,14 +938,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
         writer_token["value"] = claim_stream_writer(agent)
 
-    def _accept_codex_chunk(_chunk: Any) -> bool:
-        token = writer_token["value"]
-        if token is None or stream_writer_is_current(agent, token):
-            return True
-        logger.warning("Codex streaming attempt superseded by a newer stream; stopping consumption to preserve "
-                       "the single-writer invariant (model=%s).", api_kwargs.get("model", "unknown"))
-        return False
-
     def _drain_for_finalizer(event_stream: Any) -> None:
         # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error
         # here must NOT discard the completed, already-billed response.
@@ -954,7 +964,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 agent._abort_request_openai_client(active_client, reason="codex_stream_close_failed")
     show_commentary = getattr(agent, "show_commentary", True)
     wants_commentary = getattr(agent, "interim_assistant_callback", None) is not None and show_commentary
-    on_commentary_message = _fenced(lambda text: agent._fire_streamed_codex_commentary(text)) if wants_commentary else None
+    on_commentary_message = _live(agent._fire_streamed_codex_commentary) if wants_commentary else None
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
     for attempt in range(max_stream_retries + 1):
@@ -968,7 +978,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             with watchdog_state.lock:
                 watchdog_state.retry_started_ts = time.time()
         intercepted_events: list = []
-        writer_token["value"] = event_stream = None
+        writer_token["value"], writer_token["superseded_logged"], event_stream = None, False, None
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -977,7 +987,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     name=str(getattr(agent, "provider", "") or "codex"), model_name=str(model or ""),
                     finalizer=lambda: _consume_codex_event_stream(list(intercepted_events), model=model),
                     on_stream_created=_codex_stream_created, on_chunk=intercepted_events.append,
-                    chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_codex_chunk,
+                    chunk_adapter=lambda chunk: chunk,
                     completed_response_predicate=lambda r: bool(hasattr(r, "output") and not hasattr(r, "__iter__")),
                     metadata={"api_mode": "codex_responses", "call_role": call_role, "retry_count": attempt,
                               "api_request_id": getattr(agent, "_current_api_request_id", None)},
@@ -985,8 +995,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 final = _consume_codex_event_stream(
                     event_stream, model=model, on_text_delta=_fenced(_on_text_delta),
-                    on_reasoning_delta=_fenced(lambda text: agent._fire_reasoning_delta(text)),
-                    on_commentary_message=on_commentary_message, on_first_delta=on_first_delta,
+                    on_reasoning_delta=_live(agent._fire_reasoning_delta), on_commentary_message=on_commentary_message,
+                    on_first_delta=_live(on_first_delta) if on_first_delta is not None else None,
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
                 )
             except transport_errors as exc:
