@@ -1,7 +1,7 @@
 """OpenAI native web search — declares the Responses API server-side ``web_search`` built-in.
 
 Config: ``web.search_backend: openai-native`` (or ``web.backend``).
-Auth: openai-codex OAuth (``hermes auth --provider openai-codex``); no API key of its own.
+Auth: openai-codex OAuth (``hermes auth add openai-codex``); no API key of its own.
 
 Unlike every other provider here, this one never executes a search itself. Selecting it
 tells the Codex Responses transport to declare the provider-executed ``web_search`` tool
@@ -83,6 +83,6 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
         return setup_schema(
             self.DISPLAY_NAME,
             "native",
-            "由模型服务端执行搜索（需 Codex Responses transport + openai-codex 登录）；仅搜索，提取仍用其他后端",
+            "Search runs on the provider side (needs the Codex Responses transport + an openai-codex login); search only, extraction still uses another backend",
             "",
         )
