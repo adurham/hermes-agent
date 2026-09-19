@@ -8,7 +8,6 @@ import json
 from functools import partial
 import threading
 import zipfile
-from pathlib import Path
 
 import pytest
 
@@ -34,10 +33,7 @@ def archive(files: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
-@pytest.fixture(autouse=True)
-def isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 @pytest.fixture(params=["install", "stage"])

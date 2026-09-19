@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
 import pm.packages as pkgs
 
-@pytest.fixture(autouse=True)
-def isolated_machine_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 

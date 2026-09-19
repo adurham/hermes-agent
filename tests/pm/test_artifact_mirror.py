@@ -23,7 +23,7 @@ def test_cold_consumers_recover_after_upstream_removal(tmp_path, dl_server, monk
         archive.writestr("tool.txt", b"pinned and preserved")
     body = data.getvalue()
     if mode == "library":
-        from tests.test_termux_runtime_libs import _build_deb
+        from tests.scripts.test_termux_runtime_libs import _build_deb
         deb = tmp_path / "test.deb"
         _build_deb(deb, "libmirror.so", b"pinned and preserved")
         body = deb.read_bytes()

@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def test_fragments_match_the_pin_table():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, str(root / "scripts/gen-bootstrap-pins.py"), "--check"],
         cwd=root, capture_output=True, text=True, timeout=60,

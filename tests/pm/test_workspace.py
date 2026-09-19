@@ -22,10 +22,7 @@ from pm.environment import managed_environment
 from tests.pm.test_environment_build import locked_project  # noqa: F401
 
 
-@pytest.fixture(autouse=True)
-def isolated_machine_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 @pytest.fixture

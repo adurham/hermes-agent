@@ -56,4 +56,4 @@ jobs:
         shell: bash
         env:
           HERMES_TEST_FILE_RETRIES: '0'
-        run: bash scripts/run_tests.sh tests/test_source_launcher_stages.py -k powershell_stage -q -j 1
+        run: bash scripts/run_tests.sh tests/pm/test_source_launcher_stages.py -k powershell_stage -q -j 1

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Every PowerShell script a user or CI machine actually runs. Discovered,
 # not hardcoded: a new script in scripts/ gets gated automatically.

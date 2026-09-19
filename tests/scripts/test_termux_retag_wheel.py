@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from tests.termux_fixtures import write_wheel, verify_record
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts" / "termux"
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts" / "termux"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import retag_wheel  # noqa: E402

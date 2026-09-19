@@ -35,7 +35,7 @@ from tests.installation_launcher_fixture import publish_fixture_launcher
 
 pytestmark = pytest.mark.platforms("windows")
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 
 _FAKE_PY = r'''

@@ -123,7 +123,7 @@ jobs:
         shell: bash
         env:
           HERMES_TEST_FILE_RETRIES: '0'
-        run: bash scripts/run_tests.sh tests/test_fresh_source_install.py -q -j 1
+        run: bash scripts/run_tests.sh tests/scripts/test_fresh_source_install.py -q -j 1
 
   windows:
     name: install.ps1 protocol surface

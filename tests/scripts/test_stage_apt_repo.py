@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from tests.termux_fixtures import build_deb
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts" / "termux"
 sys.path.insert(0, str(SCRIPTS))
 

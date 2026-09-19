@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def test_icon_group_is_separate_from_runtime_extras():
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     uv = shutil.which("uv")
     assert uv, "uv is required for the dependency-selection contract"
 

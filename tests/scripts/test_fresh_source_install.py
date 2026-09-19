@@ -20,7 +20,7 @@ import pytest
 from pm.store import current_target
 from tests.pm._fixtures import _wheel, served as served
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.platforms("linux")

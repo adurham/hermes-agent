@@ -65,7 +65,7 @@ def test_cache_rejects_incomplete_or_inconsistent_manifests(tmp_path, damage):
 
 def test_cache_cli_keeps_commit_and_tag_provenance_distinct(tmp_path):
     payload, _ = cache_tree(tmp_path)
-    repo = Path(__file__).resolve().parents[1]
+    repo = Path(__file__).resolve().parents[2]
     args = [sys.executable, str(repo / 'scripts/termux/wheelhouse_cache.py'), 'write',
             '--payload', str(payload), '--repo', str(repo), '--builder', 'fixture-image',
             '--platform-tag', 'android_24_arm64_v8a', '--python-abi', 'cp314']

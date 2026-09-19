@@ -168,7 +168,7 @@ def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
 
 @pytest.fixture
 def old_updater():
-    path = Path(__file__).parent / "compat" / "old_updater_dependencies.py"
+    path = Path(__file__).parents[1] / "compat" / "old_updater_dependencies.py"
     spec = importlib.util.spec_from_file_location("old_updater_dependencies", path)
     assert spec is not None and spec.loader is not None
     old = importlib.util.module_from_spec(spec)

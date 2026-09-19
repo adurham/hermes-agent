@@ -10,10 +10,7 @@ import sys
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def isolated_machine_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 def test_ambient_uv_config_does_not_affect_pm_venv_sync(tmp_path, monkeypatch):

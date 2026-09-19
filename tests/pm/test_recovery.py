@@ -15,10 +15,7 @@ from pm.lock import Facts
 from pm.runtime import runtime_environment
 from tests.pm._fixtures import _wheel
 
-@pytest.fixture(autouse=True)
-def isolated_machine_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 

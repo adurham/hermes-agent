@@ -7,7 +7,7 @@ import subprocess
 import pytest
 from tests.installation_launcher_fixture import publish_fixture_launcher
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.platforms('posix')
 @pytest.mark.parametrize('stage, expected', [('setup', ['setup']), ('gateway', ['gateway', 'install']), ('desktop', ['desktop', '--build-only'])])

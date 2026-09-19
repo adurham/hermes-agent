@@ -39,7 +39,7 @@ print(json.dumps(result))
 """
     result = subprocess.run(
         [sys.executable, "-c", script], env=env,
-        cwd=Path(__file__).resolve().parents[1],
+        cwd=Path(__file__).resolve().parents[2],
         text=True, capture_output=True, check=True,
     )
     base = tmp_path / "AppData" / "Local" / "hermes" if sys.platform == "win32" else tmp_path / ".hermes"

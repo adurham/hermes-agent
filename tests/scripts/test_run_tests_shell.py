@@ -18,7 +18,7 @@ def test_shell_runner_executes_tests_and_propagates_failure(tmp_path):
         "    assert False, 'runner failure propagation canary'\n",
         encoding="utf-8",
     )
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         ["bash", str(root / "scripts/run_tests.sh"), "-j", "1", str(case)],
         cwd=tmp_path, capture_output=True, text=True, timeout=180,

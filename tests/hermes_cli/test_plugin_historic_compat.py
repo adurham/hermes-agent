@@ -107,7 +107,7 @@ plugins_transaction.recover_plugin_publication(
 )
 """
     return subprocess.run(
-        [sys.executable, "-I", "-S", "-c", script, str(Path(__file__).resolve().parents[1]), str(project), str(journal)],
+        [sys.executable, "-I", "-S", "-c", script, str(Path(__file__).resolve().parents[2]), str(project), str(journal)],
         input=json.dumps(row), text=True, capture_output=True, check=False,
         env={**os.environ, "HERMES_HOME": str(Path(row["metadata"]).parent.parent)},
     )
