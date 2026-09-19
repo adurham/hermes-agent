@@ -48,7 +48,8 @@ exit /b 0
     '{"packages":{"python":{"version":"3.13.2+test"}}}' |
         Set-Content -LiteralPath (Join-Path $checkout 'pm\lock.json') -Encoding UTF8
     Invoke-BootstrapPm
-    $recorded = Get-Content -LiteralPath $argsFile
+    # cmd's `echo %* >> file` keeps the space before `>>` in the recorded line.
+    $recorded = @(Get-Content -LiteralPath $argsFile | ForEach-Object { $_.Trim() })
     Assert-True ($recorded.Count -eq 2) 'uv only installs and locates bootstrap Python'
     Assert-True ($recorded[0] -eq 'python install --no-bin 3.13') 'Python minor comes from the lockfile'
     Assert-True ($recorded[1] -eq 'python find --managed-python --no-project 3.13') 'lookup ignores ambient project discovery'
