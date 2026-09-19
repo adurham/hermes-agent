@@ -25,6 +25,9 @@ from pm.lock import Facts
 from pm.package import InstallError
 from tests.pm._fixtures import isolated_python  # noqa: F401
 
+# Spawns children with a home it builds itself; the parent's must stay real.
+pytestmark = pytest.mark.real_machine_home
+
 
 @pytest.fixture
 def source_launch(tmp_path, monkeypatch, isolated_python):

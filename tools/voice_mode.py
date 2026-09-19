@@ -42,7 +42,19 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # WSL, no PortAudio).
 
 def _import_audio():
-    """Lazy-import (sounddevice, numpy); raises ImportError/OSError when unavailable."""
+    """Lazy-import (sounddevice, numpy), enabling the ``audio-io`` extra through PM first.
+
+    Raises ImportError when the extra cannot be enabled here (lazy installs off, platform
+    gate, or installed-but-needs-restart) and OSError when PortAudio's shared library is
+    missing — pip can't fix that one, so it is reported separately.
+    """
+    import pm
+
+    if not pm.available("audio-io"):
+        try:
+            pm.ensure_import("audio-io")
+        except pm.InstallError as exc:
+            raise ImportError(str(exc)) from exc
     import sounddevice as sd
     import numpy as np
     return sd, np
@@ -90,6 +102,16 @@ def _unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def _audio_unavailable_reason() -> str:
+    try:
+        _import_audio()
+    except ImportError as exc:
+        return _voice_capture_install_hint(exc)
+    except OSError:
+        return _portaudio_missing_message().splitlines()[0]
+    return ""
+
+
 def _audio_available() -> bool:
     try:
         _import_audio()
@@ -113,12 +135,13 @@ def _default_input_samplerate(sd) -> int:
 
 
 # ── Environment detection ──
-def _voice_capture_install_hint() -> str:
-    # On Termux PortAudio is a system package a pip install can't provide (#18432); everywhere
-    # else the audio-io extra goes through PM so the install lands in the venv Hermes runs.
+def _voice_capture_install_hint(error: BaseException | None = None) -> str:
+    """Why audio capture is unavailable. ``_import_audio`` already tried to enable the
+    ``audio-io`` extra through PM, so the ImportError it raised IS the remediation."""
+    # On Termux PortAudio is a system package a pip install can't provide (#18432).
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
-    return "python -c \"from pm import sync_venv; sync_venv(['audio-io'], explicit=True)\""
+    return str(error) if error else "audio-io extra unavailable"
 
 
 def _portaudio_missing_message() -> str:
@@ -245,9 +268,9 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
 
     try:
         sd, _ = _import_audio()
-    except ImportError:
+    except ImportError as exc:
         return outcome("Termux:API microphone recording available (sounddevice not required)",
-                       f"Audio libraries not installed ({_voice_capture_install_hint()})", import_failed=True)
+                       f"Audio libraries not installed ({_voice_capture_install_hint(exc)})", import_failed=True)
     except OSError:
         return outcome("Termux:API microphone recording available (PortAudio not required)",
                        _portaudio_missing_message(), import_failed=True)
@@ -752,9 +775,7 @@ class AudioRecorder(_RecorderBase):
         except OSError as e:
             raise RuntimeError(_portaudio_missing_message()) from e
         except ImportError as e:
-            raise RuntimeError(
-                "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {_voice_capture_install_hint()}") from e
+            raise RuntimeError(f"Voice mode requires sounddevice and numpy.\n{_voice_capture_install_hint(e)}") from e
         with self._lock:
             if self._recording:
                 return
@@ -1481,7 +1502,7 @@ def check_voice_requirements() -> Dict[str, Any]:
     details = [
         "Audio capture: OK (Termux:API microphone)" if termux_capture
         else "Audio capture: OK" if has_audio
-        else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
+        else f"Audio capture: MISSING ({_audio_unavailable_reason()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
         else ("STT provider: MISSING (run `hermes tools` and configure "

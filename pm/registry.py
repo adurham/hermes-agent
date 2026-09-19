@@ -14,6 +14,9 @@ from pm.package import InstallError, Package
 _packages: dict[str, Package] = {}
 
 
+_BUILTIN_MODULES = ("pm.packages", "pm.security_packages")
+
+
 def _builtins_loaded() -> dict[str, Package]:
     """Register the built-in definitions on first read, not on ``import pm``.
 
@@ -22,9 +25,9 @@ def _builtins_loaded() -> dict[str, Package]:
     cost every launch ~40ms and break the stripped payloads that ship only the
     pre-import files.
     """
-    if "pm.packages" not in sys.modules:
-        import pm.packages  # noqa: F401  (registers the built-in definitions)
-        import pm.security_packages  # noqa: F401
+    for module in _BUILTIN_MODULES:
+        if module not in sys.modules:
+            importlib.import_module(module)
     return _packages
 
 

@@ -29,8 +29,8 @@ def candidate_members(extra_dirs=(), **selection):
 
 
 def selection_snapshot() -> dict[Path, bytes | None]:
-    from pm.plugins_state import _all_homes
-    return {home / "config.yaml": _bytes(home / "config.yaml") for home in _all_homes()}
+    from pm.plugins_state import dependency_homes
+    return {home / "config.yaml": _bytes(home / "config.yaml") for home in dependency_homes()}
 
 
 def validate_manifest(source: Path) -> dict:

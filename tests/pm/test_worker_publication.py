@@ -368,12 +368,12 @@ def test_stale_enablement_cannot_replace_a_newer_selection(client, tmp_path, mon
     config.write_text("plugins: {enabled: [], disabled: []}\n")
     from pm import plugins_state
 
-    read = plugins_state._read_home_config
+    read = plugins_state.read_home_selection
     def concurrent_commit(home):
         stale = read(home)
         config.write_text("plugins: {enabled: [first], disabled: []}\n")
         return stale
-    monkeypatch.setattr(plugins_state, "_read_home_config", concurrent_commit)
+    monkeypatch.setattr(plugins_state, "read_home_selection", concurrent_commit)
     with pytest.raises(AdmissionRefused, match="changed"):
         pc._set_plugin_enabled("second", enable=True)
     assert fast_safe_load(config.read_bytes())["plugins"]["enabled"] == ["first"]

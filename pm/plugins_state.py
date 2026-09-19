@@ -16,11 +16,12 @@ def _profiles_root() -> Path:
     return dependency_home_root() / "profiles"
 
 
-def _read_home_config(home: Path) -> Optional[dict[str, Any]]:
-    """Read a selection once; only an absent file means an unknown home.
+def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
+    """The plugin/memory selection a home's config.yaml declares (None: no config yet).
 
-    An unreadable selection must not shrink the next dependency generation.
-    Empty YAML is an explicit empty configuration, as in the CLI loader.
+    The public reader for anything that must agree with what PM installs for that home.
+    An unreadable selection raises rather than shrinking the next dependency generation;
+    empty YAML is an explicit empty configuration, as in the CLI loader.
     """
     config_path = home / "config.yaml"
     try:
@@ -86,8 +87,9 @@ def _is_directory(path: Path) -> bool:
         raise ValueError(f"could not inspect plugin directory: {path}") from exc
 
 
-def _all_homes() -> list[Path]:
-    """Enumerate the complete union or refuse; a partial scan cannot remove members."""
+def dependency_homes() -> list[Path]:
+    """Every home whose selection feeds the shared venv: the default home plus each profile.
+    Enumerates the complete union or refuses; a partial scan cannot remove members."""
     from pm.environments import dependency_home_root
 
     homes = [dependency_home_root()]
@@ -112,9 +114,9 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None, 
     the union. Admission refuses a conflicting candidate without changing
     the active environment or disabling an existing provider."""
     out: dict[Path, list[str]] = {}
-    for home in _all_homes():
+    for home in dependency_homes():
         # ONE parse per home feeds both queries (enabled + provider).
-        config = _read_home_config(home)
+        config = read_home_selection(home)
         config = config or {}
         if proposed_home is not None and home.resolve() == Path(proposed_home).resolve():
             config = {**config, "plugins": {"enabled": list(enabled or ()), "disabled": list(disabled or ())}}

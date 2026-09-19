@@ -21,6 +21,9 @@ from tests.pm._fixtures import (
     isolated_python as isolated_python,
 )
 
+# Spawns children with a home it builds itself; the parent's must stay real.
+pytestmark = pytest.mark.real_machine_home
+
 
 def test_isolated_worker_preserves_install_error(client, monkeypatch):
     engine = importlib.import_module("pm.install")

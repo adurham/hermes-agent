@@ -22,6 +22,9 @@ import tomllib
 
 import pytest
 
+# Spawns children with a home it builds itself; the parent's must stay real.
+pytestmark = pytest.mark.real_machine_home
+
 
 class _ArchiveHandler(SimpleHTTPRequestHandler):
     def copyfile(self, source, outputfile):

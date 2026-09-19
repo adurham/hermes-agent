@@ -12,6 +12,9 @@ from tests.pm.test_activate_scripts import (
     _bash, _bash_env, _isolated_checkout, _posix, _powershell, _spawnable_python,
 )
 
+# Spawns children with a home it builds itself; the parent's must stay real.
+pytestmark = pytest.mark.real_machine_home
+
 
 def _sync_checkout(tmp_path: Path):
     root = _isolated_checkout(tmp_path)

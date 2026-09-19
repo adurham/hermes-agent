@@ -12,7 +12,6 @@ from tests.pm import _fixtures
 from pm.environment import managed_environment
 
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 def _buildable_source(plugin):

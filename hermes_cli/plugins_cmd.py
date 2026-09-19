@@ -1146,10 +1146,10 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
 
 def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
     """Submit the command's delta with the version of the selection it read."""
-    from pm.plugins_state import _read_home_config
+    from pm.plugins_state import read_home_selection
 
     expected_config = _plugin_selection_version()
-    config = _read_home_config(get_hermes_home()) or {}
+    config = read_home_selection(get_hermes_home()) or {}
     plugins = config.get("plugins") or {}
     enabled = set(plugins.get("enabled") or ())
     disabled = set(plugins.get("disabled") or ())

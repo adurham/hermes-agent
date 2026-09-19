@@ -15,7 +15,6 @@ from pm.lock import Facts
 from pm.runtime import runtime_environment
 from tests.pm._fixtures import _wheel
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 

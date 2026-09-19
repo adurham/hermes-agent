@@ -103,12 +103,6 @@ def current_target() -> str:
     return f"linux-{arch}"
 
 
-def sha256_file(path: Path) -> str:
-    from pm.downloader import _sha256_file
-
-    return _sha256_file(path)
-
-
 def hash_url(url: str) -> str:
     """sha256 of a url's content, streamed. `pm lock` uses this to pin."""
     import hashlib

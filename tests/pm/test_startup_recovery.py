@@ -6,6 +6,7 @@ must defer to recorded-graph recovery, not resolve today's application inputs.
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import pytest
 
 from pm.lock import Facts, Lockfile
 from pm.runtime import runtime_environment
-from pm.store import current_target, sha256_file, tree_digest
+from pm.store import current_target, tree_digest
 from tests.pm._fixtures import _wheel
 
 @pytest.fixture(autouse=True)
@@ -127,7 +128,7 @@ def test_bootstrap_repairs_before_dependency_activation(tmp_path, monkeypatch, m
         assert not package.verify(directory, target), (
             f"startup recovery requires native {target} tools: {binary}"
         )
-        digest = sha256_file(binary)
+        digest = hashlib.sha256(binary.read_bytes()).hexdigest()
         lock.set_pin(name, "fixture", {target: {"url": binary.as_uri(), "sha256": digest}})
         facts.record(name, "fixture", str(directory), {}, tools,
                      target=target, artifacts=[digest], digest=tree_digest(directory))

@@ -22,7 +22,6 @@ from pm.environment import managed_environment
 from tests.pm.test_environment_build import locked_project  # noqa: F401
 
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 @pytest.fixture

@@ -43,7 +43,7 @@ def test_home_layout_joins_sibling_union(tmp_path, monkeypatch, layout):
         monkeypatch.delenv("HERMES_HOME", raising=False)
     else:
         monkeypatch.setenv("HERMES_HOME", str(active))
-    active.mkdir(parents=True)
+    active.mkdir(parents=True, exist_ok=True)
     sibling = root / "profiles/sibling"
     _write_enabled(sibling, ["dep-plug"])
     member = _make_dep_plugin(sibling / "plugins", "dep-plug")

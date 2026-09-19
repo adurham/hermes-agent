@@ -45,7 +45,7 @@ $priorHome = $env:PYTHONHOME
 try {
     $env:PYTHONPATH = $repo
     Remove-Item env:PYTHONHOME -ErrorAction SilentlyContinue
-    $json = (& $py -m hermes_cli.runtime_paths) -join "`n"
+    $json = (& $py -m pm.environments) -join "`n"
     if ($LASTEXITCODE -ne 0) { throw 'activate: could not read the installed environment' }
     $composed = $json | ConvertFrom-Json
 } finally {

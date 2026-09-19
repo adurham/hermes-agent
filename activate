@@ -50,7 +50,7 @@ if [ -z "$_hermes_py" ]; then
 fi
 
 # --- emit export lines from `pm env` ---
-_hermes_json="$(PYTHONHOME= PYTHONPATH="$_hermes_repo" "$_hermes_py" -m hermes_cli.runtime_paths)"
+_hermes_json="$(PYTHONHOME= PYTHONPATH="$_hermes_repo" "$_hermes_py" -m pm.environments)"
 if [ -z "$_hermes_json" ] || [ "${_hermes_json#*{}" = "$_hermes_json" ]; then
     echo "activate: could not read pm env (run ./setup-hermes.sh first)" >&2
     unset _hermes_repo _hermes_os _hermes_arch _hermes_target _hermes_store _hermes_py _hermes_json

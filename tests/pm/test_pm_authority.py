@@ -314,7 +314,8 @@ def test_fetch_cache_verification_is_owned_by_downloader(pm_env, monkeypatch, po
     if poisoned:
         first.write_bytes(b"poisoned")
 
-    monkeypatch.setattr(store_mod, "sha256_file", lambda *args: pytest.fail("Store rehashed downloader-verified bytes"))
+    # Verification is the downloader's alone: the Store carries no file-hash helper to reach for.
+    assert not any(name.startswith("sha256") for name in vars(store_mod))
     with store.scratch() as scratch:
         second = store.fetch(url, digest, scratch)
     assert second == first

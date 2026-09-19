@@ -42,9 +42,8 @@ def test_features_path_in_bundle_uses_payload_root(rooted):
 def test_sync_venv_refuses_outside_frozen_extras(rooted, monkeypatch):
     feats.write_features(["web", "acp"])
 
-    import sys
 
-    ensure_mod = sys.modules["pm.install"]
+    import pm.install as ensure_mod
     from pm.package import InstallError
 
     monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: False)
@@ -63,12 +62,11 @@ def test_sync_venv_refuses_outside_frozen_extras(rooted, monkeypatch):
 def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     feats.write_features(["web"])
 
-    import sys
     from pm import paths
     from pm.lock import Facts
     from pm.environments import install_state_dir, runtime_facts_path
 
-    ensure_mod = sys.modules["pm.install"]
+    import pm.install as ensure_mod
 
     # Matching stamp alone cannot certify a vanished environment. Reuse only
     # the recorded selection while retaining the disabled acquisition policy.

@@ -33,7 +33,6 @@ def archive(files: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 @pytest.fixture(params=["install", "stage"])

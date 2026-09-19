@@ -7,10 +7,8 @@ import shutil
 import subprocess
 import sys
 
-import pytest
 
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 def test_ambient_uv_config_does_not_affect_pm_venv_sync(tmp_path, monkeypatch):

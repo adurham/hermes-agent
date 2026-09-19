@@ -16,7 +16,6 @@ from pm.package import InstallError
 from pm.packages import Python, Uv
 from pm.store import current_target
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 
-import pytest
 
 import pm.packages as pkgs
 
-pytestmark = pytest.mark.usefixtures("isolated_machine_home")
 
 
 

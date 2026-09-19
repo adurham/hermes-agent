@@ -1,11 +1,9 @@
 """A bundle reuses shipped bytes and adds missing pinned tools outside its seal."""
-import json
-from pathlib import Path
 
 import pytest
 
 import pm.paths as paths
-from pm.lock import Facts, Lockfile
+from pm.lock import Facts
 from tests.pm.test_pm_authority import core_env, pm_env, served  # noqa: F401 — fixtures
 
 

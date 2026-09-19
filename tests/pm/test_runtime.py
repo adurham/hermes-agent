@@ -30,9 +30,9 @@ def test_pm_runtime_discovers_plugins_without_application_dependencies(tmp_path,
 import importlib.util, json, sys
 sys.path.insert(0, {str(repo)!r})
 from pm.workspace import enabled_member_dirs
-from pm.plugins_state import _read_home_config
+from pm.plugins_state import read_home_selection
 from pathlib import Path
-assert _read_home_config(Path({str(home)!r}))["plugins"]["enabled"] == []
+assert read_home_selection(Path({str(home)!r}))["plugins"]["enabled"] == []
 assert enabled_member_dirs() == []
 assert importlib.util.find_spec("openai") is None
 assert importlib.util.find_spec("yaml") is None

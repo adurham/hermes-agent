@@ -27,8 +27,8 @@ _attempted: set[str] = set()
 
 def configured_provider(home: Path) -> str:
     """``memory.provider`` of *home*'s effective config, or ``""``."""
-    from pm.plugins_state import _read_home_config
-    memory = (_read_home_config(home) or {}).get("memory") or {}
+    from pm.plugins_state import read_home_selection
+    memory = (read_home_selection(home) or {}).get("memory") or {}
     return str(memory.get("provider") or "").strip()
 
 
@@ -93,9 +93,9 @@ def _install_into(home: Path) -> Callable[[str], dict]:
 
 def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     """``hermes update`` hook: every profile home sharing this venv. Returns installed plugin names."""
-    from pm.plugins_state import _all_homes
+    from pm.plugins_state import dependency_homes
     installed: list[str] = []
-    for home in _all_homes():
+    for home in dependency_homes():
         try:
             name = migrate_home(home, install=_install_into(home), say=say)
         except Exception as exc:
