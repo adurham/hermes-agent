@@ -1,23 +1,30 @@
-"""``x-opencode-session`` — OpenCode relay session-affinity header.
+"""Conversation-affinity request headers for session-aware relays and proxies.
 
-OpenCode (opencode.ai Zen/Go relay) pins requests that share an
-``x-opencode-session`` value to the same upstream backend, which is what
-keeps its prompt cache warm across the turns of one conversation. The value
-only has to be opaque and consistent per conversation, so it is derived the
-same way as the other conversation-affinity hints Hermes already sends
-(OpenRouter's sticky ``session_id``, xAI's ``x-grok-conv-id``): the
-host-declared routing scope first, then the ambient conversation root, then
-the physical session id — normalized through ``_cache_scope_from_session_id``
-so cron fires of one job share a scope.
+Two sources, one merge point:
 
-Every OpenCode request — main turn on any transport, auxiliary calls
-(compression, titles, vision, MoA) — goes through :func:`opencode_session_headers`
-so the header cannot drift per code path.
+* ``x-opencode-session`` — OpenCode (opencode.ai Zen/Go relay) pins requests that share this
+  value to the same upstream backend, which keeps its prompt cache warm across the turns of one
+  conversation. Always sent to OpenCode targets.
+* ``providers.<name>.session_affinity_header`` — an opt-in header NAME on a custom provider entry
+  (default off). Session-aware proxies fronting a stateful backend (LiteLLM's ``x-litellm-session-id``,
+  self-hosted Claude/OpenAI gateways) otherwise classify an agent-loop request whose last message is
+  a ``tool_result`` as a new conversation and replay the whole history upstream (#86241, #104449).
+
+The value only has to be opaque and consistent per conversation, so it is derived the same way as
+the other affinity hints Hermes already sends (OpenRouter's sticky ``session_id``, xAI's
+``x-grok-conv-id``): the host-declared routing scope first (a host that names its own conversation,
+#96811), then the ambient conversation ROOT (stable across compaction rotation and delegate trees),
+then the physical session id — normalized through ``_cache_scope_from_session_id`` so cron fires of
+one job share a scope. Auxiliary calls (compression, titles, vision, MoA) have no session handle and
+resolve the ambient value, so they stay on the conversation's backend too (#70820).
+
+Every request — main turn on any transport, auxiliary calls — goes through
+:func:`merge_session_affinity_headers` so the headers cannot drift per code path.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 OPENCODE_SESSION_HEADER = "x-opencode-session"
 
@@ -44,14 +51,12 @@ def is_opencode_target(provider: Optional[str], base_url: Optional[str]) -> bool
 
 
 def resolve_affinity_key(session_id: Optional[str] = None) -> str:
-    """Return the normalized rotation-stable conversation affinity key."""
+    """Return the normalized rotation-stable conversation affinity key ("" when unknown)."""
     try:
         from agent.portal_tags import get_affinity_scope, get_conversation_context
         from agent.transports.codex import _cache_scope_from_session_id
 
-        return _cache_scope_from_session_id(
-            get_affinity_scope() or get_conversation_context() or session_id
-        )
+        return _cache_scope_from_session_id(get_affinity_scope() or get_conversation_context() or session_id)
     except Exception:
         return str(session_id or "")
 
@@ -69,45 +74,35 @@ def opencode_session_headers(
 
 
 def custom_provider_session_affinity_headers(
-    provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
-    custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> dict[str, str]:
-    """Return ``{<session_affinity_header>: <key>}`` for custom providers declaring one, else ``{}``."""
+    """Return ``{<session_affinity_header>: <key>}`` when the route's provider entry declares one, else ``{}``."""
     try:
-        from hermes_cli.config_providers import get_custom_provider_session_affinity_header
+        from hermes_cli.config import get_custom_provider_session_affinity_header
 
-        header = get_custom_provider_session_affinity_header(
-            base_url=base_url,
-            provider=provider,
-            custom_providers=custom_providers,
-        )
-        if not header:
-            return {}
-        key = resolve_affinity_key(session_id)
-        return {header: key} if key else {}
+        header = get_custom_provider_session_affinity_header(str(base_url or ""))
     except Exception:
         return {}
+    if not header:
+        return {}
+    key = resolve_affinity_key(session_id)
+    return {header: key} if key else {}
 
 
-def merge_opencode_session_headers(
+def merge_session_affinity_headers(
     kwargs: dict[str, Any],
     provider: Optional[str],
     base_url: Optional[str],
     session_id: Optional[str] = None,
-    custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Merge OpenCode or custom provider affinity headers into ``kwargs["extra_headers"]`` (in place).
+    """Merge the affinity header(s) into ``kwargs["extra_headers"]`` (in place).
 
     Existing per-request headers win, so a caller-pinned value is preserved.
-    Non-OpenCode and non-affinity targets are left untouched.
+    Targets with neither source configured are left untouched.
     """
     headers = opencode_session_headers(provider, base_url, session_id)
-    if not headers:
-        headers = custom_provider_session_affinity_headers(
-            provider, base_url, session_id, custom_providers=custom_providers
-        )
+    headers.update(custom_provider_session_affinity_headers(base_url, session_id))
     if headers:
         existing = kwargs.get("extra_headers")
         merged = dict(existing) if isinstance(existing, dict) else {}
@@ -115,7 +110,3 @@ def merge_opencode_session_headers(
             merged.setdefault(key, value)
         kwargs["extra_headers"] = merged
     return kwargs
-
-
-# Alias for callers naming the generalized capability
-merge_session_affinity_headers = merge_opencode_session_headers

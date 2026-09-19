@@ -491,43 +491,19 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
 
 
 def get_custom_provider_session_affinity_header(
-    base_url: Optional[str] = None,
+    base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    provider: Optional[str] = None) -> Optional[str]:
-    """Return the declared ``session_affinity_header`` for a provider or route, or None."""
-    from hermes_cli.config import get_compatible_custom_providers
-    if custom_providers is None:
-        try:
-            custom_providers = get_compatible_custom_providers(config)
-        except Exception:
-            custom_providers = []
-    if not isinstance(custom_providers, list):
-        return None
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """Header NAME declared as ``session_affinity_header`` on the route-matching entry, else "".
 
-    want_p = str(provider or "").strip().lower()
-    target_url = normalize_route_base_url(base_url) if base_url else ""
-
-    for entry in custom_providers:
-        if not isinstance(entry, dict):
-            continue
+    Opt-in per provider (default off): Hermes never ships a session identifier to an endpoint
+    that did not ask for one (#86241).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
         header = entry.get("session_affinity_header")
-        if not (isinstance(header, str) and header.strip()):
-            continue
-        header_clean = header.strip()
-
-        if want_p:
-            entry_p = str(entry.get("provider_key") or "").strip().lower()
-            entry_n = str(entry.get("name") or "").strip().lower()
-            if want_p == entry_p or want_p == entry_n:
-                return header_clean
-
-        if target_url:
-            entry_url = normalize_route_base_url(entry.get("base_url"))
-            if entry_url and entry_url == target_url:
-                return header_clean
-
-    return None
+        if isinstance(header, str) and header.strip():
+            return header.strip()
+    return ""
 
 
 def get_custom_provider_context_length(
