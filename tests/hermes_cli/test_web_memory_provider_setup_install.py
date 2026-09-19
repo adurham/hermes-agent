@@ -123,6 +123,8 @@ def test_setup_reports_restart_and_preserves_external_steps(tmp_path, monkeypatc
         if python_failure:
             raise RuntimeError("Python preparation refused")
     monkeypatch.setattr("pm.sync_venv", sync)
+    # A sync selects a new generation the running interpreter has not activated.
+    monkeypatch.setattr("pm.environments.selected_venv", lambda root: tmp_path / "next-generation")
     result = mp._install_memory_provider_setup("provider")
     assert result["ok"] is not python_failure
     assert result["results"][0]["status"] == ("failed" if python_failure else "restart_required")

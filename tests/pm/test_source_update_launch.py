@@ -61,6 +61,15 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
     (root / "install-stamp.json").write_text(
         json.dumps({"updateMechanism": "self"}), encoding="utf-8",
     )
+    # The startup heal hands the shared completion tail (launchers, products,
+    # maintenance) to the checkout's own hermes_cli/source_completion.py. This
+    # source slice has no products; record the hand-off instead of running it.
+    (root / "hermes_cli").mkdir()
+    (root / "hermes_cli" / "source_completion.py").write_text(
+        "import json, sys\n"
+        f"open({str(tmp_path / 'completion-calls')!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n",
+        encoding="utf-8",
+    )
     (root / "pyproject.toml").write_text(
         '[project]\nname = "launch-proof"\nversion = "1"\nrequires-python = ">=3.11"\n'
         '[project.optional-dependencies]\nall = []\nlaunch-extra = []\n'
@@ -136,6 +145,9 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
     previous = selected_venv(root)
     if update == "launch":
         assert venv_sync.prepare_launch(root, []) == new_python
+        # The heal finished the whole tail, with update wording, through the checkout's own completion.
+        calls = [json.loads(line) for line in (tmp_path / "completion-calls").read_text().splitlines()]
+        assert calls == [["--source", str(root), "--finish-update"]]
     elif update == "sync":
         # This is the PM sync -> launcher publication sequence now split across
         # update_completion._prepare and _complete_selected. The former checkout

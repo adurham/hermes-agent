@@ -80,6 +80,13 @@ def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None
                       "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env)
 
 
+def source_frontends(project_root: Path) -> tuple[str, ...]:
+    """The frontend workspaces this checkout carries. A source slice without them
+    (python-only installs, the installer's acceptance fixture) has no products
+    to build; it still publishes commands and runs the maintenance tail."""
+    return tuple(name for name in ("ui-tui", "web") if (project_root / name / "package.json").is_file())
+
+
 def build_update_products(project_root: Path, *, desktop: bool) -> None:
     """Prepare the selected union once; a failed product aborts the update."""
     # Both current updates and historical takeover reach this in a fresh target
@@ -88,14 +95,19 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     from hermes_cli.update_stage import publish_stage
 
     _warn_configured_features_missing_deps()
+    frontends = source_frontends(project_root)
+    if not frontends:
+        return
     env = source_build_env(explicit=True)
-    workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
+    workspaces = frontends + (("apps/desktop",) if desktop else ())
     publish_stage("Updating Node dependencies")
     prepare_source_dependencies(project_root, workspaces, env=env, explicit=True)
-    publish_stage("Building the TUI")
-    build_source_tui(project_root, env=env)
-    publish_stage("Building the web UI")
-    build_source_web(project_root, env=env, explicit=True)
+    if "ui-tui" in frontends:
+        publish_stage("Building the TUI")
+        build_source_tui(project_root, env=env)
+    if "web" in frontends:
+        publish_stage("Building the web UI")
+        build_source_web(project_root, env=env, explicit=True)
     if desktop:
         from hermes_cli.main_desktop import _install_rebuilt_desktop_app, build_prepared_desktop
 

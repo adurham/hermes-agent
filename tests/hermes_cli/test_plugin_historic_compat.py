@@ -97,8 +97,9 @@ import json
 from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[1])
-# No selected application environment, no PM, and no CLI config/UI reader.
-for module in ('pm', 'hermes_cli.config', 'hermes_cli.plugins_cmd'):
+# No selected application environment, no PM engine, and no CLI config/UI reader.
+# pm.environments/pm.paths are stdlib boot leaves the recovery owner may use.
+for module in ('pm.client', 'pm.install', 'pm.store', 'pm.workspace', 'hermes_cli.config', 'hermes_cli.plugins_cmd'):
     sys.modules[module] = None
 from hermes_cli import plugins_transaction
 row = json.loads(sys.stdin.read())

@@ -146,7 +146,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
     marker.chmod(0o444)
     before = facts.read_bytes()
     try:
-        run([*command, "--stage", "path"])
+        run([*command, "--stage", "products"])
     finally:
         marker.chmod(0o644)
     assert facts.read_bytes() == before
