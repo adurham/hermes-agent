@@ -106,6 +106,11 @@ except ImportError:
         "  node scripts/generate-icons.mjs"
     )
 
+# Copy of hermes_cli.update_channel._CANARY_TAG_RE: this renderer runs in an
+# isolated icon-build venv (Nix, Docker, PM) where the application package is
+# absent. tests/scripts/test_icon_flavors.py pins it to the canonical one.
+_CANARY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d*)\.\d+\.\d+-canary\.20\d{6}(?:\d{6})?$")
+
 # The nous dark background (#0d1117) — fixed dark tile/background everywhere.
 DARK_HEX = "#0d1117"
 DARK_RGB = (13, 17, 23)
@@ -506,9 +511,7 @@ def build_art(source: Path) -> tuple[IconArt, IconArt]:
         if not re.fullmatch(r"[a-f0-9]{40}", commit):
             raise ValueError("HERMES_BUILD_COMMIT requires an exact full 40-character SHA")
         return art, IconArt(source, colors=("#e34850", "#4a1117"), commit=commit)
-    from hermes_cli.update_channel import is_canary_tag
-
-    if is_canary_tag(tag):
+    if _CANARY_TAG_RE.match(tag.strip()):
         return art, IconArt(source, colors=("#f5cc32", "#443808"))
     return art, art
 

@@ -130,6 +130,23 @@ def assert_unbranded_outputs(stable, flavored):
                 assert path.read_bytes() == (flavored / path.relative_to(stable)).read_bytes(), path
 
 
+def test_renderer_canary_rule_is_the_canonical_one(monkeypatch):
+    """The renderer runs without the application package installed, so it carries
+    its own copy of the canary rule; both rules must agree on every tag shape."""
+    import importlib.util
+    import types
+    from hermes_cli.update_channel import is_canary_tag
+
+    monkeypatch.setitem(sys.modules, "resvg_py", types.ModuleType("resvg_py"))
+    spec = importlib.util.spec_from_file_location("generate_icons", ROOT / "scripts/generate_icons.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for tag in ("v1.2.3-canary.20260911", "v1.2.3-canary.20260911010203", "v2026.9.15-canary.20260916120000",
+                "v1.2.3", "v1.2.3-canary.2026091101", "v1.2.3-canary.20260911010203123", "01.2.3-canary.20260911", ""):
+        assert bool(module._CANARY_TAG_RE.match(tag)) == is_canary_tag(tag), tag
+
+
 def test_canary_changes_only_desktop_background_preserving_art_and_native_geometry(generate):
     stable = generate("v1.2.3")
     canary = generate("v1.2.3-canary.20260911010203")
