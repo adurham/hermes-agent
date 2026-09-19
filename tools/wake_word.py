@@ -21,8 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from tools.wake_word_engines import (
+# The engine classes are re-exported on purpose: _build_engine resolves the
+# _PROVIDERS names on THIS module so a test (or plugin) can swap one engine.
+from tools.wake_word_engines import (  # noqa: F401
     _Engine,
+    _OpenWakeWordEngine,
+    _PorcupineEngine,
+    _SherpaKwsEngine,
 )
 
 logger = logging.getLogger(__name__)
