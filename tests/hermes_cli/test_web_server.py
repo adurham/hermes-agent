@@ -5387,6 +5387,7 @@ class TestValidateProviderCredential:
             "reachable": True,
             "message": "",
             "models": ["local-model"],
+            "resolved_base_url": "http://localhost:8000/v1",
             "model_details": [{"id": "local-model"}],
             "transport_checked": "chat_completions",
         }

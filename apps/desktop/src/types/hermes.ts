@@ -280,6 +280,8 @@ export interface CustomEndpointValidationResponse {
   models: string[]
   ok: boolean
   reachable: boolean
+  // Base URL that actually served /models (the entered URL or its /v1 variant); persist this one.
+  resolved_base_url?: string
   /** The transport whose route the backend probed (pinned api_mode, or the runtime's URL auto-detect). */
   transport_checked?: CustomEndpointApiMode
 }

@@ -764,36 +764,61 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
-    url = base_url + "/models"
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
 
+    resolved, resp = await _probe_openai_compatible_models(base_url, headers)
+    if resp is None:
+        return {"ok": False, "reachable": False, "message": f"Could not reach {base_url}/models.", "models": []}
+    if resp.status_code in (401, 403):
+        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
+    if not resp.is_success:
+        return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
+    # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
+    # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
+    entries = _parse_model_entries(resp)
+    ids = [e["id"] for e in entries]
+    # /models answering proves nothing about the transport the runtime will POST to:
+    # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
+    # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
+    # base that actually served /models (#65488) — that is the URL the runtime will persist.
+    mode = _canonical_api_mode(body.api_mode or "").lower() or _auto_api_mode(resolved)
+    probe_model = (body.model or "").strip() or (ids[0] if ids else "")
     try:
-        async with _endpoint_probe_client(url, 8.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code in (401, 403):
-                return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
-            if not resp.is_success:
-                return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
-            # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
-            # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
-            entries = _parse_model_entries(resp)
-            ids = [e["id"] for e in entries]
-            # /models answering proves nothing about the transport the runtime will POST to:
-            # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
-            # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses.
-            mode = _canonical_api_mode(body.api_mode or "").lower() or _auto_api_mode(base_url)
-            probe_model = (body.model or "").strip() or (ids[0] if ids else "")
-            missing = await _probe_transport_route(client, base_url, mode, probe_model, headers)
+        async with _endpoint_probe_client(resolved, 8.0) as client:
+            missing = await _probe_transport_route(client, resolved, mode, probe_model, headers)
     except Exception:
-        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
+        missing = ""  # inconclusive (see _probe_transport_route): never block on a transport error
 
     result = {"ok": True, "reachable": True, "message": "", "models": ids, "model_details": entries,
-              "transport_checked": mode}
+              "transport_checked": mode, "resolved_base_url": resolved}
     if missing:
         result.update(ok=False, message=missing)
     return result
+
+async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
+    """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
+    first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
+    model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
+    URL verbatim, so a bare host root that only "detected" via ``/v1/models`` would 404 every chat
+    (#65488). ``response`` is None when no candidate could be reached at all."""
+    base = base_url.rstrip("/")
+    alternate = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
+    resolved, resp = base, None
+    async with _endpoint_probe_client(base, 8.0) as client:
+        for candidate in (base, alternate):
+            try:
+                candidate_resp = await client.get(candidate + "/models", headers=headers)
+            except Exception:
+                continue
+            # Keep the most telling failure: a 401/403 from the /v1 alternate says "server is
+            # there, key rejected", which beats the typed root's 404 (wrong path).
+            if resp is None or candidate_resp.is_success or resp.status_code == 404:
+                resolved, resp = candidate, candidate_resp
+            if candidate_resp.is_success:
+                break
+    return resolved, resp
 
 
 _TRANSPORT_ROUTES = {"chat_completions": "/chat/completions", "codex_responses": "/responses",
@@ -868,13 +893,11 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # default. The optional API key is sent so servers that require auth on
     # ``/v1/models`` still enumerate instead of returning an empty list.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-        try:
-            async with _endpoint_probe_client(url, 8.0) as client:
-                resp = await client.get(url, headers=headers)
-        except Exception:
+        resolved, resp = await _probe_openai_compatible_models(value, headers)
+        url = resolved + "/models"
+        if resp is None:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
         entries = _parse_model_entries(resp)
         models = [e["id"] for e in entries]
@@ -882,7 +905,8 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
             # A proxy/gateway error page parses as "no models"; name the status instead so the
             # GUI does not tell the user to "start a model" on a server that answered.
             return {"ok": False, "reachable": True, "message": f"{url} answered HTTP {resp.status_code}.", "models": []}
-        return {"ok": True, "reachable": True, "message": "", "models": models, "model_details": entries}
+        return {"ok": True, "reachable": True, "message": "", "models": models, "model_details": entries,
+                "resolved_base_url": resolved}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:

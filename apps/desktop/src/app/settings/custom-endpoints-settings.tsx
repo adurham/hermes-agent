@@ -209,8 +209,17 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       setDiscoveredDetails(response.model_details ?? [])
 
       if (response.ok) {
+        // Persist the URL that actually served /models (e.g. "<root>/v1" when the user typed the
+        // bare root): chat POSTs {base_url}/chat/completions verbatim, so saving the typed root
+        // would 404 every request even though the test looked green (#65488).
+        const resolvedBaseUrl = response.resolved_base_url?.trim()
+
         if (!form.model && response.models[0]) {
           setForm(current => ({ ...current, model: response.models[0] }))
+        }
+
+        if (resolvedBaseUrl && resolvedBaseUrl !== form.baseUrl.trim().replace(/\/+$/, '')) {
+          setForm(current => ({ ...current, baseUrl: resolvedBaseUrl }))
         }
 
         // The backend also POSTed the transport the runtime will use; name it so an

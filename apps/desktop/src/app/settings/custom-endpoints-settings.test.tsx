@@ -147,4 +147,20 @@ describe('CustomEndpointsSettings', () => {
     expect(notify).not.toHaveBeenCalled()
     expect(notifyError).not.toHaveBeenCalled()
   })
+
+  it('Test rewrites the URL field to the base that actually served /models (#65488)', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    validateCustomEndpoint.mockResolvedValue({ ok: true, message: '', models: ['model-a'], resolved_base_url: 'http://h.test/v1' })
+    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+    render(<CustomEndpointsSettings onConfigSaved={vi.fn()} onMainModelChanged={vi.fn()} />)
+
+    await screen.findByText('No custom endpoints')
+    const urlInput = screen.getByPlaceholderText<HTMLInputElement>('http://127.0.0.1:8081/v1')
+    fireEvent.change(urlInput, { target: { value: 'http://h.test' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+
+    // Save stores form.baseUrl verbatim and chat POSTs {base_url}/chat/completions, so the
+    // typed bare root would 404 every request even though the test looked green.
+    expect(urlInput.value).toBe('http://h.test/v1')
+  })
 })
