@@ -113,6 +113,12 @@ function Initialize-HermesArm64BuildTools {
         }
     }
     if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { throw 'ARM64 C++ compiler is unavailable after environment setup' }
+    # With VSCMD_ARG_TGT_ARCH exported, rustc's cc crate takes link.exe from PATH
+    # instead of asking vswhere. Under Git Bash that is coreutils' link.exe, so
+    # pin the MSVC linker explicitly.
+    $linker = (Get-Command link.exe -ErrorAction Stop).Source
+    if ($linker -notlike '*\MSVC\*') { throw "MSVC link.exe is shadowed by $linker" }
+    $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linker
 
     # Child builds isolate HOME/USERPROFILE. Keep Rust anchored to the homes
     # used here, including caller-selected locations.
