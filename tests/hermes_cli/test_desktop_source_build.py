@@ -13,7 +13,7 @@ def desktop_source(source_products, monkeypatch):
     root, acquired = source_products
     monkeypatch.setattr(main, "PROJECT_ROOT", root)
     monkeypatch.setattr(main_desktop, "_desktop_launch_env", lambda args: ({}, []))
-    monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda: None)
+    monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda **kwargs: None)
     return root, acquired
 
 
