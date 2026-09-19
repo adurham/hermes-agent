@@ -102,6 +102,9 @@ def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkey
     if stale:
         os.utime(cache, (1, 1))
     requests.clear()
+    # The unreachable fetch above armed the failure window; a stale cache must still
+    # trigger a real retry once that window has passed.
+    monkeypatch.setattr(pc, "_live_fetch_failed_until", 0.0)
     entries = pc.load_catalog_live()
     assert [e.name for e in entries] == ["live-only"]
     assert entries[0].description == "café"

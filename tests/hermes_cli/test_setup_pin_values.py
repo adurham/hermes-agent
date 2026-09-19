@@ -19,6 +19,8 @@ def test_cold_setup_uses_exact_lock_values(tmp_path, missing_target):
     checkout = tmp_path / "checkout"
     (checkout / "pm").mkdir(parents=True)
     shutil.copy2(ROOT / "setup-hermes.sh", checkout / "setup-hermes.sh")
+    # The bootstrap reads the artifact mirror beside the lock before selecting a pin.
+    shutil.copy2(ROOT / "pm" / "artifact-mirror.json", checkout / "pm" / "artifact-mirror.json")
     lock = json.loads((ROOT / "pm" / "lock.json").read_text(encoding="utf-8"))
     target = current_target()
     uv_pin = lock["packages"]["uv"]
