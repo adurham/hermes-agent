@@ -101,8 +101,9 @@ def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_cl
     monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {"streaming": {"min_len": 6}})
 
     with stream_client.websocket_connect(_url()) as conn:
-        assert conn.receive_json()["type"] == "start"
         conn.send_text(json.dumps({"text": "记得，叫团团. 然后我们再说第二句话，这一句要长一些才行. ", "done": True}))
+        # The start frame is deferred until the first PCM chunk (rate learned from the endpoint).
+        assert conn.receive_json()["type"] == "start"
         while True:
             message = conn.receive()
             if message.get("bytes") is None:
