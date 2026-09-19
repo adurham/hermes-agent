@@ -18,7 +18,7 @@ it('prunes the saved uv cache to the lock at teardown, never during registration
   const cache = join(directory, 'cache with spaces')
   const python = join(directory, 'prepared Python')
   const lockSource = join(directory, 'checkout')
-  run({ GITHUB_STATE: state, INPUT_PYTHON: python, INPUT_CACHE: cache, INPUT_LOCK_SOURCE: lockSource }, execute)
+  run({ GITHUB_STATE: state, INPUT_PYTHON: python, INPUT_CACHE: cache, 'INPUT_LOCK-SOURCE': lockSource }, execute)
   expect(execute).not.toHaveBeenCalled()
   const saved = Object.fromEntries(readFileSync(state, 'utf8').trim().split('\n').map(line => {
     const index = line.indexOf('=')

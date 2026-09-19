@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url'
 // this action's post runs first, pruning the cache just before it is saved.
 export function run(env, execute = spawnSync) {
   if (!env.STATE_python) {
-    for (const [key, value] of Object.entries({ python: env.INPUT_PYTHON, cache: env.INPUT_CACHE, lockSource: env.INPUT_LOCK_SOURCE })) {
+    // The runner keeps hyphens when it maps an input to INPUT_<NAME>.
+    for (const [key, value] of Object.entries({ python: env.INPUT_PYTHON, cache: env.INPUT_CACHE, lockSource: env['INPUT_LOCK-SOURCE'] })) {
       if (!value || /[\r\n\0]/.test(value)) throw new Error(`invalid ${key}`)
       appendFileSync(env.GITHUB_STATE, `${key}=${value}\n`, 'utf8')
     }
