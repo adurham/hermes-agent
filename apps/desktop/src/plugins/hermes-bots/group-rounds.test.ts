@@ -167,6 +167,26 @@ describe('routing', () => {
     expect(lines.some(line => line.startsWith('research:'))).toBe(true)
     expect(lines.some(line => line.startsWith('builder: On it'))).toBe(true)
   })
+
+  // #94863 D3: a LOCAL member's reply must carry from.source too, or the same
+  // entry mirrored to another Desktop reads as that Desktop's own same-named bot.
+  it('stamps a local member reply with its connection label and keeps (you) for that member only', async () => {
+    const room = await loadRoom({ turn: () => 'Central here.' })
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+    const local: GroupMember = { connectionId: 'central', connectionLabel: 'Central', name: 'default', title: '' }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    const reply = log(room, 'Core').find(entry => entry.from.kind === 'member')
+
+    expect(reply?.from).toEqual({ kind: 'member', name: 'default', source: 'Central' })
+    expect(formatGroupChatLine(reply as GroupMessage, local)).toContain('(you)')
+    // The same entry seen by the other machine's `default` is somebody else.
+    expect(
+      formatGroupChatLine(reply as GroupMessage, { connectionId: 'mbp', connectionLabel: 'MBP', name: 'default', remoteSource: true })
+    ).not.toContain('(you)')
+  })
 })
 
 describe('round lifecycle', () => {

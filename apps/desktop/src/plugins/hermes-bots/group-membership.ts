@@ -7,7 +7,7 @@
 import { $botMeta, botFriendlyNames, botHandle, botMetaKey, botRosterKey } from './data'
 import { $groupChats, groupChatRoomKey } from './group-chat'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
-import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
+import type { BotMeta, GroupChat, GroupMember, GroupMessageAuthor, RosterRow } from './types'
 
 /** Follow the authoritative room record for one async operation. Rename moves
  * the record wholesale (including legacy rooms without a roomId); disband
@@ -55,6 +55,17 @@ export function groupWorkspaceOwnerKey(group: string) {
  *  local `dixie` never share watermarks or sessions. */
 export function groupMemberKey(member: GroupMember): string {
   return member?.sourceScoped || member?.remoteSource ? botRosterKey(member) : member?.name
+}
+
+/** The `from` stamp for a member's appended reply. Every member that knows
+ *  its connection carries `source` — local ones included — so a reply
+ *  mirrored to another Desktop still names the machine it came from (#94863
+ *  D3: an unsourced `default` reply was indistinguishable from the reader's
+ *  own `default`). Only members without a connection stay bare. */
+export function groupMemberAuthor(member: GroupMember): GroupMessageAuthor {
+  const source = member.connectionLabel || member.connectionId
+
+  return { kind: 'member', name: member.name, ...(source ? { source } : {}) }
 }
 
 /** Marks a session key as thread-scoped. Pre-thread rooms stored ONE session
