@@ -369,8 +369,8 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_r
     """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
 
     NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
-    gateway that requires sign-in, so it is a login identity — see
-    ``test_a_signed_in_ws_ticket_is_a_login_identity_so_the_desktop_is_one``.
+    gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
+    identity and takes the principal-author branch above.
     """
     from agent.turn_author import TURN_AUTHOR_ENV
 
