@@ -13,6 +13,7 @@ import { type FC, type ReactNode, useCallback, useContext, useEffect, useMemo, u
 import { useInRouterContext, useNavigate } from 'react-router'
 
 import { requestModelMenuToggle } from '@/app/chat/composer/focus'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
@@ -1043,6 +1044,8 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   const voicePlayback = useStore($voicePlayback)
   const view = useSessionView()
   const sessionId = useStore(view.$runtimeId)
+  // A Bot tile's session owns its own profile → its own TTS voice.
+  const { profile } = useComposerScope()
 
   const readAloudStatus =
     voicePlayback.source === 'read-aloud' && voicePlayback.messageId === messageId ? voicePlayback.status : 'idle'
@@ -1061,12 +1064,12 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
     }
 
     try {
-      await playSpeechText(text, { messageId, source: 'read-aloud' })
+      await playSpeechText(text, { messageId, profile, source: 'read-aloud' })
       markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }
-  }, [copy.readAloudFailed, getText, messageId, sessionId, view.$messages])
+  }, [copy.readAloudFailed, getText, messageId, profile, sessionId, view.$messages])
 
   return (
     <TooltipIconButton

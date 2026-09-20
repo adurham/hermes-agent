@@ -226,9 +226,10 @@ function TileChat({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
+      profile: ownerRoute?.targetProfile || ownerRoute?.profile || undefined,
       target: `tile:${storedSessionId}`
     }),
-    [attachments, runtimeId, storedSessionId, view.$messages]
+    [attachments, ownerRoute?.profile, ownerRoute?.targetProfile, runtimeId, storedSessionId, view.$messages]
   )
 
   // Tile actions must keep the persisted owner route. The ambient gateway hook

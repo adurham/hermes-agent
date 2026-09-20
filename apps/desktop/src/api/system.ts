@@ -184,9 +184,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
   })
 }
 
-export function speakText(text: string): Promise<AudioSpeakResponse> {
+// `profile` = the speaking session's owner profile (a Bot's own TTS voice);
+// omitted → the active profile.
+export function speakText(text: string, profile?: null | string): Promise<AudioSpeakResponse> {
   return hermesApi<AudioSpeakResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile || undefined),
     path: '/api/audio/speak',
     method: 'POST',
     body: { text },

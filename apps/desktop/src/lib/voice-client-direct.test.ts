@@ -77,6 +77,21 @@ describe('fetchVoiceClientConfig', () => {
     expect(api).toHaveBeenCalledTimes(2)
   })
 
+  // A Bot chat runs on the Bot's own profile: two Bots open beside the active
+  // profile must each fetch THEIR profile's TTS config, and a plain chat keeps
+  // the active-profile fallback (#100864).
+  it('resolves per-Bot TTS config by the owner profile, keeping the active-profile fallback', async () => {
+    const api = mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+    setApiRequestProfile('research')
+
+    await fetchVoiceClientConfig('bot-rachel')
+    await fetchVoiceClientConfig('bot-adam')
+    await fetchVoiceClientConfig()
+
+    const profiles = api.mock.calls.map(([request]) => (request as { profile?: string }).profile)
+    expect(profiles).toEqual(['bot-rachel', 'bot-adam', 'research'])
+  })
+
   it('resolves null on an older backend without the endpoint', async () => {
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,

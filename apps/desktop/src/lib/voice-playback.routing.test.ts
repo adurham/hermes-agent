@@ -71,6 +71,15 @@ describe('resolveSpeakStreamUrl', () => {
     expect(getConnectionFor).not.toHaveBeenCalled()
   })
 
+  it("dials the speaking session's owner profile ahead of the active profile", async () => {
+    setApiRequestProfile('research')
+
+    const url = await resolveSpeakStreamUrl('bot-adam')
+
+    expect(url).toContain('profile=bot-adam')
+    expect(getConnection).toHaveBeenCalledWith('bot-adam')
+  })
+
   it('preserves a backend-namespace profile already minted into the ws URL', async () => {
     // SSH remoteProfile aliasing / sharedRemote scoping: the registry mint
     // writes the BACKEND's profile name into the URL. The desktop-side

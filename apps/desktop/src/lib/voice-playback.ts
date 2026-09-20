@@ -73,6 +73,9 @@ function currentState(
 
 export interface VoicePlaybackOptions {
   messageId?: string | null
+  /** Owner profile of the speaking session (a Bot chat synthesizes with its
+   *  own profile's TTS voice). Omitted → the active profile. */
+  profile?: null | string
   source: VoicePlaybackSource
 }
 
@@ -105,7 +108,7 @@ export function stopVoicePlayback() {
 
 /** Exported for tests: the (connection, profile) routing contract below is
  *  exactly what broke in the desktop-remote voice report — keep it pinned. */
-export async function resolveSpeakStreamUrl(): Promise<null | string> {
+export async function resolveSpeakStreamUrl(ownerProfile?: null | string): Promise<null | string> {
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnection) {
@@ -123,7 +126,7 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
     // replies would synthesize with the local (often unconfigured) TTS
     // instead of the profile the user is actually talking to (#90051-adjacent
     // desktop-remote voice report, Aug 2026).
-    const profile = getApiRequestProfile()
+    const profile = ownerProfile || getApiRequestProfile()
     const connectionId = getApiRequestConnection()
 
     // Both awaits below are IPC round-trips into the main process with no
@@ -522,7 +525,7 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
  * `playSpeechText`).
  */
 export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
-  const direct = await directTtsConfig().catch(() => null)
+  const direct = await directTtsConfig(options.profile).catch(() => null)
 
   if (direct) {
     stopVoicePlayback()
@@ -539,7 +542,7 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
     return session
   }
 
-  const wsUrl = await resolveSpeakStreamUrl()
+  const wsUrl = await resolveSpeakStreamUrl(options.profile)
 
   if (!wsUrl) {
     return null
@@ -573,7 +576,7 @@ async function playSpeechDataUrl(
   options: VoicePlaybackOptions,
   isCurrent: () => boolean
 ): Promise<boolean> {
-  const response = await speakText(speakableText)
+  const response = await speakText(speakableText, options.profile)
 
   if (!isCurrent()) {
     return false
@@ -669,7 +672,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
   try {
     // Ladder: client-direct synthesis (profile's own TTS, no gateway audio
     // hop) → streaming WS relay → POST data-URL fallback.
-    const direct = await directTtsConfig().catch(() => null)
+    const direct = await directTtsConfig(options.profile).catch(() => null)
 
     if (direct && isCurrent()) {
       const session = openClientDirectSpeechSession(direct, options)
@@ -693,7 +696,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
       return false
     }
 
-    const streamUrl = await resolveSpeakStreamUrl()
+    const streamUrl = await resolveSpeakStreamUrl(options.profile)
 
     if (streamUrl && isCurrent()) {
       const outcome = await playSpeechStream(streamUrl, speakableText, options)

@@ -27,6 +27,9 @@ export interface ComposerScope {
    *  keep streaming out of the composer's renders; subscribe only off-render
    *  (auto-speak) where the reply edge is the whole point. */
   $messages: ReadableAtom<ChatMessage[]>
+  /** Owner profile of this scope's session (a Bot tile runs on the Bot's own
+   *  profile). Voice playback synthesizes with it; undefined → active profile. */
+  profile?: null | string
   /** Focus-bus routing key (`'main'` | `'tile:<id>'`). */
   target: ComposerTarget
 }
