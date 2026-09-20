@@ -16,6 +16,11 @@ from gateway.stream_consumer_fences import ensure_closed_code_fences
 
 logger = logging.getLogger("gateway.stream_consumer")
 
+# Longest interim-edit interval flood backoff may reach. Interim edits are skipped (not slept)
+# until the interval elapses, so honouring a 30s Telegram retry_after costs nothing but a
+# stale preview; anything longer is left to the strike counter and the fallback send path.
+_MAX_EDIT_BACKOFF_SECS = 30.0
+
 
 class StreamTransportMixin:
     """Send/edit/frame primitives and the transport-ordered ``_send_or_edit``."""
@@ -555,12 +560,18 @@ class StreamTransportMixin:
                 self._notify_new_message()
             return False
 
-        # Flood control: adaptive backoff (double the interval); disable edits only
+        # Flood control: adaptive backoff (double the interval, or the server's own
+        # retry_after when Telegram hands one back — the penalty is usually 9s+, so
+        # doubling 0.8s → 1.6s → 3.2s burns all strikes inside it); disable edits only
         # after _MAX_FLOOD_STRIKES in a row.
         immediate_final_fallback = False
         if self._is_flood_error(result):
             self._flood_strikes += 1
-            self._current_edit_interval = min(self._current_edit_interval * 2, 10.0)
+            backoff = min(self._current_edit_interval * 2, 10.0)
+            retry_after = getattr(result, "retry_after", None)
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                backoff = max(backoff, min(float(retry_after), _MAX_EDIT_BACKOFF_SECS))
+            self._current_edit_interval = backoff
             logger.debug("Flood control on edit (strike %d/%d), backoff interval → %.1fs",
                          self._flood_strikes, self._MAX_FLOOD_STRIKES, self._current_edit_interval)
             immediate_final_fallback = (
