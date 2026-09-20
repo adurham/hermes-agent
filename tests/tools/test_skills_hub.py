@@ -1358,6 +1358,32 @@ class TestQuarantineBundleBinaryAssets:
         assert (q_path / "SKILL.md").read_bytes() == bundle.files["SKILL.md"].encode("utf-8")
         assert content_hash(q_path) == bundle_content_hash(bundle)
 
+    @pytest.mark.windows_only
+    def test_quarantine_bundle_hash_matches_bundle_on_windows(self, tmp_path):
+        """Real Windows text mode: the quarantined SKILL.md hashes like the fetched bundle (#117181)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="crlfskill",
+                files={"SKILL.md": "---\nname: crlfskill\n---\n\nBody line one.\nBody line two.\n"},
+                source="official",
+                identifier="official/mlops/models/crlfskill",
+                trust_level="builtin",
+            )
+            q_path = quarantine_bundle(bundle)
+
+        assert b"\r\n" not in (q_path / "SKILL.md").read_bytes()
+        assert content_hash(q_path) == bundle_content_hash(bundle)
+
     def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
         import tools.skills_hub as hub
 
