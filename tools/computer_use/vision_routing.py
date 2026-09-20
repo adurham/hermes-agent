@@ -8,7 +8,8 @@ Decision order (mirrors ``vision_analyze``):
    who pay for a vision model want it used.
 2. User-declared ``supports_vision`` for the active route (escape hatch for custom/local VLMs absent from models.dev)
    → honour it (True → multimodal).
-3. Provider+model carries images inside tool-result messages AND models.dev says ``supports_vision=True`` → multimodal.
+3. The shared ``vision_analyze`` gate (profile veto, then provider tool-result media OR catalog vision) says yes AND
+   the capability lookup says ``supports_vision=True`` → multimodal.
 4. Everything else (non-vision model, provider rejecting multimodal tool results, lookup failure) → aux routing.
 
 Fails *closed* toward aux routing when metadata is missing or ambiguous: a screenshot sent to a model that cannot read
@@ -62,17 +63,18 @@ def _lookup_supports_vision(provider: str, model: str, cfg: Optional[Dict[str, A
         logger.debug("computer_use vision_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
         return None
 
-def _provider_accepts_multimodal_tool_result(provider: str, model: str) -> Optional[bool]:
-    """Whether *provider*+*model* carries images inside tool-result messages; reuses ``tools.vision_tools`` to stay in
-    lockstep with the ``vision_analyze`` fast path. None on import failure so callers fall back to aux, not guess."""
+def _provider_accepts_multimodal_tool_result(provider: str, model: str, cfg: Optional[Dict[str, Any]] = None) -> Optional[bool]:
+    """Whether *provider*+*model* may carry images inside tool-result messages — the SAME predicate the
+    ``vision_analyze`` fast path uses (#115248: the two gates disagreed for deepseek/deepseek-flash, so the route
+    depended on which tool asked). None on import failure so callers fall back to aux, not guess."""
     if not provider:
         return None
     try:
-        from tools.vision_tools import _supports_media_in_tool_results
+        from tools.vision_tools import _accepts_tool_result_images
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use vision_routing: tool-result support lookup failed: %s", exc)
         return None
-    return bool(_supports_media_in_tool_results(provider, model))
+    return bool(_accepts_tool_result_images(provider, model, cfg))
 
 def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
     """True iff the screenshot should be pre-analysed via aux vision; False keeps the multimodal envelope. *provider* is
@@ -88,7 +90,7 @@ def should_route_capture_to_aux_vision(provider: str, model: str, cfg: Optional[
     user_declared = _lookup_user_declared_supports_vision(provider, model, cfg)
     if isinstance(user_declared, bool):  # True → multimodal, False → aux
         return not user_declared
-    if not _provider_accepts_multimodal_tool_result(provider, model):
+    if not _provider_accepts_multimodal_tool_result(provider, model, cfg):
         return True
     return _lookup_supports_vision(provider, model, cfg) is not True
 

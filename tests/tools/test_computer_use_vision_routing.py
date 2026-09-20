@@ -207,3 +207,25 @@ class TestModuleSurface:
 
         assert hasattr(vision_routing, name)
         assert callable(getattr(vision_routing, name))
+
+
+class TestGateAgreementWithVisionAnalyze:
+    """The capture route and the ``vision_analyze`` fast path derive from one predicate, so the lane never
+    depends on which tool asked (#115248: deepseek/deepseek-flash went native in one and aux in the other)."""
+
+    def test_catalog_vision_model_off_the_provider_whitelist_stays_native(self):
+        from tools.computer_use import vision_routing
+
+        cfg = {"agent": {"image_input_mode": "native"}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True), \
+             patch("tools.vision_tools._supports_media_in_tool_results", return_value=False), \
+             patch("tools.vision_tools._profile_rejects_tool_media", return_value=False):
+            assert vision_routing.should_route_capture_to_aux_vision("deepseek", "deepseek-flash", cfg) is False
+
+    def test_profile_veto_still_routes_a_catalog_vision_model_to_aux(self):
+        from tools.computer_use import vision_routing
+
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True), \
+             patch("tools.vision_tools._supports_media_in_tool_results", return_value=False), \
+             patch("tools.vision_tools._profile_rejects_tool_media", return_value=True):
+            assert vision_routing.should_route_capture_to_aux_vision("xiaomi", "mimo-v2.5", {}) is True
