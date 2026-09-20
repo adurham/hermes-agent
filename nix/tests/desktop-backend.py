@@ -1,4 +1,5 @@
 """Launch the packaged desktop with a competing mutable install."""
+import contextlib
 import os
 from pathlib import Path
 import signal
@@ -6,6 +7,23 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+def _processes_under(home: Path) -> list[int]:
+    """PIDs whose environment or cwd binds them to this throwaway HOME (Linux /proc)."""
+    needle = str(home).encode()
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            environ = Path("/proc", entry, "environ").read_bytes()
+            cwd = os.readlink(f"/proc/{entry}/cwd").encode()
+        except OSError:
+            continue
+        if needle in environ or cwd.startswith(needle):
+            found.append(int(entry))
+    return found
 
 
 desktop, expected = sys.argv[1:]
@@ -75,3 +93,18 @@ with tempfile.TemporaryDirectory(prefix="hermes-desktop-backend-") as temporary:
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=5)
+            # The desktop spawns its backend in its own session (hermes serve outlives a
+            # window close on purpose), so killing cage's group leaves that gateway writing
+            # under HERMES_HOME while the tempdir is removed. Stop everything still rooted
+            # in this home before cleanup; the sandbox has no other processes to confuse.
+            survivors = _processes_under(home)
+            for pid in survivors:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 15
+            while survivors and time.monotonic() < deadline:
+                time.sleep(0.2)
+                survivors = _processes_under(home)
+            for pid in survivors:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)

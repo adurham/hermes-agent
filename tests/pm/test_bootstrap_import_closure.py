@@ -52,3 +52,29 @@ assert callable(sign_managed_python)
                             env=dict(os.environ, HERMES_HOME=str(tmp_path / "home")),
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
+
+
+def test_runtime_staging_streams_uv_output_without_tomllib(tmp_path):
+    """The PM runtime is staged by whatever python the host has (the Docker
+    arm64 image bootstraps from a 3.10 system python); streaming ``uv venv``
+    output must not pull in ``pm.workspace``, whose ``tomllib`` import needs 3.11+.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    script = """
+import sys
+class NoTomllib:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in ('tomllib', 'pm.workspace', 'pm.plugin_declarations'):
+            raise AssertionError('runtime staging imported ' + fullname)
+sys.meta_path.insert(0, NoTomllib())
+import pm.runtime_stage
+from pm.environment import _run_streaming
+import subprocess
+result = _run_streaming([sys.executable, '-c', 'print(\"no solution found\")'],
+                        cwd='.', env={}, timeout=30, output=sys.stderr)
+assert result.returncode == 0, result
+"""
+    result = subprocess.run([sys.executable, "-S", "-c", script], cwd=repo,
+                            env=dict(os.environ, HERMES_HOME=str(tmp_path / "home")),
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr

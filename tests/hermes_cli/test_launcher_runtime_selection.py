@@ -13,7 +13,8 @@ from pm.environments import install_state_dir, site_packages
 
 @pytest.mark.platforms("windows")
 def test_minted_launcher_reads_current_selection_and_editable_members(tmp_path, monkeypatch):
-    from pm import environments as runtime_paths, runtime_state
+    from pm import environments as runtime_paths
+    from hermes_cli import runtime_state
     import hermes_constants
 
     root = tmp_path / "repo"

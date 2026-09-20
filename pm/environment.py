@@ -21,6 +21,19 @@ from typing import TextIO
 
 from pm.package import InstallError
 
+# Deliberately narrow: a fetch timeout or index outage must not be misread as a
+# conflict — and regardless of classification, nothing here ever disables a
+# plugin; the caller decides. Lives here (stdlib-only imports) because the
+# bootstrap runner streams uv output from a pre-3.11 system python where
+# pm.workspace's tomllib import cannot load.
+_RESOLVER_MARKERS = (
+    "no solution found",
+    "conflicting requirements",
+    "conflicting urls",
+    "because only the following versions",
+    "and your pyproject depends on",
+)
+
 
 def prune_site_pth(venv_dir: Path) -> None:
     """Drop .pth files that must never execute inside a shipped payload.
@@ -52,8 +65,6 @@ def prune_site_pth(venv_dir: Path) -> None:
 def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextIO) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""
-    from pm.workspace import _RESOLVER_MARKERS
-
     deadline = time.monotonic() + timeout
     proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=0)

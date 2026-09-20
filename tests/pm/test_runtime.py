@@ -116,14 +116,15 @@ def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch
         shutil.copytree(Path(sys.base_prefix), base)
         python = base / "python.exe"
     else:
-        base.mkdir()
-        python = base / "python"
-        # A symlink, not a copy: a lone copied binary cannot find its stdlib on a
-        # framework-style build (macOS: "Could not find platform independent libraries").
-        # The contract under test is the sealed sys.path, not the binary's location.
-        python.symlink_to(Path(sys._base_executable).resolve())
+        # The guard resolves symlinks (a python linked outside the payload IS an escape), so the
+        # interpreter is a real copy inside the payload. A relocatable/framework build locates its
+        # stdlib beside the executable: supply the host's library tree the way the bundle test does.
+        (base / "bin").mkdir(parents=True)
+        python = base / "bin" / "python"
+        shutil.copy2(Path(sys._base_executable).resolve(), python)
+        (base / "lib").symlink_to(Path(sys.base_prefix) / "lib", target_is_directory=True)
     (runtime / "pm-runtime.json").write_text(json.dumps({
-        "python": "../python/" + python.name, "sitePackages": "site",
+        "python": os.path.relpath(python, runtime), "sitePackages": "site",
     }))
     script = repo / "probe.py"
     script.write_text("import sys,json; print(json.dumps(sys.path))")

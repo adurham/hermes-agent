@@ -9,8 +9,13 @@ import sys
 import pytest
 
 
+# Win32 strips a trailing space from every path component, so the literal-suffix contract is
+# only checkable with the leading space there.
+_SPACED = " spaced" if sys.platform == "win32" else " spaced "
+
+
 @pytest.mark.platforms("linux", "macos", "windows")
-@pytest.mark.parametrize("suffix", ["", "-asdfasdf", "magic-test", " spaced "])
+@pytest.mark.parametrize("suffix", ["", "-asdfasdf", "magic-test", _SPACED])
 def test_suffix_scopes_default_home_and_profiles(tmp_path, suffix):
     env = dict(os.environ)
     env.pop("HERMES_HOME", None)
@@ -41,8 +46,9 @@ print(json.dumps(result))
     result = subprocess.run(
         [sys.executable, "-c", script], env=env,
         cwd=Path(__file__).resolve().parents[2],
-        text=True, capture_output=True, check=True,
+        text=True, capture_output=True,
     )
+    assert result.returncode == 0, result.stderr
     base = tmp_path / "AppData" / "Local" / "hermes" if sys.platform == "win32" else tmp_path / ".hermes"
     root = Path(str(base) + suffix)
     profile = root / "profiles" / "coder"

@@ -33,16 +33,7 @@ class ResolutionConflict(InstallError):
 
 # Markers uv prints ONLY when the resolver itself proves no solution
 # exists (its conflict report: "Because ...", "no solution found").
-# Deliberately narrow: a fetch timeout or index outage must not be
-# misread as a conflict — and regardless of classification, nothing
-# here ever disables a plugin; the caller decides.
-_RESOLVER_MARKERS = (
-    "no solution found",
-    "conflicting requirements",
-    "conflicting urls",
-    "because only the following versions",
-    "and your pyproject depends on",
-)
+from pm.environment import _RESOLVER_MARKERS  # noqa: E402 — defined beside the uv runner
 
 
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
