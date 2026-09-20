@@ -148,18 +148,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // last_session alone shows "6d ago" on a bot you just messaged.
   const previewSession = bot.canonical_session || last
   const activitySession = botActivitySession(bot)
-  // A live kanban/tool worker counts as activity (#90268): fresh age while it
-  // runs, falling back to chat activity when it ends.
+  // A live kanban/tool worker gates only the pulse/mood (#90268). The age is
+  // the last time the bot did ANYTHING — chat or delegated worker run — so a
+  // delegate-only specialist that ran all day no longer snaps back to "11d"
+  // the moment the 150 s liveness window lapses (#105874). An absent
+  // worker_session (past the gateway's 20-row window) degrades to chat age.
   const workerActive = workerActiveAt(bot)
-
-  // Age reflects the last time the bot did ANYTHING — a human chat or a delegated worker run
-  // (source `tool`/`kanban`) — not only conversations. A delegate-only specialist that ran 24×
-  // today used to read "11d ago" the instant its worker's 150s liveness window lapsed, because
-  // the worker stamp only counted while workerActive (#105874). Take the max unconditionally; the
-  // worker stamp degrades to 0 when absent (worker_session can be None past the 20-row window), so
-  // the age falls back to chat activity. workerActive still gates only the live pulse/mood below.
-  const rowAgeTs = Math.max(
-    activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
+  const rowAgeTs = Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
 
   const groupKeys = useValue($activeGroupMemberKeys)
   const botMood = botWorkingMood(bot, focusedOwner, turnBusy, activeConnectionId, Date.now(), groupKeys)
