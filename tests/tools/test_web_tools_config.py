@@ -916,3 +916,35 @@ class TestSiblingProvidersEnvResolution:
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""
+
+
+def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeypatch, tmp_path):
+    """With the bundled web-xai plugin registered (the default), the registry resolves xai
+    as the single eligible search provider while _get_backend never autodetects it. The
+    gate must follow the dispatcher: keyless off -> no servable backend -> tools stay off
+    (#116175 review follow-up). Module-level on purpose: TestCheckWebApiKey neutralizes the
+    registry path with get_active_*_provider -> None."""
+    from agent import web_search_registry as registry
+    from plugins.web.xai.provider import XAIWebSearchProvider
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    with registry._lock:
+        saved = dict(registry._providers)
+        registry._providers.clear()
+    registry.register_provider(XAIWebSearchProvider())
+    try:
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._ensure_web_plugins_loaded", lambda: None), \
+             patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
+             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+            from tools.web_tools import _get_backend, check_web_api_key
+            assert registry.get_active_search_provider().name == "xai"
+            assert _get_backend() == "firecrawl"  # legacy sentinel: nothing servable
+            assert check_web_api_key() is False
+    finally:
+        with registry._lock:
+            registry._providers.clear()
+            registry._providers.update(saved)

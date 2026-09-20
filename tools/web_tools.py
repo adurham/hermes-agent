@@ -131,8 +131,13 @@ def _get_backend() -> str:
         if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
             return provider.name
 
-    # Keyless free tier — strictly last so it never pre-empts a keyed backend. Discovery must run
-    # first: reachable from contexts that haven't loaded plugins (subprocess runs, delegate children).
+    return _keyless_backend() or "firecrawl"  # default (backward compat)
+
+
+def _keyless_backend() -> Optional[str]:
+    """Keyless free-tier backend name, or None. Strictly the last autodetect rung so it never
+    pre-empts a keyed backend. Discovery must run first: reachable from contexts that haven't
+    loaded plugins (subprocess runs, delegate children)."""
     try:
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import _keyless_preference, _keyless_tier_enabled
@@ -143,8 +148,7 @@ def _get_backend() -> str:
                     return name
     except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
         logger.debug("keyless fallback walk failed: %s", exc)
-
-    return "firecrawl"  # default (backward compat)
+    return None
 
 
 def _get_search_backend() -> str:
@@ -448,9 +452,17 @@ def check_web_api_key() -> bool:
     try:
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import get_active_search_provider, get_active_extract_provider
-        return _provider_is_ready(get_active_search_provider()) or _provider_is_ready(
-            get_active_extract_provider()
-        )
+        for provider in (get_active_search_provider(), get_active_extract_provider()):
+            if provider is not None and getattr(provider, "name", None) in _WEB_CHECK_SKIP:
+                # The registry's single-eligible / legacy walk picked a built-in that _get_backend
+                # never autodetects (the explicit-config case was handled above): the dispatcher
+                # would route to the keyless tier instead, so gate on exactly that.
+                if _keyless_backend() is not None:
+                    return True
+                continue
+            if _provider_is_ready(provider):
+                return True
+        return False
     except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
         logger.debug("web provider registry availability check failed: %s", exc)
         return False
