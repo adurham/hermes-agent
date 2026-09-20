@@ -1,126 +1,81 @@
-"""Linux daemon-unit references to pruned cua-driver release dirs (#114748).
+"""`hermes computer-use doctor` names a daemon unit whose cua-driver Exec target was pruned (#114748).
 
-Linux has no managed cua-driver autostart, so users hand-write systemd user
-units / XDG autostart entries against a concrete release directory. The
-installer prunes all but the last five, so a versioned Exec reference
-crash-loops with 203/EXEC after every upgrade — for days, while every
-binary-level check (and `computer-use install`'s binary repair) stays green.
-The doctor guard surfaces the dead reference with the `packages/current`
-recovery hint.
+Linux has no managed cua-driver autostart, so users hand-write systemd user units / XDG
+autostart entries against a concrete ``packages/releases/<version>/`` directory. The installer
+keeps only the last five release dirs, so after an upgrade the unit crash-loops with 203/EXEC
+while every binary-level check stays green.  Doctor is the only surface that can name it.
 """
 
-import sys
+import json
+from io import StringIO
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tools.computer_use import doctor
 
+pytestmark = pytest.mark.linux_only
 
-def _write_unit(path, text):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-
-
-def test_pruned_release_reference_is_reported(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    _write_unit(
-        tmp_path / "systemd" / "user" / "cua-driver-screenshot.service",
-        "[Service]\n"
-        "ExecStart=%h/.cua-driver/packages/releases/0.20.0-x86_64-unknown-linux-gnu/cua-driver "
-        "serve --socket %h/.cache/cua-driver/cua-driver.sock\n",
-    )
-    findings = doctor._stale_cua_exec_references(str(tmp_path))
-    assert findings == [
-        (
-            "systemd user unit",
-            "cua-driver-screenshot.service",
-            "%h/.cua-driver/packages/releases/0.20.0-x86_64-unknown-linux-gnu/cua-driver",
-        )
-    ]
+_STALE = "%h/.cua-driver/packages/releases/0.20.0-x86_64-unknown-linux-gnu/cua-driver"
 
 
-def test_current_reference_and_live_release_are_silent(tmp_path):
-    # `packages/current` never carries a version, so it can never rot.
-    _write_unit(
-        tmp_path / "systemd" / "user" / "cua.service",
-        "[Service]\nExecStart=~/.cua-driver/packages/current/cua-driver serve\n",
-    )
-    # A releases/ dir that still exists on disk is healthy.
-    live = tmp_path / "live" / "packages" / "releases" / "0.28.2" / "cua-driver"
-    _write_unit(live, "")
-    _write_unit(tmp_path / "autostart" / "cua-driver.desktop", f"[Desktop Entry]\nExec={live}\n")
-    assert doctor._stale_cua_exec_references(str(tmp_path)) == []
+def _fake_health_report_proc() -> MagicMock:
+    """Popen double for the MCP handshake + one ``health_report`` call returning an all-ok report."""
+    report = {"schema_version": "1", "platform": "linux", "driver_version": "0.28.2", "overall": "ok",
+              "checks": [{"name": "binary_version", "status": "pass", "message": "cua-driver 0.28.2"}]}
+    lines = [json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}) + "\n",
+             json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}}) + "\n", ""]
+    proc = MagicMock()
+    proc.stdin = MagicMock()
+    proc.stdout = MagicMock()
+    proc.stdout.readline = MagicMock(side_effect=lines)
+    proc.stderr = MagicMock()
+    proc.stderr.read = MagicMock(return_value="")
+    proc.wait = MagicMock(return_value=0)
+    proc.kill = MagicMock()
+    return proc
 
 
-def test_desktop_entry_dead_release_reference(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    _write_unit(
-        tmp_path / "autostart" / "cua-driver.desktop",
-        "[Desktop Entry]\nExec=~/.cua-driver/packages/releases/0.19.0/cua-driver serve\n",
-    )
-    assert [f[1] for f in doctor._stale_cua_exec_references(str(tmp_path))] == ["cua-driver.desktop"]
+def _run_doctor_json(monkeypatch, home):
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(doctor, "_read_cli_version", lambda binary, timeout=5.0: "cua-driver 0.28.2")
+    out = StringIO()
+    with patch("shutil.which", return_value="/fake/cua-driver"), \
+         patch("subprocess.Popen", return_value=_fake_health_report_proc()), \
+         patch("sys.stdout", out):
+        code = doctor.run_doctor(json_output=True)
+    return code, json.loads(out.getvalue())
 
 
-def test_systemd_prefix_modifier_does_not_hide_dead_target(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    # '-' means "restart failures are tolerated" — the target is still dead.
-    _write_unit(
-        tmp_path / "systemd" / "user" / "restart-anyway.service",
-        "[Service]\nExecStart=-%h/.cua-driver/packages/releases/0.20.0/cua-driver serve\n",
-    )
-    assert len(doctor._stale_cua_exec_references(str(tmp_path))) == 1
+def test_doctor_reports_pruned_unit_and_degrades(tmp_path, monkeypatch):
+    unit_dir = tmp_path / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "cua-driver-screenshot.service").write_text(
+        f"[Service]\nExecStart=-{_STALE} serve --socket %h/.cache/cua-driver/cua-driver.sock\n", encoding="utf-8")
+
+    code, report = _run_doctor_json(monkeypatch, tmp_path)
+
+    unit_checks = [c for c in report["checks"] if c["name"] == "daemon unit (cua-driver-screenshot.service)"]
+    assert code == 1 and report["overall"] == "degraded"
+    assert unit_checks[0]["status"] == "fail" and _STALE in unit_checks[0]["message"]
+    assert "packages/current/cua-driver" in unit_checks[0]["hint"]
 
 
-def test_missing_config_dirs_are_silent(tmp_path):
-    assert doctor._stale_cua_exec_references(str(tmp_path / "nonexistent")) == []
+def test_doctor_is_silent_for_current_and_live_release_references(tmp_path, monkeypatch):
+    live = tmp_path / ".cua-driver" / "packages" / "releases" / "0.28.2-x86_64-unknown-linux-gnu" / "cua-driver"
+    live.parent.mkdir(parents=True)
+    live.write_text("", encoding="utf-8")
+    unit_dir = tmp_path / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "a.service").write_text("[Service]\nExecStart=%h/.cua-driver/packages/current/cua-driver serve\n",
+                                        encoding="utf-8")
+    (unit_dir / "b.service").write_text(f"[Service]\nExecStart={live} serve\n", encoding="utf-8")
+    autostart = tmp_path / ".config" / "autostart"
+    autostart.mkdir()
+    (autostart / "cua.desktop").write_text("[Desktop Entry]\nExec=%h/.cua-driver/packages/current/cua-driver serve\n",
+                                           encoding="utf-8")
 
+    code, report = _run_doctor_json(monkeypatch, tmp_path)
 
-def test_guard_appends_fail_check_and_degrades_ok(monkeypatch):
-    monkeypatch.setattr(
-        doctor,
-        "_stale_cua_exec_references",
-        lambda: [
-            (
-                "systemd user unit",
-                "cua-driver-screenshot.service",
-                "%h/.cua-driver/packages/releases/0.20.0-x86_64-unknown-linux-gnu/cua-driver",
-            )
-        ],
-    )
-    monkeypatch.setattr(sys, "platform", "linux")
-    out = doctor._apply_stale_unit_guard(
-        {"overall": "ok", "checks": [{"name": "binary_version", "status": "pass"}]}
-    )
-    assert out["overall"] == "degraded"
-    appended = out["checks"][-1]
-    assert appended["status"] == "fail"
-    assert "cua-driver-screenshot.service" in appended["name"]
-    assert "pruned" in appended["message"]
-    assert "packages/current" in appended["hint"]
-
-
-def test_guard_never_softens_worse_overall(monkeypatch):
-    monkeypatch.setattr(
-        doctor, "_stale_cua_exec_references", lambda: [("XDG autostart entry", "cua.desktop", "/x/packages/releases/0.1.0/cua-driver")]
-    )
-    monkeypatch.setattr(sys, "platform", "linux")
-    out = doctor._apply_stale_unit_guard({"overall": "failed", "checks": []})
-    assert out["overall"] == "failed"
-    assert out["checks"][-1]["status"] == "fail"
-
-
-def test_guard_without_checks_list_appends_nothing(monkeypatch):
-    monkeypatch.setattr(
-        doctor, "_stale_cua_exec_references", lambda: [("systemd user unit", "cua.service", "/x/packages/releases/0.1.0/cua-driver")]
-    )
-    monkeypatch.setattr(sys, "platform", "linux")
-    # No checks list to append to → no unexplained degraded either.
-    out = doctor._apply_stale_unit_guard({"overall": "ok"})
-    assert out == {"overall": "ok"}
-
-
-def test_guard_off_linux_never_scans(monkeypatch):
-    monkeypatch.setattr(doctor, "_stale_cua_exec_references", lambda: pytest.fail("must not scan off Linux"))
-    monkeypatch.setattr(sys, "platform", "darwin")
-    report = {"overall": "ok", "checks": []}
-    assert doctor._apply_stale_unit_guard(report) is report
+    assert code == 0 and report["overall"] == "ok"
+    assert not [c for c in report["checks"] if c["name"].startswith("daemon unit")]
