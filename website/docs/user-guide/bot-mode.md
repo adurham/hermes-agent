@@ -84,6 +84,10 @@ Every Bot gets a face:
 
 A Bot's look, title, and description are stored in the profile's metadata on the backend, so the same Bot appears the same way on every desktop connected to that backend.
 
+## Voices
+
+A Bot speaks with its **own profile's** TTS settings (`tts.*` in that profile's `config.yaml`). Read Aloud, auto-speak and voice conversation in a Bot chat all synthesize through the Bot's profile, so two Bots with different voices sound different; a Bot whose profile has no TTS config falls back to the active profile's voice.
+
 ## Routines
 
 The **Routines** pane attaches recurring tasks to the Bot that does them — "summarize my inbox every morning" lives next to the Bot responsible for it. The pane docks beside the chat only while the Bots tab is active and steps aside when you switch back to Sessions (older desktop builds keep it always visible). Closing it with its ✕ hides it until you next leave and re-enter the Bots tab, when it comes back as the collapsed right-edge tab. A structured schedule picker builds the schedule (frequency first, then only the detail that matters), with an Advanced field exposing the raw Hermes schedule string.
