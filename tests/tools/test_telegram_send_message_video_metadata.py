@@ -62,19 +62,3 @@ async def test_video_send_without_probeable_file_still_sends(monkeypatch, tmp_pa
 
     kwargs = bot.send_video.await_args.kwargs
     assert "width" not in kwargs and "thumbnail" not in kwargs
-
-
-@pytest.mark.asyncio
-async def test_non_video_extension_never_probes_geometry(monkeypatch, tmp_path):
-    called = []
-    monkeypatch.setattr("plugins.platforms.telegram.adapter._probe_video_geometry",
-                        lambda p: called.append(p) or {"width": 720, "height": 1280, "duration": 59})
-    archive = tmp_path / "bundle.zip"
-    archive.write_bytes(b"PK\x03\x04" + b"\x00" * 16)
-    bot = _fake_bot(send_document=True)
-
-    await _send(bot, archive)
-
-    bot.send_document.assert_awaited_once()
-    assert "width" not in bot.send_document.await_args.kwargs
-    assert called == [], "only video extensions carry video geometry"

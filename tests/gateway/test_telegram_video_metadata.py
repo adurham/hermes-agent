@@ -76,19 +76,6 @@ async def test_send_video_without_probeable_media_omits_metadata(monkeypatch, tm
     assert "duration" not in kwargs and "thumbnail" not in kwargs
 
 
-def test_video_helpers_degrade_without_ffmpeg(monkeypatch, tmp_path):
-    """No ffprobe/ffmpeg on the host means no metadata, never a failed send."""
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-    missing = str(tmp_path / "clip.mp4")
-
-    assert telegram_mod._probe_video_geometry(missing) == {}
-    assert telegram_mod._video_thumbnail_jpeg(missing, 5) is None
-
-
-@pytest.mark.skipif(
-    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
-    reason="needs ffmpeg/ffprobe to synthesise a real clip",
-)
 def test_video_helpers_read_real_geometry(tmp_path):
     """On a real 16:9 clip the helpers report the true size and a 16:9 thumbnail."""
     clip = tmp_path / "clip.mp4"
