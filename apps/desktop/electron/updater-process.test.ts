@@ -219,7 +219,10 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
-test('wrapHandoffForDetachedConsole uses start /b without creating a console', () => {
+test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden wrapper console', () => {
+  // #116161: `start /min` allocated a NEW (minimized, visible) console for
+  // powershell on every hand-off; `detached: true` (DETACHED_PROCESS) would
+  // leave the wrapper console-less, forcing the same allocation under `/b`.
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -232,6 +235,7 @@ test('wrapHandoffForDetachedConsole uses start /b without creating a console', (
   const wrapped = wrapHandoffForDetachedConsole(handoff, ['-InstallRoot', root, '-Branch', 'main'])
 
   assert.equal(wrapped.command, 'cmd.exe')
+  assert.equal(wrapped.detached, false)
   assert.deepEqual(wrapped.args, [
     '/d',
     '/s',
