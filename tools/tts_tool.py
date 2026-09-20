@@ -151,8 +151,10 @@ OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "s
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result
 # (media_tag / file_path fields, error text): the collector scans producer output with a
-# bare MEDIA: matcher and cannot tell a filename from a directive.
-_MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[a-z]:[/\\]|~?/)", re.IGNORECASE)
+# bare MEDIA: matcher and cannot tell a filename from a directive. Mirrors the collector's
+# grammar (gateway.platforms.base.MEDIA_TAG_CLEANUP_RE): an anchored path OR a quoted payload,
+# which the collector accepts with no anchor and no extension.
+_MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)", re.IGNORECASE)
 
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
