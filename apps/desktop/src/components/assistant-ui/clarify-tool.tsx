@@ -513,8 +513,12 @@ function ClarifyToolSinglePending({
 
   const selectChoice = useCallback(
     (choice: string, index: number) => {
-      // Picking a choice and typing are mutually exclusive answers.
-      setDraft('')
+      // Picking a choice and typing are mutually exclusive answers in
+      // single-select; multi-select keeps the typed text as one more answer.
+      if (!multiSelect) {
+        setDraft('')
+      }
+
       setSelectedChoices(selected => {
         if (!multiSelect) {
           return [choice]
@@ -537,11 +541,11 @@ function ClarifyToolSinglePending({
       const itemCount = choices.length + 1
 
       // Arrow navigation is a move, not a pick. Multi-select keeps staged
-      // choices while the cursor moves so the user can build a set; the
-      // single-select path retains its existing clear-on-navigation behaviour.
-      setDraft('')
-
+      // choices and the typed text while the cursor moves so the user can
+      // build a set; the single-select path retains its existing
+      // clear-on-navigation behaviour.
       if (!multiSelect) {
+        setDraft('')
         setSelectedChoices([])
       }
 
@@ -1110,7 +1114,9 @@ function ClarifyToolBatchPending({
           : [...stage.choices, choice]
         : [choice]
 
-      return { ...current, [question.qid]: { choices: next, draft: '' } }
+      // Multi-select keeps the typed text alongside the toggled choices;
+      // single-select stays mutually exclusive.
+      return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
     })
   }, [])
 
