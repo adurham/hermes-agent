@@ -14,9 +14,6 @@ from typing import Callable, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Module-level (not inline) so tests can flip it without breaking pathlib's os.name check.
-_IS_WINDOWS = os.name == "nt"
-
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
 STALE_LOCK_MIN_AGE_SECONDS = 10 * 60
@@ -61,7 +58,7 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     for entry in candidates():
         try:
             if entry.is_file() and (st := entry.stat()).st_mtime < cutoff:
-                if _IS_WINDOWS:
+                if os.name == "nt":
                     # git renames its transfer temps into place read-only; Windows refuses to
                     # unlink a read-only file (EACCES/13), so without clearing the write bit
                     # this sweep silently removes nothing on real debris (#116384).

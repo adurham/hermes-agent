@@ -13,6 +13,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from hermes_cli.gitlock import (
     STALE_TMP_PACK_MIN_AGE_SECONDS,
     clear_stale_tmp_packs,
@@ -102,29 +104,19 @@ def test_never_raises_on_unlink_failure(tmp_path, monkeypatch):
     assert clear_stale_tmp_packs(repo) == []  # skipped, not raised
 
 
+@pytest.mark.windows_only
 def test_windows_readonly_debris_is_cleared(tmp_path, monkeypatch):
     """git renames its transfer temps into place read-only, and Windows refuses to unlink a
     read-only file with EACCES — the exact rule that let aborted-fetch debris survive this
-    sweep for months (#116384). Path.unlink is faked to that Windows rule so the regression
-    is exercised on POSIX CI too."""
+    sweep for months (#116384). Runs on a real Windows host: no faked unlink, no faked OS."""
     repo = _mkrepo(tmp_path)
     monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
-    monkeypatch.setattr("hermes_cli.gitlock._IS_WINDOWS", True)
     pack = repo / ".git" / "objects" / "pack"
 
     debris = pack / "tmp_pack_ReadOnly"
     debris.write_bytes(b"x" * 128)
     _age(debris, STALE_TMP_PACK_MIN_AGE_SECONDS + 60)
     os.chmod(debris, 0o444)  # read-only, as git writes its pack temps
-
-    real_unlink = Path.unlink
-
-    def windows_unlink(self, *a, **k):
-        if not self.stat().st_mode & 0o222:  # Windows: no write bit -> EACCES
-            raise PermissionError(13, "Permission denied")
-        return real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(Path, "unlink", windows_unlink)
 
     removed = clear_stale_tmp_packs(repo)
     assert removed == [str(debris)]  # write bit cleared first, then unlinked
