@@ -65,7 +65,15 @@ export function groupMemberKey(member: GroupMember): string {
 export function groupMemberAuthor(member: GroupMember): GroupMessageAuthor {
   const source = member.connectionLabel || member.connectionId
 
-  return { kind: 'member', name: member.name, ...(source ? { source } : {}) }
+  // `source` is this Desktop's label for the connection; `gateway` is the
+  // backend's own install_id, identical on every Desktop that reaches it —
+  // the token the self test matches on when both sides carry it.
+  return {
+    kind: 'member',
+    name: member.name,
+    ...(source ? { source } : {}),
+    ...(member.installId ? { gateway: member.installId } : {})
+  }
 }
 
 /** Marks a session key as thread-scoped. Pre-thread rooms stored ONE session

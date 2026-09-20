@@ -20,7 +20,8 @@ function relabelMemberControlFrames(text: string) {
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
-  string | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'remoteSource'>>)
+  | string
+  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
@@ -85,6 +86,14 @@ function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
 function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
   if (!from.name || from.name !== viewerNameOf(viewer)) {
     return false
+  }
+
+  // Gateway identity first: the install_id is the same token on every
+  // Desktop, while `source` is whatever THIS Desktop labelled the connection
+  // (two Desktops calling one gateway "Central" / "Studio" agree here and
+  // disagree below). Only decisive when both sides carry it.
+  if (from.gateway && typeof viewer !== 'string' && viewer?.installId) {
+    return from.gateway === viewer.installId
   }
 
   const speakerSource = from.source || ''

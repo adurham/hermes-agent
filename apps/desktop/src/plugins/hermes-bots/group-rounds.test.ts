@@ -187,6 +187,29 @@ describe('routing', () => {
       formatGroupChatLine(reply as GroupMessage, { connectionId: 'mbp', connectionLabel: 'MBP', name: 'default', remoteSource: true })
     ).not.toContain('(you)')
   })
+
+  // Two Desktops label the same gateway differently ("Central" here, "Studio"
+  // there): the reply's gateway install_id, not the label, decides `(you)`.
+  it('matches self on the gateway install_id when Desktops label the connection differently', async () => {
+    const room = await loadRoom({ turn: () => 'Central here.' })
+    const { formatGroupChatLine } = await import('./group-round-prompt')
+    const local: GroupMember = { connectionId: 'central', connectionLabel: 'Central', installId: 'gw-1', name: 'default', title: '' }
+
+    room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
+    await settle(room, 'Core')
+
+    const reply = log(room, 'Core').find(entry => entry.from.kind === 'member') as GroupMessage
+
+    expect(reply.from).toEqual({ kind: 'member', name: 'default', source: 'Central', gateway: 'gw-1' })
+    // The other Desktop's view of the SAME gateway under its own label.
+    expect(
+      formatGroupChatLine(reply, { connectionId: 'c9', connectionLabel: 'Studio', installId: 'gw-1', name: 'default', remoteSource: true })
+    ).toContain('(you)')
+    // …and a different gateway that happens to share the label is not self.
+    expect(
+      formatGroupChatLine(reply, { connectionId: 'c2', connectionLabel: 'Central', installId: 'gw-2', name: 'default', remoteSource: true })
+    ).not.toContain('(you)')
+  })
 })
 
 describe('round lifecycle', () => {

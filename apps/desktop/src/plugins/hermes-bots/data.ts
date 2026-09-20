@@ -1290,6 +1290,7 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...bot,
     connectionKind: bot.connectionKind || source.kind,
     connectionLabel: bot.connectionLabel || source.label,
+    ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
     sourceReachable: source.reachable
