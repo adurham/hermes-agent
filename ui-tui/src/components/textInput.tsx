@@ -1473,7 +1473,7 @@ export function TextInput({
       const delFwd = k.delete || fwdDel.current
 
       const isPrintableInput =
-        !event.isControlByteChord &&
+        !event.isControlChord &&
         (event.keypress.isPasted || inp.length > 0) &&
         PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
 
@@ -1615,7 +1615,7 @@ export function TextInput({
         } else {
           ;({ cursor: c, value: v } = killToLineEnd(v, c))
         }
-      } else if (event.keypress.isPasted || (inp.length > 0 && !event.isControlByteChord)) {
+      } else if (event.keypress.isPasted || (inp.length > 0 && !event.isControlChord)) {
         const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
