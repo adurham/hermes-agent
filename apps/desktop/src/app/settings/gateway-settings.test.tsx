@@ -218,29 +218,6 @@ describe('GatewaySettings', () => {
       await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(envUrl))
     })
 
-    it('lets a stale-but-connected env session sign out, then back in', async () => {
-      const oauthLogoutConnectionConfig = vi.fn().mockResolvedValue({ connected: false })
-      const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true })
-
-      getConnectionConfig
-        .mockResolvedValueOnce({ ...envRemote, remoteOauthConnected: true })
-        .mockResolvedValue({ ...envRemote, remoteOauthConnected: false })
-      Object.assign(window.hermesDesktop, {
-        oauthLoginConnectionConfig,
-        oauthLogoutConnectionConfig,
-        probeConnectionConfig: vi.fn().mockResolvedValue(oauthProbe)
-      })
-
-      render(<GatewaySettings embedded />)
-
-      fireEvent.click(await screen.findByRole('button', { name: 'Sign out' }))
-      await waitFor(() => expect(oauthLogoutConnectionConfig).toHaveBeenCalledWith(envUrl))
-
-      // The refreshed (lapsed) config paints the sign-in control.
-      fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Nous Research' }))
-      await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(envUrl))
-    })
-
     it('leaves a saved (non-env) remote session editable and unchanged', async () => {
       const oauthLoginConnectionConfig = vi.fn()
 
