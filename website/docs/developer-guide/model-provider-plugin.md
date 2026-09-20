@@ -304,6 +304,16 @@ register_provider(ProviderProfile(
 
 In a fresh Hermes process, `get_provider_profile("gmi").base_url` returns the staging URL. No repo patch, no rebuild. Because user plugins are discovered after bundled ones, the user `register_provider()` call wins.
 
+The override also reaches the runtime. Built-in providers have a row in `hermes_cli.auth.PROVIDER_REGISTRY` (the table `resolve_runtime_provider()` reads its endpoint and env vars from); a `$HERMES_HOME` plugin re-registering that name rewrites the row's profile-derived fields, so inference goes to the staging URL, not the bundled one:
+
+| Profile field | Registry row field | When |
+|---|---|---|
+| `base_url` | `inference_base_url` | profile sets a non-empty `base_url` |
+| `env_vars` (non-URL entries) | `api_key_env_vars` | api-key row and profile sets `env_vars` |
+| `env_vars` (final `*_BASE_URL` / `*_URL` entry) | `base_url_env_var` | profile declares one; otherwise the built-in env var (e.g. `GMI_BASE_URL`) stays |
+
+Only a **user** plugin (`$HERMES_HOME/plugins/model-providers/` or an installed `kind: model-provider` plugin) triggers this; a bundled profile never rewrites a built-in row, and `copilot`, `kimi-coding`, `kimi-coding-cn` and `zai` keep their bespoke credential resolution. A field the profile leaves empty keeps the built-in value. A `*_BASE_URL` env var still wins over both.
+
 ## api_mode selection
 
 Four values are recognized. Hermes picks one based on:
