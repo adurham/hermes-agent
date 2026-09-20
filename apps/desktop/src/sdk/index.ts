@@ -1517,15 +1517,17 @@ export const host = {
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
-   *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+   *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
+   *  overrides the socket's 30 s default for RPCs that legitimately run longer
+   *  (session.compress); unset keeps the default. */
+  request: async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> => {
     const gateway = $gateway.get()
 
     if (!gateway) {
       throw new Error('Hermes gateway unavailable')
     }
 
-    return gateway.request<T>(method, params)
+    return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
   },
 
   /** The LIVE gateway instance for the active profile (null before the first
