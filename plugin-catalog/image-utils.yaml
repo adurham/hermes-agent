@@ -1,6 +1,6 @@
 name: image-utils
 repo: https://github.com/MazenMkhinini/hermes-image-plugin
-sha: b1eb2585eb687af34a1e285947ded775ecb32b40
+sha: 2cc23a99a6df9238b25cd5dc118946563afb1bd9
 description: Inspect, resize, crop, rotate, convert and re-encode image files in-process with Pillow - no shell, no ImageMagick, no network.
 maintainer: MazenMkhinini
 tier: community
