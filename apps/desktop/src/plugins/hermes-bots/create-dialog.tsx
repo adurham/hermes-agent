@@ -294,7 +294,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
   // what it WILL have — the clone source's catalog, else the main profile's.
-  const capSource = cloneFrom === '__none__' ? 'default' : cloneFrom
+  // Same rule as the `clone_from` payload below: a remote target can only
+  // clone ITS default, so a local roster name picked before the target
+  // switched must not key the preview (or the describe call) either.
+  const capSource = cloneFrom === '__none__' || remoteTarget ? 'default' : cloneFrom
 
   const ensureCaps = () => {
     if ((caps && caps.source === capSource) || capsFailed) {
@@ -303,7 +306,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
     Promise.all([
       requestForTarget<ProfileDescribeResponse>('profiles.describe', {
-        name: remoteTarget ? 'default' : capSource
+        name: capSource
       }),
       requestForTarget<McpCatalogResponse>('mcp.catalog', {}).catch(() => null)
     ])
