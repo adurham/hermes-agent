@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildGroups,
   firstVisibleGroupIndex,
+  hasTranscriptTextSelection,
   HIDDEN_TRANSCRIPT_RENDER_BUDGET,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
-  hasTranscriptTextSelection,
   type MessageGroup,
   resolveThreadScrollTarget,
   RUN_START_SNAP_THRESHOLD_PX,
