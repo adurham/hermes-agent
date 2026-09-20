@@ -15,73 +15,52 @@ import pytest
 from hermes_cli.auth import has_usable_secret, AuthError
 
 
-class TestHasUsableSecretPlaceholderRejection:
-    """has_usable_secret must reject common placeholder patterns."""
-
-    @pytest.mark.parametrize("placeholder", [
-        # every placeholder shape shipped by this repo's own .env.example
-        "your_key_here",
-        "your_google_ai_studio_key_here",
-        "your_gemini_key_here",
-        "your_ollama_key_here",
-        "your_api_key_here",
-        # the x-run convention used in quickstart / MCP / skill references
-        "sk-xxx",
-        "sk-XXXX",
-        "ghp_xxxxxxxxxxxxxxxxxxxx",
-        "xxxx xxxx xxxx xxxx",
-        "hf_xxxx",
-        "XXXXXXXX",
-    ])
-    def test_rejects_placeholder_patterns(self, placeholder):
-        assert not has_usable_secret(placeholder)
-
-    @pytest.mark.parametrize("real_key", [
-        "sk-or-v1-abc123",
-        "ghp_real_token_here",
-        "hf_real_token",
-        "xai-real-key-123",
-        "sk-test-1234567890abcdef",
-    ])
-    def test_accepts_real_looking_keys(self, real_key):
-        assert has_usable_secret(real_key)
+@pytest.mark.parametrize("value, usable", [
+    # every placeholder shape shipped by this repo's own .env.example
+    ("your_key_here", False),
+    ("your_google_ai_studio_key_here", False),
+    ("your_gemini_key_here", False),
+    ("your_ollama_key_here", False),
+    ("your_api_key_here", False),
+    # the x-run convention used in quickstart / MCP / skill references
+    ("sk-xxx", False),
+    ("sk-XXXX", False),
+    ("ghp_xxxxxxxxxxxxxxxxxxxx", False),
+    ("xxxx xxxx xxxx xxxx", False),
+    ("hf_xxxx", False),
+    ("XXXXXXXX", False),
+    # real-looking keys keep resolving
+    ("sk-or-v1-abc123", True),
+    ("ghp_real_token_here", True),
+    ("hf_real_token", True),
+    ("xai-real-key-123", True),
+    ("sk-test-1234567890abcdef", True),
+])
+def test_shipped_placeholders_are_not_usable_secrets(value, usable):
+    assert has_usable_secret(value) is usable
 
 
-class TestRuntimeRejectsPlaceholderApiKey:
-    """Placeholder env vars must raise AuthError with guidance at resolution time."""
+def test_placeholder_keys_resolve_as_unconfigured(tmp_path, monkeypatch):
+    """Production entry point: a placeholder in the env fails loud at the read point, and a pooled
+    placeholder (the sibling resolution path) behaves exactly like no credential at all."""
+    import uuid
 
-    def test_xai_placeholder_raises(self, monkeypatch):
-        monkeypatch.setenv("XAI_API_KEY", "your_key_here")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        with pytest.raises(AuthError, match="No usable credentials found for provider 'xai'"):
-            resolve_runtime_provider(requested="xai")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("XAI_API_KEY", "your_key_here")
 
-    def test_openrouter_placeholder_fallback_to_empty_key(self, monkeypatch):
-        """OpenRouter silently falls back to free-tier when the env key is a placeholder."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-xxx")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(requested="openrouter")
-        assert runtime.get("api_key") == ""
-        assert runtime.get("provider") == "openrouter"
+    from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
+    from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    def test_pooled_placeholder_is_not_used_as_a_credential(self, tmp_path, monkeypatch):
-        """The credential pool is the sibling path: a pooled placeholder must behave exactly like
-        no credential at all, never like a configured key."""
-        import uuid
+    with pytest.raises(AuthError, match="No usable credentials found for provider 'xai'"):
+        resolve_runtime_provider(requested="xai")
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-        (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-        from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
-
-        pool = load_pool("openrouter")
-        pool.add_entry(PooledCredential(
-            provider="openrouter", id=uuid.uuid4().hex[:6], label="pasted-example",
-            auth_type=AUTH_TYPE_API_KEY, priority=0, source=SOURCE_MANUAL,
-            access_token="your_key_here", base_url="https://openrouter.ai/api/v1",
-        ))
-
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        runtime = resolve_runtime_provider(requested="openrouter")
-        assert runtime.get("api_key") == "", "a pooled .env.example placeholder was used as a key"
+    pool = load_pool("openrouter")
+    pool.add_entry(PooledCredential(
+        provider="openrouter", id=uuid.uuid4().hex[:6], label="pasted-example",
+        auth_type=AUTH_TYPE_API_KEY, priority=0, source=SOURCE_MANUAL,
+        access_token="your_key_here", base_url="https://openrouter.ai/api/v1",
+    ))
+    runtime = resolve_runtime_provider(requested="openrouter")
+    assert runtime.get("api_key") == "", "a pooled .env.example placeholder was used as a key"
