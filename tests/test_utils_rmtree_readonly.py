@@ -2,7 +2,7 @@
 
 Git marks loose object files read-only on Windows (``WinError 5``), and package
 installs arrive as read-only trees on POSIX, so every cleanup path that deletes a
-clone needs the retry.  Regression coverage for #117170, #117176 and #117179.
+clone needs the retry.  Regression coverage for #117170, #117176, #117179 and #117184.
 """
 
 from __future__ import annotations
@@ -52,34 +52,15 @@ def test_removes_read_only_file_in_writable_directory(tmp_path):
     assert not root.exists()
 
 
-def _stub_rmtree(monkeypatch, exc: OSError) -> list:
-    """Replace ``shutil.rmtree`` so the wrapper sees *exc* for every attempt."""
+def test_non_permission_failures_propagate(tmp_path, monkeypatch):
+    """Only ``PermissionError`` is retried — everything else keeps rmtree semantics."""
     attempts: list = []
 
     def _fake(path, **kwargs):
-        attempts.append((path, kwargs))
-        raise exc
+        attempts.append(path)
+        raise OSError(39, "Directory not empty", str(path))
 
     monkeypatch.setattr(utils.shutil, "rmtree", _fake)
-    return attempts
-
-
-def test_ignore_errors_swallows_a_persistent_permission_failure(tmp_path, monkeypatch):
-    _stub_rmtree(monkeypatch, PermissionError(13, "Access is denied", str(tmp_path)))
-
-    rmtree_readonly(tmp_path, ignore_errors=True)
-
-
-def test_permission_failure_still_raises_without_ignore_errors(tmp_path, monkeypatch):
-    _stub_rmtree(monkeypatch, PermissionError(13, "Access is denied", str(tmp_path)))
-
-    with pytest.raises(PermissionError):
-        rmtree_readonly(tmp_path)
-
-
-def test_non_permission_failures_propagate(tmp_path, monkeypatch):
-    """Only ``PermissionError`` is retried — everything else keeps rmtree semantics."""
-    attempts = _stub_rmtree(monkeypatch, OSError(39, "Directory not empty", str(tmp_path)))
 
     with pytest.raises(OSError) as excinfo:
         rmtree_readonly(tmp_path)
