@@ -135,6 +135,7 @@ ensure_uv() {
     if [ ! -x "$UV_CMD" ]; then
         log "staging pinned uv $UV_PIN_VERSION ($_target) into the pm store"
         local _tmp
+        # no-tmp: ok — last-resort fallback when mktemp itself is missing
         _tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-uv-bootstrap.$$")"
         mkdir -p "$_tmp"
         local _fetched_from="$UV_PIN_URL"

@@ -262,7 +262,11 @@ async function verifyRunningDesktop(app: ElectronApplication, options: SmokeOpti
   return running
 }
 
-export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<void> {
+export type LaunchElectron = (launch: Parameters<typeof _electron.launch>[0]) => Promise<ElectronApplication>
+
+// `launchApp` is a parameter so a test can substitute a failing launcher and
+// exercise the seeding that happens before the launch without touching Playwright.
+export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp: LaunchElectron = (launch) => _electron.launch(launch)): Promise<void> {
   const out = options.out
   fs.mkdirSync(out, { recursive: true })
   const receiptPath = path.join(out, `desktop-chat-${options.phase}.json`)
@@ -301,7 +305,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions): Promise<v
       writeMockProviderConfig(home, mockUrl)
       writeEnvFile(home)
     }
-    app = await _electron.launch({ ...launch, timeout: 120_000 })
+    app = await launchApp({ ...launch, timeout: 120_000 })
     app.process().stdout?.on('data', (chunk: Buffer): void => { consoleLines.push(redact(chunk.toString())) })
     app.process().stderr?.on('data', (chunk: Buffer): void => { consoleLines.push(redact(chunk.toString())) })
 

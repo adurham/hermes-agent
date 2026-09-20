@@ -324,12 +324,14 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-bundle-clear-'))
   const home = path.join(root, 'home')
   const userData = path.join(root, 'root', 'user-data')
-  // A real-but-dummy executable: admission passes, seeding runs, and the
-  // Electron launch then fails fast because this is not an Electron app.
+  // A real-but-dummy executable so admission passes and seeding runs; the
+  // launcher itself is substituted below, so Playwright never spawns it (a
+  // process that exits at once leaves Playwright with dangling rejections).
   const exe = path.join(root, 'root', 'fake-desktop')
   fs.mkdirSync(path.join(root, 'root'), { recursive: true })
   fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n')
   fs.chmodSync(exe, 0o755)
+  const refuseLaunch = async (): Promise<never> => { throw new Error('launch refused by test') }
   try {
     const mock = await startMockServer()
     try {
@@ -337,7 +339,7 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
       // resolveDesktopHermesHome falls to <userData>/hermes-home. The driver must
       // have seeded THAT home, not only the --home the caller named.
       await expect(runInstalledDesktopSmoke({ exe, root: path.join(root, 'root'), origin: 'bundled', home,
-        'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) })).rejects.toThrow()
+        'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) }, refuseLaunch)).rejects.toThrow('launch refused by test')
       for (const candidate of candidateSmokeHermesHomes(home, userData)) {
         expect(yaml.load(fs.readFileSync(path.join(candidate, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'custom' } })
         expect(fs.readFileSync(path.join(candidate, '.env'), 'utf8')).toMatch(/MOCK_API_KEY=/)

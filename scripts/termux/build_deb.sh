@@ -237,13 +237,14 @@ rm -rf "$STAGE"
 [ -f "$DEB" ] || fail "dpkg-deb did not produce $DEB"
 
 # The bare rootfs has no build toolchain to hide a missing payload library.
+ctmp=/tmp  # no-tmp: ok — mount point inside the arm64 test container, not host scratch
 docker run --rm --platform linux/arm64 \
     --user 1000:1000 --network none \
-    -v "$DEB:/tmp/pkg.deb:ro" \
-    -v "$HERE/check_deb.sh:/tmp/check.sh:ro" \
-    -v "$HERE/validate_installed.py:/tmp/validate_installed.py:ro" \
+    -v "$DEB:$ctmp/pkg.deb:ro" \
+    -v "$HERE/check_deb.sh:$ctmp/check.sh:ro" \
+    -v "$HERE/validate_installed.py:$ctmp/validate_installed.py:ro" \
     "termux/termux-docker@$DIGEST" bash -c \
-        'source /tmp/check.sh; "$root/venv/bin/python" -m pm.cli status' \
+        "source $ctmp/check.sh; \"\$root/venv/bin/python\" -m pm.cli status" \
     || fail "container validation failed"
 
 log "Built $DEB (validated)"

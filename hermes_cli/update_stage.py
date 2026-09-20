@@ -57,8 +57,8 @@ def _status_from_marker() -> Path | None:
         return None
     if pid <= 0:
         return None
-    tmpdir = os.environ.get("TMPDIR") or "/tmp"
-    candidate = Path(tmpdir) / f"hermes-update-status.{pid}"
+    # The shim writes beside ${TMPDIR:-/tmp}; gettempdir() resolves the same way.
+    candidate = Path(tempfile.gettempdir()) / f"hermes-update-status.{pid}"
     return candidate if candidate.is_file() else None
 
 

@@ -847,10 +847,12 @@ select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "TID251"]
 "pm.install.uv".msg = "The raw uv bridge was removed; use PM operations."
 "pm._uv".msg = "Tool acquisition is private to PM."
 "pm.environment".msg = "The environment engine is private; use PM operations."
-"pm.runtime_stage".msg = "Use pm.stage_manager_runtime for build-time bootstrap."
+"pm.runtime_stage".msg = "PM stages its own worker runtime; consumers call pm operations."
 
 [tool.ruff.lint.per-file-ignores]
 "pm/**" = ["TID251"]
+# Desktop E2E fixtures stand in for PM's worker/runtime and reach into it like tests do.
+"apps/desktop/electron/fixtures/**" = ["TID251"]
 # Tests can intentionally exercise locale-encoding edge cases.
 "tests/**" = [
   "PLW1514",
