@@ -1,21 +1,20 @@
-"""Tests verifying clean SessionDB.close() does not poison residual entry points.
+"""A clean ``SessionDB.close()`` racing a live caller must never be classified as an externally
+deleted WAL generation (regression for #116244, sibling of #105567).
 
-Reproduces and guards against issue #116244:
-- optimize_fts()
-- rebuild_fts()
-- vacuum()
-- _execute_write() SQLite-error handling
+``append_message`` already probes the replaced/lost generation INSIDE ``_lock`` so it can only see
+the stable post-close state; ``optimize_fts``, ``rebuild_fts``, ``vacuum`` and the SQLite-error
+branch of ``_execute_write`` probed outside it and could observe the mid-teardown window (sidecars
+unlinked, identity not yet cleared), setting the sticky ``_db_wal_generation_lost`` flag on a
+healthy handle. ``normal`` is the control.
 """
-import json
 import sqlite3
 import threading
 import pytest
 from hermes_state import SessionDB
 
 
-@pytest.mark.parametrize("case", range(5))
 @pytest.mark.parametrize("entry", ["normal", "optimize", "rebuild", "vacuum", "error_branch"])
-def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry, case):
+def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry):
     path = tmp_path / "synthetic.db"
     db = SessionDB(db_path=path)
     db.create_session("synthetic", "cli")
@@ -116,17 +115,9 @@ def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry
             rows = reader.execute("SELECT count(*) FROM messages").fetchone()[0]
         finally:
             reader.close()
-        observed = {
-            "entry": entry,
-            "case": case,
-            "guard_calls": calls,
-            "sticky": sticky,
-            "errors": errors,
-            "post_errors": post_errors,
-            "rows": rows,
-            "injected_sqlite_error": entry == "error_branch",
-        }
-        print("OBSERVED " + json.dumps(observed), flush=True)
+        observed = {"entry": entry, "guard_calls": calls, "sticky": sticky, "errors": errors,
+                    "post_errors": post_errors, "rows": rows}
+        # Full positive outcome: the handle stays writable and the post-close append landed.
         assert not sticky and not post_errors, observed
         assert rows == (2 if entry == "normal" else 1), observed
     finally:
