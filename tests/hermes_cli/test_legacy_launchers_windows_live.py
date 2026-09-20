@@ -28,14 +28,16 @@ def test_status_warns_and_uninstall_removes_pre_suffix_launchers(tmp_path, monke
 
     current = gateway_windows.get_task_name()
     assert current != "Hermes_Gateway", "a temp home must carry a profile suffix"
-    legacy_vbs = startup / "Hermes_Gateway.vbs"
-    legacy_vbs.write_text("' pre-suffix login item\r\n", encoding="utf-8")
     legacy_pair = home / "gateway-service" / "Hermes_Gateway.vbs"
     legacy_pair.write_text("' pre-suffix launcher\r\n", encoding="utf-8")
+    # Both objects must point INTO this home: a bare-named task/entry targeting another home is a
+    # sibling install (the default profile's live gateway) and is deliberately left alone.
+    legacy_vbs = startup / "Hermes_Gateway.vbs"
+    legacy_vbs.write_text(gateway_windows._build_startup_launcher(legacy_pair.with_suffix(".cmd")), encoding="utf-8")
 
     schtasks = shutil.which("schtasks") or "schtasks"
     create = subprocess.run(
-        [schtasks, "/Create", "/F", "/TN", "Hermes_Gateway", "/SC", "ONLOGON", "/TR", "cmd.exe /c exit 0"],
+        [schtasks, "/Create", "/F", "/TN", "Hermes_Gateway", "/SC", "ONLOGON", "/TR", f"wscript.exe //B {legacy_pair}"],
         capture_output=True, text=True, timeout=60,
     )
     assert create.returncode == 0, create.stderr

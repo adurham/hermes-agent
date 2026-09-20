@@ -20,9 +20,20 @@ def _w():
     return gateway_windows
 
 
+def _targets_this_home(text: str) -> bool:
+    """A bare-named launcher is OURS only when its action points into THIS home's ``gateway-service``
+    dir. The bare name is also the live identity of the default ``~/.hermes`` profile, so a secondary
+    profile that classified every ``Hermes_Gateway`` object as its own stray would delete the default
+    profile's gateway autostart on ``uninstall`` / ``install --force``."""
+    w = _w()
+    marker = w._normalize_windows_path(str(w._hermes_home() / "gateway-service"))
+    return marker in w._normalize_windows_path(text)
+
+
 def legacy_launcher_artifacts() -> list[tuple[str, str, Path | str]]:
-    """``(kind, label, target)`` for every pre-suffix launcher still present; ``kind`` is ``"file"``
-    or ``"task"``. Empty when this home owns the bare name (its current objects ARE the bare ones)."""
+    """``(kind, label, target)`` for every pre-suffix launcher of THIS home still present; ``kind`` is
+    ``"file"`` or ``"task"``. Empty when this home owns the bare name (its current objects ARE the bare
+    ones). Bare-named objects belonging to another home (a sibling install) are left alone."""
     w = _w()
     bare = w._TASK_NAME_DEFAULT
     if w.get_task_name() == bare:
@@ -33,13 +44,20 @@ def legacy_launcher_artifacts() -> list[tuple[str, str, Path | str]]:
     for path, label in (
         (startup / f"{bare}.vbs", "legacy pre-suffix Windows login item"),
         (startup / f"{bare}.cmd", "legacy pre-suffix Windows login item"),
+    ):
+        try:
+            if _targets_this_home(path.read_text(encoding="utf-8", errors="replace")):
+                found.append(("file", label, path))
+        except OSError:
+            continue
+    for path, label in (
         (service_dir / f"{bare}.vbs", "legacy pre-suffix task launcher"),
         (service_dir / f"{bare}.cmd", "legacy pre-suffix task script"),
     ):
-        if path.exists():
+        if path.exists():  # inside this home by construction
             found.append(("file", label, path))
-    code, _out, _err = w._exec_schtasks(["/Query", "/TN", bare])
-    if code == 0:
+    code, out, _err = w._exec_schtasks(["/Query", "/TN", bare, "/XML"])
+    if code == 0 and _targets_this_home(out):
         found.append(("task", "legacy pre-suffix Scheduled Task", bare))
     return found
 

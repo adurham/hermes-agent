@@ -448,11 +448,12 @@ def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tm
     (home / "gateway-service").mkdir(parents=True)
     startup.mkdir()
     legacy_vbs = startup / "Hermes_Gateway.vbs"
-    legacy_vbs.write_text("legacy", encoding="utf-8")
+    legacy_vbs.write_text(gateway_windows._build_startup_launcher(home / "gateway-service" / "Hermes_Gateway.cmd"), encoding="utf-8")
     legacy_pair = home / "gateway-service" / "Hermes_Gateway.cmd"
     legacy_pair.write_text("legacy", encoding="utf-8")
     schtasks_calls = []
     registered = {"Hermes_Gateway"}
+    task_xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", home / "gateway-service" / "Hermes_Gateway.vbs", None)
 
     def fake_schtasks(args):
         schtasks_calls.append(args)
@@ -460,7 +461,7 @@ def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tm
         if args[0] == "/Delete":
             registered.discard(name)
             return (0, "SUCCESS", "")
-        return (0, "", "") if name in registered else (1, "", "ERROR: The system cannot find the file specified.")
+        return (0, task_xml, "") if name in registered else (1, "", "ERROR: The system cannot find the file specified.")
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
@@ -486,6 +487,44 @@ def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tm
     assert ["/Delete", "/F", "/TN", "Hermes_Gateway"] in schtasks_calls
     gateway_windows.status()
     assert "legacy pre-suffix" not in capsys.readouterr().out
+
+
+def test_secondary_profile_leaves_default_profiles_bare_launchers_alone(monkeypatch, tmp_path, capsys):
+    """The bare ``Hermes_Gateway`` task and Startup entry are the LIVE identity of the default ``~/.hermes``
+    profile. From a secondary profile they are a sibling install, not this home's pre-suffix stray:
+    ``uninstall`` / ``install --force`` must issue no ``schtasks /Delete`` and unlink nothing."""
+    startup, home, default_home = tmp_path / "Startup", tmp_path / "profiles" / "work", tmp_path / "default"
+    (home / "gateway-service").mkdir(parents=True)
+    (default_home / "gateway-service").mkdir(parents=True)
+    startup.mkdir()
+    default_vbs = startup / "Hermes_Gateway.vbs"
+    default_vbs.write_text(gateway_windows._build_startup_launcher(default_home / "gateway-service" / "Hermes_Gateway.cmd"), encoding="utf-8")
+    task_xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", default_home / "gateway-service" / "Hermes_Gateway.vbs", None)
+    schtasks_calls = []
+
+    def fake_schtasks(args):
+        schtasks_calls.append(args)
+        if args[0] == "/Query" and args[args.index("/TN") + 1] == "Hermes_Gateway":
+            return (0, task_xml, "")
+        return (1, "", "ERROR: The system cannot find the file specified.")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_work")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: home / "gateway-service" / "Hermes_Gateway_work.cmd")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_work.vbs")
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_work.cmd")
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
+    monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+
+    gateway_windows.status()
+    assert "legacy pre-suffix" not in capsys.readouterr().out
+    gateway_windows.uninstall()
+    capsys.readouterr()
+    assert default_vbs.exists()
+    assert not any(call[0] == "/Delete" and "Hermes_Gateway" in call for call in schtasks_calls)
 
 
 # Reporter's `Export-ScheduledTask` of a task registered before the hardened template (#113670).
