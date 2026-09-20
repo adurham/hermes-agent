@@ -62,11 +62,12 @@ export function useVoiceConversation({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level } = useMicRecorder(voiceCopy)
-  // The scope's session owner (a Bot's own profile) picks the TTS voice; a
-  // ref keeps the long-lived turn closures below reading the current value.
-  const { profile: ownerProfile } = useComposerScope()
-  const ownerProfileRef = useRef(ownerProfile)
-  ownerProfileRef.current = ownerProfile
+  // The scope's session owner (a Bot's own connection + profile) picks the TTS
+  // voice; a ref keeps the long-lived turn closures below reading the current
+  // value.
+  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   const [status, setStatus] = useState<ConversationStatus>('idle')
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
@@ -466,10 +467,7 @@ export function useVoiceConversation({
         // this is a safety net for read-aloud-style entries into the loop.
         ensureBargeMonitor()
 
-        const playback = playSpeechText(response.text, {
-          profile: ownerProfileRef.current,
-          source: 'voice-conversation'
-        })
+        const playback = playSpeechText(response.text, { ...ownerRef.current, source: 'voice-conversation' })
         // playSpeechText performs its normal cleanup synchronously before
         // returning. Capture the sequence after that internal increment so
         // only a later, external stop suppresses the next listen cycle.
@@ -510,7 +508,7 @@ export function useVoiceConversation({
       ensureBargeMonitor()
 
       void (async () => {
-        const session = await startSpeechStream({ profile: ownerProfileRef.current, source: 'voice-conversation' })
+        const session = await startSpeechStream({ ...ownerRef.current, source: 'voice-conversation' })
 
         // The session may resolve after the loop moved on (barge, disable).
         if (responseIdRef.current !== responseId) {

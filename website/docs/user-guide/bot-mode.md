@@ -86,7 +86,7 @@ A Bot's look, title, and description are stored in the profile's metadata on the
 
 ## Voices
 
-A Bot speaks with its **own profile's** TTS settings (`tts.*` in that profile's `config.yaml`). Read Aloud, auto-speak and voice conversation in a Bot chat all synthesize through the Bot's profile, so two Bots with different voices sound different; a Bot whose profile has no TTS config falls back to the active profile's voice.
+A Bot speaks with its **own profile's** TTS settings (`tts.*` in that profile's `config.yaml`) on its **own gateway**. Read Aloud, auto-speak and voice conversation in a Bot chat — in a split tile or opened in the main pane — all synthesize through the Bot's (connection, profile), so two Bots with different voices sound different and two Bots with the same profile name on different gateways never share a voice. A Bot profile with no `tts.*` of its own uses that profile's server defaults; only a chat with no known owner (a plain session) uses the active profile's voice. Speech-to-text in a Bot chat still uses the active profile's STT settings.
 
 ## Routines
 
