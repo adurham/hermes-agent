@@ -9,6 +9,7 @@ import pytest
 
 import hermes_constants
 from hermes_platform.host import runtime as host_runtime
+from hermes_platform.host import facts as host_facts
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     agent_browser_runnable,
@@ -971,7 +972,8 @@ class TestWindowsHealStageSwap:
         import urllib.request
 
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
+        # Pin the native architecture to the x64 archive served by the fake index.
+        monkeypatch.setattr(host_facts, "native_arch", lambda: "amd64")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv(
             "HERMES_NODE_TARGET_MAJOR",
