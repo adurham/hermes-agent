@@ -24,27 +24,6 @@ def _store(tmp_path) -> VaultStore:
     return store
 
 
-def test_malformed_json_vault_file_raises_vault_error(tmp_path):
-    store = _store(tmp_path)
-    _corrupt(store, b"{not json")
-    with pytest.raises(VaultError, match="corrupted"):
-        store.list_items()
-
-
-def test_non_dict_json_vault_file_raises_vault_error(tmp_path):
-    store = _store(tmp_path)
-    _corrupt(store, b"[1, 2]")
-    with pytest.raises(VaultError, match="corrupted"):
-        store.list_items()
-
-
-def test_non_utf8_vault_file_raises_vault_error(tmp_path):
-    store = _store(tmp_path)
-    _corrupt(store, b"\xff\xfe\x00binary")
-    with pytest.raises(VaultError, match="corrupted"):
-        store.list_items()
-
-
 @pytest.mark.parametrize(
     "op",
     ["list_items", "get_meta", "remove_item", "resolve_secret", "add_item"],

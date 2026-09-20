@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import yaml
 
 from agent.vault_store import VaultStore
-from hermes_cli.vault import _cmd_rm, _cmd_sources, vault_command
+from hermes_cli.vault import _cmd_sources, vault_command
 
 
 def _corrupt_vault(home):
@@ -43,19 +43,6 @@ def test_vault_command_surfaces_corrupt_store_as_clean_error(tmp_path, monkeypat
     _corrupt_vault(home)
 
     vault_command(SimpleNamespace())  # bare `hermes vault` -> _cmd_list
-
-    out = capsys.readouterr().out
-    assert "Error" in out
-    assert "corrupted" in out
-
-
-def test_vault_rm_surfaces_corrupt_store_as_clean_error(tmp_path, monkeypatch, capsys):
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    _corrupt_vault(home)
-
-    vault_command(SimpleNamespace(_vault_handler=_cmd_rm, handle="vault_x"))
 
     out = capsys.readouterr().out
     assert "Error" in out

@@ -152,8 +152,6 @@ def _cmd_sources(args) -> None:
             c.print(f"[red]Unknown password manager {name!r}[/] (expected one of {', '.join(classes)})")
             return
         cfg = load_config()
-        if not isinstance(cfg, dict):
-            cfg = {}
         section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
         if args.enable:
             section.pop("enabled", None)  # detected managers are on by default; drop the opt-out

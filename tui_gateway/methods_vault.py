@@ -88,8 +88,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, f"unknown vault source: {name}")
     enabled = bool(params.get("enabled"))
     cfg = load_config()
-    if not isinstance(cfg, dict):
-        cfg = {}
     section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
     if enabled:
         section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
