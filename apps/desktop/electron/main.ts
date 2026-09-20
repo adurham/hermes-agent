@@ -42,6 +42,7 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import {
   stopBackendChild as stopBackendChildImpl,
   stopBackendTreesForUpdate,
@@ -1360,6 +1361,14 @@ function previewFileMetadata(filePath, mimeType) {
 }
 
 app.setName(APP_NAME)
+
+// No application menu until the first window exists. Electron would otherwise
+// install its default menu at `will-finish-launching` (before `ready`), and a
+// key equivalent routed through that menu's delegate with no window open
+// segfaults the macOS shell — the updater relaunch races the user's keystroke
+// (#115332). Must run at module scope: on macOS a later `null` never removes
+// an installed menu. The real menu lands in installApplicationMenuAfterFirstWindow.
+Menu.setApplicationMenu(null)
 
 // Windows toast notifications silently no-op unless an AppUserModelID is set:
 // `new Notification().show()` returns without error and nothing appears. The
@@ -18237,12 +18246,6 @@ app.whenReady().then(() => {
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
 
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
-
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
@@ -18283,7 +18286,12 @@ app.whenReady().then(() => {
   // its worker waits for the install marker to clear, then reopens every scope
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
-  createWindow()
+  installApplicationMenuAfterFirstWindow({
+    isMac: IS_MAC,
+    buildMenu: buildApplicationMenu,
+    setApplicationMenu: menu => Menu.setApplicationMenu(menu),
+    createWindow
+  })
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
