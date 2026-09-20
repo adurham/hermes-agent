@@ -1002,6 +1002,11 @@ def _print_empty_store(action: str, args) -> None:
         print("No sessions found.")
 
 
+# VACUUM, the FTS-layout rebuild and bulk deletes rewrite the store; underneath a live gateway/Desktop/cron
+# writer that is the second-writer class behind the retired-WAL refusal (#110054). `--force` is the override.
+_HELD_STORE_ACTIONS = frozenset({"optimize", "optimize-storage", "prune"})
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
@@ -1024,6 +1029,12 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
+        if action in _HELD_STORE_ACTIONS and not getattr(args, "dry_run", False) and not getattr(args, "force", False):
+            from hermes_state_holders import held_store_refusal
+            refusal = held_store_refusal(db.db_path, command=action)
+            if refusal:
+                print(refusal)
+                return 1
         try:
             return handler(db, args)
         except sqlite3.OperationalError as e:

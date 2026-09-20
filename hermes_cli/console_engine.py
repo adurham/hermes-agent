@@ -708,6 +708,10 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
 def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
     _expect_no_args(args, "sessions optimize")
     with _session_db(read_only=False) as db:
+        from hermes_state_holders import held_store_refusal
+        refusal = held_store_refusal(db.db_path, command="optimize", force_hint="`hermes sessions optimize --force`")
+        if refusal:
+            raise ConsoleCommandError(refusal)
         print(f"Optimized {db.vacuum()} FTS index(es).")
 
 

@@ -943,10 +943,11 @@ class GatewayNotificationsMixin:
         else:
             from hermes_state_user_copy import describe_storage_failure
             failure = describe_storage_failure(error)
+            # The cause table owns the remedy: for a held retired-WAL generation a bare `doctor --fix`
+            # is the second-writer trap this notice used to send users into (#110054).
             message = (
                 "⚠️ Session database unavailable — messages may not be saved and /resume will be "
-                f"empty. Cause: {failure.gloss}. Run `hermes {profile_arg}doctor --fix` on the "
-                f"gateway machine, then `hermes {profile_arg}gateway restart`."
+                f"empty. Cause: {failure.gloss}. {failure.action}"
             )
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
         from gateway.warning_notifications import present_notification
