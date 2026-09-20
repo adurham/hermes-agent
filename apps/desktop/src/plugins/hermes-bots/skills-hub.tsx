@@ -128,6 +128,7 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
         query: name,
         ...(bot ? { profile: bot.name } : {})
       }
+
       await (bot ? requestForBot(bot, 'skills.manage', params) : host.request('skills.manage', params))
       setInstalled(prev => ({
         ...prev,
