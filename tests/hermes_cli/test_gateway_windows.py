@@ -601,3 +601,23 @@ def test_hermes_owns_windows_service_requires_name_or_binary_under_a_hermes_root
     assert owns("Hermes_Gateway_derek", "", roots)
     assert owns("gw", r'"C:\Users\KAIZE\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run', roots)
     assert owns("gw", r"C:\Users\kaize\AppData\Local\hermes\gateway-service\Hermes_Gateway.cmd", roots)
+
+
+def test_wizard_install_service_asks_once_and_never_starts_after_windows_install(monkeypatch):
+    """The wizard asks start-now/start-on-login once, forwards both answers, and returns
+    without a second start: the Windows installer owns start and the elevated child
+    starts itself, so a parent-side start would re-ask the install questions and re-offer
+    UAC while the child is still waiting on consent (#116550)."""
+    answers = iter([True, True])
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *a, **k: next(answers))
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    installs, starts = [], []
+    monkeypatch.setattr(gateway, "_gw_windows", lambda: SimpleNamespace(
+        install=lambda **kw: installs.append(kw) or True,
+    ))
+    monkeypatch.setattr(gateway, "_setup_service_action", lambda *a, **k: starts.append((a, k)))
+
+    gateway._wizard_install_service("windows")
+
+    assert installs == [{"force": False, "start_now": True, "start_on_login": True}]
+    assert starts == []
