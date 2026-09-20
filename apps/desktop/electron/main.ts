@@ -20,6 +20,7 @@ import {
   type IpcMainEvent,
   type IpcMainInvokeEvent,
   Menu,
+  type MenuItemConstructorOptions,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -6189,7 +6190,7 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
 }
 
 function buildApplicationMenu() {
-  const template = []
+  const template: MenuItemConstructorOptions[] = []
 
   const checkForUpdatesItem = {
     label: 'Check for Updates…',
@@ -6256,7 +6257,16 @@ function buildApplicationMenu() {
       // terminal, preview, and other editable surfaces that need the strip.
       { role: 'pasteAndMatchStyle' },
       { role: 'delete' },
-      { role: 'selectAll' }
+      { role: 'selectAll' },
+      ...(IS_MAC
+        ? ([
+            { type: 'separator' },
+            {
+              label: 'Substitutions',
+              submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleTextReplacement' }]
+            }
+          ] satisfies MenuItemConstructorOptions[])
+        : [])
     ]
   })
   template.push({
