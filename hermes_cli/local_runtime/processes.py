@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 import ctypes
 from ctypes import wintypes
-import os
 import subprocess
 import sys
 import threading
@@ -98,7 +97,9 @@ def server_child_env(base_env: Mapping[str, str]) -> dict[str, str]:
     us — and on Windows they are not merely leaked: the bundled OpenMP runtime died with
     STATUS_HEAP_CORRUPTION during initialisation with one `*_API_KEY` present and loaded fine
     with only that variable removed (#116109, confirmed on a model-free libomp.dll probe).
-    Everything else (PATH, CUDA_*, HSA_*, OMP_*, TEMP, …) passes through untouched.
+    Everything else (PATH, CUDA_*, HSA_*, OMP_*, TEMP, …) passes through untouched. Applied by
+    the llama-server supervisor only: spawn_server is also the generic bounded-probe spawner
+    (git / PowerShell / update probes), whose children legitimately need GH_TOKEN, HF_TOKEN, …
     """
     return {
         key: value for key, value in base_env.items()
@@ -112,9 +113,7 @@ def spawn_server(cmd, **kwargs) -> tuple[subprocess.Popen, _WindowsJob | None]:
     Keep the job until shutdown and call close() to terminate the entire tree.
     Windows closes it automatically if the owner dies. Other hosts retain Popen's
     ordinary behavior. Assignment happens before the child's first instruction.
-    The child never inherits credential-shaped variables (see server_child_env).
     """
-    kwargs["env"] = server_child_env(kwargs.get("env") or os.environ)
     if sys.platform != "win32":
         return subprocess.Popen(cmd, **kwargs), None
     job = _WindowsJob()
