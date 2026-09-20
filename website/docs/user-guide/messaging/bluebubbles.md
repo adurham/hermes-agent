@@ -214,7 +214,7 @@ One caveat: "basic messaging works without Private API" assumes BlueBubbles can 
 ### Setup succeeded, but the adapter never starts
 - `hermes gateway setup` saves credentials to `~/.hermes/.env`; it does not set `platforms.bluebubbles.enabled: true`
 - An explicit `enabled: false` in `~/.hermes/config.yaml` wins over credentials being present — check with `hermes config get platforms.bluebubbles.enabled`
-- This commonly bites after switching iMessage bridges: if you used another bridge (e.g. Photon) and disabled BlueBubbles at the time, re-running setup will not re-enable it. Set `enabled: true` (and disable the bridge you no longer use — two iMessage bridges will double-handle messages)
+- This commonly bites after switching iMessage bridges: if you used another iMessage bridge and disabled BlueBubbles at the time, re-running setup will not re-enable it. Set `enabled: true` (and disable the bridge you no longer use — two iMessage bridges will double-handle messages)
 
 ### Two BlueBubbles servers on one Mac (wrong Apple ID)
 - Hermes uses `BLUEBUBBLES_SERVER_URL` from `~/.hermes/.env`, not the Server URL shown in the BlueBubbles UI (which can be stale after a DHCP change)
