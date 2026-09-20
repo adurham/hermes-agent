@@ -4,9 +4,11 @@ const focusOpenSession = vi.fn()
 const openSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
 const setSessionTileWorkspaceScope = vi.fn()
+
 const focusedSessionWorkspaceScope = vi.fn<
   () => { workspaceMode: 'bots' | 'sessions'; workspaceOwnerKey?: string }
 >(() => ({ workspaceMode: 'sessions' }))
+
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
@@ -223,40 +225,31 @@ describe('openSession', () => {
     expect(openSessionTile).not.toHaveBeenCalled()
   })
 
-  it('stack spends the focused Bot-scoped blank draft even when main is empty', () => {
+  it('picker doors resume into the focused Bot workspace and stay in-place in Sessions', () => {
     const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
 
-    focusOpenSession.mockReturnValue(null)
-    reuseBlankDraftTile.mockReturnValue(true)
-    openSession('s1', navigate, 'stack', scope)
-
-    expect(reuseBlankDraftTile).toHaveBeenCalledWith('s1', scope)
-    expect(openSessionTile).not.toHaveBeenCalled()
-    expect(navigate).not.toHaveBeenCalled()
-  })
-
-  it('picker resumes into the focused Bot workspace instead of the Sessions main', () => {
-    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
-
+    // /resume overlay and an artifact's "open chat" (unmodified = in-place) from a Bot tab.
     focusedSessionWorkspaceScope.mockReturnValue(scope)
     focusOpenSession.mockReturnValue(null)
     reuseBlankDraftTile.mockReturnValue(true)
     openSessionFromPicker('s1', navigate)
 
-    expect(focusedSessionWorkspaceScope).toHaveBeenCalledOnce()
     expect(reuseBlankDraftTile).toHaveBeenCalledWith('s1', scope)
     expect(navigate).not.toHaveBeenCalled()
-  })
 
-  it('picker keeps its existing in-place behavior in the Sessions workspace', () => {
+    // ⌘K session search (unmodified = stack) from the same Bot tab lands in the Bot workspace too.
+    reuseBlankDraftTile.mockReturnValue(false)
+    openSessionFromPicker('s2', navigate, 'stack')
+
+    expect(openSessionTile).toHaveBeenCalledWith('s2', 'center', undefined, undefined, scope)
+    expect(navigate).not.toHaveBeenCalled()
+
+    // Control: the same doors in the Sessions workspace keep their in-place behaviour.
     $activeSessionId.set('runtime-current')
     focusedSessionWorkspaceScope.mockReturnValue({ workspaceMode: 'sessions' })
-    focusOpenSession.mockReturnValue(null)
+    openSessionFromPicker('s3', navigate)
 
-    openSessionFromPicker('s1', navigate)
-
-    expect(openSessionTile).not.toHaveBeenCalled()
-    expect(navigate).toHaveBeenCalledWith('/c/s1')
+    expect(navigate).toHaveBeenCalledWith('/c/s3')
   })
 
   it('window pops out when the bridge supports it', () => {

@@ -76,13 +76,21 @@ export function openSessionIntentFromModifiers(
   return base
 }
 
-/** Picker selection preserves the workspace of the tab that opened it without
- * changing the established Sessions behavior. */
-export function openSessionFromPicker(storedSessionId: string, navigate: OpenSessionNavigate): void {
+/** Every door that opens a saved chat from a picker-like surface (the /resume
+ * overlay, ⌘K session search, an artifact's "open chat") preserves the
+ * workspace of the tab the user acted from. `intent` is the caller's unmodified
+ * meaning (`in-place` for the overlay and artifacts, `stack` for ⌘K, or the
+ * ⌘/⇧⌘ modifier result); a Bot-scoped `in-place` becomes `stack` so the chat
+ * lands in the Bot tab instead of the Sessions main. */
+export function openSessionFromPicker(
+  storedSessionId: string,
+  navigate: OpenSessionNavigate,
+  intent: OpenSessionIntent = 'in-place'
+): void {
   const workspaceScope = focusedSessionWorkspaceScope()
-  const intent = workspaceScope.workspaceMode === 'bots' ? 'stack' : 'in-place'
+  const resolved = workspaceScope.workspaceMode === 'bots' && intent === 'in-place' ? 'stack' : intent
 
-  openSession(storedSessionId, navigate, intent, workspaceScope)
+  openSession(storedSessionId, navigate, resolved, workspaceScope)
 }
 
 /**
