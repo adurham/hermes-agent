@@ -131,7 +131,10 @@ class _SyncSentencePipeline:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
             raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return _first_written_artifact(raw, tmp_path)
+            written = _first_written_artifact(raw, tmp_path)
+            if os.path.abspath(written) != os.path.abspath(tmp_path):
+                _unlink_quietly(tmp_path)  # provider wrote elsewhere: the placeholder is empty
+            return written
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)
