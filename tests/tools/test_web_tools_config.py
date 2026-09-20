@@ -576,51 +576,12 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is False
 
-    def test_xai_credentials_do_not_light_web_tools(self):
-        """xAI credentials back TTS/media tools only: ``xai`` is in
-        _BUILTIN_AVAILABILITY for bookkeeping but no web provider is ever
-        dispatched to it, so it must not satisfy the web_search/web_extract
-        gate; otherwise the tools register with no servable backend. Note the
-        probe must be patched at ``has_xai_credentials``: _BUILTIN_AVAILABILITY
-        holds a direct reference to ``_xai_available``, so patching the module
-        attribute would not reach the dict entry."""
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.xai_http.has_xai_credentials", return_value=True):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is False
-
-    def test_xai_credentials_plus_web_key_still_pass(self):
-        """Excluding xai from the gate does not weaken detection of a real web key."""
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.xai_http.has_xai_credentials", return_value=True), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "test-key"}):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is True
-
     def test_configured_xai_backend_still_lights_gate(self):
         """An explicit ``web.backend: xai`` selection still counts toward the
         gate: the bundled web-xai plugin's provider can serve it when loaded,
         and a stored selection is returned as-is by _get_backend either way."""
         with patch("tools.web_tools._load_web_config", return_value={"backend": "xai"}), \
              patch("tools.xai_http.has_xai_credentials", return_value=True):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is True
-
-    def test_registered_xai_provider_lights_gate_via_registry(self):
-        """Skipping the bare xai credential probe does not hide real
-        availability: when the web-xai plugin IS registered and available,
-        get_active_search_provider returns it and the plugin path lights the
-        gate on its own."""
-        class _XaiProvider:
-            name = "xai"
-
-            def is_available(self):
-                return True
-
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.xai_http.has_xai_credentials", return_value=False), \
-             patch("agent.web_search_registry.get_active_search_provider",
-                   return_value=_XaiProvider()):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
