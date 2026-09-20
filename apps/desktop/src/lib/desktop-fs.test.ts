@@ -12,6 +12,7 @@ import {
   readDesktopFileDataUrl,
   readDesktopFileDataUrlLocalFirst,
   readDesktopFileText,
+  revealDesktopPath,
   selectDesktopPaths,
   setDesktopFsRemotePicker
 } from './desktop-fs'
@@ -21,6 +22,7 @@ const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local'
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
+const revealPath = vi.fn(async () => true)
 
 const api = vi.fn(async ({ path }: { path: string }) => {
   if (path.startsWith('/api/fs/list?')) {
@@ -58,6 +60,7 @@ function stubBridge() {
       readDir,
       readFileDataUrl,
       readFileText,
+      revealPath,
       selectPaths
     }
   })
@@ -95,6 +98,16 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true, profile: 'team-local' })
     expect(api).not.toHaveBeenCalled()
+  })
+
+  // The Electron door answers false for a path that is not on this computer
+  // (a remote backend's workspace); the facade must fail so the menu can toast
+  // instead of reporting success for a click that showed nothing.
+  it('rejects reveal when the bridge reports the path is missing', async () => {
+    await expect(revealDesktopPath('/local')).resolves.toBeUndefined()
+
+    revealPath.mockResolvedValueOnce(false)
+    await expect(revealDesktopPath('/remote/workspace')).rejects.toThrow(/not on this computer/)
   })
 
   it('routes filesystem reads through authenticated backend REST in remote mode', async () => {

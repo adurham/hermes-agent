@@ -521,12 +521,19 @@ export function useStatusbarItems({
                 onSelect: () => void copyFilePath(currentCwd),
                 title: displayPath(currentCwd)
               },
-              {
-                id: 'reveal-workspace-finder',
-                label: fileMenu.revealFileManager,
-                onSelect: () => void revealFile(currentCwd),
-                title: displayPath(currentCwd)
-              },
+              // The OS file manager needs the local filesystem; a remote
+              // backend's workspace is not on this computer (the sidebar
+              // trees already hide reveal the same way).
+              ...(connection?.mode === 'remote'
+                ? []
+                : [
+                    {
+                      id: 'reveal-workspace-finder',
+                      label: fileMenu.revealFileManager,
+                      onSelect: () => void revealFile(currentCwd),
+                      title: displayPath(currentCwd)
+                    }
+                  ]),
               {
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
@@ -586,6 +593,7 @@ export function useStatusbarItems({
       agentsOpen,
       botsShowing,
       commandCenterOpen,
+      connection?.mode,
       copy,
       currentCwd,
       freeTierCopy,
