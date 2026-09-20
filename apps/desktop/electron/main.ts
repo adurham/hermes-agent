@@ -35,12 +35,9 @@ import type { Session } from 'electron'
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
 import {
   destroyKeepaliveAgents,
-  downloadAgentFor,
   htmlResponseError,
-  httpStatusError,
   jsonAgentFor,
   readJsonErrorBody,
-  readStatusCode,
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
@@ -67,8 +64,6 @@ import { buildDesktopBackendEnv } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import {
   isReauthRequiredError,
-  makeNousCloudBackendDownError,
-  makeUnsignedOauthError,
   waitForHermesReady
 } from './backend-health'
 import { backendCommandMatches, type BackendOwnershipEntry, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
@@ -89,7 +84,7 @@ import {
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
-import { describeBootstrapFailure, missingInstallPartMessage } from './bootstrap-failure-copy'
+import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
@@ -109,8 +104,8 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
-import { discoverWithTeamFallback } from './cloud-discovery'
 import { provisionCliLinks } from './cli-provision'
+import { discoverWithTeamFallback } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
@@ -122,7 +117,6 @@ import {
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
-  gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
   localProfileEntry,
@@ -180,7 +174,6 @@ import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
-import { writeDesktopProfile } from './desktop-boot-preference'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import {
@@ -242,13 +235,6 @@ import { stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-import {
-  describeGitHubCredentialSource,
-  forgetGhCliToken,
-  githubApiHeaders,
-  githubTokenRejected,
-  resolveGitHubCredential
-} from './github-api-auth'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
@@ -269,13 +255,11 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
-import { requestHudClose } from './hud-close'
 import { registerHudIpc } from './hud-ipc'
-import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
-import { PrimaryProfilePin } from './primary-profile-pin'
 import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
@@ -311,9 +295,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import type { GatedDownloadAuth } from './native-auth-decisions'
 import {
-  oauthGuardMayHardFail,
   oauthSessionIsLive,
-  oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
   resolveOauthRestAuth,
@@ -357,9 +339,8 @@ import {
   isBackgroundSlotWaitTimeout,
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnPriority,
-  releaseLocalBackendSlot,
-  type LocalBackendSpawnRequest,
   registerLocalBackendExitFinalizer,
+  releaseLocalBackendSlot,
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
@@ -374,6 +355,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
+import { PrimaryProfilePin } from './primary-profile-pin'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -410,6 +392,7 @@ import {
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
+import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import {
   attachRemoteRequestHeaderListener,
   collectRemoteHeaderSources,
@@ -471,26 +454,26 @@ import {
   type UpdaterStrategy
 } from './updater'
 import {
-  resolveVenvDir,
   observeUpdaterHandoff,
   resolveStagedUpdaterBinary,
+  resolveVenvDir,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker
 } from './updater-process'
 import { AppInstallerStrategy } from './updater/app-installer'
+import { createChannelAppInstallerStrategy } from './updater/app-installer'
+import { ChannelResolver, type ChannelTarget } from './updater/channel'
+import { inspectRunningChannelApp } from './updater/channel-native'
+import { ChannelStrategy } from './updater/channel-strategy'
+import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import {
   createCheckoutStrategy
 } from './updater/checkout'
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig } from './updater/feed-config'
-import { createMacStrategy, createChannelMacStrategy } from './updater/mac-client'
-import { createChannelAppInstallerStrategy } from './updater/app-installer'
-import { ChannelResolver, type ChannelTarget } from './updater/channel'
-import { ChannelStrategy } from './updater/channel-strategy'
+import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
 import { UpdateOperation } from './updater/operation'
-import { inspectRunningChannelApp } from './updater/channel-native'
-import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { type ConsumedRelaunch, consumePendingRelaunch, registerUpdateRelaunch, type RelaunchRegistration } from './updater/relaunch'
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
@@ -795,7 +778,9 @@ if (INSTALL_STAMP) {
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 // Only the lock-owning destination may adopt a workspace or start a backend.
 const isPrimaryInstance: boolean = app.requestSingleInstanceLock()
+
 if (!isPrimaryInstance) { app.exit(0) }
+
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),
   directoryExists,
@@ -3106,9 +3091,11 @@ async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
     const build = INSTALL_STAMP.channelBuild
     const installed = await inspectRunningChannelApp(build)
     const payload = bundledPayload(process.resourcesPath)
+
     if (!payload || (process.platform !== 'darwin' && process.platform !== 'win32') || (process.arch !== 'arm64' && process.arch !== 'x64')) {
       throw new Error('Channel updates require a supported bundled application')
     }
+
     return new ChannelStrategy({
       build, mechanism,
       resolver: new ChannelResolver({ build, platform: process.platform, arch: process.arch, signer: installed.signer }),
@@ -3132,6 +3119,7 @@ function createNativePackagedStrategy(mechanism: UpdaterStrategy['mechanism'], t
       beforeInstall: teardownBundledBackend,
       onInstallFailure: restoreBundledBackend
     }
+
     return target ? createChannelMacStrategy(deps, target) : createMacStrategy(deps)
   }
 
@@ -3184,11 +3172,13 @@ function createNativePackagedStrategy(mechanism: UpdaterStrategy['mechanism'], t
             })
         })
     }
+
     return target ? createChannelAppInstallerStrategy(deps, target, verifyPreparedChannelInstaller) : new AppInstallerStrategy(deps)
   }
 
   if (mechanism === 'microsoft-store') {
     const payload = bundledPayload(process.resourcesPath)!
+
     return createStoreStrategy({
       python: payload.storePython,
       script: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'check-store-update.py'),
@@ -8932,9 +8922,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -11209,6 +11201,7 @@ function startPoolIdleReaper() {
         const retiring = entry.process
           ? poolRetirer.retireIdle(profile, poolIdleMs())
           : stopPoolBackend(profile)
+
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
@@ -11455,6 +11448,7 @@ async function spawnPoolBackend(
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+
   // Exit/error can now arrive while the ownership claim is still pending.
   startFailed.catch(() => {})
 
@@ -11490,6 +11484,7 @@ async function spawnPoolBackend(
     describeOutputTail: () => outputTail.describe(),
     readyFile
   })
+
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
@@ -11577,10 +11572,12 @@ const poolStopper = createPoolStopper({
 
 function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
+
   const stopping = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     () => poolStopper.stop(profile)
   )
+
   // Fire-and-forget callers still need diagnostics; awaiters receive the
   // rejection, while physical ownership and the exit finalizer remain live.
   void stopping.catch(error => {
@@ -11611,6 +11608,7 @@ const poolRetirer = createPoolRetirer({
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
@@ -11777,6 +11775,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message: string =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -12609,6 +12608,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -15627,6 +15627,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(request?.priority)
+
   // A passive read never dials, so it stays OUT of the claim: an interactive open
   // coalescing onto an in-flight passive read would otherwise inherit its
   // "no warm backend" rejection.
@@ -16783,6 +16784,7 @@ function canonicalizeInstallPath(p: string): string {
  *  installer-created. */
 export function isInstallerCreatedCheckout(root: string | null = ACTIVE_HERMES_ROOT): boolean {
   if (!root) { return false }
+
   try {
     return fs.existsSync(path.join(root, path.basename(BOOTSTRAP_COMPLETE_MARKER)))
   } catch {

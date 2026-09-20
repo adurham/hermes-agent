@@ -1,8 +1,8 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
-import type { MachineProfile } from '../electron/machine-profile'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
+import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 import type { GrowRequest } from '../electron/window-growth'

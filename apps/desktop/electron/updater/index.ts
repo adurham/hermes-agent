@@ -16,6 +16,7 @@
 // or Store inference; the strategy reports its mechanism to the renderer.
 
 import type { InstallStamp } from '../install-stamp'
+
 import type { ChannelRetirementStatus } from './channel-strategy'
 
 export type UpdaterMechanism =

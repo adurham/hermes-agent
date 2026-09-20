@@ -1,6 +1,6 @@
 import { getLocalModelsJobs, getLocalModelsStatus } from '@/hermes'
-import { queryClient } from '@/lib/query-client'
 import type { Translations } from '@/i18n/types'
+import { queryClient } from '@/lib/query-client'
 import { localSetupDue } from '@/lib/tips/local-cta'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -36,11 +36,13 @@ $tipsEnabled.listen(enabled => {
     reset()
   }
 })
+
 const closeWhenBusy = (): void => {
   if (localRuntimeInstallBusy()) {
     reset()
   }
 }
+
 queryClient.getQueryCache().subscribe(closeWhenBusy)
 queryClient.getMutationCache().subscribe(closeWhenBusy)
 

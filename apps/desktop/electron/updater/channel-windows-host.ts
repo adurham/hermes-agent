@@ -1,9 +1,9 @@
-import path from 'node:path'
 import { mkdtemp, rm } from 'node:fs/promises'
+import path from 'node:path'
 
-import type { ChannelTarget } from './channel'
-import { runChannelPowerShell, type NativeCommandResult } from './channel-native'
 import { downloadPinnedArtifact } from './artifact'
+import type { ChannelTarget } from './channel'
+import { type NativeCommandResult, runChannelPowerShell } from './channel-native'
 
 /** Verify downloaded bytes and native metadata before App Installer can stop the backend. */
 export async function verifyPreparedChannelInstaller(
@@ -11,13 +11,16 @@ export async function verifyPreparedChannelInstaller(
   command: (script: string, input: string) => Promise<NativeCommandResult> = runChannelPowerShell
 ): Promise<void> {
   const pkg = target.package
+
   if (pkg.platform !== 'win32' || !pkg.publisher) { throw new Error('Expected a publisher-bound Windows package') }
   const directory: string = await mkdtemp(path.join(path.dirname(file), '.channel-artifact-'))
+
   try {
     const artifact: string = await downloadPinnedArtifact(directory,
       { url: target.artifactUrl, sha256: pkg.artifact.sha256, size: pkg.artifact.size,
       format: pkg.artifact.key.endsWith('.msixbundle') ? 'msixbundle' : 'msix' }
     )
+
   await command(String.raw`
 $ErrorActionPreference='Stop'
 $p=[Console]::In.ReadToEnd() | ConvertFrom-Json

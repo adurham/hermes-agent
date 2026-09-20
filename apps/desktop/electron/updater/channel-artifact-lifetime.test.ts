@@ -1,16 +1,16 @@
 import { createHash } from 'node:crypto'
+import { once } from 'node:events'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { once } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
 
 import { afterEach, expect, test } from 'vitest'
 
 import { downloadPinnedArtifact } from './artifact'
-import { verifyPreparedChannelInstaller } from './channel-windows-host'
 import type { ChannelTarget } from './channel'
 import type { NativeCommandResult } from './channel-native'
+import { verifyPreparedChannelInstaller } from './channel-windows-host'
 
 const directories: string[] = []
 afterEach(async (): Promise<void> => {
@@ -27,10 +27,13 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const address = server.address()
+
   if (!address || !(address instanceof Object)) { throw new Error('Expected TCP server') }
   const url: string = `http://127.0.0.1:${address.port}/stable.msixbundle`
+
   const identity = { token: 'a'.repeat(16), displayName: 'Preview', appId: 'chat.nous.preview', appNamePascal: 'Preview',
     artifactNamePascal: 'Preview', cliName: 'preview', windowsExecutableName: 'preview', msixAppIdWithOrg: 'NousResearch.Preview' }
+
   const target: ChannelTarget = {
     channel: { schema: 1, state: 'active', name: 'preview', repository: 'NousResearch/hermes-agent', policy: 'preview',
       revision: 1, nextSequence: 2, head: null, identity },
@@ -42,14 +45,18 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
       feed: { key: 'stable.appinstaller', channel: 'stable' } },
     artifactUrl: url, feedUrl: 'https://example.com/stable.appinstaller', manifestSha256: 'd'.repeat(64)
   }
+
   try {
     const file: string = path.join(directory, 'stable.appinstaller')
     await writeFile(file, 'native descriptor checked by command')
+
     const command = async (_script: string, input: string): Promise<NativeCommandResult> => {
       const payload: { artifact: string } = JSON.parse(input)
       expect(await readFile(payload.artifact)).toEqual(bytes)
+
       return { stdout: '', stderr: '' }
     }
+
     await verifyPreparedChannelInstaller(file, target, command)
     expect(await readdir(directory)).toEqual(['stable.appinstaller'])
     await expect(verifyPreparedChannelInstaller(file, target, async (): Promise<never> => {

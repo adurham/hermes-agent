@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient, useIsMutating } from '@tanstack/react-query'
+import { type QueryClient, useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type ReactElement, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
@@ -48,10 +48,10 @@ import {
   refreshLocalModels,
   runningDownloadFor,
   runningRuntimeInstall,
+  startLocalRuntimeInstall,
   useLocalModelsOwner,
   useLocalModelsStatus,
   useLocalRuntimeJobs,
-  startLocalRuntimeInstall,
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'

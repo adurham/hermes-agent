@@ -1,12 +1,12 @@
 import type { QueryClient } from '@tanstack/react-query'
 import {
+  MutationObserver,
   type Query,
   type QueryCacheNotifyEvent,
   type QueryKey,
   QueryObserver,
   type QueryObserverResult,
   queryOptions,
-  MutationObserver,
   useQuery,
   useQueryClient,
   type UseQueryOptions,
