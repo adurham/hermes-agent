@@ -208,28 +208,38 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
                              overlay.base_url_override, "", "hermes")
     # Plugin-registered profiles (plugins/model-providers/<name>/) absent from models.dev and
     # HERMES_OVERLAYS would otherwise be "Unknown provider" in /model, --provider and model-switch
-    # even though the picker lists them. Profiles may declare a literal or env-configured endpoint:
-    # placeholder profiles like ``custom`` (aliases ollama/local/vllm) ship an empty base_url and
-    # are completed by config.yaml custom_providers — resolving them would preempt
-    # resolve_provider_full's custom step and collapse keyed ``custom:<name>`` ids to bare custom.
+    # even though the picker lists them. Only profiles with a literal or env-configured endpoint
+    # resolve at this rung: placeholder profiles like ``custom`` (aliases ollama/local/vllm) ship
+    # an empty base_url and are completed by config.yaml custom_providers — resolving them would
+    # preempt resolve_provider_full's custom step and collapse keyed ``custom:<name>`` ids to bare
+    # custom. Profiles whose endpoint is minted at runtime resolve at the END of
+    # resolve_provider_full, after every user-configured rung.
+    pdef = _plugin_profile_pdef(canonical)
+    if pdef is None or not (pdef.base_url or (pdef.auth_type == "api_key" and pdef.api_key_env_vars and pdef.base_url_env_var)):
+        return None
+    return pdef
+
+
+def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
+    """The registered ``ProviderProfile`` for *name* (or one of its aliases) as a ProviderDef; the
+    id is the profile's canonical name so an alias switch persists and resolves credentials under
+    the same identity as the profile itself. URL-shaped env vars are the endpoint, not the key."""
     try:
         from providers import get_provider_profile as _profile
-        _prof = _profile(canonical)
-        if _prof is not None:
-            _env_vars = tuple(_prof.env_vars or ())
-            _url_vars = tuple(v for v in _env_vars if v.endswith(("_BASE_URL", "_URL")))
-            _key_vars = tuple(v for v in _env_vars if v not in _url_vars)
-            if not ((_prof.base_url or "").strip() or (_prof.auth_type == "api_key" and _key_vars and _url_vars)):
-                return None
-            _api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
-            return ProviderDef(id=_prof.name, name=_prof.display_name or _prof.name or canonical,
-                               transport=_api_mode_to_transport.get(_prof.api_mode, "openai_chat"),
-                               api_key_env_vars=_key_vars, base_url=_prof.base_url or "",
-                               base_url_env_var=next(iter(_url_vars), ""),
-                               auth_type=_prof.auth_type or "api_key", source="plugin-profile")
+        prof = _profile(name)
     except Exception:
-        pass
-    return None
+        return None
+    if prof is None:
+        return None
+    env_vars = tuple(prof.env_vars or ())
+    url_vars = tuple(v for v in env_vars if v.endswith(("_BASE_URL", "_URL")))
+    key_vars = tuple(v for v in env_vars if v not in url_vars)
+    api_mode_to_transport = {v: k for k, v in TRANSPORT_TO_API_MODE.items()}
+    return ProviderDef(id=prof.name, name=prof.display_name or prof.name or name,
+                       transport=api_mode_to_transport.get(prof.api_mode, "openai_chat"),
+                       api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
+                       base_url_env_var=next(iter(url_vars), ""),
+                       auth_type=prof.auth_type or "api_key", source="plugin-profile")
 
 
 def get_label(provider_id: str) -> str:
@@ -523,4 +533,10 @@ def resolve_provider_full(name: str, user_providers: Optional[Dict[str, Any]] = 
                                base_url=mdev_info.api, source="models.dev")
     except Exception:
         pass
-    return None
+    # Plugin profiles whose endpoint is minted at runtime (empty base_url, e.g. a token exchange
+    # that also returns the host) are still real providers: /model --provider, the model picker
+    # and `hermes model` must not reject them as unknown. Last rung, so every user-configured
+    # entry above wins; the bare ``custom`` placeholder is excluded because model-switch completes
+    # it from the current endpoint (see get_provider).
+    pdef = _plugin_profile_pdef(canonical)
+    return pdef if pdef is not None and pdef.id != "custom" else None
