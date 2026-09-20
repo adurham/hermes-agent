@@ -1146,6 +1146,9 @@ termux = ["rich>=14"]
 
 
 class TestNodeRuntimeNpmResolution:
+    """Regression tests for #30271 — WSL must not run Windows npm against the
+    Linux checkout, and a failed Node refresh must not report success."""
+
     @pytest.fixture(autouse=True)
     def _stub_npx_warmup(self):
         """The pre-install npx cache warm-up must stay out of these tests: it
@@ -1157,8 +1160,6 @@ class TestNodeRuntimeNpmResolution:
             "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
         ):
             yield
-    """Regression tests for #30271 — WSL must not run Windows npm against the
-    Linux checkout, and a failed Node refresh must not report success."""
 
 
 
@@ -1179,10 +1180,7 @@ class TestNodeRuntimeNpmResolution:
             lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         )
 
-        with patch(
-            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
-        ):
-            failed = update_cmd._update_node_dependencies()
+        failed = update_cmd._update_node_dependencies()
         assert failed == ["ui-tui, web workspaces"]
         out = capsys.readouterr().out
         assert "mixed state" in out
