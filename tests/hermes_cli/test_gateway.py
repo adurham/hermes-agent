@@ -1442,6 +1442,33 @@ def test_find_windows_gateway_services_fails_closed_on_service_access_error(
         )
 
 
+def test_find_windows_gateway_services_skips_unrelated_service_with_unreadable_config(monkeypatch):
+    """An unrelated service whose QueryServiceConfigW fails with a plain OSError (WinError 15100 MUI
+    loader, WinError 0 from OpenServiceW behind endpoint-security agents) is not Hermes's and must be
+    skipped, not turned into "SCM service enumeration failed" that aborts `hermes update` (#116173)."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
+
+    class MuiBrokenService:
+        def name(self):
+            return "IsolationSession"
+
+        def binpath(self):
+            raise OSError(15100, "The resource loader failed to find MUI file")
+
+    class AccessDenied(Exception):
+        pass
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [MuiBrokenService()],
+        AccessDenied=AccessDenied,
+    )
+
+    assert gateway.find_windows_gateway_services(psutil_module=fake_psutil, profile_processes=[]) == []
+
+
 def test_find_windows_gateway_services_fails_closed_when_scm_scan_is_indeterminate(
     monkeypatch,
 ):
