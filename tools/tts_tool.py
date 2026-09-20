@@ -320,14 +320,7 @@ def _resolve_output_base(
 
 def _media_tag(paths: List[str], voice_compatible: bool) -> str:
     """``MEDIA:<path>`` lines; the ``[[audio_as_voice]]`` marker asks the platform for a voice bubble."""
-    from tools.path_security import has_unsafe_path_chars
-    safe = []
-    for path in paths:
-        if has_unsafe_path_chars(path):
-            logger.warning("TTS: dropping undeliverable media path with control characters: %r", path)
-            continue
-        safe.append(path)
-    media_tag = "\n".join(f"MEDIA:{path}" for path in safe)
+    media_tag = "\n".join(f"MEDIA:{path}" for path in paths)
     return f"[[audio_as_voice]]\n{media_tag}" if voice_compatible else media_tag
 
 
