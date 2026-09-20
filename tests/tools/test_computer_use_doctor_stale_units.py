@@ -7,6 +7,7 @@ while every binary-level check stays green.  Doctor is the only surface that can
 """
 
 import json
+import os
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -38,6 +39,8 @@ def _fake_health_report_proc() -> MagicMock:
 
 def _run_doctor_json(monkeypatch, home):
     monkeypatch.setenv("HOME", str(home))
+    if "XDG_CONFIG_HOME" in os.environ and not os.environ["XDG_CONFIG_HOME"].startswith(str(home)):
+        monkeypatch.delenv("XDG_CONFIG_HOME")  # the host's own config dir must not leak into the scan
     monkeypatch.setattr(doctor, "_read_cli_version", lambda binary, timeout=5.0: "cua-driver 0.28.2")
     out = StringIO()
     with patch("shutil.which", return_value="/fake/cua-driver"), \
@@ -59,6 +62,21 @@ def test_doctor_reports_pruned_unit_and_degrades(tmp_path, monkeypatch):
     assert code == 1 and report["overall"] == "degraded"
     assert unit_checks[0]["status"] == "fail" and _STALE in unit_checks[0]["message"]
     assert "packages/current/cua-driver" in unit_checks[0]["hint"]
+
+
+def test_doctor_scans_units_under_xdg_config_home(tmp_path, monkeypatch):
+    """Hosts that relocate ``~/.config`` via XDG_CONFIG_HOME keep their systemd user units there;
+    scanning only ``~/.config`` would give them the silent green doctor this fix exists to remove."""
+    cfg = tmp_path / "data" / "cfg"
+    unit_dir = cfg / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "cua-driver.service").write_text(f"[Service]\nExecStart={_STALE} serve\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
+
+    code, report = _run_doctor_json(monkeypatch, tmp_path)
+
+    assert code == 1 and report["overall"] == "degraded"
+    assert [c for c in report["checks"] if c["name"] == "daemon unit (cua-driver.service)"]
 
 
 def test_doctor_is_silent_for_current_and_live_release_references(tmp_path, monkeypatch):

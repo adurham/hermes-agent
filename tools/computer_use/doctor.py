@@ -293,8 +293,9 @@ def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[s
     after every upgrade while every binary-level check stays green (#114748). ``packages/current`` and
     still-present release dirs are healthy by construction and never reported.
     """
+    # systemd --user and XDG autostart both honour $XDG_CONFIG_HOME; a host that sets it keeps its units there.
     home = os.path.expanduser("~")
-    base = config_dir or os.path.join(home, ".config")
+    base = config_dir or os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
     findings: List[Tuple[str, str, str]] = []
     sources = (("systemd user unit", os.path.join(base, "systemd", "user"), ".service", "ExecStart"),
                ("XDG autostart entry", os.path.join(base, "autostart"), ".desktop", "Exec"))
