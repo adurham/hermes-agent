@@ -76,6 +76,10 @@ async def test_send_video_without_probeable_media_omits_metadata(monkeypatch, tm
     assert "duration" not in kwargs and "thumbnail" not in kwargs
 
 
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed (the CI runner ships without them)",
+)
 def test_video_helpers_read_real_geometry(tmp_path):
     """On a real 16:9 clip the helpers report the true size and a 16:9 thumbnail."""
     clip = tmp_path / "clip.mp4"
