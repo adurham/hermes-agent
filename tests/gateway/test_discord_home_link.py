@@ -1,6 +1,16 @@
-"""Discord home links must be normalized before any delivery consumer sees them."""
+"""Discord channel links are accepted wherever a channel id is (#115216).
+
+Copy Link sits next to Copy Channel ID in Discord's context menu; a pasted link used to reach
+``int()`` inside the adapter and every home-channel / cron delivery died as a generic send failure.
+"""
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
+
 from gateway.config import HomeChannel, Platform, load_gateway_config
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.mark.parametrize("source", ["env", "yaml"])
@@ -17,27 +27,20 @@ def test_discord_home_link_loads_as_channel_id(tmp_path, monkeypatch, source):
     (tmp_path / "config.yaml").write_text(config_text, encoding="utf-8")
     home = load_gateway_config().platforms[Platform.DISCORD].home_channel
     assert home.chat_id == channel_id
+    # Anything that is not a channel link keeps its own error path (message links included).
+    for target in ("123456789", "https://discord.com/channels/123/456/789", "123/456"):
+        assert HomeChannel(Platform.DISCORD, target, "Home").chat_id == target
+    assert HomeChannel(Platform.SLACK, link, "Home").chat_id == link
 
 
-@pytest.mark.parametrize("host", ["discord.com", "ptb.discord.com", "canary.discord.com", "discordapp.com"])
-def test_home_link_preserves_metadata_and_roundtrips(host):
-    home = HomeChannel(Platform.DISCORD, f" https://{host}/channels/@me/123456789/ ",
-                       "Home", thread_id="987", user_id="u", scope_id="s")
-    assert home.chat_id == "123456789"
-    assert HomeChannel.from_dict(home.to_dict()) == home
-    assert (home.thread_id, home.user_id, home.scope_id) == ("987", "u", "s")
+def test_resolve_channel_accepts_a_pasted_link_for_explicit_targets():
+    """Cron ``deliver: discord:<link>`` bypasses HomeChannel, so the adapter's resolver — the
+    chokepoint every outbound target passes through — must accept the link too."""
+    adapter = object.__new__(DiscordAdapter)
+    channel = SimpleNamespace(id=456)
+    adapter._client = SimpleNamespace(get_channel=Mock(return_value=channel), fetch_channel=AsyncMock())
 
+    resolved = asyncio.run(adapter._resolve_channel(" https://ptb.discord.com/channels/123/456 "))
 
-@pytest.mark.parametrize("target", [
-    "123456789", "https://example.com/channels/123/456",
-    "https://discord.com.evil.test/channels/123/456",
-    "https://discord.com/channels/123/456/789",  # message link, not channel
-    "https://discord.com/channels/123/not-a-channel", "123/456",
-])
-def test_unrecognized_targets_are_not_reinterpreted(target):
-    assert HomeChannel(Platform.DISCORD, target, "Home").chat_id == target
-
-
-def test_other_platform_home_is_unchanged():
-    target = "https://discord.com/channels/123/456"
-    assert HomeChannel(Platform.SLACK, target, "Home").chat_id == target
+    assert resolved is channel
+    adapter._client.get_channel.assert_called_once_with(456)

@@ -255,7 +255,7 @@ try:
 except ImportError:
     from ffmpeg_utils import resolve_ffmpeg_executable
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
@@ -5180,7 +5180,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return ""
 
     async def _resolve_channel(self, channel_id: Any) -> Any:
-        """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error)."""
+        """Cached ``get_channel`` first, REST ``fetch_channel`` on miss (raises on API error).
+
+        Every outbound target funnels through here (home channel, cron ``discord:<target>``,
+        thread metadata), so a pasted channel link is accepted at this one boundary instead of
+        dying in ``int()`` as a generic send failure."""
+        if isinstance(channel_id, str):
+            channel_id = discord_channel_id_from_link(channel_id.strip()) or channel_id
         channel = self._client.get_channel(int(channel_id))
         if not channel:
             channel = await self._client.fetch_channel(int(channel_id))
