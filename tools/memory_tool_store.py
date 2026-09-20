@@ -55,6 +55,29 @@ def _read_failed_error(path: Path) -> Dict[str, Any]:
         f"memory, so the write is refused. Nothing was changed — retry in a moment.")
 
 
+# Typography a model re-types differently from the stored entry: every quote/backtick -> "'",
+# every dash/minus -> "-". Plus whitespace runs (re-wrapped lines, NBSP) -> one space.
+_MATCH_FOLD = str.maketrans({**dict.fromkeys("\"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f", "'"),
+                             **dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2212", "-")})
+
+
+def _normalize_for_match(text: str) -> str:
+    """Quote/dash/whitespace-folded form for tolerant old_text matching. Models re-emit an
+    entry with straight quotes for curly ones, '-' for an em dash, or unwrapped lines, and a
+    byte-exact substring test then reports "No entry matched" for an unambiguous target."""
+    return " ".join(str(text).translate(_MATCH_FOLD).split())
+
+
+def _substring_matches(entries: List[str], old_text: str) -> List[int]:
+    """Indices of entries containing *old_text*: byte-exact first, else typography-folded."""
+    if exact := [i for i, e in enumerate(entries) if old_text in e]:
+        return exact
+    needle = _normalize_for_match(old_text)
+    if not needle.strip("'-"):  # a quotes/dashes-only needle would match every entry
+        return []
+    return [i for i, e in enumerate(entries) if needle in _normalize_for_match(e)]
+
+
 def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int], bool]:
     """``(index, ambiguous)`` for entries matching *old_text*. A whole-entry
     EXACT match (``old_text == entry``) takes absolute priority — substring
@@ -63,7 +86,7 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     longer sibling entry (remove('test') vs '...tests pass...'). Exact-duplicate
     matches are safe (first wins); distinct matches → ``(None, True)``."""
     exact = [i for i, e in enumerate(entries) if e == old_text]
-    matches = exact if exact else [i for i, e in enumerate(entries) if old_text in e]
+    matches = exact or _substring_matches(entries, old_text)
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
@@ -326,7 +349,8 @@ class MemoryStore:
         idx, ambiguous = _find_unique_match(entries, old_text)
         if ambiguous:
             return _error(f"Multiple entries matched '{old_text}'. Be more specific.",
-                          matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
+                          matches=[entries[i][:80] + ("..." if len(entries[i]) > 80 else "")
+                                   for i in _substring_matches(entries, old_text)])
         if idx is None:
             return self._consolidation_failure(_error(
                 f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
