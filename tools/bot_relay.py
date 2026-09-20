@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -166,25 +166,84 @@ def read_remote_roster(root: Path | str) -> list[dict]:
         return []
 
 
+def _target_ids(row: dict) -> set[str]:
+    """Lower-cased routing ids of a roster row: its @handle and profile folder id."""
+    return {row["handle"].lower(), row["profile"].lower()}
+
+
+def _target_aliases(row: dict) -> set[str]:
+    """Every lower-cased bare form that addresses ``row``: routing ids plus the Bot Mode title's
+    mention slugs (``"CoS Bot"`` → ``cos-bot``/``cosbot``, what the Desktop picker inserts). A remote
+    ``default`` is ``@hermes`` on every gateway, so its title is the only bare form that can single it out."""
+    return _target_ids(row) | alias_forms(row.get("title") or "")
+
+
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
-    """Matched row for a bare handle/profile (unique across connections) or
-    ``<handle|profile>@<connection-id>``; ``"ambiguous"`` for a bare form on several connections; None otherwise."""
+    """Matched row for a bare handle/profile/title slug (unique across connections) or
+    ``<handle|profile|title-slug>@<connection-id>``; ``"ambiguous"`` for a bare form on several
+    connections; None otherwise. An exact handle/profile match beats a title slug, so a title
+    colliding with another row's handle never steals it."""
     want, at, conn = (p.strip() for p in str(raw_target or "").strip().lstrip("@").partition("@"))
     if not want or (at and not conn):
         return None
-    matches = [row for row in roster if want.lower() in (row["handle"].lower(), row["profile"].lower())
-               and (not conn or row["connection_id"].lower() == conn.lower())]
+    want = want.lower()
+    rows = [row for row in roster if not conn or row["connection_id"].lower() == conn.lower()]
+    matches = [row for row in rows if want in _target_ids(row)] or [row for row in rows if want in _target_aliases(row)]
     if not matches:
         return None
     return matches[0] if len(matches) == 1 else "ambiguous"
 
 
-def remote_target_forms(roster: list[dict]) -> list[str]:
-    """Target strings: bare handle when unique across connections, else
-    ``handle@connection`` (mirrors ``resolve_remote_target``)."""
-    handles = [row["handle"].lower() for row in roster]
-    return [f"{row['handle']}@{row['connection_id']}" if handles.count(h) > 1 else row["handle"]
-            for row, h in zip(roster, handles)]
+def _title_slug(row: dict) -> str:
+    """The Bot Mode title's slug form (``"CoS Bot"`` → ``cos-bot``, what the picker inserts); "" when the
+    title is empty, reserved (a bot titled "Hermes") or not a valid handle."""
+    title = str(row.get("title") or "")
+    slug = re.sub(r"[^a-z0-9_-]+", "-", title.strip().lower()).strip("-")
+    return slug if slug in alias_forms(title) else ""
+
+
+def remote_target_forms(roster: list[dict], local_taken: "set[str] | frozenset[str]" = frozenset()) -> list[str]:
+    """One unambiguous target string per row, shortest first: the bare handle when no other remote
+    row and no LOCAL profile (``local_taken``: this gateway's handles and friendly-name slugs) answers
+    to it; else the title slug under the same test (a remote ``default`` titled "CoS Bot" is
+    ``@cos-bot``, since bare ``@hermes`` is always this gateway's own default); else
+    ``handle@connection``. Mirrors ``resolve_remote_target``."""
+    taken = {form.lower() for form in local_taken}
+    id_claims: dict[str, int] = {}
+    alias_claims: dict[str, int] = {}
+    for row in roster:
+        for form in _target_ids(row):
+            id_claims[form] = id_claims.get(form, 0) + 1
+        for form in _target_aliases(row):
+            alias_claims[form] = alias_claims.get(form, 0) + 1
+
+    def _form(row: dict) -> str:
+        # The handle needs only be unique among routing ids (resolution gives it precedence over a
+        # colliding title); a title slug must be unique among every alias.
+        for candidate, claims in ((row["handle"], id_claims), (_title_slug(row), alias_claims)):
+            if candidate and candidate.lower() not in taken and claims.get(candidate.lower(), 0) == 1:
+                return candidate
+        return f"{row['handle']}@{row['connection_id']}"
+
+    return [_form(row) for row in roster]
+
+
+_SENDER_STAMP_RE = re.compile(r"^(Message from 🤖 .+? \(@)([A-Za-z0-9_-]+)(\): )", re.DOTALL)
+
+
+def qualify_sender_stamp(message: str, from_handle: Any, from_connection: Any, roster: list[dict],
+                         local_taken: "set[str] | frozenset[str]" = frozenset()) -> str:
+    """Rewrite a relayed DM's ``Message from 🤖 <name> (@<handle>):`` stamp so the handle is the
+    form THIS gateway can reply to: the sender's row in the local relay roster as
+    ``remote_target_forms`` renders it, else ``handle@connection``. A relayed ``@hermes`` is another
+    machine's default — left bare, a reply lands on the recipient's own default (#103731)."""
+    handle, conn = str(from_handle or "").strip().lstrip("@"), str(from_connection or "").strip()
+    match = _SENDER_STAMP_RE.match(str(message or ""))
+    if not match or not conn or not _HANDLE_RE.match(handle) or not _HANDLE_RE.match(conn):
+        return message
+    forms = dict(zip(((r["connection_id"].lower(), r["handle"].lower()) for r in roster), remote_target_forms(roster, local_taken)))
+    form = forms.get((conn.lower(), handle.lower())) or f"{handle}@{conn}"
+    return f"{match.group(1)}{form}{match.group(3)}{message[match.end():]}"
 
 
 def _envelope_ttl_seconds() -> int:

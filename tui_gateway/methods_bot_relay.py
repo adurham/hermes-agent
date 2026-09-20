@@ -79,6 +79,12 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         resolved = "default" if profile.lower() == "hermes" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
+        # The sender stamped itself with its bare @handle; a relayed "@hermes" is ANOTHER machine's
+        # default, so re-stamp it with the form this gateway can reply to (#103731).
+        from tools.bot_mode_probe import local_taken_forms
+        from tools.bot_relay import qualify_sender_stamp, read_remote_roster
+        message = qualify_sender_stamp(message, params.get("from_handle"), params.get("from_connection"),
+                                       read_remote_roster(root), local_taken_forms(root))
 
         # When THIS gateway already hosts the target's Bot Chat live, the subprocess transport is
         # fenced out by the single-owner lease and the payload dropped. Land the DM in the live

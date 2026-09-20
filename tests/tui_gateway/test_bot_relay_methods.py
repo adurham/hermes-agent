@@ -111,6 +111,34 @@ def test_deliver_requires_params(home):
     assert "error" in err
 
 
+def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypatch):
+    """#103731: the sender signs with its bare @handle, which for another machine's ``default`` is
+    ``@hermes`` — the recipient's OWN default. The delivered text names the sender by the form this
+    gateway resolves back to it: its title slug when the local relay roster carries it, else
+    ``handle@connection``. A stamp that is not the relay's is left alone."""
+    seen = []
+
+    class _Proc:
+        returncode, stderr, stdout = 0, "", "ok"
+
+    def _fake_run(argv, **_kwargs):
+        seen.append(Path(argv[argv.index("--query-file") + 1]).read_text(encoding="utf-8"))
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+    ])
+    stamp = "Message from 🤖 CoS Bot (@hermes): are we done?"
+    sender = {"from_profile": "default", "from_handle": "hermes", "from_connection": "vps-1"}
+    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": stamp, **sender}))
+    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": stamp, **sender, "from_connection": "lan-2"}))
+    _result(srv._methods["bot_relay.deliver"](3, {"profile": "ops", "message": "plain text (@hermes): x", **sender}))
+    assert seen == ["Message from 🤖 CoS Bot (@cos-bot): are we done?",
+                    "Message from 🤖 CoS Bot (@hermes@lan-2): are we done?",
+                    "plain text (@hermes): x"]
+
+
 def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
     """#110782: the subprocess transport applies the gateway's silence rule — a bare marker
     relays as "", prose that merely mentions one is relayed verbatim."""
