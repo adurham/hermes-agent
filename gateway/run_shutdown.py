@@ -1584,6 +1584,9 @@ class GatewayShutdownMixin:
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
         self._draining = True
+        # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
+        # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
+        self._mark_api_runs_shutdown_requested()
 
         async def _run_restart() -> None:
             await self._await_active_work_before_restart()

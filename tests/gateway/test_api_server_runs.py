@@ -411,35 +411,41 @@ class TestStartRun:
 
 class TestRunStatus:
 
-    def test_shutdown_marker_is_persisted_for_live_run(self, adapter):
+    @pytest.mark.asyncio
+    async def test_drain_boundary_is_visible_to_pollers_on_live_runs_only(self, adapter):
+        """GET /v1/runs/{id} shows ``shutdown_requested_at`` as soon as the drain starts (#115133).
+
+        A live run keeps ``status: running`` (it is still being served) but gains the marker,
+        durably (the idempotency record carries it across a restart); a run whose status is set
+        after the boundary inherits it; a terminal run is never touched.
+        """
         status = adapter._set_run_status("run_live", "running")
-        scope = "shutdown-test-scope"
-        adapter._run_owners["run_live"] = scope
+        _claim_run(adapter, "run_live")
+        scope = adapter._run_owners["run_live"]
         adapter._run_idempotency_store.reserve(
             scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
         adapter._run_idempotency_ids.add("run_live")
+        adapter._run_statuses["run_done"] = {
+            "object": "hermes.run", "run_id": "run_done", "status": "completed"}
+        _claim_run(adapter, "run_done")
 
-        marked = adapter.mark_shutdown_requested()
+        async with TestClient(TestServer(_create_runs_app(adapter))) as client:
+            before = await (await client.get("/v1/runs/run_live")).json()
+            assert "shutdown_requested_at" not in before
 
-        assert marked == 1
-        marker = adapter._run_statuses["run_live"].get("shutdown_requested_at")
-        assert isinstance(marker, float)
+            assert adapter.mark_shutdown_requested() == 1
+
+            live = await (await client.get("/v1/runs/run_live")).json()
+            assert live["status"] == "running"
+            marker = live["shutdown_requested_at"]
+            assert isinstance(marker, float)
+            done = await (await client.get("/v1/runs/run_done")).json()
+            assert "shutdown_requested_at" not in done
+
         durable = adapter._run_idempotency_store.status_for_run(scope, "run_live")
         assert durable["status"].get("shutdown_requested_at") == marker
-
-    def test_shutdown_marker_is_inherited_by_late_status(self, adapter):
-        adapter.mark_shutdown_requested()
         adapter._set_run_status("run_late", "queued")
-
-        assert isinstance(adapter._run_statuses["run_late"].get("shutdown_requested_at"), float)
-
-    def test_shutdown_marker_does_not_touch_terminal_run(self, adapter):
-        adapter._run_statuses["run_done"] = {
-            "object": "hermes.run", "run_id": "run_done", "status": "completed",
-        }
-
-        assert adapter.mark_shutdown_requested() == 0
-        assert "shutdown_requested_at" not in adapter._run_statuses["run_done"]
+        assert adapter._run_statuses["run_late"]["shutdown_requested_at"] == marker
 
     @pytest.mark.asyncio
     async def test_status_reflects_explicit_session_id(self, adapter):
