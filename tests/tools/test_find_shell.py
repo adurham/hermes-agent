@@ -7,12 +7,29 @@ when ``~/.bash_profile`` contained ``exec /bin/zsh -l``.
 
 import os
 import platform
+import shutil
 import subprocess
+import time
 from unittest.mock import patch
 
 import pytest
 
 from tools.environments.local import _find_bash, _find_shell
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+        try:
+            return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+    except ImportError:
+        try:
+            os.kill(pid, 0)  # windows-footgun: ok — psutil fallback only on POSIX hosts without it
+        except OSError:
+            return False
+        return True
 
 
 class TestFindShellPrefersUserShell:
@@ -137,7 +154,7 @@ class TestMacosLoginShellSwallowRegression:
         # A .bash_profile that exec's zsh — the reported macOS shape.
         home = tmp_path / "home"
         home.mkdir()
-        (home / ".bash_profile").write_text("exec /bin/zsh -l\n")
+        (home / ".bash_profile").write_text("exec /bin/zsh -l\n", encoding="utf-8")
 
         # Use /bin/zsh explicitly rather than $SHELL. The reported bug is
         # specifically "system bash 3.2 swallows, zsh does not", and $SHELL is

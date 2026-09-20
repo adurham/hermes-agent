@@ -177,7 +177,7 @@ class BaseEnvironment(ABC):
         LocalEnvironment overrides this on hosts where ``/tmp`` may be missing
         and ``TMPDIR`` is the portable writable location.
         """
-        return "/tmp"
+        return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd

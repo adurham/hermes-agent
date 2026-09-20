@@ -466,6 +466,7 @@ services:
     volumes:
       - ~/.hermes:/opt/data
       - /run/user/${HERMES_UID}/pulse:/run/user/${HERMES_UID}/pulse
+      # no-tmp: ok — path inside the container
       - ~/.config/pulse/cookie:/tmp/pulse-cookie:ro
       - ./asound.conf:/etc/asound.conf:ro
     environment:
@@ -473,6 +474,7 @@ services:
       - HERMES_GID=${HERMES_GID}
       - XDG_RUNTIME_DIR=/run/user/${HERMES_UID}
       - PULSE_SERVER=unix:/run/user/${HERMES_UID}/pulse/native
+      # no-tmp: ok — path inside the container
       - PULSE_COOKIE=/tmp/pulse-cookie
 ```
 

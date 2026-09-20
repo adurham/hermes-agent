@@ -114,6 +114,10 @@ module.exports = {
     return false
   } : 'scripts/before-build.mjs',
   beforePack: 'scripts/before-pack.mjs',
+  // The exe identity stamp runs here, on the pristine electron.exe, because
+  // ASAR integrity rewrites the PE later and rcedit cannot commit to that
+  // rewritten file (#105629). afterPack keeps the signing/payload work.
+  afterExtract: 'scripts/after-extract.mjs',
   afterPack: 'scripts/after-pack.mjs',
   ...(process.platform === 'darwin' ? { afterSign: 'scripts/notarize.mjs' } : {}),
   extraResources: [

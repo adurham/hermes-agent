@@ -302,6 +302,21 @@ def harden_import_path(src_root: str | None = None) -> None:
     sys.path.insert(0, root)
 
 
+def export_scratch_tmp_env() -> None:
+    """Point ``TMPDIR``/``TMP``/``TEMP`` at ``HERMES_HOME/cache/scratch`` unless the user set them.
+
+    System temp is tmpfs on most Linux hosts and containers; Hermes' browser profiles, PTY
+    probes and every ``tempfile`` default a child script makes would eat RAM there. Runs at
+    import so every entry point and every child they spawn inherits it; ``hermes_cli.main``
+    re-runs it after ``--profile`` re-homes the process. Never raises.
+    """
+    try:
+        from hermes_constants import export_scratch_tmp_env as _export
+        _export()
+    except Exception:
+        pass  # a missing/unwritable home just leaves the system temp dir in place
+
+
 # Apply on import — entry points just need ``import hermes_bootstrap``
 # (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
@@ -346,4 +361,4 @@ if not _pm_repair:
             print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
             raise SystemExit(1) from None
 install_happy_eyeballs_socket_connect()
-
+export_scratch_tmp_env()
