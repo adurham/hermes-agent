@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from prompt_toolkit.application import get_app
 from prompt_toolkit.layout import HSplit
-from prompt_toolkit.layout.screen import WritePosition
 
 
 class FooterSplit(HSplit):
@@ -26,7 +25,7 @@ class FooterSplit(HSplit):
     next frame measures and paints against the same state.
     """
 
-    def _divide_heights(self, write_position: WritePosition) -> list[int] | None:
+    def _divide_heights(self, write_position) -> list[int] | None:
         sizes = super()._divide_heights(write_position)
         if sizes is not None:
             return sizes
