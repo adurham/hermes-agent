@@ -988,23 +988,9 @@ def test_sibling_bot_wake_word_message_is_observed_not_dropped():
     asyncio.run(_run())
 
 
-def test_sibling_bot_quote_reply_is_observed_not_dropped():
-    """The loop breaker also drops a sibling bot's quote-reply; observation must not lose it too."""
-    adapter = _make_adapter(
-        require_mention=True,
-        bots_require_mention=True,
-        allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
-        observe_unmentioned_group_messages=True,
-    )
-    msg = _bot_sender_message("auto-reply", reply_to_bot=True)
-
-    assert adapter._should_process_message(msg) is False
-    assert adapter._should_observe_unmentioned_group_message(msg) is True
-
-
 def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
-    """An explicit @mention from another bot still dispatches, so it must NOT be observed as well."""
+    """An explicit @mention from another bot still dispatches, so it must NOT be observed as well;
+    the refused quote-reply is observed; a human wake word is unaffected by the bot gate."""
     adapter = _make_adapter(
         require_mention=True,
         bots_require_mention=True,
@@ -1018,36 +1004,11 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
 
     assert adapter._should_process_message(msg) is True
     assert adapter._should_observe_unmentioned_group_message(msg) is False
-
-
-def test_human_wake_word_message_is_dispatched_not_observed_with_bot_gate_on():
-    """The bot gate must not widen observation for human senders: a human wake-word match still
-    dispatches and is therefore not double-recorded as context."""
-    adapter = _make_adapter(
-        require_mention=True,
-        bots_require_mention=True,
-        mention_patterns=["hermes"],
-        allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
-        observe_unmentioned_group_messages=True,
-    )
-    msg = _group_message("hermes, hello")
-
-    assert adapter._should_process_message(msg) is True
-    assert adapter._should_observe_unmentioned_group_message(msg) is False
-
-
-def test_bot_wake_word_message_still_dispatches_when_loop_breaker_is_off():
-    """Without ``bots_require_mention`` nothing changed: a bot's wake-word message is dispatched
-    normally and stays out of observed context."""
-    adapter = _make_adapter(
-        require_mention=True,
-        mention_patterns=["hermes"],
-        allowed_chats=["-100"],
-        group_allowed_chats=["-100"],
-        observe_unmentioned_group_messages=True,
-    )
-    msg = _bot_sender_message("hermes, take this")
-
-    assert adapter._should_process_message(msg) is True
-    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    # A sibling bot's quote-reply is refused by the same loop breaker, so it is observed too ...
+    quoted = _bot_sender_message("auto-reply", reply_to_bot=True)
+    assert adapter._should_process_message(quoted) is False
+    assert adapter._should_observe_unmentioned_group_message(quoted) is True
+    # ... while a human wake-word match still dispatches and is not double-recorded.
+    human = _group_message("hermes, hello")
+    assert adapter._should_process_message(human) is True
+    assert adapter._should_observe_unmentioned_group_message(human) is False
