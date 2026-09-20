@@ -3792,7 +3792,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # control. A final edit is never gated (the completed answer is always delivered). Sends wait for
         # their slot; edits defer instead. Over-cap interim edits are exempt: the saturated-preview dedup
         # below already throttles them to one real edit per ~4096-char growth. Consumed only when the
-        # edit actually fires.
+        # edit actually fires. The skip is flagged in raw_response so the stream consumer does not
+        # record never-shown text as the visible prefix (a later flood fallback would then drop the
+        # tail the user never saw).
         if (
             not finalize
             and utf16_len(content) <= self.MAX_MESSAGE_LENGTH
@@ -3801,7 +3803,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug(
                 "[%s] skipping interim edit for chat %s (shared send+edit budget: slot busy)",
                 self.name, chat_id)
-            return SendResult(success=True, message_id=message_id)
+            return SendResult(success=True, message_id=message_id, raw_response={"skipped": True})
         self._hold_chat_outbound_slot(chat_id)
         # Rich finalize (Bot API 10.1): edit the preview IN PLACE via rich_message — no fresh send + delete.
         # Before the 4,096 pre-flight because the rich cap is 32,768; falls back to legacy on rejection.

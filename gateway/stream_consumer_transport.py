@@ -486,6 +486,12 @@ class StreamTransportMixin:
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("skipped"):
+            # Adapter deferred the edit (Telegram's shared send+edit slot was busy): nothing
+            # changed on screen, so the visible prefix and flood state stay as they were and the
+            # next tick retries with the newer text.
+            return True
         self._already_sent = True
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST

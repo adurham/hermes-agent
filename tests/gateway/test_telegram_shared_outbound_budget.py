@@ -50,6 +50,38 @@ async def test_interim_edit_skipped_when_slot_busy_but_final_edit_never_gated():
 
 
 @pytest.mark.asyncio
+async def test_skipped_interim_edit_leaves_visible_prefix_untouched():
+    """A slot-busy skip shows nothing new, so the stream consumer must not record the skipped text as
+    the on-screen prefix: a later turn-final flood must not treat the unseen tail as delivered."""
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = _adapter(AsyncMock())
+    consumer = GatewayStreamConsumer(adapter, "c1", StreamConsumerConfig(cursor="▌"))
+    consumer._message_id = "900"
+    consumer._already_sent = True
+    consumer._flood_strikes = 1
+
+    assert await consumer._edit_existing("The answer▌", finalize=False, is_turn_final=False)
+    assert consumer._last_sent_text == "The answer▌"
+    assert consumer._flood_strikes == 0
+    consumer._flood_strikes = 1
+
+    assert adapter._chat_outbound_slot_remaining("c1") > 0  # slot held: next interim edit is skipped
+    assert await consumer._edit_existing("The answer is 42▌", finalize=False, is_turn_final=False)
+    assert adapter._bot.edit_message_text.await_count == 1
+    assert consumer._last_sent_text == "The answer▌"  # screen still shows the older preview
+    assert consumer._flood_strikes == 1
+
+    from gateway.platforms.base import SendResult
+
+    adapter.edit_message = AsyncMock(return_value=SendResult(
+        success=False, error="Flood control exceeded. Retry in 9 seconds", retry_after=9))
+    assert not await consumer._edit_existing("The answer is 42", finalize=True, is_turn_final=True)
+    assert not getattr(consumer, "_final_content_delivered", False)
+    assert consumer._fallback_prefix == "The answer"  # fallback re-sends " is 42", not nothing
+
+
+@pytest.mark.asyncio
 async def test_send_waits_for_held_slot():
     """A send to a chat whose slot is held defers until the slot opens and then fires exactly once."""
     adapter = _adapter(AsyncMock())
