@@ -340,11 +340,14 @@ def _inside_git_worktree(path: Path) -> bool:
     """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
     normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
     Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
-    regression test, not session scratch (#115295)."""
-    for parent in path.resolve().parents:
-        if (parent / ".git").exists():
-            return True
-    return False
+    regression test, not session scratch (#115295).
+
+    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for in-home paths: a home kept
+    in a dotfiles repo (``~/.git``) would otherwise make every scratch file look Git-owned."""
+    parents = list(path.resolve().parents)
+    with contextlib.suppress(ValueError):
+        parents = parents[: parents.index(get_hermes_home())]
+    return any((parent / ".git").exists() for parent in parents)
 
 
 def guess_category(path: Path) -> Optional[str]:

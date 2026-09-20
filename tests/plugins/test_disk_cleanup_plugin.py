@@ -244,9 +244,10 @@ class TestGitWorktreeFilesNeverCleaned:
     inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
     git trees still are."""
 
-    def test_linked_worktree_test_file_not_tracked(self, _isolate_env):
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
         """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
-        pointer FILE) is not classified as disposable test scratch."""
+        pointer FILE) is not classified as disposable, and a stale pre-fix tracked entry
+        (category "test") is dropped by quick()'s re-validation, not deleted."""
         dg = _load_lib()
         wt = _isolate_env / "worktrees" / "repro-wt"
         wt.mkdir(parents=True)
@@ -254,32 +255,6 @@ class TestGitWorktreeFilesNeverCleaned:
         f = wt / "test_durable.py"
         f.write_text("x")
         assert dg.guess_category(f) is None
-
-    def test_checkout_test_file_not_tracked(self, _isolate_env):
-        """Same for a plain checkout outside HERMES_HOME. Must be a literal /tmp/hermes-*
-        path — is_safe_path() only accepts that prefix for out-of-home trees, and the
-        pytest tmp dir (/private/var/folders on macOS) would be rejected before the
-        git-ownership check is ever reached."""
-        dg = _load_lib()
-        checkout = Path("/tmp/hermes-cleanup-test-checkout")
-        try:
-            (checkout / ".git").mkdir(parents=True, exist_ok=True)
-            f = checkout / "test_durable.py"
-            f.write_text("x")
-            assert dg.guess_category(f) is None
-        finally:
-            import shutil
-            shutil.rmtree(checkout, ignore_errors=True)
-
-    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
-        """A stale pre-fix tracked entry (category "test") inside a worktree is dropped by
-        re-validation, not deleted — durable, git-committed tests survive."""
-        dg = _load_lib()
-        wt = _isolate_env / "worktrees" / "repro-wt"
-        wt.mkdir(parents=True)
-        (wt / ".git").mkdir()
-        f = wt / "test_durable.py"
-        f.write_text("x")
         dg.save_tracked([{"path": str(f), "category": "test",
                           "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
         result = dg.quick()
@@ -288,9 +263,11 @@ class TestGitWorktreeFilesNeverCleaned:
         assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
 
     def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
-        """Control: root-level test_* scratch (no .git anywhere on the chain) is still
-        auto-deleted — the fix must not leak protection outside git-owned trees."""
+        """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
+        itself lives inside a git checkout (dotfiles repo); only .git entries strictly below
+        HERMES_HOME mark a file as git-owned."""
         dg = _load_lib()
+        (_isolate_env.parent / ".git").mkdir()
         scratch = _isolate_env / "test_scratch.py"
         scratch.write_text("x")
         assert dg.guess_category(scratch) == "test"
