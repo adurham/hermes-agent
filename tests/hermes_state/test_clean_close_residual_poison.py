@@ -13,6 +13,7 @@ import pytest
 from hermes_state import SessionDB
 
 
+@pytest.mark.requires_wal  # the sticky flag exists only for a recorded WAL/SHM generation; DELETE mode has none
 @pytest.mark.parametrize("entry", ["normal", "optimize", "rebuild", "vacuum", "error_branch"])
 def test_clean_close_never_causes_false_sticky_loss(tmp_path, monkeypatch, entry):
     path = tmp_path / "synthetic.db"
