@@ -164,6 +164,7 @@ class SessionManager:
         self._restore_lock = threading.Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._cwd_backfilled = False
 
     # ---- public API ---------------------------------------------------------
 
@@ -293,6 +294,16 @@ class SessionManager:
                 self._db_instance = acquire(get_hermes_home() / "state.db")
             except Exception:
                 logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
+        if self._db_instance is not None and not self._cwd_backfilled:
+            # Rows minted before the adapter wrote the cwd column still carry the workspace
+            # in model_config; one idempotent UPDATE per process repairs them (#115705).
+            self._cwd_backfilled = True
+            try:
+                repaired = self._db_instance.backfill_acp_session_cwd()
+                if repaired:
+                    logger.info("Backfilled cwd for %d ACP session(s) from model_config", repaired)
+            except Exception:
+                logger.debug("ACP session cwd backfill failed", exc_info=True)
         return self._db_instance
 
     def _persist(self, state: SessionState) -> None:
