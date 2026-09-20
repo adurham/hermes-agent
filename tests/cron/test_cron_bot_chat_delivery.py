@@ -287,17 +287,37 @@ def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
 
 
 @pytest.mark.linux_only
-def test_bot_chat_turn_decodes_stray_stderr_bytes_lossily(tmp_path):
-    """A stray non-UTF-8 byte on the delivery child's stderr (e.g. a grandchild
-    sharing the pipe interleaving a partial multi-byte write) must not raise
-    UnicodeDecodeError in the drain thread — the turn is booked and the stream
-    tail survives with U+FFFD (#105582)."""
-    child = "import os, sys; os.write(2, b'noise before \\x80 after\\n'); sys.exit(0)"
-    result = sched_delivery._run_bot_chat_turn(
-        [sys.executable, "-c", child], _child_env(), str(tmp_path / "turn.json"), timeout=15)
+def test_bot_chat_turn_keeps_failure_tail_under_non_utf8_parent(tmp_path):
+    """The gateway parent's locale codec, not the child's UTF-8, decides the decode: a parent
+    outside UTF-8 mode with a C locale (the Linux twin of the cp1252 gateway parent on Windows)
+    used to lose the failing child's accented stderr entirely — the drain thread died on the
+    first undecodable byte and ``_format_failure_streams`` recorded nothing but the exit code
+    (#115894). Lossy decoding keeps the tail: on POSIX the accented characters degrade to
+    U+FFFD (the locale default stays, #66566) but the diagnostic text and exit code survive.
 
-    assert result.returncode == 0
-    assert result.stderr == "noise before \ufffd after\n"
+    ``PYTHONUTF8=0`` alone is not enough on 3.11 — PEP 538 coerces the C locale to UTF-8, so
+    the nested parent also sets ``PYTHONCOERCECLOCALE=0`` and asserts it is really ASCII."""
+    nested = textwrap.dedent("""
+        import json, locale, os, sys
+        from cron.scheduler_delivery import _run_bot_chat_turn
+        child = "import sys; sys.stderr.buffer.write({!r}); sys.exit(3)".format(
+            bytes.fromhex(sys.argv[1]))
+        result = _run_bot_chat_turn(
+            [sys.executable, "-c", child], dict(os.environ), sys.argv[2], timeout=30)
+        print(json.dumps({"preferred": locale.getpreferredencoding(False),
+                          "returncode": result.returncode, "stderr": result.stderr}))
+    """)
+    env = {**_child_env(), "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    env.pop("PYTHONIOENCODING", None)
+    tail = "relatório nº 3: falhou\n"
+    res = subprocess.run(
+        [sys.executable, "-X", "utf8=0", "-c", nested, tail.encode("utf-8").hex(), str(tmp_path / "turn.json")],
+        env=env, timeout=60, check=True, capture_output=True, encoding="utf-8")
+
+    result = json.loads(res.stdout)
+    assert result["preferred"].lower() in ("ansi_x3.4-1968", "ascii", "us-ascii"), result
+    assert result["returncode"] == 3
+    assert result["stderr"] == "relat\ufffd\ufffdrio n\ufffd\ufffd 3: falhou\n"
 
 
 @pytest.mark.linux_only
