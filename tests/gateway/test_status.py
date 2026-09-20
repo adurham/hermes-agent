@@ -408,6 +408,14 @@ class TestGatewayRuntimeStatus:
         home = Path("/opt/data/profiles/coder with space")
         assert status._command_line_belongs_to_profile(
             'hermes_home="/opt/data/profiles/coder with space" hermes gateway run', home)
+        # /proc and psutil hand argv back space-joined, so an unquoted value with a space is cut at
+        # the space by the token parser; the whole-home literal match must still claim it.
+        assert status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with space hermes gateway run", home)
+        assert status._command_line_belongs_to_profile(
+            r"HERMES_HOME=C:\Users\John Doe\.hermes hermes gateway run", Path(r"C:\Users\John Doe\.hermes"))
+        assert not status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with spaces hermes gateway run", home)
         home = Path("/fixture/profiles/ops")
         assert status._command_line_belongs_to_profile("HERMES_HOME=/fixture/profiles/ops/ hermes gateway run", home)
         assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data/ hermes gateway run", Path("/opt/hermes-data"))

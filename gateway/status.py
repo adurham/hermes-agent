@@ -575,6 +575,16 @@ def hermes_home_assignments(command: str) -> list[str]:
     ]
 
 
+def command_line_names_hermes_home(command_lc: str, home_lc: str) -> bool:
+    """True when ``command_lc`` carries ``HERMES_HOME=<home_lc>`` (both lowercased, ``/``-separated,
+    no trailing separator). Argv reaches us space-joined, so an unquoted value with a space in it
+    (``HERMES_HOME=C:/Users/John Doe/.hermes``) is cut at the space by the token parser; a
+    token-bounded literal match of the whole home recovers that spelling."""
+    if home_lc in hermes_home_assignments(command_lc):
+        return True
+    return re.search(rf"(?:^|\s)hermes_home={re.escape(home_lc)}/?(?=\s|$)", command_lc) is not None
+
+
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """True when a gateway command line belongs to ``profile_home`` (mirrors
     ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
@@ -586,15 +596,14 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     if profile_name is not None and profile_name != "default":
         if profile_flag_value(command_lc) == profile_name.lower():
             return True
-        return home_lc in hermes_home_assignments(command_lc)
+        return command_line_names_hermes_home(command_lc, home_lc)
     # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
     # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
     # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
     # arrives via the env).
     if profile_flag_value(command_lc) is not None:
         return False
-    assignments = hermes_home_assignments(command_lc)
-    return not (assignments and home_lc not in assignments)
+    return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
 
 def _record_matches_live_gateway_pid(
