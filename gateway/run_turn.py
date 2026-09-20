@@ -3716,6 +3716,16 @@ class GatewayTurnMixin:
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
+            else:
+                # One source of truth for "this turn's final already reached the chat": the normal
+                # completion path (`_hmwa_deliver_turn_response`) consults ``already_sent`` on whatever
+                # result the queued lane hands back. Every early `return result` after this point
+                # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
+                # fallback just delivered — the #81052 duplicate. Mark both result objects: the
+                # lane may return either one.
+                for _r in (response, result):
+                    if isinstance(_r, dict):
+                        _r["already_sent"] = True
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
