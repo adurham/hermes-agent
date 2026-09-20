@@ -6,6 +6,18 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _fresh_max_depth_cache():
+    """``_resolve_max_depth`` is an ``lru_cache`` keyed on the raw env string, so its
+    once-per-value warning persists for the whole process. Clear it around every test
+    or an earlier resolution of the same invalid value (another test, a repeat run)
+    silently turns the "exactly one warning" assertions into 0 warnings."""
+    plugin = importlib.import_module("plugins.observability.langfuse")
+    plugin._resolve_max_depth.cache_clear()
+    yield
+    plugin._resolve_max_depth.cache_clear()
+
+
 @pytest.mark.parametrize("mode", ["sanitized", "full"])
 @pytest.mark.parametrize("configured_depth", [None, "", "0", "4", "5", " 10 "])
 def test_capture_respects_configured_depth_for_tool_inputs_and_outputs(
