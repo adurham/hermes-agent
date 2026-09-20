@@ -1759,9 +1759,12 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  `translateNow` is the one-shot form for the places a hook can't reach —
  *  notably a `ctx.register` pane `title`, which is read at registration time
  *  and is why plugin pane titles otherwise strand as hardcoded English. It
- *  samples the locale at call time, so React should still use the hooks. */
+ *  samples the locale at call time, so React should still use the hooks. A
+ *  pane whose label must track the locale pairs that `title` with
+ *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
   type Locale,
+  LocalizedTabTitle,
   type PluginI18n,
   type PluginLocaleBundles,
   type PluginMessages,

@@ -42,7 +42,7 @@ import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { translateNow } from '@/i18n'
+import { LocalizedTabTitle, translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Users, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -162,7 +162,9 @@ registry.registerMany([
   {
     id: 'sessions',
     area: 'panes',
-    title: 'sessions',
+    // String fallback only (menus, drag ghosts); the tab itself renders
+    // `tabTitle` below so the strip follows `display.language` once it loads.
+    title: translateNow('sidebar.sessions'),
     // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
     // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
     // its default-ish spot beside main, not a random same-placement stack.
@@ -174,6 +176,7 @@ registry.registerMany([
       // Standing chrome: no close gestures at all — the tab is shown/hidden
       // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
       hideOnly: true,
+      tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.sessions} />,
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`
