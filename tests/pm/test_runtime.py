@@ -118,7 +118,10 @@ def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch
     else:
         base.mkdir()
         python = base / "python"
-        shutil.copy2(Path(sys._base_executable).resolve(), python)
+        # A symlink, not a copy: a lone copied binary cannot find its stdlib on a
+        # framework-style build (macOS: "Could not find platform independent libraries").
+        # The contract under test is the sealed sys.path, not the binary's location.
+        python.symlink_to(Path(sys._base_executable).resolve())
     (runtime / "pm-runtime.json").write_text(json.dumps({
         "python": "../python/" + python.name, "sitePackages": "site",
     }))

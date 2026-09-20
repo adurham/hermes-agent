@@ -25,7 +25,7 @@ def _powershell(script, *args, env=None):
     return subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(script), *map(str, args)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=180,
     )
 
 
@@ -158,6 +158,9 @@ function Get-Command {
     param([string]$Name)
     switch ($Name) {
         'cl.exe' { return [pscustomobject]@{Source = (Join-Path $vs 'cl.exe')} }
+        # The MSVC linker pin (CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER) resolves link.exe;
+        # a path under \MSVC\ is what the helper accepts.
+        'link.exe' { return [pscustomobject]@{Source = (Join-Path $vs 'VC\Tools\MSVC\14.44\bin\HostARM64\ARM64\link.exe')} }
         'rustup.exe' { return [pscustomobject]@{Source = (Join-Path $Root 'rustup.exe')} }
         'rustc.exe' { return [pscustomobject]@{Source = $rustcPath} }
         'vcpkg.exe' { return $null }
@@ -190,6 +193,7 @@ if ($env:PATH -ne $expectedPath) { throw 'PATH lost or reordered' }
 if ($env:OPENSSL_DIR -ne $prefix -or $env:OPENSSL_STATIC -ne '1') { throw 'Wrong OpenSSL tree' }
 if ($env:INCLUDE -ne 'fixture SDK include' -or $env:LIB -ne 'fixture SDK lib') { throw 'SDK environment lost' }
 if ($env:CC_aarch64_pc_windows_msvc -ne (Join-Path $vs 'clang.exe')) { throw 'Compiler lost' }
+if ($env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER -notlike '*\MSVC\*link.exe') { throw 'MSVC linker not pinned' }
 # CI initializes once, desktop again, then its native staging child a third time.
 # Re-running VsDevCmd grows PATH until cmd.exe hits its 8191-character limit.
 $prepared = @{}

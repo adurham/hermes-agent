@@ -245,7 +245,9 @@ def test_direct_packaged_cli_exposes_shims_before_electron(tmp_path):
     env = dict(os.environ, HOME=str(home), HERMES_HOME=str(home / ".hermes"),
                HERMES_INSTALL_ROOT=str(repo), HERMES_RUNTIME_DIR=str(tmp_path / "tools"))
     # Execute the package CLI directly. No Electron process or linking helper runs.
-    result = subprocess.run([str(bin_dir / "hermes"), "--version"], env=env,
+    # `--help` reaches main()'s boot bootstrap (which owns expose_cli) before argparse
+    # exits; `--version` is answered on the pre-import fast path and never gets there.
+    result = subprocess.run([str(bin_dir / "hermes"), "--help"], env=env,
                             capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     for name in ("hermes", "hermes-agent", "hermes-acp"):

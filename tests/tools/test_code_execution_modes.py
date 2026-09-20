@@ -64,7 +64,11 @@ print(json.dumps({{
     expected_cwd = child_env if mode == "project" else Path(result["staging"])
     assert Path(result["cwd"]).resolve() == expected_cwd.resolve()
     controlled = [result["staging"]] + ([str(repo)] if mode == "strict" else [])
-    assert list(map(os.path.normcase, result["pythonpath"])) == list(map(os.path.normcase, controlled + [str(user_lib)] * 2))
+    # macOS: the staging dir is minted under /var/tmp (a symlink to /private/var/tmp) and
+    # `hermes_tools.__file__` reports the resolved path, so compare realpaths.
+    def _canon(path: str) -> str:
+        return os.path.normcase(os.path.realpath(path))
+    assert list(map(_canon, result["pythonpath"])) == list(map(_canon, controlled + [str(user_lib)] * 2))
     assert dict(os.environ) == before
 
 
