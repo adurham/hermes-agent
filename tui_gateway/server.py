@@ -245,11 +245,9 @@ class _SlashWorker:
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
         # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
         # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
-        # `hermes -p X` would load itself.
-        # Multiplexing fail-closed: once the gateway serves a second profile home (#115427), the launch
-        # profile's OWN worker must still pass its home explicitly — otherwise inherit_credentials=True
-        # with no target (profile_home is None for the launch profile) and no bound scope raises
-        # UnscopedSecretError. When multiplexing is off the default (no target) is correct and untouched.
+        # `hermes -p X` would load itself. The launch profile is a profile too: once the process hosts
+        # a second home (multiplex flipped), its worker must name its own home or the fail-closed
+        # no-target/no-scope path raises UnscopedSecretError (#115427).
         env = _prepend_tool_paths(served_profile_child_env(
             target_home=profile_home or (_hermes_home if is_multiplex_active() else None),
             inherit_credentials=True))
