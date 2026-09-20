@@ -70,6 +70,7 @@ export function trackInboundActivity(roster: RosterRow[]) {
       // rather than replaying it — or a busy bridge's unchanged preview — as a
       // duplicate toast.
       lastToastedPreview.set(key, (activity?.preview || '').trim())
+
       continue
     }
 
@@ -107,6 +108,7 @@ export function trackInboundActivity(roster: RosterRow[]) {
     if (lastToastedPreview.get(key) === preview) {
       continue
     }
+
     lastToastedPreview.set(key, preview)
 
     if ($activityToasts.get()) {
