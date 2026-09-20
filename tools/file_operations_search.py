@@ -952,7 +952,10 @@ class SearchMixin:
         grep's exit code, so a hard grep error surfaces as an empty result."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
         q_root = self._escape_shell_arg(path or ".")
-        find_parts = ["find", q_root]
+        # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
+        # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
+        # symlinked root answered a confident ``total_count: 0`` on every platform (#116270).
+        find_parts = ["find", "-H", q_root]
         if protected_paths:
             find_parts.extend([self._prune_expr(protected_paths), "-o"])
         find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])

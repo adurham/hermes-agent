@@ -329,6 +329,34 @@ class TestSymlinkedRootOnTheFilesLane:
             assert nothing.error is None and nothing.total_count == 0, (
                 f"an empty root ({root}) answered {nothing.total_count} file(s): {nothing.files!r}")
 
+    def test_symlinked_content_root_under_a_dot_dir_matches_on_the_grep_lane(self, tmp_path, monkeypatch):
+        """The pruned grep lane (root under a dot-dir) must search through a symlinked
+        root instead of answering a silent zero (#116270).
+
+        ``find <link> -type f`` returned no files on every platform, so the pipeline was
+        byte-identical to "no match"; ``find -H`` follows the operand.
+        """
+        from tools.file_tools import _get_file_ops
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        hidden = tmp_path / ".dot"
+        (hidden / "real").mkdir(parents=True)
+        (hidden / "real" / "f.md").write_text("NEEDLE\n")
+        (hidden / "link.md").symlink_to(hidden / "real" / "f.md")
+        (hidden / "dirlink").symlink_to(hidden / "real")
+
+        ops = _get_file_ops(task_id="t-symlink-content-grep")
+        if not ops._has_command("grep"):
+            pytest.skip("grep not installed")
+        self._pin_engine(monkeypatch, ops, "grep")
+        for root in ("link.md", "dirlink"):
+            r = ops.search("NEEDLE", path=str(hidden / root), target="content")
+            assert r.error is None, r.error
+            assert r.total_count == 1, (
+                f"symlinked root {root} answered total_count={r.total_count} on the grep lane")
+        miss = ops.search("ABSENT_TOKEN", path=str(hidden / "dirlink"), target="content")
+        assert miss.error is None and miss.total_count == 0
+
     def test_a_symlinked_root_pointing_at_home_is_still_refused(self, tmp_path, monkeypatch):
         """The no-rg breadth guard must classify the link's target (#116270)."""
         import tools.file_operations as file_operations
