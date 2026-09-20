@@ -368,7 +368,10 @@ def _probe_ipv6_path() -> ProbeResult:
     return _row(name, "ok", f"(IPv6 path to {host} reachable)")  # refused/reset also prove a live path
 
 
-GITHUB_API_USER_URL = "https://api.github.com/user"
+# /rate_limit is reachable by EVERY token type and does not count against the quota. /user answers
+# 403 "Resource not accessible by integration" for App installation tokens (the GITHUB_TOKEN every
+# Actions job exports), which would paint a valid token red.
+GITHUB_API_PROBE_URL = "https://api.github.com/rate_limit"
 
 
 def _probe_github_token() -> ProbeResult:
@@ -387,7 +390,7 @@ def _probe_github_token() -> ProbeResult:
     where = f"{_DHH}/.env" if var in load_env() else "the environment"
     try:
         import httpx
-        r = httpx.get(GITHUB_API_USER_URL, timeout=10, headers={
+        r = httpx.get(GITHUB_API_PROBE_URL, timeout=10, headers={
             "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": _HERMES_USER_AGENT,
             "Accept": "application/vnd.github+json"})
     except Exception as e:

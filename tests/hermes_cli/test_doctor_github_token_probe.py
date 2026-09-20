@@ -17,6 +17,7 @@ from hermes_cli import doctor_connectivity as dc
 
 # GitHub's documented 401 body for a bad/expired token (REST API "Authentication" docs).
 _BAD_CREDENTIALS = {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"}
+_NOT_ACCESSIBLE = {"message": "Resource not accessible by integration", "documentation_url": "https://docs.github.com/rest"}
 
 
 @pytest.fixture
@@ -27,9 +28,15 @@ def github_stand_in(monkeypatch):
         status = 401
 
         def do_GET(self):  # noqa: N802 - http.server API
-            seen.append({"path": self.path, "authorization": self.headers.get("Authorization")})
-            body = json.dumps(_BAD_CREDENTIALS if self.status == 401 else {"login": "octocat"}).encode()
-            self.send_response(self.status)
+            auth = self.headers.get("Authorization") or ""
+            seen.append({"path": self.path, "authorization": auth})
+            status = self.status
+            if status == 200 and self.path == "/user" and auth.startswith("Bearer ghs_"):
+                # GitHub's documented answer for an App installation token on /user.
+                status, body = 403, json.dumps(_NOT_ACCESSIBLE).encode()
+            else:
+                body = json.dumps(_BAD_CREDENTIALS if status == 401 else {"login": "octocat"}).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -40,7 +47,10 @@ def github_stand_in(monkeypatch):
 
     srv = HTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    monkeypatch.setattr(dc, "GITHUB_API_USER_URL", f"http://127.0.0.1:{srv.server_port}/user")
+    # Keep the production path so the stand-in can tell /user from /rate_limit.
+    from urllib.parse import urlsplit
+    path = urlsplit(dc.GITHUB_API_PROBE_URL).path
+    monkeypatch.setattr(dc, "GITHUB_API_PROBE_URL", f"http://127.0.0.1:{srv.server_port}{path}")
     yield Handler, seen
     srv.shutdown()
 
@@ -84,3 +94,13 @@ def test_valid_token_is_ok_and_no_token_is_skipped(monkeypatch, tmp_path, github
     seen.clear()
     result = _github_probe_row(monkeypatch, tmp_path, None, name="home-without-token")
     assert result.lines == [] and result.issues == [] and seen == []  # nothing configured: no request, no row
+
+
+def test_actions_installation_token_is_accepted(monkeypatch, tmp_path, github_stand_in):
+    """A ``ghs_`` App installation token (the GITHUB_TOKEN every Actions job exports) is valid yet
+    GitHub answers 403 on /user; the doctor must probe an endpoint every token type can reach."""
+    handler, seen = github_stand_in
+    handler.status = 200
+    result = _github_probe_row(monkeypatch, tmp_path, "GITHUB_TOKEN=ghs_install000000000000000000000000000000\n")
+    ((glyph, _label, detail),) = result.lines
+    assert "✓" in glyph and "GITHUB_TOKEN" in detail and not result.issues, (detail, seen)
