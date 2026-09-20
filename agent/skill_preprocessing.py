@@ -77,6 +77,10 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             return f"[inline-shell timeout after {timeout}s: {command}]"
         return f"[inline-shell error: {exc}]"
     output = (completed.stdout or "").rstrip("\n") or (completed.stderr or "").rstrip("\n")
+    if completed.returncode != 0 and not output:
+        # rc!=0 with no output at all is indistinguishable from a legit empty result; it is the
+        # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
+        return f"[inline-shell exit {completed.returncode} with no output: {command}]"
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
         output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
     return output

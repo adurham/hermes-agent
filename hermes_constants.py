@@ -653,12 +653,14 @@ def _run_node_bootstrap(func: str, *, timeout: int, **extra_env: str) -> bool:
         return False
     import subprocess
     try:
+        # Never a bare "bash": CreateProcess resolves it to System32's WSL launcher on Windows.
+        from tools.environments.local import _find_bash
         result = subprocess.run(
-            ["bash", "-c", f'source "{_NODE_BOOTSTRAP_SCRIPT}" && {func}'],
+            [_find_bash(), "-c", f'source "{_NODE_BOOTSTRAP_SCRIPT}" && {func}'],
             env={**os.environ, "HERMES_HOME": str(get_hermes_home()), **extra_env},
             capture_output=True, timeout=timeout, check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, subprocess.SubprocessError):  # RuntimeError: no Git Bash on Windows
         return False
     return result.returncode == 0
 
