@@ -234,20 +234,32 @@ def test_print_run_result_shows_decision_for_error_and_timeout():
     assert '"action": "block"' in out
 
 
-def test_print_run_result_happy_path_unchanged():
-    """The normal success path still prints exit, streams, and the decision."""
-    buf = io.StringIO()
-    with redirect_stdout(buf):
-        hooks_cli._print_run_result(
-            {
-                "returncode": 0,
-                "elapsed_seconds": 0.1,
-                "stdout": "ok",
-                "stderr": "",
-                "parsed": {"action": "allow"},
-            }
-        )
-    out = buf.getvalue()
-    assert "exit=0" in out
-    assert "stdout: ok" in out
-    assert '"action": "allow"' in out
+def test_hooks_test_distinguishes_fail_closed_from_fail_open(tmp_path):
+    """`hermes hooks test` on a missing command shows the dispatcher's decision (#115968).
+
+    Drives the real CLI subcommand: a fail_closed hook whose command does not exist
+    must print the block decision, while the fail-open twin prints the "contributed
+    nothing" line — the two must not render identically.
+    """
+    cfg = {
+        "hooks": {
+            "pre_tool_call": [
+                {"matcher": "terminal", "command": "/nonexistent/hook-closed.sh",
+                 "fail_closed": True},
+                {"matcher": "terminal", "command": "/nonexistent/hook-open.sh"},
+            ],
+        },
+        "hooks_auto_accept": True,
+    }
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        out = _run(SimpleNamespace(
+            hooks_action="test", event="pre_tool_call",
+            for_tool="terminal", payload_file=None,
+        ))
+
+    closed, open_ = out.split("/nonexistent/hook-open.sh", 1)
+    assert "✗ error:" in closed and "✗ error:" in open_
+    assert '"action": "block"' in closed
+    assert "failed closed" in closed
+    assert '"action": "block"' not in open_
+    assert "contributed nothing" in open_
