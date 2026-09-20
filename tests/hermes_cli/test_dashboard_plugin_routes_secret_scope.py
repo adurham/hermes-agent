@@ -72,6 +72,7 @@ def test_install_route_reads_the_git_credential_in_profile_scope(client, multipl
 
     assert resp.status_code == 200, resp.text
     assert seen["token"] == "ghp_launch_token"
+    assert seen["on_event_loop"] is False  # the clone/pull body runs off the event loop
 
 
 def test_update_route_reads_the_git_credential_in_profile_scope(client, multiplexed, monkeypatch):
@@ -82,16 +83,6 @@ def test_update_route_reads_the_git_credential_in_profile_scope(client, multiple
 
     assert resp.status_code == 200, resp.text
     assert seen["token"] == "ghp_launch_token"
-
-
-def test_plugin_mutation_keeps_blocking_work_off_the_event_loop(client, multiplexed, monkeypatch):
-    seen: dict = {}
-    _stub_action(monkeypatch, "dashboard_install_plugin", seen)
-
-    assert client.post(
-        "/api/dashboard/agent-plugins/install", json={"identifier": "owner/repo"}
-    ).status_code == 200
-    assert seen["on_event_loop"] is False
 
 
 def test_failure_and_request_shape_errors_are_unchanged(client, multiplexed, monkeypatch):
