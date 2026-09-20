@@ -4,21 +4,16 @@ import { test, vi } from 'vitest'
 
 import { createQuitFinalization } from './quit-finalization'
 
-test('does not arm a finalization fallback outside Windows', () => {
-  const schedule = vi.fn()
-  const hardExit = vi.fn()
-  const finalization = createQuitFinalization({ isWindows: false, schedule, hardExit })
+/**
+ * #116376: on Windows, closing the last window ran the whole JS quit path
+ * (window-all-closed → app.quit → before-quit teardown → will-quit) and the
+ * process still stayed resident with 0 windows. The fallback must force the
+ * exit once, only on Windows, and only if Electron never reports `quit`.
+ */
 
-  finalization.arm()
-
-  assert.equal(schedule.mock.calls.length, 0)
-  assert.equal(hardExit.mock.calls.length, 0)
-})
-
-test('forces a Windows exit once the admitted quit exceeds its deadline', () => {
+test('forces a single Windows exit once the admitted quit exceeds its deadline; never arms off Windows', () => {
   let onTimeout: (() => void) | undefined
   const hardExit = vi.fn()
-
   const finalization = createQuitFinalization({
     isWindows: true,
     schedule: callback => {
@@ -31,46 +26,35 @@ test('forces a Windows exit once the admitted quit exceeds its deadline', () => 
 
   finalization.arm()
   finalization.arm()
-
   assert.ok(onTimeout)
   onTimeout()
   onTimeout()
-
   assert.deepEqual(hardExit.mock.calls, [[0]])
+
+  const schedule = vi.fn()
+  const posixExit = vi.fn()
+  createQuitFinalization({ isWindows: false, schedule, hardExit: posixExit }).arm()
+  assert.equal(schedule.mock.calls.length, 0)
+  assert.equal(posixExit.mock.calls.length, 0)
 })
 
-test('cancels the fallback when Electron reports a completed quit', () => {
+test('a completed quit cancels the fallback and it never re-arms', () => {
   let onTimeout: (() => void) | undefined
   const cancel = vi.fn()
   const hardExit = vi.fn()
+  const schedule = vi.fn((callback: () => void) => {
+    onTimeout = callback
 
-  const finalization = createQuitFinalization({
-    isWindows: true,
-    schedule: callback => {
-      onTimeout = callback
-
-      return 'timer'
-    },
-    cancel,
-    hardExit
+    return 'timer'
   })
+  const finalization = createQuitFinalization({ isWindows: true, schedule, cancel, hardExit })
 
   finalization.arm()
   finalization.cancel()
   onTimeout?.()
+  finalization.arm()
 
   assert.deepEqual(cancel.mock.calls, [['timer']])
   assert.equal(hardExit.mock.calls.length, 0)
-})
-
-test('does not re-arm after finalization has been cancelled', () => {
-  const schedule = vi.fn(() => 'timer')
-  const hardExit = vi.fn()
-  const finalization = createQuitFinalization({ isWindows: true, schedule, hardExit })
-
-  finalization.arm()
-  finalization.cancel()
-  finalization.arm()
-
   assert.equal(schedule.mock.calls.length, 1)
 })

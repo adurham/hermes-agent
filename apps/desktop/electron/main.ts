@@ -18293,7 +18293,10 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   }
 
   const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
-  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  // A hidden aux window must never parent the quit prompt: the dialog would
+  // be invisible and the held quit unanswerable (#116376 §E).
+  const parent =
+    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
 
   if (!prompt || !parent || parent.isDestroyed()) {
     return false
