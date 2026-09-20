@@ -95,4 +95,3 @@ print(json.dumps([{"event": event, "message": format_process_notification(event)
             assert (path in item['message']) == (path in paths.values())
     assert set(by_index) == ({'1'} if missing_writer else {'0', '1'} if split else {'0'})
     assert set(by_index.values()) == set(transcripts)
-
