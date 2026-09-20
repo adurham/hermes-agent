@@ -178,7 +178,7 @@ def _recorded_launcher_pid() -> Optional[int]:
     return int(pid_s) if pid_s.isdigit() and born_s else None
 
 
-_X_LOCK_DIR = Path("/tmp")  # where X servers write .X<n>-lock (tests point it at a scratch dir)
+_X_LOCK_DIR = Path("/tmp")  # no-tmp: ok — X servers write .X<n>-lock here by protocol (tests point it at a scratch dir)
 _X_UNIX_TABLE = Path("/proc/net/unix")  # the kernel's list of bound Unix sockets (tests point it at a fixture)
 
 
@@ -197,6 +197,7 @@ def _x_socket_bound(num: int) -> bool:
         lines = _X_UNIX_TABLE.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
+    # no-tmp: ok — detects the X server's display socket at the path the X11 protocol fixes
     return any(line.split()[-1].lstrip("@") == f"/tmp/.X11-unix/X{num}" for line in lines if line.strip())
 
 

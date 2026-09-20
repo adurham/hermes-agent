@@ -268,13 +268,14 @@ Xauthority, launcher log, per-profile xfconf).
 
 WSL2 counts as a supported Linux host: `screen status` reports it as such and
 the pane is offered. One WSLg quirk gets in the way of the first start: WSLg
+<!-- no-tmp: ok — the X11 socket directory is fixed by the protocol, not a scratch path -->
 mounts `/tmp/.X11-unix` read-only, so `Xvnc` cannot create its display socket
 and dies with `Cannot establish any listening sockets` in `launcher.log`.
 Replace the mount with a writable directory before starting the screen:
 
 ```bash
-sudo umount /tmp/.X11-unix
-sudo mkdir -p /tmp/.X11-unix && sudo chmod 1777 /tmp/.X11-unix
+sudo umount /tmp/.X11-unix  # no-tmp: ok — X11 socket directory, fixed by the protocol
+sudo mkdir -p /tmp/.X11-unix && sudo chmod 1777 /tmp/.X11-unix  # no-tmp: ok — same
 ```
 
 The mount comes back on the next WSL restart; repeat the two commands then.
