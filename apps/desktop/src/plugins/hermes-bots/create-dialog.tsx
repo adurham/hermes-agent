@@ -740,20 +740,22 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                   {labeled(
                     remoteTarget ? `Clone from profile (on ${targetLabel})` : 'Clone from profile',
                     <Select
-                      disabled={remoteTarget}
                       onValueChange={value => {
                         setCloneFrom(value)
                         setCaps(null)
                         setCapsFailed(false)
                       }}
-                      value={remoteTarget ? 'default' : cloneFrom}
+                      value={remoteTarget && cloneFrom !== '__none__' ? 'default' : cloneFrom}
                     >
                       <SelectTrigger className="h-8 rounded-md">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">Fresh profile (bundled skills)</SelectItem>
-                        {roster.map(b => (
+                        {/* The roster lists THIS window's profiles; the only clone
+                            source guaranteed to exist on another machine is its
+                            own default, so a remote target offers that or fresh. */}
+                        {(remoteTarget ? [{ name: 'default' }] : roster).map(b => (
                           <SelectItem key={b.name} value={b.name}>
                             {b.name}
                           </SelectItem>

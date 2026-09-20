@@ -58,7 +58,7 @@ An **Advanced** disclosure opens the full capabilities surface:
 
 ### Choosing which machine it lives on ("Create on")
 
-With more than one connection registered in [Settings → Connections](./multi-connection-desktop.md), the New Agent dialog grows a **Create on** picker. Pick a device and the profile is created on **that** machine's backend — your window never switches gateways. The new Bot then appears in the roster as a Connections Bot (with an `@name-device` handle when the name exists on several machines), and chatting with it routes to its own machine.
+With more than one connection registered in [Settings → Connections](./multi-connection-desktop.md), the New Agent dialog grows a **Create on** picker. Pick a device and the profile is created on **that** machine's backend — your window never switches gateways. The new Bot then appears in the roster as a Connections Bot (with an `@name-device` handle when the name exists on several machines), and chatting with it routes to its own machine. **Clone from profile** then offers what exists on the target machine — its own `default`, or **Fresh profile** — rather than this window's roster; you never have to switch gateways to create a fresh Bot elsewhere.
 
 With a single connection (the common case) the picker is hidden and the Bot is created on the machine you're connected to — exactly the old behavior.
 
