@@ -649,8 +649,9 @@ def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
     """
     import time
 
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
-    node_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "x86": "x86"}.get(arch)
+    from hermes_platform.host import facts
+
+    node_arch = {"amd64": "x64", "arm64": "arm64", "x86": "x86"}.get(facts.native_arch())
     if node_arch is None:
         return False
     home = home or get_hermes_home()
