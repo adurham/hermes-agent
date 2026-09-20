@@ -528,7 +528,7 @@ async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(m
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
-    monkeypatch.setattr("cron.jobs.get_job", lambda job_id: None)
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
     runner._restart_after_turn_timeout = 300.0  # would hang the test without the wedge bypass
@@ -552,7 +552,7 @@ def test_wedged_cron_allowance_honours_young_runs_and_job_interval(monkeypatch, 
     import cron.scheduler as sched
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("cron.jobs.get_job", lambda job_id: {"id": job_id, "schedule": {"kind": "interval", "minutes": 360}})
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [{"id": "six-hourly-job", "schedule": {"kind": "interval", "minutes": 360}}])
     runner, _adapter = make_restart_runner()
     assert sched.try_register_running_job("six-hourly-job")
     try:
@@ -565,3 +565,28 @@ def test_wedged_cron_allowance_honours_young_runs_and_job_interval(monkeypatch, 
         assert runner._wedged_agent_count() == 1 and runner._awaitable_work_count() == 0
     finally:
         sched.release_running_job("six-hourly-job")
+
+
+def test_wedged_cron_check_parses_jobs_once_per_run(monkeypatch, tmp_path):
+    """The restart drain polls the wedged count every 0.1 s on the event loop; the job interval
+    must be resolved once per in-flight run, not by a full jobs.json parse per job per tick."""
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    loads = []
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: loads.append(1) or [
+        {"id": jid, "schedule": {"kind": "interval", "minutes": 360}} for jid in ("job-a", "job-b", "job-c")])
+    for jid in ("job-a", "job-b", "job-c"):
+        assert sched.try_register_running_job(jid)
+    try:
+        for _ in range(50):
+            assert sched.get_wedged_job_ids() == frozenset()
+        assert len(loads) == 1
+        with sched._running_lock:
+            sched._running_since["job-b"] = time.time() - 13 * 3600
+        assert sched.get_wedged_job_ids() == frozenset({"job-b"})
+        assert len(loads) == 1
+    finally:
+        for jid in ("job-a", "job-b", "job-c"):
+            sched.release_running_job(jid)
+    assert not sched._running_allowance_s
