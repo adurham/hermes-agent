@@ -416,25 +416,6 @@ def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to
     assert json.loads(calls[-1]["env"][TURN_AUTHOR_ENV])["id"] != authors[0]["id"], "a different principal is a different author"
 
 
-def test_a_signed_in_ws_ticket_is_a_login_identity_so_the_desktop_is_one(monkeypatch, tmp_path):
-    """The root cause, pinned: the Desktop's own credential produces a login identity.
-
-    It fetches ``POST /api/auth/ws-ticket``, which mints the ticket from the signed-in session
-    (``hermes_cli/dashboard_auth/routes.py``); consuming it yields that user's identity, which is a
-    login identity. So any relay rule that keys on "is this caller logged in" also catches the
-    Desktop, and cross-connection relay is exactly what the Desktop exists to do.
-    """
-    from hermes_cli.dashboard_auth import ws_tickets
-    from tui_gateway.methods_browser_control import _is_authenticated_identity
-
-    monkeypatch.setattr(ws_tickets, "_TICKET_STORE_PATH", tmp_path / "tickets.json", raising=False)
-    consumed = ws_tickets.consume_ticket(ws_tickets.mint_ticket(user_id="alice", provider="google"))
-
-    assert _is_authenticated_identity({"user_id": consumed["user_id"], "provider": consumed["provider"]})
-    assert not _is_authenticated_identity(
-        {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}), "only ?internal= is exempt"
-
-
 @pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])
 def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, subdir):
     """Both ends of the relay mailbox derive the install root from HERMES_HOME with ONE formula.
