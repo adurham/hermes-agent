@@ -3,50 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts';
-import { assertBackendOrigin, localBackendProcess, readInstallationCommit, within } from '../../../tests-js/scripts/desktop-smoke-process.ts';
-import { smokeEnvironment } from './desktop-smoke.ts';
-
-// Source updater processes still need the git redirect; smokeEnvironment keeps
-// it while removing driver activation, credentials and remote/backend overrides.
-/** @param {NodeJS.ProcessEnv} inherited @param {string} root @param {'source'|'bundled'} origin */
-export function updateWindowEnvironment(inherited, root, origin) {
-  const home = inherited.HERMES_HOME;
-  const userData = inherited.HERMES_DESKTOP_USER_DATA_DIR;
-  if (!home || !userData) throw new Error('Update chat requires isolated HERMES_HOME and HERMES_DESKTOP_USER_DATA_DIR');
-  const env = smokeEnvironment(inherited, home, userData);
-  // The detached source updater builds NEW in this environment too.
-  for (const key of ['GITHUB_SHA', 'GITHUB_REF', 'GITHUB_REF_NAME', 'GITHUB_HEAD_REF', 'GITHUB_BASE_REF']) {
-    delete env[key];
-  }
-  fs.mkdirSync(env.HOME, { recursive: true });
-  fs.mkdirSync(userData, { recursive: true });
-  for (const [filename, local] of [
-    ['connection.json', { mode: 'local' }],
-    ['connections.json', { primary: 'local', launchMode: 'primary', lastUsed: 'local' }],
-  ]) {
-    const file = path.join(userData, filename);
-    if (filename === 'connections.json' && !fs.existsSync(file)) continue;
-    const prior = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
-    fs.writeFileSync(file, JSON.stringify({ ...prior, ...local }), { mode: 0o600 });
-  }
-  if (origin === 'source') {
-    const editableRoot = inherited.HERMES_PYTHON_SRC_ROOT;
-    if (editableRoot) {
-      if (!path.isAbsolute(editableRoot) || fs.realpathSync(editableRoot) !== fs.realpathSync(root)) {
-        throw new Error('Captured HERMES_PYTHON_SRC_ROOT differs from the installed source');
-      }
-      env.HERMES_PYTHON_SRC_ROOT = editableRoot;
-    }
-    for (const key of ['HERMES_DESKTOP_PYTHON', 'HERMES_DESKTOP_HERMES', 'HERMES_DESKTOP_HERMES_ROOT']) {
-      if (inherited[key]) {
-        if (!path.isAbsolute(inherited[key]) || (key !== 'HERMES_DESKTOP_PYTHON' && !within(root, inherited[key]))) throw new Error(`Captured ${key} escapes the installed source`);
-        fs.accessSync(inherited[key]);
-        env[key] = inherited[key];
-      }
-    }
-  }
-  return env;
-}
+import { assertBackendOrigin, localBackendProcess, readInstallationCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts';
 
 /**
  * @param {import('@playwright/test').ElectronApplication} app

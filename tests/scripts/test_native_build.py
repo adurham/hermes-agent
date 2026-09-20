@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.pm._fixtures import stage_host_python
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/bundles/native_build.py"
@@ -63,9 +64,7 @@ def test_native_cli_consumes_real_minimal_preparation_without_bootstrap(tmp_path
     (code / "entry.py").write_text('def main():\n print("native fixture")\n return 0\n')
     for name in RESOURCE_ENV:
         (code / name).mkdir()
-    python = out / "tools/python/bin/python3"
-    python.parent.mkdir(parents=True)
-    shutil.copy2(Path(getattr(sys, "_base_executable")).resolve(), python)
+    python = stage_host_python(out / "tools/python/bin/python3")
     site = out / "venv/lib/site-packages"
     site.mkdir(parents=True)
     runtime = out / "pm-runtime"

@@ -728,7 +728,7 @@ def ensure_matrix_deps() -> bool:
     forever and broke E2EE connect with ``No module named 'asyncpg'``
     (#31116).  Rebinds module-level type globals on success.
     """
-    from pm.extras import ensure_and_bind
+    from pm import extras
 
     def _import():
         from mautrix.types import (
@@ -744,7 +744,9 @@ def ensure_matrix_deps() -> bool:
             "UserID": UserID,
         }
 
-    if not ensure_and_bind("matrix", _import, globals()):
+    # A complete install (module-level imports already bound the types) needs no sync; only a
+    # partial one goes through ensure_and_bind, which rebinds after the install.
+    if extras.missing("matrix") and not extras.ensure_and_bind("matrix", _import, globals()):
         logger.warning(
             "Matrix: required packages not installed or need a restart. "
             "Run `hermes pm install`, then restart Hermes."

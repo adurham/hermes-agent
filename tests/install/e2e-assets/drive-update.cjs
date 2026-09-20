@@ -60,7 +60,8 @@ const killer = setTimeout(() => {
 killer.unref()
 
 async function main() {
-  const { runUpdateWindowChat, updateWindowEnvironment } = await import('./update-window-chat.mjs')
+  const { runUpdateWindowChat } = await import('./update-window-chat.mjs')
+  const { updateWindowEnvironment } = await import('./smoke-env.mjs')
   const origin = nativeHandoff ? 'bundled' : 'source'
   const root = nativeHandoff ? path.join(path.dirname(exePath), 'resources', 'agent-payload') : path.join(process.env.HERMES_HOME, 'hermes-agent')
   log(`launching ${exePath}`)

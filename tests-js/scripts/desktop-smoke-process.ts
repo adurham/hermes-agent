@@ -4,6 +4,8 @@ import path from 'node:path'
 
 import { z } from 'zod'
 
+import { within } from '../../tests/install/e2e-assets/smoke-env.mjs'
+
 export interface NativeProcess {
   pid: number
   parentPid: number
@@ -22,11 +24,6 @@ export interface NativeProcess {
 export interface OriginEvidence {
   /** The root the app itself reported resolving, from its own UI/identity channel. */
   appReportedRoot?: string
-}
-
-export function within(root: string, candidate: string): boolean {
-  const relative = path.relative(fs.realpathSync(root), fs.realpathSync(candidate))
-  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
 
 function nativeText(command: string, args: string[]): string {

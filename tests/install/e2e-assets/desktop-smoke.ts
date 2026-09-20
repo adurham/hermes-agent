@@ -11,7 +11,8 @@ import { z } from 'zod'
 import { resolveDesktopHermesHome } from '../../../apps/desktop/electron/data-paths.mjs'
 import { applyBundleEnvironment } from '../../../apps/desktop/scripts/bundle-env.mjs'
 import { readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
-import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit, within } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
+import { type SmokeEnvironment, smokeEnvironment, within } from './smoke-env.mjs'
 import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config.ts'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
 
@@ -34,16 +35,6 @@ const launchSpecSchema = z.object({
   env: z.record(z.string(), z.string()), matchedShape: z.enum(['source', 'packaged']),
 })
 
-interface SmokeEnvironment extends Record<string, string> {
-  HOME: string
-  USERPROFILE: string
-  HERMES_HOME: string
-  HERMES_DESKTOP_USER_DATA_DIR: string
-  XDG_CONFIG_HOME: string
-  XDG_DATA_HOME: string
-  XDG_CACHE_HOME: string
-}
-
 interface Launch {
   executablePath: string
   args: string[]
@@ -63,30 +54,7 @@ interface ElectronProcess extends NodeJS.Process {
   resourcesPath: string
 }
 
-export function smokeEnvironment(inherited: NodeJS.ProcessEnv, home: string, userData: string): SmokeEnvironment {
-  const clean: Record<string, string> = {}
-  const keepHermes = new Set(['HERMES_TEST_INSTALL_REF', 'HERMES_TEST_INSTALL_REPO'])
-  for (const [key, value] of Object.entries(inherited)) {
-    const name = key.toUpperCase()
-    if (!value || /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/.test(name)
-        || /^(?:PYTHON|VIRTUAL_ENV|CONDA|NODE_|NPM_|ELECTRON_|VITE_|UV_|PM_)/.test(name)
-        || /^(?:OPENAI|ANTHROPIC|OPENROUTER|OLLAMA|GEMINI|GROQ|XAI)_/.test(name)
-        || (name.startsWith('HERMES_') && !keepHermes.has(name))
-        || ['INIT_CWD', 'TERMINAL_CWD', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'SSH_AUTH_SOCK', 'SSH_ASKPASS', 'GIT_ASKPASS'].includes(name)) {
-      continue
-    }
-    clean[key] = value
-  }
-  return {
-    ...clean, HOME: path.join(home, '.desktop-smoke-home'), USERPROFILE: path.join(home, '.desktop-smoke-home'),
-    XDG_CONFIG_HOME: path.join(home, '.desktop-smoke-home', '.config'),
-    XDG_DATA_HOME: path.join(home, '.desktop-smoke-home', '.local', 'share'),
-    XDG_CACHE_HOME: path.join(home, '.desktop-smoke-home', '.cache'),
-    HERMES_HOME: home, HERMES_DESKTOP_USER_DATA_DIR: userData,
-    APPDATA: path.join(home, '.desktop-smoke-home', 'AppData', 'Roaming'),
-    LOCALAPPDATA: path.join(home, '.desktop-smoke-home', 'AppData', 'Local'),
-  }
-}
+export { smokeEnvironment }
 
 /** The bundled app resolves its Hermes home the same way electron/data-paths.ts does:
  * an explicit HERMES_HOME wins, but a bundle-env clear (HERMES_HOME=null) empties it before

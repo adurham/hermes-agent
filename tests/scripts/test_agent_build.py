@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import pytest
+from tests.pm._fixtures import stage_host_python
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -28,9 +29,7 @@ def inputs_fixture(tmp_path):
     (source / "skills").mkdir()
     (source / "skills/data").write_text("resource", encoding="utf-8")
     out = tmp_path / "payload"
-    python = out / "tools/python/bin/python3"
-    python.parent.mkdir(parents=True)
-    shutil.copy2(Path(sys._base_executable).resolve(), python)
+    python = stage_host_python(out / "tools/python/bin/python3")
     site = out / "venv/lib/python3.14/site-packages"
     site.mkdir(parents=True)
     (site / "dependency.py").write_text("VALUE = 'prepared'\n", encoding="utf-8")

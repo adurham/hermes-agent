@@ -23,7 +23,8 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { _electron } from '@playwright/test';
 import { createRequire } from 'node:module';
-import { runUpdateWindowChat, updateWindowEnvironment } from './update-window-chat.mjs';
+import { runUpdateWindowChat } from './update-window-chat.mjs';
+import { updateWindowEnvironment } from './smoke-env.mjs';
 
 const require = createRequire(import.meta.url);
 const { observeProcessClose } = require('./process-close.cjs');

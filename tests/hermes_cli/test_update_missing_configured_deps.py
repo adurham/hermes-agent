@@ -40,6 +40,13 @@ def configured_update(source_launch, tmp_path, monkeypatch):
     # offline while exercising the real selected-environment launch boundary.
     for path in repository.iterdir():
         if path.name in {"hermes_cli", "gateway", "agent", "tools", "plugins", "pm"} or path.suffix == ".py":
+            if (root / path.name).exists():
+                # source_launch already stubs hermes_cli/source_completion.py; link the rest of that
+                # package's modules beside it.
+                for module in path.iterdir():
+                    if not (root / path.name / module.name).exists():
+                        (root / path.name / module.name).symlink_to(module, target_is_directory=module.is_dir())
+                continue
             (root / path.name).symlink_to(path, target_is_directory=path.is_dir())
     def build_in_child():
         script = (

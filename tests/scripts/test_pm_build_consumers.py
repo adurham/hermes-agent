@@ -19,7 +19,11 @@ def local_toolchain(tmp_path, monkeypatch):
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
 
 
-def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, local_toolchain):
+def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeypatch, local_toolchain):
+    """The CI toolchain exports PM's Python (a command environment) as HERMES_PYTHON and never
+    leaks installer policy (``UV_*``). uv itself IS placed on PATH — after the interpreter —
+    because the test suites this toolchain serves drive real uv through ``shutil.which("uv")``.
+    """
     import importlib
     from types import SimpleNamespace
     from scripts.ci import setup_toolchain
@@ -35,9 +39,10 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
         composed.append(names)
         return {"PATH": str(Path(sys.executable).parent)}
 
+    uv_binary = Path(shutil.which("uv"))
+
     def package(name):
-        assert name != "uv", "CI must not resolve an installer executable"
-        return SimpleNamespace(binary=lambda *args: Path(sys.executable))
+        return SimpleNamespace(binary=lambda *args: uv_binary if name == "uv" else Path(sys.executable))
 
     monkeypatch.setattr(manager, "env_for", environment)
     monkeypatch.setattr("pm.registry.get_package", package)
@@ -50,10 +55,14 @@ def test_ci_setup_exports_no_installer_path_or_policy(tmp_path, monkeypatch, loc
     assert composed == [("python",)]
     outputs = dict(line.split("=", 1) for line in files["GITHUB_OUTPUT"].read_text(encoding="utf-8").splitlines())
     exported = dict(line.split("=", 1) for line in files["GITHUB_ENV"].read_text(encoding="utf-8").splitlines())
-    assert "uv-path" not in outputs
+    assert outputs["uv-path"] == str(uv_binary)
     assert not any(name.startswith("UV_") for name in exported)
     assert exported["HERMES_PYTHON"] == outputs["python-path"]
-    assert Path(outputs["python-path"]).parent.as_posix() in files["GITHUB_PATH"].read_text(encoding="utf-8").replace("\\", "/")
+    path_entries = files["GITHUB_PATH"].read_text(encoding="utf-8").replace("\\", "/").splitlines()
+    python_dir = Path(outputs["python-path"]).parent.as_posix()
+    assert python_dir in path_entries
+    # GITHUB_PATH lines are prepended one by one, so the last line wins: python must be written after uv.
+    assert path_entries.index(python_dir) > path_entries.index(uv_binary.parent.as_posix())
     subprocess.run([outputs["python-path"], "-I", "-c", "import sys; assert sys.prefix != sys.base_prefix"], check=True)
 
 

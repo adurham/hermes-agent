@@ -35,6 +35,26 @@ def _wheel(directory: Path, name: str, version: str = "1.0", requirements=()) ->
     return wheel
 
 
+def stage_host_python(python: Path) -> Path:
+    """Place a runnable copy of the test host's interpreter at ``python`` (``<root>/bin/python…``).
+
+    CI's test interpreter is a relocatable python-build-standalone whose prefix is wherever the
+    binary sits, so a bare copy cannot find its stdlib (``No module named 'encodings'``). Copy the
+    host's stdlib beside it (a real copy, not a link: payload guards refuse links that escape the
+    tree); site-packages and the test suite stay out. Production's package stage ships the whole
+    distribution.
+    """
+    python.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(sys._base_executable).resolve(), python)
+    host_lib = Path(sys.base_prefix) / "lib"
+    stdlib = next((d for d in host_lib.glob("python3.*") if (d / "os.py").is_file()), None)
+    if stdlib is not None and not (python.parent.parent / "lib" / stdlib.name).exists():
+        shutil.copytree(stdlib, python.parent.parent / "lib" / stdlib.name,
+                        ignore=shutil.ignore_patterns("site-packages", "test", "__pycache__", "idlelib", "tkinter"),
+                        symlinks=True)
+    return python
+
+
 def _run(command, *, cwd: Path, env: dict) -> str:
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr

@@ -32,7 +32,8 @@ import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
 import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
-import { runUpdateWindowChat, updateWindowEnvironment } from './update-window-chat.mjs';
+import { runUpdateWindowChat } from './update-window-chat.mjs';
+import { updateWindowEnvironment } from './smoke-env.mjs';
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,

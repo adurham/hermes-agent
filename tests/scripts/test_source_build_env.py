@@ -77,7 +77,7 @@ if source_build_env "$PROBE_PYTHON" -I -S -c 'raise SystemExit(23)'; then exit 9
         command = [shell, "--input-type=module", "-e", '''
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-const { updateWindowEnvironment } = await import(pathToFileURL(process.env.ASSETS + '/update-window-chat.mjs'));
+const { updateWindowEnvironment } = await import(pathToFileURL(process.env.ASSETS + '/smoke-env.mjs'));
 const env = updateWindowEnvironment(process.env, process.env.PROBE_ROOT, 'source');
 const result = spawnSync(process.env.PROBE_PYTHON, ['-I', '-S', process.env.PROBE_SCRIPT], { env, stdio: 'inherit' });
 if (result.error || result.status !== 0) throw new Error(`stamp child failed: ${result.error || result.status}`);

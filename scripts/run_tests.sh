@@ -108,21 +108,6 @@ if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
 fi
 
 
-# ── Real-home PATH entries (computed before we drop env) ────────────────────
-# An installed Hermes puts ~/.hermes/{bin,node/bin} on the shell PATH. Tests
-# run under the real-home I/O tripwire, so a `shutil.which()` walking those
-# entries fails as "I/O against the REAL hermes home" — CI has none of them.
-TEST_PATH=""
-_IFS_SAVE="$IFS"; IFS=':'
-for _entry in $PATH; do
-  case "$_entry" in
-    "$HOME/.hermes"|"$HOME/.hermes/"*) ;;
-    *) TEST_PATH="${TEST_PATH:+$TEST_PATH:}$_entry" ;;
-  esac
-done
-IFS="$_IFS_SAVE"
-
-
 # ── Windows location variables (computed before we drop env) ───────────────
 # `env -i` forwards HOME, which is enough on POSIX. Native Windows CPython
 # resolves Path.home() from USERPROFILE (or HOMEDRIVE+HOMEPATH), stdlib
@@ -202,7 +187,7 @@ echo "▶ pre-compiling bytecode cache"
 
 echo "▶ launching test runner"
 exec env -i \
-  PATH="$TEST_PATH" \
+  PATH="$PATH" \
   HOME="$HOME" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
   ${TEST_ENV[@]+"${TEST_ENV[@]}"} \

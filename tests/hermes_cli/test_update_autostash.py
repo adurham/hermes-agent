@@ -110,8 +110,10 @@ def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode):
     ('terminated', 'import os\nos._exit(7)\n', ('consumer',), 'exit code 7'),
     ('paths', 'VALUE = 2\n', (), 'restored Python source discovery'),
 ])
-def test_restore_validates_real_stash_and_each_import(tmp_path, monkeypatch, capsys, fault, body, modules, message):
+def test_restore_validates_real_stash_and_each_import(probe_root, monkeypatch, capsys, fault, body, modules, message):
     import hermes_cli.update_cmd_stash as stash
+
+    tmp_path = probe_root
 
     git(tmp_path, 'init', '-q', '-b', 'main')
     (tmp_path / 'first.py').write_text("raise RuntimeError('missing local config')\n", encoding='utf-8')

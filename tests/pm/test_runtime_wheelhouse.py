@@ -14,6 +14,7 @@ import pytest
 
 from pm.runtime import runtime_environment
 from scripts.bundles.payload import seal_pm_runtime
+from tests.pm._fixtures import stage_host_python
 
 
 @pytest.fixture(scope="module")
@@ -60,9 +61,7 @@ def test_offline_wheelhouse_runtime_survives_sealing_and_move(
 ):
     wheelhouse, versions = locked_wheelhouse
     root = tmp_path / "payload"
-    python = root / "tools/python/bin/python"
-    python.parent.mkdir(parents=True)
-    shutil.copy2(Path(sys._base_executable).resolve(), python)
+    python = stage_host_python(root / "tools/python/bin/python")
     from pm import stage_manager_runtime
     from pm.lock import _write
 

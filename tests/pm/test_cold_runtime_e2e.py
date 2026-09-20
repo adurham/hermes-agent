@@ -130,6 +130,12 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
         with tarfile.open(archive, "w:gz", compresslevel=1) as tar:
             for binary, name in files:
                 tar.add(binary, arcname=name)
+            if package.name == "python":
+                # A relocatable python-build-standalone finds its stdlib beside the binary, not at
+                # the host's prefix: ship the host's stdlib the way the real archive does.
+                stdlib = next(d for d in (Path(sys.base_prefix) / "lib").glob("python3.*") if (d / "os.py").is_file())
+                tar.add(stdlib, arcname=f"python/lib/{stdlib.name}",
+                        filter=lambda info: None if any(part in info.name.split("/") for part in ("site-packages", "test", "__pycache__")) else info)
         version = _run([str(files[0][0]), "--version"], cwd=tmp_path,
                        env=env).stdout.split()[1]
         rows[package.name] = {

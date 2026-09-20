@@ -8,7 +8,12 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import sys
 import threading
+
+_INTERPRETER_PREFIXES = tuple({
+    Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+})
 
 
 class HomeIOGuard:
@@ -22,7 +27,14 @@ class HomeIOGuard:
             return
         self.checking.active = True
         try:
-            candidate = Path(os.fsdecode(value)).expanduser()
+            candidate = Path(os.fsdecode(value))
+            if candidate.parts and candidate.parts[0].startswith("~"):
+                # A test may have patched Path.expanduser to fail; the guard must not
+                # turn that into its own crash — the unexpanded path is checked instead.
+                try:
+                    candidate = candidate.expanduser()
+                except Exception:
+                    pass
             if dir_fd is not None and not candidate.is_absolute():
                 parent = self.directories.get(dir_fd)
                 if parent is None:
@@ -39,12 +51,26 @@ class HomeIOGuard:
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
+            # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
+            # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is
+            # command lookup, not reading Hermes state. CI has no such entries.
+            if metadata and any(absolute.parent == entry for entry in self._path_entries()):
+                return
+            # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
+            # stdlib source reads (linecache, traceback) are not Hermes state either, nor is
+            # realpath() walking up through its ancestors.
+            if any(absolute.is_relative_to(prefix) or (metadata and prefix.is_relative_to(absolute))
+                   for prefix in _INTERPRETER_PREFIXES):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             if any(absolute.is_relative_to(root) for root in roots):
                 self.refuse(value)
             resolved = absolute.resolve()
             if metadata and resolved in roots:
+                return
+            # A fixture symlink to the running interpreter resolves into its installation.
+            if any(resolved.is_relative_to(prefix) for prefix in _INTERPRETER_PREFIXES):
                 return
             if any(resolved.is_relative_to(root) for root in roots):
                 self.refuse(value)
@@ -57,6 +83,10 @@ class HomeIOGuard:
             f"TEST BUG: file I/O against the REAL hermes home: {value}\n"
             "Use the isolated HERMES_HOME or a temporary fixture instead."
         )
+
+    @staticmethod
+    def _path_entries():
+        return [Path(os.path.abspath(entry)) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
 
     def install(self, monkeypatch):
         def wrap(module, name, parameters, *, metadata=False):
