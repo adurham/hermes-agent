@@ -50,3 +50,17 @@ def test_registered_kanban_tools_reject_unknown_keys():
         result = json.loads(registry.dispatch(name, {'misspelled_argument': True}))
         assert 'unknown parameter' in result.get('error', ''), (name, result)
         assert 'misspelled_argument' in result['error']
+
+
+def test_undeclared_internal_keys_survive_the_strict_check():
+    """``project_id`` (legacy alias of ``project``) and ``session_id`` (internal
+    provenance) are read by ``_handle_create`` without being in the LLM-facing
+    schema; the unknown-key gate must not reject them (#115641 follow-up)."""
+    from tools import kanban_tools
+    from tools.registry import registry
+    # No board in this test: an accepted key set reaches the handler proper and
+    # fails on the *next* validation, never on "unknown parameter".
+    result = json.loads(registry.dispatch(
+        'kanban_create', {'title': 'x', 'project_id': '', 'session_id': 's'}))
+    assert 'unknown parameter' not in result.get('error', ''), result
+    assert 'project_id' in kanban_tools._UNDECLARED_ARGS['kanban_create']
