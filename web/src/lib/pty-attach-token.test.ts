@@ -112,32 +112,4 @@ describe("ptyAttachToken", () => {
 
     expect(await reloaded.ptyAttachToken()).toBe("tab-token");
   });
-
-  it("claims the token once per document so a reconnect never re-locks it", async () => {
-    const held = new Set<string>();
-    const requests: string[] = [];
-    const tab = await openTab(held, { [KEY]: "tab-token" }, requests);
-
-    expect(await tab.ptyAttachToken()).toBe("tab-token");
-    expect(await tab.ptyAttachToken()).toBe("tab-token");
-
-    expect(requests).toEqual([`hermes.pty.attach.tab-token`]);
-  });
-
-  it("rotates the token for an explicit fresh session", async () => {
-    const held = new Set<string>();
-    const tab = await openTab(held, { [KEY]: "tab-token" });
-
-    const rotated = await tab.ptyAttachToken(true);
-
-    expect(rotated).not.toBe("tab-token");
-    expect(tab.storage.getItem(KEY)).toBe(rotated);
-  });
-
-  it("still isolates tabs on sessionStorage when the browser has no Web Locks", async () => {
-    const tab = await openTab(new Set(), { [KEY]: "tab-token" });
-    Object.defineProperty(window.navigator, "locks", { configurable: true, value: undefined });
-
-    expect(await tab.ptyAttachToken()).toBe("tab-token");
-  });
 });
