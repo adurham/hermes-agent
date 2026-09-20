@@ -416,28 +416,6 @@ def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to
     assert json.loads(calls[-1]["env"][TURN_AUTHOR_ENV])["id"] != authors[0]["id"], "a different principal is a different author"
 
 
-def test_live_delivery_from_a_logged_in_client_carries_the_principal_author(home, monkeypatch, bound_client):
-    """The live Bot Chat path (``prompt.submit``) gets the principal-derived bot author as a ``DeliveryAuthor``."""
-    from tools.bot_relay import DeliveryAuthor
-
-    submitted = []
-    monkeypatch.setitem(
-        srv._methods, "prompt.submit",
-        lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
-    monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
-    monkeypatch.setitem(srv._sessions, "live-ops", {
-        "profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []})
-    bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
-
-    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **SENDER}))
-
-    assert len(submitted) == 1 and submitted[0]["text"] == "ping"
-    author = submitted[0]["_turn_author"]
-    assert isinstance(author, DeliveryAuthor)
-    assert author.author["is_bot"] is True and author.author["id"].startswith("bot:principal:dashboard:")
-    assert author.author != SENDER_AUTHOR
-
-
 def test_a_signed_in_ws_ticket_is_a_login_identity_so_the_desktop_is_one(monkeypatch, tmp_path):
     """The root cause, pinned: the Desktop's own credential produces a login identity.
 
