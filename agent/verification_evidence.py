@@ -26,7 +26,9 @@ _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 
-_INTERPRETERS = {"python", "python3", "node", "bash", "sh", "ruby", "perl"}
+_INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
+# Windows spells the same interpreters `python.exe` / `py.exe` (a venv's absolute Scripts path).
+_WINDOWS_EXE_SUFFIX_RE = re.compile(r"\.(?:exe|bat|cmd)$", re.IGNORECASE)
 # The same interpreter is reached as `python3`, `python3.12`, `/usr/bin/python3.12`, or
 # `env python3`. Matching only the bare token recorded no evidence for the invocation shapes
 # the verify-on-stop nudge itself hands the agent, so a passing run left the workspace
@@ -316,7 +318,9 @@ def _is_interpreter_token(token: str) -> bool:
     only the bare token left the ad-hoc branch blind to the invocation shapes the nudge hands
     the agent, so a passing run recorded no evidence and the workspace stayed ``unverified``.
     """
-    return bool(_INTERPRETER_NAME_RE.match(Path(token).name))
+    # Basename by hand: on POSIX ``Path`` treats a Windows backslash path as one component.
+    name = token.replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_INTERPRETER_NAME_RE.match(_WINDOWS_EXE_SUFFIX_RE.sub("", name)))
 
 
 def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:

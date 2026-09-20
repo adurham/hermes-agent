@@ -374,6 +374,23 @@ def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
     assert status["changed_paths"] == []
 
 
+@pytest.mark.parametrize(
+    "interpreter",
+    [r"C:\Users\me\venv\Scripts\python.exe", "python.EXE", "py -3"],
+)
+def test_windows_exe_interpreter_records_ad_hoc_evidence(tmp_path, monkeypatch, interpreter):
+    """A venv's absolute ``Scripts\\python.exe`` (or the ``py`` launcher) is the interpreter shape
+    Windows hands the agent; ``.exe`` must not hide it from the ad-hoc branch (review follow-up)."""
+    from agent.verification_evidence import _find_ad_hoc_match
+
+    monkeypatch.setattr(
+        "agent.verification_evidence._is_temp_script_path",
+        lambda token, root: "hermes-verify-" in token and token.endswith(".py"),
+    )
+    win_script = r"C:\Users\me\AppData\Local\Temp\hermes-verify-x.py"
+    assert _find_ad_hoc_match(f"{interpreter} {win_script}", tmp_path) == []
+
+
 def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     """Ad-hoc verification scripts with Windows backslash paths must be
     matched by ``_find_ad_hoc_match`` trying ``posix=False`` in addition to
