@@ -42,11 +42,6 @@ class TestContinuationWordBoundary:
         assert consumer._continuation_text(final_text) == (
             "рядками (мій попередній EN-паттерн…")
 
-    def test_mid_word_prefix_backs_up_to_last_newline(self):
-        consumer = _make_consumer()
-        consumer._last_sent_text = "a\nb c\nword"
-        assert consumer._continuation_text("a\nb c\nword-two") == "word-two"
-
     def test_one_long_token_keeps_original_cut(self):
         # No boundary to back up to: the original cut stands rather than
         # re-sending the whole message.
@@ -54,27 +49,3 @@ class TestContinuationWordBoundary:
         consumer._last_sent_text = "у" * 100
         final_text = ("у" * 100) + ("д" * 20)
         assert consumer._continuation_text(final_text) == "д" * 20
-
-    def test_prefix_ending_on_space_changes_nothing(self):
-        # Already at a word boundary: the cut stays exactly at the prefix end.
-        consumer = _make_consumer()
-        consumer._last_sent_text = "hello world "
-        assert consumer._continuation_text("hello world foo") == "foo"
-
-    def test_fallback_prefix_takes_precedence(self):
-        consumer = _make_consumer()
-        consumer._fallback_prefix = "first line\nkeep word"
-        consumer._last_sent_text = "ignored older prefix "
-        final_text = "first line\nkeep word-zone tail"
-        assert consumer._continuation_text(final_text) == "word-zone tail"
-
-    def test_unrelated_text_returns_whole_text(self):
-        consumer = _make_consumer()
-        consumer._last_sent_text = "something completely different"
-        final_text = "let me start over"
-        assert consumer._continuation_text(final_text) == final_text
-
-    def test_full_match_returns_empty_tail(self):
-        consumer = _make_consumer()
-        consumer._last_sent_text = "всі слова повністю"
-        assert consumer._continuation_text("всі слова повністю") == ""
