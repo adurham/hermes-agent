@@ -28,13 +28,18 @@ def _read_only_object_dir(root: Path) -> Path:
     return obj_dir
 
 
-def test_removes_tree_with_read_only_object(tmp_path):
-    root = tmp_path / "plugins" / "demo"
+def test_checkpoint_clear_all_removes_tree_with_read_only_object(tmp_path):
+    """Driven through a production call site (#117170): ``checkpoint_manager.clear_all`` must
+    reach ``rmtree_readonly`` — a bare ``shutil.rmtree`` there reports ``deleted=False``."""
+    from tools.checkpoint_manager import clear_all
+
+    root = tmp_path / "checkpoints"
     obj_dir = _read_only_object_dir(root)
     assert not (obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904").stat().st_mode & stat.S_IWUSR
 
-    rmtree_readonly(root)
+    out = clear_all(root)
 
+    assert out["deleted"] is True
     assert not root.exists()
 
 
