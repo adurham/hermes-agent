@@ -127,3 +127,19 @@ class TestGenericProviderLiveCuratedMerge:
         assert "x-preview-f-free" not in result
         assert {"kimi-k3", "gpt-5.6-sol", "claude-opus-5"} <= set(result)
 
+
+    def test_opencode_zen_offline_catalog_drops_retired_model(self):
+        """#115496 without a key: no live fetch, so provider_model_ids serves the curated floor merged
+        with models.dev — both still carry the retired x-preview-f-free. The final rows must not."""
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(None)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "", "base_url": ""},
+            ),
+            patch("agent.models_dev.list_agentic_models", return_value=["x-preview-f-free", "kimi-k3"]),
+        ):
+            result = provider_model_ids("opencode-zen")
+
+        assert "x-preview-f-free" not in result
+        assert "kimi-k3" in result

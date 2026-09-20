@@ -1573,24 +1573,26 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
     picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
-    if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
-        # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
-        # live-first, so it filters them out here (#111749).
-        live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
     if not live:
-        return list(profile.fallback_models) if profile.fallback_models else None
-    curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
-    if not curated:
-        return live
-    primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
-    merged = _merge_unique(primary, secondary, key=_model_dedup_key)
-    # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
-    # live-first, so filter the MERGED result — the curated floor is merged back in as the
-    # secondary half and would otherwise resurrect a delisted slug after the live filter ran
-    # (#111749, #115496).
-    if normalized in _LIVE_FIRST_PICKER_PROVIDERS:
-        merged = [m for m in merged if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
-    return merged
+        rows = list(profile.fallback_models) if profile.fallback_models else None
+    else:
+        curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
+        if not curated:
+            rows = live
+        else:
+            primary, secondary = (live, curated) if normalized in _LIVE_FIRST_PICKER_PROVIDERS else (curated, live)
+            rows = _merge_unique(primary, secondary, key=_model_dedup_key)
+    return _drop_delisted_opencode_models(normalized, rows)
+
+
+def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -> Optional[list[str]]:
+    """The relay still LISTS delisted ids it no longer serves, and the curated floor (merged back in
+    as the secondary half, or served alone when there is no key) carries retired ids too. Filter the
+    FINAL rows for the live-first Zen/Go pickers so no path can offer a slug that 401s (#111749,
+    #115496)."""
+    if rows and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+        return [m for m in rows if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
+    return rows
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
@@ -1623,8 +1625,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # model, flux-*, ahead of its chat models).
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized not in _MODELS_DEV_PREFERRED:
-        return curated_static
-    merged = _merge_with_models_dev(normalized, curated_static)
+        return _drop_delisted_opencode_models(normalized, curated_static)
+    # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
+    merged = _drop_delisted_opencode_models(normalized, _merge_with_models_dev(normalized, curated_static))
     return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
 
 
