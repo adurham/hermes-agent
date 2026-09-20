@@ -125,7 +125,11 @@ def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypa
         seen.append(Path(argv[argv.index("--query-file") + 1]).read_text(encoding="utf-8"))
         return _Proc()
 
+    # The deliver child's runner, whichever this tree has: subprocess.run today, and
+    # quiet_single_query.run_reported_turn once the relay books turns from their report
+    # (#114980) — patching only the first would spawn a real ``hermes chat -Q`` child there.
     monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
     bot_relay.write_remote_roster(home, [
         {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
     ])
