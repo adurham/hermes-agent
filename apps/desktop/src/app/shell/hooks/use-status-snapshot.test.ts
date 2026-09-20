@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { MotionGlobalConfig } from 'motion/react'
 import { createElement, type ReactElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -23,6 +24,11 @@ async function flushAsync() {
     await vi.advanceTimersByTimeAsync(0)
   })
 }
+
+// This file is about status RPC cadence, not card choreography: the notification
+// stack's exit animation would otherwise straddle the fake→real timer swap between
+// locales and leave a departing card in the next test's DOM.
+MotionGlobalConfig.skipAnimations = true
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -71,7 +77,11 @@ describe('useStatusSnapshot', () => {
         await vi.advanceTimersByTimeAsync(60_000)
       })
       expect(screen.getByText(warning)).toBeTruthy()
-      fireEvent.click(screen.getByRole('button', { name: copy.notifications.dismiss }))
+      // Dismiss departs through the card stack (store row on a microtask, then the exit).
+      await act(async (): Promise<void> => {
+        fireEvent.click(screen.getByRole('button', { name: copy.notifications.dismiss }))
+        await vi.advanceTimersByTimeAsync(100)
+      })
       expect(screen.queryByText(warning)).toBeNull()
       await act(async (): Promise<void> => {
         await vi.advanceTimersByTimeAsync(60_000)
@@ -90,6 +100,9 @@ describe('useStatusSnapshot', () => {
       vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
       rerender({ scope: 'local-work' })
       await flushAsync()
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
       expect(screen.queryByText(warning)).toBeNull()
     }
   )

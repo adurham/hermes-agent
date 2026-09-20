@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $desktopBoot } from '@/store/boot'
 import { $notifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -330,7 +331,7 @@ describe('BootFailureOverlay', () => {
       fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
 
       const message = failure === 'thrown' ? 'installer permission denied'
-        : failure === 'refused' ? 'bundled-immutable' : 'Desktop IPC bridge is unavailable.'
+        : failure === 'refused' ? 'bundled-immutable' : en.boot.errors.ipcBridgeUnavailable
 
       await waitFor(() => expect($notifications.get()).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'error', message })

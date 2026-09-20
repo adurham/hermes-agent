@@ -13,7 +13,12 @@ import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelPickerDialog } from './model-picker'
 
+// The jobs query refetches on mount and would replace a seeded cache entry with
+// whatever the backend answers; answering with the seeded jobs keeps the two equal.
+const seededJobs: { current: readonly LocalRuntimeJob[] } = vi.hoisted(() => ({ current: [] }))
+
 vi.mock('@/hermes', () => ({
+  getLocalModelsJobs: vi.fn(async () => ({ jobs: [...seededJobs.current] })),
   getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} })
 }))
 vi.mock('@/lib/model-options', async importOriginal => ({
@@ -60,18 +65,18 @@ const DOWNLOAD_JOB: LocalRuntimeJob = {
   error: null
 }
 
-let seedClient: QueryClient | null = null
+// One client per test, created in beforeEach: the tests seed jobs BEFORE
+// rendering, so the picker must mount against the client that was seeded.
+let client: QueryClient = new QueryClient()
 
 function setRuntimeJobs(jobs: readonly LocalRuntimeJob[]): void {
-  // Banana's store keeps jobs in react-query, not the old atom: seed the cache
+  // The jobs store keeps jobs in react-query, not an atom: seed the cache
   // directly the way production populates it (localModelsKey(owner, 'jobs')).
-  seedClient?.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), jobs)
+  seededJobs.current = jobs
+  client.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), jobs)
 }
 
 function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  seedClient = client
-
   const element: ReactElement = (
     <QueryClientProvider client={client}>
       <I18nProvider>
@@ -91,6 +96,7 @@ function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
 }
 
 beforeEach(() => {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   vi.mocked(requestModelOptions).mockResolvedValue(OPTIONS)
   setRuntimeJobs([])
   // These suites exercise the local-models rows, which ship behind --local.

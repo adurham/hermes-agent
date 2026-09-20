@@ -15,7 +15,13 @@ vi.mock('@/hermes', async (): Promise<object> => ({
 vi.mock('@/store/profile', async (): Promise<object> => {
   const { atom } = await import('nanostores')
 
-  return { $activeGatewayProfile: atom<string>('work') }
+  // settings-scope compares the selected profile against the roster's default; 'work' IS the
+  // default here so the settings surfaces render without the non-default warning.
+  return {
+    $activeGatewayProfile: atom<string>('work'),
+    $profiles: atom([{ name: 'work', is_default: true }]),
+    normalizeProfileKey: (name: string | null | undefined): string => (name ?? '').trim() || 'default'
+  }
 })
 vi.mock('@/store/session', async (): Promise<object> => {
   const { atom } = await import('nanostores')
