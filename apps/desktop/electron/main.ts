@@ -15621,16 +15621,11 @@ async function dispatchRegistryApiRequest(
   requestProfile = request?.profile
 ) {
   // Claim-guarded (#90812): every registry-scoped REST call funnels through
-  // here, so it can race a renderer's own WS reconnect dial for the same
-  // (connectionId, profile) scope; coalescing avoids bootstrapping a second
-  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
-  // OUT of the claim: an interactive open coalescing onto an in-flight
-  // passive read would otherwise inherit its "no warm backend" rejection.
+  // here and can race a renderer's WS reconnect dial for the same scope;
+  // coalescing avoids a second SSH tunnel / remote dashboard. A passive read
+  // never dials, so it stays OUT of the claim: an interactive open coalescing
+  // onto it would inherit its "no warm backend" rejection.
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(request?.priority)
-
-  // A passive read never dials, so it stays OUT of the claim: an interactive open
-  // coalescing onto an in-flight passive read would otherwise inherit its
-  // "no warm backend" rejection.
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
