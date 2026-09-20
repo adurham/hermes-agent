@@ -1277,12 +1277,13 @@ export const GROUP_CHAT_MAX_CONTINUATIONS = 2
 // Per-turn room window (#114341 follow-up): a member sees every message since
 // its last turn, up to BOTH ceilings — oldest dropped first, the cut named
 // exactly. Room lines are short by construction (the rules ask for 1-3
-// sentences; user lines average ~100-300 chars), so ~200 entries and ~32 KB
-// (~8k tokens) bite at about the same place for ordinary traffic; the char
-// budget is what keeps a prompt bounded when the lines are long. One body
-// is cut to LINE_CHARS (mark: '… [truncated]') rather than evicting whole
-// messages, so a single giant paste costs a quarter of the window, not all
-// of it, while a multi-paragraph member result still lands intact.
+// sentences; user lines average ~100-300 chars), so ~200 entries and ~32k
+// characters (~8k tokens; budgets are String.length code units, not bytes)
+// bite at about the same place for ordinary traffic; the char budget is
+// what keeps a prompt bounded when the lines are long. One body is cut to
+// LINE_CHARS (mark: '… [truncated]') rather than evicting whole messages, so
+// a single giant paste costs a quarter of the window, not all of it, while a
+// multi-paragraph member result still lands intact.
 export const GROUP_CHAT_HISTORY_LIMIT = 200
 export const GROUP_CHAT_HISTORY_CHARS = 32_000
 export const GROUP_CHAT_HISTORY_LINE_CHARS = 8_000
@@ -1290,6 +1291,16 @@ export const GROUP_CHAT_HISTORY_LINE_CHARS = 8_000
 // a whole window still receives an exact omitted count, not a clamped
 // watermark and a silently shortened room.
 export const GROUP_CHAT_LOG_RETAIN = GROUP_CHAT_HISTORY_LIMIT * 2
+// Storage footprint of the retained log. updateGroupChat persists the WHOLE
+// room map to localStorage (~5M-char origin quota, a failed setItem is
+// swallowed and every later room write is lost with it). Measured on the
+// real persist path: 400 uncapped 8k bodies serialise to 3.25M chars, 400
+// 64k pastes to 25.6M. Stored bodies are therefore cut to the same
+// LINE_CHARS the turn prompt renders (nothing past it ever reaches a member)
+// and the log is head-trimmed to a character budget: 8x the turn window, so
+// ordinary traffic never hits it and a room of back-to-back pastes stays
+// well under a tenth of the quota.
+export const GROUP_CHAT_LOG_RETAIN_CHARS = GROUP_CHAT_HISTORY_CHARS * 8
 export const GROUP_CHAT_MAX_MEMBERS = 6
 
 /** Transcript form of a room speaker's identity. Friendly identity wins:
@@ -1379,20 +1390,43 @@ export function groupSpeakerLabel(name?: null | string, group?: null | string) {
 }
 
 /** Trim a room log + its watermarks to the retained window, keeping
- *  watermark indices consistent with the trimmed array. */
+ *  watermark indices consistent with the trimmed array. Runs on every
+ *  updateGroupChat, i.e. right before the room map is persisted: entries are
+ *  bounded by count AND by stored characters (each body cut to the prompt's
+ *  LINE_CHARS, then the oldest dropped until the log fits the char budget). */
 export function trimGroupChatLog(
   log: GroupMessage[],
   watermarks: Record<string, number>,
-  limit = GROUP_CHAT_LOG_RETAIN
+  limit = GROUP_CHAT_LOG_RETAIN,
+  chars = GROUP_CHAT_LOG_RETAIN_CHARS
 ) {
-  if (log.length <= limit) {
+  const capped = log.map(entry =>
+    entry.text.length > GROUP_CHAT_HISTORY_LINE_CHARS
+      ? { ...entry, text: compactGroupChatSyncText(entry.text, GROUP_CHAT_HISTORY_LINE_CHARS).text }
+      : entry
+  )
+
+  let total = 0
+  let keep = 0
+
+  for (let i = capped.length - 1; i >= 0 && keep < limit; i--) {
+    total += capped[i].text.length
+
+    if (keep && total > chars) {
+      break
+    }
+
+    keep++
+  }
+
+  if (keep >= log.length) {
     return {
-      log,
+      log: capped,
       watermarks
     }
   }
 
-  const drop = log.length - limit
+  const drop = log.length - keep
   const trimmed: Record<string, number> = {}
 
   for (const [name, index] of Object.entries(watermarks || {})) {
@@ -1400,7 +1434,7 @@ export function trimGroupChatLog(
   }
 
   return {
-    log: log.slice(drop),
+    log: capped.slice(drop),
     watermarks: trimmed
   }
 }
@@ -1555,7 +1589,9 @@ export function appendGroupChatEntry(
     id: groupChatEntryId(),
     at: Date.now(),
     from,
-    text: normalizeGroupChatText(text),
+    // Stored bodies share the prompt's per-line cap (see trimGroupChatLog);
+    // cutting here too keeps the duplicate-echo guard comparing like with like.
+    text: compactGroupChatSyncText(normalizeGroupChatText(text), GROUP_CHAT_HISTORY_LINE_CHARS).text,
     thread: thread || 'legacy'
   }
 
