@@ -41,7 +41,7 @@ _FORBIDDEN_MODULES = (
 )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows refuses to remove the process cwd; no such fixture there")
+@pytest.mark.linux_only
 def test_cli_starts_from_a_deleted_cwd(tmp_path):
     """A child spawned into a directory that was removed since (a cron delivery from a reaped
     kanban workspace) must still reach argv parsing: a relative ``sys.path`` entry made
