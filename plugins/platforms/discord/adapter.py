@@ -2161,8 +2161,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         free-response channels by default; ``channels: "*"`` scans every text channel."""
         configured = self.config.extra.get("missed_message_backfill")
         if isinstance(configured, dict) and "channels" in configured:
-            channels = self._gate_csv_set(configured.get("channels"))
-            if channels:
+            raw = configured.get("channels")
+            channels = self._gate_csv_set(raw)
+            # An explicit list (YAML list or JSON-list string, even empty) is authoritative — the
+            # operator disabled the scan; only the default "" string falls through to the env/default.
+            if channels or isinstance(_decode_json_list_literal(raw), list):
                 return channels
         raw = self._gate_env("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS")
         if not raw.strip():
