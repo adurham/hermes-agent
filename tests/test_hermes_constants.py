@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
+from hermes_platform.host import runtime as host_runtime
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     agent_browser_runnable,
@@ -376,7 +377,7 @@ class TestIsContainer:
 
     def _reset_cache(self, monkeypatch):
         """Reset the cached detection result before each test."""
-        monkeypatch.setattr(hermes_constants, "_container_detected", None)
+        monkeypatch.setattr(host_runtime, "_container_detected", None)
 
     def test_detects_dockerenv(self, monkeypatch, tmp_path):
         """/.dockerenv triggers container detection."""
@@ -400,8 +401,6 @@ class TestIsContainer:
         """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
         (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
         says whether *this* process lives in a runtime overlay."""
-        from hermes_constants import _root_mount_has_marker
-
         markers = ("kubepods", "containerd", "crio")
         host = tmp_path / "host"
         host.write_text(
@@ -415,13 +414,13 @@ class TestIsContainer:
             "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
             "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
         )
-        assert _root_mount_has_marker(str(host), markers) is False
-        assert _root_mount_has_marker(str(container), markers) is True
-        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
+        assert host_runtime._root_mount_has_marker(str(host), markers) is False
+        assert host_runtime._root_mount_has_marker(str(container), markers) is True
+        assert host_runtime._root_mount_has_marker(str(tmp_path / "missing"), markers) is False
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
-        monkeypatch.setattr(hermes_constants, "_container_detected", True)
+        monkeypatch.setattr(host_runtime, "_container_detected", True)
         assert is_container() is True
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
