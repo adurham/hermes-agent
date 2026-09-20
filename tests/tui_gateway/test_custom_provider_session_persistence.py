@@ -567,29 +567,82 @@ class TestRoomPlumbingRuntimeOverrides:
 
 
 class TestFollowProfileConfigRuntimeOverrides:
-    def test_composer_override_survives_while_profile_model_is_unchanged(self, monkeypatch):
-        """An explicit Bot Chat pick outranks the unchanged profile default."""
+    def test_composer_pick_on_bot_chat_survives_resume_until_profile_model_changes(self, monkeypatch, tmp_path):
+        """Production path, A->B->A shape: a composer /model pick on a follow_profile_config Bot Chat under
+        profile B persists its provenance marker into B's real SessionDB row via ``_apply_model_switch``;
+        ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
+        model is unchanged, and drops it once B's profile model moves. Launch home A has a different
+        model the whole time, so the compare must run under B's scope, not the launch profile's."""
         import tui_gateway.server as server
 
-        monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/default", "nous"))
-        row = {
-            "title": "Bot Chat",
-            "model": "openai/gpt-5.6-luna-pro",
-            "model_config": json.dumps(
-                {
-                    "model": "openai/gpt-5.6-luna-pro",
-                    "provider": "nous",
-                    "reasoning_config": {"effort": "xhigh"},
-                    "follow_profile_config": True,
-                    "composer_override_profile": {"model": "profile/default", "provider": "nous"},
-                }
-            ),
-        }
+        launch, secondary = tmp_path / "a", tmp_path / "b"
+        for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
+            home.mkdir()
+            (home / "config.yaml").write_text(f"model:\n  default: {model}\n  provider: nous\n")
+            (home / ".env").write_text("")
+        stored = "20260919-000000-botc"
+        db = SessionDB(db_path=secondary / "state.db")
+        db.create_session(stored, "desktop", model="profile/default",
+                          model_config={"model": "profile/default", "provider": "nous", "follow_profile_config": True})
+        db.append_message(stored, "user", "hi")
+        db.append_message(stored, "assistant", "hello")
 
-        overrides = server._stored_session_runtime_overrides(row)
+        class _FakeAgent:
+            model, provider, base_url, api_key, api_mode = "profile/default", "nous", "", "", ""
+            _session_db = db
 
-        assert overrides["model_override"]["model"] == "openai/gpt-5.6-luna-pro"
-        assert overrides["reasoning_config_override"] == {"effort": "xhigh"}
+            def switch_model(self, **kw):
+                self.model, self.provider = kw["new_model"], kw["new_provider"]
+
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setattr(server, "_hermes_home", str(launch))
+        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
+        monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(server, "_schedule_resume_hydration", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
+        monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_restart_slash_worker", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+        live = {"agent": _FakeAgent(), "session_key": stored, "model_override": None,
+                "follow_profile_config": True, "profile_home": str(secondary)}
+        result = types.SimpleNamespace(success=True, error_message="", new_model="zai/glm-5.1", target_provider="zai", api_key="k", base_url="",
+                                       api_mode="", warning_message="", runtime_capabilities=None)
+        known = set(server._sessions)
+        try:
+            with (
+                patch("hermes_cli.model_switch.parse_model_flags", return_value=("glm-5.1", None, False, False, None)),
+                patch("hermes_cli.model_switch.resolve_persist_behavior", return_value=False),
+                patch("hermes_cli.model_switch.switch_model", return_value=result),
+                server._profile_build_scope(secondary),
+            ):
+                server._apply_model_switch("sid-live", live, "glm-5.1")
+
+            row = json.loads(db.get_session(stored)["model_config"])
+            assert row["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+            assert row["model"] == "zai/glm-5.1"
+
+            def resume():
+                resp = server.handle_request({"id": "1", "method": "session.resume", "params": {
+                    "session_id": stored, "source": "desktop", "profile": "b",
+                    "defer_history": True, "omit_messages": True}})
+                assert "error" not in resp, resp
+                # Pop the live record so the next resume rebuilds from the stored row instead of reusing it.
+                with server._sessions_lock:
+                    return server._sessions.pop(resp["result"]["session_id"])
+
+            record = resume()
+            assert record["model_override"]["model"] == "zai/glm-5.1"
+            assert record["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+
+            (secondary / "config.yaml").write_text("model:\n  default: profile/new-default\n  provider: nous\n")
+            assert resume().get("model_override") is None
+        finally:
+            db.close()
+            with server._sessions_lock:
+                for sid in [s for s in server._sessions if s not in known]:
+                    server._sessions.pop(sid, None)
 
     def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
         """Changing the Bot profile invalidates both stored and live chat pins."""
@@ -733,9 +786,12 @@ class TestFollowProfileConfigRuntimeOverrides:
             "session_key": "key-1",
             "model_override": {"model": "glm-5.1", "provider": "ollama-cloud"},
             "follow_profile_config": True,
+            "composer_override_profile": {"model": "profile/default", "provider": "nous"},
         }
         server._ensure_session_db_row(session)
         assert captured["model_config"].get("follow_profile_config") is True
+        # A pick made before the first send rides the same first-write projection as the marker.
+        assert captured["model_config"].get("composer_override_profile") == {"model": "profile/default", "provider": "nous"}
 
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats

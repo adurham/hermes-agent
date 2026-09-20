@@ -529,9 +529,8 @@ class _Resume:
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-            model_config = _parse_model_config(self.found.get("model_config"), quiet=True) if self.found else {}
-            title = str((self.found or {}).get("title") or "").strip()
-            follows_profile = bool(model_config.get("follow_profile_config") or title == "Bot Chat")
+            model_config = _parse_model_config((self.found or {}).get("model_config"), quiet=True)
+            follows_profile = _row_follows_profile(self.found)
         else:
             model_config, follows_profile = {}, False
         record = _deferred_session_record(
@@ -848,7 +847,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
-                if model_config.get("follow_profile_config") or str(ctx.found.get("title") or "").strip() == "Bot Chat":
+                if _row_follows_profile(ctx.found):
                     session["follow_profile_config"] = True
                     session["composer_override_profile"] = (
                         model_config.get("composer_override_profile")

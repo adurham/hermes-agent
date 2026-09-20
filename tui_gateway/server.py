@@ -1502,6 +1502,16 @@ def _parse_model_config(raw, *, quiet: bool = False) -> dict:
     return {}
 
 
+def _row_follows_profile(row: dict | None) -> bool:
+    """Whether a stored row is a canonical Bot Chat whose runtime follows the member profile's config.
+    Identity is the persisted ``follow_profile_config`` marker; the bare title compare stays ONLY here as
+    the legacy fallback for rows written before the marker existed."""
+    if not row:
+        return False
+    model_config = _parse_model_config(row.get("model_config"), quiet=True)
+    return bool(model_config.get("follow_profile_config") or str(row.get("title") or "").strip() == "Bot Chat")
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Runtime fields persisted with a stored session (model column, ``billing_provider``, JSON ``model_config``):
     resume restores the model/provider/reasoning THAT chat used, not the global pick. Plugin-owned Bot-Mode
@@ -1513,13 +1523,12 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     model_config = _parse_model_config(row.get("model_config"), quiet=True)
     _row_title = str(row.get("title") or "").strip()
     room_plumbing = model_config.get("room_plumbing") or (row.get("hidden") and _row_title.startswith("Group:"))
-    follows_profile = model_config.get("follow_profile_config") or _row_title == "Bot Chat"
     composer_profile = model_config.get("composer_override_profile")
     composer_profile_matches = isinstance(composer_profile, dict) and (
         str(composer_profile.get("model") or "").strip(),
         str(composer_profile.get("provider") or "").strip(),
     ) == _config_model_target()
-    if room_plumbing or (follows_profile and not composer_profile_matches):
+    if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
     field = lambda k: str(model_config.get(k) or "").strip()
