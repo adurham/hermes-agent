@@ -131,7 +131,7 @@ class TestSpawnAsyncDiagnostic:
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         self._assert_diagnostic_written(tmp_path)
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_spawns_without_gnu_timeout_on_macos(self, tmp_path):
         """Stock macOS has no ``timeout`` binary and BSD ``ps``; the diagnostic still lands."""
         self._assert_diagnostic_written(tmp_path)

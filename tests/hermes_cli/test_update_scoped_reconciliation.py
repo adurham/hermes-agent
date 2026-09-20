@@ -63,7 +63,7 @@ def test_scoped_reconciliation_matrix(monkeypatch, capsys, name, old, marker, li
         assert target.read_bytes() == before
 
 
-@pytest.mark.parametrize("suffix", ["inventory=not-json", "expected_sha=", "inventory={}", "stray=1"])
+@pytest.mark.parametrize("suffix", ["inventory=not-json", "expected_sha=", "inventory={}", 'inventory=null\ninventory={"version":1,"runtimes":[]}', "broken-line"])
 def test_malformed_marker_stays_pending(monkeypatch, suffix):
     seed(monkeypatch, {}, "new", [CURRENT])
     marker = fleet._fleet_restart_pending_marker_path()
@@ -85,3 +85,37 @@ def test_marker_reconciliation_collects_one_live_snapshot(monkeypatch):
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", collect)
     assert not fleet._pending_fleet_restart_needed()
     assert len(probes) == 1
+@pytest.mark.parametrize("completed_restart", [False, True])
+def test_legacy_marker_discharges_on_live_fleet_evidence_without_receipt(monkeypatch, capsys, completed_restart):
+    """An inventory-less N+1 marker settles on live-fleet evidence alone (#115638).
+
+    It never borrows the old receipt's ownership: the receipt is left intact and the
+    marker discharges only because every live row is current at its expected SHA.
+    """
+    old = {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}
+    if completed_restart:
+        old.update(post_update={"sha": "new"}, gateway_restart={"incomplete": False})
+    live = [CURRENT]
+    target = seed(monkeypatch, old, "new", live)
+    marker = fleet._fleet_restart_pending_marker_path()
+    receipt_before = target.read_bytes()
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "hermes gateway restart" not in capsys.readouterr().err
+    assert not fleet._pending_fleet_restart_needed()
+    assert not marker.exists()
+    assert target.read_bytes() == receipt_before
+
+
+@pytest.mark.parametrize("live,pending", [([CURRENT], False), ([dict(CURRENT, state="stale", code_sha="old")], True), ([], True)], ids=["fleet-current", "fleet-stale", "fleet-empty"])
+def test_inventory_less_marker_settles_after_out_of_band_pull(monkeypatch, capsys, live, pending):
+    """An inventory-less marker left behind by an old update survives every later out-of-band
+    ``git pull`` (#115638): nothing rewrites it, and its ``expected_sha`` is never HEAD again.
+    It records no owed set, so a fleet that is current on the checkout is the whole of the
+    evidence the warning can be about — a stale or absent fleet still keeps it.
+    """
+    seed(monkeypatch, {}, "old", live)
+    marker = fleet._fleet_restart_pending_marker_path()
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert ("hermes gateway restart" in capsys.readouterr().err) is pending
+    assert fleet._pending_fleet_restart_needed() is pending
+    assert marker.exists() is pending

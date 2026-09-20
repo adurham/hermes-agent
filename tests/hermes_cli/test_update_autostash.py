@@ -1,4 +1,5 @@
 """Real Git local-work safety: caller divergence, restore faults and rescue retention."""
+import contextlib
 from pathlib import Path
 import subprocess
 from unittest.mock import patch
@@ -230,6 +231,7 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
     """Behavioral E2E of the whole permission-denied class with real git:
     root-owned-style undeletable untracked dir → stash succeeds, update-style
     reset works, restore round-trips, nothing lost. (#70127 follow-up)"""
+    import contextlib
     import os
     import shutil
     import subprocess
@@ -384,3 +386,159 @@ def test_prune_orphan_rescue_refs_with_real_git_unpins_objects(tmp_path):
     # And gc can now reclaim the snapshot's objects.
     git("gc", "-q", "--prune=now")
     assert git("cat-file", "-e", snap_sha, check=False).returncode != 0
+
+
+def test_autostash_survives_intent_to_add_entries(tmp_path):
+    """An index entry from `git add -N` must not block the update autostash.
+
+    Reported: `hermes update` aborted with "Entry 'tests/...' not uptodate. Cannot merge." because
+    `git add -N` records a path with the empty blob and zeroed stat data, which `git stash push`
+    refuses outright. Editors that show new files in diffs leave exactly that state behind, and the
+    update must not require the user to repair their index by hand.
+    """
+    import subprocess
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    # The reported shape: a new local file recorded with `git add -N`, alongside a normal edit.
+    (tmp_path / "tracked.txt").write_text("v2 local\n", encoding="utf-8")
+    local_test = tmp_path / "tests" / "test_live_custom_provider_poll.py"
+    local_test.parent.mkdir()
+    body = "def test_poll():\n    assert True\n"
+    local_test.write_text(body, encoding="utf-8")
+    git("add", "-N", "tests/test_live_custom_provider_poll.py")
+    # Precondition: git reports it as " A" (present in the worktree, absent from the index) - the
+    # intent-to-add shape that `git stash push` refuses.
+    assert " A tests/test_live_custom_provider_poll.py" in git("status", "--porcelain").stdout.splitlines()
+
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+
+    assert stash_ref, "the update must be able to stash an intent-to-add entry"
+    # The stash must have taken everything, so the pull cannot be blocked by a dirty tree.
+    assert git("status", "--porcelain").stdout == ""
+    assert hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+    assert local_test.read_text(encoding="utf-8") == body
+    assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "v2 local\n"
+
+
+class _ReceiptProbe:
+    """Minimal stand-in for the active update receipt: records steps.
+
+    ``record_step`` clones the active receipt before mutating it (copy-on-write per context),
+    so the steps list is shared by reference for the probe to observe.
+    """
+
+    def __init__(self):
+        self.steps = []
+        self.data = {}  # copied per record; ``steps`` is shared by reference
+
+    def step(self, name, ok, detail=""):
+        self.steps.append({"name": name, "ok": ok, "detail": detail})
+
+
+@contextlib.contextmanager
+def _active_receipt(probe):
+    from hermes_cli import update_receipt
+
+    token = update_receipt._current.set(probe)
+    try:
+        yield
+    finally:
+        update_receipt._current.reset(token)
+
+
+def test_conflicted_restore_records_parked_step_in_receipt(monkeypatch, tmp_path):
+    import subprocess
+    from hermes_cli import update_receipt
+
+    def git(*args, check=True):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "tools" / "terminal_tool.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    # Local edit whose restore will conflict with the pulled change.
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    # Simulate the pull moving the same lines: the stash apply now conflicts.
+    git("checkout", "HEAD")
+    source.write_text("VALUE = 3\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "pulled change")
+
+    probe = _ReceiptProbe()
+    with _active_receipt(probe):
+        restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+
+    assert restored is False
+    disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+    assert len(disposition) == 1
+    assert disposition[0]["ok"] is False
+    assert "parked" in disposition[0]["detail"]
+    assert stash_ref in disposition[0]["detail"]
+    assert git("stash", "list").stdout.strip(), "stash must survive for manual recovery"
+
+
+def test_clean_restore_records_restored_step_in_receipt(monkeypatch, tmp_path):
+    import subprocess
+    from hermes_cli import update_receipt
+
+    def git(*args, check=True):
+        return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    source = tmp_path / "tools" / "terminal_tool.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+
+    probe = _ReceiptProbe()
+    with _active_receipt(probe):
+        restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
+
+    assert restored is True
+    disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+    assert len(disposition) == 1
+    assert disposition[0]["ok"] is True
+    assert "restored" in disposition[0]["detail"]
+    assert stash_ref in disposition[0]["detail"]
+
+
+def test_keep_stash_park_records_parked_step_in_receipt(capsys):
+    probe = _ReceiptProbe()
+    import hermes_cli.update_cmd_stash as stash_mod
+    from hermes_cli import update_receipt
+
+    with _active_receipt(probe):
+        stash_mod._park_stashed_changes("deadbeefcafe")
+
+    out = capsys.readouterr().out
+    assert "--keep-stash" in out
+    disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+    assert len(disposition) == 1
+    assert disposition[0]["ok"] is False
+    assert "parked" in disposition[0]["detail"]

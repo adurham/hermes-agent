@@ -29,6 +29,11 @@ class HomeIOGuard:
                     raise AssertionError("TEST BUG: untracked dir_fd in guarded filesystem I/O")
                 candidate = parent / candidate
             absolute = Path(os.path.abspath(candidate))
+            # /proc/<pid>/fd/N is descriptor inspection (deleted-WAL holder scans stat the magic
+            # link to compare inode identity); resolving it names whatever file that fd holds,
+            # which is not I/O against the home.
+            if metadata and absolute.is_relative_to("/proc"):
+                return
             roots = self.roots()
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.

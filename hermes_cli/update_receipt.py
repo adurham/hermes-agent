@@ -266,6 +266,13 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+        # Manual serve restart obligations outlive one receipt rotation: carry the previous
+        # receipt's still-pending rows forward so the startup warning survives (see
+        # update_serve_obligations).
+        from hermes_cli.update_serve_obligations import retain_receipt_manual_serves
+        pending = retain_receipt_manual_serves(read_latest_receipt() or {})
+        if pending:
+            receipt.data["pending_manual_serves"] = pending
         # EMBED the pm sync sections (the settled receipts contract): the
         # update's rebuild/bisect ran through pm's own sync receipt, which
         # finalizes before this one. Fold in only the completion filed

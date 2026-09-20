@@ -1297,7 +1297,7 @@ def test_find_windows_gateway_services_rejects_transitional_ancestor(monkeypatch
         )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypatch):
     """gateway <- cmd.exe <- svchost.exe(Schedule) <- services.exe: the Task Scheduler host is not the
     gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
