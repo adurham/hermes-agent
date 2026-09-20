@@ -89,6 +89,28 @@ class TestCatchAllPatterns:
 # Non-secret keys → config.yaml
 # ---------------------------------------------------------------------------
 
+class TestGatewayPlatformsPrefixRedirect:
+    """#115212: ``gateway.platforms.<p>.<field>`` lands on the top-level ``platforms.<p>.<field>``
+    the gateway prefers, instead of a nested key that an existing top-level value shadows."""
+
+    def test_set_lands_on_top_level_platforms_block_the_loader_reads(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platforms:\n  telegram:\n    enabled: false\n", encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "true")
+        out = capsys.readouterr().out
+        assert "saved as platforms.telegram.enabled" in out
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded["platforms"]["telegram"]["enabled"] is True
+        assert "gateway" not in loaded
+        from gateway.config import Platform, load_gateway_config
+        assert load_gateway_config().platforms[Platform.TELEGRAM].enabled is True
+
+    def test_nested_display_setting_still_reaches_display_platforms(self):
+        from hermes_cli.config import _redirect_platform_display_key
+        key, _ = _redirect_platform_display_key("gateway.platforms.telegram.streaming")
+        assert key == "display.platforms.telegram.streaming"
+
+
 class TestConfigYamlRouting:
     """Regular config keys should go to config.yaml, NOT .env."""
 
