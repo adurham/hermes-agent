@@ -16,7 +16,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/requesting-code-review` |
-| Version | `2.0.0` |
+| Version | `2.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -142,6 +142,11 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
+**Interactive sessions only.** In a one-shot run (`hermes chat -q`, `--oneshot`, a
+benchmark harness) there is no one to hand the verdict to and a fresh subagent re-pays
+the whole system prompt plus a repo re-read: skip Steps 5 and 7, apply the Step 4
+checklist to the diff yourself, run the tests, and go to Step 8.
+
 Call `delegate_task` directly — it is NOT available inside execute_code or scripts.
 
 The reviewer gets ONLY the diff and static scan results. No shared context with
@@ -211,7 +216,7 @@ Suggestions (non-blocking): [list]
 
 ## Step 7 — Auto-fix loop
 
-**Maximum 2 fix-and-reverify cycles.**
+**Maximum 2 fix-and-reverify cycles. Interactive sessions only (see Step 5).**
 
 Spawn a THIRD agent context — not you (the implementer), not the reviewer.
 It fixes ONLY the reported issues:
