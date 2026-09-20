@@ -61,7 +61,11 @@ def _build_browser_env() -> dict:
     # builder also serves the npx cache warmer, the Chromium auto-installer and the Lightpanda engine, none of which
     # may bring a screen up — the auto-start hook lives at the headed Chromium spawn sites (browser_tool_session).
     from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
-    return add_loopback_no_proxy(_bot_desktop_env(env))
+    env = add_loopback_no_proxy(_bot_desktop_env(env))
+    # Chrome puts its SingletonSocket under $TMPDIR; a deep scratch dir overflows the AF_UNIX
+    # path cap and Chrome dies at startup ("Socket path too long"), so browsers get the short root.
+    env["TMPDIR"] = _socket_safe_tmpdir()
+    return env
 
 
 try:
@@ -356,9 +360,10 @@ def _last_session_key(task_id: str) -> str:
 
 
 def _socket_safe_tmpdir() -> str:
-    """Short temp dir for Unix sockets: macOS ``TMPDIR`` + ``agent-browser-hermes_…``
-    exceeds the 104-byte AF_UNIX limit (silent screenshot failures), so use /tmp there."""
-    return "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+    """Temp root short enough for the agent-browser socket dir and Chrome's SingletonSocket
+    (``hermes_constants.socket_safe_tmpdir``)."""
+    from hermes_constants import socket_safe_tmpdir
+    return socket_safe_tmpdir()
 
 
 # Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
