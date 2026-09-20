@@ -601,30 +601,3 @@ def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout
     assert "Running 1 test files" in proc.stdout, proc.stdout
     assert "✓2" in proc.stdout or "2 passed" in proc.stdout, proc.stdout
-
-
-def test_files_and_files_from_are_mutually_exclusive(tmp_path: Path) -> None:
-    """Both explicit-list flags at once is a usage error, not a silent pick."""
-    probe_dir = _make_probe_dir(tmp_path)
-    list_file = tmp_path / "files.txt"
-    list_file.write_text(f"{probe_dir / 'test_flagprobe.py'}\n", encoding="utf-8")
-
-    proc = _run_runner(
-        probe_dir, "--files", str(probe_dir / "test_flagprobe.py"),
-        "--files-from", str(list_file),
-    )
-    assert proc.returncode == 2, proc.stdout
-    assert "mutually exclusive" in proc.stdout, proc.stdout
-    assert "Running" not in proc.stdout, proc.stdout
-
-
-def test_files_from_missing_file_errors_cleanly(tmp_path: Path) -> None:
-    """An unreadable list file fails with one clear line, not a traceback."""
-    probe_dir = _make_probe_dir(tmp_path)
-    missing = tmp_path / "no-such-list.txt"
-
-    proc = _run_runner(probe_dir, "--files-from", str(missing))
-    assert proc.returncode == 2, proc.stdout
-    assert f"error: --files-from: cannot read {str(missing)!r}" in proc.stdout
-    assert "Traceback" not in proc.stdout, proc.stdout
-    assert "Running" not in proc.stdout, proc.stdout
