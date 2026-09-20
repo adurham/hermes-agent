@@ -307,8 +307,11 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         char_budget = None if max_inline_tokens is None else max_inline_tokens * CHARS_PER_TOKEN
         line_cap = None if char_budget is None else char_budget + 1
 
-        def _next_line(fh, collect: bool) -> str | None:
-            pieces, seen = [], False
+        def _next_line(fh, collect: bool, remaining: int | None = None) -> str | None:
+            """One line ("" when skipping), None at EOF. While collecting, stop as soon as the
+            pieces exceed ``remaining``: the caller returns the oversized block and never needs
+            the rest of a giant line, so it is never materialized."""
+            pieces, seen, collected = [], False, 0
             while True:
                 piece = fh.readline() if line_cap is None else fh.readline(line_cap)
                 if not piece:
@@ -316,6 +319,9 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
                 seen = True
                 if collect:
                     pieces.append(piece)
+                    collected += len(piece)
+                    if remaining is not None and collected > remaining:
+                        break
                 if piece.endswith("\n"):
                     break
             return ("".join(pieces) if collect else "") if seen else None
@@ -326,7 +332,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
                 if _next_line(fh, collect=False) is None:
                     break
             for _ in range((ref.line_end or ref.line_start) - ref.line_start + 1):
-                line = _next_line(fh, collect=True)
+                line = _next_line(fh, collect=True, remaining=None if char_budget is None else char_budget - total_chars)
                 if line is None:
                     break
                 total_chars += len(line)

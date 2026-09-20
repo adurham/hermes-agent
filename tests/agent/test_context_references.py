@@ -246,7 +246,7 @@ def test_line_range_bounds_reads_on_single_line_file(tmp_path: Path, monkeypatch
     payload = tmp_path / "oneline.txt"
     payload.write_text("x" * 100_000, encoding="utf-8")  # one giant line, no newline
 
-    read_sizes = []
+    read_sizes, returned = [], []
     orig_open = Path.open
 
     def _counting_open(self, *args, **kwargs):
@@ -254,7 +254,14 @@ def test_line_range_bounds_reads_on_single_line_file(tmp_path: Path, monkeypatch
         mode = args[0] if args else kwargs.get("mode", "r")
         if "b" not in mode:
             orig_readline = fh.readline
-            fh.readline = lambda *a, **k: (read_sizes.append(a[0] if a else -1), orig_readline(*a, **k))[1]
+
+            def _readline(*a, **k):
+                read_sizes.append(a[0] if a else -1)
+                piece = orig_readline(*a, **k)
+                returned.append(len(piece))
+                return piece
+
+            fh.readline = _readline
         return fh
 
     monkeypatch.setattr(Path, "open", _counting_open)
@@ -264,6 +271,9 @@ def test_line_range_bounds_reads_on_single_line_file(tmp_path: Path, monkeypatch
     assert "too large to inline safely" in result.message
     # hard_limit = 500 tokens -> char budget 2000 -> each readline bounded at 2001
     assert read_sizes and max(read_sizes) <= 2001
+    # ... and the giant line is never materialized: reading stops once the budget is exceeded
+    # instead of collecting every 2001-char piece up to the newline (review follow-up).
+    assert sum(returned) <= 2 * 2001
 
 
 def test_run_quiet_caps_child_output(tmp_path: Path):
