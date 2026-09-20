@@ -35,7 +35,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_MARKER = "<module>"
-_RESOLUTION_ALLOWLIST_PATH = REPO_ROOT / "tests/data/resolution_allowlist.json"
+_RESOLUTION_ALLOWLIST_PATH = REPO_ROOT / "tests/fixtures/resolution_allowlist.json"
 _KNOWN_PATH_FRAGMENTS = (
     ".local/bin",
     ".cargo/bin",
@@ -137,8 +137,6 @@ def _iter_which_calls(tree: ast.AST):
 
 
 class _ResolutionSiteVisitor(ast.NodeVisitor):
-    """Collect bare PATH lookups and known-path tables by enclosing symbol."""
-
     def __init__(self, tree: ast.Module) -> None:
         self._scope: list[tuple[str, bool]] = []
         self._shutil_aliases = {"shutil"}
@@ -204,16 +202,13 @@ class _ResolutionSiteVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _visit_path_table(self, node: ast.List | ast.Tuple) -> None:
+        # Re-join fragments split across path-construction arguments before matching.
         strings = [
-            element.value
-            for element in node.elts
-            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+            child.value for child in ast.walk(node)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)
         ]
-        fragments = {
-            fragment
-            for fragment in _KNOWN_PATH_FRAGMENTS
-            if any(fragment in value for value in strings)
-        }
+        joined = "/".join(strings)
+        fragments = {fragment for fragment in _KNOWN_PATH_FRAGMENTS if fragment in joined}
         if len(fragments) >= 2:
             self.sites.add((self._symbol, "known_path_table"))
 
