@@ -1538,6 +1538,17 @@ function logPoolSpawnFailure(label: string, error: unknown): void {
   }
 }
 
+// A passive read (background tile reconcile, #103375) may only be served by a
+// backend that already exists: it never cold-starts a pooled child, never
+// takes a slot, and never refreshes lastActiveAt, so an open-but-unviewed tile
+// cannot keep the pool saturated. Callers treat the rejection as "nothing to
+// refresh yet"; primary-routed profiles are always warm and never reach here.
+function assertNotPassiveSpawn(passive: boolean, poolKey: string): void {
+  if (passive) {
+    throw new Error(`Passive read: no warm backend for "${poolKey}"`)
+  }
+}
+
 // Apply foreground intent to the dial claim for `scopeKey`: an entry already
 // in the pool is promoted directly, otherwise the intent is marked for the
 // spawn the claim owner is about to start. Returns the cleanup that clears a
@@ -10208,10 +10219,11 @@ function profileRouteOptions(profile, request?) {
 // Resolve a backend connection for the given profile, per the routing table in
 // resolveProfileBackendRoute(). An empty / unknown profile resolves to the
 // primary, so legacy callers are unchanged.
-async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnPriority } = {}) {
+async function ensureBackend(profile, opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}) {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   poolRetirer.assertCanOpen(key, spawnPriority)
+  const passive = Boolean(opts.passive)
 
   profileDeletionGate.assertCanStart(key)
 
@@ -10245,7 +10257,9 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
+    if (!passive) {
+      existing.lastActiveAt = Date.now()
+    }
 
     if (spawnPriority === 'foreground') {
       promotePoolEntry(existing)
@@ -10257,6 +10271,7 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
     return connection
   }
 
+  assertNotPassiveSpawn(passive, key)
   evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
@@ -10301,9 +10316,10 @@ async function ensureRegistryBackend(
   connectionId,
   profile,
   managedUpdateCorrelation = '',
-  opts: { spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: { passive?: boolean; spawnPriority?: LocalBackendSpawnPriority } = {}
 ) {
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
+  const passive = Boolean(opts.passive)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const source = registry.connections.find(c => c.id === id)
@@ -10360,7 +10376,7 @@ async function ensureRegistryBackend(
   const primary = await reuseMatchingPrimarySshBackend({
     connectionId: id,
     effectiveFingerprint: resolveRegistryEffectiveFingerprint,
-    ensurePrimary: () => ensureBackend(profile, { spawnPriority }),
+    ensurePrimary: () => ensureBackend(profile, { passive, spawnPriority }),
     profile,
     registry,
     source
@@ -10405,7 +10421,7 @@ async function ensureRegistryBackend(
     })
 
     if (localRoute.delegate) {
-      return ensureBackend(profile, { spawnPriority })
+      return ensureBackend(profile, { passive, spawnPriority })
     }
 
     const stoppingLocal = poolStopper.inFlight(localRoute.poolKey)
@@ -10417,7 +10433,9 @@ async function ensureRegistryBackend(
     const existingLocal = backendPool.get(localRoute.poolKey)
 
     if (existingLocal) {
-      existingLocal.lastActiveAt = Date.now()
+      if (!passive) {
+        existingLocal.lastActiveAt = Date.now()
+      }
 
       if (spawnPriority === 'foreground') {
         promotePoolEntry(existingLocal)
@@ -10426,6 +10444,7 @@ async function ensureRegistryBackend(
       return existingLocal.connectionPromise
     }
 
+    assertNotPassiveSpawn(passive, localRoute.poolKey)
     evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
@@ -10462,7 +10481,10 @@ async function ensureRegistryBackend(
   const existing = backendPool.get(key)
 
   if (existing) {
-    existing.lastActiveAt = Date.now()
+    if (!passive) {
+      existing.lastActiveAt = Date.now()
+    }
+
     const connectionPromise = existing.connectionPromise
 
     // A remote process can die while its local SSH forward stays LISTENing.
@@ -10474,7 +10496,7 @@ async function ensureRegistryBackend(
         connectionPromise,
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
-        reconnect: () => ensureRegistryBackend(id, profile),
+        reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
         retire: async (error: any) => {
           // A late failure from an old descriptor must never tear down a newer
           // entry that another caller has already installed.
@@ -10496,6 +10518,7 @@ async function ensureRegistryBackend(
     )
   }
 
+  assertNotPassiveSpawn(passive, key)
   evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
@@ -15604,9 +15627,14 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(request?.priority)
-  const connection: any = await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-    ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-  )
+  // A passive read never dials, so it stays OUT of the claim: an interactive open
+  // coalescing onto an in-flight passive read would otherwise inherit its
+  // "no warm backend" rejection.
+  const connection: any = request?.passive
+    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
+      )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -15695,7 +15723,7 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-    connection = await ensureBackend(routeProfile, { spawnPriority })
+    connection = await ensureBackend(routeProfile, { passive: request?.passive, spawnPriority })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const url = `${connection.baseUrl}${apiRoute.requestPath}`
