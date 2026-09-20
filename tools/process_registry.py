@@ -957,13 +957,27 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return []
         return [c.pid for c in children if ProcessRegistry._proc_alive(c)]
 
+    # SIGKILL / taskkill are asynchronous: the kernel needs a scheduling tick to
+    # tear the process down and the parent must reap it before poll()/isalive()
+    # stop saying "alive". Verifying survivors in that window flagged every
+    # escalated kill as incomplete.
+    _KILL_SETTLE_SECONDS = 1.0
+
     def _post_kill_survivors(self, session: "ProcessSession") -> List[int]:
-        """Host PIDs still alive after the kill signals were delivered (#115490).
+        """Host PIDs still alive once the kill signals have had time to land (#115490).
 
         Fail-closed: anything unverifiable counts as a survivor, so a kill
         that leaves a live tree can never write a killed receipt. Sandbox
         (env) sessions have no host-visible tree and are unverifiable by
         design — they return no survivors, preserving existing behavior."""
+        deadline = time.monotonic() + self._KILL_SETTLE_SECONDS
+        while True:
+            survivors = self._probe_survivors(session)
+            if not survivors or time.monotonic() >= deadline:
+                return survivors
+            time.sleep(0.05)
+
+    def _probe_survivors(self, session: "ProcessSession") -> List[int]:
         survivors: List[int] = []
         proc = getattr(session, "process", None)
         if proc is not None:
