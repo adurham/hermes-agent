@@ -50,7 +50,7 @@ def check_desktop_surface(report, plugin_dir: Path) -> None:
     hits: List[str] = []
     for js in sorted(desktop.rglob("*.js")):
         try:
-            source = js.read_text(encoding="utf-8", errors="replace")
+            source = js.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
         rel = js.relative_to(plugin_dir).as_posix()
