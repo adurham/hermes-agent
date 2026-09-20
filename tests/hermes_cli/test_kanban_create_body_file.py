@@ -26,65 +26,41 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
 
 
-def _build_kanban_parser():
+def _create(argv, monkeypatch=None, stdin=None):
+    """Drive the real ``hermes kanban create`` parser into ``_cmd_create``."""
     root = argparse.ArgumentParser(prog="hermes")
-    subs = root.add_subparsers()
-    return kc.build_parser(subs)
-
-
-def _make_create_ns(**overrides):
-    ns = argparse.Namespace(
-        title="t", body=None, body_file=None, assignee=None,
-        created_by="user", workspace="scratch", branch=None, project=None,
-        tenant=None, priority=0, parent=None, triage=False,
-        idempotency_key=None, max_runtime=None, max_retries=None,
-        skills=None, json=False, model_override=None,
-        provider_override=None, goal_mode=False, goal_max_turns=None,
-        completion_contract=None, initial_status="running",
-    )
-    for k, v in overrides.items():
-        setattr(ns, k, v)
-    return ns
+    kc.build_parser(root.add_subparsers())
+    args = root.parse_args(["kanban", "create", *argv])
+    if stdin is not None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(stdin))
+    return kc._cmd_create(args)
 
 
 def _latest_body():
     with kbc.connect_closing() as conn:
         tasks = kb.list_tasks(conn)
     assert tasks, "expected _cmd_create to have stored a task"
-    return tasks[-1].body
+    return tasks[-1]
 
 
-def test_create_parser_accepts_body_file():
-    parser = _build_kanban_parser()
-    args = parser.parse_args(["create", "title here", "--body-file", "note.md"])
-    assert args.body_file == "note.md"
-
-
-def test_create_body_file_preserves_newlines_and_flag_like_lines(kanban_home, tmp_path, capsys):
+def test_body_file_stores_body_verbatim_with_trailing_flags_intact(kanban_home, tmp_path, capsys):
     f = tmp_path / "body.md"
-    f.write_text(BODY)
-    rc = kc._cmd_create(_make_create_ns(body_file=str(f)))
-    assert rc == 0
+    f.write_text(BODY, encoding="utf-8")
+    assert _create(["PROBE", "--body-file", str(f), "--assignee", "baxter", "--priority", "7"]) == 0
     capsys.readouterr()
-    assert _latest_body() == BODY
+    task = _latest_body()
+    assert (task.body, task.assignee, task.priority) == (BODY, "baxter", 7)
+    # --body and --body-file cannot both win; refuse instead of picking one.
+    assert _create(["PROBE", "--body", "inline", "--body-file", str(f)]) == 2
 
 
-def test_create_body_file_dash_reads_stdin(kanban_home, monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", io.StringIO(BODY))
-    rc = kc._cmd_create(_make_create_ns(body_file="-"))
-    assert rc == 0
+def test_body_file_dash_reads_stdin(kanban_home, monkeypatch, capsys):
+    assert _create(["PROBE", "--body-file", "-"], monkeypatch, stdin=BODY) == 0
     capsys.readouterr()
-    assert _latest_body() == BODY
-
-
-def test_create_body_and_body_file_conflict(kanban_home, tmp_path, capsys):
-    f = tmp_path / "body.md"
-    f.write_text(BODY)
-    rc = kc._cmd_create(_make_create_ns(body="inline", body_file=str(f)))
-    assert rc == 2
-    capsys.readouterr()
+    assert _latest_body().body == BODY
