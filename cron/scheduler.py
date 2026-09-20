@@ -602,6 +602,32 @@ def get_running_job_details() -> list[dict]:
         ]
 
 
+def get_wedged_job_ids() -> "frozenset[str]":
+    """In-flight job IDs older than their stale-inflight allowance (``max(2 * interval,
+    cron.inflight_max_minutes)``) — the scheduler's own definition of a claim that can no longer be
+    making progress. ``sweep_stale_inflight`` cannot release these while the worker thread is still
+    alive (a delivery blocked on a dead transport, #115469), so the gateway restart drain reads this to
+    skip them the way it skips wedged chat turns; restart is their remedy.
+    """
+    now = time.time()
+    with _running_lock:
+        ages = {jid: now - started for jid, started in _running_since.items() if jid in _running_job_ids}
+    if not ages:
+        return frozenset()
+    floor_seconds = _inflight_min_allowance_minutes() * 60.0
+    wedged = set()
+    for job_id, age in ages.items():
+        allowance = floor_seconds
+        with contextlib.suppress(Exception):
+            from cron.jobs import get_job
+            interval_minutes = _job_interval_minutes(get_job(job_id) or {})
+            if interval_minutes:
+                allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+        if age >= allowance:
+            wedged.add(job_id)
+    return frozenset(wedged)
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
