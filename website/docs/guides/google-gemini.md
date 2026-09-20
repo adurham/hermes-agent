@@ -128,6 +128,16 @@ A base URL on any other host (a proxy) is never rewritten. Express keys are
 separate from the OAuth-based
 [Vertex AI provider](./google-vertex.md), which needs no API key.
 
+:::warning Upgrade note for existing express-key users
+Earlier Hermes releases detected the `AQ.` prefix and rerouted such keys to
+`aiplatform.googleapis.com` automatically, so the documented setup was "set
+`GEMINI_API_KEY` to the express key and leave `GEMINI_BASE_URL` unset". That
+automatic reroute is gone: with `GEMINI_BASE_URL` unset, every request — chat,
+`hermes doctor`, TTS — now goes to the AI Studio host and a Vertex express key
+gets `403 PERMISSION_DENIED` there. Add `GEMINI_BASE_URL=https://aiplatform.googleapis.com`
+to `~/.hermes/.env` (or set `base_url` on the provider) once and restart.
+:::
+
 ## Available Models
 
 The `hermes model` picker shows Gemini models maintained in Hermes' provider registry. Common choices include:
