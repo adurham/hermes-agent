@@ -17,6 +17,12 @@ def test_python_symbols_gain_an_explicit_library_dependency(tmp_path):
     import _cffi_backend
 
     library = Path(sysconfig.get_config_var("LIBDIR")) / sysconfig.get_config_var("LDLIBRARY")
+    if not library.is_file():
+        # A relocatable python-build-standalone reports its build-time prefix (/install)
+        # and links libpython statically; there is no shared library to name here.
+        pytest.skip(f"host interpreter has no shared libpython at {library}")
+    if shutil.which("patchelf") is None:
+        pytest.skip("patchelf is not on PATH")
     extension = tmp_path / Path(_cffi_backend.__file__).name
     shutil.copyfile(_cffi_backend.__file__, extension)  # Writable scratch even from a read-only Nix store.
     original = subprocess.check_output(["patchelf", "--print-needed", str(extension)], text=True).splitlines()

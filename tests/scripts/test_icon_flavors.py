@@ -109,10 +109,16 @@ def frames(path):
 
 
 def tile_color(image):
-    # Sample below the artwork, inside the tile (also works for mac margins
-    # and the centered wide Appx tile). Ignore sub-visible resampling alpha.
+    # The flavor background is the tile fill. Tiles carry an inward contrasting
+    # border (black or white) and the artwork sits above the centre, both of
+    # which LANCZOS smears across tiny frames — so read the most chromatic pixel
+    # of the tile's lower half instead of one fixed coordinate: on a flavored
+    # tile that is the fill colour, on a stable tile every candidate is grey.
     x0, y0, x1, y1 = image.getchannel("A").point(lambda a: 255 if a >= 128 else 0).getbbox()
-    return image.getpixel(((x0 + x1) // 2, y1 - 1))[:3]
+    pixels = [rgba[:3] for rgba in image.crop((x0, (y0 + y1) // 2, x1, y1)).getdata() if rgba[3] >= 128]
+    # Saturation weighted by chroma: a near-black anti-aliased edge pixel has high HSV
+    # saturation but almost no colour, the fill has both.
+    return max(pixels, key=lambda rgb: max(rgb) - min(rgb))
 
 
 def assert_same_geometry(original, flavored):
@@ -162,7 +168,7 @@ def test_canary_changes_only_desktop_background_preserving_art_and_native_geomet
             assert_same_geometry(original, yellow)
             hue, saturation, value = colorsys.rgb_to_hsv(*(v / 255 for v in tile_color(yellow)))
             assert 0.10 < hue < 0.18 and saturation > 0.65, (path, yellow.size, tile_color(yellow))
-            assert (value < 0.4) if "dark" in path.name else (value > 0.8)
+            assert (value < 0.4) if "dark" in path.name else (value > 0.8), (path, yellow.size, tile_color(yellow))
             # Compare art in direct renders. Tiny container frames use LANCZOS,
             # whose ringing legitimately depends on adjacent background colors.
             if path.suffix == ".png" and original.width >= 256:
@@ -188,7 +194,7 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
             assert_same_geometry(original, red)
             hue, saturation, value = colorsys.rgb_to_hsv(*(v / 255 for v in tile_color(red)))
             assert (hue < 0.05 or hue > 0.95) and saturation > 0.6, (rel, tile_color(red))
-            assert (value < 0.4) if "dark" in path.name else (value > 0.8)
+            assert (value < 0.4) if "dark" in path.name else (value > 0.8), (rel, red.size, tile_color(red))
             # No SHA change may move the tile/art or alter the region below its top quarter.
             bbox = red.getchannel("A").point(lambda a: 255 if a >= 128 else 0).getbbox()
             diff = ImageChops.difference(red.convert("RGB"), other.convert("RGB")).convert("L")
@@ -205,13 +211,24 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
         (2, 6, 10, 18, 31, 2, 2), (31, 16, 16, 30, 1, 1, 30),
         (14, 16, 16, 30, 17, 17, 14),
     )
+    # The portrait renders in front of the badge (her hair crosses its lower rows), so a
+    # cell is only judged where the stable icon shows no art at that spot; every glyph
+    # must still be identified by a majority of its uncovered cells.
     for name in ("icon.png", "icon-dark.png"):
         image = Image.open(first / "apps/desktop/assets" / name).convert("RGB")
+        unbadged = Image.open(stable / "apps/desktop/assets" / name).convert("RGB")
+        art = (0, 0, 0) if name == "icon.png" else (255, 255, 255)
         for digit, rows in enumerate(expected):
+            judged = 0
             for y, row in enumerate(rows):
                 for x in range(5):
-                    pixel = image.getpixel((184 + (digit * 6 + x) * 16 + 8, 48 + y * 16 + 8))
-                    assert (min(pixel) > 240) == bool(row & (1 << (4 - x))), (digit, x, y)
+                    point = (184 + (digit * 6 + x) * 16 + 8, 48 + y * 16 + 8)
+                    if unbadged.getpixel(point) == art:
+                        continue
+                    judged += 1
+                    pixel = image.getpixel(point)
+                    assert (min(pixel) > 240) == bool(row & (1 << (4 - x))), (name, digit, x, y)
+            assert judged >= 18, (name, digit, judged)
     assert_unbranded_outputs(stable, first)
 
 

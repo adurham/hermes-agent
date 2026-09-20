@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.pm._fixtures import isolated_python  # noqa: F401
 import hermes_yaml as yaml
 
 from hermes_cli.subcommands.plugins import build_plugins_parser
@@ -307,19 +309,24 @@ def test_checkout_mismatch_is_rejected(monkeypatch, tmp_path):
         _checkout_exact_revision(clone, "git", old_sha)
 
 
-def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path):
+def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path, isolated_python):
     from hermes_cli.plugins_cmd import _install_plugin_core, PluginOperationError
-    from hermes_cli import runtime_state
+    from pm import client
+    from tests.pm._fixtures import worker_toolchain
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    atomic_bytes = runtime_state._atomic_bytes
-    def fail_metadata(path, data):
-        if path == home / "plugins/.install-metadata.json":
-            raise OSError("disk full")
-        return atomic_bytes(path, data)
-    monkeypatch.setattr(runtime_state, "_atomic_bytes", fail_metadata)
+    metadata = home / "plugins" / ".install-metadata.json"
+    # The PM worker process publishes the plugin; fail its metadata write there.
+    worker_toolchain(client, monkeypatch, isolated_python,
+        "import pm.publication as publication\n"
+        "original = publication._atomic_bytes\n"
+        "def fail_metadata(path, data):\n"
+        f"    if Path(path) == Path({str(metadata)!r}):\n"
+        "        raise OSError('disk full')\n"
+        "    return original(path, data)\n"
+        "publication._atomic_bytes = fail_metadata\n")
 
     with pytest.raises(PluginOperationError, match="disk full"):
         _install_plugin_core(repo.as_uri(), force=False, ref=old_sha)

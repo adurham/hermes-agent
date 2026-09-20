@@ -182,9 +182,9 @@ def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_p
     ready = tmp_path / "waiting-for-lock"
     worker_toolchain(client, monkeypatch, isolated_python,
         "from contextlib import contextmanager\nimport hermes_cli.runtime_state as state\n"
-        "original = state.runtime_lock\n@contextmanager\ndef lock(project):\n"
+        "original = state.runtime_lock\n@contextmanager\ndef lock(project, **kwargs):\n"
         f"    Path({str(ready)!r}).touch()\n"
-        "    with original(project):\n        yield\nstate.runtime_lock = lock\n")
+        "    with original(project, **kwargs) as held:\n        yield held\nstate.runtime_lock = lock\n")
     with ThreadPoolExecutor() as executor:
         with runtime_lock(repo):
             future = executor.submit(client.sync_venv, explicit=explicit, selection={

@@ -23,7 +23,7 @@ import sys
 
 def main():
     if '--version' in sys.argv:
-        print('Install directory: ' + os.environ.get('HANDOFF_FOREIGN', str(Path(__file__).resolve().parents[2]))); return 0
+        print('Install directory: ' + os.environ.get('HANDOFF_FOREIGN', str(Path(__file__).resolve().parents[1]))); return 0
     if '--help' in sys.argv:
         print('update options')
         sys.exit(0)

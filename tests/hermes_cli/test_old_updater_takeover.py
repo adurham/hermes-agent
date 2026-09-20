@@ -50,6 +50,9 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     }
     if resume is not None:
         payload["windows_gateway_resume"] = resume
+    # The retired updater reaches the takeover through the NEW tree's hand-off module; this
+    # checkout is the whole tree the child sees (CI has no editable finder for the source).
+    shutil.copy2(source / "hermes_cli/update_handoff.py", package / "update_handoff.py")
     program = root / "historical.py"
     program.write_text(
         "import os\n"
