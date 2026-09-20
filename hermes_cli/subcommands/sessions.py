@@ -167,6 +167,18 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Only report whether the database opens cleanly; do not modify it")
     _flag(sessions_repair, "--no-backup", help="Skip the timestamped backup copy (not recommended)")
 
+    sessions_set_journal_mode = sessions_subparsers.add_parser(
+        "set-journal-mode", help="Convert state.db between journal_mode=WAL and DELETE offline (every holder stopped)",
+        description="Switch the on-disk journal mode of the session store. Hermes never "
+            "live-downgrades a WAL database at startup (other processes may hold "
+            "uncheckpointed commits), so `database.journal_mode: delete` cannot "
+            "self-apply to an existing WAL store. Run this with the gateway, "
+            "dashboard and every CLI stopped: it refuses while any process holds "
+            "the file, switches the mode, and verifies the file header.")
+    sessions_set_journal_mode.add_argument("mode", choices=("delete", "wal"), help="Target journal mode")
+    sessions_set_journal_mode.add_argument("--db", default=None, metavar="PATH",
+        help="Convert another Hermes SQLite store (e.g. kanban.db) instead of the profile's state.db")
+
     sessions_repair_routing = sessions_subparsers.add_parser(
         "repair-routing", help="Re-stamp gateway sessions that lost their routing identity",
         description="Find gateway conversations stranded in session rows whose "

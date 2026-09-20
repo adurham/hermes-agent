@@ -971,9 +971,15 @@ def _cmd_repair_profiles(args):
     return cmd_repair_profiles(args)
 
 
+def _cmd_set_journal_mode(args):
+    from hermes_cli.sessions_cmd_journal_mode import cmd_set_journal_mode
+    return cmd_set_journal_mode(args)
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
+    "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
 }
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
