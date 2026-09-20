@@ -76,6 +76,7 @@ That's it. After dropping these two files, the following **auto-wire** with no o
 |---|---|---|
 | Credential resolution | `hermes_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` populated from profile |
 | `--provider` CLI flag | `hermes_cli/main.py` | Accepts `acme-inference` |
+| `/model --provider`, model picker switch | `hermes_cli/providers.py::resolve_provider_full` | Resolves `acme-inference` and every alias to the profile (switch lands on `name`, so `acme` persists as `acme-inference`); user `providers:` / `custom_providers:` blocks keep precedence. A profile with an empty `base_url` (endpoint minted at runtime) resolves too, on the last rung |
 | `hermes model` picker | `hermes_cli/models.py` | Appears in `CANONICAL_PROVIDERS`, model list fetched from `{base_url}/models` |
 | `hermes doctor` | `hermes_cli/doctor.py` | Health check for `ACME_API_KEY` + `{base_url}/models` probe |
 | `hermes setup` | `hermes_cli/config.py` | `ACME_API_KEY` appears in `OPTIONAL_ENV_VARS` and the setup wizard |
