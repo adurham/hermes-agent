@@ -432,7 +432,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     rp = _rp()
     try:
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint(rp.load_config())
+        endpoint = resolve_llamacpp_endpoint(config=rp.load_config())
     except Exception:  # noqa: BLE001 — resolution is best-effort
         endpoint = None
     if endpoint:

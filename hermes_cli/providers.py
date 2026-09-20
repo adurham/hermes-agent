@@ -502,7 +502,7 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-        endpoint = resolve_llamacpp_endpoint(load_config_readonly(), wait_for_boot_s=0)
+        endpoint = resolve_llamacpp_endpoint(config=load_config_readonly(), wait_for_boot_s=0)
     except Exception:
         endpoint = None
     if not endpoint and not _has_staged_local_models():
