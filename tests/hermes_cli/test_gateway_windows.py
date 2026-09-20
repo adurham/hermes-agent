@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway_windows."""
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,12 +16,52 @@ import hermes_cli.setup as setup
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
-def test_decode_schtasks_output_preserves_non_ascii_windows_path(monkeypatch):
-    """Scheduled Task XML keeps an ANSI-encoded account path intact under UTF-8 mode."""
-    monkeypatch.setattr(gateway_windows, "_windows_ansi_encoding", lambda: "gbk")
-    raw = r"<Arguments>C:\\Users\\方舟\\AppData\\Local\\hermes\\gateway.vbs</Arguments>".encode("gbk")
+def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
+    """schtasks emits the ANSI code page even when Python runs in UTF-8 mode; a non-ASCII account
+    path in the task XML must survive `_exec_schtasks` intact or `scheduled_task_drift` reports
+    "launcher arguments differs" forever (#116193). Drives the production seam with the bytes the
+    reporter captured (GBK for 方舟)."""
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows.shutil, "which", lambda name: "schtasks.exe")
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+    monkeypatch.setattr(gateway_windows, "_windows_console_encodings", lambda: ["cp936"], raising=False)
+    xml = r'<Arguments>//B //Nologo "C:\Users\方舟\AppData\Local\hermes\gateway-service\Hermes_Gateway.vbs"</Arguments>'
 
-    assert "方舟" in gateway_windows._decode_schtasks_output(raw)
+    def fake_run(argv, **kwargs):
+        # schtasks writes cp936 bytes; honour text/encoding like the real subprocess would.
+        out, err = xml.encode("gbk"), "错误: 拒绝访问。".encode("gbk")
+        if kwargs.get("text"):
+            enc, errors = kwargs.get("encoding") or "utf-8", kwargs.get("errors") or "strict"
+            out, err = out.decode(enc, errors), err.decode(enc, errors)
+        return subprocess.CompletedProcess(argv, 0, stdout=out, stderr=err)
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", fake_run)
+
+    code, out, err = gateway_windows._exec_schtasks(["/Query", "/TN", "Hermes_Gateway", "/XML"])
+
+    assert (code, out) == (0, xml)
+    assert gateway_windows._is_access_denied(err) and gateway_windows._should_fall_back(1, err)
+
+
+@pytest.mark.windows_only
+def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
+    """Real schtasks.exe on a real task whose argument carries a non-ASCII (ANSI-representable)
+    character, queried from a UTF-8-mode interpreter: the template/live comparison in
+    `scheduled_task_drift` needs the exact characters back (#116193)."""
+    monkeypatch.setattr(gateway_windows.locale, "getpreferredencoding", lambda *a, **k: "utf-8")
+    task = f"Hermes_Test_{os.getpid()}"
+    marker = "Zo\u00eb"  # ë: one byte in every Western OEM/ANSI code page, invalid as a lone UTF-8 byte
+    created = subprocess.run(
+        ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
+        capture_output=True, timeout=30,
+    )
+    assert created.returncode == 0, created.stderr
+    try:
+        code, out, _err = gateway_windows._exec_schtasks(["/Query", "/TN", task, "/XML"])
+    finally:
+        subprocess.run(["schtasks", "/Delete", "/F", "/TN", task], capture_output=True, timeout=30)
+    assert code == 0
+    assert marker in out, out
 
 
 def test_localized_access_denied_uses_existing_fallback_paths():
