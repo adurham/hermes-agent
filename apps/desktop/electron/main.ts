@@ -13562,7 +13562,7 @@ function spawnSecondaryWindow({
     // covers it. ready-to-show fires after the boot-time paint in
     // themes/context.tsx, so the window appears already themed.
     show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH, profile)
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
   // Chat-surface registration: applyWindowTranslucency swaps this window's
@@ -13748,7 +13748,7 @@ function createInstanceWindow(
     ...chatWindowSurfaceOptions(),
     icon,
     show: false,
-    webPreferences: chatWindowWebPreferences(PRELOAD_PATH, route.profile)
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
   instanceWindows.add(win)
