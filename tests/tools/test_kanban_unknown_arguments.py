@@ -64,3 +64,7 @@ def test_undeclared_internal_keys_survive_the_strict_check():
         'kanban_create', {'title': 'x', 'project_id': '', 'session_id': 's'}))
     assert 'unknown parameter' not in result.get('error', ''), result
     assert 'project_id' in kanban_tools._UNDECLARED_ARGS['kanban_create']
+    # ``title`` is the filename alias ``_handle_attach_url`` still reads (review follow-up).
+    result = json.loads(registry.dispatch(
+        'kanban_attach_url', {'task_id': 'x', 'url': 'https://example.invalid/y.pdf', 'title': 'spec'}))
+    assert 'unknown parameter' not in result.get('error', ''), result

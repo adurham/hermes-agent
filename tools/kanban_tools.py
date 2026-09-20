@@ -131,6 +131,8 @@ def _check(cond: Any, message: str) -> None:
 # the pre-``project`` alias still honoured by ``_handle_create`` (e7811345c17).
 _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
     "kanban_create": frozenset({"session_id", "project_id"}),
+    # ``title`` is the pre-schema alias of ``filename`` that ``_handle_attach_url`` still honours.
+    "kanban_attach_url": frozenset({"title"}),
 }
 
 
