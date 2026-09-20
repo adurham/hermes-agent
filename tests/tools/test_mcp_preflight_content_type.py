@@ -270,37 +270,6 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
     )
 
 
-def test_run_forwards_strict_redirect_headers_to_preflight(monkeypatch):
-    """``strict_redirect_headers`` in server config must reach the probe — the
-    boundary it promises is meaningless if the preflight leaks the configured
-    headers on a redirect before the SDK client ever runs."""
-    import tools.mcp_tool as _mcp
-    from tools import mcp_tool_errors as _mcp_errors
-
-    seen_kwargs: list[dict] = []
-
-    async def _inner():
-        async def _fake_preflight(self, url, **kwargs):
-            seen_kwargs.append(kwargs)
-
-        async def _fake_run_http(self, config):
-            raise asyncio.CancelledError()
-
-        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
-        monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
-        monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
-
-        task = _mcp.MCPServerTask("strict-preflight-test")
-        with pytest.raises(asyncio.CancelledError):
-            await task.run({
-                "url": "https://mcp.example.com/mcp",
-                "strict_redirect_headers": True,
-            })
-
-    asyncio.run(_inner())
-    assert seen_kwargs and seen_kwargs[0].get("strict_redirect_headers") is True
-
-
 # ---------------------------------------------------------------------------
 # POST probe fallback for POST-only MCP servers
 # ---------------------------------------------------------------------------
@@ -326,13 +295,11 @@ def test_post_probe_not_attempted_for_valid_head():
 # ---------------------------------------------------------------------------
 
 
-def _redirect_handler(target_base: str, record=None):
+def _redirect_handler(target_base: str):
     """HEAD/GET/POST all 302 to ``target_base/mcp``."""
 
     class _H(http.server.BaseHTTPRequestHandler):
         def _redir(self):
-            if record is not None:
-                record.append(dict(self.headers))
             self.send_response(302)
             self.send_header("Location", f"{target_base}/mcp")
             self.end_headers()
@@ -367,105 +334,35 @@ def _recording_mcp_handler(seen: dict):
     return _H
 
 
-def test_preflight_strips_credential_headers_on_cross_origin_redirect():
-    """A configured ``Authorization``/``X-API-Key`` header must not reach a
-    redirect target on another origin — the probe client previously followed
-    redirects with no hook, forwarding every configured header verbatim."""
-    task = _make_task()
+def test_run_strict_redirect_headers_reaches_preflight_boundary(monkeypatch):
+    """#115155: ``strict_redirect_headers: true`` in a server entry must keep the configured
+    ``X-API-Key`` off a cross-origin redirect target — on the preflight probe too, which ran before
+    the SDK client and forwarded every configured header verbatim. Driven through the production
+    ``MCPServerTask.run`` so the flag's plumbing from config to the probe is what is asserted; only
+    the SDK handshake after the probe is cut short."""
+    import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
+
     seen: dict = {}
+
+    async def _fake_run_http(self, config):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)  # loopback URL
+    monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
+
     with _serve(_recording_mcp_handler(seen)) as target, \
             _serve(_redirect_handler(target)) as origin:
-        asyncio.run(task._preflight_content_type(
-            f"{origin}/mcp",
-            headers={"Authorization": "Bearer s3cr3t", "X-API-Key": "k3y"},
-            strict_redirect_headers=True,
-            timeout=5.0,
-        ))
-    assert "s3cr3t" not in seen.values() and "k3y" not in seen.values()
+        task = _mcp.MCPServerTask("strict-preflight-test")
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(task.run({
+                "url": f"{origin}/mcp",
+                "headers": {"Authorization": "Bearer s3cr3t", "X-API-Key": "k3y"},
+                "strict_redirect_headers": True,
+            }))
+    assert seen, "the redirect target was never probed"
     assert "authorization" not in seen and "x-api-key" not in seen
-
-
-def test_preflight_keeps_headers_on_same_origin_redirect():
-    """Relative redirects stay on the configured origin — headers must arrive."""
-    task = _make_task()
-    seen: dict = {}
-    origin_hits: list = []
-
-    class _Origin(http.server.BaseHTTPRequestHandler):
-        def do_HEAD(self):
-            if self.path == "/mcp":
-                seen.update({k.lower(): v for k, v in self.headers.items()})
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", "2")
-                self.end_headers()
-            else:
-                origin_hits.append(dict(self.headers))
-                self.send_response(302)
-                self.send_header("Location", "/mcp")
-                self.end_headers()
-
-        def log_message(self, format, *args):  # noqa: A002
-            pass
-
-    with _serve(_Origin) as origin:
-        asyncio.run(task._preflight_content_type(
-            f"{origin}/old",
-            headers={"Authorization": "Bearer s3cr3t"},
-            timeout=5.0,
-        ))
-    assert seen.get("authorization") == "Bearer s3cr3t"
-
-
-def test_preflight_non_strict_forwards_configured_headers():
-    """Non-strict is the documented compat contract: configured headers follow
-    redirects (gateways that bounce to a same-service regional host). Only
-    ``Authorization`` is withheld — matching the transport client's policy."""
-    task = _make_task()
-    seen: dict = {}
-    with _serve(_recording_mcp_handler(seen)) as target, \
-            _serve(_redirect_handler(target)) as origin:
-        asyncio.run(task._preflight_content_type(
-            f"{origin}/mcp",
-            headers={"Authorization": "Bearer s3cr3t", "X-API-Key": "k3y"},
-            strict_redirect_headers=False,
-            timeout=5.0,
-        ))
-    assert seen.get("x-api-key") == "k3y"          # configured headers forward
-    assert "authorization" not in seen              # bearer never leaves origin
-
-
-def test_preflight_multi_hop_redirect_stays_stripped():
-    """origin -> B -> C: once headers are stripped at the first cross-origin hop
-    they must not reappear on a later hop (and are not restored if a redirect
-    chains back toward the configured origin)."""
-    task = _make_task()
-    seen_b: dict = {}
-    seen_c: dict = {}
-    with _serve(_recording_mcp_handler(seen_c)) as c_base:
-        class _B(http.server.BaseHTTPRequestHandler):
-            def do_HEAD(self):
-                seen_b.update({k.lower(): v for k, v in self.headers.items()})
-                self.send_response(302)
-                self.send_header("Location", f"{c_base}/mcp")
-                self.end_headers()
-            def log_message(self, format, *args):  # noqa: A002
-                pass
-
-        with _serve(_B) as b_base, _serve(_redirect_handler(b_base)) as origin:
-            asyncio.run(task._preflight_content_type(
-                f"{origin}/mcp",
-                headers={"Authorization": "Bearer s3cr3t", "X-API-Key": "k3y"},
-                strict_redirect_headers=True,
-                timeout=5.0,
-            ))
-    assert "authorization" not in seen_b and "x-api-key" not in seen_b
-    assert "authorization" not in seen_c and "x-api-key" not in seen_c
-
-
-# ---------------------------------------------------------------------------
-# Streamable HTTP transport client: same boundary on the real connection
-# ---------------------------------------------------------------------------
+    assert "s3cr3t" not in seen.values() and "k3y" not in seen.values()
 
 
 def test_streamable_http_client_strips_credentials_on_redirect(monkeypatch):
