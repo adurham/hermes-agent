@@ -50,10 +50,12 @@ def completion(tmp_path, monkeypatch):
     shutil.copytree(ROOT / "scripts/build", source / "scripts/build",
                     ignore=shutil.ignore_patterns("__pycache__"))
     _put(source, "pyproject.toml", '[project]\nname="takeover-fixture"\nversion="2.0"\n')
-    # The selected interpreter is dependency-free, not the pytest environment.
+    # The selected interpreter is dependency-free, not the pytest environment. A symlink, not a
+    # copy: a relocatable build (python-build-standalone) locates its stdlib beside the resolved
+    # executable, so a lone copied binary cannot even import ``encodings``.
     python = tmp_path / "store/python/bin/python3"
     python.parent.mkdir(parents=True)
-    shutil.copy2(Path(sys._base_executable).resolve(), python)
+    python.symlink_to(Path(sys._base_executable).resolve())
     _put(tmp_path / "store", "facts.json", json.dumps({"packages": {"python": {"entry": "python"}}}))
     generation = install_state_dir(source) / "environments/prepared"
     site = site_packages(generation)

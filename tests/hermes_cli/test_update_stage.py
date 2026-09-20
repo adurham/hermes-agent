@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 
 import pytest
@@ -29,6 +30,9 @@ def status_file(tmp_path):
 def clean_env(monkeypatch):
     monkeypatch.delenv(update_stage.STATUS_FILE_ENV, raising=False)
     monkeypatch.delenv(update_stage.UI_SPAWNED_ENV, raising=False)
+    # gettempdir() caches its first answer per process; the shim writes beside ${TMPDIR}
+    # so tests that redirect TMPDIR need the cache cleared to be observed.
+    monkeypatch.setattr(tempfile, "tempdir", None)
 
 
 def _assert_running(payload: str, message: str) -> None:

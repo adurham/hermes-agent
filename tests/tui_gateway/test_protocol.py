@@ -36,6 +36,9 @@ def server():
     # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
     # unbound copy whose default sinks drop frames and treat every client as answerable.
     import tui_gateway.server_requests  # noqa: F401
+    # hermes_bootstrap is process boot (PM dependency activation reads the real install root);
+    # its first import must not happen while hermes_constants is a MagicMock.
+    import hermes_bootstrap  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),

@@ -9,6 +9,8 @@ from uuid import uuid4
 
 import pytest
 
+# The fixture below serves channel records over loopback; the reader's real HTTP path is the subject.
+pytestmark = pytest.mark.real_release_channels
 
 MAIN_CHANNEL = "/releases/channels/main.json"
 
