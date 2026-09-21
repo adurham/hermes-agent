@@ -52,7 +52,7 @@ def _arch_guard(store_dir: Path) -> list[str]:
 
 
 
-from pm.cache_lock import lock_package_names, prune_uv_cache_to_lock
+from pm.uv_cache_prune import lock_package_names, prune_uv_cache_to_lock
 
 __all__ = ["prune_uv_cache_to_lock", "lock_package_names", "stage_uv_cache"]
 
