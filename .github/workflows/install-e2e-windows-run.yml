@@ -185,11 +185,13 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      # Old installers refresh PATH after winget installs ripgrep, dropping the
+      # process-only uv path. Supply the tool before running those shipped scripts.
       - name: Set up driver tools only
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          packages: ffmpeg
+          packages: ffmpeg,ripgrep
           cache: false
           cache-python: false
           cache-node: false
