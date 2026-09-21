@@ -45,7 +45,6 @@ def test_recovery_resets_unparseable_model_config(tmp_path):
     report = recover_session_database(source, output)
 
     assert report["verification"]["healthy"], report["verification"]["errors"]
-    assert report["derived_metadata"]["model_config_reset"] == 1
 
     recovered = SessionDB(db_path=output)
     try:
@@ -55,3 +54,4 @@ def test_recovery_resets_unparseable_model_config(tmp_path):
         recovered.reopen_session("parent")
     finally:
         recovered.close()
+    assert report["derived_metadata"]["model_config_reset"] == 1

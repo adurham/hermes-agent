@@ -908,15 +908,36 @@ def _verify_recovered_database(
     return verification
 
 
+def _sanitize_session_model_config(destination: sqlite3.Connection) -> int:
+    """Rewrite unparseable ``sessions.model_config`` blobs to ``'{}'``; returns the row count.
+
+    ``integrity_check`` validates b-tree structure, never column *contents*: a row whose
+    JSON was truncated by the damage verifies clean and then makes every ``json_extract``
+    reader (``hermes sessions list``, the dashboard chain CTE) raise on the recovered
+    database. The blob is unrecoverable either way, so neutralise it at the copy boundary
+    both lanes pass through rather than shipping a store that cannot be listed.
+    """
+    if "model_config" not in _table_columns(destination, "sessions"):
+        return 0
+    with _immediate_transaction(destination):
+        return _reconcile(
+            destination, "sessions",
+            "model_config IS NOT NULL AND json_valid(model_config) = 0",
+            "UPDATE sessions SET model_config = '{}'",
+        )
+
+
 def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any]:
-    """Stamp only metadata that the newly created destination actually owns."""
+    """Sanitize copied JSON columns and stamp metadata the new destination actually owns."""
+    model_config_reset = _sanitize_session_model_config(destination)
     fts_tables = {
         str(row[0])
         for row in destination.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('messages_fts', 'messages_fts_trigram')"
         ).fetchall()
     }
-    result: dict[str, Any] = {"fts_tables": sorted(fts_tables), "finalized": False}
+    result: dict[str, Any] = {
+        "fts_tables": sorted(fts_tables), "finalized": False, "model_config_reset": model_config_reset}
     if fts_tables != {"messages_fts", "messages_fts_trigram"}:
         result["error"] = "fresh destination is missing required FTS tables"
         return result
