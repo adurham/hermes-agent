@@ -80,8 +80,10 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
     else:
         # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
         # "already the launch profile"); only its secrets (+ terminal policy under multiplex) need binding.
+        # Resolved at call time like the launch state.db handle: a harness that re-homes the process
+        # after import must not have the import-time home's ``.env`` read on every turn.
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-        home = Path(_hermes_home)
+        home = _launch_home()
         secrets = launch_secret_scope(home)
         scopes.secret = set_secret_scope(secrets)
         if not is_multiplex_active():
