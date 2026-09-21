@@ -64,6 +64,11 @@ stamp['write_stamp'](os.environ['PROBE_OUT'], update_mechanism='self')
 Path(os.environ['PROBE_ENV']).write_text(json.dumps(dict(os.environ)), encoding='utf-8')
 ''', encoding="utf-8")
     env["PROBE_SCRIPT"] = str(probe)
+    # A file, not `-c 'import json, ...'`: pwsh 7.6 on the Windows lane re-quotes native
+    # argv and the venv launcher receives a truncated -c body (`import` → SyntaxError).
+    dump = tmp_path / "dump_env.py"
+    dump.write_text("import json, os; print(json.dumps(dict(os.environ)))\n", encoding="utf-8")
+    env["PROBE_DUMP"] = str(dump)
     if shell == "bash":
         command = [shell, "-euc", '''
 source "$ASSETS/source-build-env.sh"
@@ -91,28 +96,14 @@ console.log(JSON.stringify(process.env));
 [Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
 trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine($_.ScriptStackTrace); exit 97 }
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
-[Console]::Error.WriteLine("probe: asset sourced; python exists=$(Test-Path -LiteralPath $env:PROBE_PYTHON) script exists=$(Test-Path -LiteralPath $env:PROBE_SCRIPT)")
-& $env:PROBE_PYTHON -I -S -c 'import sys; sys.stderr.write("probe: bare child ran %s\n" % sys.version.split()[0])'
-[Console]::Error.WriteLine("probe: bare child dollar-question=$? exit=$LASTEXITCODE")
-$touch = Join-Path (Split-Path -Parent $env:PROBE_OUT) 'touched-by-child.txt'
-& $env:PROBE_PYTHON -c "open(r'$touch','w').write('yes')"
-[Console]::Error.WriteLine("probe: plain -c child touched=$(Test-Path -LiteralPath $touch) exit=$LASTEXITCODE")
-$proc = Start-Process -FilePath $env:PROBE_PYTHON -ArgumentList @('-I','-S','-c','import sys; sys.exit(42)') -NoNewWindow -Wait -PassThru
-[Console]::Error.WriteLine("probe: Start-Process exit=$($proc.ExitCode)")
-if ($IsWindows) {
-    & cmd.exe /c "`"$env:PROBE_PYTHON`" -I -S -c `"import sys; sys.exit(43)`""
-    [Console]::Error.WriteLine("probe: via cmd exit=$LASTEXITCODE")
-}
 Invoke-SourceBuild {
     & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT
     [Console]::Error.WriteLine("probe: child dollar-question=$? exit=$LASTEXITCODE out-exists=$(Test-Path -LiteralPath $env:PROBE_OUT)")
     if ($LASTEXITCODE) { throw 'stamp failed' }
 }
-[Console]::Error.WriteLine("probe: stamp step done")
 try { Invoke-SourceBuild { throw 'child failure' }; throw 'lost exception' }
 catch { if ($_.Exception.Message -ne 'child failure') { throw } }
-[Console]::Error.WriteLine("probe: failure step done")
-& $env:PROBE_PYTHON -I -S -c 'import json, os; print(json.dumps(dict(os.environ)))'
+& $env:PROBE_PYTHON -I -S $env:PROBE_DUMP
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 ''', encoding="utf-8-sig")
         command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)]
@@ -148,7 +139,10 @@ def test_posix_build_children_stamp_old_and_new_without_changing_parent(tmp_path
 @pytest.mark.platforms("windows", "posix")
 def test_powershell_build_children_stamp_old_and_new_without_changing_parent(tmp_path):
     path = os.pathsep.join(p for p in os.get_exec_path() if ".hermes" not in Path(p).parts)
-    shell = shutil.which("pwsh", path=path) or shutil.which("powershell", path=path)
+    # Windows PowerShell 5.1 is what install-e2e-windows-run.yml drives windows-e2e.ps1 (the
+    # asset's real consumer) with; pwsh is the only PowerShell a POSIX host offers.
+    order = ("powershell", "pwsh") if os.name == "nt" else ("pwsh", "powershell")
+    shell = next((found for name in order if (found := shutil.which(name, path=path))), None)
     if not shell:
         if os.name == "nt":
             pytest.fail("native Windows acceptance requires PowerShell")

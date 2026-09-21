@@ -41,8 +41,7 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
 
     monkeypatch.setattr(update_cmd_fleet, "_collect_fleet_snapshot", collect)
     update_cmd_fleet._write_fleet_restart_pending_marker()
-    marker = update_cmd_fleet._fleet_restart_pending_marker_path()
-    assert marker.exists()
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
     healthy = update_complete and state == "current"
     with update_receipt.update_receipt_scope():
         update_receipt.begin_update_receipt()
@@ -58,6 +57,6 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
     assert receipt["outcome"] == ("success" if healthy else "partial")
     assert receipt["fleet"] == snapshot
     assert restart.incomplete is (state != "current")
-    assert marker.exists() is (state != "current")
+    assert update_cmd_fleet._fleet_restart_obligation_armed() is (state != "current")
     assert migrated == ([True] if healthy else [])
     assert refreshed == [{"already_restarted_units": {"hermes-gateway"}}]
