@@ -49,7 +49,7 @@ from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _FLEET_RESTART_PENDING_NAME, _FRESH_RESTART_SUPERVISORS, _GatewayRestartOutcome,
     _clear_fleet_restart_pending_marker,
     _current_checkout_sha, _drain_or_signal_gateway_for_update, _fleet_probe_expected_runtimes,
-    _fleet_restart_pending_marker_path, _for_each_systemd_gateway_unit,
+    _fleet_restart_pending_marker_path, _fleet_restart_skip_reason, _for_each_systemd_gateway_unit,
     _gateway_recovery_partition, _gateway_service_matches_profile, _pending_fleet_restart_needed,
     _receipt_looks_unfinished, _receipt_reports_stale_runtime, _resolve_manage_cmd,
     _restart_gateway_fleet_after_update, _restart_launchd_gateway_after_update,
@@ -1373,6 +1373,9 @@ def _finish_already_up_to_date(
         _git_run(git_cmd, ["checkout", current_branch])
 
     if completion_request is not None:
+        # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
+        # (and its restarted proof), so a sibling profile's no-op update re-kills the multiplexer.
+        completion_request["expected_sha"] = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or ""
         completion_request["completion_message"] = (
             "✓ Already up to date!" if _plan.upstream_checked
             else "✓ Up to date with your fork (official repo not checked).")

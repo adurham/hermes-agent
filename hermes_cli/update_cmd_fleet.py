@@ -567,6 +567,30 @@ def _restart_identity_sha() -> str:
     return ""
 
 
+def _fleet_restart_skip_reason(plan) -> str | None:
+    """Why the completion tail may leave the fleet alone, or ``None`` when a restart is owed.
+
+    Every route (pulled, already-current, ZIP) now finishes through the same completion
+    tail, so the guards the old catch-up path carried live here: one host runs ONE
+    multiplexing gateway, so a second profile's ``hermes update`` attaches to the restart the
+    first one already stamped (#95294), and a fleet already serving the checkout code (a
+    no-op update, a manual ``hermes gateway restart`` seconds ago) is not re-killed (#117051).
+
+    The second guard needs BOTH the pre-update plan and the live probe: the live matrix only
+    lists gateways, so a planned ``serve`` still on pre-update code (or any runtime without a
+    stamped identity) keeps the restart — the reconciliation there is what surfaces it.
+    """
+    from hermes_cli.update_host_obligation import host_restart_already_completed
+    checkout_sha = _restart_identity_sha()
+    if host_restart_already_completed(checkout_sha):
+        return "this host's gateway was already restarted for this update"
+    if (checkout_sha and plan is not None and plan.runtimes
+            and all(str(runtime.code_sha) == checkout_sha for runtime in plan.runtimes)
+            and _live_fleet_current_rows() is not None):
+        return "every running gateway already serves the checkout code"
+    return None
+
+
 def _run_pending_fleet_restart() -> bool:
     """Historical retry hook; new retries use the ordinary completion owner."""
     from hermes_cli._old_updater import stop_for_relaunch
@@ -1550,6 +1574,11 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         )
 
     out.restarted_scoped_units = set(restarted_scoped_units)
+    if not out.incomplete:
+        # Stamp the HOST obligation so every other profile's CLI knows this update's restart
+        # already happened; without it each profile re-kills the one shared multiplexer.
+        from hermes_cli.update_host_obligation import mark_host_restart_completed
+        mark_host_restart_completed(_restart_identity_sha())
     return out
 
 
