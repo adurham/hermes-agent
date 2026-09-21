@@ -3,6 +3,8 @@
 import json
 import os
 import plistlib
+import re
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +24,19 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     resolve_systemd_timeout_stop_sec,
 )
+
+
+def _osascript_exec_argv(program_args: list[str]) -> list[str]:
+    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/osascript -e <script>`` hands to ``exec`` —
+    undoing the AppleScript string escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
+    assert program_args[:2] == ["/usr/bin/osascript", "-e"] and len(program_args) == 3, program_args
+    script = program_args[2]
+    prefix, suffix = 'do shell script "', '"'
+    assert script.startswith(prefix) and script.endswith(suffix), script
+    shell = re.sub(r"\\(.)", r"\1", script[len(prefix):-len(suffix)])
+    exec_, *argv = shlex.split(shell)
+    assert exec_ == "exec", shell
+    return argv
 
 
 class TestUserSystemdPrivateSocketPreflight:
@@ -1866,11 +1881,36 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
+        # The job is launched through osascript so macOS Local Network Privacy attributes the
+        # gateway's sockets to a platform binary (#71206); the real command is the exec'd child,
+        # whose python runs through the PM installation launcher (-I -c bootstrap ...).
+        exec_argv = _osascript_exec_argv(program_args)
+        assert exec_argv[-4:] == [">>", str(profile_dir / "logs" / "gateway.log"),
+                                  "2>>", str(profile_dir / "logs" / "gateway.error.log")]
+        program_args = exec_argv[:-4]
         assert program_args[0] == "/usr/bin/python3"
         assert program_args[-5:] == ["--profile", "mybot", "gateway", "run", "--external-supervisor"]
         separator = program_args.index("--")
+
         assert program_args[separator - 2:separator] == ["--error-log", str(profile_dir / "logs" / "gateway.error.log")]
         assert "--replace" not in program_args
+
+    def test_launchd_osascript_wrapper_round_trips_shell_hostile_paths(self, tmp_path, monkeypatch):
+        """A home with spaces, quotes and a backslash survives shlex + AppleScript + plist quoting."""
+        profile_dir = tmp_path / 'my "odd" dir \\ here' / ".hermes"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(profile_dir / "bin dir" / "python"))
+
+        program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
+        argv = _osascript_exec_argv(program_args)
+
+        assert argv[0] == str(profile_dir / "bin dir" / "python")
+        assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
+        # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
+        assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -2583,9 +2623,9 @@ class TestServiceTakeoverGovernance:
         plist = gateway_cli.generate_launchd_plist()
         # The whole bug class: no --replace anywhere in the supervised argv.
         assert "--replace" not in plist
-        # It still runs the plain gateway command under KeepAlive.
-        assert "<string>gateway</string>" in plist
-        assert "<string>run</string>" in plist
+        # It still runs the plain gateway command under KeepAlive (inside the osascript wrapper).
+        argv = _osascript_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"])
+        assert argv[argv.index("gateway") + 1] == "run"
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
 
