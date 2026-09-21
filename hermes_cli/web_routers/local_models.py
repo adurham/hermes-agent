@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import config as config_mod, web_deps
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, _config_profile_scope
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
@@ -654,17 +654,18 @@ def _install_engine_job(job: Dict[str, Any], backend: str):
 
 
 @router.post("/api/local-models/runtime/install")
-def local_models_runtime_install(body: RuntimeInstallBody):
+def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str] = None):
     tag, backend = _runtime_target(body.backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
 
     def run():
-        previous = binaries.installed_engine(backend)
-        engine = _install_engine_job(job, backend)
-        running = bootstrap.get_supervisor()
-        if running is not None and previous != engine:
-            _step(job, "restarting", "Switching the running server to the pinned build")
-            bootstrap.refresh_local_runtime()
+        with _config_profile_scope(profile):
+            previous = binaries.installed_engine(backend)
+            engine = _install_engine_job(job, backend)
+            running = bootstrap.get_supervisor()
+            if running is not None and previous != engine:
+                _step(job, "restarting", "Switching the running server to the pinned build")
+                bootstrap.refresh_local_runtime()
         _finish(job, f"llama.cpp {tag} ready ({backend})")
 
     _spawn_job(job, "lr-runtime-install", run, fail_msg="runtime install failed: %s", resumable=True)
@@ -769,7 +770,7 @@ def _quickstart_target(body: QuickstartBody, budget):
 
 
 @router.post("/api/local-models/quickstart")
-def local_models_quickstart(body: QuickstartBody):
+def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
     missing), make it the default. Each leg uses the same code as the individual setup routes.
     Preflight rejects (no automatic recommendation or no servable choice) fail the POST
@@ -796,10 +797,11 @@ def local_models_quickstart(body: QuickstartBody):
                     job.update(done_bytes=0, total_bytes=None, ranges={})
             _run_download_plan(job, download_plan, entry.display_name)
         _step(job, "starting-server", "Starting the local server")
-        _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
-                       fail_detail="The local server could not start — open Local Models for details",
-                       skip_msg="quickstart rescan check skipped")
-        _assign_default(job, variant.model_id)
+        with _config_profile_scope(profile):
+            _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
+                           fail_detail="The local server could not start — open Local Models for details",
+                           skip_msg="quickstart rescan check skipped")
+            _assign_default(job, variant.model_id)
         _finish(job, f"{entry.display_name} is ready — new chats use it")
 
     _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s",
@@ -869,7 +871,7 @@ def local_models_eject(body: ModelEjectBody):
 
 
 @router.post("/api/local-models/activate")
-async def local_models_activate(body: ModelActivateBody):
+async def local_models_activate(body: ModelActivateBody, profile: Optional[str] = None):
     """Make a downloaded model the default for new chats: a config write via the same machinery as
     /api/model/set plus making sure the server is up. NO model loading (residency v2: models load on first
     inference; an empty router costs nothing). Kept as a job for UI continuity."""
@@ -879,12 +881,16 @@ async def local_models_activate(body: ModelActivateBody):
     job = _job("model-activate", body.model_id, model_id=body.model_id)
 
     def _run():
-        _ensure_server(job, config_mod.load_config(), body.model_id,
-                       fail_detail=_SERVER_START_FAILED, skip_msg="activate rescan check skipped")
-        _step(job, "setting-default", "Making it your default")
-        _set_runtime_enabled(True)
-        _assign_default(job, body.model_id)
-        _finish(job, f"{body.model_id} is the default for new chats")
+        # The llama runtime is one host-wide process, but "my default model" is a
+        # config.yaml write — scope it to the profile the request names, inside the job
+        # thread (the contextvar override must be set where the write happens).
+        with _config_profile_scope(profile):
+            _ensure_server(job, config_mod.load_config(), body.model_id,
+                           fail_detail=_SERVER_START_FAILED, skip_msg="activate rescan check skipped")
+            _step(job, "setting-default", "Making it your default")
+            _set_runtime_enabled(True)
+            _assign_default(job, body.model_id)
+            _finish(job, f"{body.model_id} is the default for new chats")
 
     _spawn_job(job, "lr-model-activate", _run, fail_msg="model activate failed: %s")
     return {"job_id": job["job_id"]}

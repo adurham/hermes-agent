@@ -33,6 +33,7 @@ _spawn_gateway_restart = late("_spawn_gateway_restart")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 detect_install_method = late("detect_install_method", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_cli.web_server_gateway")
 _ACTION_IDS = LateState("_ACTION_IDS", "hermes_cli.web_server_gateway")
 _ACTION_PROCS = LateState("_ACTION_PROCS", "hermes_cli.web_server_gateway")
@@ -259,7 +260,7 @@ _NON_APPLYABLE_MESSAGES = {
 
 
 @router.get("/api/hermes/update/check")
-async def check_hermes_update(force: bool = False):
+async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
 
     Returns install_method ('apt'|'git'|'docker'|'nix'|'nixos'|'unknown'),
@@ -302,7 +303,8 @@ async def check_hermes_update(force: bool = False):
     try:
         from hermes_cli.source_check import check_for_updates
 
-        status = await asyncio.to_thread(check_for_updates, force=force)
+        with _config_profile_scope(profile):
+            status = await asyncio.to_thread(check_for_updates, force=force)
         behind = status.get("behind")
     except Exception:
         _log.exception("Update check failed")
