@@ -173,6 +173,14 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
         assert 'save-cache' not in recording['with']
         upload = next(step for step in job['steps'] if 'actions/upload-artifact@' in step.get('uses', ''))
         assert upload['if'] == 'always()' and upload['with']['path'].endswith('/out')
+        # The chat steps are the smoke verdict. Recording stop and artifact
+        # upload run after that and are evidence; a 403 there must not fail
+        # the job or skip channel publication.
+        stop = next(step for step in job['steps'] if step.get('name') == 'Stop screen recording')
+        assert stop['continue-on-error'] is True and upload['continue-on-error'] is True
+        for verdict in ('Install and chat on macOS', 'Install and chat on Windows'):
+            chat = next(step for step in job['steps'] if step.get('name') == verdict)
+            assert 'continue-on-error' not in chat
 
     recorder = hermes_yaml.safe_load((ROOT / '.github/actions/e2e-screen-record/action.yml').read_text())
     assert all(not step.get('uses', '').startswith('actions/cache') for step in recorder['runs']['steps'])
