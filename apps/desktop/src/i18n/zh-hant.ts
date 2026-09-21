@@ -2816,7 +2816,31 @@ export const zhHant = defineLocale({
       notAvailable: '此後端無法更新。',
       failed: '後端更新失敗。',
       noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `版本 ${value}`,
+    versionUnavailable: '版本不可用',
+    checkNow: '立即檢查',
+    seeWhatsNew: '查看新增內容',
+    releaseNotes: '發行說明',
+    onLatest: '你已是最新版本。',
+    installing: '正在安裝更新。',
+    cantReach: '無法連線到更新伺服器。',
+    tapCheck: '點選「立即檢查」以尋找更新。',
+    updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+    updateReadyUnknown: '新更新已就緒。',
+    lastChecked: age => `上次檢查：${age}`,
+    never: '從未',
+    justNow: '剛剛',
+    minAgo: count => `${count} 分鐘前`,
+    hoursAgo: count => `${count} 小時前`,
+    daysAgo: count => `${count} 天前`,
+    justNowSuffix: ' · 剛剛',
+    bundleOutOfSync: '應用程式建置版本過舊',
+    bundleOutOfSyncDesc:
+      'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+    bundleOutOfSyncAction: '取得安裝程式',
+    checkingShort: '檢查中…'
   },
 
   guidedGreeting: {
