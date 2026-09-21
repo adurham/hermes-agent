@@ -190,6 +190,12 @@ ensure_uv() {
 }
 
 check_platform() {
+    # Termux is Linux by uname, but this installer builds a glibc source
+    # install the phone cannot run (no Android wheels in the lock). The
+    # signed APT package is the only supported shape there.
+    if [ -n "${TERMUX_VERSION:-}" ] || case "${PREFIX:-}" in *com.termux/files/usr*) true ;; *) false ;; esac; then
+        fail "Termux is installed from its APT repository, not install.sh: pkg install hermes-agent (setup: https://hermes-agent.nousresearch.com/docs/getting-started/termux)"
+    fi
     case "$(uname -s 2>/dev/null)" in
         Linux*) : ;;
         Darwin*) : ;;
@@ -311,6 +317,16 @@ stage_repository() {
             log "not fast-forwardable; reset to origin/$BRANCH"
         fi
     else
+        # `mv <clone> <existing dir>` nests the checkout INSIDE it as
+        # <dir>/tree, so a pre-existing destination must be empty (we take
+        # the empty dir over) or we refuse: whatever lives there is not ours.
+        if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
+            if [ -d "$INSTALL_DIR" ] && [ ! -L "$INSTALL_DIR" ] && [ -z "$(ls -A "$INSTALL_DIR")" ]; then
+                rmdir "$INSTALL_DIR" || fail "cannot replace empty $INSTALL_DIR"
+            else
+                fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>."
+            fi
+        fi
         log "cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
         mkdir -p "$(dirname "$INSTALL_DIR")"
         local staged attempt cloned=false

@@ -118,7 +118,7 @@ def channel_record(config: Optional[dict], project_root: Optional[Path] = None) 
 
 
 def _package_channel(stamp: dict) -> bool:
-    return stamp.get("payload") in ("bundled", "light") or stamp.get("updateMechanism") in (
+    return stamp.get("payload") in ("bundled", "light", "runtime") or stamp.get("updateMechanism") in (
         "electron-updater", "app-installer", "microsoft-store"
     )
 

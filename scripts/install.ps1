@@ -468,7 +468,13 @@ function Ensure-Git {
 }
 
 function Log([string]$msg) { Write-Host "[hermes] $msg" -ForegroundColor Blue }
-function Fail([string]$msg) { Write-Host "[hermes] $msg" -ForegroundColor Red; exit 1 }
+function Fail([string]$msg) {
+    Write-Host "[hermes] $msg" -ForegroundColor Red
+    # `exit` unwinds past the stage dispatcher's try/catch, so a -Json caller
+    # would otherwise get NO frame at all; emit the failure frame here.
+    if ($Json -and $Stage) { Emit-Frame $false $Stage $false $msg }
+    exit 1
+}
 
 function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = "") {
     $frame = [ordered]@{ ok = $ok; stage = $name; skipped = $skipped }
