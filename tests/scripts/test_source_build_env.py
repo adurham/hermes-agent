@@ -88,6 +88,7 @@ console.log(JSON.stringify(process.env));
         # far as the first line break and exits 0 having run only the preference line.
         script = tmp_path / "probe.ps1"
         script.write_text('''$ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
 Invoke-SourceBuild { & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT; if ($LASTEXITCODE) { throw 'stamp failed' } }
 try { Invoke-SourceBuild { throw 'child failure' }; throw 'lost exception' }
@@ -96,13 +97,14 @@ catch { if ($_.Exception.Message -ne 'child failure') { throw } }
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 ''', encoding="utf-8-sig")
         command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+        print("powershell probe:", shell, file=sys.stderr)
     for sha in (old, new):
         git("checkout", "-q", "-B", "installed", sha)
-        result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True,
-                                text=True, encoding="utf-8", timeout=30)
+        result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, stdin=subprocess.DEVNULL,
+                                text=True, encoding="utf-8", errors="replace", timeout=30)
         assert result.returncode == 0, result.stdout + result.stderr
         assert Path(env["PROBE_OUT"]).is_file(), (
-            f"the build child wrote no stamp\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}")
+            f"the build child wrote no stamp (shell={command[0]} rc={result.returncode})\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}")
         stamp = json.loads(Path(env["PROBE_OUT"]).read_text(encoding="utf-8-sig"))
         assert (stamp["commit"], stamp["branch"], stamp["source"], stamp["payload"]) == (
             sha, "installed", "local", "bootstrap")
