@@ -262,9 +262,12 @@ class PythonEnvironment:
                 command.append("--offline")
             try:
                 if self.output is not None:
-                    # No --verbose: it is uv's DEBUG level and buries the progress
-                    # lines under interpreter/cache internals on every streamed run.
-                    # Build-backend output still arrives with the failure.
+                    # uv hides build-backend output until failure without verbose mode,
+                    # but --verbose alone is uv's DEBUG level: ~200 lines of interpreter
+                    # and cache internals on every streamed run. RUST_LOG scopes it to the
+                    # build frontend, so only the backend's own lines reach the user.
+                    command.append("--verbose")
+                    env.setdefault("RUST_LOG", "uv_build_frontend=debug")
                     return _run_streaming(command, cwd=cwd, env=env, timeout=timeout, output=self.output)
                 return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout)

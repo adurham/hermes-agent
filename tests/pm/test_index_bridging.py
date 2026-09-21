@@ -57,15 +57,19 @@ def test_streamed_runs_do_not_request_uv_debug_output(tmp_path, monkeypatch):
     from pm import environment
 
     seen: list[list[str]] = []
+    kwargs_seen: list[dict] = []
 
     def record(command, **kwargs):
         seen.append(command)
+        kwargs_seen.append(kwargs)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(environment, "_run_streaming", record)
     PythonEnvironment(uv=tmp_path / "uv", python=tmp_path / "python", destination=tmp_path / "venv",
                       cache=tmp_path / "cache", env={}, output=io.StringIO())._run(["sync"], cwd=tmp_path, timeout=5)
-    assert seen and not {"--verbose", "-v"} & set(seen[0])
+    (command,), (kwargs,) = seen, kwargs_seen
+    # Verbose only where the build backend speaks; uv's own DEBUG stays silent.
+    assert "--verbose" in command and kwargs["env"]["RUST_LOG"] == "uv_build_frontend=debug"
 
 
 def test_uv_timeout_names_the_mirror_knobs(tmp_path, monkeypatch):
