@@ -61,9 +61,11 @@ def _resolve_repo_dir() -> Path | None:
     repo_dir = Path(__file__).parent.parent.resolve()
     if (repo_dir / ".git").exists():
         return repo_dir
-    from hermes_constants import get_hermes_home
+    # The PROCESS home: this is the running code's identity and is cached
+    # process-wide, so a profile's context-local override must not pick it.
+    from hermes_constants import get_process_hermes_home
 
-    candidate = get_hermes_home() / "hermes-agent"
+    candidate = get_process_hermes_home() / "hermes-agent"
     if (candidate / ".git").exists():
         return candidate
     return None
@@ -79,16 +81,12 @@ def _parse_nonnegative(value: str | None) -> int | None:
 
 # --- Install stamp reader ---------------------------------------------------
 
-# The stamp file lives at the install root: beside the code in source
-# checkouts and Docker (which writes it to the project root), and in the
-# artifact's resources dir for sealed installs — whose processes carry
-# HERMES_INSTALL_ROOT (the Nix wrapper points it at the store path's
-# share/hermes-agent, where the stamp is baked). One resolution path for
-# every steward; no stamp-specific env override.
 def _resolve_stamp_file() -> Path | None:
-    from pm.paths import install_root
+    """The executing tree's stamp (steward.install_stamp_path owns the location)."""
+    from hermes_cli.steward import install_stamp_path
+    from pm.paths import repo_root
 
-    p = install_root() / "install-stamp.json"
+    p = install_stamp_path(repo_root())
     return p if p.is_file() else None
 
 

@@ -301,8 +301,10 @@ class PythonEnvironment:
         if not frozen:
             self.lock(source, timeout=timeout)
         # Locking members alone is insufficient: plain sync only installs root deps.
+        # uv writes no __pycache__ (pip does): without --compile-bytecode the first import
+        # of every module in the foreground of a user request compiles it (#100461).
         command = ["sync", "--locked" if locked else "--frozen", "--all-packages",
-                   "--python", str(self.python)]
+                   "--python", str(self.python), "--compile-bytecode"]
         if no_default_groups:
             command.append("--no-default-groups")
         if all_extras:

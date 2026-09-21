@@ -359,8 +359,13 @@ if not _pm_repair:
                 raise SystemExit(subprocess.call(_command))
             os.execv(str(_launch_python), _command)
     except Exception as exc:
-        print(f"hermes: source-update completion failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from None
+        # Degrade, never brick the CLI: the previous dependency generation is still selected
+        # (a failed sync commits nothing), so an offline or half-finished update leaves a
+        # usable Hermes plus a warning. Activation below is the real gate — a tree whose
+        # dependencies cannot load still exits with the repair remedy.
+        print(f"hermes: source-update completion failed: {exc}; "
+              "running with the previous dependencies — run `hermes update` to finish it",
+              file=sys.stderr)
     recover_if_needed(_root)
     try:
         activate_dependencies(_root)
