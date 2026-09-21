@@ -12,6 +12,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.hermes_cli.plugin_worker_support import (
+    isolated_python as isolated_python,
+    plugin_world as plugin_world,
+)
 from tools.plugin_guard import (
     scan_plugin,
     should_allow_plugin_install,
@@ -340,6 +344,12 @@ class TestRuntimeSelfTestTokens:
 
 class TestInstallIntegration:
     """E2E through _install_plugin_core with a real git clone."""
+
+    @pytest.fixture(autouse=True)
+    def _offline_pm(self, plugin_world):
+        # Keep real worker publication without provisioning tools per temporary home.
+        # Preserve the original installs' absent-config selection semantics.
+        (plugin_world.home / "config.yaml").unlink()
 
     @staticmethod
     def _make_git_repo(repo_root: Path, files: dict[str, str]):

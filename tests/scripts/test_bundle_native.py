@@ -27,7 +27,7 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     from pm.lock import Facts
     from pm.registry import get_package
     from pm.store import tree_digest
-    from tests.pm._fixtures import _wheel
+    from tests.pm._fixtures import _wheel, stage_host_python
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -37,15 +37,15 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     python_package = get_package("python")
     python_entry = python_package.store_entry(lock.version("python"), target)
     source_python = python_package.binary(canonical / python_entry, target)
+    assert source_python is not None
     target_python = output / "tools" / source_python.relative_to(canonical)
     source_python.parent.mkdir(parents=True)
-    # PM seals a payload-owned base interpreter, not an external venv launcher.
-    # Windows carries its stdlib beside the executable; POSIX PM pythons are
-    # RELOCATABLE builds that resolve sys.prefix relative to their own
-    # tree — a bare ELF copy falls back to the compile-time /install prefix
-    # and cannot even create its venv. Stage the full toolchain, mirroring
-    # the store layout the payload's tools/ directory promises.
-    if os.name == "nt":
+    # Keep a real payload-owned interpreter and stdlib. The Linux fixture
+    # excludes unused SDK libraries and duplicate executable aliases, which
+    # otherwise dominate each of the repeated admission digests below.
+    if sys.platform == "linux":
+        stage_host_python(source_python)
+    elif os.name == "nt":
         shutil.copytree(Path(sys.base_prefix), source_python.parent, dirs_exist_ok=True)
     else:
         shutil.copytree(Path(getattr(sys, "_base_executable")).resolve().parents[1],
