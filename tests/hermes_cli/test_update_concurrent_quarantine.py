@@ -457,6 +457,9 @@ def _fake_psutil_tree(tree, venv_exe, worker_exe, dead=None):
 @pytest.mark.platforms("windows")
 def test_venv_launcher_ancestors_returns_venv_side_parent(monkeypatch):
     """The worker's venv-side parent is included in the gateway pause."""
+    # The install venv is whatever hermes_constants.project_venv_dir resolves for the checkout (a
+    # CI checkout has no venv/ and the test interpreter lives elsewhere); pin it to the fixture layout.
+    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: cli_main.PROJECT_ROOT / "venv")
     venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
     worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
 
@@ -471,6 +474,9 @@ def test_venv_launcher_ancestors_returns_venv_side_parent(monkeypatch):
 @pytest.mark.platforms("windows")
 def test_venv_launcher_ancestors_ignores_non_venv_parents(monkeypatch):
     """A Scheduled Task's cmd.exe / an operator shell is not a venv holder."""
+    # The install venv is whatever hermes_constants.project_venv_dir resolves for the checkout (a
+    # CI checkout has no venv/ and the test interpreter lives elsewhere); pin it to the fixture layout.
+    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: cli_main.PROJECT_ROOT / "venv")
     venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
     worker_exe = r"C:\Windows\System32\cmd.exe"
 
@@ -498,6 +504,9 @@ def test_pause_stops_launcher_after_worker_drain(
     import hermes_cli.gateway as gateway_mod
     import gateway.status as status_mod
 
+    # The install venv is whatever hermes_constants.project_venv_dir resolves for the checkout (a
+    # CI checkout has no venv/ and the test interpreter lives elsewhere); pin it to the fixture layout.
+    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda root: cli_main.PROJECT_ROOT / "venv")
     venv_exe = str(cli_main.PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
     worker_exe = r"C:\Users\x\AppData\Roaming\uv\python\cpython-3.11\python.exe"
 

@@ -133,22 +133,16 @@ for _tool_var in INCLUDE LIB LIBPATH VSINSTALLDIR VCINSTALLDIR VCToolsInstallDir
     WindowsLibPath UCRTVersion UniversalCRTSdkDir VSCMD_ARG_HOST_ARCH VSCMD_ARG_TGT_ARCH VSCMD_VER \
     DevEnvDir ExtensionSdkDir Platform CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN \
     CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER CC_aarch64_pc_windows_msvc CC CXX AR \
-    VCPKG_ROOT OPENSSL_DIR OPENSSL_STATIC OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR \
-    DISTUTILS_USE_SDK MSSdk; do
+    VCPKG_ROOT OPENSSL_DIR OPENSSL_STATIC OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR; do
   if [ -n "${!_tool_var:-}" ]; then
     WIN_ENV+=("$_tool_var=${!_tool_var}")
   fi
 done
-# With DISTUTILS_USE_SDK set, setuptools takes `link.exe` from PATH. Under a bash-hosted step
-# the runner puts Git for Windows' /usr/bin (coreutils `link`) first, so lead PATH with the
-# MSVC linker's directory the toolchain setup pinned.
-if [ -n "${CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER:-}" ] && command -v cygpath >/dev/null 2>&1; then
-  _linker_dir="$(dirname "$(cygpath -u "$CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER")")"
-  case ":$PATH:" in
-    "$_linker_dir:"*) ;;
-    *) PATH="$_linker_dir:$PATH" ;;
-  esac
-fi
+# setuptools locates the compiler through vswhere under "%ProgramFiles(x86)%\Microsoft Visual
+# Studio\Installer"; without that variable a primed INCLUDE/LIB still reads as "Visual C++ 14.0
+# or greater is required". The parenthesised name cannot be read with ${!var}.
+_pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
+[ -z "$_pf86" ] || WIN_ENV+=("ProgramFiles(x86)=$_pf86")
 
 # ── Test-runner knobs (computed before we drop env) ────────────────────────
 # The runner's own documented environment knobs must survive the hermetic

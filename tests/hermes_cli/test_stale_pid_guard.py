@@ -177,30 +177,33 @@ class TestKillStaleDashboardProcesses:
         assert result["killed"] == [12345]
         assert result["failed"] == []
 
-    def test_stop_only_targets_the_invoking_hermes_home(self, monkeypatch):
-        """An argv match from another profile is never a ``--stop`` target."""
-        own_home = "/tmp/hermes-own"
-        foreign_home = "/tmp/hermes-foreign"
-        monkeypatch.setenv("HERMES_HOME", own_home)
 
-        with mock.patch.object(
-            dashboard_procs, "_scan_dashboard_processes",
-            return_value=[(12345, "hermes serve"), (12346, "hermes serve"), (12347, "hermes serve")],
-        ), mock.patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), mock.patch.object(
-            dashboard_procs, "_hermes_home_for_pid",
-            side_effect=lambda pid: {
-                12345: own_home,
-                12346: foreign_home,
-                12347: None,
-            }[pid],
-        ), mock.patch.object(
-            dashboard_procs, "_kill_pids_posix"
-        ) as kill:
-            result = dashboard_procs._kill_stale_dashboard_processes(scope_home=own_home)
+# The POSIX kill path (the Windows class above is host-gated on taskkill).
+@pytest.mark.platforms("posix")
+def test_stop_only_targets_the_invoking_hermes_home(monkeypatch):
+    """An argv match from another profile is never a ``--stop`` target."""
+    own_home = "/tmp/hermes-own"
+    foreign_home = "/tmp/hermes-foreign"
+    monkeypatch.setenv("HERMES_HOME", own_home)
 
-        kill.assert_called_once()
-        assert kill.call_args.args[0] == [12345]
-        assert result["matched"] == [12345]
+    with mock.patch.object(
+        dashboard_procs, "_scan_dashboard_processes",
+        return_value=[(12345, "hermes serve"), (12346, "hermes serve"), (12347, "hermes serve")],
+    ), mock.patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), mock.patch.object(
+        dashboard_procs, "_hermes_home_for_pid",
+        side_effect=lambda pid: {
+            12345: own_home,
+            12346: foreign_home,
+            12347: None,
+        }[pid],
+    ), mock.patch.object(
+        dashboard_procs, "_kill_pids_posix"
+    ) as kill:
+        result = dashboard_procs._kill_stale_dashboard_processes(scope_home=own_home)
+
+    kill.assert_called_once()
+    assert kill.call_args.args[0] == [12345]
+    assert result["matched"] == [12345]
 
 
 class TestHermesHomeForPid:

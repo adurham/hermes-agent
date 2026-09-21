@@ -256,7 +256,11 @@ def _npm_graph(source):
     assert node, "source completion acceptance requires Node and npm"
     for name in ("esbuild", "typescript", "vite"):
         probe = subprocess.run([node, "-p", f"require.resolve('{name}/package.json')"],
-                               cwd=ROOT, capture_output=True, text=True, check=True)
+                               cwd=ROOT, capture_output=True, text=True)
+        if probe.returncode:
+            # The Python lane runs without `npm ci`. The real completion path runs in the
+            # install E2E workflow (source updates rebuild the products there).
+            pytest.skip(f"source completion acceptance requires {name} from the checkout's node_modules")
         tools[name] = str(Path(probe.stdout.strip()).parent)
     root = {"name": "completion-graph", "version": "1.0.0", "private": True, "type": "module",
             "workspaces": ["ui-tui", "web", "packages/value"],
