@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import unittest
 
-from tools.process_registry import _format_async_delegation, _result_model_label
+from tools.process_registry import _result_model_label
+from tools.process_registry_notifications import _format_async_delegation
 
 
 def _single_evt(**overrides) -> dict:

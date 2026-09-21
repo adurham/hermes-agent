@@ -138,6 +138,10 @@ export function openSession(
     const focused = focusOpenSession(storedSessionId, workspaceScope)
 
     if (focused) {
+      if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
+        navigate(sessionRoute(storedSessionId))
+      }
+
       return
     }
 
@@ -165,6 +169,8 @@ export function openSession(
     // click looks like a no-op. Same compensation the drag flow and
     // `reuseBlankDraftTile` above already make.
     revealTreePane(`session-tile:${storedSessionId}`)
+
+    focusOpenSession(storedSessionId, workspaceScope)
 
     return
   }

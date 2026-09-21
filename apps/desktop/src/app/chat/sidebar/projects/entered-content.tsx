@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import type { HermesGitWorktree } from '@/global'
@@ -12,6 +13,7 @@ import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import {
   $dismissedWorktreeIds,
+  $removedWorktreeIds,
   $sidebarLaneSessionOrderIds,
   $sidebarWorkspaceOrderIds,
   dismissWorktree,
@@ -54,6 +56,7 @@ export function EnteredProjectContent({
   project,
   renderRows,
   onNewSession,
+  onNewSessionSplit,
   repoWorktrees,
   liveSessions,
   removedSessionIds,
@@ -68,6 +71,7 @@ export function EnteredProjectContent({
     preserveOrder?: boolean
   ) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -95,6 +99,7 @@ export function EnteredProjectContent({
           key={repo.id}
           liveSessions={liveSessions}
           onNewSession={onNewSession}
+          onNewSessionSplit={onNewSessionSplit}
           removedSessionIds={removedSessionIds}
           renderRows={renderRows}
           repo={repo}
@@ -111,6 +116,7 @@ function RepoFlatSection({
   showHeader,
   renderRows,
   onNewSession,
+  onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
   removedSessionIds,
@@ -126,6 +132,7 @@ function RepoFlatSection({
     preserveOrder?: boolean
   ) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionSplit?: NewSessionSplitHandler
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
@@ -142,6 +149,7 @@ function RepoFlatSection({
   // lanes never clobbers repo B's saved order.
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const laneSessionOrders = useStore($sidebarLaneSessionOrderIds)
+  const removedWorktrees = useStore($removedWorktreeIds)
 
   // The repo's session lanes already come fully built from the backend; this
   // only injects empty VISUAL lanes from a live `git worktree list`.
@@ -172,11 +180,12 @@ function RepoFlatSection({
   )
 
   // Main lanes are always visible; linked worktrees can be user-dismissed.
-  // A live `git worktree list` hit wins over an old dismissal: if git says the
-  // worktree exists again (or still exists after "hide from sidebar"), surface it.
+  // Discovery may resurrect a removed worktree, never an explicit sidebar hide.
   const defaultOrdered = overlaidGroups.filter(
     group =>
-      group.isMain || !dismissedWorktrees.includes(group.id) || (group.path && discoveredWorktreePaths.has(group.path))
+      group.isMain ||
+      !dismissedWorktrees.includes(group.id) ||
+      (removedWorktrees.includes(group.id) && group.path && discoveredWorktreePaths.has(group.path))
   )
 
 
@@ -217,7 +226,7 @@ function RepoFlatSection({
 
     try {
       await removeWorktreePath(repo.path, group.path, { force })
-      dismissWorktree(group.id)
+      dismissWorktree(group.id, { removed: true })
     } catch (err) {
       // git refuses a non-force remove on a dirty/locked worktree — offer force
       // rather than dead-ending on an error toast.
@@ -306,6 +315,7 @@ function RepoFlatSection({
       // The kanban bucket is read-only: it aggregates many task worktrees, so
       // "new session here" and "remove worktree" have no single target.
       onNewSession: group.isKanban ? undefined : onNewSession,
+      onNewSessionSplit: group.isKanban ? undefined : onNewSessionSplit,
       onRemove: group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group),
       renderRows,
       sessionsReorderable: true,
@@ -406,6 +416,24 @@ function RepoFlatSection({
                 setWorkspaceNodeOpen(repo.id, true)
                 onNewSession(repo.path)
               }}
+              onPointerDown={
+                onNewSessionSplit
+                  ? event => {
+                      startNewSessionDrag(
+                        placement => {
+                          setWorkspaceNodeOpen(repo.id, true)
+                          onNewSessionSplit(placement.dir, {
+                            anchor: placement.anchor,
+                            before: placement.before,
+                            cwd: repo.path
+                          })
+                        },
+                        event,
+                        { cwd: repo.path, label: s.newSessionIn(repo.label) }
+                      )
+                    }
+                  : undefined
+              }
             />
           )
         }

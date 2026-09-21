@@ -46,6 +46,29 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    def test_generate_title_disables_reasoning(self):
+        """The titling pass must explicitly disable thinking (#91927).
+
+        With the aux default reasoning_effort "" (provider default), Gemini
+        bills internal thought tokens against max_tokens=64, the JSON payload
+        never lands, and the prose fallback stores the opening fence
+        ("```json") as the title. Enforce the module's documented
+        thinking-disabled contract at the call site.
+        """
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Reasoning Off"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question") == "Reasoning Off"
+
+        assert captured_kwargs.get("reasoning_config") == {"enabled": False}
+
 
 
     def test_strips_think_blocks(self):
@@ -126,6 +149,48 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("question", "answer") == "Investigate the title resolver bug"
+
+    @pytest.mark.parametrize("echo", [
+        "Fix login button on mobile",
+        "fix login button on mobile",
+        '"Fix login button on mobile"',
+        "(Fix login button on mobile)",
+        "[Fix login button on mobile]",
+        "Postgres connection pool exhaustion",
+        "Code changes",
+    ])
+    def test_rejects_prompt_example_echo(self, echo):
+        """A model that parrots one of the prompt's own example titles back
+        must be rejected — a canned example says nothing about the session.
+        Port of QwenLM/qwen-code#9709 (their #9706 bug class)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = echo
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("help me with something unrelated") is None
+
+    def test_friendly_greeting_example_is_allowed(self):
+        """'Friendly greeting' is prescribed output for bare greetings, not an
+        echo failure — it must pass the guard."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Friendly greeting"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("hey there!") == "Friendly greeting"
+
+    def test_topical_title_resembling_example_passes(self):
+        """The guard is exact-match only: a genuinely topical title that merely
+        resembles an example must not be rejected."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Fix login button on desktop"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("the login button is broken on desktop") == (
+                "Fix login button on desktop"
+            )
 
 
 
@@ -221,7 +286,17 @@ class TestGenerateTitle:
         assert "hello world" in captured["messages"][1]["content"]
 
     def test_handles_none_message_content(self):
-        """None content (e.g. empty assistant turn) becomes empty string."""
+        """None user_message short-circuits to no title, no LLM call.
+
+        STALE TEST, CORRECT NEW CODE: this test predates a refactor (already
+        landed on the fork's pre-merge tip, confirmed via `generate_title`'s
+        current single-arg-titling docstring/signature) that dropped the old
+        two-message "User: ...\\n\\nAssistant: ..." skeleton in favor of titling
+        from the user's opening message alone. With `user_message=None`,
+        `_summarize_user_message` returns "" and `generate_title` returns
+        None before ever calling `call_llm` — there is no "User:"/"Assistant:"
+        skeleton to inspect anymore.
+        """
         captured = {}
 
         def mock_call_llm(**kwargs):
@@ -232,11 +307,11 @@ class TestGenerateTitle:
             return resp
 
         with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
-            generate_title(None, None)
+            result = generate_title(None, None)
 
-        # Should have produced an "User: \n\nAssistant: " skeleton, not crashed.
-        assert "User:" in captured["messages"][1]["content"]
-        assert "Assistant:" in captured["messages"][1]["content"]
+        # Empty user message means nothing to title: no title, no LLM call.
+        assert result is None
+        assert captured == {}
 
     def test_skips_when_title_generation_disabled(self):
         """auxiliary.title_generation.enabled=false disables automatic titles."""
@@ -324,10 +399,11 @@ class TestAutoTitleSession:
     def test_body_exception_routed_to_failure_callback(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         seen = []
 
         boom = ImportError("stale module")
-        with patch("agent.title_generator._auto_title_session", side_effect=boom):
+        with patch("agent.title_generator.generate_title", side_effect=boom):
             auto_title_session(
                 db,
                 "sess-1",

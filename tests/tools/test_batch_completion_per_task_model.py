@@ -17,7 +17,7 @@ These assert the invariant (reported model reflects what children actually
 ran on), not the exact header wording.
 """
 
-from tools.process_registry import _format_async_delegation as _fmt
+from tools.process_registry_notifications import _format_async_delegation as _fmt
 
 
 def _evt(results, model="claude-sonnet-5"):

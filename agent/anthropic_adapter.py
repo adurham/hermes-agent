@@ -1,105 +1,38 @@
-"""Anthropic Messages API adapter for Hermes Agent.
+"""Anthropic Messages API adapter: client construction + the Messages call for Hermes's
+OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth setup-tokens
+(``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header. Endpoint predicates,
+payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
+credentials}.py``; import them from there.
 
-Translates between Hermes's internal OpenAI-style message format and
-Anthropic's Messages API. Follows the same pattern as the codex_responses
-adapter — all provider-specific logic is isolated here.
-
-Targets ``client.beta.messages.{create,stream}`` (anthropic SDK 0.100+).
-The beta namespace exposes typed kwargs for the beta-gated fields
-``thinking``, ``output_config``, ``context_management``, ``betas``,
-``speed``, and ``metadata`` — eliminating the ``extra_body`` /
-``extra_headers`` workarounds the plain ``messages.*`` namespace required.
-
-Wire shape mirrors Claude Code 2.1.119 (verified by mitmdump capture
-2026-05-06): same betas, same body field set, same metadata.user_id
-identity blob shape.
-
-Auth supports:
-  - Regular API keys (sk-ant-api*) → x-api-key header
-  - OAuth setup-tokens (sk-ant-oat*) → Bearer auth + beta header
-  - Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json) → Bearer auth
+FORK: targets ``client.beta.messages.{create,stream}`` (anthropic SDK 0.100+) — the beta
+namespace exposes typed kwargs for ``thinking``, ``output_config``, ``context_management``,
+``betas``, ``speed`` and ``metadata``. Wire shape mirrors Claude Code 2.1.119 (mitmdump
+capture 2026-05-06): same betas, same body field set, same metadata.user_id identity blob.
 """
 
 import copy
 import hashlib
 import json
 import logging
+import math
 import os
-import platform
 import re
-import secrets
 import socket
-import stat
 import subprocess
 import time
 import uuid
+from contextlib import suppress
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from utils import base_url_host_matches, normalize_proxy_env_vars
 from hermes_constants import get_hermes_home
-from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
-from agent.secret_scope import get_secret as _get_secret
 
-# This module keeps client construction and the Messages API call itself.  The
-# three surfaces it used to inline now live next to it:
-#
-#   agent/anthropic_endpoints.py        base-URL/endpoint-family predicates
-#   agent/anthropic_message_convert.py  OpenAI -> Anthropic payload conversion
-#   agent/anthropic_credentials.py      credential sources, OAuth, refresh commit
-#
-# All three are re-exported below so long standing
-# ``from agent.anthropic_adapter import resolve_anthropic_token`` (or
-# ``convert_messages_to_anthropic``, ...) imports keep resolving.
-from agent.anthropic_endpoints import (  # noqa: F401
-    _KIMI_FAMILY_EXACT_SLUGS,
-    _KIMI_FAMILY_MODEL_PREFIXES,
-    _base_url_needs_context_1m_beta,
-    _is_azure_anthropic_endpoint,
-    _is_deepseek_anthropic_endpoint,
-    _is_kimi_coding_endpoint,
-    _is_kimi_family_endpoint,
-    _is_minimax_anthropic_endpoint,
-    _is_nous_portal_endpoint,
-    _is_opencode_endpoint,
-    _is_third_party_anthropic_endpoint,
-    _model_name_is_kimi_family,
-    _normalize_base_url_text,
-    _requires_bearer_auth,
-)
-from agent.anthropic_message_convert import (  # noqa: F401
-    _EMPTY_TEXT_PLACEHOLDER,
-    _apply_assistant_cache_control_to_last_cacheable_block,
-    _content_parts_to_anthropic_blocks,
-    _convert_assistant_message,
-    _convert_content_part_to_anthropic,
-    _convert_content_to_anthropic,
-    _convert_tool_message_to_result,
-    _convert_user_message,
-    _ensure_leading_user_turn,
-    _evict_old_screenshots,
-    _extract_preserved_thinking_blocks,
-    _fix_blank_text_blocks_in_list,
-    _image_source_from_openai_url,
-    _is_bedrock_model_id,
-    _manage_thinking_signatures,
-    _merge_consecutive_roles,
-    _normalize_tool_input_schema,
-    _safe_text,
-    _sanitize_replay_block,
-    _sanitize_tool_id,
-    _scrub_blank_text_blocks,
-    _strip_orphaned_tool_blocks,
-    _to_plain_data,
-    convert_messages_to_anthropic,
-    convert_tools_to_anthropic,
-    normalize_model_name,
-)
-from agent.anthropic_credentials import (  # noqa: F401
+from agent.anthropic_credentials import (  # noqa: F401 — compat re-export surface for tests/plugins
     _OAUTH_CLIENT_ID,
     _OAUTH_REDIRECT_URI,
     _OAUTH_SCOPES,
-    _OAUTH_TOKEN_URL,
     _OAUTH_TOKEN_URLS,
     _OAUTH_TOKEN_USER_AGENT,
     CredentialPersistError,
@@ -129,23 +62,22 @@ from agent.anthropic_credentials import (  # noqa: F401
     run_hermes_oauth_login_pure,
     run_oauth_setup_token,
 )
+from agent.anthropic_endpoints import (
+    _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
+    _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
+    _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
+    _requires_bearer_auth,
+)
+from agent.anthropic_message_convert import (
+    convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
+)
 
-try:
-    import hermes_cli as _hermes_cli
-
-    _HERMES_VERSION = str(_hermes_cli.__version__)
-except Exception:
-    _HERMES_VERSION = "0.0.0"
+from hermes_cli import __version__ as _HERMES_VERSION
 
 
-
-# NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
-# ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
-# and the 3 usage sites (build_anthropic_client, build_anthropic_bedrock_client,
-# read_claude_code_credentials_from_keychain) are all on cold user-triggered
-# paths. Access via the `_get_anthropic_sdk()` accessor below, which caches
-# the module after the first call and returns None on ImportError.
-_anthropic_sdk: Any = ...  # sentinel — None means "tried and missing"
+# ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
+# every usage site is a cold user-triggered path. ``...`` = not yet tried; None = tried, missing.
+_anthropic_sdk: Any = ...
 
 # FORK: beta-only typed kwargs that only work on client.beta.messages.*
 # (Anthropic SDK 0.100+). The fork's Claude-Code-mimicry path attaches
@@ -158,14 +90,9 @@ def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
     global _anthropic_sdk
     if _anthropic_sdk is ...:
-        try:
+        with suppress(Exception):  # ImportError or FeatureUnavailable — fall through to the import below
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("provider.anthropic", prompt=False)
-        except ImportError:
-            pass
-        except Exception:
-            # FeatureUnavailable — fall through to ImportError handling below
-            pass
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -174,6 +101,14 @@ def _get_anthropic_sdk():
         else:
             _install_sse_event_observer(_sdk)
     return _anthropic_sdk
+
+
+def _require_sdk(purpose: str, verb: str = "Install it with"):
+    """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
+    sdk = _get_anthropic_sdk()
+    if sdk is None:
+        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: pip install 'anthropic>=0.39.0'")
+    return sdk
 
 
 # ── SSE event observer (ping visibility) ──────────────────────────────
@@ -328,85 +263,53 @@ def _build_anthropic_metadata(session_id: str | None) -> Dict[str, str]:
 
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
-# Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
-# Anthropic exposes 5 levels on 4.7+: low, medium, high, xhigh, max.
-# Opus/Sonnet 4.6 only expose 4 levels: low, medium, high, max — no xhigh.
-# We preserve xhigh as xhigh on 4.7+ (the recommended default for coding/
-# agentic work) and downgrade it to max on pre-4.7 adaptive models (which
-# is the strongest level they accept).  "minimal" is a legacy alias that
-# maps to low on every model.  See:
-# https://platform.claude.com/docs/en/about-claude/models/migration-guide
+# Hermes effort -> Anthropic adaptive-thinking effort (output_config.effort). 4.7+ exposes
+# low/medium/high/xhigh/max; Opus/Sonnet 4.6 have no xhigh, so callers downgrade xhigh->max
+# there (see _supports_xhigh_effort). "minimal" is a legacy alias for low on every model.
 ADAPTIVE_EFFORT_MAP = {
-    "ultra":   "max",
-    "max":     "max",
-    "xhigh":   "xhigh",
-    "high":    "high",
-    "medium":  "medium",
-    "low":     "low",
+    "ultra": "max", "max": "max", "xhigh": "xhigh", "high": "high", "medium": "medium", "low": "low",
     "minimal": "low",
 }
 
-# ── Anthropic thinking-mode classification ────────────────────────────
-# Claude 4.6 replaced budget-based extended thinking with *adaptive* thinking,
-# and 4.7 additionally forbids the manual ``thinking`` block entirely and drops
-# temperature/top_p/top_k.  Newer Claude releases (4.8, and named models like
-# claude-fable-5) follow the same modern contract — but they share no common
-# version substring, so an allowlist of version numbers ("4.6", "4.7", …) goes
-# stale the moment a model ships without a recognized number and silently
-# routes it down the legacy manual-thinking path.
-#
-# Instead we DEFAULT unknown Claude models to the modern contract and keep an
-# explicit *legacy* list of the older Claude families that still require manual
-# thinking.  This mirrors _get_anthropic_max_output's "default to newest" design
-# (future models are unlikely to regress to the older contract), so each new
-# Claude release works without a code change.
-#
-# Non-Claude Anthropic-Messages models (minimax, qwen3, GLM, …) are NOT Claude,
-# so they fall through to the legacy path automatically — exactly what those
-# manual-thinking endpoints need.
-
-# Older Claude families that DON'T support adaptive thinking (manual thinking
-# with budget_tokens only). Substring-matched against the model name.
+# Thinking-mode classification. Claude 4.6 replaced budget-based extended thinking with *adaptive*
+# thinking; 4.7 additionally forbids the manual ``thinking`` block and drops temperature/top_p/
+# top_k. Newer releases share no common version substring, so an allowlist of "modern" versions
+# would go stale and silently route a new model down the legacy path: unknown Claude models
+# DEFAULT to the modern contract and only explicit *legacy* lists are kept (mirroring
+# _get_anthropic_max_output's default-to-newest). Non-Claude Anthropic-Messages models (minimax,
+# qwen3, GLM, ...) fall through to the legacy manual-thinking path, which they need.
+# Older Claude families that need manual thinking (budget_tokens only); ``claude-3`` covers
+# 3/3.5/3.7 and the ``-2025`` entries are date-stamped 4.0 ids.
 _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
-    "claude-3",          # 3, 3.5, 3.7
-    "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
-    "claude-sonnet-4-0", "claude-sonnet-4.0",
-    "claude-opus-4-2025", "claude-sonnet-4-2025",  # date-stamped 4.0 IDs
-    "claude-opus-4-5", "claude-opus-4.5",
-    "claude-sonnet-4-5", "claude-sonnet-4.5",
-    "claude-haiku-4-5", "claude-haiku-4.5",
+    "claude-3", "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
+    "claude-sonnet-4-0", "claude-sonnet-4.0", "claude-opus-4-2025", "claude-sonnet-4-2025",
+    "claude-opus-4-5", "claude-opus-4.5", "claude-sonnet-4-5", "claude-sonnet-4.5", "claude-haiku-4-5",
+    "claude-haiku-4.5",
 )
-
-# Older Claude families that DON'T accept the "xhigh" effort level (4.6 only
-# supports low/medium/high/max). xhigh arrived with Opus 4.7. Adaptive models
-# not in this list (4.7, 4.8, fable, future) accept xhigh.
-_NO_XHIGH_CLAUDE_SUBSTRINGS = (
-    "claude-opus-4-6", "claude-opus-4.6",
-    "claude-sonnet-4-6", "claude-sonnet-4.6",
-)
-
-# Adaptive Claude families that REJECT a thinking disable — thinking is
-# mandatory and ``thinking: {"type": "disabled"}`` answers HTTP 400. The Portal
-# catalog flags the same families with ``reasoning.mandatory``.
-#
-# Unlike the two lists above, the failure here is asymmetric: a missing entry
-# 400s the turn, while a spurious one only leaves thinking on. When in doubt,
-# add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = (
-    "claude-fable",
-)
+# Adaptive families that reject the "xhigh" effort (arrived with Opus 4.7) and still accept
+# sampling params.
+_NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-sonnet-4-6", "claude-sonnet-4.6")
+# Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
+# 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
+# 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-8", "opus-4.8", "opus-5")
 
 
 def _is_claude_model(model: str | None) -> bool:
     return "claude" in (model or "").lower()
 
 
-_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
+def _model_matches(model: str, substrings) -> bool:
+    """Case-insensitive substring match of ``model`` against a family list."""
+    m = model.lower()
+    return any(v in m for v in substrings)
 
-# ── Max output token limits per Anthropic model ───────────────────────
-# Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
-# max_tokens as a mandatory field.  Previously we hardcoded 16384, which
-# starves thinking-enabled models (thinking tokens count toward the limit).
+
+# Max output tokens per model (Anthropic docs + Cline catalog). Anthropic requires max_tokens; a
+# fixed 16384 starved thinking-enabled models (thinking tokens count toward the limit).
+# ``claude-fable`` = Mythos-class named models (1M context); ``minimax`` is a third-party
+# Anthropic-compatible endpoint; DashScope enforces ``qwen3`` max_tokens in [1, 65536].
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Match Claude Code 2.1.119 main chat path (verified by disassembly:
     # `max_tokens: 16000` appears 7× in the binary; 64000 once for streaming
@@ -449,84 +352,41 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     # DashScope enforces max_tokens ∈ [1, 65536]
     "qwen3":               65_536,
 }
-
-# For any model not in the table, assume the highest current limit.
-# Future Anthropic models are unlikely to have *less* output capacity.
+# Unknown models get the highest current limit: future models are unlikely to have *less*.
 _ANTHROPIC_DEFAULT_OUTPUT_LIMIT = 128_000
 
 
 def _get_anthropic_max_output(model: str) -> int:
-    """Look up the max output token limit for an Anthropic model.
-
-    Uses substring matching against _ANTHROPIC_OUTPUT_LIMITS so date-stamped
-    model IDs (claude-sonnet-4-5-20250929) and variant suffixes (:1m, :fast)
-    resolve correctly.  Longest-prefix match wins to avoid e.g. "claude-3-5"
-    matching before "claude-3-5-sonnet".
-
-    Normalizes dots to hyphens so that model names like
-    ``anthropic/claude-opus-4.6`` match the ``claude-opus-4-6`` table key.
-    """
+    """Max output tokens for ``model`` via longest substring match against
+    ``_ANTHROPIC_OUTPUT_LIMITS`` (so date-stamped ids and ``:1m``/``:fast`` suffixes resolve, and
+    ``claude-3-5-sonnet`` beats ``claude-3-5``). Dots normalize to hyphens (``claude-opus-4.6``)."""
     m = model.lower().replace(".", "-")
-    best_key = ""
-    best_val = _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
-    for key, val in _ANTHROPIC_OUTPUT_LIMITS.items():
-        if key in m and len(key) > len(best_key):
-            best_key = key
-            best_val = val
-    return best_val
+    best_key = max((key for key in _ANTHROPIC_OUTPUT_LIMITS if key in m), key=len, default=None)
+    return _ANTHROPIC_OUTPUT_LIMITS[best_key] if best_key else _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
 
 
 def _resolve_positive_anthropic_max_tokens(value) -> Optional[int]:
-    """Return ``value`` floored to a positive int, or ``None`` if it is not a
-    finite positive number. Ported from openclaw/openclaw#66664.
-
-    Anthropic's Messages API rejects ``max_tokens`` values that are 0,
-    negative, non-integer, or non-finite with HTTP 400. Python's ``or``
-    idiom (``max_tokens or fallback``) correctly catches ``0`` but lets
-    negative ints and fractional floats (``-1``, ``0.5``) through to the
-    API, producing a user-visible failure instead of a local error.
-    """
-    # Booleans are a subclass of int — exclude explicitly so ``True`` doesn't
-    # silently become 1 and ``False`` doesn't become 0.
-    if isinstance(value, bool):
-        return None
-    if not isinstance(value, (int, float)):
+    """``value`` floored to a positive int, or None when it is not a finite positive number.
+    Anthropic 400s on max_tokens that are 0, negative, fractional or non-finite; the ``max_tokens
+    or fallback`` idiom catches 0 but lets ``-1``/``0.5`` through. Booleans are excluded (they
+    subclass int)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
-        import math
         if not math.isfinite(value):
             return None
-    except Exception:
+    except Exception:  # e.g. OverflowError for ints too large for float
         return None
-    floored = int(value)  # truncates toward zero for floats
-    return floored if floored > 0 else None
+    return int(value) if int(value) > 0 else None  # int() truncates toward zero for floats
 
 
-def _resolve_anthropic_messages_max_tokens(
-    requested,
-    model: str,
-    context_length: Optional[int] = None,
-) -> int:
-    """Resolve the ``max_tokens`` budget for an Anthropic Messages call.
-
-    Prefers ``requested`` when it is a positive finite number; otherwise
-    falls back to the model's output ceiling. Raises ``ValueError`` if no
-    positive budget can be resolved (should not happen with current model
-    table defaults, but guards against a future regression where
-    ``_get_anthropic_max_output`` could return ``0``).
-
-    Separately, callers apply a context-window clamp — this resolver does
-    not, to keep the positive-value contract independent of endpoint
-    specifics.
-
-    Ported from openclaw/openclaw#66664 (resolveAnthropicMessagesMaxTokens).
-    """
-    resolved = _resolve_positive_anthropic_max_tokens(requested)
-    if resolved is not None:
+def _resolve_anthropic_messages_max_tokens(requested, model: str, context_length: Optional[int] = None) -> int:
+    """``requested`` when it is a positive finite number, else the model's output ceiling. Raises
+    ValueError if neither is positive. The context-window clamp is the caller's job so the
+    positive-value contract stays endpoint-agnostic."""
+    resolved = _resolve_positive_anthropic_max_tokens(requested) or _get_anthropic_max_output(model)
+    if resolved > 0:
         return resolved
-    fallback = _get_anthropic_max_output(model)
-    if fallback > 0:
-        return fallback
     raise ValueError(
         f"Anthropic Messages adapter requires a positive max_tokens value for "
         f"model {model!r}; got {requested!r} and no model default resolved."
@@ -534,152 +394,70 @@ def _resolve_anthropic_messages_max_tokens(
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude models that use adaptive thinking (4.6+).
-
-    Defaults *unknown* Claude models to adaptive (the modern contract) and
-    only returns False for the explicit legacy list of older Claude families
-    that require manual budget-based thinking. Non-Claude Anthropic-Messages
-    models (minimax, qwen3, …) return False so they keep the manual path.
-
-    Kimi / Moonshot models are the exception: their Anthropic-compatible
-    endpoints implement the adaptive contract (``thinking.type="adaptive"``
-    + ``output_config.effort``, including ``xhigh`` and ``display``).
-    """
-    if _model_name_is_kimi_family(model):
-        return True
-    if not _is_claude_model(model):
-        return False
-    m = model.lower()
-    return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+    """True for Claude models using adaptive thinking (4.6+): unknown Claude models default to
+    adaptive, the explicit legacy list stays manual, and non-Claude models return False — except
+    Kimi/Moonshot, whose Anthropic-compatible endpoints implement the adaptive contract."""
+    return _model_name_is_kimi_family(model) or (
+        _is_claude_model(model) and not _model_matches(model, _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+    )
 
 
 def _supports_xhigh_effort(model: str) -> bool:
-    """Return True for models that accept the 'xhigh' adaptive effort level.
-
-    Opus 4.7 introduced xhigh as a distinct level between high and max.
-    Pre-4.7 adaptive models (Opus/Sonnet 4.6) only accept low/medium/high/max
-    and reject xhigh with an HTTP 400. Callers should downgrade xhigh→max
-    when this returns False.
-
-    Defaults unknown adaptive Claude models to accepting xhigh (4.7+ contract);
-    only the 4.6 family and legacy manual-thinking models are excluded.
-    """
-    if not _supports_adaptive_thinking(model):
-        return False
-    m = model.lower()
-    return not any(v in m for v in _NO_XHIGH_CLAUDE_SUBSTRINGS)
+    """True for models accepting the 'xhigh' effort (Opus 4.7+). Opus/Sonnet 4.6 400 on it —
+    callers downgrade xhigh->max when this returns False."""
+    return _supports_adaptive_thinking(model) and not _model_matches(model, _NO_XHIGH_CLAUDE_SUBSTRINGS)
 
 
 def _accepts_thinking_disable(model: str) -> bool:
-    """Return True when *model* accepts an explicit thinking disable.
-
-    Adaptive Claude models default to thinking ON, so "thinking off" only
-    takes effect if we actively send ``thinking: {"type": "disabled"}`` —
-    omitting the parameter leaves the upstream default in place and the model
-    thinks anyway.  Reasoning-mandatory families reject the disable outright
-    with an HTTP 400, so they keep the omit-everything behavior.
-
-    Legacy manual-thinking Claude models are excluded because they need no
-    disable: thinking is opt-in there via ``budget_tokens``, so not sending
-    the block already means off.
-
-    Scoped to Claude deliberately.  Kimi/Moonshot endpoints also speak the
-    adaptive contract, but their documented disable behavior is omission
-    (#13848) and they are not part of this bug; sending them a new parameter
-    on the strength of Claude's contract would be a guess.
-    """
-    if not _is_claude_model(model):
-        return False
-    if not _supports_adaptive_thinking(model):
-        return False
-    m = model.lower()
-    return not any(v in m for v in _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+    """True when ``model`` accepts an explicit ``thinking: {"type": "disabled"}``. Adaptive Claude
+    thinks by default, so "off" only works if the disable is sent; mandatory-thinking families
+    400 on it and keep the omit behavior. Legacy manual-thinking models are opt-in via
+    budget_tokens, so omission is already off. Scoped to Claude: Kimi's documented disable is
+    omission, and sending it a new parameter on the strength of Claude's contract is a guess."""
+    return (
+        _is_claude_model(model)
+        and _supports_adaptive_thinking(model)
+        and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+    )
 
 
 def _forbids_sampling_params(model: str) -> bool:
-    """Return True for models that 400 on any non-default temperature/top_p/top_k.
-
-    Opus 4.7 introduced this restriction; later Claude releases follow it.
-    Defaults unknown Claude models to forbidding sampling params (the modern
-    contract). The 4.6 family still accepts them, and the legacy manual-thinking
-    families (4.5 and older) accept them too, so both are excluded. Non-Claude
-    models are unaffected. Callers should omit these fields entirely rather than
-    passing zero/default values (the API rejects anything non-null).
-    """
-    if not _is_claude_model(model):
-        return False
-    m = model.lower()
-    # 4.6 family is adaptive but still accepts sampling params.
-    if any(v in m for v in _NO_XHIGH_CLAUDE_SUBSTRINGS):
-        return False
-    return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
+    """True for models that 400 on any non-default temperature/top_p/top_k (Opus 4.7 and later;
+    unknown Claude defaults to forbidding). The 4.6 family and the legacy manual-thinking families
+    still accept them. Callers omit the fields entirely — the API rejects anything non-null."""
+    return _is_claude_model(model) and not _model_matches(
+        model, _NO_XHIGH_CLAUDE_SUBSTRINGS + _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS
+    )
 
 
 def _supports_fast_mode(model: str) -> bool:
-    """Return True for models that support Anthropic Fast Mode (speed=fast).
-
-    Per Anthropic docs, fast mode is currently supported on Opus 4.6 only.
-    Sending ``speed: "fast"`` to any other Claude model (including Opus 4.7)
-    returns HTTP 400. This guard prevents silently 400'ing when stale config
-    or older callers leave fast mode enabled across a model upgrade.
-    """
-    return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5, Claude API only). Explicit
+    allowlist, not a version floor: Opus 4.6 had fast mode and lost it (requests silently run and
+    bill at standard speed), Opus 4.7 hard-400s on the param. Dedicated ``...-fast`` ids select
+    fast inference via the model field and must NOT also receive the speed parameter."""
+    return "-fast" not in model and any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
 
-# Beta headers for enhanced features that are safe on ordinary/native Anthropic
-# requests. As of Opus 4.7 (2026-04-16), these are GA on Claude 4.6+ — the
-# beta headers are still accepted (harmless no-op) but not required. Kept
-# here so older Claude (4.5, 4.1) + compatible endpoints that still gate on
-# the headers continue to get the enhanced features.
-#
-# Do NOT include ``context-1m-2025-08-07`` here. Anthropic returns HTTP 400
-# ("long context beta is not yet available for this subscription") for
-# accounts without the long-context beta, which breaks normal short auxiliary
-# calls like title generation/session summarization.
-#
-# ``context-1m-2025-08-07`` is still required to unlock the 1M context window
-# on Claude Opus 4.6/4.7 and Sonnet 4.6 when served via AWS Bedrock or Azure
-# AI Foundry. Add it only for those endpoint-specific paths below.
-_COMMON_BETAS = [
-    "interleaved-thinking-2025-05-14",
-    "fine-grained-tool-streaming-2025-05-14",
-    # extended-cache-ttl-2025-04-11 enables the ``ttl`` field on
-    # cache_control markers (e.g. ``{"type": "ephemeral", "ttl": "1h"}``).
-    # Without this header, Anthropic ignores the ttl field and falls back
-    # to the default 5-minute cache TTL — which silently breaks the
-    # ``prompt_caching.cache_ttl: 1h`` config. The header is harmless when
-    # cache_ttl is "5m" (the marker just doesn't include ttl in that case).
-    "extended-cache-ttl-2025-04-11",
-    # Added 2026-05-06 to mirror Claude Code 2.1.119's wire format
-    # (verified by mitmdump capture against api.anthropic.com).
-    # CC sends these on every /v1/messages request:
-    "redact-thinking-2026-02-12",
-    "context-management-2025-06-27",
-    "prompt-caching-scope-2026-01-05",
-    "effort-2025-11-24",
-]
-# context-1m-2025-08-07 is added conditionally — see
-# ``_base_url_needs_context_1m_beta`` and the insert in
-# ``_common_betas_for_base_url`` below.
-# Anthropic-native-only betas — strip on bearer-auth third-party endpoints
-# (MiniMax etc. host their own models and reject unknown betas).
-_ANTHROPIC_NATIVE_ONLY_BETAS = {
-    "redact-thinking-2026-02-12",
-    "context-management-2025-06-27",
-    "prompt-caching-scope-2026-01-05",
-    "effort-2025-11-24",
-}
-# MiniMax's Anthropic-compatible endpoints fail tool-use requests when
-# the fine-grained tool streaming beta is present.  Omit it so tool calls
-# fall back to the provider's default response path.
+# Beta headers safe on ordinary/native Anthropic requests. GA on Claude 4.6+ (harmless no-op
+# there) but older Claude and compatible endpoints still gate on them. Do NOT add
+# ``context-1m-2025-08-07``: accounts without the long-context beta get HTTP 400, breaking short
+# auxiliary calls. Bedrock/Azure still need it for 1M context and opt in on their own paths.
+# MiniMax's Anthropic-compatible endpoints fail tool-use requests when the tool-streaming beta is
+# present. ``_FAST_MODE_BETA`` enables the ``speed: "fast"`` request parameter.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-# 1M context beta. Native Anthropic does not get this by default because some
-# subscriptions reject it, but Bedrock/Azure still need it for 1M context.
+_COMMON_BETAS = ["interleaved-thinking-2025-05-14", _TOOL_STREAMING_BETA]
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
-# Extended cache TTL beta — Anthropic-only feature; bearer-auth endpoints
-# (MiniMax) host their own models and don't honor it, and may reject
-# unknown Anthropic-namespaced betas.
+# FORK: extra betas Claude Code 2.1.119 sends on every /v1/messages request (mitmdump capture
+# 2026-05-06), plus extended-cache-ttl which enables the ``ttl`` field on cache_control markers
+# — without it Anthropic ignores ttl and ``prompt_caching.cache_ttl: 1h`` silently degrades to 5m.
 _EXTENDED_CACHE_TTL_BETA = "extended-cache-ttl-2025-04-11"
+# Anthropic-native-only: stripped on bearer-auth third-party endpoints (MiniMax et al. host
+# their own models and reject unknown Anthropic-namespaced betas).
+_ANTHROPIC_NATIVE_ONLY_BETAS = {
+    "redact-thinking-2026-02-12", "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05", "effort-2025-11-24",
+}
+_COMMON_BETAS += [_EXTENDED_CACHE_TTL_BETA, *sorted(_ANTHROPIC_NATIVE_ONLY_BETAS)]
 
 
 def _model_supports_1m_context(model: str | None) -> bool:
@@ -704,11 +482,15 @@ def _model_supports_1m_context(model: str | None) -> bool:
     m = str(model).lower()
     # Models with a 1M-context tier. Conservative allowlist — if a future
     # Haiku gains 1M, add it here explicitly rather than fuzzy-matching.
+    # Kept in sync with agent/model_metadata.py's DEFAULT_CONTEXT_LENGTHS
+    # 1,000,000-token entries (opus-5/sonnet-5/opus-4-8 were added there
+    # without a matching update here — 2026-09 sync drift, fixed).
     _SUPPORTS_1M = (
+        "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-fable",
+        "claude-opus-4-8", "claude-opus-4.8",
         "claude-opus-4-7", "claude-opus-4.7",
         "claude-opus-4-6", "claude-opus-4.6",
         "claude-sonnet-4-6", "claude-sonnet-4.6",
-        "claude-sonnet-5",
     )
     return any(needle in m for needle in _SUPPORTS_1M)
 
@@ -716,6 +498,8 @@ def _model_supports_1m_context(model: str | None) -> bool:
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
 _FAST_MODE_BETA = "fast-mode-2026-02-01"
+# Required for OAuth/subscription auth; matches Claude Code / pi-ai / OpenCode.
+_OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
@@ -740,27 +524,17 @@ _claude_code_version_cache: Optional[str] = None
 
 
 def _detect_claude_code_version() -> str:
-    """Detect the installed Claude Code version, fall back to a static constant.
-
-    Anthropic's OAuth infrastructure validates the user-agent version and may
-    reject requests with a version that's too old.  Detecting dynamically means
-    users who keep Claude Code updated never hit stale-version 400s.
-    """
-    import subprocess as _sp
-
+    """Installed Claude Code version (``claude --version``), else the static fallback."""
     for cmd in ("claude", "claude-code"):
-        try:
-            result = _sp.run(
+        with suppress(Exception):
+            result = subprocess.run(
                 [cmd, "--version"],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
-                # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
-                version = result.stdout.strip().split()[0]
+                version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
                 if version and version[0].isdigit():
                     return version
-        except Exception:
-            pass
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
@@ -774,11 +548,36 @@ _MCP_TOOL_PREFIX = "mcp__"
 
 
 def _get_claude_code_version() -> str:
-    """Lazily detect the installed Claude Code version when OAuth headers need it."""
+    """Detect lazily (only OAuth headers need it) and cache for the process."""
     global _claude_code_version_cache
     if _claude_code_version_cache is None:
         _claude_code_version_cache = _detect_claude_code_version()
     return _claude_code_version_cache
+
+
+_CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+_MCP_TOOL_PREFIX = "mcp__"
+
+# Anthropic's OAuth billing classifier fingerprints certain Hermes tool schemas/prose as a
+# third-party app and reroutes to the metered extra-usage lane (HTTP 400 "You're out of extra
+# usage" on a valid subscription). Live A/B repros isolated two independent triggers — the
+# ``session_search`` tool (schema/name/prose) and the ``memory`` tool (schema/name) — so both are
+# aliased on the OAuth wire only; normalize_response reverses the mapping.
+_OAUTH_TOOL_NAME_ALIASES = {"session_search": "chat_history_lookup", "memory": "context_notes"}
+_OAUTH_TOOL_NAME_REVERSE_ALIASES = {wire_name: name for name, wire_name in _OAUTH_TOOL_NAME_ALIASES.items()}
+
+# Aliases ALSO safe to substitute in free-form prose (system prompt, tool descriptions). "memory"
+# is ordinary English throughout the prompt and inside the memory tool's own parameter docs (an
+# enum the model must emit verbatim), so rewriting it would corrupt guidance; a model that calls
+# bare ``memory`` still dispatches, since normalize_response resolves it through the registry.
+_OAUTH_PROSE_ALIAS_NAMES = frozenset({"session_search"})
+
+# Word-boundary matchers so a longer identifier containing the token (e.g.
+# ``tools/session_search_tool.py`` in AGENTS.md) is left alone; ``\b`` treats ``_`` as a word char.
+_OAUTH_PROSE_ALIAS_PATTERNS = tuple(
+    (re.compile(rf"\b{re.escape(name)}\b"), _OAUTH_TOOL_NAME_ALIASES[name])
+    for name in sorted(_OAUTH_PROSE_ALIAS_NAMES)
+)
 
 
 def _system_prompt_mode_compact() -> bool:
@@ -844,44 +643,12 @@ def _prepend_user_message_preamble(
     return messages
 
 
-def _normalize_base_url_text(base_url) -> str:
-    """Normalize SDK/base transport URL values to a plain string for inspection.
-
-    Some client objects expose ``base_url`` as an ``httpx.URL`` instead of a raw
-    string.  Provider/auth detection should accept either shape.
-    """
-    if not base_url:
-        return ""
-    return str(base_url).strip()
 
 
-def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
-    """Return True for non-Anthropic endpoints using the Anthropic Messages API.
-
-    Third-party proxies (Microsoft Foundry, AWS Bedrock, self-hosted) authenticate
-    with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
-    detection should be skipped for these endpoints.
-    """
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False  # No base_url = direct Anthropic API
-    normalized = normalized.rstrip("/").lower()
-    if "anthropic.com" in normalized:
-        return False  # Direct Anthropic API — OAuth applies
-    return True  # Any other endpoint is a third-party proxy
 
 
-def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
-    """Return True for Kimi's /coding endpoint that requires claude-code UA."""
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
-def _is_opencode_endpoint(base_url: str | None) -> bool:
-    """Return True for OpenCode's Zen/Go relay (opencode.ai)."""
-    return base_url_host_matches(base_url or "", "opencode.ai")
 
 
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
@@ -891,33 +658,12 @@ def _is_opencode_endpoint(base_url: str | None) -> bool:
 # Matched case-insensitively against the post-``normalize_model_name`` form,
 # so a caller's ``provider/vendor/model`` slug is handled the same as a
 # bare name.
-_KIMI_FAMILY_MODEL_PREFIXES = (
-    "kimi-", "kimi_",
-    "moonshot-", "moonshot_",
-    "k1.", "k1-",
-    "k2.", "k2-",
-    "k25", "k2.5",
-    "k3.", "k3-",
-)
 
 # Bare release slugs with no separator suffix (Kimi Coding Plan serves K3
 # as the exact slug ``k3``). Kept exact-match so unrelated model names that
 # merely start with the same characters don't get misclassified.
-_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
 
 
-def _model_name_is_kimi_family(model: str | None) -> bool:
-    if not isinstance(model, str):
-        return False
-    m = model.strip().lower()
-    if not m:
-        return False
-    # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
-    if "/" in m:
-        m = m.rsplit("/", 1)[-1]
-    if m in _KIMI_FAMILY_EXACT_SLUGS:
-        return True
-    return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
@@ -975,70 +721,17 @@ def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
     return "/anthropic" in normalized.rstrip("/").lower()
 
 
-def _is_nous_portal_endpoint(base_url: str | None) -> bool:
-    """Return True for Nous Portal's Anthropic Messages route.
-
-    Portal serves its ``anthropic/*`` catalog natively at
-    ``https://inference-api.nousresearch.com/v1/messages``.  Portal-specific
-    behaviours key off this: Bearer JWT auth, verbatim catalog model ids,
-    and native thinking-signature replay.
-
-    Trusted hosts only:
-
-    1. Prod hostname ``inference-api.nousresearch.com``
-    2. The operator-set ``NOUS_INFERENCE_BASE_URL`` hostname (staging/preview)
-
-    Lookalikes such as ``inference-api.nousresearch.com.attacker.test`` are
-    rejected (hostname match, not substring).
-    """
-    if base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
-        return True
-    try:
-        from hermes_cli.auth import _nous_inference_env_override
-
-        override = _nous_inference_env_override()
-    except Exception:
-        return False
-    if not override:
-        return False
-    # Exact host equality (not subdomain) so the env override can't broaden
-    # into sibling hosts the operator did not set.
-    override_host = base_url_hostname(override)
-    return bool(override_host) and base_url_hostname(base_url or "") == override_host
 
 
-def _requires_bearer_auth(base_url: str | None) -> bool:
-    """Return True for Anthropic-compatible providers that require Bearer auth.
-
-    Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer instead of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints, Azure AI
-    Foundry's Anthropic-style endpoint, Palantir Foundry's LLM proxy, and Nous
-    Portal's Messages route follow this pattern.
-    """
-    if _is_nous_portal_endpoint(base_url):
-        return True
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    normalized = normalized.rstrip("/").lower()
-    return (
-        normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
-        or "azure.com" in normalized
-        # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
-        # rejects x-api-key with 401 and requires Authorization: Bearer.
-        # Hostname match (not substring) so e.g. evil.com/palantirfoundry
-        # paths don't trigger Bearer auth.
-        or base_url_host_matches(normalized, "palantirfoundry.com")
-        # CommandCode's /provider/v1/messages endpoint uses Bearer auth,
-        # not Anthropic's native x-api-key header. Hostname match for the
-        # same reason as above.
-        or base_url_host_matches(normalized, "api.commandcode.ai")
-    )
 
 
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
-    """Return True for endpoints that gate 1M context behind a beta.
+    """FORK override of ``anthropic_endpoints._base_url_needs_context_1m_beta`` (azure-only):
+    the fork also opts NATIVE Anthropic in, because its 1M usage is gated per-model by
+    ``_model_supports_1m_context`` plus the ``_oauth_1m_beta_disabled`` latch rather than by
+    endpoint. Deliberately not imported from anthropic_endpoints for that reason.
+
+    Return True for endpoints that gate 1M context behind a beta.
 
     Native Anthropic (no base_url override, or any *.anthropic.com host)
     plus Azure AI Foundry. Bedrock has its own client helper
@@ -1059,415 +752,216 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     return False
 
 
-def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
-    """Return True for MiniMax's Anthropic-compatible endpoints.
-
-    MiniMax rejects the fine-grained-tool-streaming and context-1m betas;
-    those need to be stripped even though MiniMax also uses Bearer auth.
-    """
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    normalized = normalized.rstrip("/").lower()
-    return normalized.startswith(
-        ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
-    )
 
 
-def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
-    """Return True for Azure-hosted Anthropic Messages endpoints.
 
-    Covers both the modern Foundry host family (``*.services.ai.azure.*``)
-    and the legacy Azure OpenAI host family (``*.openai.azure.*``) when
-    serving Anthropic's ``/anthropic`` route. Used to opt-in those hosts
-    to the ``api-version`` query-param plumbing required by Azure.
-
-    Intentionally avoids a finite allow-list of TLD suffixes so it works
-    across sovereign / private Azure clouds.
-    """
-    normalized = _normalize_base_url_text(base_url)
-    if not normalized:
-        return False
-    parsed = urlparse(normalized)
-    host = (parsed.hostname or "").lower().rstrip(".")
-    path = (parsed.path or "").lower()
-    host_padded = f".{host}."
-    is_foundry_host = ".services.ai.azure." in host_padded
-    is_legacy_azoai_host = ".openai.azure." in host_padded
-    return (is_foundry_host or is_legacy_azoai_host) and "/anthropic" in path
+def _apply_oauth_prose_aliases(text: str) -> str:
+    """Rewrite prose-safe tool-name tokens to their OAuth wire aliases."""
+    for pattern, wire_name in _OAUTH_PROSE_ALIAS_PATTERNS:
+        text = pattern.sub(wire_name, text)
+    return text
 
 
 def _common_betas_for_base_url(
-    base_url: str | None,
-    *,
-    drop_context_1m_beta: bool = False,
-    model: str | None = None,
+    base_url: str | None, *, drop_context_1m_beta: bool = False, model: str | None = None,
 ) -> list[str]:
-    """Return the beta headers that are safe for the configured endpoint.
+    """Beta headers safe for the configured endpoint. MiniMax (Bearer-auth) rejects both the
+    fine-grained-tool-streaming beta (every tool-use message errors) and the 1M-context beta.
+    Azure AI Foundry also uses Bearer auth but keeps both — it needs the 1M beta for 1M context,
+    which native Anthropic does not get by default (some subscriptions reject it; Bedrock opts in
+    via its own client helper). ``drop_context_1m_beta`` strips the 1M beta after a
+    subscription/endpoint rejected it.
 
-    MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
-    that include Anthropic's ``fine-grained-tool-streaming`` beta — every
-    tool-use message triggers a connection error. They also reject the
-    1M-context beta. Azure AI Foundry's Anthropic endpoint also uses
-    Bearer auth but keeps both betas (it needs the 1M beta for 1M context).
-
-    The ``context-1m-2025-08-07`` beta is not sent to native Anthropic by
-    default because some subscriptions reject it. Add it only for endpoint
-    families that still require it for 1M context, currently Microsoft Foundry.
-    Bedrock uses its own client helper below and opts in explicitly.
-
-    ``drop_context_1m_beta=True`` additionally strips the 1M-context beta on
-    otherwise-unrelated endpoints. The OAuth retry path flips this flag after
-    a subscription rejects the beta with
-    "The long context beta is not yet available for this subscription" so
-    subsequent requests in the same session don't repeat the probe. See the
-    reactive recovery loop in ``run_agent.py`` and issue-comment history on
-    PR #17680 for the full rationale.
-
-    ``model``, when known, gates the 1M-context beta proactively: models
-    without a 1M tier (Haiku 4.5, older Claude) silently drop the header so
-    subagents using those models never trigger the rejection-and-retry path.
-    Leaving ``model=None`` falls back to the pre-existing endpoint+latch
-    gating only — capable models still get the beta.
-    """
+    FORK: ``model``, when known, gates the 1M beta proactively — models with no 1M tier (Haiku
+    4.5, older Claude) drop the header so those agents never trigger the rejection-and-retry
+    path. ``model=None`` keeps the endpoint+latch gating only."""
     betas = list(_COMMON_BETAS)
     if (
         _base_url_needs_context_1m_beta(base_url)
         and not drop_context_1m_beta
         and (model is None or _model_supports_1m_context(model))
     ):
-        # Insert at position 3 (after fine-grained-tool-streaming) to
-        # preserve Claude Code 2.1.119's wire-format ordering verified
-        # by mitmdump against api.anthropic.com.
+        # FORK: insert after fine-grained-tool-streaming to preserve Claude Code 2.1.119 wire
+        # ordering (verified by mitmdump against api.anthropic.com).
         betas.insert(2, _CONTEXT_1M_BETA)
     if _requires_bearer_auth(base_url):
-        # MiniMax rejects both fine-grained-tool-streaming AND context-1m;
-        # Azure keeps both. Differentiate by checking which provider it is.
+        # FORK: MiniMax rejects tool-streaming AND context-1m AND the Anthropic-native-only
+        # betas; Azure (and other future bearer-auth endpoints) only rejects the native-only set.
         if _is_minimax_anthropic_endpoint(base_url):
             _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA, _EXTENDED_CACHE_TTL_BETA} | _ANTHROPIC_NATIVE_ONLY_BETAS
         else:
-            # Azure (and any other future bearer-auth endpoint that's not MiniMax)
-            # only strips the truly Anthropic-native-only betas. Keeps
-            # tool-streaming and 1M-context.
-            _stripped = _ANTHROPIC_NATIVE_ONLY_BETAS
+            _stripped = set(_ANTHROPIC_NATIVE_ONLY_BETAS)
         return [b for b in betas if b not in _stripped]
+    if drop_context_1m_beta:
+        return [b for b in betas if b != _CONTEXT_1M_BETA]
     return betas
 
 
-def _build_anthropic_client_with_bearer_hook(
-    token_provider,
-    base_url: str = None,
-    timeout: float = None,
-    *,
-    drop_context_1m_beta: bool = False,
-):
-    """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`.
+def _beta_header(betas: list) -> Dict[str, str]:
+    """``{"anthropic-beta": ...}`` when there are betas, else ``{}``."""
+    return {"anthropic-beta": ",".join(betas)} if betas else {}
 
-    Anthropic SDK 0.86.0 stores ``api_key`` / ``auth_token`` as static
-    strings; there is no callable-token contract. To get per-request
-    bearer refresh (Microsoft's documented Foundry pattern), we hand
-    the SDK a custom ``httpx.Client`` whose request event hook mints a
-    fresh JWT from the Entra credential chain and rewrites
-    ``Authorization: Bearer <jwt>`` on every outbound request. The SDK
-    ignores its own auth logic when ``http_client`` is provided (the
-    hook strips any pre-set Authorization).
 
-    The placeholder ``auth_token`` is required because the SDK raises
-    ``AnthropicError`` at construction if neither ``api_key`` nor
-    ``auth_token`` is set — but the hook overrides it per-request so
-    the placeholder value never reaches Azure.
-    """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for Azure Foundry Anthropic-style "
-            "endpoints with Entra ID auth. Install with: pip install 'anthropic>=0.39.0'"
-        )
-
-    normalize_proxy_env_vars()
-
-    from httpx import Timeout
-    from agent.azure_identity_adapter import build_bearer_http_client
-
-    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
-    timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
-
-    # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
-    normalized_base_url = _normalize_base_url_text(base_url)
-    if normalized_base_url:
-        import re as _re
-        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
-
-    http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
-
-    kwargs = {
-        "timeout": timeout_obj,
-        "http_client": http_client,
-        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
-        # default max_retries=2 ignores it and double-retries. (#26293)
-        "max_retries": 0,
-        # The SDK requires *something* for api_key/auth_token. Our
-        # event hook overrides Authorization per request so this value
-        # is never sent. The sentinel string makes accidental leaks
-        # diagnosable in logs.
-        "auth_token": "entra-id-bearer-via-http-hook",
+def _attribution_headers() -> Dict[str, str]:
+    """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
+    return {
+        "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
     }
 
-    if normalized_base_url:
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
-            kwargs["base_url"] = normalized_base_url
+
+def _client_timeout(timeout):
+    """httpx.Timeout with the caller's read timeout (default 900s) and a 10s connect."""
+    from httpx import Timeout
+    read = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    return Timeout(timeout=float(read), connect=10.0)
+
+
+def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
+    """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
+    hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
+    Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
+    SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
+    base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
+    kwargs: Dict[str, Any] = {"timeout": _client_timeout(timeout), "max_retries": 0}
+    normalized = re.sub(r"/v1/?$", "", _normalize_base_url_text(base_url).rstrip("/"))
+    if normalized:
+        kwargs["base_url"] = normalized
+        if _is_azure_anthropic_endpoint(normalized) and "api-version" not in normalized:
             kwargs["default_query"] = {"api-version": "2025-04-15"}
-        else:
-            kwargs["base_url"] = normalized_base_url
+    return normalized, kwargs
 
-    common_betas = _common_betas_for_base_url(
-        normalized_base_url,
-        drop_context_1m_beta=drop_context_1m_beta,
-    )
-    if common_betas:
-        kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    client = _anthropic_sdk.Anthropic(**kwargs)
-    # Same env-leak guard as build_anthropic_client: with auth_token set and
-    # api_key unset, the SDK auto-reads ANTHROPIC_API_KEY from the environment
-    # and sends it as x-api-key alongside the Bearer hook's Authorization.
-    client.api_key = None
-    return client
+def _build_anthropic_client_with_bearer_hook(
+    token_provider, base_url: str = None, timeout: float = None, *, drop_context_1m_beta: bool = False
+):
+    """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
+    ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
+    documented Foundry pattern) uses a custom ``httpx.Client`` whose request hook mints a fresh JWT
+    and rewrites ``Authorization``; the SDK skips its own auth when ``http_client`` is given. The
+    placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
+    sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")
+    normalize_proxy_env_vars()
+    from agent.azure_identity_adapter import build_bearer_http_client
+    normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
+    kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
+    kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
+    headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
+    return _new_sdk_client(sdk, kwargs, headers)
+
+
+def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
+    """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+
+    The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
+    ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
+    auth — x-api-key *and* Authorization: Bearer — shipping a foreign credential to Portal / MiniMax
+    / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
+    SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
+    ``with_options()``, which re-runs the constructor and re-reads the environment."""
+    merged = dict(headers)
+    if "api_key" in kwargs and "auth_token" not in kwargs:
+        merged["Authorization"] = sdk.Omit()
+    elif "auth_token" in kwargs and "api_key" not in kwargs:
+        merged["X-Api-Key"] = sdk.Omit()
+    if merged:
+        kwargs["default_headers"] = merged
+    return sdk.Anthropic(**kwargs)
+
+
+def _auth_style(api_key, base_url, normalized_base_url) -> str:
+    """Order-sensitive endpoint/key classification for :func:`build_anthropic_client`. ``kimi``:
+    Kimi's /coding endpoint 403s without a User-Agent (the Kimi team asked for proper attribution).
+    ``bearer``: MiniMax & co. want Authorization: Bearer — checked before the OAuth shape test
+    because their secrets lack the sk-ant-api prefix and would be misread as OAuth/setup tokens.
+    ``api_key``: third-party proxies use their own x-api-key keys (skip OAuth detection). ``oauth``:
+    Bearer auth + Claude Code identity (Anthropic routes OAuth by user-agent; without it, 500s)."""
+    if _is_kimi_coding_endpoint(base_url):
+        return "kimi"
+    if _requires_bearer_auth(normalized_base_url):
+        return "bearer"
+    if _is_third_party_anthropic_endpoint(base_url):
+        return "api_key"
+    if _is_oauth_token(api_key):
+        return "oauth"
+    return "api_key"
 
 
 def build_anthropic_client(
-    api_key,
-    base_url: str = None,
-    timeout: float = None,
-    *,
-    drop_context_1m_beta: bool = False,
-    model: Optional[str] = None,
+    api_key, base_url: str = None, timeout: float = None, *,
+    drop_context_1m_beta: bool = False, model: Optional[str] = None,
 ):
-    """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
+    """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
+    ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
+    :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
+    (connect stays 10s). ``drop_context_1m_beta`` strips ``context-1m-2025-08-07`` from the
+    client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
+    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability.
 
-    ``api_key`` accepts either:
-
-    * a static ``str`` — the historical contract for all key-based and
-      OAuth flows.
-    * a ``Callable[[], str]`` — an Entra ID bearer token provider from
-      :mod:`agent.azure_identity_adapter`. The Anthropic SDK itself
-      requires a static string, so when given a callable we construct
-      a custom ``httpx.Client`` with a request event hook that mints a
-      fresh JWT per outbound request and rewrites the ``Authorization``
-      header. The SDK never sees the callable directly.
-
-    If *timeout* is provided it overrides the default 900s read timeout.  The
-    connect timeout stays at 10s.  Callers pass this from the per-provider /
-    per-model ``request_timeout_seconds`` config so Anthropic-native and
-    Anthropic-compatible providers respect the same knob as OpenAI-wire
-    providers.
-
-    ``drop_context_1m_beta=True`` strips ``context-1m-2025-08-07`` from the
-    client-level ``anthropic-beta`` header. Used by the reactive OAuth retry
-    path in ``run_agent.py`` when a subscription rejects the beta; leave at
-    its default on fresh clients so 1M-capable subscriptions keep the
-    capability.
-
-    ``model`` (when provided) lets ``_common_betas_for_base_url`` strip the
-    1M-context beta proactively for models that don't have a 1M tier (e.g.
-    Haiku 4.5). Without this, the auxiliary client gets ``context-1m-…``
-    on its client-level headers and Haiku rejects every call with HTTP 400
-    "long context beta is not yet available for this subscription". The
-    main agent loop sets ``drop_context_1m_beta`` explicitly, so leaving
-    ``model`` at None there is fine.
-
-    Returns an anthropic.Anthropic instance.
-    """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for the Anthropic provider. "
-            "Install it with: pip install 'anthropic>=0.39.0'"
-        )
-
-    # Callable api_key → Entra ID bearer provider path. Delegated to a
-    # helper so the existing static-key code below stays unchanged.
+    FORK: ``model`` (when known) additionally lets ``_common_betas_for_base_url`` strip the
+    1M beta proactively for models with no 1M tier (Haiku 4.5) — the auxiliary client passes it
+    so Haiku-routed aux calls don't 400 on a client-level ``context-1m-...`` header."""
+    sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout,
-            drop_context_1m_beta=drop_context_1m_beta,
+            api_key, base_url, timeout, drop_context_1m_beta=drop_context_1m_beta
         )
-
     normalize_proxy_env_vars()
-
-    from httpx import Timeout
-
-    normalized_base_url = _normalize_base_url_text(base_url)
-    if normalized_base_url:
-        import re as _re
-        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
-    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
-    kwargs = {
-        "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
-        # Delegate all rate-limit / 5xx retry to hermes's outer conversation
-        # loop, which honors Retry-After. The SDK default (max_retries=2) uses
-        # its own 1-2s backoff that ignores Retry-After and double-retries
-        # inside our loop — burning request slots against a bucket that won't
-        # refill for minutes. (#26293)
-        "max_retries": 0,
-    }
-    if normalized_base_url:
-        # Azure Anthropic endpoints require an ``api-version`` query parameter.
-        # Pass it via default_query so the SDK appends it to every request URL
-        # without corrupting the base_url (appending it directly produces
-        # malformed paths like /anthropic?api-version=.../v1/messages).
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
-            kwargs["base_url"] = normalized_base_url.rstrip("/")
-            kwargs["default_query"] = {"api-version": "2025-04-15"}
-        else:
-            kwargs["base_url"] = normalized_base_url
+    normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
+    if "default_query" in kwargs:  # historical: this path also strips a stray trailing slash on Azure
+        kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(
-        normalized_base_url,
-        drop_context_1m_beta=drop_context_1m_beta,
-        model=model,
+        normalized_base_url, drop_context_1m_beta=drop_context_1m_beta, model=model,
     )
-
-    if _is_kimi_coding_endpoint(base_url):
-        # Kimi's /coding endpoint requires a non-empty User-Agent to be
-        # recognized as a valid Coding Agent. Originally we sent
-        # ``claude-code/0.1.0`` (the minimum that avoided a 403), but the Kimi
-        # team asked us to identify ourselves properly so they can attribute
-        # traffic correctly. Send the same attribution header set we send to
-        # OpenRouter, Vercel AI Gateway, and Fireworks:
-        # HTTP-Referer + X-Title + HermesAgent User-Agent.
-        kwargs["api_key"] = api_key
-        kwargs["default_headers"] = {
-            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-            "X-Title": "Hermes Agent",
-            "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
-            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
-        }
-    elif _requires_bearer_auth(normalized_base_url):
-        # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
-        # Authorization: Bearer *** for regular API keys. Route those endpoints
-        # through auth_token so the SDK sends Bearer auth instead of x-api-key.
-        # Check this before OAuth token shape detection because MiniMax secrets do
-        # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
-        # Anthropic OAuth/setup tokens.
-        kwargs["auth_token"] = api_key
-        if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
-    elif _is_third_party_anthropic_endpoint(base_url):
-        # Third-party proxies (Microsoft Foundry, AWS Bedrock, etc.) use their
-        # own API keys with x-api-key auth. Skip OAuth detection — their keys
-        # don't follow Anthropic's sk-ant-* prefix convention and would be
-        # misclassified as OAuth tokens.
-        kwargs["api_key"] = api_key
-        if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
-    elif _is_oauth_token(api_key):
-        # OAuth access token / setup-token → Bearer auth + Claude Code identity.
-        # Anthropic routes OAuth requests based on user-agent and headers;
-        # without Claude Code's fingerprint, requests get intermittent 500s.
-        #
-        # Strip x-stainless-* fingerprint headers (2026-05-06): the Python
-        # SDK adds 6 x-stainless-{lang,os,arch,runtime,runtime-version,
-        # package-version} + 2 per-request (retry-count, read-timeout)
-        # headers identifying the request as Python SDK. Claude Code's
-        # native (Bun/JS) implementation doesn't send these. If Anthropic
-        # routes/prioritises requests by client fingerprint, these
-        # headers tag hermes as "third-party Python automation" while a
-        # bare claude-cli UA would tag it as the official client. Empirical
-        # evidence: hermes hits sporadic multi-minute "queued/prefilling"
-        # stalls Claude Code never sees, with same model + same betas +
-        # same OAuth scope. Use ``Omit()`` (the SDK's drop-header
-        # sentinel) to suppress them.
-        try:
+    style = _auth_style(api_key, base_url, normalized_base_url)
+    kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key
+    headers = _beta_header(common_betas + _OAUTH_ONLY_BETAS if style == "oauth" else common_betas)
+    if style == "kimi":
+        headers = {**_attribution_headers(), **headers}
+    elif style == "oauth":
+        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["x-app"] = "cli"
+        # FORK: strip the SDK's x-stainless-* fingerprint headers. Claude Code's native (Bun/JS)
+        # client does not send them; leaving them on tags the request as third-party Python
+        # automation, which correlates with multi-minute queued/prefilling stalls Claude Code
+        # never sees at the same model/betas/OAuth scope. ``Omit()`` is the SDK drop sentinel.
+        with suppress(ImportError):
             from anthropic._types import Omit as _Omit
-            _omit_stainless = {
-                "x-stainless-lang": _Omit(),
-                "x-stainless-package-version": _Omit(),
-                "x-stainless-os": _Omit(),
-                "x-stainless-arch": _Omit(),
-                "x-stainless-runtime": _Omit(),
-                "x-stainless-runtime-version": _Omit(),
-                "x-stainless-retry-count": _Omit(),
-                "x-stainless-read-timeout": _Omit(),
-                "x-stainless-timeout": _Omit(),
-            }
-        except ImportError:
-            _omit_stainless = {}
-        all_betas = common_betas + _OAUTH_ONLY_BETAS
-        kwargs["auth_token"] = api_key
-        kwargs["default_headers"] = {
-            "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-code/{_get_claude_code_version()} (external, cli)",
-            "x-app": "cli",
-            **_omit_stainless,
-        }
-    else:
-        # Regular API key → x-api-key header + common betas
-        kwargs["api_key"] = api_key
-        if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
-
+            headers.update({
+                name: _Omit() for name in (
+                    "x-stainless-lang", "x-stainless-package-version", "x-stainless-os",
+                    "x-stainless-arch", "x-stainless-runtime", "x-stainless-runtime-version",
+                    "x-stainless-retry-count", "x-stainless-read-timeout", "x-stainless-timeout",
+                )
+            })
     if _is_opencode_endpoint(base_url):
-        # OpenCode identifies clients by request headers, like OpenRouter does.
-        # The OpenAI-wire paths pick these up from profile.default_headers
-        # (plugins/model-providers/opencode-zen), but the Anthropic Messages
-        # route builds its client right here and never sees the profile. Merge
-        # the same set on top of whatever auth branch ran above.
-        headers = dict(kwargs.get("default_headers") or {})
-        headers.setdefault("HTTP-Referer", "https://hermes-agent.nousresearch.com")
-        headers.setdefault("X-Title", "Hermes Agent")
-        headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
-        kwargs["default_headers"] = headers
-
-    client = _anthropic_sdk.Anthropic(**kwargs)
-    if "auth_token" in kwargs and "api_key" not in kwargs:
-        # Bearer-auth paths (OAuth / bearer-only endpoints) pass auth_token
-        # and leave api_key unset — but the SDK constructor then auto-reads
-        # ANTHROPIC_API_KEY from the environment and sends it as an x-api-key
-        # header ALONGSIDE the Authorization: Bearer *** A stale token in
-        # the shell environment (e.g. inherited by every terminal tab from a
-        # long-dead export) makes the server reject the whole request with
-        # 401 "invalid x-api-key" even though the Bearer credential is valid.
-        # Bearer-auth requests must never carry x-api-key.
-        client.api_key = None
-    return client
+        # OpenCode identifies clients by request headers (like OpenRouter). The OpenAI-wire paths
+        # get these from profile.default_headers, but this route never sees the profile.
+        for k, v in _attribution_headers().items():
+            headers.setdefault(k, v)
+    return _new_sdk_client(sdk, kwargs, headers)
 
 
 def build_anthropic_bedrock_client(region: str):
-    """Create an AnthropicBedrock client for Bedrock Claude models.
-
-    Uses the Anthropic SDK's native Bedrock adapter, which provides full
-    Claude feature parity: prompt caching, thinking budgets, adaptive
-    thinking, fast mode — features not available via the Converse API.
-
-    Attaches the common Anthropic beta headers as client-level defaults so
-    that Bedrock-hosted Claude models get the same enhanced features as
-    native Anthropic. The ``context-1m-2025-08-07`` beta in particular
-    unlocks the 1M context window for Opus 4.6/4.7 on Bedrock — without
-    it, Bedrock caps these models at 200K even though the Anthropic API
-    serves them with 1M natively.
-
-    Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
-    """
-    _anthropic_sdk = _get_anthropic_sdk()
-    if _anthropic_sdk is None:
-        raise ImportError(
-            "The 'anthropic' package is required for the Bedrock provider. "
-            "Install it with: pip install 'anthropic>=0.39.0'"
-        )
-    if not hasattr(_anthropic_sdk, "AnthropicBedrock"):
-        raise ImportError(
-            "anthropic.AnthropicBedrock not available. "
-            "Upgrade with: pip install 'anthropic>=0.39.0'"
-        )
-    from httpx import Timeout
-
-    return _anthropic_sdk.AnthropicBedrock(
-        aws_region=region,
-        timeout=Timeout(timeout=900.0, connect=10.0),
-        # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
-        # default max_retries=2 ignores it and double-retries. (#26293)
-        max_retries=0,
-        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+    """AnthropicBedrock client for Bedrock Claude models (boto3 default credential chain). The
+    SDK's native Bedrock adapter gives full Claude feature parity (prompt caching, thinking
+    budgets, adaptive thinking, fast mode) that Converse lacks. The common betas plus
+    ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
+    A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
+    (primary, auxiliary, per-request rebuild) enforces it."""
+    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
+    sdk = _require_sdk("the Bedrock provider")
+    if not hasattr(sdk, "AnthropicBedrock"):
+        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
+    # launch profile's process env); unscoped passes nothing and keeps the default chain.
+    scoped = scoped_aws_session_kwargs()
+    aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
+                  "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
+    return sdk.AnthropicBedrock(
+        aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
+        max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
+        default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
 
 
@@ -1499,33 +993,6 @@ def _is_bedrock_model_id(model: str) -> bool:
     return False
 
 
-def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
-    """Normalize a model name for the Anthropic API.
-
-    - Strips 'anthropic/' prefix (OpenRouter format, case-insensitive)
-    - Converts dots to hyphens in version numbers (OpenRouter uses dots,
-      Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
-      preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
-    - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
-      regional inference profiles (``us.anthropic.claude-*``) whose dots
-      are namespace separators, not version separators.
-    """
-    lower = model.lower()
-    if lower.startswith("anthropic/"):
-        model = model[len("anthropic/"):]
-    if not preserve_dots:
-        # Bedrock model IDs use dots as namespace separators
-        # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
-        # These must not be converted to hyphens.  See issue #12295.
-        if _is_bedrock_model_id(model):
-            return model
-        # Only convert dots to hyphens for Anthropic/Claude models.
-        # Non-Anthropic models (gpt-5.4, gemini-2.5, etc.) use dots
-        # as part of their canonical names.  See issue #17171.
-        _lower = model.lower()
-        if _lower.startswith("claude-") or _lower.startswith("anthropic/"):
-            model = model.replace(".", "-")
-    return model
 
 
 def _sanitize_tool_id(tool_id: str) -> str:
@@ -1794,42 +1261,6 @@ def _strip_unknown_tool_blocks(
     return anthropic_messages
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI tool definitions to Anthropic format."""
-    if not tools:
-        return []
-    result = []
-    seen_names: set = set()
-    for t in tools:
-        fn = t.get("function", {})
-        name = fn.get("name", "")
-        # Defensive dedup: Anthropic rejects requests with duplicate tool
-        # names.  Upstream injection paths already dedup, but this guard
-        # converts a hard API failure into a warning.  See: #18478
-        if name and name in seen_names:
-            logger.warning(
-                "convert_tools_to_anthropic: duplicate tool name '%s' "
-                "— dropping second occurrence",
-                name,
-            )
-            continue
-        if name:
-            seen_names.add(name)
-        anthropic_tool: Dict[str, Any] = {
-            "name": name,
-            "description": fn.get("description", ""),
-            "input_schema": _normalize_tool_input_schema(
-                fn.get("parameters", {"type": "object", "properties": {}})
-            ),
-        }
-        # Forward cache_control marker when present on the OpenAI-format
-        # tool dict. Anthropic's tools array supports cache_control on the
-        # last tool to cache the entire schema cross-session.
-        cache_control = t.get("cache_control")
-        if isinstance(cache_control, dict):
-            anthropic_tool["cache_control"] = dict(cache_control)
-        result.append(anthropic_tool)
-    return result
 
 
 def _image_source_from_openai_url(url: str) -> Dict[str, str]:
@@ -3487,7 +2918,7 @@ def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
         msg["content"] = new_content
 
 
-def convert_messages_to_anthropic(
+def convert_messages_to_anthropic(  # noqa: F811 — fork forwarder deliberately shadows the import
     messages: List[Dict],
     base_url: str | None = None,
     model: str | None = None,
@@ -3641,6 +3072,17 @@ def _apply_tool_search(
     return [{"type": ts_type, "name": ts_name}] + transformed
 
 
+def _normalize_to_mcp_wire(name: str) -> str:
+    """OAuth wire form of a tool name (no aliasing): ``mcp__<...>``. Anthropic's OAuth billing
+    classifier treats a single-underscore ``mcp_`` tool name as a third-party-app fingerprint
+    (HTTP 400 "Third-party apps now draw from extra usage"); ``mcp__foo`` is accepted. Both bare
+    Hermes tools (``read_file``) and native MCP tools registered as ``mcp_<server>_<tool>`` must
+    land on the double-underscore form. normalize_response reverses both via registry lookup."""
+    if name.startswith("mcp__"):
+        return name  # already correct, don't double-prefix
+    return _MCP_TOOL_PREFIX + name.removeprefix("mcp_")
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -3768,6 +3210,10 @@ def build_anthropic_kwargs(
         effective_max_tokens = max(context_length - 1, 1)
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
+    # _to_oauth_wire_name is defined inside this block (needs anthropic_tools
+    # in scope to compute _claimed_wire_names) but is also invoked later for
+    # tool_choice, well outside the block. Every call site below guards on
+    # `is_oauth` first, so it is always bound by the time it's used.
     if is_oauth:
         # 1. Prepend Claude Code system prompt identity
         cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
@@ -3787,7 +3233,7 @@ def build_anthropic_kwargs(
                 text = text.replace("Hermes agent", "Claude Code")
                 text = text.replace("hermes-agent", "claude-code")
                 text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+                block["text"] = _apply_oauth_prose_aliases(text)  # upstream: prose-safe aliases only
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
@@ -3840,20 +3286,28 @@ def build_anthropic_kwargs(
             except Exception:
                 pass
 
+        # Upstream (2026-09 sync) additionally aliases two tools whose schema/name the billing
+        # classifier fingerprints on their own (session_search, memory). Composed with the fork's
+        # CC-canonical renaming: CC-aliased builtins are skipped, everything else gets aliased
+        # (when the alias isn't already claimed) and then mcp__-normalized.
+        _claimed_wire_names = {
+            _normalize_to_mcp_wire(t["name"]) for t in (anthropic_tools or []) if isinstance(t, dict) and t.get("name")
+        }
+
         def _to_oauth_wire_name(name: str) -> str:
             if name in _cc_skip_names:
                 return name  # CC-aliased builtin / CC-canonical — handled by CC-alias step
-            if name.startswith("mcp__"):
-                return name  # already correct, don't double-prefix
-            if name.startswith("mcp_"):
-                # single-underscore native MCP tool -> promote to double
-                return "mcp__" + name[len("mcp_"):]
-            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+            aliased = _OAUTH_TOOL_NAME_ALIASES.get(name)
+            if aliased and _MCP_TOOL_PREFIX + aliased not in _claimed_wire_names:
+                name = aliased
+            return _normalize_to_mcp_wire(name)
 
         if anthropic_tools:
             for tool in anthropic_tools:
                 if "name" in tool:
                     tool["name"] = _to_oauth_wire_name(tool["name"])
+                if isinstance(tool.get("description"), str):
+                    tool["description"] = _apply_oauth_prose_aliases(tool["description"])
 
         # Apply the same normalization to tool names in message history
         # (tool_use blocks) so replayed turns match the wire names above.
@@ -4004,8 +3458,29 @@ def build_anthropic_kwargs(
             # Anthropic has no tool_choice "none" — omit tools entirely to prevent use
             kwargs.pop("tools", None)
         elif isinstance(tool_choice, str):
-            # Specific tool name
-            kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+            # Specific tool name. On the OAuth wire every tools[] entry is
+            # mcp__-prefixed/CC-aliased above, so a forced tool_choice must go
+            # through the same mapping or it names a tool that no longer
+            # exists on the wire (Anthropic 400s, or worse, silently targets
+            # the wrong tool if a stale non-prefixed name happens to
+            # collide). CC-aliased builtins (read_file -> Read, etc.) are a
+            # separate final rename done by replace_with_cc_canonical, not
+            # _to_oauth_wire_name (which deliberately passes them through
+            # unchanged for the tools[] step) — resolve that mapping here too
+            # so tool_choice lands on the SAME final name as its tools[]
+            # entry. Mirrors upstream's to_wire(tool_choice) composition in
+            # build_anthropic_kwargs.
+            wire_name = tool_choice
+            if is_oauth:
+                cc_wire_name = None
+                try:
+                    from agent import cc_aliases as _cc_for_choice
+                    if _cc_for_choice.is_enabled():
+                        cc_wire_name = _cc_for_choice.HERMES_TO_CC.get(tool_choice)
+                except Exception:
+                    cc_wire_name = None
+                wire_name = cc_wire_name if cc_wire_name else _to_oauth_wire_name(tool_choice)
+            kwargs["tool_choice"] = {"type": "tool", "name": wire_name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6+ models use adaptive thinking + output_config.effort.
@@ -4215,35 +3690,54 @@ def build_anthropic_kwargs(
     return kwargs
 
 
-# Keys that belong exclusively to the OpenAI Responses / Codex API shape.
-# The Anthropic Messages SDK (``messages.create()`` / ``messages.stream()``)
-# raises ``TypeError: ... got an unexpected keyword argument`` on any of them.
-_RESPONSES_ONLY_KWARGS = frozenset(
-    {"instructions", "input", "store", "parallel_tool_calls"}
-)
+
+
+def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+    """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
+    Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
+    manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
+    4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
+    so "summarized" is requested to keep the activity feed populated."""
+    if reasoning_config.get("enabled") is False:
+        # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
+        # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
+        # omission: a silently-ignored disable beats a dead turn.
+        return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
+    if "haiku" in model.lower():
+        return {}
+    effort = str(reasoning_config.get("effort", "medium")).lower()
+    if _supports_adaptive_thinking(model):
+        adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+        if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
+            adaptive_effort = "max"
+        return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": adaptive_effort}}
+    budget = THINKING_BUDGET.get(effort, 8000)
+    return {
+        "thinking": {"type": "enabled", "budget_tokens": budget},
+        "temperature": 1,  # required when thinking is enabled on older models
+        "max_tokens": max(effective_max_tokens, budget + 4096),
+    }
+
+
+# OpenAI tool_choice -> Anthropic; any other string is a forced tool name.
+_TOOL_CHOICE_MAP = {None: {"type": "auto"}, "auto": {"type": "auto"}, "required": {"type": "any"}}
+
+
+# Keys exclusive to the OpenAI Responses / Codex shape; the Messages SDK raises ``TypeError: ...
+# unexpected keyword argument`` on any of them.
+_RESPONSES_ONLY_KWARGS = frozenset({"instructions", "input", "store", "parallel_tool_calls"})
 
 
 def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
-    """Drop Responses-API-only keys before an Anthropic Messages SDK call.
-
-    Defensive boundary guard for #31673: under rare api_mode-flip races
-    (e.g. a concurrent auxiliary call mutating a shared agent between the
-    kwargs build and the stream dispatch), a Responses-shaped payload
-    carrying ``instructions=`` can reach ``messages.stream()`` /
-    ``messages.create()``. The Anthropic SDK rejects it with a
-    non-retryable ``TypeError`` that nukes the whole turn and propagates
-    the entire fallback chain.
-
-    Mutates ``api_kwargs`` in place and returns it. When a foreign key is
-    present we log a WARNING so the underlying race stays visible in the
-    wild instead of being silently papered over.
-    """
-    if not isinstance(api_kwargs, dict):
-        return api_kwargs
-    leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs)
+    """Drop Responses-API-only keys before an Anthropic Messages SDK call. Boundary guard for
+    api_mode-flip races (a concurrent auxiliary call mutating a shared agent between kwargs build
+    and dispatch): a Responses-shaped payload reaching ``messages.stream()`` dies with a
+    non-retryable TypeError that takes the whole turn and fallback chain with it. Mutates and
+    returns ``api_kwargs``; logs a WARNING so the race stays visible."""
+    leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs) if isinstance(api_kwargs, dict) else ()
     if leaked:
-        for _key in leaked:
-            api_kwargs.pop(_key, None)
+        for key in leaked:
+            del api_kwargs[key]
         logger.warning(
             "%sStripped Responses-only kwarg(s) %s from an Anthropic Messages "
             "call (api_mode flip race — see #31673). The call will proceed; "
@@ -4255,16 +3749,55 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
     return api_kwargs
 
 
+def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None) -> None:
+    """Retry knob for a malformed fine-grained tool-JSON stream (#107830): the beta streams tool
+    args unvalidated, so a model that emits ``{"names": cronjob_manage}`` breaks the SDK parser
+    and an identical retry breaks identically. ``eager_input_streaming: false`` per tool restores
+    Anthropic's buffered, validated args for the rest of this turn (the flag lives on the turn's
+    kwargs, so a later retry of the same turn keeps it; the changed ``tools`` block costs one
+    prompt-cache miss, cheaper than a dead turn). Off the happy path on purpose:
+    buffering a large payload is a zero-event gap the stale-stream detector kills. No-op on
+    endpoints that never get the beta (MiniMax) rather than sending them an unknown field."""
+    if _TOOL_STREAMING_BETA not in _common_betas_for_base_url(base_url):
+        return
+    for tool in api_kwargs.get("tools") or ():
+        tool["eager_input_streaming"] = False
+
+
 def _is_stream_unavailable_error(exc: Exception) -> bool:
-    """Return True when an Anthropic stream call should fall back to create()."""
+    """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
     if "stream" in err_lower and "not supported" in err_lower:
         return True
-    if "invokemodelwithresponsestream" in err_lower:
-        from agent.bedrock_adapter import is_streaming_access_denied_error
+    if "invokemodelwithresponsestream" not in err_lower:
+        return False
+    from agent.bedrock_adapter import is_streaming_access_denied_error
+    return is_streaming_access_denied_error(exc)
 
-        return is_streaming_access_denied_error(exc)
-    return False
+
+def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
+    """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
+    with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
+        if callable(on_response):
+            try:
+                on_response(getattr(stream, "response", None))
+            except Exception:
+                logger.debug("%son_response callback failed", log_prefix, exc_info=True)
+        # Consume manually so each event ticks the progress callback; get_final_message then
+        # returns the accumulated snapshot. TimeoutError is the caller's deadline seam: the host
+        # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
+        # nobody reads.
+        for event in stream if callable(on_stream_event) else ():
+            try:
+                on_stream_event(event)
+            except TimeoutError:
+                # The callback is the caller's deadline seam (#99692: the host waiting on this summary has
+                # already given up). Abandon the stream — the ``with`` closes it — instead of streaming an
+                # answer nobody will read.
+                raise
+            except Exception:
+                logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
+        return stream.get_final_message()
 
 
 def _coerce_positive_seconds(raw: Any) -> Optional[float]:
@@ -4294,61 +3827,28 @@ def create_anthropic_message(
     no_progress_timeout: Optional[float] = None,
     is_progress_event=None,
 ) -> Any:
-    """Create an Anthropic message, aggregating via stream when available.
+    """Create an Anthropic message, aggregating via stream when available. Some Anthropic-compatible
+    gateways are SSE-only and answer ``create()`` with ``text/event-stream``, which the SDK surfaces
+    as raw text (callers then crash on ``.content``), so prefer ``messages.stream()`` like the main
+    turn path and fall back to ``create()`` only for providers that explicitly don't support
+    streaming (restricted Bedrock roles). Both callbacks are best-effort and fire only on the
+    streaming path: ``on_stream_event(event)`` lets liveness watchdogs see forward progress;
+    ``on_response(httpx_response)`` exposes headers the parsed Message drops (Nous Portal's
+    ``x-nous-credits-*`` balance family).
 
-    Some Anthropic-compatible gateways are SSE-only: they ignore non-streaming
-    requests and return ``text/event-stream`` even for ``messages.create()``.
-    The SDK can surface that as raw text, so callers that expect a Message then
-    crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
-    match the main turn path, falling back to ``create()`` only for providers
-    that explicitly do not support streaming, such as restricted Bedrock roles.
-
-    ``on_stream_event``: optional callable invoked once per streamed event
-    (best-effort, exceptions swallowed). Lets callers report forward progress
-    to liveness watchdogs — e.g. the auxiliary compression path ticking its
-    progress hook so a slow-but-generating summary model isn't treated as
-    hung. Only fires on the streaming path; the ``create()`` fallback has no
-    events to report.
-
-    ``on_response``: optional callable invoked once with the underlying httpx
-    response before the message is aggregated (best-effort, exceptions
-    swallowed). Response *headers* carry out-of-band provider state that the
-    parsed ``Message`` drops — Nous Portal's ``x-nous-credits-*`` balance family
-    in particular. Only fires on the streaming path, which is the one the main
-    turn loop takes.
-
-    ``total_ceiling``: optional absolute wall-clock backstop (seconds) on the
-    streamed event loop. ``no_progress_timeout`` + ``is_progress_event``:
-    optional STALL deadline, armed only once the stream has produced its first
-    substantive payload.
-
-    These exist because the SDK/httpx ``timeout`` is a per-READ (idle) timeout,
-    NOT a total budget, and Anthropic emits content-free ``ping`` keepalives
-    every ~10-25s during a long extended-thinking turn. Every ping is a
-    successful read, so the configured timeout is re-armed forever and a
-    stream that will never finish is never killed.
-
-    The two bounds deliberately cover different phases, because on this wire
-    "no content" does not mean "no progress":
-
-      1. BEFORE the first substantive payload, bounded ONLY by
-         ``total_ceiling``. ``thinking.display`` defaults to "omitted" on
-         adaptive-thinking models, so a model reasoning at high/max effort
-         legitimately emits nothing but keepalives for MINUTES. Verified the
-         hard way 2026-09-10: a 60s content-based window applied from the
-         start killed a healthy claude-fable-5-1 call at 253.6s mid-thought.
-         Silence here is the expected shape of the request, not a stall.
-      2. AFTER the first substantive payload, ``no_progress_timeout`` arms and
-         each further substantive event re-arms it; keepalive/lifecycle frames
-         do NOT. Content that starts flowing and then stops IS a real stall,
-         and this catches it without waiting for the ceiling.
-
-    Both raise ``TimeoutError``, phrased with "timed out" so the auxiliary
-    client's ``_is_timeout_error()`` classification treats them exactly like a
-    request timeout and runs the normal provider fallback chain. Leaving both
-    at ``None`` (the default) preserves the historical unbounded behavior for
-    callers that manage their own liveness, e.g. the main turn loop.
-    """
+    FORK — ``total_ceiling`` / ``no_progress_timeout`` + ``is_progress_event``: the SDK/httpx
+    ``timeout`` is a per-READ (idle) timeout, not a total budget, and Anthropic emits content-free
+    ``ping`` keepalives every ~10-25s during extended thinking, so a stream that will never finish
+    is never killed. Two phases, because "no content" does not mean "no progress" on this wire:
+      1. BEFORE the first substantive payload, bounded ONLY by ``total_ceiling``.
+         ``thinking.display`` defaults to "omitted", so a model reasoning at high/max effort
+         legitimately emits nothing but keepalives for minutes (a 60s content window applied from
+         the start killed a healthy claude-fable-5-1 call at 253.6s mid-thought, 2026-09-10).
+      2. AFTER the first substantive payload, ``no_progress_timeout`` arms and each further
+         substantive event re-arms it; keepalive/lifecycle frames do not.
+    Both raise ``TimeoutError`` phrased with "timed out" so the auxiliary client's
+    ``_is_timeout_error()`` runs the normal provider fallback chain. Both ``None`` (the default)
+    preserves the historical unbounded behavior for callers managing their own liveness."""
     sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
 
     # FORK: prefer the ``.beta.messages`` namespace when the client exposes it.
@@ -4374,8 +3874,6 @@ def create_anthropic_message(
     messages_api = getattr(_beta, "messages", None) or getattr(client, "messages", None)
     stream_fn = getattr(messages_api, "stream", None)
     if prefer_stream and callable(stream_fn):
-        stream_kwargs = dict(api_kwargs)
-        stream_kwargs.pop("stream", None)
         try:
             _ceiling = _coerce_positive_seconds(total_ceiling)
             _idle_window = _coerce_positive_seconds(no_progress_timeout)
@@ -4385,6 +3883,7 @@ def create_anthropic_message(
             # pre-content thinking silence is bounded only by _ceiling. See the
             # two-phase rationale in the docstring.
             _progress_deadline = None
+            stream_kwargs = {k: v for k, v in api_kwargs.items() if k != "stream"}
             with stream_fn(**stream_kwargs) as stream:
                 if callable(on_response):
                     try:
@@ -4421,6 +3920,10 @@ def create_anthropic_message(
                         if callable(on_stream_event):
                             try:
                                 on_stream_event(_event)
+                            except TimeoutError:
+                                # Upstream: the callback is the caller's deadline seam (#99692) —
+                                # abandon the stream instead of finishing an answer nobody reads.
+                                raise
                             except Exception:
                                 logger.debug(
                                     "%son_stream_event callback failed",
@@ -4468,12 +3971,50 @@ def create_anthropic_message(
             if not _is_stream_unavailable_error(exc):
                 raise
             logger.debug(
-                "%sAnthropic Messages stream unavailable; falling back to "
-                "messages.create(): %s",
-                log_prefix,
-                exc,
+                "%sAnthropic Messages stream unavailable; falling back to messages.create(): %s", log_prefix, exc
             )
+    return messages_api.create(**{k: v for k, v in api_kwargs.items() if k != "stream"})
 
-    create_kwargs = dict(api_kwargs)
-    create_kwargs.pop("stream", None)
-    return messages_api.create(**create_kwargs)
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+from pathlib import Path  # noqa: F401,F811,E402
+from typing import Tuple  # noqa: F401,F811,E402
+import copy  # noqa: F401,F811,E402
+import json  # noqa: F401,F811,E402
+import os  # noqa: F401,F811,E402
+import platform  # noqa: F401,F811,E402
+import secrets  # noqa: F401,F811,E402
+import stat  # noqa: F401,F811,E402
+from urllib.parse import urlparse  # noqa: F401,F811,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'CredentialPersistError': ('agent.anthropic_credentials', 'CredentialPersistError'),
+    'base_url_host_matches': ('utils', 'base_url_host_matches'),
+    'base_url_hostname': ('utils', 'base_url_hostname'),
+    'claude_code_credentials_path': ('agent.anthropic_credentials', 'claude_code_credentials_path'),
+    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
+    'is_claude_code_token_valid': ('agent.anthropic_credentials', 'is_claude_code_token_valid'),
+    'is_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'is_rotation_consumed_uncommitted'),
+    'mark_rotation_consumed_uncommitted': ('agent.anthropic_credentials', 'mark_rotation_consumed_uncommitted'),
+    'read_claude_code_credentials': ('agent.anthropic_credentials', 'read_claude_code_credentials'),
+    'read_hermes_oauth_credentials': ('agent.anthropic_credentials', 'read_hermes_oauth_credentials'),
+    'refresh_anthropic_oauth_pure': ('agent.anthropic_credentials', 'refresh_anthropic_oauth_pure'),
+    'resolve_anthropic_token': ('agent.anthropic_credentials', 'resolve_anthropic_token'),
+    'run_hermes_oauth_login_pure': ('agent.anthropic_credentials', 'run_hermes_oauth_login_pure'),
+    'run_oauth_setup_token': ('agent.anthropic_credentials', 'run_oauth_setup_token'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----
