@@ -88,3 +88,38 @@ def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     from pm.package import InstallError
     with pytest.raises(InstallError, match="lazy installs are disabled"):
         ensure_mod.sync_venv(["web"])
+
+
+def test_lazy_sync_never_creates_the_first_selection_for_a_foreign_interpreter(rooted, monkeypatch):
+    """A process running from an environment PM did not select (a build_environment test venv,
+    a dev venv, nix) imports an adapter whose extra is missing. Letting that lazy sync commit
+    the install's FIRST selection strands every later process: they boot into a generation
+    that lacks whatever the foreign interpreter carried (the CI "anthropic/aiohttp vanished"
+    class). Only an explicit install may create it. Exercised at the client seam every
+    ensure_import caller goes through, in the in-process (is_runtime) shape."""
+    import pm.client as client
+    import pm.install as ensure_mod
+    from pm import paths
+    from pm.package import InstallError
+    from pm.environments import runtime_facts_path
+
+    repo = rooted / "repo"
+    repo.mkdir()
+    (repo / "venv").mkdir()  # the install's own base venv, which this pytest process is NOT running from
+    monkeypatch.setattr(paths, "repo_root", lambda: repo)
+    monkeypatch.setattr(client, "is_runtime", lambda: True)
+    monkeypatch.setattr(ensure_mod, "lazy_installs_allowed", lambda: True)
+    venv_pkg = ensure_mod.get_package("venv")
+    monkeypatch.setattr(venv_pkg, "expected_stamp", lambda extras, **kwargs: "stamp")
+    monkeypatch.setattr(
+        venv_pkg, "apply", lambda *args, **kwargs: pytest.fail("lazy sync built a generation for a foreign interpreter"))
+
+    assert not runtime_facts_path(repo).exists()
+    with pytest.raises(InstallError, match="not running from the install's dependency environment"):
+        client.sync_venv(["bedrock"])
+    assert not runtime_facts_path(repo).exists(), "a refused sync must not commit a selection"
+
+    # The remedy the refusal names still works: an explicit install creates the selection.
+    monkeypatch.setattr(venv_pkg, "apply", lambda *args, **kwargs: {})
+    client.sync_venv(["bedrock"], explicit=True)
+    assert runtime_facts_path(repo).is_file()

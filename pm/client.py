@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import uuid
 
@@ -183,6 +184,20 @@ def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=No
 
 def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dirs=(), selection=None, staged_plugin=None, repair=False,
               project_root: Path | None = None) -> None:
+    from pm.environments import running_from_selected_environment
+
+    if extras and not explicit and not repair and not running_from_selected_environment(
+            paths.repo_root() if project_root is None else Path(project_root)):
+        # A lazy extra may only extend the environment this process runs from. From any other
+        # interpreter (a build_environment test venv, a developer venv, a Nix Python) the sync would
+        # commit a selection this process never activates while every process booted afterwards
+        # swaps onto it — a generation without whatever the foreign interpreter carried.
+        from pm.install import _refuse_lazy
+        raise _refuse_lazy(
+            "venv",
+            f"{list(extras)}: this process is not running from the install's dependency environment "
+            f"({sys.prefix}); only an explicit install may change what later processes boot into",
+        )
     if selection is not None and "expected_config" not in selection:
         from hermes_cli.runtime_state import _digest
         selection = {**selection, "expected_config": _digest(Path(selection["home"]) / "config.yaml") or "missing"}

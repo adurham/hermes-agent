@@ -169,6 +169,27 @@ def site_packages(venv: Path) -> Path:
     return venv / f"lib/python{version[0]}.{version[1]}/site-packages"
 
 
+def running_from_selected_environment(project_root: Path) -> bool:
+    """Does this process run on the environment PM selected for the install (base venv or committed
+    generation)?
+
+    A lazy sync from any other interpreter — a build_environment test venv, a developer's own venv,
+    a Nix store Python — must not commit the install's selection: activation is a boot decision, so
+    this process keeps running unchanged while every process booted afterwards swaps onto a
+    generation that lacks whatever the foreign interpreter carried.
+
+    activate_dependencies puts the selection's site-packages on sys.path without changing
+    sys.prefix, so sys.path is the signal (the same one ensure_import reads after a sync).
+    """
+    import sys
+
+    try:
+        selected = site_packages(selected_venv(project_root)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return any(Path(entry).resolve() == selected for entry in sys.path if entry)
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
