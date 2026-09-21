@@ -90,11 +90,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "gateway/platforms/webhook_filters.py",
-    "symbol": "WebhookRouteProcessor.run_route_script",
-    "kind": "bare_which"
-  },
-  {
     "path": "gateway/platforms/whatsapp_cloud.py",
     "symbol": "<module>",
     "kind": "bare_which"
@@ -132,6 +127,11 @@
   {
     "path": "hermes_cli/auth.py",
     "symbol": "_external_process_spec",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/cli_session_mixin.py",
+    "symbol": "CLISessionMixin._clear_terminal_on_exit",
     "kind": "bare_which"
   },
   {
@@ -181,11 +181,6 @@
   },
   {
     "path": "hermes_cli/gateway.py",
-    "symbol": "_append_node_dir_for_service",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/gateway.py",
     "symbol": "_build_wsl_interop_paths",
     "kind": "bare_which"
   },
@@ -230,6 +225,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/gateway_service_unit.py",
+    "symbol": "_append_node_dir_for_service",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_cli/gateway_windows.py",
     "symbol": "_exec_schtasks",
     "kind": "bare_which"
@@ -241,7 +241,7 @@
   },
   {
     "path": "hermes_cli/git_credentials.py",
-    "symbol": "_github_token",
+    "symbol": "_gh_cli_token",
     "kind": "bare_which"
   },
   {
@@ -567,11 +567,6 @@
   {
     "path": "tools/mcp_tool_config.py",
     "symbol": "_resolve_stdio_command",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/mcp_tool_config.py",
-    "symbol": "_which_with_config_pathext",
     "kind": "bare_which"
   },
   {
