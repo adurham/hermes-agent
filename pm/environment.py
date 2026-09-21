@@ -262,8 +262,9 @@ class PythonEnvironment:
                 command.append("--offline")
             try:
                 if self.output is not None:
-                    # uv hides build-backend output until failure without verbose mode.
-                    command.append("--verbose")
+                    # No --verbose: it is uv's DEBUG level and buries the progress
+                    # lines under interpreter/cache internals on every streamed run.
+                    # Build-backend output still arrives with the failure.
                     return _run_streaming(command, cwd=cwd, env=env, timeout=timeout, output=self.output)
                 return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout)

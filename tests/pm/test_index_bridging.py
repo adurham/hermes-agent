@@ -52,6 +52,22 @@ def test_pip_conf_is_bridged_only_when_uv_has_no_index(clean_index_env, monkeypa
     assert "UV_INDEX_URL" not in env
 
 
+def test_streamed_runs_do_not_request_uv_debug_output(tmp_path, monkeypatch):
+    import io
+    from pm import environment
+
+    seen: list[list[str]] = []
+
+    def record(command, **kwargs):
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(environment, "_run_streaming", record)
+    PythonEnvironment(uv=tmp_path / "uv", python=tmp_path / "python", destination=tmp_path / "venv",
+                      cache=tmp_path / "cache", env={}, output=io.StringIO())._run(["sync"], cwd=tmp_path, timeout=5)
+    assert seen and not {"--verbose", "-v"} & set(seen[0])
+
+
 def test_uv_timeout_names_the_mirror_knobs(tmp_path, monkeypatch):
     def stall(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
