@@ -190,7 +190,11 @@ def lease_generation(environment: Path) -> Callable[[], None]:
     caller must re-read the selection after leasing: an installer may have moved it in between,
     and an unselected, unleased generation is exactly what the collector removes.
     """
-    generation = environment.parent
+    return lease_directory(environment.parent)
+
+
+def lease_directory(generation: Path) -> Callable[[], None]:
+    """Pin a lease-managed generation directory for this process's lifetime."""
     if not (generation / ".lease-managed").is_file():
         return lambda: None  # Generations produced before leases stay conservatively retained.
     leases = generation / ".leases"
@@ -236,16 +240,19 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             marker = generation / ".lease-managed"
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
-            active = False
-            for lease in (generation / ".leases").glob("*"):
-                fd = os.open(lease, os.O_RDWR)
-                try:
-                    if not _lock(fd, wait=False):
-                        active = True
-                        break
-                finally:
-                    os.close(fd)
-            if not active:
+            if not leases_held(generation):
                 shutil.rmtree(generation)
                 removed.append(generation)
     return removed
+
+
+def leases_held(generation: Path) -> bool:
+    """True while any process still holds a lease taken by ``lease_directory``."""
+    for lease in (generation / ".leases").glob("*"):
+        fd = os.open(lease, os.O_RDWR)
+        try:
+            if not _lock(fd, wait=False):
+                return True
+        finally:
+            os.close(fd)
+    return False

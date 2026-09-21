@@ -288,9 +288,13 @@ def cmd_gc(args) -> int:
     facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
     removed, kept = _gc_store(store, facts)
     from hermes_cli.runtime_state import collect_generations
+    from pm.environments import install_state_dir
     from pm.paths import repo_root
+    from pm.runtime import collect_runtime_generations
     generations = collect_generations(repo_root())
-    print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations")
+    runtimes = collect_runtime_generations(install_state_dir(repo_root()) / "pm-runtime")
+    print(f"gc: removed {removed}, kept {kept}; removed {len(generations)} dependency generations, "
+          f"{len(runtimes)} PM runtime generations")
     return 0
 
 
