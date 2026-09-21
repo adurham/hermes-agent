@@ -34,6 +34,7 @@ import {
   setSessionTileDelegate
 } from '@/store/session-states'
 
+import { cachedSessionRow } from './use-session-actions/utils'
 import { useSessionStateCache } from './use-session-state-cache'
 
 type Cache = ReturnType<typeof useSessionStateCache>
@@ -107,6 +108,10 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
       selected: 'stored-B'
     },
     {
+      // Also the pop-out/secondary-window shape: `isSecondaryWindow()` starts
+      // that renderer with `$sessionTiles` empty AND `$layoutTree` null, so
+      // `$focusedStoredSessionId` collapses to the selection and the route is
+      // the only voice left. No tiles and no tree is exactly this case.
       surface: 'hash route',
       arm: () => window.history.pushState({}, '', '/#/stored-B'),
       selected: null
@@ -145,6 +150,17 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect($activeSessionStoredIdRotation.get()).toBeNull()
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+
+    // Aftermath of the suppression: nothing re-points the primary, so its
+    // selection and route keep the PRE-rotation stored id. That residue is
+    // benign only if the id is still a live handle — the lineage row resolves
+    // it to the tip, so coming back to this chat resumes A-next (the same
+    // resolution `resolveStoredSession` does on every sidebar/route resume)
+    // rather than a dead segment.
+    setSessions([
+      { _lineage_ids: ['stored-A', 'stored-A-next'], _lineage_root_id: 'stored-A', id: 'stored-A-next' }
+    ] as never)
+    expect(cachedSessionRow('stored-A')?.id).toBe('stored-A-next')
   })
 
   it.each([

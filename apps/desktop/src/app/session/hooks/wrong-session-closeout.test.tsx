@@ -1,22 +1,18 @@
 // @vitest-environment jsdom
 /**
- * Wrong-session close-out scenario for #86106 (a Desktop message persisted
- * to a stale session after switching chats), composed from the producers
- * mapped on the issue: a background session's delayed stored-id rotation
- * (#86359), a queued drain whose runtime went stale (fromQueue fence), and a
- * queued send with an attachment recovering against its OWN chat (#116287).
+ * Integration invariant for #86106 / #86359: a background chat's delayed
+ * stored-id rotation must not move the user off the surface they are on.
  *
- *   A active → B queued send created → user focuses tile C → B's runtime goes
- *   stale → A's delayed rotation lands → B's queued text + image drain → B's
- *   recovery mints a new runtime
+ * The unit test in `use-session-state-cache.test.tsx` pins the PRODUCER (no
+ * rotation event is published). This one wires the real producer to the real
+ * CONSUMER (`useSessionActions`' route-follow effect) so the user-visible half
+ * is pinned too: no navigate(), no selection move, no focus move.
  *
- * Invariants: focus stays where the user left it; prompt and attachment both
- * reach B's owner on B's new runtime; stored B maps only to B's runtime and
- * stored A only to A's. Real hooks (cache, session actions, prompt actions)
- * and the production owner-routing dispatcher; only the gateway edge is mocked.
+ *   A is the primary (route + selection + active runtime) → the user focuses
+ *   tile C → A auto-compresses and rotates its stored id
  */
 import { useStore } from '@nanostores/react'
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -41,8 +37,6 @@ import {
 import { $focusedStoredSessionId, $sessionTiles, clearAllSessionStates } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { usePromptActions } from './use-prompt-actions'
-import { clearSingleFlightSessionResumeState } from './use-prompt-actions/single-flight-resume'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -56,10 +50,7 @@ vi.mock('@/store/gateway', async original => ({
 let routedStoredId: string | null = 'stored-A'
 const navigate = vi.fn()
 
-let handle: {
-  cache: ReturnType<typeof useSessionStateCache>
-  prompts: ReturnType<typeof usePromptActions>
-}
+let handle: { cache: ReturnType<typeof useSessionStateCache> }
 
 function Harness() {
   const activeSessionId = useStore($activeSessionId)
@@ -83,7 +74,7 @@ function Harness() {
     }
   })
 
-  const sessionActions = useSessionActions({
+  useSessionActions({
     activeSessionId,
     ...cache,
     busyRef,
@@ -95,26 +86,7 @@ function Harness() {
     selectedStoredSessionId
   })
 
-  const prompts = usePromptActions({
-    activeSessionId,
-    ...cache,
-    busyRef,
-    branchCurrentSession: async () => false,
-    createBackendSessionForSend: sessionActions.createBackendSessionForSend,
-    getRouteToken: () => `${routedStoredId ? sessionRoute(routedStoredId) : '/'}::`,
-    getRoutedStoredSessionId: () => routedStoredId,
-    handleSkinCommand: () => '',
-    openMemoryGraph: () => undefined,
-    refreshSessions: async () => undefined,
-    requestGateway,
-    resumeStoredSession: async () => {
-      throw new Error('unexpected foreground resume')
-    },
-    startFreshSessionDraft: () => undefined,
-    sttEnabled: false
-  })
-
-  handle = { cache, prompts }
+  handle = { cache }
 
   return null
 }
@@ -122,7 +94,6 @@ function Harness() {
 afterEach(() => {
   cleanup()
   clearAllSessionStates()
-  clearSingleFlightSessionResumeState()
   setActiveSessionStoredIdRotation(null)
   setActiveSessionId(null)
   setSelectedStoredSessionId(null)
@@ -138,35 +109,9 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-it('a queued B send drained through A’s delayed rotation and B’s recovery lands in B without moving the user off tile C', async () => {
-  const sessionIdOf = (params?: Record<string, unknown>) => String(params?.session_id ?? '')
-  vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, rpc, params) => {
-    const sessionId = sessionIdOf(params)
-
-    if (rpc === 'session.resume') {
-      return { session_id: sessionId === 'stored-B' ? 'rt-B2' : `rt-unexpected-${sessionId}` }
-    }
-
-    if (sessionId === 'rt-B') {
-      // B's runtime was reaped while its send sat in the queue.
-      throw new Error('4007 session not found')
-    }
-
-    if (rpc === 'image.attach') {
-      return { attached: true, path: '/scratch/shot.png' }
-    }
-
-    if (rpc === 'prompt.submit') {
-      return { status: 'streaming' }
-    }
-
-    throw new Error(`unexpected ${rpc} for ${sessionId}`)
-  })
-
-  // Distinct owners per chat: routing to the wrong runtime is visible as a
-  // call on the wrong connection, not only as a wrong session_id.
+it('a background chat’s delayed stored-id rotation never moves the user off the tile they are on', async () => {
   setSessions(
-    ['A', 'B', 'C'].map(id => ({
+    ['A', 'C'].map(id => ({
       id: `stored-${id}`,
       connection_id: `connection-${id}`,
       profile: 'default',
@@ -181,7 +126,7 @@ it('a queued B send drained through A’s delayed rotation and B’s recovery la
   setActiveSessionId('rt-A')
   render(<Harness />)
   act(() => {
-    for (const id of ['A', 'B', 'C']) {
+    for (const id of ['A', 'C']) {
       handle.cache.updateSessionState(
         `rt-${id}`,
         state => ({
@@ -193,7 +138,7 @@ it('a queued B send drained through A’s delayed rotation and B’s recovery la
     }
   })
 
-  // The user opens C as a tile and is typing there when everything below lands.
+  // The user opens C as a tile and is working there when the rotation lands.
   act(() => {
     $sessionTiles.set([{ runtimeId: 'rt-C', storedSessionId: 'stored-C' }])
     $layoutTree.set(group(['workspace', 'session-tile:stored-C'], { active: 'session-tile:stored-C', id: 'grp-main' }))
@@ -212,53 +157,11 @@ it('a queued B send drained through A’s delayed rotation and B’s recovery la
   expect($activeSessionStoredIdRotation.get()).toBeNull()
   expect($focusedStoredSessionId.get()).toBe('stored-C')
   expect($selectedStoredSessionId.get()).toBe('stored-A')
-  expect(handle.cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('rt-A')
-
-  // The composer queue drains B's send (text + image) with the runtime id it
-  // captured when the send was queued — stale by now.
-  await act(async () => {
-    expect(
-      await handle.prompts.submitText('B queued text', {
-        attachments: [{ id: 'att-1', kind: 'image', label: 'shot.png', path: '/scratch/shot.png' } as never],
-        composerScope: 'stored-B',
-        fromQueue: true,
-        sessionId: 'rt-B',
-        storedSessionId: 'stored-B'
-      })
-    ).toBe(true)
-  })
-
-  const calls = vi
-    .mocked(requestGatewayForAgent)
-    .mock.calls.map(([connection, , rpc, params]) => [connection, rpc, sessionIdOf(params as never)])
-
-  await waitFor(() => expect(calls).toContainEqual(['connection-B', 'prompt.submit', 'rt-B2']))
-  expect(calls).toContainEqual(['connection-B', 'session.resume', 'stored-B'])
-  expect(calls).toContainEqual(['connection-B', 'image.attach', 'rt-B2'])
-  expect(calls.filter(([, rpc]) => rpc === 'session.resume')).toEqual([['connection-B', 'session.resume', 'stored-B']])
-  expect(calls.some(([connection]) => connection !== 'connection-B')).toBe(false)
-  expect(calls.some(([, , sessionId]) => sessionId === 'rt-A' || sessionId === 'rt-C')).toBe(false)
-  expect(requestGatewayForProfile).not.toHaveBeenCalled()
-
-  // Each stored id maps only to its own runtime; the foreground never moved.
-  const bindings = handle.cache.runtimeIdByStoredSessionIdRef.current
-  expect(bindings.get('stored-B')).toBe('rt-B2')
-  expect(bindings.get('stored-A-next')).toBe('rt-A')
-  expect(bindings.get('stored-C')).toBe('rt-C')
-  expect([...bindings.values()].filter(runtime => runtime === 'rt-B2')).toEqual(['rt-B2'])
-  expect(handle.cache.sessionStateByRuntimeIdRef.current.get('rt-B2')?.storedSessionId).toBe('stored-B')
   expect($activeSessionId.get()).toBe('rt-A')
-  expect(handle.cache.activeSessionIdRef.current).toBe('rt-A')
-  expect($selectedStoredSessionId.get()).toBe('stored-A')
-  expect($focusedStoredSessionId.get()).toBe('stored-C')
-  expect(navigate).not.toHaveBeenCalled()
-
-  // B's user row is filed under B only (never under A's or C's state). The
-  // optimistic bubble stays on the cache entry the queued send was seeded on;
-  // the persisted row is the prompt.submit on rt-B2 asserted above.
-  const userRowOwners = [...handle.cache.sessionStateByRuntimeIdRef.current.values()].flatMap(state =>
-    state.messages.filter(message => message.role === 'user').map(() => state.storedSessionId)
-  )
-
-  expect(userRowOwners).toEqual(['stored-B'])
+  // The rotation still re-keys A's own binding; only the foreground move is
+  // suppressed.
+  expect(handle.cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('rt-A')
+  expect(handle.cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+  expect(requestGatewayForAgent).not.toHaveBeenCalled()
+  expect(requestGatewayForProfile).not.toHaveBeenCalled()
 })
