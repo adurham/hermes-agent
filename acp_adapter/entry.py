@@ -175,6 +175,13 @@ def main(argv: list[str] | None = None) -> None:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
+    # One TLS authority: trust the OS store before any outbound call (bare
+    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # This console script bypasses hermes_cli.main, which does the same.
+    from agent.ssl_verify import install_truststore
+
+    install_truststore()
+
     import acp
     from .server import HermesACPAgent
 
