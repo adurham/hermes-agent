@@ -1089,6 +1089,9 @@ function Invoke-UserStateActions {
             if (-not (Test-Path -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second'))) {
                 throw 'hermes profile create produced no profile dir'
             }
+            # Factory templates migrate intentionally; preserve an authored profile instead.
+            Add-Content -LiteralPath (Join-Path $HermesHome 'profiles\e2e-second\SOUL.md') `
+                -Encoding UTF8 -Value "`nUser preference: preserve my e2e-second profile identity across upgrades."
             Write-Host '  a second profile exists (profiles/e2e-second)'
             }
         }

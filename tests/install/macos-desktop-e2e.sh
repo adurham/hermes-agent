@@ -8,7 +8,9 @@
 # GIT_CONFIG_GLOBAL. The published dmg carries no commit pin - it installs
 # whatever `main` serves - so parking serve.git's main at OLD stages the
 # "user on the current release" start, and advancing it to HEAD makes an
-# update available exactly the way it does for a real user.
+# update available exactly the way it does for a real user. Its separately
+# resolved install.sh must come from OLD too: git's redirect does not cover
+# raw.githubusercontent.com. The published GUI still owns every install stage.
 #
 # Phases (state shared via the workroot, mirroring the windows driver):
 #   stage    bare-clone this checkout to serve.git, park main at OLD
@@ -179,6 +181,18 @@ phase_install() {
   arm_redirect
   step "installing OLD ($OLD_REF) via the published Hermes-Setup.dmg"
 
+  # Pair both historical inputs. Today's downloaded install.sh can call helpers
+  # absent from OLD (e.g. ensure-rolldown-binding.mjs). Use the published
+  # bootstrap's script-source override, not a patched script or prebuilt app.
+  local bootstrap_root="$WORK_ROOT/bootstrap-source"
+  mkdir -p "$bootstrap_root/scripts"
+  git -C "$SERVE_REPO" show "$OLD_SHA:scripts/install.sh" > "$bootstrap_root/scripts/install.sh"
+  cp "$bootstrap_root/scripts/install.sh" "$LOG_DIR/bootstrap-install-script.sh"
+  printf 'source_commit=%s\nscript_blob=%s\n' "$OLD_SHA" \
+    "$(git -C "$SERVE_REPO" rev-parse "$OLD_SHA:scripts/install.sh")" \
+    > "$LOG_DIR/bootstrap-install-script.txt"
+  ok "bootstrap script is unmodified scripts/install.sh from $OLD_REF ($OLD_SHA)"
+
   local dmg="$WORK_ROOT/Hermes-Setup.dmg"
   [ -f "$dmg" ] || curl -fsSL -o "$dmg" "$DMG_URL"
   [ "$(stat -f%z "$dmg")" -gt 1000000 ] || fail "dmg download too small: $(stat -f%z "$dmg") bytes"
@@ -203,14 +217,20 @@ phase_install() {
   # `open`: launchd inherits NONE of the redirect env) and drive the
   # "Install Hermes" button with native input.
   local rc=0
-  source_build_env bash "$ASSETS/drive-dmg-install.sh" \
+  HERMES_SETUP_DEV_REPO_ROOT="$bootstrap_root" source_build_env bash "$ASSETS/drive-dmg-install.sh" \
     --app-bin "$app_bin" \
     --install-dir "$INSTALL_DIR" \
     --proof-dir "$LOG_DIR" 2>&1 \
     | ts_prefix > "$LOG_DIR/bootstrap-install.log" || rc=$?
   log_group "Hermes-Setup (dmg bootstrap) transcript" "$LOG_DIR/bootstrap-install.log"
+  local bootstrap_log="$LOG_DIR/bootstrap-logs/bootstrap-installer.log"
+  if [ -f "$bootstrap_log" ]; then
+    log_group "Hermes-Setup inner installer log" "$bootstrap_log"
+  fi
   hdiutil detach "$mount" >/dev/null 2>&1 || true
   [ "$rc" -eq 0 ] || fail "dmg bootstrap exited $rc; transcript above"
+  grep -Fq "[bootstrap] script $bootstrap_root/scripts/install.sh via dev checkout" "$bootstrap_log" \
+    || fail "bootstrap did not confirm using the historical install script"
 
   [ -d "$INSTALL_DIR/.git" ] || fail "no checkout landed at $INSTALL_DIR"
   local got

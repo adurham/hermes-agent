@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Produce the user state that preserve-user-state.sh verifies — through the
-# ORDINARY user surface, never by writing files ourselves.
+# ORDINARY user surface, including editing a profile's user-owned SOUL.md.
 #
 # Why this exists: an upgrade-preservation check over fixtures the harness wrote
-# proves only that the harness can write files. Everything here is a real
-# command a user would run, against the leg's real installed CLI, with a real
+# proves only that the harness can write files. Profiles and sessions come from
+# commands a user would run, against the leg's real installed CLI, with a real
 # (mocked-inference) provider configured:
 #
 #   hermes chat -q ...        a real turn  -> sessions/ transcripts + state.db rows
@@ -115,6 +115,10 @@ user_state_produce() {
       "$hermes" profile create e2e-second > "$LOG_DIR/user-state-profile.log" 2>&1 \
       || fail "hermes profile create failed; see $LOG_DIR/user-state-profile.log"
     [ -d "$HERMES_HOME/profiles/e2e-second" ] || fail "hermes profile create produced no profile dir"
+    # Untouched factory templates migrate intentionally. Customize the real
+    # profile before snapshotting so byte preservation protects user authorship.
+    printf '\nUser preference: preserve my e2e-second profile identity across upgrades.\n' \
+      >> "$HERMES_HOME/profiles/e2e-second/SOUL.md"
     ok "a second profile exists (profiles/e2e-second)"
   else
     ok "the second profile already exists"

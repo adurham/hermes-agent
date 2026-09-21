@@ -34,6 +34,8 @@ interface SmokeWindow extends Window {
 
 export interface TranscriptMessage {
   id: string
+  /** Historical user roots omit the message ID; label their content identity honestly. */
+  idSource?: 'legacy-user-text'
   role: string
   text: string
   streaming: boolean
@@ -136,16 +138,30 @@ export async function composerText(composer: Locator): Promise<string> {
     node instanceof HTMLTextAreaElement ? node.value : node.textContent ?? '')
 }
 
+export function transcriptMessages(viewports: Element[]): TranscriptMessage[] {
+  return viewports.flatMap((viewport: Element): TranscriptMessage[] =>
+    [...viewport.querySelectorAll('[data-message-id][data-role], [data-slot="aui_user-message-root"][data-role="user"]')]
+      .map((node: Element): TranscriptMessage => {
+        const id = node.getAttribute('data-message-id') ?? ''
+        const role = node.getAttribute('data-role') ?? ''
+        const text = node.textContent ?? ''
+        // v2026.6.19's sticky user wrapper drops MessagePrimitive.Root's ID.
+        // Its full text is stable across remounts, unlike a DOM index/handle.
+        // The new nonce and ordered, fresh assistant ID remain mandatory.
+        const legacyUser = !id && role === 'user' && node.getAttribute('data-slot') === 'aui_user-message-root'
+        const message: TranscriptMessage = {
+          id: legacyUser ? `legacy-user-text:${text}` : id,
+          role, text,
+          streaming: node.getAttribute('data-streaming') === 'true' || Boolean(node.querySelector('[data-message-streaming="true"]')),
+          error: Boolean(node.querySelector('[role="alert"]')),
+        }
+        if (legacyUser) { message.idSource = 'legacy-user-text' }
+        return message
+      }))
+}
+
 async function readTranscript(page: Page): Promise<TranscriptMessage[]> {
-  return page.locator('[data-slot="aui_thread-viewport"]:visible [data-message-id][data-role]').evaluateAll(
-    (nodes: Element[]): TranscriptMessage[] => nodes.map((node: Element): TranscriptMessage => ({
-      id: node.getAttribute('data-message-id') ?? '',
-      role: node.getAttribute('data-role') ?? '',
-      text: node.textContent ?? '',
-      streaming: node.getAttribute('data-streaming') === 'true' || Boolean(node.querySelector('[data-message-streaming="true"]')),
-      error: Boolean(node.querySelector('[role="alert"]')),
-    })),
-  )
+  return page.locator('[data-slot="aui_thread-viewport"]:visible').evaluateAll(transcriptMessages)
 }
 
 /** Match an ordered new pair, never a reply carried over from an earlier checkpoint. */
