@@ -311,6 +311,16 @@ stage_repository() {
             log "not fast-forwardable; reset to origin/$BRANCH"
         fi
     else
+        # `mv <clone> <existing dir>` nests the checkout INSIDE it as
+        # <dir>/tree, so a pre-existing destination must be empty (we take
+        # the empty dir over) or we refuse: whatever lives there is not ours.
+        if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
+            if [ -d "$INSTALL_DIR" ] && [ ! -L "$INSTALL_DIR" ] && [ -z "$(ls -A "$INSTALL_DIR")" ]; then
+                rmdir "$INSTALL_DIR" || fail "cannot replace empty $INSTALL_DIR"
+            else
+                fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>."
+            fi
+        fi
         log "cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
         mkdir -p "$(dirname "$INSTALL_DIR")"
         local staged attempt cloned=false
