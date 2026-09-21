@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 
 import pytest
 
@@ -14,21 +13,9 @@ from pm.store import current_target
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _bash() -> str:
-    """A real bash: on the Windows runner PATH finds System32's WSL stub first (it prints a
-    UTF-16 "no installed distributions" notice and exits 1), so prefer Git for Windows'."""
-    found = shutil.which("bash")
-    if sys.platform == "win32" and (not found or "system32" in found.lower() or "windowsapps" in found.lower()):
-        for rel in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
-            cand = Path(os.environ.get("ProgramFiles", r"C:\Program Files")).joinpath(*rel)
-            if cand.exists():
-                return str(cand)
-    return found or "bash"
-
-
 @pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("missing_target", [False, True])
-def test_cold_setup_uses_exact_lock_values(tmp_path, missing_target):
+def test_cold_setup_uses_exact_lock_values(tmp_path, missing_target, real_bash):
     checkout = tmp_path / "checkout"
     (checkout / "pm").mkdir(parents=True)
     shutil.copy2(ROOT / "setup-hermes.sh", checkout / "setup-hermes.sh")
@@ -60,7 +47,7 @@ def test_cold_setup_uses_exact_lock_values(tmp_path, missing_target):
     env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                HERMES_RUNTIME_DIR=(tmp_path / "tools").as_posix(), BASH_ENV=hook.as_posix(),
                PROBE_ARGS=args.as_posix(), PROBE_DOWNLOAD=corrupt.as_posix())
-    result = subprocess.run([_bash(), str(checkout / "setup-hermes.sh")], cwd=tmp_path,
+    result = subprocess.run([real_bash, str(checkout / "setup-hermes.sh")], cwd=tmp_path,
                             env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode != 0, result.stdout + result.stderr
     if missing_target:

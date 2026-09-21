@@ -60,11 +60,11 @@ run_stage "$STAGE"
 
 
 @pytest.mark.platforms("windows", "posix")
-def test_real_single_stage_cli_reports_admission_or_execution_failure(tmp_path):
+def test_real_single_stage_cli_reports_admission_or_execution_failure(tmp_path, real_bash):
     stage = 'unknown"\\\n\x1fstage'
     env = dict(_env(tmp_path), PROBE_STAGE=stage)
-    result = subprocess.run(["bash", "-c", 'exec bash "$1" --stage "$PROBE_STAGE" --json',
-                             "stage-test", SCRIPT.as_posix()],
+    result = subprocess.run([real_bash, "-c", 'exec "$0" "$1" --stage "$PROBE_STAGE" --json',
+                             real_bash, SCRIPT.as_posix()],
                             cwd=tmp_path, env=env, capture_output=True,
                             text=True, encoding="utf-8", timeout=30)
     assert result.returncode != 0

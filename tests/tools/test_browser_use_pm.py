@@ -61,7 +61,8 @@ def main():
     result = json.loads(bu.browser_exec("print('payload')", session="research", task_id="owner"))
     assert result["success"], result
     child = json.loads(result["output"])
-    assert Path(child["argv"][0]) == binary
+    # Windows console-script launchers report sys.argv[0] without the .exe suffix.
+    assert Path(child["argv"][0]).with_suffix("") == binary.with_suffix("")
     assert child["stdin"] == "print('payload')"
     for key in ("PYTHONPATH", "PYTHONHOME", "OPENAI_API_KEY", "_HERMES_BU_PRIVATE_BROWSER"):
         assert key not in child["env"]

@@ -3,8 +3,8 @@
 The retained desktop stage used to call helpers deleted by the PM
 consolidation (Resolve-UvCmd, Test-Node, the electron-dist recovery set) —
 runtime failures under `-Stage desktop`. The stage must use the CURRENT
-paths: pm's venv sync for the wake/voice extras and the product CLI
-(`hermes desktop --build-only`) for the build. The $Stages table must be
+path: the shared completion tail (source_completion.py --desktop) that
+`hermes update` also runs. The $Stages table must be
 the ONE list: -Manifest prints it and the no-flag ladder runs it, so
 -IncludeDesktop affects the real loop exactly as the manifest advertises.
 `-Stage desktop` stays directly dispatchable without the flag (the
@@ -47,9 +47,10 @@ public static class FakePy {
         string log = Environment.GetEnvironmentVariable("FAKE_PY_LOG");
         File.AppendAllText(log, string.Join("\u0001", args) + Environment.NewLine);
         if (Array.IndexOf(args, "-c") >= 0) { return 0; }
-        if (args.Length >= 2
-                && args[args.Length - 2] == "desktop"
-                && args[args.Length - 1] == "--build-only") {
+        // The shared completion tail (hermes_cli/source_completion.py --source <root> [--desktop])
+        // builds the products; with --desktop it leaves the packaged app under release/.
+        if (Array.IndexOf(args, "hermes_cli/source_completion.py") >= 0
+                && Array.IndexOf(args, "--desktop") >= 0) {
             string dir = Path.Combine(
                 Environment.GetEnvironmentVariable("FAKE_INSTALL_DIR"),
                 "apps", "desktop", "release", "win-unpacked");
@@ -180,13 +181,17 @@ def test_manifest_without_flag_lists_no_desktop(tmp_path: Path) -> None:
     assert "desktop" not in _manifest_stages(_run(powershell, tmp_path, ["-Manifest"]))
 
 
-def test_manifest_with_include_desktop_orders_desktop_before_complete(tmp_path: Path) -> None:
+def test_manifest_with_include_desktop_selects_the_desktop_product(tmp_path: Path) -> None:
+    """-IncludeDesktop selects the desktop product inside the shared ``products`` stage
+    (the bootstrap installer's manifest contract); it never adds a second build stage."""
     powershell = shutil.which("powershell")
     if not powershell:
         pytest.skip("Windows PowerShell is required")
-    names = _manifest_stages(_run(powershell, tmp_path, ["-Manifest", "-IncludeDesktop"]))
-    assert names.index("desktop") < names.index("complete")
-    assert names[-1] == "complete"
+    stages = json.loads(_run(powershell, tmp_path, ["-Manifest", "-IncludeDesktop"]).stdout)["stages"]
+    names = [s["name"] for s in stages]
+    assert "desktop" not in names
+    assert names.index("products") < names.index("complete") and names[-1] == "complete"
+    assert "desktop" in next(s for s in stages if s["name"] == "products")["title"].lower()
 
 
 def test_unknown_stage_is_rejected(tmp_path: Path) -> None:
@@ -216,8 +221,8 @@ def test_complete_stage_writes_pinned_install_marker(tmp_path: Path) -> None:
 
 def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     """-Stage desktop (without -IncludeDesktop — the standalone contract)
-    runs the CURRENT paths: pm's venv sync for wake/voice, then
-    `hermes desktop --build-only` through the published installation launcher; the produced
+    runs the CURRENT path: the shared completion tail (source_completion.py
+    --desktop, the same call `hermes update` makes) builds the products; the produced
     artifact is probed, ACL-granted, and shortcut-ed — with icacls,
     ie4uinit.exe, and WScript.Shell intercepted in the wrapper boundary so
     nothing outside the temp dirs is touched."""
@@ -265,15 +270,12 @@ def test_desktop_stage_uses_pm_sync_and_product_cli(tmp_path: Path) -> None:
     assert run.returncode == 0, f"{run.stdout}{run.stderr}\nFAKE LOG:\n{calls}"
 
     assert isinstance(calls, list)
-    # 1. wake/voice extras via pm's venv sync (the pm-owned path).
-    assert any(
-        len(c) >= 3 and c[:2] == ["-I", "-c"] and "from pm import sync_venv" in c[2]
-        and "'wake'" in c[2] and "'voice'" in c[2] and "explicit=True" in c[2]
-        for c in calls
-    ), calls
-    # 2. the build through the parsed product CLI (never a `build` subcommand
-    #    or any deleted helper).
-    assert any(c[-2:] == ["desktop", "--build-only"] for c in calls), calls
+    # 1./2. one completion call with the desktop product selected (never a `build`
+    #    subcommand, a deleted helper, or a separate extras sync — pm lazy-installs
+    #    wake/voice at first use, #70509).
+    completion = [c for c in calls if "hermes_cli/source_completion.py" in c]
+    assert len(completion) == 1 and "--desktop" in completion[0], calls
+    assert not any(c[-2:] == ["desktop", "--build-only"] or "sync_venv" in " ".join(c) for c in calls), calls
     # 3. the stage probed the artifact the fake build produced.
     exe = install_dir / "apps" / "desktop" / "release" / "win-unpacked" / "Hermes.exe"
     assert exe.is_file(), calls

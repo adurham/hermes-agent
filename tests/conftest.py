@@ -2167,3 +2167,18 @@ def _forbid_real_hermes_home_io(monkeypatch, request):
     from tests.home_io_guard import HomeIOGuard
 
     HomeIOGuard(lambda: _REAL_HERMES_ROOT_CANDIDATES).install(monkeypatch)
+
+
+@pytest.fixture
+def real_bash() -> str:
+    """A bash that runs shell scripts: on the Windows runners PATH resolves ``bash`` to
+    System32's WSL launcher, which prints a UTF-16 "no installed distributions" notice and
+    exits 1. Prefer Git for Windows' bash there; elsewhere the PATH one is real."""
+    found = shutil.which("bash")
+    if sys.platform == "win32" and (
+            not found or any(marker in found.lower() for marker in ("system32", "windowsapps"))):
+        for rel in (("Git", "bin", "bash.exe"), ("Git", "usr", "bin", "bash.exe")):
+            candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")).joinpath(*rel)
+            if candidate.exists():
+                return str(candidate)
+    return found or "bash"

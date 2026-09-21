@@ -42,7 +42,7 @@ def payload_tree(tmp_path: Path):
     py_dir = tmp_path / "stage" / "tools" / "py-1"
     repo = tmp_path / "stage" / "repo"
     site = tmp_path / "stage" / "venv" / "Lib" / "site-packages"
-    for d in (bin_dir, py_dir, repo / "hermes_cli", site):
+    for d in (bin_dir, py_dir, repo / "hermes_cli", repo / "pm", site):
         d.mkdir(parents=True, exist_ok=True)
 
     # A real interpreter at the shebang's target: the launcher will create

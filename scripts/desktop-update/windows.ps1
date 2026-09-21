@@ -1557,8 +1557,10 @@ try {
         $gatewayArg = @()
         Write-HandoffLog "update requested without --gateway (remote-served Desktop)"
     }
-    $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $targetArgs
-    if ($legacyInstall) { $updateArgs += '--force' }
+    # --force precedes the target (the hand-off contract test reads the argv in this order).
+    $forceArg = @()
+    if ($legacyInstall) { $forceArg = @('--force') }
+    $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which

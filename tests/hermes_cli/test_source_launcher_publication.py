@@ -67,7 +67,7 @@ def select_generation(repo, name, value):
 
 @pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("form", ["native", "shell"])
-def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, monkeypatch, form):
+def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, monkeypatch, form, real_bash):
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     out = tmp_path / "commands"
     out.mkdir()
@@ -92,8 +92,8 @@ def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, mo
         env["PYTHONPATH"] = str(tmp_path / "foreign-deps")
         for launcher in launchers:
             assert launcher is not None
-            command = ["bash", "-s"] if form == "shell" else [str(launcher), *args]
-            script = "exec " + shlex.join(["bash", str(launcher), *args]) + "\n" if form == "shell" else None
+            command = [real_bash, "-s"] if form == "shell" else [str(launcher), *args]
+            script = "exec " + shlex.join([real_bash, str(launcher), *args]) + "\n" if form == "shell" else None
             result = subprocess.run(command, input=script, cwd=tmp_path, env=env,
                                     capture_output=True, text=True, encoding="utf-8", timeout=30)
             assert result.returncode == 7, result.stdout + result.stderr

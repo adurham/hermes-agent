@@ -1071,11 +1071,11 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         # argv is identical across primary and fallback, and every current
         # watcher parameter survives:
-        #   [watcher_python, "-c", <script>, str(pid), str(restart_after_s), *cmd_argv]
+        #   [python, "-I", "-c", <bootstrap + watcher script>, str(pid), str(restart_after_s), *cmd_argv]
         assert argv1 == argv2
-        assert argv1[1] == "-c"
-        assert argv1[3] == str(os.getpid())
-        assert float(argv1[4]) >= 5.0  # restart deadline preserved
+        assert argv1[1:3] == ["-I", "-c"]
+        assert argv1[4] == str(os.getpid())
+        assert float(argv1[5]) >= 5.0  # restart deadline preserved
         assert argv1[-2:] == ["gateway", "restart"]
 
         # Scrubbed env preserved and identical on both calls.
