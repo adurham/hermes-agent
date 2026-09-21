@@ -45,6 +45,9 @@ export function smokeEnvironment(inherited, home, userData) {
     XDG_DATA_HOME: path.join(home, '.desktop-smoke-home', '.local', 'share'),
     XDG_CACHE_HOME: path.join(home, '.desktop-smoke-home', '.cache'),
     HERMES_HOME: home, HERMES_DESKTOP_USER_DATA_DIR: userData,
+    // app.close() cannot answer a native modal. This bypasses confirmation only;
+    // normal backend teardown and the driver's process-exit checks still run.
+    HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
     APPDATA: path.join(home, '.desktop-smoke-home', 'AppData', 'Roaming'),
     LOCALAPPDATA: path.join(home, '.desktop-smoke-home', 'AppData', 'Local'),
   };

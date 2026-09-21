@@ -80,8 +80,14 @@ async function openAbout(page, { prepare, log, shot, confirmSettings = false, hi
 
 async function waitForUpdate(page, { log, shot }) {
   const update = page.getByRole('button', { name: /update now/i }).first()
+  const details = page.getByRole('button', { name: /^see what['’]s new$/i }).first()
   const deadline = Date.now() + 180_000
   while (!await update.isVisible().catch(() => false) && Date.now() < deadline) {
+    if (await details.isVisible().catch(() => false)) {
+      await details.click({ timeout: 5_000 })
+      log("opened See what's new")
+      continue
+    }
     await page.getByRole('button', { name: /check now/i }).first().click({ timeout: 5_000 })
       .then(() => log('nudged Check now')).catch(() => {})
     await page.waitForTimeout(15_000)
@@ -92,7 +98,7 @@ async function waitForUpdate(page, { log, shot }) {
     ).catch(error => `updates.check failed: ${error.message}`)
     log(`[update-status] ${JSON.stringify(status)}`)
     await shot(page, 'ERROR-no-update-now')
-    throw new Error('"Update now" never appeared — update check did not report an update')
+    throw new Error('"Update now" never appeared after checking for updates and opening available update details')
   }
   await shot(page, '04-update-available')
   return update
