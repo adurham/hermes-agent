@@ -2,7 +2,7 @@
 
 #100896 (@ruangraung): `database.journal_mode: delete` never self-applies to a store that is already WAL because
 open never live-downgrades; this command is the sanctioned offline path and must fail closed while any other
-process holds the file.
+process holds the file — or while it cannot prove the file is quiet at all.
 """
 import argparse
 import sqlite3
@@ -13,6 +13,7 @@ import time
 import pytest
 
 from hermes_cli.sessions_cmd import cmd_sessions
+from hermes_cli.sessions_cmd_journal_mode import _refusal
 
 
 def _wal_store(path):
@@ -24,11 +25,12 @@ def _wal_store(path):
     assert path.read_bytes()[18:20] == b"\x02\x02"
 
 
-def _args(mode):
-    return argparse.Namespace(sessions_action="set-journal-mode", mode=mode, db=None)
+def _args(mode, db=None, force=True):
+    # --force only waives the Windows "no holder scan" refusal; on POSIX the scan still gates the flip,
+    # so passing it keeps the happy path exercised on every lane including windows-latest.
+    return argparse.Namespace(sessions_action="set-journal-mode", mode=mode, db=db, force=force)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="holder scan and header probe are POSIX-only")
 def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, capsys):
     db = tmp_path / "state.db"
     _wal_store(db)
@@ -45,7 +47,8 @@ def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, caps
     assert "wal → delete" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="holder scan is POSIX-only")
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="foreign_state_db_holders has no Windows scan; the --force refusal covers that lane")
 def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path, monkeypatch, capsys):
     db = tmp_path / "state.db"
     _wal_store(db)
@@ -59,7 +62,7 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not (tmp_path / "state.db-shm").exists():
             time.sleep(0.05)
-        assert cmd_sessions(_args("delete")) == 1
+        assert cmd_sessions(_args("delete", force=False)) == 1
     finally:
         holder.kill()
         holder.wait()
@@ -67,3 +70,38 @@ def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path
     out = capsys.readouterr().out
     assert f"pid {holder.pid}" in out
     assert db.read_bytes()[18:20] == b"\x02\x02", "a refused switch must leave the file untouched"
+
+
+@pytest.mark.parametrize("target,current,platform,cross_vm,force,expected", [
+    # Windows has no holder scan (foreign_state_db_holders returns []): an empty list must never read
+    # as "nobody holds it", so the gate refuses instead of issuing a silent all-clear.
+    ("delete", "wal", "win32", False, False, "no holder scan"),
+    ("delete", "wal", "win32", False, True, None),
+    ("delete", "wal", "linux", False, False, None),
+    # WAL shared memory corrupts on virtiofs/9p, so ENABLING it there is refused, --force or not.
+    ("wal", "delete", "linux", True, False, "cross-VM filesystems"),
+    ("wal", "delete", "win32", True, True, "cross-VM filesystems"),
+    ("delete", "wal", "linux", True, False, None),
+    # A garbage or unrecognised header is reported, never handed to sqlite3 for a raw traceback.
+    ("delete", "not-a-database", "linux", False, False, "not a Hermes SQLite store"),
+    ("delete", "unknown(3/3)", "linux", False, True, "not a Hermes SQLite store"),
+])
+def test_refusal_admission_invariants(target, current, platform, cross_vm, force, expected):
+    reason = _refusal(target, current, platform, on_cross_vm_fs=cross_vm, force=force)
+    if expected is None:
+        assert reason is None
+    else:
+        assert reason is not None and expected in reason
+
+
+@pytest.mark.parametrize("kind", ["garbage-file", "directory"])
+def test_set_journal_mode_reports_unusable_db_paths_without_a_traceback(kind, tmp_path, capsys):
+    if kind == "garbage-file":
+        bad = tmp_path / "notes.txt"
+        bad.write_bytes(b"this is not a database, not even close\n")
+    else:
+        bad = tmp_path / "a-directory"
+        bad.mkdir()
+
+    assert cmd_sessions(_args("delete", db=str(bad))) == 1
+    assert "✗" in capsys.readouterr().out
