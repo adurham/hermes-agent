@@ -16,7 +16,8 @@ import hermes_cli.gateway_windows as gateway_windows
 
 @pytest.mark.platforms("windows")
 def test_status_warns_and_uninstall_removes_pre_suffix_launchers(tmp_path, monkeypatch, capsys):
-    home = tmp_path / "hermes"
+    # The shared isolation fixture uses tmp_path / "hermes" as the Windows native default.
+    home = tmp_path / "custom-hermes"
     (home / "gateway-service").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     appdata = tmp_path / "AppData" / "Roaming"

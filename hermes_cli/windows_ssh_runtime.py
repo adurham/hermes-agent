@@ -87,17 +87,12 @@ def _sid_str(sid) -> str:
 
 
 def _security_attributes():
-    w = _win32()
-    ntsecuritycon, win32security = w.ntsecuritycon, w.win32security
-    owner = _current_sid()
-    acl = win32security.ACL()
-    for sid in (owner, _system_sid()):
-        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
-    descriptor = win32security.SECURITY_DESCRIPTOR()
-    descriptor.SetSecurityDescriptorOwner(owner, False)
-    descriptor.SetSecurityDescriptorDacl(True, acl, False)
-    # Protect the DACL so inheritable parent ACEs (%LOCALAPPDATA% grants) are not merged in.
-    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
+    win32security = _win32().win32security
+    owner = _sid_str(_current_sid())
+    # D:P blocks inherited grants at creation. SDDL also avoids pywin32 311's
+    # SetSecurityDescriptorControl argument-width bug on ARM64.
+    descriptor = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+        f"O:{owner}D:P(A;;FA;;;{owner})(A;;FA;;;SY)", win32security.SDDL_REVISION_1)
     attributes = win32security.SECURITY_ATTRIBUTES()
     attributes.SECURITY_DESCRIPTOR = descriptor
     return attributes
