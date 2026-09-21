@@ -111,7 +111,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     return target, manifest, installed_name
 
 
-def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
+def repin_catalog_plugin(target: Path, sidecar: dict, *, interactive: bool = False) -> tuple[str, bool]:
     """Re-pin a catalog install to the current catalog SHA (never ``git pull``). Returns
     ``(new_sha, changed)``; raises ``PluginOperationError`` when the entry left the catalog."""
     from hermes_cli.plugins_cmd import PluginOperationError
@@ -126,15 +126,15 @@ def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
         return entry.sha, False
     from hermes_cli.plugins_transaction import update_plugin
 
-    update_plugin(target, catalog_entry=entry)
+    update_plugin(target, catalog_entry=entry, interactive=interactive)
     return entry.sha, True
 
 
-def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
+def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> None:
     from hermes_cli.plugins_cmd import PluginOperationError, _fail
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
     try:
-        sha, changed = repin_catalog_plugin(target, sidecar)
+        sha, changed = repin_catalog_plugin(target, sidecar, interactive=interactive)
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
         raise SystemExit(1)
