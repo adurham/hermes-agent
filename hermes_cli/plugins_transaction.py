@@ -35,8 +35,50 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     })
 
 
-def update_plugin(target: Path, *, catalog_entry=None) -> str:
-    """Prepare a catalog re-pin or custom Git pull without changing the live tree."""
+def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *, interactive: bool) -> None:
+    """Dependency changes carried by an update clear the same gates as an install.
+
+    New Python requirements install packages into the shared environment: install and
+    reinstall prompt for that, so an update prompts too, and an unattended one (dashboard,
+    ``plugins.auto_apply`` from the gateway) is REFUSED rather than consented on the user's
+    behalf. Publication replaces the whole tree, so a Node sidecar the user accepted earlier is
+    rebuilt in the staged copy when its package.json/lock moved (custom pulls copy a stale
+    node_modules; catalog re-pins clone without one).
+    """
+    from hermes_cli import plugins_cmd as pc
+    from hermes_cli.runtime_state import _bytes
+    from pm.plugin_declarations import read_python_declaration
+    from pm.workspace import enabled_plugin_dirs, install_node_sidecar
+
+    if (target / "node_modules").is_dir() and (staged / "package.json").is_file() and (
+            not (staged / "node_modules").is_dir()
+            or any(_bytes(target / name) != _bytes(staged / name) for name in ("package.json", "package-lock.json"))):
+        reason = install_node_sidecar(staged, explicit=True)
+        if reason:
+            raise pc.PluginOperationError(
+                f"Node dependencies could not be refreshed: {reason}. "
+                "The installed plugin and active environment are unchanged.")
+    if target.resolve() not in enabled_plugin_dirs(installing=target):
+        return  # a disabled plugin's deps are admitted (and consented) by `hermes plugins enable`
+    before, after = read_python_declaration(target), read_python_declaration(staged)
+    added = tuple(spec for spec in after.install_requirements if spec not in before.install_requirements)
+    if not added and not (after.is_member and not before.is_member):
+        return
+    if not interactive:
+        raise pc.PluginOperationError(
+            f"The update declares new Python dependencies ({', '.join(added) or 'in its pyproject.toml'}); "
+            f"run `hermes plugins update {target.name}` in a terminal to review them.")
+    consented, reason = pc._consent_python_deps(manifest.get("name", target.name), added, pc._console())
+    if not consented:
+        raise pc.PluginOperationError(
+            f"Update declined: {reason}. The installed plugin and active environment are unchanged.")
+
+
+def update_plugin(target: Path, *, catalog_entry=None, interactive: bool = False) -> str:
+    """Prepare a catalog re-pin or custom Git pull without changing the live tree.
+
+    *interactive*: a terminal user is present to consent to newly declared dependencies;
+    the dashboard and the gateway's auto-apply pass False and get a refusal instead."""
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
@@ -108,6 +150,7 @@ def update_plugin(target: Path, *, catalog_entry=None) -> str:
             pc._check_manifest_version(manifest, target.name)
             pc._scan_plugin_tree(staged, source, force=False)
             pc._copy_example_files(staged, pc._console())
+            _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:
                 raise pc.PluginOperationError("Plugin files changed while preparing the update; retry.")
             record["revision"] = revision

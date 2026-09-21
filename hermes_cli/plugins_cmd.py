@@ -397,8 +397,13 @@ def _install_plugin_python_deps(
 
     if not has_python:
         return True, None
+    return _consent_python_deps(manifest.get("name", "this plugin"), deps, console)
 
-    plugin_name = manifest.get("name", "this plugin")
+
+def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tuple[bool, Optional[str]]:
+    """The y/N gate for Python deps entering the shared environment — install,
+    reinstall AND an update that declares new ones all pass through here.
+    Returns (consented, reason); never raises."""
     console.print(
         f"\n[bold]{plugin_name}[/bold] declares Python dependencies:"
     )
@@ -831,13 +836,12 @@ def _install_plugin_core(
         # manifest's update_url is COPIED into the row at install. Check
         # time compares manifest vs tag; a mismatch is needs-fixing and
         # only `hermes plugins trust-update-url` moves the tag.
-        try:
-            manifest = _read_manifest(Path(tmp_target))
-            update_url = (manifest or {}).get("update_url")
-            if isinstance(update_url, str) and update_url.strip():
-                new_metadata[plugin_name]["update_url"] = update_url.strip()
-        except Exception:
-            pass
+        if manifest.get("update_url"):
+            from hermes_cli.plugins_updates import https_update_url
+            try:
+                new_metadata[plugin_name]["update_url"] = https_update_url(manifest["update_url"])
+            except ValueError as exc:
+                raise PluginOperationError(f"Plugin '{plugin_name}' {exc}") from exc
         if catalog_entry is not None:
             new_metadata[plugin_name]["catalog_name"] = catalog_entry.name
             new_metadata[plugin_name]["catalog_tier"] = catalog_entry.tier
@@ -986,7 +990,7 @@ def cmd_install(
     console.print()
 
 
-def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None) -> str:
+def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None, *, interactive: bool = False) -> str:
     """Shared ``update`` core: refuse pinned / non-git checkouts, ``git pull``, record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
     *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text."""
@@ -1000,7 +1004,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
 
-    return update_plugin(target)
+    return update_plugin(target, interactive=interactive)
 
 
 def cmd_update(name: str, *, interactive: bool = True) -> None:
@@ -1011,7 +1015,7 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
     target = _require_installed_plugin(name, _plugins_dir(), console)
     sidecar = catalog.catalog_install_record(target)
     if sidecar:  # catalog installs re-pin to the reviewed SHA — never `git pull`
-        catalog.cmd_update_catalog(name, target, sidecar, console)
+        catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
         return
     try:
         output = _pull_plugin_update(
@@ -1021,7 +1025,8 @@ def cmd_update(name: str, *, interactive: bool = True) -> None:
                 f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
                 "--ref <40-character commit SHA>`."),
             lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
-            before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"))
+            before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"),
+            interactive=interactive)
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
     _post_pull_housekeeping(target, console)
@@ -1636,6 +1641,13 @@ def cmd_trust_update_url(name: str) -> None:
             "update_url mismatch."
         )
         return
+    if claimed is not None:
+        from hermes_cli.plugins_updates import https_update_url
+        try:
+            claimed = https_update_url(claimed)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] Plugin '{name}' {exc}. Not trusted.")
+            sys.exit(1)
 
     row["update_url"] = claimed
     rows[target.name] = row
