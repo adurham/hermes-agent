@@ -131,10 +131,13 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
+    from hermes_cli.update_receipt import row_is_external
+
     fleet = receipt.get("fleet")
     if isinstance(fleet, list) and fleet:
         return any(
             isinstance(entry, dict)
+            and not row_is_external(entry)
             and (entry.get("state") == "stale" or _sha_mismatch(entry.get("code_sha")))
             for entry in fleet
         )
@@ -151,6 +154,12 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
 
 
 _SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
+# Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
+# is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
+# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
+# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop or manual-serve
+# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
+_SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
 def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tuple[str, str]] | None:
@@ -205,7 +214,7 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
     """Require a successor at the expected SHA for every owed gateway identity."""
     if not expected_sha:
         return False
-    from hermes_cli.update_receipt import collect_fleet_versions
+    from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
 
     try:
         if owed is None:
@@ -216,7 +225,7 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         # State labels are checkout-relative; completed restarts may accept stale rows at the pulled SHA.
         if not fleet or any(
             row.get("state") not in accept_states or row.get("code_sha") != expected_sha
-            for row in fleet
+            for row in fleet if not row_is_external(row)
         ):
             return False
         covered = _fleet_covered_gateways(fleet)
@@ -237,6 +246,16 @@ def _marker_only_restart_obsolete() -> bool:
     current on the checkout — there is no recorded owed set, so the fleet running the code on disk
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
     ``expected_sha`` by an out-of-band pull.
+
+    A serve/dashboard row whose supervisor owns the restart (Desktop backend, systemd/launchd
+    unit, Windows service) is outside the gateway matrix's evidence, not evidence against it —
+    the same boundary ``_receipt_owed_gateways`` draws for receipts (#115090) and the restart
+    phase draws for the Desktop backend (#111494). Counting it made the warning permanently
+    undischargeable on every host that runs a dashboard. A manual-serve row still needs its
+    durable handoff (``defer_manual_serve``), and an unclassified backend stays fail-closed.
+    Discharging here strands nobody: the same row is still accounted at update time by
+    ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
+    phase never touched it — this marker only stops re-warning about it on every later startup.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -260,7 +279,10 @@ def _marker_only_restart_obsolete() -> bool:
             for runtime in runtimes:
                 if not isinstance(runtime, dict):
                     return False
-                if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                if runtime.get("kind") in ("serve", "dashboard") and (
+                    defer_manual_serve(runtime)
+                    or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
+                ):
                     continue
                 if runtime.get("kind") != "gateway":
                     return False
@@ -285,7 +307,7 @@ def _marker_only_restart_obsolete() -> bool:
     if not target_sha:
         return False
     try:
-        from hermes_cli.update_receipt import collect_fleet_versions
+        from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
         fleet = collect_fleet_versions()
     except Exception as exc:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
@@ -296,6 +318,8 @@ def _marker_only_restart_obsolete() -> bool:
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it
     for row in fleet:
+        if row_is_external(row):
+            continue
         if row.get("state") != "current" or str(row.get("code_sha")) != target_sha:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed <= covered:
@@ -416,6 +440,26 @@ def _needs_sudo(scope: str) -> bool:
 
 
 
+
+
+def _live_fleet_current_rows() -> list[dict] | None:
+    """The fleet matrix when the probe finds at least one gateway and every row is ``current``
+    at the checkout SHA (identity known); ``None`` on any unknown/stale/down row or a failed
+    probe (restart)."""
+    checkout_sha = _current_checkout_sha()
+    if not checkout_sha:
+        return None
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Pending fleet restart: fleet probe failed: %s", exc)
+        return None
+    if not fleet or _fleet_covered_gateways(fleet) is None:
+        return None
+    if all(row.get("state") == "current" and str(row.get("code_sha")) == checkout_sha for row in fleet):
+        return fleet
+    return None
 
 
 def _run_pending_fleet_restart() -> bool:
@@ -575,11 +619,17 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     """
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
+        _launchctl_supervised_pid,
     )
     current_label = get_launchd_label()
+    old_pid = None
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
+        # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
+        # and verification-only — the restart itself is never gated on `launchctl list` (#74973).
+        old_pid = _launchctl_supervised_pid(current_label) if supervision_verify else None
         try:
             launchd_restart()
         except subprocess.CalledProcessError as e:
@@ -610,10 +660,10 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     # domain locate fails on macOS-26 per-user domains.
     # launchd_restart() returning is only "restart REQUESTED" — the self-restart branch hands work to the
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
-    if wait_for_launchd_gateway_supervision(label=current_label):
+    if wait_for_launchd_gateway_supervision(label=current_label, old_pid=old_pid):
         return [current_label], []
     print(
-        f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
+        f"  ✗ {current_label} restarted but launchd is not supervising a new process for it.\n"
         "    Check logs, then: hermes gateway restart"
     )
     return [], [current_label]

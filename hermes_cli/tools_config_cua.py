@@ -202,8 +202,10 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     _print_info("    Registering cua-driver auto-start..." if verbose
                 else "    Repairing cua-driver auto-start registration...")
     try:
-        result = _run_text([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-                           timeout=300, env=_cua_driver_env())
+        result = _run_text([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-Command", ps_cmd],
+                           timeout=300, env=_cua_driver_env(),
+                           creationflags=_post_setup_no_window_flags())
     except subprocess.TimeoutExpired:
         return _fail("    cua-driver autostart registration timed out.")
     except Exception as exc:

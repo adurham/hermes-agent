@@ -156,14 +156,24 @@ def _detect_gateway_code_skew() -> tuple[str, str] | None:
         return None
 
 
+def _current_gateway_code_sha() -> str | None:
+    """Full revision currently on disk; kept separate from display-shortened skew labels."""
+    try:
+        from gateway.code_skew import current_code_sha
+
+        return current_code_sha()
+    except Exception:
+        return None
+
+
 class CronTickYielded(RuntimeError):
     """A stale-code ticker yielded this tick to a fresh gateway.
 
     Raised by ``tick()`` BEFORE the tick lock when boot fingerprint ≠ disk, this process does NOT
-    own the runtime lock and a fresh process holds it — the stale process must stay out of the
-    dispatch race (contention would starve the fresh ticker). Skew ``None`` never yields (fail
-    open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron status``
-    isn't green.
+    own the runtime lock and its live holder reports the disk revision — the stale process must
+    stay out of the dispatch race (contention would starve the fresh ticker). Skew ``None`` never
+    yields (fail open). Raised, not returned, so ``record_ticker_error`` sees it and ``hermes cron
+    status`` isn't green.
     """
 
     def __init__(self, boot_rev: str, disk_rev: str) -> None:
@@ -182,10 +192,19 @@ _last_yield_log: dict[str, object] = {}
 
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when this tick must yield to a fresher gateway, else None. Yields
-    only when ALL hold: code skew, we don't own the runtime lock, another process holds it. Every
-    probe failure returns None — yielding is a certainty claim, never a guess."""
+    only when ALL hold: code skew, we don't own the runtime lock, another process holds it, and
+    the home-shared runtime status record reports a fresh heartbeat on the disk revision. Every
+    probe failure returns None — yielding is a certainty claim, never a guess.
+
+    ``gateway_state.json`` is per-HOME and last-writer-wins, not per-process: during a
+    ``--replace`` takeover both the stale and the fresh gateway stamp it, so which one this
+    predicate reads is write-order dependent. The pid equality below is what binds the record to
+    the current lock holder; the takeover window itself fails open (no yield) by design."""
     skew = _detect_gateway_code_skew()
     if skew is None:
+        return None
+    disk_sha = _current_gateway_code_sha()
+    if disk_sha is None:
         return None
     try:
         from gateway import status as _gateway_status
@@ -195,6 +214,21 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
         if _gateway_status.owns_gateway_runtime_lock():
             return None
         if not _gateway_status.is_gateway_runtime_lock_active():
+            return None
+        holder_pid = _gateway_status.get_running_pid(cleanup_stale=False)
+        holder_status = _gateway_status.read_runtime_status()
+        # `get_running_pid(pid_path=None)` can itself fall back to
+        # `get_runtime_status_running_pid()`, which derives the pid FROM this same record — in
+        # that branch the equality is tautological and the real proof is
+        # `runtime_status_is_stale` + `code_sha`. Kept because in the common branch (a live
+        # gateway.pid/gateway.lock) it is the only thing tying the record to the lock holder.
+        if (
+            holder_pid is None
+            or not isinstance(holder_status, dict)
+            or holder_status.get("pid") != holder_pid
+            or _gateway_status.runtime_status_is_stale(holder_status)
+            or holder_status.get("code_sha") != disk_sha
+        ):
             return None
     except Exception:
         return None
@@ -527,6 +561,8 @@ _running_lock = threading.Lock()
 # Per in-flight id: time.time() claim instant + the future owning its release (``_FUTURE_PENDING``
 # until pool.submit returns). Past-allowance with no live future = leak; the sweep force-releases.
 _running_since: dict = {}
+# job_id -> stale-inflight allowance (s), resolved once per run by get_wedged_job_ids.
+_running_allowance_s: dict = {}
 _running_futures: dict = {}
 
 # Installed in ``_running_futures`` at claim time so a sweep landing before ``pool.submit`` returns
@@ -602,6 +638,40 @@ def get_running_job_details() -> list[dict]:
         ]
 
 
+def get_wedged_job_ids() -> "frozenset[str]":
+    """In-flight job IDs older than their stale-inflight allowance (``max(2 * interval,
+    cron.inflight_max_minutes)``) — the scheduler's own definition of a claim that can no longer be
+    making progress. ``sweep_stale_inflight`` cannot release these while the worker thread is still
+    alive (a delivery blocked on a dead transport, #115469), so the gateway restart drain reads this to
+    skip them the way it skips wedged chat turns; restart is their remedy.
+    """
+    now = time.time()
+    with _running_lock:
+        ages = {jid: now - started for jid, started in _running_since.items() if jid in _running_job_ids}
+        allowances = {jid: _running_allowance_s[jid] for jid in ages if jid in _running_allowance_s}
+    if not ages:
+        return frozenset()
+    floor_seconds = _inflight_min_allowance_minutes() * 60.0
+    unresolved = [jid for jid in ages if jid not in allowances]
+    if unresolved:
+        # One jobs.json parse per run, not per tick per job: the restart drain polls this every
+        # 0.1 s on the event loop for the whole wait, and get_job() re-reads the file each call.
+        by_id: dict = {}
+        with contextlib.suppress(Exception):
+            from cron.jobs import load_jobs
+            by_id = {j.get("id"): j for j in load_jobs()}
+        with _running_lock:
+            for job_id in unresolved:
+                allowance = floor_seconds
+                interval_minutes = _job_interval_minutes(by_id.get(job_id) or {})
+                if interval_minutes:
+                    allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+                allowances[job_id] = allowance
+                if job_id in _running_job_ids:  # released meanwhile -> don't resurrect the entry
+                    _running_allowance_s[job_id] = allowance
+    return frozenset(jid for jid, age in ages.items() if age >= max(allowances[jid], floor_seconds))
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -632,6 +702,7 @@ def release_running_job(job_id: str) -> None:
     with _running_lock:
         _running_job_ids.discard(job_id)
         _running_since.pop(job_id, None)
+        _running_allowance_s.pop(job_id, None)
         _running_futures.pop(job_id, None)
         _running_worker_pids.pop(job_id, None)
 
@@ -863,6 +934,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 continue
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
+            _running_allowance_s.pop(job_id, None)
             _running_futures.pop(job_id, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))

@@ -1249,9 +1249,16 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         </div>
       ) : null}
 
-      {state.mode === 'remote' && !state.envOverride ? (
+      {/* An env-pinned remote (HERMES_DESKTOP_REMOTE_URL) still renders this
+          block: the override pins the URL/mode, but the browser SESSION is not
+          env-owned — docs promise "you still sign in from the Gateway settings
+          panel" (user-guide/desktop.md). Hiding it left a lapsed session with
+          no sign-in anywhere in Settings, and the boot-recovery card routes
+          every remote failure here, so "Use local gateway" became the only way
+          back in (#114856). The URL input and Save/Test stay env-gated. */}
+      {state.mode === 'remote' ? (
         <div className="mt-5">
-          <RemoteSetupFields disabled={saving} setup={remote} />
+          <RemoteSetupFields disabled={saving} setup={remote} urlDisabled={state.envOverride} />
           {remote.credentials.authMode === 'token' && state.remoteTokenPlainText ? (
             <div className="mt-2 text-sm text-destructive">
               <div className="font-medium">{g.plainTextStoredTitle}</div>

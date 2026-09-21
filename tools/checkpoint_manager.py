@@ -59,6 +59,7 @@ import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
+from hermes_cli.gitlock import clear_stale_tmp_packs
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
@@ -1806,6 +1807,10 @@ def _prune_checkpoints(
     # --- v2 shared store: per-project ref pruning via metadata ---
     store = _store_path(base)
     if (store / "HEAD").exists():
+        # A gc killed by the store timeout strands tmp_pack_* files that gc.auto=0 means git
+        # itself never reclaims; sweep them even when no ref moved (a sweep is a directory
+        # listing, unlike the pack-rewriting gc gated on refs below).
+        clear_stale_tmp_packs(store)
         for meta in _list_projects(store):
             dir_hash = meta.get("_hash") or ""
             workdir = meta.get("workdir") or ""

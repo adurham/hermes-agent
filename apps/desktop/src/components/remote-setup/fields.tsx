@@ -30,6 +30,8 @@ function Field({ stacked, title, description, children }: FieldProps): ReactElem
 interface RemoteSetupFieldsProps {
   setup: RemoteSetup
   disabled?: boolean
+  /** Pins only the URL input: an env-owned remote (HERMES_DESKTOP_REMOTE_URL) still signs in here. */
+  urlDisabled?: boolean
   urlOnly?: boolean
   onUrlChange?: () => void
 }
@@ -37,6 +39,7 @@ interface RemoteSetupFieldsProps {
 export function RemoteSetupFields({
   setup,
   disabled = false,
+  urlDisabled = false,
   urlOnly = false,
   onUrlChange
 }: RemoteSetupFieldsProps): ReactElement {
@@ -66,7 +69,7 @@ export function RemoteSetupFields({
         <Input
           aria-label={urlTitle}
           autoComplete="url"
-          disabled={disabled}
+          disabled={disabled || urlDisabled}
           onChange={event => {
             setup.setUrl(event.target.value)
             onUrlChange?.()
