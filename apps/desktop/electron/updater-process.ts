@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type SpawnOptions } from 'node:child_process'
+import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -94,7 +94,7 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
     const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
     const args: string[] = viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version']
 
-    const output: string = execFileSync(command, args, {
+    const probe: SpawnSyncReturns<string> = spawnSync(command, args, {
       cwd: root,
       encoding: 'utf8',
       timeout: 15000,
@@ -103,7 +103,11 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
       env: { ...process.env, HERMES_INSTALL_ROOT: root }
     })
 
-    const reported: string | undefined = /^Install directory: (.+)$/m.exec(output)?.[1]?.trim()
+    if (probe.error || probe.status !== 0) {
+      return false
+    }
+
+    const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
 
     return reported !== undefined && realpathSync(reported) === realpathSync(root)
   } catch {
