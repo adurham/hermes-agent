@@ -33,7 +33,7 @@ class TestQRCode:
             print_qr_code("https://example.com")
         output = capsys.readouterr().out
         assert "https://example.com" in output
-        assert "sync_venv" in output
+        assert "hermes pm install --extra messaging" in output
         assert "pip install" not in output
 
     def test_print_qr_code_with_url(self, capsys):
@@ -49,7 +49,7 @@ class TestQRCode:
         with patch.dict("sys.modules", {"qrcode": None}):
             print_qr_code("https://t.me/newbot/Bot/test_bot")
         captured = capsys.readouterr()
-        assert "sync_venv(['messaging'], explicit=True)" in captured.out
+        assert "hermes pm install --extra messaging" in captured.out
         assert "pip install" not in captured.out
 
 

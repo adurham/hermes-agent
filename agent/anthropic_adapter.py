@@ -4,6 +4,7 @@ OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth set
 payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
 credentials}.py``; import them from there."""
 
+from pm import install_hint
 import logging
 import math
 import os
@@ -60,7 +61,7 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
     sdk = _get_anthropic_sdk()
     if sdk is None:
         raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
-                          "python -c \"from pm import sync_venv; sync_venv(['anthropic'], explicit=True)\"")
+                          f"{install_hint('anthropic')}")
     return sdk
 
 

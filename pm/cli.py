@@ -164,9 +164,13 @@ def cmd_install(args) -> int:
             return 1
     # Source-install launchers require the store interpreter, even though
     # Python remains optional when provisioning individual tools.
-    names = args.names or source_install_packages(_lockfile().names())
+    extras = list(dict.fromkeys(args.extra))
+    if extras and cross_target:
+        print("✗ --extra syncs this install's venv and cannot combine with --target")
+        return 1
+    names = args.names if args.names or extras else source_install_packages(_lockfile().names())
     failed = _install_names(names, target=cross_target)
-    if not args.names:
+    if extras or not args.names:
         from pm.install import sync_venv
 
         try:
@@ -175,8 +179,8 @@ def cmd_install(args) -> int:
             # the installers' old `--extra all` did. sync_venv unions, so
             # any lazy extras already recorded survive this; it only makes
             # a fresh bootstrap match what the first update would do.
-            sync_venv(["all"], explicit=True)
-            print("✓ venv")
+            sync_venv(extras or ["all"], explicit=True)
+            print(f"✓ venv{' +' + ' +'.join(extras) if extras else ''}")
         except InstallError as e:
             print(f"✗ {e}")
             failed += 1
@@ -543,6 +547,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("install", help="install packages (default: all required)")
     p.add_argument("names", nargs="*")
+    p.add_argument("--extra", action="append", default=[], metavar="NAME",
+                   help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument(
         "--target",
         help="stage for a cross target (e.g. linux-arm64-bionic on a glibc "
