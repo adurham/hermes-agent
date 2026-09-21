@@ -119,6 +119,11 @@ function Initialize-HermesArm64BuildTools {
     $linker = (Get-Command link.exe -ErrorAction Stop).Source
     if ($linker -notlike '*\MSVC\*') { throw "MSVC link.exe is shadowed by $linker" }
     $env:CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER = $linker
+    # setuptools' MSVC detection ignores an already-primed developer environment and asks
+    # vswhere (via ProgramFiles(x86)) unless both of these are set; hermetic test runners
+    # (`env -i`) carry INCLUDE/LIB but not the discovery variables vswhere needs.
+    $env:DISTUTILS_USE_SDK = '1'
+    $env:MSSdk = '1'
 
     # Child builds isolate HOME/USERPROFILE. Keep Rust anchored to the homes
     # used here, including caller-selected locations.

@@ -85,12 +85,10 @@ def prepare_memory_provider_dependencies(provider_name: str) -> tuple[dict, str 
     if not inputs:
         return meta, None
     pm.sync_venv(explicit=True, **inputs)
-    from pm.environments import selected_venv, site_packages
+    from pm.environments import running_from_selected_environment
     from pm.paths import repo_root
 
-    selected = site_packages(selected_venv(repo_root())).resolve()
-    active = {Path(entry).resolve() for entry in sys.path}
-    return meta, "installed" if selected in active else "restart_required"
+    return meta, "installed" if running_from_selected_environment(repo_root()) else "restart_required"
 
 
 def _install_dependencies(provider_name: str) -> None:

@@ -69,6 +69,13 @@ function Initialize-HermesArm64BuildTools {
 }
 ''', encoding="utf-8")
     env = dict(os.environ)
+    # The runner job env may already carry the toolchain variables the fixture sets (a prior
+    # workflow step exported them); the delta filter then rightly skips them. This test is about
+    # the protocol, so start from a parent that does not have them.
+    for name in ("INCLUDE", "LIB", "WINDOWSSDKDIR", "OPENSSL_DIR", "OPENSSL_STATIC",
+                 "CC_AARCH64_PC_WINDOWS_MSVC", "GITHUB_FIXTURE", "RUNNER_FIXTURE", "NODE_OPTIONS"):
+        for key in [k for k in env if k.upper() == name]:
+            del env[key]
     env.update(CARGO_HOME=str(tmp_path / "caller cargo"), RUSTUP_HOME=str(tmp_path / "caller rustup"),
                RUSTUP_TOOLCHAIN="caller-toolchain", UNCHANGED_BUILD_SENTINEL="inherited")
     state = tmp_path / "state with spaces"

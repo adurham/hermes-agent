@@ -2,7 +2,7 @@
 from unittest.mock import MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.mark.parametrize(

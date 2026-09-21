@@ -121,7 +121,9 @@ export async function waitForChatReady(page: Page, timeoutMs = 120_000): Promise
 /** What the composer actually contains, for a failure that explains itself. */
 async function composerDiagnostics(root: Locator): Promise<string> {
   try {
-    if (await root.count() === 0) return '(no [data-slot="composer-root"] in the DOM)'
+    if (await root.count() === 0) {
+      return '(no [data-slot="composer-root"] in the DOM)'
+    }
     return (await root.first().evaluate((el: Element): string => el.outerHTML.slice(0, 1500)))
   } catch (error) {
     return `(diagnostics unavailable: ${(error as Error).message})`

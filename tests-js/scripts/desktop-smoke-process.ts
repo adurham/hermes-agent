@@ -176,7 +176,9 @@ export function assertBackendOrigin(backend: NativeProcess, root: string, origin
     return new RegExp(`(?:^|[\\s"'])${escaped}(?:[/\\\\]|[\\s"']|$)`, process.platform === 'win32' ? 'i' : '').test(command)
   })
   const sameTree = (value?: string): boolean => {
-    if (value === undefined) return false
+    if (value === undefined) {
+      return false
+    }
     // An unreadable path is no evidence, not a crash: a process cwd can be gone.
     try { return fs.realpathSync(value) === fs.realpathSync(root) } catch { return false }
   }

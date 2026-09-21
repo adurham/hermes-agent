@@ -4715,7 +4715,7 @@ def _start_gateway_housekeeping(
         (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
         (60, "Auto-archive tick", profile_scoped_chore(runner, _housekeeping_auto_archive)),
         # Due-gated inside: the first tick after startup runs an overdue check, not tick 60.
-        (1, "Plugin update check", profile_scoped_chore(runner, _housekeeping_plugin_update_check)),
+        (1, "Plugin update check", _housekeeping_plugin_update_check),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

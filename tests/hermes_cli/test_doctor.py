@@ -1948,7 +1948,7 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
 def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypatch):
     """A routed auxiliary.<task> block that the runtime resolver rejects is a doctor finding, not a
     silent fall-back to the main model (#116055); a resolvable one is not flagged."""
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli import doctor_config
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

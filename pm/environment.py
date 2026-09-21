@@ -35,6 +35,23 @@ _RESOLVER_MARKERS = (
 )
 
 
+class ResolutionConflict(InstallError):
+    """uv's resolver proved the union has no valid solution."""
+
+
+def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
+    """Turn a failed `uv <stage>` into the right classified error.
+
+    Resolver-conflict output → ResolutionConflict; anything else (fetch,
+    build, tooling) → plain InstallError with the tail of the output.
+    """
+    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
+    lowered = output.lower()
+    if any(marker in lowered for marker in _RESOLVER_MARKERS):
+        return ResolutionConflict("venv", cause)
+    return InstallError("venv", cause)
+
+
 def prune_site_pth(venv_dir: Path) -> None:
     """Drop .pth files that must never execute inside a shipped payload.
 
@@ -219,8 +236,6 @@ class PythonEnvironment:
             raise InstallError("venv", f"uv venv failed: {result.stderr[-600:]}")
 
     def lock(self, source: Path, *, upgrade: bool = False, timeout: int = 1800) -> None:
-        from pm.workspace import classify_uv_failure
-
         command = ["lock", "--python", str(self.python)]
         if upgrade:
             command.append("--upgrade")
@@ -229,8 +244,6 @@ class PythonEnvironment:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
     def check_lock(self, source: Path) -> None:
-        from pm.workspace import classify_uv_failure
-
         result = self._run(["lock", "--check", "--python", str(self.python)],
                            cwd=source, timeout=1800)
         if result.returncode:
@@ -245,8 +258,6 @@ class PythonEnvironment:
         ``frozen=False`` is reserved for the caller-owned generated workspace,
         never the original project's lock. Seed/replay policy belongs to PM.
         """
-        from pm.workspace import classify_uv_failure
-
         if only_groups and (not groups or extras or all_extras):
             raise ValueError("group-only builds require groups and cannot select extras")
         if not frozen:
@@ -276,8 +287,6 @@ class PythonEnvironment:
 
     def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
                             timeout: int = 1800) -> None:
-        from pm.workspace import classify_uv_failure
-
         command = ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
                    "--no-emit-project", "--no-hashes", "--no-annotate", "--no-header",
                    "--format", "requirements-txt", "--output-file", str(out)]
@@ -298,8 +307,6 @@ class PythonEnvironment:
 
     def _install_requirements_file(self, requirements: Path, *, wheelhouse: Path | None = None,
                                    timeout: int = 1800) -> None:
-        from pm.workspace import classify_uv_failure
-
         command = ["pip", "install", "--no-config", "--python", str(self.executable),
                    "--requirements", str(requirements)]
         if wheelhouse is not None:

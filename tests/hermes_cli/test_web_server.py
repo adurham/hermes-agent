@@ -946,6 +946,9 @@ class TestWebServerEndpoints:
             pm, "sync_venv",
             lambda extras=None, explicit=False: installed.append(tuple(extras or ())),
         )
+        # The dashboard process is not the environment the sync just built; activation is a
+        # boot decision, so the row must tell the user to restart.
+        monkeypatch.setattr("pm.environments.running_from_selected_environment", lambda root: False)
 
         # Any direct pip/uv subprocess from the memory-provider pip path is
         # a regression; external-dep checks may still run subprocess, so only

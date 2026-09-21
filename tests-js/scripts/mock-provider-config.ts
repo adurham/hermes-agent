@@ -104,9 +104,13 @@ export function writeEnvFile(hermesHome: string, apiKey = 'e2e-mock-key', mockUr
   }
   // Drop the prior file's trailing blank lines BEFORE appending: trimEnd() runs
   // after the appended keys, so it cannot reach a blank line that they now follow.
-  while (kept.length > 0 && kept[kept.length - 1].trim() === '') kept.pop()
+  while (kept.length > 0 && kept[kept.length - 1].trim() === '') {
+    kept.pop()
+  }
   for (const [key, line] of reps) {
-    if (!seen.has(key)) kept.push(line)
+    if (!seen.has(key)) {
+      kept.push(line)
+    }
   }
   fs.writeFileSync(envPath, `${kept.join('\n').trimEnd()}\n`, { mode: 0o600 })
 }

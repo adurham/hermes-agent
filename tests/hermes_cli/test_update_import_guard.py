@@ -304,9 +304,6 @@ def test_import_guard_rejects_module_satisfied_only_by_inherited_pythonpath(
     monkeypatch.setattr(
         update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
     )
-    monkeypatch.setattr(
-        update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
-    )
     monkeypatch.setenv("PYTHONPATH", str(stale))
 
     ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
@@ -326,9 +323,6 @@ def test_import_guard_accepts_candidate_with_foreign_pythonpath(monkeypatch, tmp
 
     monkeypatch.setattr(
         update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
-    )
-    monkeypatch.setattr(
-        update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
     )
     monkeypatch.setenv("PYTHONPATH", str(stale))
 

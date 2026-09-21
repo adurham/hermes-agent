@@ -6,7 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     config_command,

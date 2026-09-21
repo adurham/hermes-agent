@@ -27,26 +27,10 @@ def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
 
 
-class ResolutionConflict(InstallError):
-    """uv's resolver proved the union has no valid solution."""
-
-
-# Markers uv prints ONLY when the resolver itself proves no solution
-# exists (its conflict report: "Because ...", "no solution found").
-from pm.environment import _RESOLVER_MARKERS  # noqa: E402 — defined beside the uv runner
-
-
-def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
-    """Turn a failed `uv <stage>` into the right classified error.
-
-    Resolver-conflict output → ResolutionConflict; anything else (fetch,
-    build, tooling) → plain InstallError with the tail of the output.
-    """
-    cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
-    lowered = output.lower()
-    if any(marker in lowered for marker in _RESOLVER_MARKERS):
-        return ResolutionConflict("venv", cause)
-    return InstallError("venv", cause)
+# The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
+# runner streams uv output from a pre-3.11 system python where this module's tomllib import
+# cannot load. Workspace callers keep reaching it from here.
+from pm.environment import ResolutionConflict, classify_uv_failure  # noqa: E402,F401
 
 
 def member_sources(plugin_dirs) -> dict[Path, Path]:

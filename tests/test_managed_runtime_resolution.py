@@ -65,7 +65,7 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "can only run what is on that subshell's PATH, which local.py populates "
         "with the managed dirs — so PATH is the correct question to ask here."
     ),
-    ("hermes_cli/gateway_service_unit.py", "node"): (
+    ("hermes_cli/gateway.py", "node"): (
         "Fallback rung of _append_node_dir_for_service(), after the managed "
         "dirs from iter_hermes_node_dirs() are already appended."
     ),

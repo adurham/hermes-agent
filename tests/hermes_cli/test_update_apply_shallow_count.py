@@ -22,6 +22,7 @@ def test_apply_plan_counts_supplied_git_results(monkeypatch, tmp_path, shallow, 
     monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
     responses = {
         ("status", "--porcelain"): "",
+        ("status", "--porcelain", "-z"): "",
         ("rev-list", "HEAD..origin/main", "--count"): str(raw_count),
         ("rev-parse", "--is-shallow-repository"): "true" if shallow else "false",
         ("rev-parse", "HEAD"): SHA_A,

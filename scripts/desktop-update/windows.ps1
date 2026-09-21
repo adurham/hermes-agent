@@ -1552,7 +1552,7 @@ try {
     # same channel credentials as the remote host it becomes a competing
     # long-poll consumer (e.g. Telegram rejects one of the two getUpdates
     # callers).
-    $gatewayArg = @('--gateway')
+    $gatewayArg = @("--gateway")
     if ($NoGateway) {
         $gatewayArg = @()
         Write-HandoffLog "update requested without --gateway (remote-served Desktop)"

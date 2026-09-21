@@ -13,6 +13,11 @@ import threading
 
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+} | {
+    # A PM-activated developer shell runs sys.prefix's python against a dependency generation
+    # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
+    # interpreter's installation, not Hermes state.
+    Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
 })
 
 

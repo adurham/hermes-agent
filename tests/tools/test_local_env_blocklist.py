@@ -13,6 +13,21 @@ import pytest
 from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal  # noqa: F401
 from tools.environments import local
 from tools.environments import local_pythonpath as pp
+from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+
+def _running_venv_site_packages() -> Path:
+    """Independently construct the host-native venv site-packages path."""
+    if sys.platform == "win32":
+        return Path(sys.prefix) / "Lib" / "site-packages"
+    return Path(sys.prefix) / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+
+
+def _physical_repo_root(tmp_path: Path) -> Path:
+    """Create the physical repo checkout directory for junction tests."""
+    physical_root = tmp_path / "physical-home" / "hermes-agent"
+    physical_root.mkdir(parents=True)
+    return physical_root
 
 
 # Expectations come from independent provider/config declarations and literal
