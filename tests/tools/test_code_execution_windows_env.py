@@ -206,19 +206,30 @@ def test_windows_live_child_offset_matches_os_zone_when_timezone_is_configured(m
     """The user-visible contract of #112233: with ``timezone:`` configured, a real Windows child
     must report the OS zone's UTC offset — an IANA name in ``TZ`` made the MSVC runtime derive
     ``time.timezone == 0`` (+01:00 instead of -07:00) while ``time.tzname`` still read correctly."""
-    import datetime
     import json
 
     monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
     child_env = _configured_timezone_child_env()
-    result = subprocess.run(
-        [sys.executable, "-c",
-         "import json, time, datetime; print(json.dumps([time.timezone, "
-         "datetime.datetime.now().astimezone().utcoffset().total_seconds()]))"],
-        env=child_env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+    assert "TZ" not in child_env
+
+    # The runner starts Python with TZ=UTC; its cached timezone is not the OS zone.
+    # Query a fresh control process with TZ removed, independently of the builder.
+    control_env = os.environ.copy()
+    control_env.pop("TZ", None)
+    timestamp = str(time.time())  # Both children observe the same instant across DST changes.
+    script = (
+        "import datetime, json, sys, time; "
+        "instant = datetime.datetime.fromtimestamp(float(sys.argv[1]), datetime.timezone.utc); "
+        "print(json.dumps([time.timezone, instant.astimezone().utcoffset().total_seconds()]))"
     )
-    assert result.returncode == 0, result.stderr
-    child_timezone, child_offset = json.loads(result.stdout.strip())
-    # The test process itself has no TZ override, so its view IS the OS zone.
-    assert child_offset == datetime.datetime.now().astimezone().utcoffset().total_seconds()
-    assert child_timezone == time.timezone
+
+    def read_timezone(env):
+        result = subprocess.run(
+            [sys.executable, "-c", script, timestamp],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    assert read_timezone(child_env) == read_timezone(control_env)
