@@ -156,6 +156,9 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
 _SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
 # Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
 # is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
+# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
+# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop or manual-serve
+# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
 _SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
@@ -250,6 +253,9 @@ def _marker_only_restart_obsolete() -> bool:
     phase draws for the Desktop backend (#111494). Counting it made the warning permanently
     undischargeable on every host that runs a dashboard. A manual-serve row still needs its
     durable handoff (``defer_manual_serve``), and an unclassified backend stays fail-closed.
+    Discharging here strands nobody: the same row is still accounted at update time by
+    ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
+    phase never touched it — this marker only stops re-warning about it on every later startup.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -794,11 +800,17 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     """
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
+        _launchctl_supervised_pid,
     )
     current_label = get_launchd_label()
+    old_pid = None
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
+        # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
+        # and verification-only — the restart itself is never gated on `launchctl list` (#74973).
+        old_pid = _launchctl_supervised_pid(current_label) if supervision_verify else None
         try:
             launchd_restart()
         except subprocess.CalledProcessError as e:
@@ -829,10 +841,10 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     # domain locate fails on macOS-26 per-user domains.
     # launchd_restart() returning is only "restart REQUESTED" — the self-restart branch hands work to the
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
-    if wait_for_launchd_gateway_supervision(label=current_label):
+    if wait_for_launchd_gateway_supervision(label=current_label, old_pid=old_pid):
         return [current_label], []
     print(
-        f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
+        f"  ✗ {current_label} restarted but launchd is not supervising a new process for it.\n"
         "    Check logs, then: hermes gateway restart"
     )
     return [], [current_label]
