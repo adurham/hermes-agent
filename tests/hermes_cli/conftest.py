@@ -78,6 +78,32 @@ def _source_channels_resolve_locally(request, monkeypatch):
     monkeypatch.setattr(source_releases, "_resolve_channel", resolve)
 
 
+@pytest.fixture(autouse=True)
+def _discharge_host_update_obligation():
+    """Start and end every ``hermes_cli`` test with NO host update-restart obligation.
+
+    The record is host-scoped on purpose (one multiplexer per host), so it lives in the
+    per-OS-USER host state dir — not in the per-test ``HERMES_HOME``. The root conftest pins
+    that dir per test only when the caller supplied no ``HERMES_GATEWAY_LOCK_DIR`` (#118097
+    keeps the documented override working), so with one set every test in a file shares it and
+    a test that arms the obligation makes the next one read a restart it never owed. Clearing
+    the record — rather than re-pinning the dir — leaves that override rule untouched.
+    """
+
+    def _clear() -> None:
+        try:
+            from hermes_cli.update_host_obligation import clear_host_obligation
+
+            clear_host_obligation()
+        except Exception:
+            # Import/env failure here must never error an unrelated test.
+            pass
+
+    _clear()
+    yield
+    _clear()
+
+
 @pytest.fixture
 def isolated_source_completion(monkeypatch):
     """Unit-test the completion tail in-process; real transport is tested separately."""

@@ -6,6 +6,7 @@ import pytest
 
 from hermes_cli import process_identity, update_cmd_fleet as fleet, update_receipt
 from hermes_constants import get_hermes_home
+import hermes_cli.update_host_obligation as host_obligation
 
 MANUAL = {"kind": "serve", "profile": "work", "pid": 900, "supervisor": "manual-serve", "restart_via": "respawn-argv", "code_sha": "old", "detail": {"create_time": 1000.0}}
 CURRENT = {"profile": "alpha", "state": "current", "code_sha": "new"}
@@ -55,20 +56,20 @@ def test_scoped_reconciliation_matrix(monkeypatch, capsys, name, old, marker, li
     # Deferred catch-up rides the ordinary completion owner under PM; the marker
     # lifecycle is what the startup warning reflects here.
     assert target.read_bytes() == before
-    assert fleet._fleet_restart_pending_marker_path().exists() is (marker is not None and pending)
+    assert host_obligation.host_obligation_path().exists() is (marker is not None and pending)
     if name == "missing-sibling":
         live.append(dict(CURRENT, profile="beta"))
         assert not fleet._pending_fleet_restart_needed()
-        assert not fleet._fleet_restart_pending_marker_path().exists()
+        assert not host_obligation.host_obligation_path().exists()
         assert target.read_bytes() == before
 
 
-@pytest.mark.parametrize("suffix", ["inventory=not-json", "expected_sha=", "inventory={}", 'inventory=null\ninventory={"version":1,"runtimes":[]}', "broken-line"])
-def test_malformed_marker_stays_pending(monkeypatch, suffix):
+@pytest.mark.parametrize("suffix", ["{", '{"version": 1, "inventory": ', "broken-line"])
+def test_malformed_obligation_stays_pending(monkeypatch, suffix):
+    """An unparseable record is an obligation whose terms are unknown — never a discharged one."""
     seed(monkeypatch, {}, "new", [CURRENT])
-    marker = fleet._fleet_restart_pending_marker_path()
-    with marker.open("a") as stream:
-        stream.write(suffix + "\n")
+    marker = host_obligation.host_obligation_path()
+    marker.write_text(marker.read_text(encoding="utf-8") + suffix, encoding="utf-8")
     assert fleet._pending_fleet_restart_needed()
     assert marker.exists()
 
@@ -85,6 +86,8 @@ def test_marker_reconciliation_collects_one_live_snapshot(monkeypatch):
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", collect)
     assert not fleet._pending_fleet_restart_needed()
     assert len(probes) == 1
+
+
 @pytest.mark.parametrize("completed_restart", [False, True])
 def test_legacy_marker_discharges_on_live_fleet_evidence_without_receipt(monkeypatch, capsys, completed_restart):
     """An inventory-less N+1 marker settles on live-fleet evidence alone (#115638).
@@ -97,7 +100,7 @@ def test_legacy_marker_discharges_on_live_fleet_evidence_without_receipt(monkeyp
         old.update(post_update={"sha": "new"}, gateway_restart={"incomplete": False})
     live = [CURRENT]
     target = seed(monkeypatch, old, "new", live)
-    marker = fleet._fleet_restart_pending_marker_path()
+    marker = host_obligation.host_obligation_path()
     receipt_before = target.read_bytes()
     fleet._warn_pending_fleet_restart_on_startup()
     assert "hermes gateway restart" not in capsys.readouterr().err
@@ -114,7 +117,7 @@ def test_inventory_less_marker_settles_after_out_of_band_pull(monkeypatch, capsy
     evidence the warning can be about — a stale or absent fleet still keeps it.
     """
     seed(monkeypatch, {}, "old", live)
-    marker = fleet._fleet_restart_pending_marker_path()
+    marker = host_obligation.host_obligation_path()
     fleet._warn_pending_fleet_restart_on_startup()
     assert ("hermes gateway restart" in capsys.readouterr().err) is pending
     assert fleet._pending_fleet_restart_needed() is pending
