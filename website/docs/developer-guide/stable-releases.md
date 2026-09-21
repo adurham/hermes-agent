@@ -198,7 +198,7 @@ package identities must agree, and versions must increase. Stable sideload
 Windows versions must equal the tag's three components plus `.0`; Store
 packages retain their separate version policy. Missing baseline
 artifacts are a blocker, not permission to fabricate or skip acceptance.
-See [the bundled update contract](../tests/install/BUNDLED_UPDATES.md).
+See [the bundled update contract](https://github.com/NousResearch/hermes-agent/blob/main/tests/install/BUNDLED_UPDATES.md).
 
 ## Explicit exclusions and policy
 

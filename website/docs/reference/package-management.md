@@ -50,7 +50,7 @@ completion result cannot report success. Correlated PM failures remain in the
 update receipt, and interrupted restarts retain their fleet obligation.
 Dependency or build failures never retry through pip or a source re-download.
 Use `hermes pm repair` for damaged dependency files. See the developer
-[source completion ownership note](https://github.com/NousResearch/hermes-agent/blob/main/docs/source-update-completion.md).
+[source completion ownership note](../developer-guide/source-update-completion.md).
 
 ## Source installs and packaged builds
 
