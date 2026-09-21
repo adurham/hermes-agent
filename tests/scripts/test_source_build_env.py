@@ -96,6 +96,26 @@ console.log(JSON.stringify(process.env));
 [Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
 trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine($_.ScriptStackTrace); exit 97 }
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
+if ($env:OS -eq 'Windows_NT') {
+    # Diagnostics (stderr, shown only on failure): `&` on the lane returns at once with $LASTEXITCODE
+    # unset and no output — PowerShell's behaviour for a non-console image — while Start-Process
+    # gets a real exit code. Ask what image the launcher is and whether a known console exe behaves.
+    $subsystem = try {
+        $bytes = [System.IO.File]::ReadAllBytes($env:PROBE_PYTHON)
+        $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+        [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+    } catch { "unreadable: $_" }
+    [Console]::Error.WriteLine("probe: launcher subsystem=$subsystem (2=GUI 3=console) passing=$PSNativeCommandArgumentPassing")
+    & "$env:SystemRoot\System32\cmd.exe" /c "exit 7"
+    [Console]::Error.WriteLine("probe: control cmd.exe exit=$LASTEXITCODE")
+    $home_ = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent (Split-Path -Parent $env:PROBE_PYTHON)) 'pyvenv.cfg') |
+        Where-Object { $_ -match '^home\s*=' }) -replace '^home\s*=\s*', ''
+    [Console]::Error.WriteLine("probe: pyvenv home=$home_ base exists=$(Test-Path -LiteralPath (Join-Path $home_ 'python.exe'))")
+    & (Join-Path $home_ 'python.exe') -I -S -c "import sys; sys.exit(5)"
+    [Console]::Error.WriteLine("probe: base interpreter exit=$LASTEXITCODE")
+    & $env:PROBE_PYTHON -I -S -c "import sys; sys.exit(6)"
+    [Console]::Error.WriteLine("probe: launcher exit=$LASTEXITCODE")
+}
 Invoke-SourceBuild {
     & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT
     [Console]::Error.WriteLine("probe: child dollar-question=$? exit=$LASTEXITCODE out-exists=$(Test-Path -LiteralPath $env:PROBE_OUT)")
