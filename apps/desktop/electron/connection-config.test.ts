@@ -383,7 +383,7 @@ const ROUTES = [
       globalRemote: false,
       profileRemoteOverride: false,
       requestMethod: 'POST',
-      requestPath: '/api/memory/reset'
+      requestPath: '/api/files/upload'
     },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
@@ -701,7 +701,17 @@ test('pathWithGlobalRemoteProfile appends local-primary profile scope only for e
       requestMethod: 'POST',
       requestPath: '/api/memory/reset'
     }),
-    '/api/memory/reset'
+    '/api/memory/reset?profile=iris'
+  )
+  // Still ineligible: the managed-files routes act on host paths, not a profile home.
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/files/upload', 'iris', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/files/upload'
+    }),
+    '/api/files/upload'
   )
 })
 
@@ -752,12 +762,18 @@ test('resolveProfileApiRequest scopes read-only session probes without spawning 
   )
 })
 
-test('resolveProfileApiRequest keeps unscoped destructive routes on the profile backend', () => {
+test('resolveProfileApiRequest scopes destructive profile-owned routes to the shared backend', () => {
+  // These handlers used to read the process home directly, so they had to ride a
+  // per-profile backend. They now take `?profile=` and refuse an unnamed profile
+  // while several are served, so the shared primary is what reaches the right home.
   for (const [method, path] of [
     ['POST', '/api/memory/reset'],
     ['POST', '/api/curator/run'],
     ['PUT', '/api/curator/paused'],
-    ['POST', '/api/webhooks']
+    ['POST', '/api/webhooks'],
+    ['DELETE', '/api/webhooks/alerts'],
+    ['DELETE', '/api/ops/hooks'],
+    ['POST', '/api/ops/checkpoints/prune']
   ]) {
     assert.deepEqual(
       resolveProfileApiRequest('iris', path, {
@@ -765,7 +781,7 @@ test('resolveProfileApiRequest keeps unscoped destructive routes on the profile 
         profileRemoteOverride: false,
         requestMethod: method
       }),
-      { backendProfile: 'iris', requestPath: path }
+      { backendProfile: null, requestPath: `${path}?profile=iris` }
     )
   }
 })
