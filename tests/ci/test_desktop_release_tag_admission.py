@@ -223,3 +223,34 @@ def test_malformed_tag_is_refused_before_any_git_work(tmp_path: Path):
         "not a release tag" in proc.stdout + proc.stderr
         or "does not match pyproject.toml version" in proc.stdout + proc.stderr
     )
+
+
+def _require_step(job: str, name_prefix: str) -> dict:
+    steps = _workflow()["jobs"][job]["steps"]
+    (step,) = [s for s in steps if isinstance(s, dict) and s.get("name", "").startswith(name_prefix)]
+    return step
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_downloadable_windows_builds_refuse_to_ship_unsigned(tmp_path: Path):
+    """The Windows signer only warns without AZURE_SIGN_*; every lane whose
+    artifacts are downloadable must therefore fail before building, under
+    the same gate the macOS leg uses for its signing credentials."""
+    step = _require_step("build-win32-release", "Require Azure signing")
+    assert step["if"] == _require_step("build-darwin-release", "Require signing credentials")["if"]
+    assert "build-commit" not in step["if"] and "release-phase == 'candidate'" in step["if"]
+    names = list(step["env"])
+    assert {"AZURE_SIGN_ENDPOINT", "AZURE_SIGN_ACCOUNT", "AZURE_SIGN_PROFILE", "AZURE_CLIENT_ID"} <= set(names)
+
+    def run(**values: str) -> subprocess.CompletedProcess:
+        env = {"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)}
+        env.update({name: "" for name in names})
+        env.update(values)
+        return subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    proc = run()
+    assert proc.returncode != 0 and "::error::" in proc.stdout and "AZURE_SIGN_ENDPOINT" in proc.stdout
+    assert run(**{name: "x" for name in names}).returncode == 0
+    partial = run(**{name: "x" for name in names if name != "AZURE_CLIENT_ID"})
+    assert partial.returncode != 0 and "AZURE_CLIENT_ID" in partial.stdout
