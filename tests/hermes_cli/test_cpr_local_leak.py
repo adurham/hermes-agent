@@ -57,7 +57,7 @@ def _openpty_or_skip():
         pytest.skip(f"no PTY devices available: {exc}")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY harness")
+@pytest.mark.platforms("posix")  # POSIX PTY harness
 class TestDelayedCprLocalPtyLeak:
     def test_delayed_cpr_reply_leaks_when_enable_cpr_true(self):
         """Local (no SSH) delayed ESC[6n reply lands as ESC[39;1R on stdin."""

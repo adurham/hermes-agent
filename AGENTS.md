@@ -403,16 +403,13 @@ is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tz
 is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
-```python
-@pytest.mark.platforms("linux")
-@pytest.mark.platforms("macos")
-@pytest.mark.platforms("windows")
-```
-
-The `platforms` marker takes any number of spec strings (any-of semantics)
-plus optional arch filters, so it can express more than the legacy trio:
+One marker per test, with any number of spec strings (any-of semantics) plus
+optional arch filters — never stack several `platforms()` decorators on one
+test (the conftest rejects that at collection):
 
 ```python
+@pytest.mark.platforms("windows")                # only on native Windows
+@pytest.mark.platforms("linux", "macos")         # either of the two
 @pytest.mark.platforms("not macos")              # anywhere except macOS
 @pytest.mark.platforms("windows", arch="arm64")  # native Windows on arm64
 @pytest.mark.platforms("posix")                  # linux or macOS
@@ -453,19 +450,22 @@ argv, not the direct parent (the venv shim makes every spawn a
 launcher/worker chain).
 
 **Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
-decides which files the macOS lane imports by grepping for the quoted spec
-inside `platforms(...)`, and the lane then selects with `-m platforms` while
-the conftest's per-test host skips do the actual gating. A test gated with
+decides which files an OS lane imports by resolving the quoted specs inside
+`platforms(...)` (`"posix"` reaches the macOS lane, `"not linux"` reaches
+both others), and the lane then selects with `-m platforms` while the
+conftest's per-test host skips do the actual gating. A test gated with
 `@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
 all, silently — it is never imported by the lane that would run it, and the
-full-suite lanes skip it. Don't stack a module-level `pytestmark =
+full-suite lanes skip it. `skipif(sys.platform == "win32")` becomes
+`platforms("posix")`; a non-host condition (`os.geteuid() == 0`) stays a
+separate `skipif` beside the marker. A misspelt spec is a collection error,
+not a skip. Don't stack a module-level `pytestmark =
 platforms(...)` on a file whose tests carry their own host marker — the
 conftest hard-rejects tests carrying two `platforms()` markers (a test
 skipped on every host, reported green everywhere).
 Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
 platforms — split it into one marked test per OS, or only the host's row ever
 executes.
-<!-- MERGE-CHECK: kept our expanded `platforms()` marker docs; upstream's side still described the legacy linux_only/macos_only/windows_only markers. -->
 
 ### Don't write change-detector tests
 

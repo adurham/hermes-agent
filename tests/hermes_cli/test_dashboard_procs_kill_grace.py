@@ -27,7 +27,7 @@ from hermes_cli import dashboard_procs
 
 _REPO_ROOT = pathlib.Path(dashboard_procs.__file__).resolve().parents[1]
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics only")
+pytestmark = pytest.mark.platforms("posix")  # POSIX signal semantics only
 
 # Mirrors the lifespan: sleep for the teardown budget on SIGTERM, then leave a marker and exit 0.
 _GRACEFUL_CHILD = textwrap.dedent(

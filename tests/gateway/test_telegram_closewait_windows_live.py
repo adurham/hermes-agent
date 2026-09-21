@@ -56,10 +56,7 @@ if sys.platform == "win32":
 
 pytestmark = [
     pytest.mark.asyncio,
-    pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Windows-only live probe: CLOSE-WAIT reconnect behavior (#87057)",
-    ),
+    pytest.mark.platforms("windows"),  # Windows-only live probe: CLOSE-WAIT reconnect behavior (#87057)
 ]
 
 

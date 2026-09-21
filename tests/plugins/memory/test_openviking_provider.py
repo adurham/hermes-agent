@@ -1222,7 +1222,7 @@ class _HungThread:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX advisory locks")
+@pytest.mark.platforms("posix")  # POSIX advisory locks
 @pytest.mark.parametrize("owner_run_id", ["dead-owner", ""])
 def test_concurrent_providers_claim_unlocked_pending_owner_once(
     tmp_path,

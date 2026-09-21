@@ -58,7 +58,7 @@ def test_prune_removes_only_stale_top_level_entries(tmp_path):
     assert not stale.exists() and fresh.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
+@pytest.mark.platforms("posix")  # POSIX directory modes
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:
     an explicit HERMES_HOME_MODE and a managed/shared home win (#117347)."""
@@ -165,7 +165,7 @@ class TestScratchDirPermissionPolicy:
         mock_chown.assert_called_once_with(tmp_path / "cache" / "scratch", 1000, 911)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+@pytest.mark.platforms("posix")  # POSIX file modes
 def test_config_and_constants_share_one_policy_implementation(tmp_path, monkeypatch):
     """hermes_constants is the single home of managed / container / HERMES_UID policy: config
     re-exports it (no keep-in-sync twins), so _secure_file skips on the same canonical container

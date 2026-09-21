@@ -26,9 +26,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows lifecycle E2E"
-)
+pytestmark = pytest.mark.platforms("windows")  # live Windows lifecycle E2E
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

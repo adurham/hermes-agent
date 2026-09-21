@@ -75,10 +75,6 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
     _write_machine_sentinel_line,
 )
 
-# MERGE-CHECK: upstream moved the parent-start-marker helpers into web_server_lifecycle.py
-# (imported above); our branch's in-file copies were dropped with the rest of the
-# pre-refactor block below. Parent re-verify no desktop caller needed the old in-file copies.
-
 
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
@@ -924,9 +920,6 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
     return True
 
 
-# MERGE-CHECK: ours-side of this conflict was ~13k lines of pre-#102117 endpoints
-# (elevenlabs voices, themes, plugin discovery, model/config routers) now decomposed by
-# upstream into web_routers/*, web_server_dashboard.py and audio.py; ours dropped, upstream kept.
 _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 # Cache discovered plugins per-process (refresh on explicit re-scan).
