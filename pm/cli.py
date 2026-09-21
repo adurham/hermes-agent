@@ -264,7 +264,13 @@ def _gc_store(store, facts) -> tuple[int, int]:
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
         for item in sorted(store.root.iterdir()):
-            if not item.is_dir() or item.name.startswith("."):
+            if not item.is_dir():
+                continue
+            # Scratch dirs are created and removed under this same lock, so any
+            # that remain belong to a killed installer. Other dot-dirs stay:
+            # .previous-* is the restore point the next install of that entry
+            # consumes, and it is only safe to drop after that verification.
+            if item.name.startswith(".") and not item.name.startswith(".staging-"):
                 continue
             if item.name in keep:
                 continue

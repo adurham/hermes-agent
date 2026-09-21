@@ -401,8 +401,13 @@ def test_gc_keeps_used_removes_orphans(pm_env):
     ensure("faketool", base_env={})
     orphan = runtime / "orphan-9.9-nowhere"
     orphan.mkdir()
+    # A killed installer's scratch dir; its restore point must survive gc.
+    (runtime / ".staging-abandoned" / "tree").mkdir(parents=True)
+    (runtime / ".previous-faketool-1.0").mkdir()
     cmd_gc(None)
     assert not orphan.exists()
+    assert not (runtime / ".staging-abandoned").exists()
+    assert (runtime / ".previous-faketool-1.0").is_dir()
     assert any(p.name.startswith("faketool-1.0") for p in runtime.iterdir())
 
 
