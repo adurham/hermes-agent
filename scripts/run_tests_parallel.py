@@ -64,11 +64,18 @@ def _runner_scratch_root() -> str:
     the FHS disk-backed temp root and is used because the alternatives fail tests that assume
     the root's shape: under the Hermes home conftest relocates the basetemp; under a dot-dir
     (~/.cache) the hidden-dir search tests see every fixture as hidden; anything longer than
-    the old /tmp root pushes AF_UNIX test sockets past sun_path."""
+    the old /tmp root pushes AF_UNIX test sockets past sun_path.
+
+    The name is per-USER because a fixed literal in a world-writable sticky dir belongs to
+    whoever created it first: a root-owned root (a container or system-service run) makes every
+    later makedirs/mkdtemp here fail with EPERM for every other user on the host, with no way
+    back that does not need root. Keying by uid means no run is blocked by another's leftovers.
+    """
+    name = "hermes-pytest" + (f"-{os.getuid()}" if hasattr(os, "getuid") else "")
     if os.name == "nt" or not os.path.isdir("/var/tmp"):  # no-tmp: ok — probing the disk-backed FHS root
-        root = os.path.join(tempfile.gettempdir(), "hermes-pytest")
+        root = os.path.join(tempfile.gettempdir(), name)
     else:
-        root = "/var/tmp/hermes-pytest"  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
+        root = f"/var/tmp/{name}"  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
     os.makedirs(root, exist_ok=True)
     return root
 

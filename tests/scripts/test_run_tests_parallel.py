@@ -535,3 +535,33 @@ def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout
     assert "Running 1 test files" in proc.stdout, proc.stdout
     assert "✓2" in proc.stdout or "2 passed" in proc.stdout, proc.stdout
+
+
+def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:
+    """Two users on one host must never share the runner's scratch root.
+
+    A fixed literal in a world-writable sticky dir belongs to whoever created it first: a
+    root-owned root (a container or system-service run) makes every later ``mkdtemp`` there
+    fail with EPERM for every other user, with no non-root way back.
+    """
+    import importlib
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_dir))
+    runner = importlib.import_module("run_tests_parallel")
+
+    # Exercise the non-/var/tmp arm so the probe never mints roots in the real shared dir.
+    # (Narrow: on 3.14 ``Path.is_dir()`` itself goes through ``os.path.isdir``.)
+    monkeypatch.setattr(runner.tempfile, "gettempdir", lambda: str(tmp_path))
+    real_isdir = os.path.isdir
+    monkeypatch.setattr(runner.os.path, "isdir",
+                        lambda path: False if str(path) == "/var/tmp" else real_isdir(path))
+
+    monkeypatch.setattr(runner.os, "getuid", lambda: 1000)
+    mine = Path(runner._runner_scratch_root())
+    monkeypatch.setattr(runner.os, "getuid", lambda: 0)
+    theirs = Path(runner._runner_scratch_root())
+
+    assert mine != theirs
+    assert mine.is_dir() and theirs.is_dir()
+    assert mine.parent == tmp_path and theirs.parent == tmp_path
