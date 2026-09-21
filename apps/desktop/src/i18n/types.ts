@@ -1250,6 +1250,11 @@ export interface Translations {
       downloadStatusRunning: string
       downloadSpeed: (rate: string) => string
       downloadEta: (time: string) => string
+      /** Duration units the ETA is composed from; hours carries its
+       *  remainder so a locale orders the two parts itself. */
+      downloadEtaSeconds: (count: number) => string
+      downloadEtaMinutes: (count: number) => string
+      downloadEtaHours: (hours: number, minutes: number) => string
       downloadPausedLabel: string
       downloadPauseAction: string
       downloadResumeAction: string
@@ -1295,6 +1300,8 @@ export interface Translations {
       activateFailed: (model: string) => string
       activateDoneToast: (model: string) => string
       downloadFailed: (model: string) => string
+      downloadPauseFailed: (model: string) => string
+      downloadResumeFailed: (model: string) => string
       pillFitsGpu: string
       pillUsesRam: string
       pillTooBig: string
