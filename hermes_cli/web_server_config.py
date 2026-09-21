@@ -9,12 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from agent.model_metadata import is_local_endpoint
 from hermes_cli.config import (
     DEFAULT_CONFIG,
-    build_cron_model_impact,
     cfg_get,
     clear_model_endpoint_credentials,
     find_provider_entry,
     read_raw_config,
-    resolve_cron_model_drift_defaults,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.wake_word import _PROVIDER_PREFERENCE
@@ -664,21 +662,6 @@ def _stale_aux_pins(cfg: dict, new_provider: str) -> list:
     return stale_aux
 
 
-def _cron_model_impact(cfg: dict, provider: str, model: str) -> Any:
-    from hermes_cli.config import load_config
-    try:
-        effective_config = load_config()
-        effective_provider, effective_model = resolve_cron_model_drift_defaults(effective_config)
-        return build_cron_model_impact(
-            current_provider=effective_provider or provider,
-            current_model=effective_model or model,
-            config=effective_config,
-        )
-    except Exception:
-        _log.debug("cron model impact inspection failed", exc_info=True)
-        return build_cron_model_impact(config=cfg, jobs={})
-
-
 def _provider_entry(cfg: dict, provider: str) -> Any:
     providers_cfg = cfg.get("providers")
     return providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
@@ -724,7 +707,6 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
         "base_url": model_cfg.get("base_url", ""),
         "gateway_tools": gateway_tools,
         "stale_aux": _stale_aux_pins(cfg, new_provider),
-        "cron_model_impact": _cron_model_impact(cfg, provider, model),
     }
 
 
