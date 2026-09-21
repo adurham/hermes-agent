@@ -380,6 +380,30 @@ format. Preserve the current data before attempting a restore.
 Package-owned installations use their package manager's rollback or reinstall
 procedure. Do not run Git or pip inside a signed app or an immutable image.
 
+### Python 3.14 and older interpreters
+
+Hermes runs only on **Python 3.14**. `pyproject.toml` still declares
+`requires-python = ">=3.11,<3.15"`, but every runtime dependency carries a
+`python_version >= '3.14'` marker. The wider range exists for one reason: a
+source install whose venv predates the PM migration (Python 3.11–3.13) must be
+able to check out the new code and run `hermes update` once more. That update
+hands off to a fresh completion process, PM provisions the pinned 3.14
+interpreter from `pm/lock.json`, builds the dependency environment on it, and
+repoints the launchers. After that the old interpreter is no longer used.
+
+What this means outside `hermes update`:
+
+- `pip install .`, `uv pip install .`, `pip install -e .`, or a Homebrew/PyPI
+  package built on Python 3.11–3.13 installs `hermes-agent` with **no
+  dependencies** and the package does not import. These install methods are
+  [unsupported](./platform-support.md#unsupported); use the source installer or
+  a packaged build.
+- A Nix build outside the repo flake sees the same marker-gated dependency set
+  and needs a 3.14 interpreter.
+- A `hermes` launcher that still points at a pre-migration venv should be
+  repaired with `hermes update` (or `python -m pm.cli install` from the
+  checkout), not by reinstalling into the old venv.
+
 ### Image-managed installs (Docker): the provenance marker
 
 Published Docker images bake a small read-only marker (`/etc/hermes/image-provenance.json`) that authoritatively identifies the filesystem as image-managed. `hermes update`, `hermes update --check`, and the dashboard's Update button all consult it before touching anything: on an image-managed install they refuse cleanly (exit code 2), print the actual update command (`docker pull nousresearch/hermes-agent:latest`), and write a `refused` receipt so fleet tooling can see the attempt happened. The marker wins even when a source checkout is bind-mounted into the container — the refusal is based on what the running filesystem *is*, not what it looks like. A damaged marker still refuses (fail-closed). Nix- and apt-managed installs refuse through the same gate using the existing detection.
