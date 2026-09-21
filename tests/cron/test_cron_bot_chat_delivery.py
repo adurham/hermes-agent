@@ -277,7 +277,7 @@ def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
             proc.wait(timeout=10)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_delivery_child_runs_in_the_target_home_not_the_schedulers_cwd(tmp_path, monkeypatch):
     """The spawn pins ``cwd`` to the target home: a scheduler left in a reaped kanban scratch
     workspace must not hand its dead cwd to the child, which then dies before argv (#102941)."""

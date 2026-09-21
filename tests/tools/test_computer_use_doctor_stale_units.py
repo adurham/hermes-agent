@@ -16,7 +16,7 @@ import pytest
 
 from tools.computer_use import doctor
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 _STALE = "%h/.cua-driver/packages/releases/0.20.0-x86_64-unknown-linux-gnu/cua-driver"
 

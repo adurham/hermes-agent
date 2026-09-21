@@ -783,7 +783,7 @@ class TestRoutedProfileEnv:
 # faking ``sys.platform``.
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_bare_script_hook_path_executes_on_windows(tmp_path):
     """A hook whose command is a bare script path — the shape every example in
     ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
@@ -804,7 +804,7 @@ def test_bare_script_hook_path_executes_on_windows(tmp_path):
     assert missing["error"] == "command not found"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_unroutable_script_hook_names_the_remediation(tmp_path):
     """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
     the raw WinError text is localized, so a non-English Windows install could not act on it."""

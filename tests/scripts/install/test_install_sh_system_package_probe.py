@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 pytestmark = [
-    pytest.mark.linux_only,
+    pytest.mark.platforms("linux"),
     pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash"),
 ]
 

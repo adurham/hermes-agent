@@ -1,4 +1,4 @@
-"""Windows confidentiality for the host rendezvous token + lock (``windows_only``).
+"""Windows confidentiality for the host rendezvous token + lock (``platforms("windows")``).
 
 ``os.open(..., 0o600)`` sets NO ACLs on Windows, so the host token — which holds the backend's
 LIVE session token — would inherit whatever the parent directory grants. The SSH runtime's
@@ -11,7 +11,7 @@ import pytest
 
 from gateway import host_rendezvous as hr
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms("windows")
 
 
 @pytest.fixture

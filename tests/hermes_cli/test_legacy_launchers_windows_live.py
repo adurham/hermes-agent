@@ -14,7 +14,7 @@ import pytest
 import hermes_cli.gateway_windows as gateway_windows
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_status_warns_and_uninstall_removes_pre_suffix_launchers(tmp_path, monkeypatch, capsys):
     home = tmp_path / "hermes"
     (home / "gateway-service").mkdir(parents=True)
