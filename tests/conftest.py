@@ -97,6 +97,28 @@ def _hermes_home_points_at_production(value: str) -> bool:
     return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
 
 
+# ``import hermes_bootstrap`` (transitively: any entry-point module) runs
+# ``export_scratch_tmp_env()``, which points TMPDIR/TMP/TEMP at
+# ``<HERMES_HOME>/cache/scratch`` unless a temp var is already set — and a
+# Hermes-launched shell (agent terminal, ``hermes`` child) arrives with that
+# redirect already applied, tagged by HERMES_SCRATCH_DIR. Either way the tmp
+# root ends up INSIDE a guarded real home (the operator's, or a custom one
+# honored below), so the session sandbox, pytest's basetemp and every
+# ``tempfile`` default in the code under test trip the real-home guard. Strip
+# Hermes' own export (the marker tells it apart from a user-set var, which is
+# left alone) and pin the system default so the import-time hook stays a
+# no-op. The parallel runner exports its own disk-backed TMPDIR anyway.
+from hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS
+
+_HERMES_EXPORTED_TMP = os.environ.get(SCRATCH_DIR_MARKER_ENV, "")
+if _HERMES_EXPORTED_TMP:
+    for _key in SCRATCH_TMP_ENV_VARS:
+        if os.environ.get(_key, "").strip() == _HERMES_EXPORTED_TMP:
+            del os.environ[_key]
+    del os.environ[SCRATCH_DIR_MARKER_ENV]
+    tempfile.tempdir = None  # drop the cached redirect so gettempdir() re-resolves
+os.environ.setdefault("TMPDIR", tempfile.gettempdir())
+
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):
     _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
     os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
