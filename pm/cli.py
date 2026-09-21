@@ -164,7 +164,7 @@ def cmd_install(args) -> int:
             return 1
     # Source-install launchers require the store interpreter, even though
     # Python remains optional when provisioning individual tools.
-    extras = list(dict.fromkeys(args.extra))
+    extras = list(dict.fromkeys(getattr(args, "extra", None) or ()))
     if extras and cross_target:
         print("✗ --extra syncs this install's venv and cannot combine with --target")
         return 1
