@@ -332,7 +332,7 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { bundledPayload, installIdForRoot } from './payload-backend'
+import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -3122,14 +3122,16 @@ async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
   if (INSTALL_STAMP?.channelBuild && (mechanism === 'electron-updater' || mechanism === 'app-installer')) {
     const build = INSTALL_STAMP.channelBuild
     const installed = await inspectRunningChannelApp(build)
-    const payload = bundledPayload(process.resourcesPath)
 
+    // Platform/arch/signing are the channel's own preconditions. The Python
+    // payload is not: electron-updater swaps the .app without it, and the
+    // darwin Light channel build ships none (write-build-stamp.mjs). The
+    // strategy that consumes the payload (app-installer) demands it itself.
     if (
-      !payload ||
       (process.platform !== 'darwin' && process.platform !== 'win32') ||
       (process.arch !== 'arm64' && process.arch !== 'x64')
     ) {
-      throw new Error('Channel updates require a supported bundled application')
+      throw new Error('Channel updates require a supported packaged application')
     }
 
     return new ChannelStrategy({
@@ -3168,7 +3170,7 @@ function createNativePackagedStrategy(
   }
 
   if (mechanism === 'app-installer') {
-    const payload = bundledPayload(process.resourcesPath)!
+    const payload: PayloadInfo = requireBundledPayload(mechanism)
 
     const deps: ConstructorParameters<typeof AppInstallerStrategy>[0] = {
       python: payload.storePython,
@@ -3218,7 +3220,7 @@ function createNativePackagedStrategy(
   }
 
   if (mechanism === 'microsoft-store') {
-    const payload = bundledPayload(process.resourcesPath)!
+    const payload: PayloadInfo = requireBundledPayload(mechanism)
 
     return createStoreStrategy({
       python: payload.storePython,
@@ -3246,6 +3248,21 @@ function createNativePackagedStrategy(
   }
 
   return new ExternalStrategy(INSTALL_STAMP)
+}
+
+/**
+ * The bundled Python payload for a strategy whose update check runs inside
+ * it. A stamp that names such a mechanism without a payload is a broken
+ * install; say so instead of failing on `payload.storePython`.
+ */
+function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): PayloadInfo {
+  const payload: PayloadInfo | null = bundledPayload(process.resourcesPath)
+
+  if (!payload) {
+    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
+  }
+
+  return payload
 }
 
 /**
