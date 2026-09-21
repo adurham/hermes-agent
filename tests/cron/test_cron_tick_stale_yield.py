@@ -53,7 +53,11 @@ def _gate_mocks(
     from gateway import status as gateway_status
 
     monkeypatch.setattr(scheduler_mod, "_detect_gateway_code_skew", lambda: skew)
-    monkeypatch.setattr(scheduler_mod, "_current_gateway_code_sha", lambda: DISK_SHA)
+    # `raising=False`: `_current_gateway_code_sha` is introduced by this PR, so on the base tree
+    # the patch must no-op instead of erroring the whole module out with AttributeError.
+    monkeypatch.setattr(
+        scheduler_mod, "_current_gateway_code_sha", lambda: DISK_SHA, raising=False
+    )
     monkeypatch.setattr(gateway_status, "owns_gateway_runtime_lock", lambda: owns)
     monkeypatch.setattr(
         gateway_status, "is_gateway_runtime_lock_active", lambda lock_path=None: active

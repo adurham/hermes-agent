@@ -193,8 +193,13 @@ _last_yield_log: dict[str, object] = {}
 def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     """``(boot_rev, disk_rev)`` when this tick must yield to a fresher gateway, else None. Yields
     only when ALL hold: code skew, we don't own the runtime lock, another process holds it, and
-    that holder's live status reports the disk revision. Every probe failure returns None —
-    yielding is a certainty claim, never a guess."""
+    the home-shared runtime status record reports a fresh heartbeat on the disk revision. Every
+    probe failure returns None — yielding is a certainty claim, never a guess.
+
+    ``gateway_state.json`` is per-HOME and last-writer-wins, not per-process: during a
+    ``--replace`` takeover both the stale and the fresh gateway stamp it, so which one this
+    predicate reads is write-order dependent. The pid equality below is what binds the record to
+    the current lock holder; the takeover window itself fails open (no yield) by design."""
     skew = _detect_gateway_code_skew()
     if skew is None:
         return None
@@ -212,6 +217,11 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
             return None
         holder_pid = _gateway_status.get_running_pid(cleanup_stale=False)
         holder_status = _gateway_status.read_runtime_status()
+        # `get_running_pid(pid_path=None)` can itself fall back to
+        # `get_runtime_status_running_pid()`, which derives the pid FROM this same record — in
+        # that branch the equality is tautological and the real proof is
+        # `runtime_status_is_stale` + `code_sha`. Kept because in the common branch (a live
+        # gateway.pid/gateway.lock) it is the only thing tying the record to the lock holder.
         if (
             holder_pid is None
             or not isinstance(holder_status, dict)
