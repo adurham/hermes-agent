@@ -71,6 +71,32 @@ def test_cli_starts_from_a_deleted_cwd(tmp_path):
     assert "FileNotFoundError" not in result.stderr
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("remove_cwd", [False, True], ids=["live", "deleted"])
+def test_bootstrap_preserves_live_cwd_and_recovers_deleted_cwd(tmp_path, remove_cwd):
+    cwd = tmp_path / "workspace"
+    cwd.mkdir()
+    probe = (
+        "import os, sys\n"
+        "os.chdir(sys.argv[1])\n"
+        "if sys.argv[2] == 'deleted':\n"
+        "    os.rmdir(sys.argv[1])\n"
+        "import hermes_bootstrap\n"
+        "print(os.getcwd())\n"
+    )
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / ".hermes"),
+           "PYTHONPATH": str(REPO_ROOT)}
+    env.pop("HERMES_DEV", None)
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(cwd), "deleted" if remove_cwd else "live"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        timeout=60, cwd=REPO_ROOT, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(REPO_ROOT if remove_cwd else cwd)
+    assert "Traceback" not in result.stderr
+
+
 def test_startup_fast_import_weight():
     """Importing _startup_fast must not drag in any heavy module."""
     probe = (

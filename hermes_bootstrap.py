@@ -326,12 +326,20 @@ suppress_platform_ver_console()
 
 # Every entry point imports this module before its dependency graph.
 from pathlib import Path
+
+_root = Path(__file__).resolve().parent
+try:
+    os.getcwd()
+except FileNotFoundError:
+    # Reaped workspaces leave children in a deleted cwd. PM resolves relative
+    # import paths before the CLI's guards, so recover before any PM work.
+    os.chdir(_root)
+
 from pm.environments import activate_dependencies
 from hermes_cli._early_recovery import recover_if_needed
 
 from hermes_cli._parser import command_argv
 
-_root = Path(__file__).resolve().parent
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
