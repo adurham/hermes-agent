@@ -97,6 +97,8 @@ catch { if ($_.Exception.Message -ne 'child failure') { throw } }
         result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True,
                                 text=True, encoding="utf-8", timeout=30)
         assert result.returncode == 0, result.stdout + result.stderr
+        assert Path(env["PROBE_OUT"]).is_file(), (
+            f"the build child wrote no stamp\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}")
         stamp = json.loads(Path(env["PROBE_OUT"]).read_text(encoding="utf-8-sig"))
         assert (stamp["commit"], stamp["branch"], stamp["source"], stamp["payload"]) == (
             sha, "installed", "local", "bootstrap")

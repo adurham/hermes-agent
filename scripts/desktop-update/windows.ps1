@@ -1588,7 +1588,9 @@ try {
         $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
         $pythonExe = $runtimeCommand[0]
         $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1)
-        $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $targetArgs
+        # Same request as the first attempt (--force included): the installation is still the
+        # legacy one being converted until this run succeeds.
+        $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
         $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
     }
 
