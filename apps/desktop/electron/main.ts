@@ -419,6 +419,7 @@ import {
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
@@ -3328,6 +3329,21 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     repairMacUpdaterHelper,
     preflightStateDb: async (home: string, log: (message: string) => void): Promise<void> => {
       const root: string = resolveUpdateRoot()
+
+      // `updates.pre_update_backup: off` is the CLI's opt-out for the whole
+      // pre-update backup family; the Desktop's emergency snapshot honours it
+      // too (4de06d1dbf7b). An unreadable answer keeps the snapshot.
+      if (
+        !(await readPreUpdateBackupEnabled(
+          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          home
+        ))
+      ) {
+        log('[updates] emergency state.db backup disabled by updates.pre_update_backup')
+
+        return
+      }
+
       preflightStateDb({
         python: await findPythonForRoot(root),
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
