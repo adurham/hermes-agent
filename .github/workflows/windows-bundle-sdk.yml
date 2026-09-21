@@ -1,38 +1,26 @@
-name: PM Toolchain
+name: Windows bundle SDK
+# The desktop signing adapter downloads and executes the pinned Windows SDK
+# tools. The vitest halves under js-tests run on Linux and skip every
+# runIf(win32) leg, so this is the only lane that runs the real downloader.
 on:
-  push:
-    branches: [ci/pm-toolchain]
   pull_request:
     paths:
-      - '.github/actions/setup-pm/**'
-      - '.github/actions/save-pm-cache/**'
-      - '.github/actions/setup-windows-build-deps/**'
-      - 'scripts/windows-build-deps.ps1'
-      - 'scripts/build/windows-deps.ps1'
-      - 'scripts/build/windows_deps.py'
-      - 'tests/pm/test_windows_build_deps.py'
-      - '.github/workflows/pm-toolchain*.yml'
-      - 'scripts/ci/*toolchain.py'
-      - 'tests/scripts/test_setup_toolchain.py'
-      - 'tests-js/setup-pm-post.test.mjs'
-      - 'tests-js/setup-pm-cache.test.mjs'
-      - 'pm/**'
+      - 'apps/desktop/scripts/windows-bundle-tools.mjs'
+      - 'apps/desktop/scripts/windows-bundle-tools.test.mjs'
+      - 'scripts/msix-shared.mjs'
+      - 'apps/desktop/scripts/msix-shared.test.mjs'
+      - 'apps/desktop/scripts/sign-msix.mjs'
+      - 'apps/desktop/scripts/sign-msix.test.mjs'
+      - 'apps/desktop/scripts/batch-sign-binaries.mjs'
+      - 'apps/desktop/scripts/batch-sign-binaries.test.mjs'
+      - '.github/workflows/windows-bundle-sdk.yml'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: pm-toolchain-${{ github.ref }}
+  group: windows-bundle-sdk-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  cold:
-    uses: ./.github/workflows/pm-toolchain-smoke.yml
-    with:
-      warm: false
-  warm:
-    needs: cold
-    uses: ./.github/workflows/pm-toolchain-smoke.yml
-    with:
-      warm: true
   windows-bundle-tools:
     name: Cold Windows SDK (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}

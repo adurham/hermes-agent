@@ -81,9 +81,7 @@ Outputs include `python-version`, `uv-version`, `node-version`, `npm-version`,
 `python-path`, `venv`, `target`, and the three `*-cache-hit` flags.
 Use the version outputs in installed-tree cache keys instead of repeating pins.
 
-`.github/workflows/pm-toolchain.yml` exercises cold setup and a separate warm
-runner for Linux, macOS and Windows on both architectures. Its optional cache
-suffix isolates cache lookup, not the repository's storage budget. The trusted
-`pm-toolchain-cache-cleanup.yml` completion workflow deletes only that run's
-smoke keys after all cache saves finish, including failed or cancelled runs.
-It must be on the default branch for GitHub to run it.
+The tools cache key hashes `pm/**`, this action, and `scripts/ci/setup_toolchain.py`,
+so a provisioning change re-runs the cold path on every lane that uses the action
+(`tests-os.yml` covers macOS and both Windows architectures). `cache-suffix` is an
+optional namespace for isolated cache experiments; it changes lookup, not storage.

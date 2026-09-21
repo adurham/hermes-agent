@@ -107,13 +107,16 @@ runs:
         "$bootstrap" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" prepare \
           --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --packages "$_PM_PACKAGES" --home "$RUNNER_TEMP/setup-pm"
 
+    # The key covers the PM code and this action, not only the lock: a
+    # provisioning change must re-run the cold path on every lane rather
+    # than restore a store the previous code wrote.
     - name: Cache verified PM tools
       id: tools-cache
       if: inputs.cache == 'true' && inputs.save-tools-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.prepare.outputs.store }}
-        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}${{ steps.prepare.outputs.extra-packages }}-${{ hashFiles('pm/lock.json') }}-${{ inputs.cache-suffix }}
+        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}${{ steps.prepare.outputs.extra-packages }}-${{ hashFiles('pm/**', '.github/actions/setup-pm/**', 'scripts/ci/setup_toolchain.py') }}-${{ inputs.cache-suffix }}
 
     - name: Restore verified PM tools without saving
       id: tools-cache-restore
@@ -121,7 +124,7 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.prepare.outputs.store }}
-        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}${{ steps.prepare.outputs.extra-packages }}-${{ hashFiles('pm/lock.json') }}-${{ inputs.cache-suffix }}
+        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}${{ steps.prepare.outputs.extra-packages }}-${{ hashFiles('pm/**', '.github/actions/setup-pm/**', 'scripts/ci/setup_toolchain.py') }}-${{ inputs.cache-suffix }}
 
     - name: Preserve and retrieve the pinned toolchain
       if: inputs.archive-inputs == 'true'

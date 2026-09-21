@@ -12,7 +12,7 @@ name: OS-specific tests
 # is where those markers actually execute:
 #
 #   macos    → ``-m platforms``    on macos-latest
-#   windows  → ``-m platforms``    on windows-latest-32-core
+#   windows  → ``-m platforms``    on windows-latest-32-core and windows-11-arm
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
 # foreign-OS ``platforms(...)`` markers on each host, so one shared ``-m
@@ -53,7 +53,8 @@ jobs:
   os-tests:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # windows-11-arm is a 4-core runner that builds sdists on the way in.
+    timeout-minutes: ${{ matrix.timeout || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -64,9 +65,18 @@ jobs:
           - name: Windows-only tests
             runner: windows-latest-32-core
             marker: windows
+          - name: Windows-only tests (arm64)
+            runner: windows-11-arm
+            marker: windows
+            timeout: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # No arm64 wheels for some of the extras below: PM builds them from sdist.
+      - name: Set up native ARM64 build dependencies
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        uses: ./.github/actions/setup-windows-build-deps
 
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
@@ -146,7 +156,7 @@ jobs:
         env:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
-          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && '8' || '' }}
+          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '2' || '8') || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ""

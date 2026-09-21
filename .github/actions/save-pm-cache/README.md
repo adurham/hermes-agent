@@ -17,10 +17,10 @@ different contents under the same key.
 Restore tries the current dependency set's rolling snapshots first, then the
 compatible v2 prefix. There is no fallback to older cache formats. This lets
 a retry add wheels to a snapshot saved by a partially failed build. The ordinary
-automatic cache path and its exact-hit smoke tests remain available.
+automatic cache path remains available.
 
-Smoke namespaces precede the native/dependency identity, outside production's
-restore prefix. PM Toolchain cleanup removes its run-scoped snapshots.
+Suffixed namespaces precede the native/dependency identity, outside production's
+restore prefix.
 
 Before saving, `python -m pm.build_env --exact-lock --cache PATH --lock-source REPO`
 deletes every entry the project's `uv.lock` cannot resolve. It keeps downloaded
