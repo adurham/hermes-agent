@@ -135,7 +135,7 @@ export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: stri
 
 interface PetSpriteProps {
   info: PetInfo
-  /** Keep animating in a deliberately non-activating visible window, such as the pop-out pet overlay. */
+  /** Opt in to pausing on blur; visible pets animate by default. */
   pauseWhenUnfocused?: boolean
   /** On-screen scale multiplier applied on top of the pet's native scale. */
   zoom?: number
@@ -160,7 +160,7 @@ interface PetSpriteProps {
  * with `memo`, this component effectively never re-renders after mount until
  * the pet itself changes.
  */
-function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUnfocused = true }: PetSpriteProps) {
+function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUnfocused = false }: PetSpriteProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const stateRef = useRef<PetState>($petState.get())

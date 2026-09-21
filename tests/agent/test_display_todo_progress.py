@@ -48,7 +48,7 @@ class TestTodoRead:
     """get_cute_tool_message(…, result=…) when todos_arg is None (read path)."""
 
     def test_read_no_result(self):
-        msg = get_cute_tool_message("todo", {}, 0.5)
+        msg = get_cute_tool_message("todo_list", {}, 0.5)
         assert "reading tasks" in msg
         assert "0.5s" in msg
 
@@ -56,7 +56,7 @@ class TestTodoRead:
 
     def test_read_zero_total(self):
         """Edge case: empty todo list returns summary with total=0."""
-        msg = get_cute_tool_message("todo", {}, 0.5,
+        msg = get_cute_tool_message("todo_list", {}, 0.5,
                                     result=_todo_result(0, 0))
         assert "reading tasks" in msg
 
@@ -68,7 +68,7 @@ class TestTodoCreate:
 
     def test_create_default(self):
         """Brand-new plan: all pending, no result — plain count."""
-        msg = get_cute_tool_message("todo",
+        msg = get_cute_tool_message("todo_list",
                                     {"todos": [
                                         {"id": "a", "content": "x", "status": "pending"},
                                     ]}, 0.3)
@@ -80,7 +80,7 @@ class TestTodoCreate:
 
     def test_create_with_result_zero_done(self):
         """New plan with 0 done — plain count, no progress fraction."""
-        msg = get_cute_tool_message("todo",
+        msg = get_cute_tool_message("todo_list",
                                     {"todos": [
                                         {"id": "a", "content": "x", "status": "pending"},
                                         {"id": "b", "content": "y", "status": "pending"},
@@ -96,7 +96,7 @@ class TestTodoUpdate:
 
     def test_update_no_result(self):
         """No result available — plain update N task(s)."""
-        msg = get_cute_tool_message("todo",
+        msg = get_cute_tool_message("todo_list",
                                     {"todos": [{"id": "a", "status": "completed"}],
                                      "merge": True}, 0.5)
         assert "update 1 task(s)" in msg
@@ -104,7 +104,7 @@ class TestTodoUpdate:
 
     def test_update_halfway(self):
         """2/4 — midpoint progress."""
-        msg = get_cute_tool_message("todo",
+        msg = get_cute_tool_message("todo_list",
                                     {"todos": [{"id": "b", "status": "in_progress"}],
                                      "merge": True},
                                     0.7,
@@ -118,7 +118,7 @@ class TestTodoUpdate:
 
     def test_update_total_not_in_summary(self):
         """Result summary missing total key."""
-        msg = get_cute_tool_message("todo",
+        msg = get_cute_tool_message("todo_list",
                                     {"todos": [{"id": "a", "status": "completed"}],
                                      "merge": True},
                                     0.3,
@@ -133,7 +133,7 @@ class TestTodoEdgeCases:
 
     def test_merge_default_value(self):
         """merge defaults to False in function signature, should be False when absent."""
-        msg = get_cute_tool_message("todo",
+        msg = get_cute_tool_message("todo_list",
                                     {"todos": [{"id": "a", "content": "x", "status": "pending"}]},
                                     1.0)
         assert "1 task(s)" in msg
@@ -142,7 +142,7 @@ class TestTodoEdgeCases:
     def test_large_task_count(self):
         """Many tasks should not break formatting."""
         many = [{"id": str(i), "content": "x", "status": "pending"} for i in range(50)]
-        msg = get_cute_tool_message("todo", {"todos": many}, 0.5)
+        msg = get_cute_tool_message("todo_list", {"todos": many}, 0.5)
         assert "50 task(s)" in msg
 
 
@@ -153,7 +153,7 @@ class TestTodoSkinIntegration:
     """
 
     def test_default_skin_prefix(self):
-        msg = get_cute_tool_message("todo", {}, 0.5)
+        msg = get_cute_tool_message("todo_list", {}, 0.5)
         assert msg.startswith("┊")
 
 
@@ -174,7 +174,7 @@ class TestTodoChecklistBody:
         ]
 
     def test_checklist_renders_all_items_on_read(self):
-        msg = get_cute_tool_message("todo", {}, 0.0,
+        msg = get_cute_tool_message("todo_list", {}, 0.0,
                                     result=_todo_result_with_items(self._items()))
         lines = msg.splitlines()
         assert lines[0].startswith("┊ 📋 plan")
@@ -188,7 +188,7 @@ class TestTodoChecklistBody:
 
     def test_checklist_renders_on_create(self):
         items = self._items()
-        msg = get_cute_tool_message("todo", {"todos": items}, 0.1,
+        msg = get_cute_tool_message("todo_list", {"todos": items}, 0.1,
                                     result=_todo_result_with_items(items))
         lines = msg.splitlines()
         assert len(lines) == 6
@@ -197,7 +197,7 @@ class TestTodoChecklistBody:
     def test_checklist_renders_on_merge_update(self):
         items = self._items()
         msg = get_cute_tool_message(
-            "todo", {"todos": [{"id": "3", "status": "in_progress"}], "merge": True},
+            "todo_list", {"todos": [{"id": "3", "status": "in_progress"}], "merge": True},
             0.2, result=_todo_result_with_items(items))
         lines = msg.splitlines()
         assert lines[0].startswith("┊ 📋 plan      update")
@@ -207,12 +207,12 @@ class TestTodoChecklistBody:
         """Backward-compat: old-shape results (no 'todos' key, or empty
         list) fall back to the header-only line -- no regression for
         callers/tests that don't pass item data."""
-        msg = get_cute_tool_message("todo", {}, 0.5, result=_todo_result(4, 2))
+        msg = get_cute_tool_message("todo_list", {}, 0.5, result=_todo_result(4, 2))
         assert "\n" not in msg
         assert "2/4" in msg
 
     def test_no_checklist_body_with_no_result_at_all(self):
-        msg = get_cute_tool_message("todo", {}, 0.5)
+        msg = get_cute_tool_message("todo_list", {}, 0.5)
         assert "\n" not in msg
 
     def test_checklist_truncates_long_content(self):
@@ -223,7 +223,7 @@ class TestTodoChecklistBody:
         try:
             long_content = "x" * 200
             items = [{"id": "1", "content": long_content, "status": "pending"}]
-            msg = get_cute_tool_message("todo", {}, 0.0,
+            msg = get_cute_tool_message("todo_list", {}, 0.0,
                                         result=_todo_result_with_items(items))
             lines = msg.splitlines()
             assert len(lines) == 2
@@ -234,7 +234,7 @@ class TestTodoChecklistBody:
     def test_checklist_caps_at_30_with_more_marker(self):
         items = [{"id": str(i), "content": f"task {i}", "status": "pending"}
                  for i in range(40)]
-        msg = get_cute_tool_message("todo", {}, 0.0,
+        msg = get_cute_tool_message("todo_list", {}, 0.0,
                                     result=_todo_result_with_items(items))
         lines = msg.splitlines()
         # header + 30 shown items + 1 "more" marker line
@@ -249,7 +249,7 @@ class TestTodoChecklistBody:
             "summary": {"total": 1, "pending": 1,
                         "in_progress": 0, "completed": 0, "cancelled": 0},
         })
-        msg = get_cute_tool_message("todo", {}, 0.0, result=raw_result)
+        msg = get_cute_tool_message("todo_list", {}, 0.0, result=raw_result)
         lines = msg.splitlines()
         assert "ok" in msg
         assert len(lines) == 2  # header + the one valid dict item

@@ -88,12 +88,19 @@ class TestAgentInitFork:
         assert agent._oauth_1m_beta_disabled is True
 
     def test_import_additional_types(self):
-        """The fork adds Path and Tuple to imports."""
+        """The fork adds interleaved_thinking to init_agent's signature.
+
+        (This test previously also asserted a literal "Path" substring
+        appeared somewhere in agent_init.py's source — an incidental
+        docstring match, not an actual Path import/usage; agent_init.py
+        has never imported pathlib.Path. That docstring line moved to
+        another module during the 2026-09 upstream sync, which is an
+        unrelated refactor, not a regression — the clause added no real
+        coverage and is dropped.)
+        """
         import inspect
         from agent.agent_init import init_agent
-        # The function signature should have Path/Tuple available via the module
         source = inspect.getsource(inspect.getmodule(init_agent))
-        assert "from pathlib import Path" in source or "Path" in source
         # Interleaved thinking param is the fork signature
         assert "interleaved_thinking" in source
 

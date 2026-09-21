@@ -5,7 +5,7 @@ When the main provider is ``custom`` and its ``base_url`` ends in ``/anthropic``
 (a proxied Anthropic gateway — MiniMax, Zhipu GLM, LiteLLM, or a self-hosted
 LLM proxy), auxiliary tasks reach ``resolve_provider_client("custom",
 explicit_base_url=..., api_mode="anthropic_messages")`` — directly for a
-per-task ``auxiliary.<task>`` override, or via ``_resolve_auto`` Step 1 which
+per-task ``auxiliary.<task>`` override, or via ``_resolve_auto_route`` Step 1 which
 forwards the main runtime's ``api_mode``.
 
 The bug (issue #16254): this branch called ``_to_openai_base_url()``
@@ -75,7 +75,15 @@ def test_explicit_base_anthropic_messages_keeps_anthropic_path():
     )
     # The wrapper — and the Anthropic SDK client it was built from — must keep
     # the /anthropic path, NOT the /v1-rewritten one.
-    mock_build.assert_called_once_with("k", _ANTHROPIC_BASE)
+    # NOTE: build_anthropic_client() also takes a `model` kwarg (added so
+    # _common_betas_for_base_url can proactively drop the 1M-context beta for
+    # models with no 1M tier, e.g. Haiku 4.5) and resolve_provider_client's
+    # anthropic_messages branch passes the resolved model through to it.
+    # That kwarg is orthogonal to this test's concern (the base_url path),
+    # so match on it explicitly rather than pinning a positional-only call
+    # that predates the kwarg's existence.
+    mock_build.assert_called_once_with("k", _ANTHROPIC_BASE, model="claude-opus-4-8")
+
     assert client.base_url == _ANTHROPIC_BASE
     assert model == "claude-opus-4-8"
 

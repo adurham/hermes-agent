@@ -44,6 +44,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
+# (state attribute, header tag) for the four windows.
+_BUCKET_TAGS = (
+    ("requests_min", "requests"),
+    ("requests_hour", "requests-1h"),
+    ("tokens_min", "tokens"),
+    ("tokens_hour", "tokens-1h"),
+)
+
 
 @dataclass
 class RateLimitBucket:
@@ -60,15 +68,12 @@ class RateLimitBucket:
 
     @property
     def usage_pct(self) -> float:
-        if self.limit <= 0:
-            return 0.0
-        return (self.used / self.limit) * 100.0
+        return (self.used / self.limit) * 100.0 if self.limit > 0 else 0.0
 
     @property
     def remaining_seconds_now(self) -> float:
         """Estimated seconds remaining until reset, adjusted for elapsed time."""
-        elapsed = time.time() - self.captured_at
-        return max(0.0, self.reset_seconds - elapsed)
+        return max(0.0, self.reset_seconds - (time.time() - self.captured_at))
 
 
 @dataclass
@@ -100,9 +105,7 @@ class RateLimitState:
 
     @property
     def age_seconds(self) -> float:
-        if not self.has_data:
-            return float("inf")
-        return time.time() - self.captured_at
+        return time.time() - self.captured_at if self.has_data else float("inf")
 
     @property
     def hottest_bucket(self) -> Optional[tuple[str, "RateLimitBucket"]]:
@@ -127,16 +130,16 @@ class RateLimitState:
         return max(live, key=lambda lb: lb[1].usage_pct)
 
 
-def _safe_int(value: Any, default: int = 0) -> int:
+def _safe_float(value: Any, default: Any = 0.0) -> Any:
     try:
-        return int(float(value))
+        return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _safe_int(value: Any, default: Any = 0) -> Any:
     try:
-        return float(value)
+        return int(float(value))
     except (TypeError, ValueError):
         return default
 
@@ -167,6 +170,15 @@ def _parse_iso8601_reset_to_seconds(value: Any, *, now: float) -> float:
         dt = dt.replace(tzinfo=timezone.utc)
     delta = dt.timestamp() - now
     return max(0.0, delta)
+
+
+def lower_headers(headers: Optional[Mapping[str, str]]) -> dict[str, str]:
+    """Lowercase header names (HTTP header names are case-insensitive)."""
+    return {k.lower(): v for k, v in headers.items()} if headers else {}
+
+
+def has_rate_limit_headers(lowered: Mapping[str, str]) -> bool:
+    return any(k.startswith("x-ratelimit-") for k in lowered)
 
 
 def _parse_x_ratelimit(
@@ -299,8 +311,6 @@ def _fmt_count(n: int) -> str:
     """Human-friendly number: 7999856 -> '8.0M', 33599 -> '33.6K', 799 -> '799'."""
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
-    if n >= 10_000:
-        return f"{n / 1_000:.1f}K"
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
     return str(n)
@@ -314,32 +324,25 @@ def _fmt_seconds(seconds: float) -> str:
     if s < 3600:
         m, sec = divmod(s, 60)
         return f"{m}m {sec}s" if sec else f"{m}m"
-    h, remainder = divmod(s, 3600)
-    m = remainder // 60
+    h, m = divmod(s, 3600)
+    m //= 60
     return f"{h}h {m}m" if m else f"{h}h"
 
 
 def _bar(pct: float, width: int = 20) -> str:
     """ASCII progress bar: [████████░░░░░░░░░░░░] 40%."""
-    filled = int(pct / 100.0 * width)
-    filled = max(0, min(width, filled))
-    empty = width - filled
-    return f"[{'█' * filled}{'░' * empty}]"
+    filled = max(0, min(width, int(pct / 100.0 * width)))
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
 
 
 def _bucket_line(label: str, bucket: RateLimitBucket, label_width: int = 14) -> str:
     """Format one bucket as a single line."""
     if bucket.limit <= 0:
         return f"  {label:<{label_width}}  (no data)"
-
     pct = bucket.usage_pct
-    used = _fmt_count(bucket.used)
-    limit = _fmt_count(bucket.limit)
-    remaining = _fmt_count(bucket.remaining)
+    used, limit, remaining = map(_fmt_count, (bucket.used, bucket.limit, bucket.remaining))
     reset = _fmt_seconds(bucket.remaining_seconds_now)
-
-    bar = _bar(pct)
-    return f"  {label:<{label_width}} {bar} {pct:5.1f}%  {used}/{limit} used  ({remaining} left, resets in {reset})"
+    return f"  {label:<{label_width}} {_bar(pct)} {pct:5.1f}%  {used}/{limit} used  ({remaining} left, resets in {reset})"
 
 
 def format_rate_limit_display(state: RateLimitState) -> str:
@@ -348,15 +351,9 @@ def format_rate_limit_display(state: RateLimitState) -> str:
         return "No rate limit data yet — make an API request first."
 
     age = state.age_seconds
-    if age < 5:
-        freshness = "just now"
-    elif age < 60:
-        freshness = f"{int(age)}s ago"
-    else:
-        freshness = f"{_fmt_seconds(age)} ago"
+    freshness = "just now" if age < 5 else f"{int(age)}s ago" if age < 60 else f"{_fmt_seconds(age)} ago"
 
     provider_label = state.provider.title() if state.provider else "Provider"
-
     lines = [
         f"{provider_label} Rate Limits (captured {freshness}):",
         "",
@@ -396,9 +393,7 @@ def format_rate_limit_display(state: RateLimitState) -> str:
             warnings.append(f"  ⚠ {label} at {bucket.usage_pct:.0f}% — resets in {reset}")
 
     if warnings:
-        lines.append("")
-        lines.extend(warnings)
-
+        lines += [""] + warnings
     return "\n".join(lines)
 
 
