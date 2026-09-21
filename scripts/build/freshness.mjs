@@ -59,7 +59,7 @@ function outputHash(out) {
   // Native binaries can be signed after compilation. Their ABI validation is
   // owned by native preparation; renderer/main/preload bytes must stay intact.
   return treeHash(out, readdirSync(out).sort(), name => name === receiptName || name === '.hermes-product',
-    name => !name.split('/').includes('node_modules'))
+    name => !name.split('/').includes('node_modules') && !name.startsWith('native/'))
 }
 
 export function buildInputs(source, product, prepared = {}) {

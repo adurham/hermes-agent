@@ -37,6 +37,7 @@ function fixture() {
   put(join(app, 'electron/preload.ts'), 'globalThis.fixturePreload = "compiled preload"')
   put(join(app, 'electron/preview-guest-preload-entry.ts'), 'globalThis.fixtureGuestPreload = "compiled guest preload"')
   cpSync(join(repo, 'apps/desktop/product-identity.cjs'), join(app, 'product-identity.cjs'))
+  cpSync(join(repo, 'apps/desktop/electron/native'), join(app, 'electron/native'), { recursive: true })
   // product-identity.cjs resolves the channel request through the in-tree
   // packaging helper (and its content-types table) by relative path.
   for (const helper of ['scripts/msix-shared.mjs', 'scripts/release-content-types.json']) {
@@ -50,6 +51,7 @@ function fixture() {
   // The native input is the real host binding, not a fake compiler/dependency.
   stageNodePtyInto(join(repo, 'node_modules/node-pty'), join(nativeDeps, 'node-pty'))
   stageGetWindows({ source: repo, out: nativeDeps })
+  put(join(nativeDeps, 'native/helper-fixture'), 'prepared executable resource')
   const stamp = join(root, 'install-stamp.json')
   put(stamp, JSON.stringify({ schemaVersion: 1, payload: 'light', updateMechanism: 'external', commit: 'a'.repeat(40), tag: 'v1.2.3' }))
   return { source, out: join(root, 'result'), icons, nativeDeps, stamp }
@@ -70,7 +72,7 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   const { productCurrent } = await import('../scripts/build/freshness.mjs')
   expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
   for (const file of [join(input.icons, 'apps/desktop/public/apple-touch-icon.png'), input.stamp,
-    join(input.nativeDeps, 'node-pty/package.json')]) {
+    join(input.nativeDeps, 'node-pty/package.json'), join(input.nativeDeps, 'native/helper-fixture')]) {
     const original = readFileSync(file)
     put(file, 'changed prepared input')
     expect(productCurrent({ ...input, product: 'desktop' }), file).toBe(false)
@@ -85,6 +87,12 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(readFileSync(join(input.out, 'apple-touch-icon.png'), 'utf8')).toBe('fresh icon')
   expect(existsSync(join(input.out, 'assets'))).toBe(true)
   expect(existsSync(join(input.out, 'electron-preload.js'))).toBe(true)
+  expect(readFileSync(join(input.out, 'native/helper-fixture'), 'utf8')).toBe('prepared executable resource')
+  expect(existsSync(join(input.out, 'node_modules/native'))).toBe(false)
+  put(join(input.out, 'native/helper-fixture'), 'signed resource')
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(true)
+  rmSync(join(input.out, 'native/helper-fixture'))
+  expect(productCurrent({ ...input, product: 'desktop' })).toBe(false)
   expect(files(join(input.out, 'node_modules/node-pty')).some(([name]) => name.endsWith('.node'))).toBe(true)
   const run = () => JSON.parse(execFileSync(process.execPath, [join(input.out, 'electron-main.mjs')], { cwd: tmpdir(), encoding: 'utf8' }))
   expect(run().identity.light).toBe(true)

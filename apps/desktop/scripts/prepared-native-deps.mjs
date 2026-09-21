@@ -11,6 +11,11 @@ function nativeIdentity(source) {
     fileDigest(path.join(source, 'apps/desktop/package.json')),
     fileDigest(path.join(import.meta.dirname, 'stage-native-deps.mjs')),
     fileDigest(path.join(import.meta.dirname, 'prepared-native-deps.mjs')),
+    ...['build-command-screenshot-monitor.mjs', 'build-hud-modifier-monitor.mjs']
+      .map(name => fileDigest(path.join(import.meta.dirname, name))),
+    ...['command-screenshot-monitor.m', 'hud-modifier-gesture.h', 'hud-modifier-monitor.m',
+      'hud-modifier-monitor-win.c', 'hud-modifier-monitor-x11.c']
+      .map(name => fileDigest(path.join(source, 'apps/desktop/electron/native', name))),
   ])).digest('hex')
 }
 
@@ -45,11 +50,26 @@ export function readNativeInputs({ source, nativeDeps, platform = process.platfo
 
 /** @param {NativeSelection & { out: string }} inputs @returns {void} */
 export function copyNativeInputs({ out, ...inputs }) {
-  const nativeDeps = readNativeInputs(inputs)
+  copyNativeTree({ nativeDeps: readNativeInputs(inputs), out })
+}
+
+/** Copy admitted modules and executable resources without rebuilding either.
+ * @param {{ nativeDeps: string, out: string }} inputs out is the product's node_modules.
+ * @returns {void}
+ */
+export function copyNativeTree({ nativeDeps, out }) {
+  nativeDeps = fs.realpathSync(nativeDeps)
   const destination = path.resolve(out)
-  if (destination === nativeDeps || destination.startsWith(nativeDeps + path.sep) || nativeDeps.startsWith(destination + path.sep)) {
-    throw preparationRequired('Native input and product directories overlap')
+  const helpers = path.join(path.dirname(destination), 'native')
+  for (const target of [destination, helpers]) {
+    if (target === nativeDeps || target.startsWith(nativeDeps + path.sep) || nativeDeps.startsWith(target + path.sep)) {
+      throw preparationRequired('Native input and product directories overlap')
+    }
   }
   fs.rmSync(destination, { recursive: true, force: true })
-  fs.cpSync(nativeDeps, destination, { recursive: true, dereference: true })
+  fs.rmSync(helpers, { recursive: true, force: true })
+  const preparedHelpers = path.join(nativeDeps, 'native')
+  fs.cpSync(nativeDeps, destination, { recursive: true, dereference: true,
+    filter: file => file !== preparedHelpers })
+  if (fs.existsSync(preparedHelpers)) fs.cpSync(preparedHelpers, helpers, { recursive: true, dereference: true })
 }

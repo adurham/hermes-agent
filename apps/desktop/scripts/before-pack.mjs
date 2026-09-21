@@ -53,6 +53,7 @@ import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
 import { copyNativeInputs } from './prepared-native-deps.mjs'
+import { removeDirSync } from './stage-native-deps.mjs'
 
 /** @param {string | null | undefined} appOutDir @returns {boolean} */
 export function cleanStaleAppOutDir(appOutDir) {

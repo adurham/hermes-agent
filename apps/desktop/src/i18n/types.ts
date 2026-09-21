@@ -794,6 +794,9 @@ export interface Translations {
       updates: string
     }
     config: {
+      minimizeToTrayTitle: string
+      minimizeToTrayDesc: string
+      minimizeToTrayUnavailable: string
       none: string
       noneParen: string
       builtinOnly: string
@@ -819,6 +822,14 @@ export interface Translations {
       attachmentSizeUnit: string
       attachmentSizeLabel: string
       showOptions: string
+    }
+    hudModifier: {
+      title: string
+      description: string
+      statusTitle: string
+      ready: string
+      permission: string
+      unavailable: string
     }
     screenshot: {
       enabledTitle: string

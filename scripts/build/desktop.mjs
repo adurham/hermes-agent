@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { bundleElectronMain } from '../../apps/desktop/scripts/bundle-electron-main.mjs'
 import { checkDistBuilt } from '../../apps/desktop/scripts/assert-dist-built.mjs'
 import { classifyNativeBinary } from '../../apps/desktop/scripts/stage-native-deps.mjs'
+import { copyNativeTree } from '../../apps/desktop/scripts/prepared-native-deps.mjs'
 import { frontendArgs, isMain, productOutput, withProduct, workspaceTool } from './frontend-common.mjs'
 import { recordProduct, buildInputs } from './freshness.mjs'
 
@@ -59,7 +60,7 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
       build: { outDir: product, emptyOutDir: true },
     })
     await bundleElectronMain({ source, out: product, stamp })
-    cpSync(resolve(nativeDeps), join(product, 'node_modules'), { recursive: true, dereference: true })
+    copyNativeTree({ nativeDeps, out: join(product, 'node_modules') })
     const result = checkDistBuilt(product)
     if (!result.ok) throw new Error(result.error)
     recordProduct({ source, product: 'desktop', out: product, inputs })

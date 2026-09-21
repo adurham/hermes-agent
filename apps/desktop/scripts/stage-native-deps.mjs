@@ -6,9 +6,8 @@
 //   node scripts/stage-native-deps.mjs --platform win32 --arch arm64
 //   node scripts/stage-native-deps.mjs --source REPO --out NATIVE_NODE_MODULES
 //
-// Also exported as `stageNodePty({ platform, arch })` for use from
-// before-pack.mjs, where electron-builder gives you the real per-target
-// platform/arch during multi-arch builds.
+// Preparation owns acquisition and helper compilation. beforePack only copies
+// the admitted per-target tree.
 
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +28,8 @@ import {
 import { spawnSync } from 'node:child_process'
 import { isMain } from './utils.mjs'
 import { recordNativeInputs } from './prepared-native-deps.mjs'
+import { buildCommandScreenshotMonitor } from './build-command-screenshot-monitor.mjs'
+import { buildHudModifierMonitor } from './build-hud-modifier-monitor.mjs'
 import { parseArgs } from 'node:util'
 import { productOutput, withProduct, workspaceTool } from '../../../scripts/build/frontend-common.mjs'
 
@@ -737,6 +738,8 @@ export async function prepareDesktopNativeDependencies({ source, out, platform =
   await withProduct(out, async product => {
     stageNodePty({ source, out: product, platform, arch })
     stageGetWindows({ source, out: product, platform, arch })
+    buildCommandScreenshotMonitor({ source, distDir: product, platform })
+    buildHudModifierMonitor({ source, distDir: product, platform, arch })
   }, { source })
   recordNativeInputs({ source, out, platform, arch, nativeToolchain })
   return { out }
