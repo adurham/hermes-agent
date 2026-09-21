@@ -89,10 +89,14 @@ console.log(JSON.stringify(process.env));
         script = tmp_path / "probe.ps1"
         script.write_text('''$ErrorActionPreference = 'Stop'
 [Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
+trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine($_.ScriptStackTrace); exit 97 }
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
-Invoke-SourceBuild { & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT; if ($LASTEXITCODE) { throw 'stamp failed' } }
+[Console]::Error.WriteLine("probe: asset sourced")
+Invoke-SourceBuild { & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT; [Console]::Error.WriteLine("probe: child exit $LASTEXITCODE"); if ($LASTEXITCODE) { throw 'stamp failed' } }
+[Console]::Error.WriteLine("probe: stamp step done")
 try { Invoke-SourceBuild { throw 'child failure' }; throw 'lost exception' }
 catch { if ($_.Exception.Message -ne 'child failure') { throw } }
+[Console]::Error.WriteLine("probe: failure step done")
 & $env:PROBE_PYTHON -I -S -c 'import json, os; print(json.dumps(dict(os.environ)))'
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 ''', encoding="utf-8-sig")
