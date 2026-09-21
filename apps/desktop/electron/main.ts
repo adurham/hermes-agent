@@ -10315,7 +10315,11 @@ function profileRouteOptions(
 // primary, so legacy callers are unchanged.
 async function ensureBackend(
   profile: string | null | undefined,
-  opts: { passive?: boolean; request?: { method?: string; path?: string }; spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: {
+    passive?: boolean
+    request?: { method?: string; path?: string }
+    spawnPriority?: LocalBackendSpawnPriority
+  } = {}
 ): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
