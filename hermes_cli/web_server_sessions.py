@@ -231,6 +231,14 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_archive", False):
             return
+        from gateway.status import is_gateway_runtime_lock_active
+
+        # A live gateway owns this profile's store and runs the same sweep in its own
+        # housekeeping. Opening it WRITABLE from `hermes serve` adds a second writer to a
+        # database another process is already archiving, for zero extra coverage (#110405).
+        lock_path = _session_db_path_for_profile(profile).with_name("gateway.lock")
+        if is_gateway_runtime_lock_active(lock_path):
+            return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:
             db.maybe_auto_archive(
