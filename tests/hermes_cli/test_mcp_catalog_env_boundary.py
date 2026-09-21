@@ -147,12 +147,6 @@ def test_catalog_accepts_declared_credential(
     from tools.connectors.mcp import _CatalogBackend
 
     probes: list[str] = []
-    installs: list[str] = []
-    monkeypatch.setattr(
-        mcp_catalog,
-        "install_entry",
-        lambda entry, enable=True, preloaded_env=None: installs.append(entry.name),
-    )
 
     def probe(name, cfg, **_kwargs):
         # The credential is in scope for the probe, and nothing is saved before it answers.
@@ -326,3 +320,34 @@ def test_preexisting_copilot_controls_remain_usable(
 
     assert _resolve_command() == "/opt/operator/copilot"
     assert _resolve_args() == ["--acp", "--stdio", "--operator-mode"]
+
+
+def test_connection_card_install_keeps_env_file_secrets_only(
+    client: TestClient,
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The connector-card backend (Desktop/TUI/CLI setup card) makes the same secrets-only split
+    as the terminal install: a declared non-secret lands in the server block, never in .env."""
+    import hermes_cli.mcp_config as mcp_config
+    from tools.connectors.mcp import _CatalogBackend
+
+    catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
+    manifest_path = catalog_root / "demo" / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["transport"]["env"] = {"DEMO_BASE_URL": "${DEMO_BASE_URL}"}
+    manifest["auth"]["env"] = [
+        {"name": "DEMO_API_KEY", "prompt": "Demo API key", "secret": True},
+        {"name": "DEMO_BASE_URL", "prompt": "Demo base URL", "secret": False},
+    ]
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(mcp_config, "_probe_single_server", lambda name, cfg, **_k: [("demo_tool", "")])
+
+    _CatalogBackend().install(
+        "demo", {"DEMO_API_KEY": "valid-demo-value", "DEMO_BASE_URL": "https://demo.example.test"}
+    )
+
+    env_text = (catalog_env / ".env").read_text(encoding="utf-8")
+    assert "DEMO_API_KEY=valid-demo-value" in env_text
+    assert "DEMO_BASE_URL" not in env_text and "https://demo.example.test" not in env_text
+    assert mcp_config._get_mcp_servers()["demo"]["env"]["DEMO_BASE_URL"] == "https://demo.example.test"
