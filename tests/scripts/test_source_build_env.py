@@ -91,8 +91,14 @@ console.log(JSON.stringify(process.env));
 [Console]::Error.WriteLine("probe start: $($PSVersionTable.PSVersion) assets=$env:ASSETS python=$env:PROBE_PYTHON")
 trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine($_.ScriptStackTrace); exit 97 }
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
-[Console]::Error.WriteLine("probe: asset sourced")
-Invoke-SourceBuild { & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT; [Console]::Error.WriteLine("probe: child exit $LASTEXITCODE"); if ($LASTEXITCODE) { throw 'stamp failed' } }
+[Console]::Error.WriteLine("probe: asset sourced; python exists=$(Test-Path -LiteralPath $env:PROBE_PYTHON) script exists=$(Test-Path -LiteralPath $env:PROBE_SCRIPT)")
+& $env:PROBE_PYTHON -I -S -c 'import sys; sys.stderr.write("probe: bare child ran %s\n" % sys.version.split()[0])'
+[Console]::Error.WriteLine("probe: bare child dollar-question=$? exit=$LASTEXITCODE")
+Invoke-SourceBuild {
+    & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT
+    [Console]::Error.WriteLine("probe: child dollar-question=$? exit=$LASTEXITCODE out-exists=$(Test-Path -LiteralPath $env:PROBE_OUT)")
+    if ($LASTEXITCODE) { throw 'stamp failed' }
+}
 [Console]::Error.WriteLine("probe: stamp step done")
 try { Invoke-SourceBuild { throw 'child failure' }; throw 'lost exception' }
 catch { if ($_.Exception.Message -ne 'child failure') { throw } }
