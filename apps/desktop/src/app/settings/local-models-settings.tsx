@@ -280,7 +280,9 @@ function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): Reac
     j => (j.kind === 'runtime-install' || j.kind === 'model-download') && isActiveStatus(j.status)
   )
 
-  const failedInstall: boolean = jobs.some((job: LocalRuntimeJob): boolean => job.kind === 'runtime-install' && job.status === 'error')
+  const failedInstall: boolean = jobs.some(
+    (job: LocalRuntimeJob): boolean => job.kind === 'runtime-install' && job.status === 'error'
+  )
 
   if ((qJob || (needsSetup && !configure && heroModel)) && !otherActiveJob && !installStarting && !failedInstall) {
     // Stage rail derived from the job phase: engine -> model -> finish.

@@ -4,10 +4,7 @@ import { queryClient } from '@/lib/query-client'
 import { localSetupDue } from '@/lib/tips/local-cta'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import {
-  localRuntimeInstallBusy,
-  startLocalRuntimeInstall
-} from '@/store/local-runtime-jobs'
+import { localRuntimeInstallBusy, startLocalRuntimeInstall } from '@/store/local-runtime-jobs'
 import { $connection } from '@/store/session'
 import { $activeTip, $retiredTips, $tipsEnabled, $tipShownAt, dismissTip, showTip } from '@/store/tips'
 import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'

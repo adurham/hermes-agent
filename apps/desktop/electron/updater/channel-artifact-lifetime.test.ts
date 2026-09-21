@@ -23,27 +23,76 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-artifact-lifetime-'))
   directories.push(directory)
   const bytes: Buffer = Buffer.from('digest-bound download')
-  const server = createServer((_request, response): void => { response.end(bytes) })
+  const server = createServer((_request, response): void => {
+    response.end(bytes)
+  })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const address = server.address()
 
-  if (!address || !(address instanceof Object)) { throw new Error('Expected TCP server') }
+  if (!address || !(address instanceof Object)) {
+    throw new Error('Expected TCP server')
+  }
   const url: string = `http://127.0.0.1:${address.port}/stable.msixbundle`
 
-  const identity = { token: 'a'.repeat(16), displayName: 'Preview', appId: 'chat.nous.preview', appNamePascal: 'Preview',
-    artifactNamePascal: 'Preview', cliName: 'preview', windowsExecutableName: 'preview', msixAppIdWithOrg: 'NousResearch.Preview' }
+  const identity = {
+    token: 'a'.repeat(16),
+    displayName: 'Preview',
+    appId: 'chat.nous.preview',
+    appNamePascal: 'Preview',
+    artifactNamePascal: 'Preview',
+    cliName: 'preview',
+    windowsExecutableName: 'preview',
+    msixAppIdWithOrg: 'NousResearch.Preview'
+  }
 
   const target: ChannelTarget = {
-    channel: { schema: 1, state: 'active', name: 'preview', repository: 'NousResearch/hermes-agent', policy: 'preview',
-      revision: 1, nextSequence: 2, head: null, identity },
-    manifest: { schema: 1, packages: [], request: { schema: 1, buildId: 'b'.repeat(32), channel: 'preview', sequence: 1,
-      repository: 'NousResearch/hermes-agent', commit: 'c'.repeat(40), sourceVersion: '1.0.0', version: '0.0.1',
-      windowsVersion: '0.0.1.0', identity, bundleEnv: {}, publicBase: 'https://example.com' } },
-    package: { platform: 'win32', arch: 'x64', variant: 'bundled', version: '0.0.1.0', identity: identity.msixAppIdWithOrg,
-      publisher: 'CN=Test', artifact: { key: 'stable.msixbundle', sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length },
-      feed: { key: 'stable.appinstaller', channel: 'stable' } },
-    artifactUrl: url, feedUrl: 'https://example.com/stable.appinstaller', manifestSha256: 'd'.repeat(64)
+    channel: {
+      schema: 1,
+      state: 'active',
+      name: 'preview',
+      repository: 'NousResearch/hermes-agent',
+      policy: 'preview',
+      revision: 1,
+      nextSequence: 2,
+      head: null,
+      identity
+    },
+    manifest: {
+      schema: 1,
+      packages: [],
+      request: {
+        schema: 1,
+        buildId: 'b'.repeat(32),
+        channel: 'preview',
+        sequence: 1,
+        repository: 'NousResearch/hermes-agent',
+        commit: 'c'.repeat(40),
+        sourceVersion: '1.0.0',
+        version: '0.0.1',
+        windowsVersion: '0.0.1.0',
+        identity,
+        bundleEnv: {},
+        publicBase: 'https://example.com'
+      }
+    },
+    package: {
+      platform: 'win32',
+      arch: 'x64',
+      variant: 'bundled',
+      version: '0.0.1.0',
+      identity: identity.msixAppIdWithOrg,
+      publisher: 'CN=Test',
+      artifact: {
+        key: 'stable.msixbundle',
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        size: bytes.length
+      },
+      feed: { key: 'stable.appinstaller', channel: 'stable' }
+    },
+    artifactUrl: url,
+    feedUrl: 'https://example.com/stable.appinstaller',
+    manifestSha256: 'd'.repeat(64)
   }
 
   try {
@@ -59,9 +108,11 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
 
     await verifyPreparedChannelInstaller(file, target, command)
     expect(await readdir(directory)).toEqual(['stable.appinstaller'])
-    await expect(verifyPreparedChannelInstaller(file, target, async (): Promise<never> => {
-      throw new Error('native signature refused')
-    })).rejects.toThrow('signature refused')
+    await expect(
+      verifyPreparedChannelInstaller(file, target, async (): Promise<never> => {
+        throw new Error('native signature refused')
+      })
+    ).rejects.toThrow('signature refused')
     expect(await readdir(directory)).toEqual(['stable.appinstaller'])
     const durable: string = path.join(directory, 'durable-download')
     await mkdir(durable, { mode: 0o700 })
@@ -69,5 +120,8 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
     const downloaded: string = await downloadPinnedArtifact(durable, artifact)
     expect(await downloadPinnedArtifact(durable, artifact)).toBe(downloaded)
     expect(await readFile(downloaded)).toEqual(bytes)
-  } finally { server.close(); await once(server, 'close') }
+  } finally {
+    server.close()
+    await once(server, 'close')
+  }
 })
