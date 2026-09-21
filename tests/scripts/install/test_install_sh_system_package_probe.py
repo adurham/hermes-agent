@@ -18,7 +18,7 @@ pytestmark = [
 
 
 def _write_executable(path: Path, body: str) -> None:
-    path.write_text(f"#!/bin/bash\n{body}\n")
+    path.write_text(f"#!/usr/bin/env bash\n{body}\n")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 

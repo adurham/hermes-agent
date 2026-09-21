@@ -32,7 +32,7 @@ requires_posix_handoff = pytest.mark.skipif(
 # Stands in for `hermes`: answers the `update --help` probe (so --keep-stash
 # is kept), and appends every non-help invocation's argv as one JSON line so
 # the tests can inspect exactly what the update was invoked with.
-FAKE_HERMES = """#!/bin/bash
+FAKE_HERMES = """#!/usr/bin/env bash
 case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 printf '%s\\n' "$*" >> "$HERMES_TEST_ARGV"
 exit 0
