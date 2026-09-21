@@ -11,7 +11,7 @@ jobs:
   native:
     name: ${{ inputs.warm && 'warm' || 'cold' }} ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: ${{ inputs.warm && 15 || 35 }}
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +44,9 @@ jobs:
         with:
           toolchain: all
           extras: '["dev"]'
+          # Production callers prune before saving; the warm restore must
+          # work from a pruned cache, so the smoke saves one too.
+          prune-python-cache: true
           # Each workflow run proves a genuinely cold save followed by a
           # different runner restoring it. No pre-existing cache can mask it.
           cache-suffix: smoke-${{ github.run_id }}-${{ github.run_attempt }}
@@ -59,6 +62,8 @@ jobs:
           python scripts/ci/verify_toolchain.py --extras
           python -c 'import os; expected=os.environ["EXPECT_WARM"]=="true"; values={k:os.environ[k]=="true" for k in ("TOOLS_HIT","PYTHON_HIT","NODE_HIT")}; print(values); assert all(v==expected for v in values.values()), values'
 
+      # Cold populates the npm cache; warm must complete the same install
+      # without the network. That is the restore proof for the node half.
       - name: Install the real locked npm workspace
         shell: bash
         env:
@@ -67,13 +72,28 @@ jobs:
           flags=()
           if [ "$EXPECT_WARM" = true ]; then flags+=(--offline); fi
           npm ci --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund ${flags[@]+"${flags[@]}"}
-          node node_modules/vitest/vitest.mjs run --root tests-js setup-pm-post.test.mjs generate-icons.test.mjs
 
+      # The cold leg is the only runner for these on linux-arm64, darwin-x64
+      # and win32-arm64 (tests-os selects platform-marked files only). Warm
+      # runs the same commit on the same tree, so it skips them.
       - name: Run the PM and action contracts
+        if: ${{ !inputs.warm }}
         shell: bash
         run: |
           scripts/run_tests.sh -j 2 tests/scripts/test_setup_toolchain.py tests/pm/test_pm_core.py tests/pm/test_bootstrap_import_closure.py tests/pm/test_uv_cache.py tests/pm/test_windows_build_deps.py
           python scripts/ci/verify_toolchain.py --extras
+
+      # Build-side consumers of the provisioned toolchain. One target is
+      # enough: the vitest halves already run under js-tests.
+      - name: Exercise the docs, payload and icon build entrypoints
+        if: ${{ !inputs.warm && matrix.target == 'linux-x64' }}
+        shell: bash
+        run: |
+          python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 httpx==0.28.1 -- -c 'import ruamel.yaml,httpx; print(ruamel.yaml.__version__, httpx.__version__)'
+          npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+          npm run payload --workspace apps/desktop -- --help
+          node scripts/generate-icons.mjs
+          node scripts/generate-icons.mjs --check
 
       - name: Upload native setup proof
         if: always()
