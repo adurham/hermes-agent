@@ -10,7 +10,7 @@ import sys
 MANIFEST_SCHEMA = 1
 SHA256 = re.compile(r"[a-f0-9]{64}")
 GIT_SHA = re.compile(r"[a-f0-9]{40}")
-from scripts.releases.semver import STABLE_TAG
+from hermes_cli.update_channel import STABLE_TAG_RE
 ARCHES = ("amd64", "arm64")
 
 class DockerReleaseError(ValueError):
@@ -18,7 +18,7 @@ class DockerReleaseError(ValueError):
 
 
 def require_stable_tag(tag: str) -> str:
-    if not isinstance(tag, str) or not STABLE_TAG.fullmatch(tag or ""):
+    if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag or ""):
         raise DockerReleaseError(f"Not a stable release tag: {tag!r}")
     return tag
 

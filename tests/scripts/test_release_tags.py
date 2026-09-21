@@ -18,6 +18,23 @@ def test_release_tag_uses_the_semver_version():
     assert release.release_tag_for_version("0.20.0") == "v0.20.0"
 
 
+def test_every_stable_selector_rejects_legacy_calver_tags():
+    """One shared stable grammar: a CalVer tag (v2026.9.21) must be refused by
+    every stable admission path, or a workflow_call carrying the old GitHub
+    'latest' tag would be admitted for docker/stable publication."""
+    from hermes_cli.source_releases import _valid_tag
+    from scripts.releases.docker import DockerReleaseError, require_stable_tag
+    from scripts.releases.semver import compare
+
+    for tag in ("v2026.9.21", "v1000.0.0", "v1.01.0", "v1.0.0-canary.20260921000000"):
+        assert not _valid_tag(tag, "stable")
+        with pytest.raises(DockerReleaseError):
+            require_stable_tag(tag)
+    assert _valid_tag("v1.0.0", "stable") and require_stable_tag("v999.0.0") == "v999.0.0"
+    with pytest.raises(ValueError):
+        compare("1.0.0", "2026.9.21")
+
+
 @pytest.fixture
 def release_repo(tmp_path, monkeypatch):
     from tests.scripts.test_release_build_commit import git

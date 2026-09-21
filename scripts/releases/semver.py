@@ -1,10 +1,7 @@
 """Compare the stable and canary versions accepted by release feeds."""
 from __future__ import annotations
 
-import re
-from hermes_cli.update_channel import _CANARY_TAG_RE
-
-STABLE_TAG = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+from hermes_cli.update_channel import _CANARY_TAG_RE, STABLE_TAG_RE
 
 
 def is_valid_version(version: str) -> bool:
@@ -14,10 +11,10 @@ def is_valid_version(version: str) -> bool:
     if not isinstance(version, str):
         return False
     core, sep, tail = version.partition("-")
-    if sep and not STABLE_TAG.fullmatch("v" + core):
+    if sep and not STABLE_TAG_RE.fullmatch("v" + core):
         return False
     if not sep:
-        return bool(STABLE_TAG.fullmatch("v" + version))
+        return bool(STABLE_TAG_RE.fullmatch("v" + version))
     if not _CANARY_TAG_RE.fullmatch("v" + version):
         return False
     # Canary timestamp is a fixed-length 14-digit numeric stamp.

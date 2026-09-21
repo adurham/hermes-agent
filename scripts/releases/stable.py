@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from scripts.releases.semver import STABLE_TAG
+from hermes_cli.update_channel import STABLE_TAG_RE
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
@@ -25,7 +25,7 @@ SMOKE_JOBS = {
 
 
 def require_stable_identity(tag: str, commit: str, ref: str) -> None:
-    if not isinstance(tag, str) or not STABLE_TAG.fullmatch(tag) or not SHA.fullmatch(commit or "") or ref != f"refs/tags/{tag}":
+    if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag) or not SHA.fullmatch(commit or "") or ref != f"refs/tags/{tag}":
         raise ValueError("Stable release must run on its exact stable tag and commit")
 
 
