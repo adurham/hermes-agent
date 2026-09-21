@@ -49,8 +49,8 @@ refusal exists precisely so nothing gets lost.
 ## Do not
 
 - **Do not run `hermes doctor --fix` while the processes are running.** Doctor refuses the
-  checkpoint while it can see a holder, but on a host where it cannot inspect processes the
-  fix path is exactly the second writer that caused the problem.
+  checkpoint while it can see a process holding the retired log, but on a host where it cannot
+  inspect processes the fix path is exactly the second writer that caused the problem.
 - **Do not delete `state.db-wal` or `state.db-shm`.** The log holds committed conversations
   that are not yet in `state.db`. Deleting it is the one action that turns a refusal into
   real data loss.

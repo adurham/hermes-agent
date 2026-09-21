@@ -42,6 +42,9 @@ _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
 _WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+# Storage causes that clear on their own (one session's lease/compression, not the store): the
+# home-channel notice appends the operator restart tail for every OTHER cause.
+_SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -944,10 +947,15 @@ class GatewayNotificationsMixin:
             from hermes_state_user_copy import describe_storage_failure
             failure = describe_storage_failure(error)
             # The cause table owns the remedy: for a held retired-WAL generation a bare `doctor --fix`
-            # is the second-writer trap this notice used to send users into (#110054).
+            # is the second-writer trap this notice used to send users into (#110054). Its copy is
+            # user-phrased, so a store-level failure still gets the operator tail — this gateway
+            # opened its store at startup and stays broken until it is restarted.
+            action = failure.action
+            if failure.cause not in _SELF_CLEARING_STORAGE_CAUSES:
+                action = f"{action} Then `hermes {profile_arg}gateway restart`."
             message = (
                 "⚠️ Session database unavailable — messages may not be saved and /resume will be "
-                f"empty. Cause: {failure.gloss}. {failure.action}"
+                f"empty. Cause: {failure.gloss}. {action}"
             )
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
         from gateway.warning_notifications import present_notification
