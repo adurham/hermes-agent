@@ -208,7 +208,12 @@ def activate_dependencies(project_root: Path) -> None:
             if held:
                 recover_publication(project_root)
             environment = selected_venv(project_root)
-            lease_generation(environment)
+            release = lease_generation(environment)
+            # Without the lock, an installer may commit a new generation between the
+            # read and the lease, leaving the leased one unselected and collectable.
+            while not held and (current := selected_venv(project_root)) != environment:
+                release()
+                environment, release = current, lease_generation(current)
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return
