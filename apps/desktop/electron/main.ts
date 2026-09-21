@@ -35,7 +35,15 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
-import { destroyKeepaliveAgents, htmlResponseError, jsonAgentFor, readJsonErrorBody, withRetry } from './api-transport'
+import {
+  destroyKeepaliveAgents,
+  htmlResponseError,
+  httpStatusError,
+  jsonAgentFor,
+  readJsonErrorBody,
+  readStatusCode,
+  withRetry
+} from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
 import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
@@ -318,6 +326,7 @@ import {
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
+import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -4871,7 +4880,7 @@ function fetchJson(url, token, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+                reject(httpStatusError(res.statusCode, text, res.statusMessage))
 
                 return
               }
@@ -4982,7 +4991,7 @@ function fetchPublicJson(url, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+                reject(httpStatusError(res.statusCode, text, res.statusMessage))
 
                 return
               }
@@ -7419,50 +7428,35 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
   return fetchJson(url, null, { method: 'POST', body: resolveJsonBody(body), ...opts })
 }
 
+// All explicit mutations go through the coordinator; only its refresh/store
+// dependencies may call the raw persistence helpers above. It single-flights
+// the /auth/native/refresh rotation per host (concurrent callers share one
+// flight instead of racing rotations and losing the winner) and fences a
+// refresh that lands after a login/logout changed the identity underneath it
+// (22751c8fd9b9). A 401 on refresh means the RT is dead — tokens are dropped
+// so the UI prompts a fresh native login; a 503/transient keeps them.
+const nativeAccessTokenCoordinator: ReturnType<typeof createNativeAccessTokenCoordinator> =
+  createNativeAccessTokenCoordinator({
+    clearTokens: _clearNativeTokens,
+    isRefreshAuthRejection: (error: unknown): boolean => readStatusCode(error) === 401,
+    loadTokens: _loadNativeTokens,
+    normalizeBaseUrl: normalizeRemoteBaseUrl,
+    refreshTokens: async (baseUrl: string, tokens: NativeTokenSet): Promise<NativeTokenSet> =>
+      parseTokenResponse(
+        await postJsonNoAuth(
+          nativeRefreshUrl(baseUrl),
+          { refresh_token: tokens.refreshToken, provider: tokens.provider },
+          { timeoutMs: 10_000 }
+        )
+      ),
+    storeTokens: _storeNativeTokens,
+    tokenNeedsRefresh
+  })
+
 // Return a valid native access token for baseUrl, refreshing via
 // /auth/native/refresh if the stored one is at/near expiry. Returns null when
 // there are no tokens or the refresh is terminally rejected (caller re-logins).
-async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> {
-  const tokens = _loadNativeTokens(baseUrl)
-
-  if (!tokens) {
-    return null
-  }
-
-  if (!tokenNeedsRefresh(tokens, Math.floor(Date.now() / 1000))) {
-    return tokens.accessToken
-  }
-
-  if (!tokens.refreshToken) {
-    // Access token expired and no RT to rotate — force re-login.
-    _clearNativeTokens(baseUrl)
-
-    return null
-  }
-
-  try {
-    const body = await postJsonNoAuth(
-      nativeRefreshUrl(baseUrl),
-      { refresh_token: tokens.refreshToken, provider: tokens.provider },
-      { timeoutMs: 10_000 }
-    )
-
-    const rotated = parseTokenResponse(body)
-    _storeNativeTokens(baseUrl, rotated)
-
-    return rotated.accessToken
-  } catch (error: any) {
-    // A 401 means the RT is dead (session_expired) — drop tokens so the UI
-    // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
-      _clearNativeTokens(baseUrl)
-
-      return null
-    }
-
-    throw error
-  }
-}
+const ensureNativeAccessToken: (baseUrl: string) => Promise<string | null> = nativeAccessTokenCoordinator.ensure
 
 interface GatewayFileConnection extends RegistryBackendRequestScope {
   authMode?: 'oauth' | 'token'
@@ -15571,6 +15565,8 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   //   - a failed native login reports the error rather than auto-falling back
   //     to the embedded flow — one sign-in action opens at most one window.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // Order login attempts without interrupting rotation of the existing session.
+  const authIsCurrent: () => boolean = nativeAccessTokenCoordinator.beginLogin(baseUrl)
 
   let statusBody: any = null
 
@@ -15608,7 +15604,11 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
         rememberLog
       })
 
-      _storeNativeTokens(baseUrl, tokens)
+      if (!authIsCurrent()) {
+        throw new NativeAuthChangedError()
+      }
+
+      nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next
       // startHermes() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
@@ -15629,7 +15629,13 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
   // window must leave it set, or the overlay's "Sign in" button starts
   // flickering again on the next retry.
+  if (!authIsCurrent()) {
+    throw new NativeAuthChangedError()
+  }
+
   if (connected) {
+    // A confirmed cookie login supersedes any older native identity.
+    nativeAccessTokenCoordinator.clearTokens(baseUrl)
     remoteReauthFailure = null
   }
 
@@ -15637,11 +15643,13 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-  await clearOauthSession(baseUrl)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
-  _clearNativeTokens(baseUrl)
+  // Clear before awaiting cookie I/O: a pending login/refresh cannot restore
+  // logout, and a later login must not be erased when cookie clearing settles.
+  nativeAccessTokenCoordinator.clearTokens(baseUrl)
+  await clearOauthSession(baseUrl)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
