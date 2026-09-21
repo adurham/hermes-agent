@@ -97,6 +97,7 @@ it('a failed hand-off spawn keeps the app alive and reports the failure in plain
     const child: EventEmitter & updaterProcess.UpdaterChild = Object.assign(new EventEmitter(), {
       unref: (): void => {}
     })
+
     queueMicrotask((): void => {
       child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }))
     })
@@ -107,6 +108,7 @@ it('a failed hand-off spawn keeps the app alive and reports the failure in plain
   try {
     const result: Awaited<ReturnType<ReturnType<typeof createCheckoutStrategy>['apply']>> =
       await createCheckoutStrategy(deps).apply()
+
     expect(result).toMatchObject({ ok: false, error: 'updater-spawn-failed' })
     expect(result.message).toMatch(/Hermes keeps running/)
     expect(result.message).toMatch(/Details: .*ENOENT/)

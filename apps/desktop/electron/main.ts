@@ -82,8 +82,8 @@ import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
-  shouldLatchBackendStartFailure,
   shouldHoldBootProgressForReauth,
+  shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
@@ -318,6 +318,7 @@ import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
+import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import type { GatedDownloadAuth } from './native-auth-decisions'
 import {
   oauthSessionIsLive,
@@ -326,7 +327,6 @@ import {
   resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
-import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -373,6 +373,7 @@ import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -429,7 +430,6 @@ import {
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
-import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
