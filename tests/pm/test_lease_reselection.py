@@ -18,13 +18,13 @@ def generations(tmp_path, monkeypatch):
     for name in ("first", "second"):
         venv = state / "environments" / name / "venv"
         venv.mkdir(parents=True)
-        (venv / "pyvenv.cfg").write_text("version = 3.11")
+        (venv / "pyvenv.cfg").write_text("version = 3.11", encoding="utf-8")
         site_packages(venv).mkdir(parents=True)
         (venv.parent / ".lease-managed").touch()
 
     def select(name):
         environment = state / "environments" / name / "venv"
-        runtime_facts_path(repo).write_text(json.dumps({"packages": {"venv": {"environment": str(environment)}}}))
+        runtime_facts_path(repo).write_text(json.dumps({"packages": {"venv": {"environment": str(environment)}}}), encoding="utf-8")
         return environment.resolve()
 
     return repo, state, select
