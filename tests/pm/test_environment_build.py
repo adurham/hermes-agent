@@ -465,7 +465,9 @@ def streaming_runner(request, tmp_path):
                                  env=dict(os.environ), timeout=timeout)
         return environment._run(["-c", script], cwd=tmp_path, timeout=timeout)
 
-    return run, output, RuntimeError if request.param == "cli" else subprocess.TimeoutExpired
+    from pm.package import InstallError
+
+    return run, output, RuntimeError if request.param == "cli" else InstallError
 
 
 @pytest.mark.parametrize("parent_exits", [True, False])

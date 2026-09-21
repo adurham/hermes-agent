@@ -173,15 +173,20 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
 
 
 def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Ambient UV settings are never policy; explicit build index settings are."""
-    index_settings = {
-        "UV_DEFAULT_INDEX", "UV_EXTRA_INDEX_URL", "UV_NO_INDEX", "UV_FIND_LINKS",
-        "UV_INSECURE_HOST", "UV_KEYRING_PROVIDER", "UV_NATIVE_TLS",
-    }
-    return {key: value for key, value in (os.environ if env is None else env).items()
+    """Ambient UV settings never select the project, interpreter or cache.
+
+    Index and transport settings are the exception (pm.index_config): without
+    them mirrored and air-gapped networks cannot resolve anything.
+    """
+    from pm.index_config import bridged_index_settings, is_forwarded
+
+    source = os.environ if env is None else env
+    base = {key: value for key, value in source.items()
             if not key.startswith("PYTHON") and key != "VIRTUAL_ENV"
-            and (not key.startswith("UV_") or
-                 (env is not None and (key.startswith("UV_INDEX") or key in index_settings)))}
+            and (not key.startswith("UV_") or is_forwarded(key))}
+    if env is None:
+        base.update(bridged_index_settings(os.environ))
+    return base
 
 
 def managed_environment(destination: Path, *, python: Path | None = None,
@@ -255,12 +260,23 @@ class PythonEnvironment:
                 command.append("--no-config")
             if self.offline:
                 command.append("--offline")
-            if self.output is not None:
-                # uv hides build-backend output until failure without verbose mode.
-                command.append("--verbose")
-                return _run_streaming(command, cwd=cwd, env=env, timeout=timeout, output=self.output)
-            return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
-                                  text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            try:
+                if self.output is not None:
+                    # uv hides build-backend output until failure without verbose mode,
+                    # but --verbose alone is uv's DEBUG level: ~200 lines of interpreter
+                    # and cache internals on every streamed run. RUST_LOG scopes it to the
+                    # build frontend, so only the backend's own lines reach the user.
+                    command.append("--verbose")
+                    env.setdefault("RUST_LOG", "uv_build_frontend=debug")
+                    return _run_streaming(command, cwd=cwd, env=env, timeout=timeout, output=self.output)
+                return subprocess.run(command, cwd=str(cwd), env=env, capture_output=True,
+                                      text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                from pm.index_config import TIMEOUT_HINT
+
+                # A silent stall against an unreachable index is the #95608 shape;
+                # name the mirror knobs instead of surfacing a raw TimeoutExpired.
+                raise InstallError("venv", f"uv {args[0]} timed out after {timeout}s", TIMEOUT_HINT) from exc
 
     def create(self) -> None:
         """Create at the final destination; callers must not move a live venv."""

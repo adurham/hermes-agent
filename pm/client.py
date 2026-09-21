@@ -65,14 +65,22 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
         # PM is itself a missing prerequisite, not permission to bootstrap tools.
         try:
             command = runtime_command(worker, bootstrap=False, cache=cache)
-        except InstallError as exc:
+        except InstallError as cold:
+            exc = cold
+            if arguments.get("extras"):
+                # The user asked for an extra, not for PM's own runtime: name
+                # the command that provisions both.
+                from pm.extras import install_hint
+
+                exc = InstallError(cold.package, f"{cold.cause} while enabling {list(arguments['extras'])}",
+                                   "run `" + "`, `".join(install_hint(extra) for extra in arguments["extras"]) + "`")
             token = receipt.begin("sync")
             try:
                 receipt.record_refusal("lazy-install", str(exc))
                 receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
             finally:
                 receipt.finalize("failed", 1, token=token)
-            raise
+            raise exc from None
         environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     elif spec.bootstrap == "never":
         command = runtime_command(worker, bootstrap=False, cache=cache)
