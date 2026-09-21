@@ -14004,7 +14004,7 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
-  minimizeToTray.registerWindow(createdMainWindow)
+  minimizeToTray.registerWindow(createdMainWindow, { closeToTray: true })
   const defaultRoute = desktopProfilePreferences.getDefault()
 
   if (defaultRoute) {
