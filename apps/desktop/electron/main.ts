@@ -35,7 +35,15 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
-import { destroyKeepaliveAgents, htmlResponseError, jsonAgentFor, readJsonErrorBody, withRetry } from './api-transport'
+import {
+  destroyKeepaliveAgents,
+  htmlResponseError,
+  httpStatusError,
+  jsonAgentFor,
+  readJsonErrorBody,
+  readStatusCode,
+  withRetry
+} from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
 import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
@@ -74,6 +82,7 @@ import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
+  shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
@@ -309,6 +318,7 @@ import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
+import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import type { GatedDownloadAuth } from './native-auth-decisions'
 import {
   oauthSessionIsLive,
@@ -332,7 +342,7 @@ import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { bundledPayload, installIdForRoot } from './payload-backend'
+import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   pendingNotice as pendingPluginCompatNotice,
@@ -363,6 +373,7 @@ import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -419,6 +430,7 @@ import {
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
+import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
@@ -486,7 +498,7 @@ import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
-import { readUpdatesFeedBaseFromConfig } from './updater/feed-config'
+import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
 import { UpdateOperation } from './updater/operation'
 import {
@@ -804,6 +816,34 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
   directoryExists,
   readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
 })
+
+// #77311: `desktop.electron_flags` and the renderer heap ceiling
+// (`desktop.renderer_max_old_space_mb`) used to reach Chromium only through
+// the `hermes desktop` launcher's argv, so a packaged app opened from its
+// Start-menu / .desktop entry ran with no `--js-flags` at all. Apply them here
+// from config.yaml, before `ready` — Chromium copies `js-flags` to renderer
+// processes only from the browser's pre-launch command line.
+{
+  let desktopLaunchYaml: string = ''
+
+  try {
+    desktopLaunchYaml = fs.readFileSync(path.join(HERMES_HOME, 'config.yaml'), 'utf8')
+  } catch {
+    void 0 // first run: no config yet → Chromium defaults
+  }
+
+  for (const planned of planLaunchSwitches(readDesktopLaunchConfig(desktopLaunchYaml), process.argv.slice(1))) {
+    if (planned.value === undefined) {
+      app.commandLine.appendSwitch(planned.name)
+    } else {
+      app.commandLine.appendSwitch(planned.name, planned.value)
+    }
+
+    console.log(
+      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
+    )
+  }
+}
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
@@ -2207,7 +2247,28 @@ function abandonFirstRunSetupChoiceForRemoteApply() {
   return resumedGatedConnection
 }
 
+// The latched reauth failure whose hold has already been logged, so a burst of
+// dropped updates from one in-flight sibling attempt logs once, not per event.
+let bootProgressHeldFor: Error | null = null
+
 function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
+  // A latched CONFIRMED reauth rejection owns the boot surface until a
+  // recovery path clears it. Updates that are not a re-emit of that failure —
+  // a running:true phase or cleared error from an attempt already in flight
+  // when the latch closed, or an unrelated sibling failure that would flip
+  // retryable back on — must not reach the renderer, or the overlay's Sign in
+  // button flickers away again (#95701).
+  if (shouldHoldBootProgressForReauth(remoteReauthFailure ? remoteReauthFailure.message : null, update)) {
+    if (bootProgressHeldFor !== remoteReauthFailure) {
+      bootProgressHeldFor = remoteReauthFailure
+      rememberLog('[boot] remote reauth latched: holding the recovery overlay against a stale boot-progress update')
+    }
+
+    return
+  }
+
+  bootProgressHeldFor = null
+
   const nextProgressRaw =
     typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
 
@@ -3122,14 +3183,16 @@ async function createPackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
   if (INSTALL_STAMP?.channelBuild && (mechanism === 'electron-updater' || mechanism === 'app-installer')) {
     const build = INSTALL_STAMP.channelBuild
     const installed = await inspectRunningChannelApp(build)
-    const payload = bundledPayload(process.resourcesPath)
 
+    // Platform/arch/signing are the channel's own preconditions. The Python
+    // payload is not: electron-updater swaps the .app without it, and the
+    // darwin Light channel build ships none (write-build-stamp.mjs). The
+    // strategy that consumes the payload (app-installer) demands it itself.
     if (
-      !payload ||
       (process.platform !== 'darwin' && process.platform !== 'win32') ||
       (process.arch !== 'arm64' && process.arch !== 'x64')
     ) {
-      throw new Error('Channel updates require a supported bundled application')
+      throw new Error('Channel updates require a supported packaged application')
     }
 
     return new ChannelStrategy({
@@ -3168,7 +3231,7 @@ function createNativePackagedStrategy(
   }
 
   if (mechanism === 'app-installer') {
-    const payload = bundledPayload(process.resourcesPath)!
+    const payload: PayloadInfo = requireBundledPayload(mechanism)
 
     const deps: ConstructorParameters<typeof AppInstallerStrategy>[0] = {
       python: payload.storePython,
@@ -3218,7 +3281,7 @@ function createNativePackagedStrategy(
   }
 
   if (mechanism === 'microsoft-store') {
-    const payload = bundledPayload(process.resourcesPath)!
+    const payload: PayloadInfo = requireBundledPayload(mechanism)
 
     return createStoreStrategy({
       python: payload.storePython,
@@ -3249,6 +3312,21 @@ function createNativePackagedStrategy(
 }
 
 /**
+ * The bundled Python payload for a strategy whose update check runs inside
+ * it. A stamp that names such a mechanism without a payload is a broken
+ * install; say so instead of failing on `payload.storePython`.
+ */
+function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): PayloadInfo {
+  const payload: PayloadInfo | null = bundledPayload(process.resourcesPath)
+
+  if (!payload) {
+    throw new Error(`${mechanism} updates require the bundled application payload, which this install has none of`)
+  }
+
+  return payload
+}
+
+/**
  * The checkout updater strategy (windows-handoff / posix-handoff). The flow
  * lives in updater/checkout.ts; this is the composition root that hands it
  * the app shell's impure edges. The public checkUpdates/applyUpdates
@@ -3273,6 +3351,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
+    remoteGatewayActive: globalRemoteActive,
 
     emitUpdateProgress,
     rememberLog,
@@ -3281,6 +3360,21 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
     repairMacUpdaterHelper,
     preflightStateDb: async (home: string, log: (message: string) => void): Promise<void> => {
       const root: string = resolveUpdateRoot()
+
+      // `updates.pre_update_backup: off` is the CLI's opt-out for the whole
+      // pre-update backup family; the Desktop's emergency snapshot honours it
+      // too (4de06d1dbf7b). An unreadable answer keeps the snapshot.
+      if (
+        !(await readPreUpdateBackupEnabled(
+          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          home
+        ))
+      ) {
+        log('[updates] emergency state.db backup disabled by updates.pre_update_backup')
+
+        return
+      }
+
       preflightStateDb({
         python: await findPythonForRoot(root),
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
@@ -3302,19 +3396,10 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
  * Windows' registered App Installer source when no override is set.
  */
 function resolveDesktopFeedBaseUrl(): string {
-  const configured: string = readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml'))
-
-  if (configured) {
-    return configured
-  }
-
-  const env: string | undefined = process.env.HERMES_DESKTOP_FEED_BASE_URL
-
-  if (env) {
-    return env
-  }
-
-  return ''
+  return resolveFeedBaseUrl(
+    readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml')),
+    process.env.HERMES_DESKTOP_FEED_BASE_URL
+  )
 }
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
@@ -4795,7 +4880,7 @@ function fetchJson(url, token, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+                reject(httpStatusError(res.statusCode, text, res.statusMessage))
 
                 return
               }
@@ -4906,7 +4991,7 @@ function fetchPublicJson(url, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+                reject(httpStatusError(res.statusCode, text, res.statusMessage))
 
                 return
               }
@@ -6701,6 +6786,13 @@ function installContextMenuBridge(window: BrowserWindow) {
 // usage strings), so the user keeps a real allow/deny and can revoke it in
 // System Settings afterwards.
 function isMediaCapturePermission(permission, details) {
+  // HTML5 video/audio fullscreen asks the request handler for 'fullscreen'
+  // and the check handler for 'automatic-fullscreen'. Both must be allowed
+  // or the native fullscreen button on <video controls> does nothing.
+  if (permission === 'fullscreen' || permission === 'automatic-fullscreen') {
+    return true
+  }
+
   if (permission === 'audioCapture' || permission === 'videoCapture') {
     return true
   }
@@ -6763,6 +6855,7 @@ function installMediaPermissions() {
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
     return (
       permission === 'media' ||
+      (permission as string) === 'automatic-fullscreen' ||
       permission === ('audioCapture' as any) /* todo: is this needed? */ ||
       permission === ('videoCapture' as any)
     )
@@ -7343,50 +7436,35 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
   return fetchJson(url, null, { method: 'POST', body: resolveJsonBody(body), ...opts })
 }
 
+// All explicit mutations go through the coordinator; only its refresh/store
+// dependencies may call the raw persistence helpers above. It single-flights
+// the /auth/native/refresh rotation per host (concurrent callers share one
+// flight instead of racing rotations and losing the winner) and fences a
+// refresh that lands after a login/logout changed the identity underneath it
+// (22751c8fd9b9). A 401 on refresh means the RT is dead — tokens are dropped
+// so the UI prompts a fresh native login; a 503/transient keeps them.
+const nativeAccessTokenCoordinator: ReturnType<typeof createNativeAccessTokenCoordinator> =
+  createNativeAccessTokenCoordinator({
+    clearTokens: _clearNativeTokens,
+    isRefreshAuthRejection: (error: unknown): boolean => readStatusCode(error) === 401,
+    loadTokens: _loadNativeTokens,
+    normalizeBaseUrl: normalizeRemoteBaseUrl,
+    refreshTokens: async (baseUrl: string, tokens: NativeTokenSet): Promise<NativeTokenSet> =>
+      parseTokenResponse(
+        await postJsonNoAuth(
+          nativeRefreshUrl(baseUrl),
+          { refresh_token: tokens.refreshToken, provider: tokens.provider },
+          { timeoutMs: 10_000 }
+        )
+      ),
+    storeTokens: _storeNativeTokens,
+    tokenNeedsRefresh
+  })
+
 // Return a valid native access token for baseUrl, refreshing via
 // /auth/native/refresh if the stored one is at/near expiry. Returns null when
 // there are no tokens or the refresh is terminally rejected (caller re-logins).
-async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> {
-  const tokens = _loadNativeTokens(baseUrl)
-
-  if (!tokens) {
-    return null
-  }
-
-  if (!tokenNeedsRefresh(tokens, Math.floor(Date.now() / 1000))) {
-    return tokens.accessToken
-  }
-
-  if (!tokens.refreshToken) {
-    // Access token expired and no RT to rotate — force re-login.
-    _clearNativeTokens(baseUrl)
-
-    return null
-  }
-
-  try {
-    const body = await postJsonNoAuth(
-      nativeRefreshUrl(baseUrl),
-      { refresh_token: tokens.refreshToken, provider: tokens.provider },
-      { timeoutMs: 10_000 }
-    )
-
-    const rotated = parseTokenResponse(body)
-    _storeNativeTokens(baseUrl, rotated)
-
-    return rotated.accessToken
-  } catch (error: any) {
-    // A 401 means the RT is dead (session_expired) — drop tokens so the UI
-    // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
-      _clearNativeTokens(baseUrl)
-
-      return null
-    }
-
-    throw error
-  }
-}
+const ensureNativeAccessToken: (baseUrl: string) => Promise<string | null> = nativeAccessTokenCoordinator.ensure
 
 interface GatewayFileConnection extends RegistryBackendRequestScope {
   authMode?: 'oauth' | 'token'
@@ -15495,6 +15573,8 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   //   - a failed native login reports the error rather than auto-falling back
   //     to the embedded flow — one sign-in action opens at most one window.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // Order login attempts without interrupting rotation of the existing session.
+  const authIsCurrent: () => boolean = nativeAccessTokenCoordinator.beginLogin(baseUrl)
 
   let statusBody: any = null
 
@@ -15532,7 +15612,11 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
         rememberLog
       })
 
-      _storeNativeTokens(baseUrl, tokens)
+      if (!authIsCurrent()) {
+        throw new NativeAuthChangedError()
+      }
+
+      nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next
       // startHermes() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
@@ -15553,7 +15637,13 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   // Only a CONFIRMED sign-in releases the latch. A cancelled/closed login
   // window must leave it set, or the overlay's "Sign in" button starts
   // flickering again on the next retry.
+  if (!authIsCurrent()) {
+    throw new NativeAuthChangedError()
+  }
+
   if (connected) {
+    // A confirmed cookie login supersedes any older native identity.
+    nativeAccessTokenCoordinator.clearTokens(baseUrl)
     remoteReauthFailure = null
   }
 
@@ -15561,11 +15651,13 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-  await clearOauthSession(baseUrl)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
-  _clearNativeTokens(baseUrl)
+  // Clear before awaiting cookie I/O: a pending login/refresh cannot restore
+  // logout, and a later login must not be erased when cookie clearing settles.
+  nativeAccessTokenCoordinator.clearTokens(baseUrl)
+  await clearOauthSession(baseUrl)
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session

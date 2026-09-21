@@ -96,7 +96,7 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
         return real_run(args, **kwargs)
 
     monkeypatch.setattr(source_check.subprocess, "run", spy_run)
-    monkeypatch.setattr(source_check, "_branch_tip", lambda *args: (head_sha, False))
+    monkeypatch.setattr(source_check, "_branch_tip", lambda *args: (head_sha, False, None))
 
     behind = source_check.check_for_updates(install_root=repo_dir, branch="main").get("behind")
 

@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { updateHandoffConflict, writeUpdateMarker } from '../update-marker'
 import {
   collectRelaunchArgs,
+  describeUpdaterHandoffFailure,
   observeUpdaterHandoff,
   resolveInstallationLauncher,
   resolvePosixScriptHandoff,
@@ -34,6 +35,13 @@ export interface CheckoutStrategyDeps {
   defaultUpdateBranch: string
   updateHandoffDwellMs: number
   resolveUpdaterBinary: () => string | null
+  /**
+   * True when one remote gateway serves this Desktop (app-global remote /
+   * cloud / SSH). The hand-off then tells `hermes update` not to (re)start a
+   * local messaging gateway: with the same channel credentials as the remote
+   * host it would become a competing long-poll consumer (#117529).
+   */
+  remoteGatewayActive: () => boolean
 
   emitUpdateProgress: (payload: { stage: string; message: string; percent: number | null }) => void
   rememberLog: (chunk: unknown) => void
@@ -244,7 +252,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
       // pid — the script claims the update marker itself with its own $PID
       // as its first action, and a relaunched Desktop parks on that.
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
+      const wrappedArgs: string[] = [
         '-InstallRoot',
         updateRoot,
         ...(status.channel ? ['-Channel', status.channel] : ['-Branch', branch]),
@@ -252,7 +260,15 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
         String(process.pid),
         '-RelaunchExe',
         process.execPath
-      ])
+      ]
+
+      // Same remote-ownership rule as the posix hand-off (#117529): a
+      // remote-served Desktop owns no local messaging gateway.
+      if (deps.remoteGatewayActive()) {
+        wrappedArgs.push('-NoGateway')
+      }
+
+      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, wrappedArgs)
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: deps.hermesHome,
@@ -332,7 +348,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
 
     if (!handoffOutcome.ok) {
-      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+      const message: string = describeUpdaterHandoffFailure(handoffOutcome)
 
       deps.rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
       deps.emitUpdateProgress({ stage: 'error', message, percent: null })
@@ -388,6 +404,14 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       '--desktop-pid',
       String(process.pid)
     ]
+
+    // A remote-served Desktop owns no local messaging gateway: `hermes update
+    // --gateway` would (re)start one here anyway, and with the same channel
+    // credentials as the remote host it becomes a competing long-poll consumer
+    // (#117529). Keep --gateway for the local-ownership default.
+    if (deps.remoteGatewayActive()) {
+      args.push('--no-gateway')
+    }
 
     const updateStartedAt = Math.floor(Date.now() / 1000)
 
@@ -451,7 +475,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const handoffOutcome = await observeUpdaterHandoff(child, deps.updateHandoffDwellMs)
 
     if (!handoffOutcome.ok) {
-      const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
+      const message: string = describeUpdaterHandoffFailure(handoffOutcome)
 
       deps.rememberLog(`[updates] posix hand-off not viable, aborting quit: ${handoffOutcome.message}`)
       deps.emitUpdateProgress({ stage: 'error', message, percent: null })

@@ -7,7 +7,10 @@ export async function stageAppInstallerFile(
   directory: string,
   fetchFile: typeof fetch = fetch
 ): Promise<string> {
-  const response = await fetchFile(url, { signal: AbortSignal.timeout(30_000) })
+  // No redirects: the descriptor must come from the validated feed origin
+  // itself, not from wherever that origin's operator (or a hijacked hop)
+  // points next. Windows verifies the referenced package, not this file.
+  const response = await fetchFile(url, { signal: AbortSignal.timeout(30_000), redirect: 'error' })
 
   if (!response.ok || !response.body) {
     throw new Error(`App Installer descriptor download failed: HTTP ${response.status}`)

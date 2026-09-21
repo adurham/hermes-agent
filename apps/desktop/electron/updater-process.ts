@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type SpawnOptions } from 'node:child_process'
+import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -20,6 +20,7 @@ export function resolveVenvDir(updateRoot: string): string {
   return path.join(updateRoot, 'venv')
 }
 
+import { platformDefaultHermesHome } from './data-paths'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 /** Exact installation identity; PATH may refer to another checkout. */
@@ -41,9 +42,7 @@ export function resolveInstallationLauncher(
   // Earlier PM installers published only to user-bin. Trust that historical
   // launcher only after its existing version surface proves exact source identity.
   if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
-    const defaultHome: string = isWindows
-      ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'hermes')
-      : path.join(os.homedir(), '.hermes')
+    const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
 
     const dirs: string[] = isWindows
       ? [
@@ -76,20 +75,39 @@ export function resolveInstallationLauncher(
   return null
 }
 
+// cmd.exe re-parses its command line, so a launcher path carrying any of
+// these would change the command instead of naming a file.
+const CMD_UNSAFE_PATH: RegExp = /["%&|<>^\r\n]/
+
 export function launcherTargetsInstallation(launcher: string, root: string): boolean {
   try {
-    const shell: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
+    // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
+    // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
+    // explicitly instead: a fixed argv, the path quoted verbatim and screened
+    // for cmd metacharacters, and nothing else for the shell to interpret.
+    const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
 
-    const output: string = execFileSync(shell ? `"${launcher}"` : launcher, ['--version'], {
+    if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
+      return false
+    }
+
+    const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
+    const args: string[] = viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version']
+
+    const probe: SpawnSyncReturns<string> = spawnSync(command, args, {
       cwd: root,
       encoding: 'utf8',
       timeout: 15000,
       windowsHide: true,
-      shell,
+      windowsVerbatimArguments: viaCmd,
       env: { ...process.env, HERMES_INSTALL_ROOT: root }
     })
 
-    const reported: string | undefined = /^Install directory: (.+)$/m.exec(output)?.[1]?.trim()
+    if (probe.error || probe.status !== 0) {
+      return false
+    }
+
+    const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
 
     return reported !== undefined && realpathSync(reported) === realpathSync(root)
   } catch {

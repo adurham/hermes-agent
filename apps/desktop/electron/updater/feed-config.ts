@@ -2,6 +2,30 @@ import { readFileSync } from 'node:fs'
 
 import { load } from 'js-yaml'
 
+import { channelPublicBase } from './channel-protocol'
+
+/**
+ * The feed base a bundled install downloads its update descriptor from:
+ * config.yaml's `updates.desktop_feed_base_url`, then the env override,
+ * else '' (the OS-registered App Installer source / no feed). A configured
+ * value is held to the same rule as every other update origin
+ * (channelPublicBase: HTTPS or loopback, no credentials/traversal) — the
+ * descriptor is fetched and opened unverified, so a plain-http base would
+ * hand a network attacker the update source. Throws on a bad value rather
+ * than silently falling back, so the misconfiguration is named.
+ */
+export function resolveFeedBaseUrl(configured: string, envOverride: string | undefined): string {
+  const value: string = configured || (envOverride ?? '').trim()
+
+  if (!value) {
+    return ''
+  }
+
+  channelPublicBase(value)
+
+  return value
+}
+
 export function readUpdatesFeedBaseFromConfig(configPath: string): string {
   try {
     // YAML permits scalar and sequence roots; validate the nested string at this I/O boundary.
