@@ -99,6 +99,24 @@ def prune_site_pth(venv_dir: Path) -> None:
                     pass
 
 
+def _read_pipe(fd: int) -> bytes:
+    size = 65536
+    if sys.platform == "win32":
+        import _winapi
+        import msvcrt
+
+        # Bootstrap can run on Python 3.11, before Windows os.set_blocking
+        # exists. Peek keeps the sole reader bounded without changing pipe mode.
+        try:
+            available, _ = _winapi.PeekNamedPipe(msvcrt.get_osfhandle(fd), 0)
+        except BrokenPipeError:
+            return b""
+        if not available:
+            raise BlockingIOError
+        size = min(size, available)
+    return os.read(fd, size)
+
+
 def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                    timeout: int, output: TextIO) -> subprocess.CompletedProcess:
     """Keep CI progress live, a bounded diagnostic tail, and a wall-clock timeout."""
@@ -112,8 +130,8 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
     try:
         # A descendant can keep stdout open after proc exits. Nonblocking reads
         # bound that drain without leaving a thread stuck in readline()/close().
-        # PM's Python >=3.14 supports nonblocking pipes on Windows as well as POSIX.
-        os.set_blocking(pipe.fileno(), False)
+        if sys.platform != "win32":
+            os.set_blocking(pipe.fileno(), False)
         decoder = io.IncrementalNewlineDecoder(
             codecs.getincrementaldecoder(pipe.encoding)(errors="replace"), translate=True,
         )
@@ -122,7 +140,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout, stderr=tail)
             try:
-                data = os.read(pipe.fileno(), 65536)
+                data = _read_pipe(pipe.fileno())
             except BlockingIOError:
                 time.sleep(min(.05, remaining))
                 continue

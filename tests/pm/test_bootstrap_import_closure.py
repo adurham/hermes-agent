@@ -6,6 +6,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 
 def test_minimal_bootstrap_closure_reaches_pm_paths_and_locks(tmp_path):
     repo = Path(__file__).resolve().parents[2]
@@ -54,14 +56,17 @@ assert callable(sign_managed_python)
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.platforms("linux", "macos", "windows")
 def test_runtime_staging_streams_uv_output_without_tomllib(tmp_path):
-    """The PM runtime is staged by whatever python the host has (the Docker
-    arm64 image bootstraps from a 3.10 system python); streaming ``uv venv``
-    output must not pull in ``pm.workspace``, whose ``tomllib`` import needs 3.11+.
+    """Bootstrap runs before PM selects its Python: Docker has 3.10 and
+    historical Windows updaters have 3.11, without os.set_blocking for pipes.
     """
     repo = Path(__file__).resolve().parents[2]
     script = """
+import os
 import sys
+if sys.platform == 'win32' and hasattr(os, 'set_blocking'):
+    del os.set_blocking
 class NoTomllib:
     def find_spec(self, fullname, path=None, target=None):
         if fullname in ('tomllib', 'pm.workspace', 'pm.plugin_declarations'):
