@@ -2410,6 +2410,7 @@ export const ar = defineLocale({
     checkingShort: 'جار التحقق...',
     seeWhatsNew: 'عرض الجديد',
     releaseNotes: 'ملاحظات الإصدار',
+    onLatest: 'أنت على أحدث إصدار',
     installing: 'جار التثبيت...',
     cantReach: 'تعذر الوصول لخدمة التحديث',
     tapCheck: 'اضغط للتحقق من التحديثات.',

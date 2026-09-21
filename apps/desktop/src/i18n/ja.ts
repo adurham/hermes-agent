@@ -2843,7 +2843,31 @@ export const ja = defineLocale({
       failed: 'バックエンドの更新に失敗しました。',
       noReturn:
         'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `バージョン ${value}`,
+    versionUnavailable: 'バージョンを取得できません',
+    checkNow: '今すぐ確認',
+    seeWhatsNew: '新機能を見る',
+    releaseNotes: 'リリースノート',
+    onLatest: '最新バージョンです。',
+    installing: '更新をインストール中です。',
+    cantReach: '更新サーバーに接続できませんでした。',
+    tapCheck: '更新を探すには「今すぐ確認」を押してください。',
+    updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
+    updateReadyUnknown: '新しい更新の準備ができました。',
+    lastChecked: age => `前回確認: ${age}`,
+    never: '未確認',
+    justNow: 'たった今',
+    minAgo: count => `${count} 分前`,
+    hoursAgo: count => `${count} 時間前`,
+    daysAgo: count => `${count} 日前`,
+    justNowSuffix: ' · たった今',
+    bundleOutOfSync: 'アプリのビルドが古くなっています',
+    bundleOutOfSyncDesc:
+      'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
+    bundleOutOfSyncAction: 'インストーラーを入手',
+    checkingShort: '確認中…'
   },
 
   guidedGreeting: {
