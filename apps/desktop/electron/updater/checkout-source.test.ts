@@ -376,6 +376,7 @@ urllib.request.build_opener = local_build
           force: opts.force
         }),
       resolveUpdaterBinary: (): null => null,
+      remoteGatewayActive: (): boolean => false,
 
       emitUpdateProgress: vi.fn(),
       rememberLog: vi.fn(),

@@ -18,6 +18,7 @@ it.each(['not-a-git-checkout', 'update-root-steward-owned-git-tree', 'fetch-fail
       updateHandoffDwellMs: 0,
       resolveUpdateRoot: (): string => 'repo',
       resolveUpdaterBinary: vi.fn((): null => null),
+      remoteGatewayActive: (): boolean => false,
       emitUpdateProgress: vi.fn(),
       rememberLog: vi.fn(),
       startHermes: vi.fn(async (): Promise<void> => {}),

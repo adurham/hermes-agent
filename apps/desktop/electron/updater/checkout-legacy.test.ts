@@ -32,6 +32,7 @@ it('offers manual recovery only for a missing source probe, never for a broken p
     updateHandoffDwellMs: 0,
     resolveUpdateRoot: (): string => root,
     resolveUpdaterBinary: vi.fn((): string => 'frozen-updater'),
+    remoteGatewayActive: (): boolean => false,
     emitUpdateProgress: vi.fn(),
     rememberLog: vi.fn(),
     startHermes: vi.fn(async (): Promise<void> => {}),

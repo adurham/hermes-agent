@@ -3273,6 +3273,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
+    remoteGatewayActive: globalRemoteActive,
 
     emitUpdateProgress,
     rememberLog,
