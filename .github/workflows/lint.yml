@@ -46,7 +46,7 @@ jobs:
       - name: Install ruff + ty
         uses: ./.github/actions/retry
         with:
-          command: python -m scripts.ci.python_packages ruff==0.15.10 ty==0.0.21
+          command: python -m scripts.ci.python_packages ruff==0.15.10 ty==0.0.82
 
       - name: Determine base ref
         id: base

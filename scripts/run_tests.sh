@@ -114,7 +114,7 @@ fi
 # platform paths come from LOCALAPPDATA/APPDATA, ssl/sockets need SYSTEMROOT,
 # and tempfile needs TEMP/TMP. Dropping them breaks collection on native
 # Windows (issues #67385, #70813). PATHEXT is also required: without .EXE,
-# PowerShell can return success without executing a native child.
+# PowerShell opens a native child as a document without waiting for its exit.
 # These are location variables, not
 # credentials, so forwarding them keeps the isolation intent intact. Each is
 # only forwarded when actually set, so POSIX runs are byte-for-byte unchanged.
