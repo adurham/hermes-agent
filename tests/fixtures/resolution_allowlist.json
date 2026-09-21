@@ -200,7 +200,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "hermes_cli/gateway_setup_wizard.py",
     "symbol": "_setup_signal",
     "kind": "bare_which"
   },
