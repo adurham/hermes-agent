@@ -70,6 +70,14 @@ jobs:
     # runs in its own workflow run now, so this no longer waits on it —
     # the window is 14 days, far wider than any build.
     if: always() && needs.tag.result != 'cancelled'
+    # Job-level so the R2 prune step can gate on `env` (a step `if` cannot
+    # read `secrets`): an unprovisioned release-signing environment skips
+    # the R2 prune instead of failing the nightly.
+    env:
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -80,12 +88,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release.py --prune-canaries --publish --remote origin
       - uses: ./.github/actions/setup-pm
+        if: env.CLOUDFLARE_R2_ACCOUNT_ID != ''
         with:
           cache-python: false
       - name: Prune R2 canary objects
-        env:
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        if: env.CLOUDFLARE_R2_ACCOUNT_ID != ''
         run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.r2 prune-canaries --keep-days 14
