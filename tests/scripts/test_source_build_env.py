@@ -84,14 +84,18 @@ if (result.error || result.status !== 0) throw new Error(`stamp child failed: ${
 console.log(JSON.stringify(process.env));
 ''']
     else:
-        command = [shell, "-NoProfile", "-NonInteractive", "-Command", '''
-$ErrorActionPreference = 'Stop'
+        # -File, not -Command: Windows PowerShell 5.1 reads a multi-line -Command argument as
+        # far as the first line break and exits 0 having run only the preference line.
+        script = tmp_path / "probe.ps1"
+        script.write_text('''$ErrorActionPreference = 'Stop'
 . (Join-Path $env:ASSETS 'source-build-env.ps1')
 Invoke-SourceBuild { & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT; if ($LASTEXITCODE) { throw 'stamp failed' } }
 try { Invoke-SourceBuild { throw 'child failure' }; throw 'lost exception' }
 catch { if ($_.Exception.Message -ne 'child failure') { throw } }
 & $env:PROBE_PYTHON -I -S -c 'import json, os; print(json.dumps(dict(os.environ)))'
-''']
+if ($LASTEXITCODE) { exit $LASTEXITCODE }
+''', encoding="utf-8-sig")
+        command = [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)]
     for sha in (old, new):
         git("checkout", "-q", "-B", "installed", sha)
         result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True,

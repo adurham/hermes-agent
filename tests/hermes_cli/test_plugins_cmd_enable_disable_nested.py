@@ -73,6 +73,11 @@ def test_dependency_free_enable_no_churn_and_tool_override_fails_closed(plugin_w
     monkeypatch.setattr("rich.console.Console.input", eof)
     world.command("enable", name="plugin-worker-proof")
     config = yaml.safe_load((world.home / "config.yaml").read_text())
+    # Enabling is not a request for undeclared privileges (#64228): no grant is prompted for or
+    # written; only an explicit flag persists one.
+    assert "allow_tool_override" not in config.get("plugins", {}).get("entries", {}).get("plugin-worker-proof", {})
+    world.command("enable", name="plugin-worker-proof", no_allow_tool_override=True)
+    config = yaml.safe_load((world.home / "config.yaml").read_text())
     assert config["plugins"]["entries"]["plugin-worker-proof"]["allow_tool_override"] is False
     assert world.selected() == selected
     assert receipt.latest()["venv_rebuild"]["ok"] is False

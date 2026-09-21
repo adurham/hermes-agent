@@ -201,8 +201,10 @@ def test_stage_repin_refuses_a_native_directory_hold_then_recovers(sandbox, monk
     kernel.CreateFileW.restype = wintypes.HANDLE
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
-    # FILE_FLAG_BACKUP_SEMANTICS opens a directory; omit FILE_SHARE_DELETE.
-    handle = kernel.CreateFileW(str(entry), 0, 3, None, 3, 0x02000000, None)
+    # FILE_FLAG_BACKUP_SEMANTICS opens a directory; omit FILE_SHARE_DELETE. The access mask must
+    # be non-zero (FILE_LIST_DIRECTORY): a zero-access handle takes no sharing lock and the rename
+    # the stage repin performs goes through unopposed.
+    handle = kernel.CreateFileW(str(entry), 1, 3, None, 3, 0x02000000, None)
     assert handle != wintypes.HANDLE(-1).value, ctypes.get_last_error()
     try:
         with pytest.raises(InstallError):
