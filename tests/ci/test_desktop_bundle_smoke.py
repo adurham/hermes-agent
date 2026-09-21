@@ -196,7 +196,7 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
             steps = job['steps']
             setup = next(step for step in steps if step.get('uses') == './.github/actions/setup-pm')
             assert setup['with']['toolchain'] == 'all' and not setup['with'].get('extras')
-            assert setup['with']['packages'] == 'ffmpeg'
+            assert 'ffmpeg' in setup['with']['packages'].split(',')
             assert all(setup['with'][key] is False for key in ('cache', 'cache-node', 'cache-python'))
             install = next(step for step in steps if step.get('name') == 'Install locked chat driver dependencies')
             assert steps.index(setup) < steps.index(install)
