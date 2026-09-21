@@ -1,6 +1,6 @@
 name: browserclaw
 repo: https://github.com/GoldenLoaf24h/browserclaw
-sha: 4436397402e38e22e68157e61b9573934d6d1129
+sha: 9678a11460213341ea41b405356f2c5d04be6c37
 subdir: "plugins/browserclaw"
 description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge."
 maintainer: GoldenLoaf24h
