@@ -22,3 +22,18 @@ it.each([
   expect(config.targets).toContain('zip')
   expect(config.notarize).toBe(false)
 })
+
+it('bakes only a canonical https feed base into the updater config', () => {
+  expect(feedContract.feedBaseUrl(undefined)).toBeUndefined()
+  expect(feedContract.feedBaseUrl('https://updates.example/releases/')).toBe('https://updates.example/releases')
+  for (const raw of ['http://updates.example', 'https://user:pw@updates.example', 'https://updates.example/?x=1',
+    'https://updates.example/#frag', 'https://Updates.Example', 'updates.example', 'https://updates.example/a b']) {
+    expect(() => feedContract.feedBaseUrl(raw)).toThrow(TypeError)
+  }
+  const build = (url) => execFileSync(process.execPath, ['-e', "const c=require('./apps/desktop/electron-builder.config.cjs'); console.log(JSON.stringify(c.publish))"], {
+    cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled', HERMES_PAYLOAD_TAG: 'v0.28.0', CLOUDFLARE_R2_PUBLIC_URL: url }
+  })
+  expect(JSON.parse(build('https://updates.example/'))).toEqual([{ provider: 'generic', url: 'https://updates.example', channel: 'latest' }])
+  expect(() => build('http://updates.example')).toThrow(/canonical https/)
+})

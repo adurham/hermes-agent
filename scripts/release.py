@@ -36,7 +36,7 @@ from pathlib import Path
 # is import-light: only os/sys + version constants).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli.update_channel import _CANARY_TAG_RE, canary_tag_for_date  # noqa: E402
+from hermes_cli.update_channel import _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
@@ -2163,8 +2163,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
     canary = _CANARY_TAG_RE.fullmatch(tag) is not None
-    from scripts.releases.semver import STABLE_TAG
-    if not canary and not STABLE_TAG.fullmatch(tag):
+    if not canary and not STABLE_TAG_RE.fullmatch(tag):
         raise ValueError("Expected an exact stable or canary release tag")
     workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
     cmd = ["gh", "workflow", "run", workflow, "--ref", "main" if canary else tag,
@@ -2249,15 +2248,12 @@ def remote_github_repo(remote: str) -> str | None:
     return match.group(1) if match else None
 
 
-# Cap the major at three digits, as in scripts/write_install_stamp.py.
-# The legacy CalVer tags (v2026.7.20) must never match as SemVer.
-_SEMVER_TAG_RE = re.compile(r"v(?:0|[1-9]\d{0,2})\.\d+\.\d+$")
-_LEGACY_CALVER_TAG_RE = re.compile(r"v20\d{2}\.\d+\.\d+(?:\.\d+)?$")
-# Canary prerelease tags are matched with _CANARY_TAG_RE, imported from
-# hermes_cli.update_channel — the single authority for the canary tag
-# shape (v<major>.<minor>.<any patch>-canary.<YYYYMMDDHHMMSS>, plus the
-# legacy date-only form). The suffix keeps them out of every stable
-# selector (all of which require the no-suffix SemVer shape above).
+# Stable tags are matched with STABLE_TAG_RE and canary prerelease tags
+# with _CANARY_TAG_RE, both imported from hermes_cli.update_channel — the
+# single authority for both tag shapes (the stable major is capped at three
+# digits so legacy CalVer tags like v2026.7.20 never match; the canary shape
+# is v<major>.<minor>.<any patch>-canary.<YYYYMMDDHHMMSS>, plus the legacy
+# date-only form). The suffix keeps canaries out of every stable selector.
 # Second precision so manual fires can publish several canaries per day;
 # the identifier is pure numeric and fixed-length, so semver prerelease
 # comparison (numeric) and lexical sort both order it chronologically.
@@ -2274,7 +2270,7 @@ def get_last_tag():
     if tags:
         tag_list = tags.split("\n")
         for tag in tag_list:
-            if _SEMVER_TAG_RE.fullmatch(tag) and not _LEGACY_CALVER_TAG_RE.fullmatch(tag):
+            if STABLE_TAG_RE.fullmatch(tag):
                 return tag
 
     legacy_tags = git("tag", "--list", "v20*", "--sort=-v:refname")

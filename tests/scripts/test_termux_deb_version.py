@@ -54,11 +54,13 @@ def test_canary_shape_matches_the_stable_shape_on_every_component():
     from hermes_cli.update_channel import _CANARY_TAG_RE
     from scripts.releases.semver import is_valid_version
 
-    assert _CANARY_TAG_RE.fullmatch("v2026.9.15-canary.20260916120000")
-    assert is_valid_version("2026.9.15-canary.20260916120000")
+    assert _CANARY_TAG_RE.fullmatch("v1.9.15-canary.20260916120000")
+    assert is_valid_version("1.9.15-canary.20260916120000")
+    # A legacy CalVer core is refused as a stable, so its canary is refused too.
+    assert not is_valid_version("2026.9.15") and not is_valid_version("2026.9.15-canary.20260916120000")
     # And the malformed-tag negatives stay malformed.
-    assert not is_valid_version("2026.9.15-canary.2026091612")
-    assert not is_valid_version("2026.9.15-canary.20260916120000123")
+    assert not is_valid_version("1.9.15-canary.2026091612")
+    assert not is_valid_version("1.9.15-canary.20260916120000123")
 
 
 @pytest.mark.parametrize("tag", [

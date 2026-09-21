@@ -56,6 +56,13 @@ CHANNEL_CANARY = "canary"
 # patch is accepted here.
 _CANARY_TAG_RE = re.compile(r"^v(?:0|[1-9]\d*)\.\d+\.\d+-canary\.20\d{6}(?:\d{6})?$")
 
+# A stable release tag: v<major>.<minor>.<patch>, no suffix. The major is
+# capped at three digits so the historical CalVer tags (v2026.7.20) can never
+# pass as SemVer and reach a stable feed, Docker publish, or the source
+# updater. THIS is the single authority for the stable shape; every stable
+# selector imports it rather than re-typing the rule.
+STABLE_TAG_RE = re.compile(r"^v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$")
+
 
 def is_canary_tag(tag: Any) -> bool:
     """True when ``tag`` is a canary release tag."""

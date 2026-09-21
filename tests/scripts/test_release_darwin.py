@@ -127,7 +127,8 @@ def test_semver_grammar_rejects_non_release_versions():
     from scripts.releases.semver import compare, is_valid_version
 
     assert is_valid_version("0.28.0") and is_valid_version("0.28.0-canary.20260904101010")
-    assert not is_valid_version("0.28") and is_valid_version("2026.7.20")
+    # Legacy CalVer (four-digit major) is not a release version anywhere.
+    assert not is_valid_version("0.28") and not is_valid_version("2026.7.20")
     assert not is_valid_version("0.28.0-beta.1")
     assert compare("0.28.0", "0.27.9") == 1
     assert compare("0.28.0-canary.20260904101010", "0.28.0") == -1  # prerelease < release

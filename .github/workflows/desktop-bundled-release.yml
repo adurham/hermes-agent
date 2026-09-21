@@ -497,6 +497,30 @@ jobs:
             payload-signatures-v1-${{ runner.os }}-${{ matrix.target.label }}-
             payload-signatures-v1-${{ runner.os }}-
 
+      # Downloadable artifacts (commit builds, candidates, published tags,
+      # channels) must be Authenticode-signed. Without the Azure Trusted
+      # Signing vars the build only warns and ships UNSIGNED binaries, which
+      # is right for a fork or a local build and wrong for a release.
+      - name: Require Azure signing when publishing
+        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
+        shell: bash
+        env:
+          AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
+          AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
+          AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
+          AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          missing=()
+          for name in AZURE_SIGN_ENDPOINT AZURE_SIGN_ACCOUNT AZURE_SIGN_PROFILE AZURE_SIGN_PUBLISHER AZURE_CLIENT_ID AZURE_TENANT_ID; do
+            [ -z "${!name}" ] && missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::required Azure Trusted Signing vars are missing from release-signing: ${missing[*]}"
+            exit 1
+          fi
+
       - name: Azure login (OIDC)
         if: vars.AZURE_CLIENT_ID != ''
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1

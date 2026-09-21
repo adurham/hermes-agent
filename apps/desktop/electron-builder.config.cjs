@@ -64,7 +64,7 @@ if (!/^\d+\.\d+\.\d+$/.test(electronVersion)) {
 }
 
 const macFeed = channelRequest ? null : feedContract.darwinFeed(channel === 'canary' || channel === 'light-canary' ? 'canary' : 'stable', light)
-const publicUrl = process.env.CLOUDFLARE_R2_PUBLIC_URL?.replace(/\/+$/, '')
+const publicUrl = feedContract.feedBaseUrl(process.env.CLOUDFLARE_R2_PUBLIC_URL)
 
 /** @satisfies {Configuration} */
 module.exports = {
@@ -93,8 +93,8 @@ module.exports = {
   publish: channelRequest ? null : !channel
     ? null
     : [
-        process.env.CLOUDFLARE_R2_PUBLIC_URL
-          ? { provider: 'generic', url: process.env.CLOUDFLARE_R2_PUBLIC_URL.replace(/\/+$/, ''), channel }
+        publicUrl
+          ? { provider: 'generic', url: publicUrl, channel }
           : { provider: 'github', owner, repo, channel }
       ],
   extraMetadata: {
