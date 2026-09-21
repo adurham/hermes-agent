@@ -486,7 +486,7 @@ import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
-import { readUpdatesFeedBaseFromConfig } from './updater/feed-config'
+import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
 import { UpdateOperation } from './updater/operation'
 import {
@@ -3303,19 +3303,10 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
  * Windows' registered App Installer source when no override is set.
  */
 function resolveDesktopFeedBaseUrl(): string {
-  const configured: string = readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml'))
-
-  if (configured) {
-    return configured
-  }
-
-  const env: string | undefined = process.env.HERMES_DESKTOP_FEED_BASE_URL
-
-  if (env) {
-    return env
-  }
-
-  return ''
+  return resolveFeedBaseUrl(
+    readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml')),
+    process.env.HERMES_DESKTOP_FEED_BASE_URL
+  )
 }
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
