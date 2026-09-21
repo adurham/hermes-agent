@@ -912,10 +912,14 @@ def _sanitize_session_model_config(destination: sqlite3.Connection) -> int:
     """Rewrite unparseable ``sessions.model_config`` blobs to ``'{}'``; returns the row count.
 
     ``integrity_check`` validates b-tree structure, never column *contents*: a row whose
-    JSON was truncated by the damage verifies clean and then makes every ``json_extract``
-    reader (``hermes sessions list``, the dashboard chain CTE) raise on the recovered
-    database. The blob is unrecoverable either way, so neutralise it at the copy boundary
-    both lanes pass through rather than shipping a store that cannot be listed.
+    JSON was truncated by the damage verifies clean, and the recovered store then raises
+    ``OperationalError: malformed JSON`` the first time ``reopen_session`` rewrites the
+    reset-child markers with ``json_set`` (``hermes_state_sessions.py::reopen_session``) —
+    i.e. on the first resume of a parent session. Read paths are already guarded
+    (``_sql_json_extract`` wraps every extract in ``CASE WHEN json_valid``), so this is
+    about the write path. The blob is unrecoverable either way, so neutralise it at the
+    copy boundary both lanes pass through rather than shipping a store that breaks on
+    the first resume.
     """
     if "model_config" not in _table_columns(destination, "sessions"):
         return 0
