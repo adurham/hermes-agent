@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from tests.pm._fixtures import isolated_python  # noqa: F401
+from tests.hermes_cli.plugin_worker_support import (
+    isolated_python as isolated_python,
+    plugin_world as plugin_world,
+)
 import hermes_yaml as yaml
 
 from hermes_cli.subcommands.plugins import build_plugins_parser
+
+
+@pytest.fixture(autouse=True)
+def _offline_pm(plugin_world):
+    # Keep real worker publication/rollback, without provisioning pinned tools
+    # into every temporary home. These installs start with no plugin selection.
+    (plugin_world.home / "config.yaml").unlink()
 
 
 def _git(repo: Path, *args: str) -> str:
