@@ -58,6 +58,18 @@ STEWARD_UPDATE_MESSAGES = {
     ),
 }
 
+# A git checkout on a Termux host is not ours to update either: the lock
+# pins a bionic CPython with no Android wheels, so a source sync would
+# build sdists on the phone. The APT package is the only supported shape.
+SOURCE_ON_TERMUX_UPDATE_MESSAGE = (
+    "✗ This Hermes is a source checkout running under Termux.\n"
+    "\n"
+    "Source installs are not supported on Termux — `hermes update` would\n"
+    "build Python packages on the device. Switch to the APT package:\n"
+    "  pkg install hermes-agent"
+)
+SOURCE_ON_TERMUX_UPDATE_COMMAND = "pkg install hermes-agent"
+
 
 _STEWARD_UPDATE_FALLBACK = (
     "✗ This Hermes install is managed by {steward}.\n"
