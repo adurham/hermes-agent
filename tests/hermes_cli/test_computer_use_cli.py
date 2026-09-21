@@ -94,3 +94,23 @@ def test_computer_use_install_propagates_setup_result(monkeypatch, ready, upgrad
     args = ("install", "--upgrade") if upgrade else ("install",)
     assert _invoke(monkeypatch, *args) == (0 if ready else 1)
     install.assert_called_once_with(upgrade=upgrade)
+
+
+def test_permissions_status_names_the_stale_tcc_row_for_the_missing_grant(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A grant the daemon reports missing while System Settings shows it ON is a stale TCC row (trycua/cua#3170);
+    the status output must name the reset for exactly the missing service, never for one that is granted."""
+    from tools.computer_use import permissions
+
+    status = {"platform": "darwin", "platform_supported": True, "installed": True, "version": "cua-driver 0.28.2",
+              "ready": False, "can_grant": True, "checks": [], "source": None, "error": None,
+              "accessibility": False, "screen_recording": True, "screen_recording_capturable": True}
+    monkeypatch.setattr(permissions, "computer_use_status", lambda driver_cmd=None: status)
+
+    assert _invoke(monkeypatch, "permissions", "status") == 1
+    out = capsys.readouterr().out
+    assert "tccutil reset Accessibility com.trycua.driver" in out
+    assert "ScreenCapture" not in out
+    assert "hermes computer-use permissions grant" in out
