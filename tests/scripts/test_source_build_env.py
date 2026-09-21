@@ -94,6 +94,15 @@ trap { [Console]::Error.WriteLine("probe trap: $_"); [Console]::Error.WriteLine(
 [Console]::Error.WriteLine("probe: asset sourced; python exists=$(Test-Path -LiteralPath $env:PROBE_PYTHON) script exists=$(Test-Path -LiteralPath $env:PROBE_SCRIPT)")
 & $env:PROBE_PYTHON -I -S -c 'import sys; sys.stderr.write("probe: bare child ran %s\n" % sys.version.split()[0])'
 [Console]::Error.WriteLine("probe: bare child dollar-question=$? exit=$LASTEXITCODE")
+$touch = Join-Path (Split-Path -Parent $env:PROBE_OUT) 'touched-by-child.txt'
+& $env:PROBE_PYTHON -c "open(r'$touch','w').write('yes')"
+[Console]::Error.WriteLine("probe: plain -c child touched=$(Test-Path -LiteralPath $touch) exit=$LASTEXITCODE")
+$proc = Start-Process -FilePath $env:PROBE_PYTHON -ArgumentList @('-I','-S','-c','import sys; sys.exit(42)') -NoNewWindow -Wait -PassThru
+[Console]::Error.WriteLine("probe: Start-Process exit=$($proc.ExitCode)")
+if ($IsWindows) {
+    & cmd.exe /c "`"$env:PROBE_PYTHON`" -I -S -c `"import sys; sys.exit(43)`""
+    [Console]::Error.WriteLine("probe: via cmd exit=$LASTEXITCODE")
+}
 Invoke-SourceBuild {
     & $env:PROBE_PYTHON -I -S $env:PROBE_SCRIPT
     [Console]::Error.WriteLine("probe: child dollar-question=$? exit=$LASTEXITCODE out-exists=$(Test-Path -LiteralPath $env:PROBE_OUT)")
