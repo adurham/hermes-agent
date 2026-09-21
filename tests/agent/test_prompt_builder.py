@@ -580,10 +580,7 @@ class TestBuildContextFilesPrompt:
         assert "Project Context" in result
 
 
-    @pytest.mark.skipif(
-        sys.platform == "darwin",
-        reason="APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path",
-    )
+    @pytest.mark.platforms("not macos")  # APFS default volume is case-insensitive; CLAUDE.md and claude.md alias the same path
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
         uppercase = tmp_path / "CLAUDE.md"
         lowercase = tmp_path / "claude.md"

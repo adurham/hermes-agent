@@ -104,7 +104,7 @@ def test_kill_with_dead_tree_still_reports_killed():
     assert s.id in reg._finished
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal escalation; Windows uses taskkill")
+@pytest.mark.platforms("posix")  # POSIX signal escalation; Windows uses taskkill
 def test_escalated_kill_of_sigterm_ignoring_child_reports_killed(tmp_path, monkeypatch):
     """The #115490 scenario itself: a child that ignores SIGTERM is SIGKILLed after the grace
     window, and the verification must give the kernel a moment to reap it — poll() right

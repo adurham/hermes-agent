@@ -22,9 +22,7 @@ pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
 
 
-skip_on_windows = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
-)
+skip_on_windows = pytest.mark.platforms("posix")  # PTY bridge is POSIX-only
 
 
 def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes:

@@ -456,7 +456,7 @@ def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
     assert "Discovered 1 test files" in proc.stdout, proc.stdout
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal death; Windows has no SIGSEGV exit")
+@pytest.mark.platforms("posix")  # POSIX signal death; Windows has no SIGSEGV exit
 def test_interpreter_crash_is_reported_as_a_crash_not_as_no_tests_ran(tmp_path: Path) -> None:
     """A file whose interpreter dies by signal is classified as CRASHED (#113186).
 

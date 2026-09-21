@@ -163,7 +163,7 @@ def test_windows_gateway_start_diag_reports_detach_state(
 
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY coverage")
+@pytest.mark.platforms("posix")  # POSIX PTY coverage
 @pytest.mark.parametrize(
     ("stdin_is_tty", "outcome", "expected_exit"),
     [
@@ -359,10 +359,7 @@ def test_spawn_detached_gateway_timestamps_stderr(monkeypatch, tmp_path):
     assert kwargs["stdout"].name == str(tmp_path / "logs" / "gateway.log")
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="systemd user-linger is Linux-only (drives os.getuid())",
-)
+@pytest.mark.platforms("posix")  # systemd user-linger is Linux-only (drives os.getuid())
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 

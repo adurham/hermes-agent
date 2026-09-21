@@ -170,8 +170,8 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
     assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
 
 
-@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
-                    reason="needs POSIX file permissions for an unreadable ticket")
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason='needs POSIX file permissions for an unreadable ticket')
 def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     import logging
 
@@ -203,8 +203,8 @@ def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     assert len(denied) == 1, "one persistent bad ticket must warn once per process, not per scan"
 
 
-@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
-                    reason="needs POSIX file permissions for an unreadable ticket")
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason='needs POSIX file permissions for an unreadable ticket')
 def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
     from tools import bot_live_delivery as mailbox
 

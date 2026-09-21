@@ -486,7 +486,7 @@ def test_pty_reader_loop_reassembles_multibyte_char_split_across_chunks(registry
 # Orphaned-pipe reconciliation (issue #17327)
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uses setsid/fcntl")
+@pytest.mark.platforms("posix")  # POSIX-only: uses setsid/fcntl
 class TestOrphanedPipeReconciliation:
     """Regression tests for issue #17327.
 
@@ -1733,7 +1733,7 @@ class TestTerminateHostPidPosix:
             "Parent must receive SIGTERM before any snapshot descendant"
         )
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal ordering; Windows uses taskkill")
+    @pytest.mark.platforms("posix")  # POSIX signal ordering; Windows uses taskkill
     @pytest.mark.live_system_guard_bypass
     def test_posix_self_reaping_supervisor_child_is_never_signalled_by_registry(self, monkeypatch, tmp_path):
         """A parent that tears down its own children on SIGTERM keeps that job.
@@ -1836,8 +1836,7 @@ class TestPidReuseGuard:
         assert s.id in registry._finished
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="POSIX SIGTERM→SIGKILL escalation; Windows uses taskkill /F")
+@pytest.mark.platforms("posix")  # POSIX SIGTERM→SIGKILL escalation; Windows uses taskkill /F
 class TestSigkillEscalation:
     """Bounded SIGTERM→SIGKILL escalation in _terminate_host_pid.
 
@@ -2055,7 +2054,7 @@ class TestHandleProcessRedaction:
 # Reader loop: orphaned grandchild holding the stdout pipe (issue #68915)
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: select() on pipes")
+@pytest.mark.platforms("posix")  # POSIX-only: select() on pipes
 class TestReaderLoopOrphanedPipe:
     """Regression tests for issue #68915.
 
@@ -2156,7 +2155,6 @@ class TestReaderLoopOrphanedPipe:
 # =========================================================================
 # systemd cgroup isolation for gateway-spawned local executors (#70716)
 # =========================================================================
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: systemd scopes")
 class TestSystemdCgroupIsolation:
     """Verify spawn_local wraps the worker in ``systemd-run --user --scope``
     when running under a supervisor and systemd-run is available, and falls
@@ -2263,6 +2261,7 @@ class TestSystemdCgroupIsolation:
         # The session must record the unit name so kill_process can stop it.
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_falls_back_when_systemd_run_unavailable(self, registry, monkeypatch, _gateway_identity):
         """Under a supervisor but without systemd-run, fall back to the
         legacy ``start_new_session=True`` path (worker shares the gateway
@@ -2291,6 +2290,7 @@ class TestSystemdCgroupIsolation:
         assert argv == ["/bin/bash", "-lic", "set +m; echo hello"], argv
         assert captured["start_new_session"] is True
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_falls_back_when_not_under_supervisor(self, registry, monkeypatch):
         """CLI mode (no supervisor) must NOT wrap in a systemd scope even if
         systemd-run is available — isolation is a gateway concern."""
@@ -2318,6 +2318,7 @@ class TestSystemdCgroupIsolation:
         assert captured["start_new_session"] is True
 
     @pytest.mark.parametrize("use_pty", [False, True])
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_inherited_systemd_marker_does_not_scope_interactive_cli(
         self, registry, monkeypatch, use_pty
     ):
@@ -2364,6 +2365,7 @@ class TestSystemdCgroupIsolation:
         assert session.systemd_unit == ""
 
     @pytest.mark.parametrize("use_pty", [False, True])
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_inherited_gateway_tree_markers_do_not_scope_child_cli(
         self, registry, monkeypatch, use_pty
     ):
@@ -2568,6 +2570,7 @@ class TestSystemdCgroupIsolation:
         stop_unit.assert_called_once()
         pipe_spawn.assert_not_called()
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_worker_memory_limit_honors_local_guard_mb_override(self, monkeypatch):
         import tools.process_registry as pr
 
@@ -2583,6 +2586,7 @@ class TestSystemdCgroupIsolation:
         warning.assert_not_called()
         assert f"MemoryMax={123 * 1024 * 1024}" in argv
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_worker_memory_limit_caps_oversized_local_guard_override(
         self, monkeypatch
     ):
@@ -2602,6 +2606,7 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):
@@ -2663,6 +2668,7 @@ class TestSystemdCgroupIsolation:
             value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
         ), probe_argv
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_successful_systemd_probe_revalidates_after_cache_ttl(self, monkeypatch):
         """A vanished user bus invalidates a formerly successful scope verdict."""
         import tools.process_registry as pr
@@ -2876,6 +2882,7 @@ class TestSystemdCgroupIsolation:
         assert pr._systemd_run_user_scope_available() is True
         assert len(probe_calls) == 2
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
         import tools.process_registry as pr
 
@@ -2891,6 +2898,7 @@ class TestSystemdCgroupIsolation:
 
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_darwin_never_takes_scope_path_even_with_systemd_run_on_path(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2944,6 +2952,7 @@ class TestSystemdCgroupIsolation:
         assert scope_builds == [], "darwin must never build a systemd scope argv"
         assert probe_runs == [], "darwin must never run the systemd-run probe"
 
+    @pytest.mark.platforms("posix")  # POSIX-only: systemd scopes
     def test_probe_returns_false_off_linux(self, monkeypatch):
         """``_systemd_run_user_scope_available`` is False on non-Linux even
         when a ``systemd-run`` binary exists on PATH."""

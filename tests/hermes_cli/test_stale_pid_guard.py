@@ -106,7 +106,7 @@ class TestPidIsHermes:
         ):
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="real probe is windows-only")
+    @pytest.mark.platforms("windows")  # real probe is windows-only
     def test_missing_pid_real_probe_fails_closed(self):
         # A PID that cannot exist must never be judged Hermes-owned.
         assert _subprocess_compat.pid_is_hermes(2**24) is False
@@ -209,7 +209,7 @@ def test_stop_only_targets_the_invoking_hermes_home(monkeypatch):
 class TestHermesHomeForPid:
     """Tri-state owner resolution: a readable environment always names a home."""
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX default home is $HOME/.hermes")
+    @pytest.mark.platforms("posix")  # POSIX default home is $HOME/.hermes
     def test_readable_env_without_var_resolves_to_that_process_default_home(self, monkeypatch, tmp_path):
         """The common install shape exports no HERMES_HOME: the backend lives in its user's
         platform default home, and a default-home ``--stop`` must still find it (#113978)."""

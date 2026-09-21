@@ -342,10 +342,7 @@ class TestRunJobScript:
         assert argv == [sys.executable, str(script)]
 
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Windows always takes the overlay/creationflags branch",
-    )
+    @pytest.mark.platforms("posix")  # Windows always takes the overlay/creationflags branch
     def test_non_windows_script_keeps_locale_encoding_with_lossy_errors(self, cron_env, monkeypatch):
         """POSIX keeps the platform-default (locale) encoding — gating ``encoding=`` to win32
         was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but decoding must be
@@ -626,10 +623,7 @@ class TestScriptPathContainment:
         assert output == "sub ok"
 
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Symlinks require elevated privileges on Windows",
-    )
+    @pytest.mark.platforms("posix")  # Symlinks require elevated privileges on Windows
     def test_symlink_escape_blocked(self, cron_env, tmp_path):
         """Symlinks pointing outside scripts/ must be rejected."""
         from cron.scheduler_script import _run_job_script

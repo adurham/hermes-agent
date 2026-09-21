@@ -4904,9 +4904,7 @@ import sys
 from hermes_cli import main_tui_launch
 
 
-skip_on_windows = pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
-)
+skip_on_windows = pytest.mark.platforms("posix")  # PTY bridge is POSIX-only
 
 
 @skip_on_windows

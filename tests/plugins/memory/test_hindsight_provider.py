@@ -1566,7 +1566,7 @@ class TestSharedEventLoopLifecycle:
         assert provider._client is None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+@pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_save_config_sets_owner_only_permissions(tmp_path):
     """hindsight/config.json must be written with 0o600 so API key is not world-readable."""
     provider = HindsightMemoryProvider()
