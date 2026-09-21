@@ -92,11 +92,20 @@ def main(context: Path, result: Path) -> int:
                     code = 2
                     return code
                 resume = _resume_windows_gateways_after_update
-                build_update_products(root, desktop=request["desktop"])
+                desktop = request.get("desktop")
+                if desktop is None:
+                    # Historical hooks can precede Desktop detection. Resolve
+                    # only that unknown state, in the freshly bootstrapped app.
+                    from hermes_cli.main_desktop import _desktop_dist_exists, _desktop_packaged_executable
+
+                    desktop_dir = root / "apps" / "desktop"
+                    desktop = (_desktop_packaged_executable(desktop_dir) is not None
+                               or _desktop_dist_exists(desktop_dir))
+                build_update_products(root, desktop=desktop)
                 finish_update(
                     assume_yes=request["assume_yes"], gateway_mode=request["gateway_mode"],
                     pre_update_snapshot_id=request.get("pre_update_snapshot_id"),
-                    had_desktop_app_before_update=request["desktop"],
+                    had_desktop_app_before_update=desktop,
                     pre_update_version=request.get("pre_update_version"),
                     plan=plan, windows_resume=token,
                 )

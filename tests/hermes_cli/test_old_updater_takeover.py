@@ -80,7 +80,8 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
 
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
-def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding):
+@pytest.mark.parametrize("desktop", [None, False, True])
+def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, status, encoding, desktop):
     source = Path(__file__).resolve().parents[2]
     root = tmp_path / "updated checkout"
     package = root / "hermes_cli"
@@ -94,7 +95,7 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
         "assert 'old_only' not in sys.modules\n"
         "assert sys.flags.utf8_mode == 1\n"
         "assert 'PYTHONPATH' not in os.environ\n"
-        "assert request['desktop'] is True\n"
+        f"assert request['desktop'] is {desktop!r}, request['desktop']\n"
         "assert request['windows_resume']['profiles'] == {'work': 'old-pid'}\n"
         "assert request['pre_update_snapshot_id'] == 'preserve-snapshot'\n"
         "assert request['gateway_mode'] == True\n"
@@ -112,7 +113,8 @@ def test_takeover_waits_propagates_status_and_never_reenters_old_code(tmp_path, 
         "sys.modules['old_only'] = types.ModuleType('old_only')\n"
         "from hermes_cli._old_updater import stop_for_relaunch\n"
         "_windows_gateway_resume = {'resume_needed': True, 'profiles': {'work': 'old-pid'}}\n"
-        "had_desktop_app_before_update = True\n"
+        # The June updater reaches the takeover before it declares this local.
+        f"if {desktop!r} is not None:\n    had_desktop_app_before_update = {desktop!r}\n"
         "pre_update_snapshot_id = 'preserve-snapshot'\n"
         "gateway_mode = True\npre_update_version = 'old-version'\n"
         "def cleanup():\n"

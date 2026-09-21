@@ -170,6 +170,17 @@ def completion(tmp_path, monkeypatch):
                     pm.ensure = provision
                     web = source_build.build_source_web
                     source_build.build_source_web = lambda root, **kwargs: web(root, icons=root, **kwargs)
+                    build = source_build.build_update_products
+                    def build_products(root, *, desktop):
+                        (root / 'desktop-build.json').write_text(json.dumps(desktop), encoding='utf-8')
+                        return build(root, desktop=desktop)
+                    source_build.build_update_products = build_products
+                    maintenance = update._run_post_update_maintenance
+                    def maintain(**kwargs):
+                        (root / 'desktop-maintenance.json').write_text(
+                            json.dumps(kwargs['had_desktop_app_before_update']), encoding='utf-8')
+                        return maintenance(**kwargs)
+                    update._run_post_update_maintenance = maintain
                     # Ancillary system changes are not the acceptance target.
                     macos_tcc_anchor.ensure_tcc_anchor = lambda: None
                     maint._print_post_update_notices_and_self_heals = lambda: None
@@ -246,6 +257,33 @@ def test_failure_preserves_original_receipt_before_build(completion, fault):
     assert (home / ".update_exit_code").read_text().strip() == "1"
     assert context.read_bytes() == before
     assert not (source / "build-environment.json").exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("captured, installed, expected", [
+    (None, None, False),
+    (None, "renderer", True),
+    (None, "packaged", True),
+    (False, "packaged", False),
+    (True, None, True),
+])
+def test_missing_desktop_observation_uses_installed_products(completion, captured, installed, expected):
+    source, home, request, context, result, run = completion
+    request["desktop"] = captured
+    context.write_text(json.dumps(request), encoding="utf-8")
+    if installed == "renderer":
+        _put(source, "apps/desktop/dist/index.html", "old renderer")
+    elif installed == "packaged":
+        executable = ("mac-arm64/Hermes.app/Contents/MacOS/Hermes" if sys.platform == "darwin"
+                      else "linux-unpacked/hermes")
+        _put(source, f"apps/desktop/release/{executable}", "old packaged app")
+    before = context.read_bytes()
+    child = run()
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert json.loads((source / "desktop-build.json").read_text()) is expected
+    assert json.loads((source / "desktop-maintenance.json").read_text()) is expected
+    assert context.read_bytes() == before
+    assert json.loads(result.read_text())["receipt_handled"] is True
 
 
 def _npm_graph(source):

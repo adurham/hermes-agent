@@ -61,7 +61,8 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
         plan = receipt.get("plan") if isinstance(receipt, dict) else None
     return {
         "restart_update": restart_update is True,
-        "desktop": bool(found.get("had_desktop_app_before_update", False)),
+        # Some old updaters reach this hook before checking Desktop at all.
+        "desktop": found.get("had_desktop_app_before_update"),
         "pre_update_snapshot_id": found.get("pre_update_snapshot_id"),
         "pre_update_version": found.get("pre_update_version"),
         "gateway_mode": bool(found.get("gateway_mode", "--gateway" in sys.argv)),
