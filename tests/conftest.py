@@ -1358,11 +1358,18 @@ def _host_matches_platforms(conditions, arch=None, arch_negate=False):
     specs = [str(c).strip().lower() for c in conditions if str(c).strip()]
     if not specs:
         return True, "platforms() with no specs matches every host"
+    # An unknown spec is a collection error, never a skip: a typo like
+    # platforms("linx") would otherwise drop the test on every host while
+    # both lanes stay green — the exact failure the gate exists to catch.
+    unknown = [spec for spec in specs if spec.removeprefix("not ").strip() not in _PLATFORM_ALIASES]
+    if unknown:
+        raise pytest.UsageError(
+            f"platforms(): unknown spec(s) {', '.join(map(repr, unknown))} — valid: "
+            f"{', '.join(sorted(_PLATFORM_ALIASES))}, each optionally prefixed with 'not '"
+        )
     for spec in specs:
         negate = spec.startswith("not ")
         leaf = spec[4:].strip() if negate else spec
-        if leaf not in _PLATFORM_ALIASES:
-            return False, f"platforms(): unknown spec {spec!r}"
         wanted = _PLATFORM_ALIASES[leaf]
         matched = (not wanted) or host in wanted
         if negate:
@@ -1391,11 +1398,14 @@ def _platforms_gate_reason(item):
     for mark in item.iter_markers("platforms"):
         kwargs = dict(mark.kwargs)
         conds = list(mark.args)
-        ok, reason = _host_matches_platforms(
-            conds,
-            arch=kwargs.pop("arch", None),
-            arch_negate=kwargs.pop("arch_negate", False),
-        )
+        try:
+            ok, reason = _host_matches_platforms(
+                conds,
+                arch=kwargs.pop("arch", None),
+                arch_negate=kwargs.pop("arch_negate", False),
+            )
+        except pytest.UsageError as exc:
+            raise pytest.UsageError(f"{item.nodeid}: {exc}") from None
         if kwargs:
             raise pytest.UsageError(
                 f"{item.nodeid}: platforms() got unexpected keyword(s) "
