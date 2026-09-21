@@ -75,6 +75,7 @@ import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
   shouldLatchBackendStartFailure,
+  shouldHoldBootProgressForReauth,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
 } from './backend-start-failure'
@@ -2237,7 +2238,28 @@ function abandonFirstRunSetupChoiceForRemoteApply() {
   return resumedGatedConnection
 }
 
+// The latched reauth failure whose hold has already been logged, so a burst of
+// dropped updates from one in-flight sibling attempt logs once, not per event.
+let bootProgressHeldFor: Error | null = null
+
 function updateBootProgress(update, options: { allowDecrease?: boolean } = {}) {
+  // A latched CONFIRMED reauth rejection owns the boot surface until a
+  // recovery path clears it. Updates that are not a re-emit of that failure —
+  // a running:true phase or cleared error from an attempt already in flight
+  // when the latch closed, or an unrelated sibling failure that would flip
+  // retryable back on — must not reach the renderer, or the overlay's Sign in
+  // button flickers away again (#95701).
+  if (shouldHoldBootProgressForReauth(remoteReauthFailure ? remoteReauthFailure.message : null, update)) {
+    if (bootProgressHeldFor !== remoteReauthFailure) {
+      bootProgressHeldFor = remoteReauthFailure
+      rememberLog('[boot] remote reauth latched: holding the recovery overlay against a stale boot-progress update')
+    }
+
+    return
+  }
+
+  bootProgressHeldFor = null
+
   const nextProgressRaw =
     typeof update.progress === 'number' ? clampBootProgress(update.progress) : bootProgressState.progress
 
