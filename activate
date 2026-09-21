@@ -23,8 +23,10 @@ if ! (
 fi
 
 # Guard against double-sourcing: venv activate precedent (re-activating is a
-# no-op re-save; we keep it idempotent by deactivating first).
-if [ -n "${__HERMES_ACTIVATED:-}" ]; then
+# no-op re-save; we keep it idempotent by deactivating first). Key on the
+# function, not the sentinel: child shells inherit __HERMES_ACTIVATED from an
+# activated parent but never the function, and there is nothing to undo there.
+if [ "$(type -t deactivate 2>/dev/null)" = "function" ]; then
     deactivate
 fi
 
