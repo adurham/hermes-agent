@@ -90,6 +90,7 @@ describe('macOS strategy', () => {
     deps.verifyDownload = async (): Promise<void> => {
       throw new Error('artifact digest mismatch')
     }
+
     await expect(new MacStrategy(deps).apply()).rejects.toThrow('artifact digest')
     expect(events).not.toContain('verify')
     expect(events).not.toContain('stop')

@@ -78,6 +78,7 @@ afterEach((): void => {
 test('channel packaging reuses admitted identity and rejects unsupported or unsafe identities', (): void => {
   const first: ChannelBuildRequest = request()
   const a: ReturnType<typeof load> = load(first)
+
   const b: ReturnType<typeof load> = load({
     ...first,
     ...request(65537),
@@ -188,16 +189,19 @@ test('channel stamps verify the real checkout and retain source version and nati
       ],
       { cwd: dir }
     )
+
     const build: ChannelBuildRequest = {
       ...request(),
       commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
     }
+
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HERMES_DESKTOP_VARIANT: 'bundled',
       _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(build),
       GITHUB_SHA: 'd'.repeat(40)
     }
+
     const provenance: InstallStamp = resolveStamp({ env, repoRoot: dir })
     const payload: StampPayload = { runtime: { repoDir: 'repo', commands: { hermes: 'bin/hermes' } } }
     const built: InstallStamp = buildStampPayload(provenance, env, 'darwin', payload)
@@ -237,12 +241,14 @@ test('channel stamps verify the real checkout and retain source version and nati
     }
 
     const receiverEnv: NodeJS.ProcessEnv = { ...env, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(receiver) }
+
     const stable: InstallStamp = buildStampPayload(
       resolveStamp({ env: receiverEnv, repoRoot: dir }),
       receiverEnv,
       'darwin',
       payload
     )
+
     assert.equal(stable.channelBuild, undefined)
     assert.equal(stable.source, 'build')
     assert.equal(stable.tag, receiver.releaseTag)

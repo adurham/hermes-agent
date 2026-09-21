@@ -16,6 +16,7 @@ export async function verifyPreparedChannelInstaller(
   if (pkg.platform !== 'win32' || !pkg.publisher) {
     throw new Error('Expected a publisher-bound Windows package')
   }
+
   const directory: string = await mkdtemp(path.join(path.dirname(file), '.channel-artifact-'))
 
   try {

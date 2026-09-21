@@ -112,12 +112,14 @@ function parseChannelJson(body: string): unknown {
     if (!token.endsWith(':')) {
       continue
     }
+
     const key: string = JSON.parse(token.slice(0, -1))
     const keys = objects[objects.length - 1]
 
     if (keys.has(key)) {
       throw new Error('Duplicate channel JSON member')
     }
+
     keys.add(key)
   }
 
@@ -131,6 +133,7 @@ class Fields {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new Error('Expected channel object')
     }
+
     this.input = input
   }
   get(key: string): unknown {
@@ -258,6 +261,7 @@ function head(value: unknown): ChannelHead | null {
   if (value === null) {
     return null
   }
+
   const fields = new Fields(value)
   const buildId = fields.text('buildId', BUILD_ID)
   const manifestKey = fields.text('manifestKey')
@@ -307,6 +311,7 @@ export function decodeChannelRecord(body: string): ChannelRecord {
   if (common.head && common.head.sequence >= common.nextSequence) {
     throw new Error('Channel head exceeds allocation')
   }
+
   const state = fields.text('state')
 
   if (state === 'active') {
@@ -316,6 +321,7 @@ export function decodeChannelRecord(body: string): ChannelRecord {
   if (state !== 'retired') {
     throw new Error('Invalid channel state')
   }
+
   const lastHead = head(fields.get('lastHead'))
 
   if (JSON.stringify(lastHead) !== JSON.stringify(common.head)) {
@@ -325,6 +331,7 @@ export function decodeChannelRecord(body: string): ChannelRecord {
   if (fields.get('receiverProtocol') !== 1) {
     throw new Error('Unsupported retirement receiver protocol')
   }
+
   const receiverFields = fields.object('receiver')
   const kind = receiverFields.text('kind')
 
@@ -353,11 +360,13 @@ function request(fields: Fields): ChannelRequest {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
       throw new Error('Invalid bundle environment name')
     }
+
     const value: unknown = environment.get(key)
 
     if (value !== null && (typeof value !== 'string' || value.includes('\0'))) {
       throw new Error('Invalid bundle environment value')
     }
+
     Object.defineProperty(bundleEnv, key, { value, enumerable: true })
   }
 
@@ -366,7 +375,9 @@ function request(fields: Fields): ChannelRequest {
   if (channelPublicBase(publicBase) !== publicBase) {
     throw new Error('Noncanonical request publicBase')
   }
+
   const releaseTag = fields.optional('releaseTag', /^v\d+\.\d+\.\d+(?:-canary\.\d+)?$/)
+
   const windowsVersion = fields.text(
     'windowsVersion',
     releaseTag?.includes('-canary.') ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/
@@ -435,12 +446,14 @@ export function decodeChannelManifest(body: string): ChannelManifest {
   if (!Array.isArray(entries) || !entries.length || entries.length > 4) {
     throw new Error('Invalid channel packages')
   }
+
   const packages: ChannelPackage[] = entries.map(packageEntry)
   const keys = new Set(packages.map((entry: ChannelPackage): string => `${entry.platform}/${entry.arch}`))
 
   if (keys.size !== packages.length) {
     throw new Error('Duplicate channel package')
   }
+
   const manifest: ChannelManifest = { schema: 1, request: request(fields.object('request')), packages }
 
   if (fields.get('receiverProtocol') !== undefined) {

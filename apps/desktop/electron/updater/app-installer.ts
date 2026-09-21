@@ -200,6 +200,7 @@ function newerWindowsVersion(target: string, current: string): boolean {
     if (!/^\d+\.\d+\.\d+\.\d+$/.test(version)) {
       throw new Error('Windows channel updates require native numeric versions')
     }
+
     const parts = version.split('.').map(Number)
 
     if (parts.some((part: number): boolean => part > 65535)) {

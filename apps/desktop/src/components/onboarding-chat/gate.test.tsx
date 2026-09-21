@@ -19,9 +19,11 @@ it('starts the skipped-film splash before the backend connects and removes it on
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), firstRunSkipped: false })
 
   let complete = (_ready: boolean) => {}
+
   const pending = new Promise<boolean>(resolve => {
     complete = resolve
   })
+
   const kickoff = vi.fn(() => pending)
 
   const request = async () => {
@@ -68,6 +70,7 @@ it.each(['refused', 'rejected'])('restores the ordinary app after %s startup', a
   const request = async () => {
     throw new Error('No provider notice available')
   }
+
   render(
     <I18nProvider>
       <OnboardingChatGate enabled onKickoff={kickoff} requestGateway={request} />

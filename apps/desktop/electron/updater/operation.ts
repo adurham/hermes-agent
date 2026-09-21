@@ -20,6 +20,7 @@ export class UpdateOperation {
     if (this.applying) {
       throw new Error('An update is already in progress.')
     }
+
     this.applying = true
     let handedOff: boolean = false
 

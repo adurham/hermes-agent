@@ -88,12 +88,14 @@ export class ChannelResolver {
     if (!response.ok || response.url !== url) {
       throw new Error(`Channel read unavailable: HTTP ${response.status}`)
     }
+
     const maximum = 4 * 1024 * 1024
     const reader = response.body?.getReader()
 
     if (!reader) {
       throw new Error('Channel metadata has no body')
     }
+
     const chunks: Uint8Array[] = []
     let size = 0
 
@@ -104,11 +106,13 @@ export class ChannelResolver {
         if (done) {
           break
         }
+
         size += value.byteLength
 
         if (size > maximum) {
           throw new Error('Channel metadata exceeds size limit')
         }
+
         chunks.push(value)
       }
     } finally {
@@ -141,6 +145,7 @@ export class ChannelResolver {
     if (retired.destination === retired.name) {
       throw new Error('Channel retirement cycle')
     }
+
     record = decodeChannelRecord(await this.read(`releases/channels/${retired.destination}.json`))
     this.assertRecord(record, retired.destination)
 
@@ -158,6 +163,7 @@ export class ChannelResolver {
     if (target.manifest.receiverProtocol !== retired.receiverProtocol) {
       throw new Error('Stable build has no supported retirement receiver')
     }
+
     assertVersionFloor(target.manifest.request.sourceVersion, retired.minimumVersion)
 
     return { kind: 'retirement', retirement: { source: this.deps.build, target, receiverKind: retired.receiver.kind } }
@@ -177,6 +183,7 @@ export class ChannelResolver {
     if (!channel.head) {
       throw new Error('No destination build published')
     }
+
     const manifest = decodeChannelManifest(await this.read(channel.head.manifestKey, channel.head.sha256))
     const request = manifest.request
 
@@ -200,6 +207,7 @@ export class ChannelResolver {
     }
 
     this.assertPackages(channel, manifest)
+
     const entry = manifest.packages.find(
       (item: ChannelPackage): boolean => item.platform === this.deps.platform && item.arch === this.deps.arch
     )
@@ -207,6 +215,7 @@ export class ChannelResolver {
     if (!entry) {
       throw new Error('Channel has no package for this platform and architecture')
     }
+
     const signer = entry.platform === 'darwin' ? entry.teamId : entry.publisher
 
     if (!this.deps.signer || signer !== this.deps.signer) {
@@ -231,6 +240,7 @@ export class ChannelResolver {
       if (!request.releaseTag || request.version !== request.releaseTag.slice(1)) {
         throw new Error('Protected release version mismatch')
       }
+
       prefixes.push(`releases/tag/${request.releaseTag}/`)
     }
 

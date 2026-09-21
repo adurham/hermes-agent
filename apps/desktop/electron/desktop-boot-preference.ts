@@ -21,6 +21,7 @@ export function readDesktopBootPreference(file: string): DesktopBootPreference |
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       return null
     }
+
     throw error
   }
 
@@ -85,6 +86,7 @@ function updatePreference(
     } finally {
       closeSync(handle)
     }
+
     renameSync(temporary, file)
 
     if (process.platform !== 'win32') {

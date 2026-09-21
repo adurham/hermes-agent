@@ -12,12 +12,14 @@ export function removeBundleCliLinks(payloadRoot: string, binDir: string): void 
   if (!fs.existsSync(binDir)) {
     return
   }
+
   const payloadBin: string = path.resolve(payloadRoot, 'bin')
 
   for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
     if (!entry.isSymbolicLink()) {
       continue
     }
+
     const link: string = path.join(binDir, entry.name)
     const destination: string = fs.readlinkSync(link)
 

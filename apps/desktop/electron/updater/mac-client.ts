@@ -55,6 +55,7 @@ export function createMacStrategy(deps: MacClientDeps): MacStrategy {
     if (!/^[a-z][a-z0-9-]*$/.test(channel) || !url.pathname.endsWith(`/${channel}-mac.yml`)) {
       throw new Error('Invalid macOS feed descriptor')
     }
+
     updater.setFeedURL({ provider: 'generic', url: new URL('./', url).href, channel })
   } else if (deps.feedBaseUrl) {
     const base = channelPublicBase(deps.feedBaseUrl)

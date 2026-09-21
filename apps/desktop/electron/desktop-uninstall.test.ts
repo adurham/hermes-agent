@@ -214,6 +214,7 @@ test.skipIf(process.platform === 'win32').each(['gui', 'lite', 'full'] as const)
         child.kill()
         await once(child, 'close')
       }
+
       fs.rmSync(root, { recursive: true, force: true })
     }
   }

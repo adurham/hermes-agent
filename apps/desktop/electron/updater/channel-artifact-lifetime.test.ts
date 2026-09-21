@@ -23,9 +23,11 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
   const directory: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-artifact-lifetime-'))
   directories.push(directory)
   const bytes: Buffer = Buffer.from('digest-bound download')
+
   const server = createServer((_request, response): void => {
     response.end(bytes)
   })
+
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const address = server.address()
@@ -33,6 +35,7 @@ test('ordinary Windows preparation owns temporary bytes while a resumable downlo
   if (!address || !(address instanceof Object)) {
     throw new Error('Expected TCP server')
   }
+
   const url: string = `http://127.0.0.1:${address.port}/stable.msixbundle`
 
   const identity = {

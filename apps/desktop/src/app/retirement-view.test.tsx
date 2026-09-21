@@ -19,10 +19,12 @@ afterEach((): void => {
 test('discontinued retirement shows the uninstall notice and persists dismissal per revision', async (): Promise<void> => {
   const dismissed: string[] = []
   const stored = new Map<string, string>()
+
   const original = {
     getItem: window.localStorage.getItem.bind(window.localStorage),
     setItem: window.localStorage.setItem.bind(window.localStorage)
   }
+
   vi.spyOn(window.localStorage, 'getItem').mockImplementation((key: string) => stored.get(key) ?? original.getItem(key))
   vi.spyOn(window.localStorage, 'setItem').mockImplementation((key: string, value: string) => {
     stored.set(key, value)

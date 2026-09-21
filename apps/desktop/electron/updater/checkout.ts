@@ -110,9 +110,11 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     const branch: string = status.branch ?? deps.defaultUpdateBranch
     const targetArgs: string[] = status.channel ? ['--channel', status.channel] : ['--branch', branch]
     const targetLabel: string = status.channel ?? branch
+
     const manualCommand: string = status.channel
       ? `hermes update --channel ${status.channel}`
       : buildManualUpdateCommand(branch)
+
     const updater: string | null = deps.resolveUpdaterBinary()
     const root: string = deps.resolveUpdateRoot()
 
@@ -386,6 +388,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
       '--desktop-pid',
       String(process.pid)
     ]
+
     const updateStartedAt = Math.floor(Date.now() / 1000)
 
     // Relaunch target: the running .app bundle on mac (script swaps the

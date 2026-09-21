@@ -110,6 +110,7 @@ it.each(cases)(
     if (receipt?.plugin_checks?.some(row => row.needs_fixing)) {
       expect(screen.getByText('bad-url: update_url points at a fork')).toBeTruthy()
     }
+
     expect(screen.getByText('grower: 1.0.0 → 1.1.0')).toBeTruthy()
     expect(screen.queryByText('fine')).toBeNull()
     expect(screen.queryByText('kept')).toBeNull()

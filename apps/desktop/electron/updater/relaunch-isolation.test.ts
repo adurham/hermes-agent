@@ -102,11 +102,13 @@ test('cancellation and failed registration remove only their own installation ma
 
   for (const automatic of [true, false]) {
     let resolveReady!: (handle: RelaunchWaiterHandle | undefined) => void
+
     const ready: Promise<RelaunchWaiterHandle | undefined> = new Promise(
       (resolve: (handle: RelaunchWaiterHandle | undefined) => void): void => {
         resolveReady = resolve
       }
     )
+
     let registered: boolean = false
 
     const pending: Promise<RelaunchRegistration> = registerUpdateRelaunch(canary, 'canary-old', {

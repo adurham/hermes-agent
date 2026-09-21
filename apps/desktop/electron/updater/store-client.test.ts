@@ -10,6 +10,7 @@ it('the production runner passes modes, full HWND and isolated payload imports',
     timeout?: number
     waitForExit?: boolean
   }[] = []
+
   const handle = Buffer.alloc(8)
   handle.writeBigUInt64LE(0x1234567887654321n)
 

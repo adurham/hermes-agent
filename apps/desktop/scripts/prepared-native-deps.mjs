@@ -13,8 +13,8 @@ function nativeIdentity(source) {
     fileDigest(path.join(import.meta.dirname, 'prepared-native-deps.mjs')),
     ...['build-command-screenshot-monitor.mjs', 'build-hud-modifier-monitor.mjs']
       .map(name => fileDigest(path.join(import.meta.dirname, name))),
-    ...['command-screenshot-monitor.m', 'hud-modifier-gesture.h', 'hud-modifier-monitor.m',
-      'hud-modifier-monitor-win.c', 'hud-modifier-monitor-x11.c']
+    ...['command-screenshot-monitor.m', 'hud-modifier-gesture.h', 'hud-modifier-gesture.cs',
+      'hud-modifier-monitor.m', 'hud-modifier-monitor-win.cs', 'hud-modifier-monitor-x11.c']
       .map(name => fileDigest(path.join(source, 'apps/desktop/electron/native', name))),
   ])).digest('hex')
 }

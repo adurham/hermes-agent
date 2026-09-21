@@ -327,6 +327,7 @@ apps/desktop/assets/appx/*.png
 apps/desktop/public/apple-touch-icon.png
 apps/desktop/public/nous-girl.png
 apps/desktop/public/nous-girl-dark.png
+apps/desktop/.dist-build*
 apps/bootstrap-installer/src-tauri/icons/*.png
 apps/bootstrap-installer/src-tauri/icons/icon.ico
 apps/bootstrap-installer/src-tauri/icons/icon.icns

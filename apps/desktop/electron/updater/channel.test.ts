@@ -113,6 +113,7 @@ async function fixture(): Promise<{
     if (record.state !== 'active' || !record.head) {
       throw new Error('Fixture requires active head')
     }
+
     record.head.sha256 = createHash('sha256').update(body).digest('hex')
     objects.set(`/${record.head.manifestKey}`, body)
     objects.set(`/releases/channels/${record.name}.json`, JSON.stringify(record))
@@ -253,6 +254,7 @@ test('offers a digest-bound retirement without a second proof document', async (
   if (result.kind !== 'retirement') {
     throw new Error('Expected retirement')
   }
+
   expect(result.retirement.target.channel.name).toBe('stable')
   expect(result.retirement.target.manifestSha256).toBe(retired.destinationHead.sha256)
   expect(requests).toEqual([
@@ -269,9 +271,11 @@ test('pins the checked target during apply even after R2 advances, and never aut
   let enteredResolve: () => void = (): void => {}
 
   let releaseResolve: () => void = (): void => {}
+
   const entered = new Promise<void>((resolve): void => {
     enteredResolve = resolve
   })
+
   const release = new Promise<void>((resolve): void => {
     releaseResolve = resolve
   })
@@ -323,6 +327,7 @@ test('in-place retirement resolves with the receiver kind and routes through the
   if (result.kind !== 'retirement') {
     throw new Error('Expected retirement')
   }
+
   expect(result.retirement.receiverKind).toBe('in-place')
 
   const strategy = new ChannelStrategy({
@@ -368,6 +373,7 @@ test('discontinued retirement surfaces the notice and never downloads or applies
   if (result.kind !== 'retirement') {
     throw new Error('Expected retirement')
   }
+
   expect(result.retirement.receiverKind).toBe('discontinued')
 
   const strategy = new ChannelStrategy({
@@ -437,6 +443,7 @@ test.each(['hash', 'identity', 'repository', 'signer', 'escape', 'schema', 'vers
     if (fault === 'version') {
       f.manifest.request.version = '1.0.0'
     }
+
     f.publish()
 
     if (fault === 'hash') {
@@ -446,6 +453,7 @@ test.each(['hash', 'identity', 'repository', 'signer', 'escape', 'schema', 'vers
     if (fault === 'schema') {
       f.objects.set(`/releases/channels/${f.record.name}.json`, '{"schema":2}')
     }
+
     await expect(
       new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' }).resolve()
     ).rejects.toThrow()
@@ -476,6 +484,7 @@ test.each(['floor', 'cycle', 'protocol', 'receiver', 'digest', 'missing', 'unpro
       if (!f.record.head) {
         throw new Error('Expected published stable')
       }
+
       f.retired.destinationHead = structuredClone(f.record.head)
     }
 
@@ -490,6 +499,7 @@ test.each(['floor', 'cycle', 'protocol', 'receiver', 'digest', 'missing', 'unpro
     if (fault === 'missing') {
       f.objects.delete(`/${f.retired.destinationHead.manifestKey}`)
     }
+
     f.objects.set(`/releases/channels/${f.retired.name}.json`, JSON.stringify(f.retired))
 
     if (fault === 'protocol') {
@@ -553,17 +563,20 @@ test('Windows resolves its numeric native version, publisher and immutable descr
     }
   ]
   f.publish()
+
   const result = await new ChannelResolver({
     build: f.build,
     platform: 'win32',
     arch: 'x64',
     signer: 'CN=Nous Research'
   }).resolve()
+
   expect(result.kind).toBe('active')
 
   if (result.kind !== 'active') {
     throw new Error('Expected active')
   }
+
   expect(result.target.package.version).toBe('0.0.2.0')
   expect(result.target.feedUrl).toContain('/win32/stable.appinstaller')
 })
@@ -623,17 +636,20 @@ test('long-offline previews retain the qualified migration target after stable a
     feed: { key: `releases/channel-builds/${f.manifest.request.buildId}/darwin/stable-mac.yml`, channel: 'stable' }
   }
   f.publish()
+
   const result = await new ChannelResolver({
     build: f.build,
     platform: 'darwin',
     arch: 'arm64',
     signer: 'ABCDE12345'
   }).resolve()
+
   expect(result.kind).toBe('retirement')
 
   if (result.kind !== 'retirement') {
     throw new Error('Expected retirement')
   }
+
   expect(result.retirement.target.manifest.request.buildId).toBe(qualifiedBuild)
   expect(result.retirement.target.manifest.request.channel).toBe('stable')
 })
@@ -655,6 +671,7 @@ test('resolves an arbitrary R2 name through a real HTTP channel and digest-bound
   if (result.kind !== 'active') {
     throw new Error('Expected active build')
   }
+
   expect(result.target.manifest.request.sequence).toBe(2)
   expect(result.target.feedUrl).toBe(
     `${build.publicBase}/releases/channel-builds/${'c'.repeat(32)}/darwin/stable-mac.yml`

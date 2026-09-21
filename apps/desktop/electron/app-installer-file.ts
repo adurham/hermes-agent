@@ -24,6 +24,7 @@ export async function stageAppInstallerFile(
       if (done) {
         break
       }
+
       size += value.byteLength
 
       if (size > 1024 * 1024) {
@@ -39,6 +40,7 @@ export async function stageAppInstallerFile(
   if (size === 0) {
     throw new Error('App Installer descriptor is empty')
   }
+
   await fs.mkdir(directory, { recursive: true })
   const target = path.join(directory, 'update.appinstaller')
   const temporary = `${target}.tmp`

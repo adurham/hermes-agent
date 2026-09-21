@@ -153,6 +153,7 @@ export function isUnderInstallRoot(
       .replace(/[\\/]+$/, '')
       .replace(/\//g, '\\')
       .toLowerCase()
+
   const normalizedPath = normalize(imagePath)
   const candidates = typeof roots === 'string' || roots == null ? [roots] : roots
 

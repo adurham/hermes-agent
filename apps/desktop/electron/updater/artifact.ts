@@ -54,6 +54,7 @@ export async function downloadPinnedArtifact(directory: string, artifact: Pinned
   if (!response.ok || !response.body) {
     throw new Error(`Pinned artifact download failed (${response.status})`)
   }
+
   const handle: FileHandle = await open(temporary, 'wx', 0o600)
   let size: number = 0
 
@@ -64,6 +65,7 @@ export async function downloadPinnedArtifact(directory: string, artifact: Pinned
       if (size > artifact.size) {
         throw new Error('Pinned artifact download exceeds pinned size')
       }
+
       await handle.writeFile(chunk)
     }
 

@@ -251,6 +251,7 @@ export function notify(input: NotificationInput): string {
 function logErrorToDesktopLog(error: unknown, fallback: string): void {
   try {
     const label: string = new URLSearchParams(window.location.search).get('win') ?? 'main'
+
     const raw: string =
       error instanceof Error ? (error.stack ?? error.message) : typeof error === 'string' ? error : fallback
 

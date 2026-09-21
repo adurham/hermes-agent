@@ -96,6 +96,7 @@ describe('VersionDetails', () => {
     const openExternal: Mock<Window['hermesDesktop']['openExternal']> = vi
       .fn<Window['hermesDesktop']['openExternal']>()
       .mockResolvedValue(undefined)
+
     vi.stubGlobal('hermesDesktop', { openExternal } satisfies Pick<Window['hermesDesktop'], 'openExternal'>)
 
     render(

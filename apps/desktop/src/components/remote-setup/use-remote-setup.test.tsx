@@ -93,6 +93,7 @@ it.each<RemoteSetupHost>(['first-run', 'settings', 'registry'])(
   'stale probes and credential tests cannot authorize %s',
   async (host: RemoteSetupHost): Promise<void> => {
     const probe: ReturnType<typeof deferred<DesktopConnectionProbeResult>> = deferred<DesktopConnectionProbeResult>()
+
     const tested: ReturnType<typeof deferred<Awaited<ReturnType<Window['hermesDesktop']['testConnectionConfig']>>>> =
       deferred()
 
@@ -102,11 +103,13 @@ it.each<RemoteSetupHost>(['first-run', 'settings', 'registry'])(
     } satisfies Pick<Window['hermesDesktop'], 'probeConnectionConfig' | 'testConnectionConfig'>
 
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: bridge })
+
     const {
       result
     }: RenderHookResult<ReturnType<typeof useRemoteSetup>, void> = renderHook((): ReturnType<typeof useRemoteSetup> =>
       useRemoteSetup({ host })
     )
+
     act((): void => {
       result.current.setAuthMode('oauth')
       result.current.setUrl('https://a.example')

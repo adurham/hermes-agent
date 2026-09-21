@@ -419,6 +419,7 @@ it.each(['model-download', 'quickstart', 'runtime-install'] as const)(
     if (kind === 'quickstart') {
       expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
     }
+
     fireEvent.click(screen.getByRole('button', { name: /resume/i }))
     await tick()
     expect(jobs[0].status).toBe('running')

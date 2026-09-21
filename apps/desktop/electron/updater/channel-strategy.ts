@@ -41,6 +41,7 @@ export class ChannelStrategy implements UpdaterStrategy {
     if (this.busy) {
       throw new Error('An update operation is already in progress.')
     }
+
     this.busy = true
   }
 
@@ -119,6 +120,7 @@ export class ChannelStrategy implements UpdaterStrategy {
     if (status.error || status.updateAvailable === undefined) {
       throw new Error(status.error || 'Native update availability unknown')
     }
+
     this.selection = { kind: 'native', strategy, available: status.updateAvailable }
 
     return {
@@ -136,6 +138,7 @@ export class ChannelStrategy implements UpdaterStrategy {
       if (!this.selection) {
         await this.select()
       }
+
       const selected = this.selection
 
       if (selected?.kind === 'retirement') {

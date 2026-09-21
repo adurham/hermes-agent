@@ -10,6 +10,7 @@ export async function verifyChannelDownload(files: string[], artifact: ChannelPa
   if (files.length !== 1) {
     throw new Error('Expected exactly one channel artifact')
   }
+
   const file = await open(files[0], 'r')
 
   try {
@@ -18,6 +19,7 @@ export async function verifyChannelDownload(files: string[], artifact: ChannelPa
     if (!stat.isFile() || stat.size !== artifact.size) {
       throw new Error('Channel artifact size mismatch')
     }
+
     const digest = createHash('sha256')
 
     for await (const chunk of file.createReadStream({ autoClose: false })) {

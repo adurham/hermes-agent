@@ -94,6 +94,7 @@ for (const mode of [
       if (mode.refuseKill) {
         child.kill = () => false
       }
+
       child.once('close', () => {
         closed = true
       })
@@ -163,6 +164,7 @@ for (const mode of [
       if (child && originalKill) {
         child.kill = originalKill
       }
+
       await stop(child)
 
       if (stage) {

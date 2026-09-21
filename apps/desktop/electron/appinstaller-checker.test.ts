@@ -85,9 +85,11 @@ describe('runAppInstallerChecker', () => {
 
     try {
       let callback: Callback | undefined
+
       const { impl } = stubExecFile(call => {
         callback = call.callback
       })
+
       let settled = false
 
       const pending = runAppInstallerChecker('python.exe', 'store.py', {

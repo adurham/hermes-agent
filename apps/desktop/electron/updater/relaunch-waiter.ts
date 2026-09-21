@@ -191,6 +191,7 @@ export async function startRelaunchWaiter(
       if (settled) {
         return
       }
+
       settled = true
       clearTimeout(timer)
       resolve(ready)

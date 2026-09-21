@@ -3307,6 +3307,7 @@ function resolveDesktopFeedBaseUrl(): string {
   if (configured) {
     return configured
   }
+
   const env: string | undefined = process.env.HERMES_DESKTOP_FEED_BASE_URL
 
   if (env) {
@@ -4524,6 +4525,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   const activeBackend: SourceBackend | null = await resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, {
     hermesHome: HERMES_HOME
   })
+
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)
 
   if (activeBackend && !bootstrapRepairRequested) {
@@ -11495,6 +11497,7 @@ async function spawnPoolBackend(
   const cancelRequest = (): void => {
     spawnRequest.cancel()
   }
+
   localBackendLifecycle.signal.addEventListener('abort', cancelRequest, { once: true })
 
   try {
@@ -17916,6 +17919,7 @@ app.on('before-quit', event => {
 
   const sshNeedsWait =
     sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending()
+
   const teardownTasks: QuitTeardownTask[] = [
     { run: (): Promise<void> => backendShutdown.run(), waitForCompletion: backendNeedsWait }
   ]

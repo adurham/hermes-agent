@@ -40,6 +40,7 @@ test('bundled launch paths come from build metadata without filesystem access', 
   const probe = vi.spyOn(fs, 'existsSync').mockImplementation(() => {
     throw new Error('runtime probe')
   })
+
   const read = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
     throw new Error('runtime read')
   })

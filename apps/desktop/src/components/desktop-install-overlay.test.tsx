@@ -567,6 +567,7 @@ it.each([
     if (local === undefined && state.setupChoice) {
       Reflect.deleteProperty(state.setupChoice, 'local')
     }
+
     installDesktopMock(state)
     render(<DesktopInstallOverlay />)
     expect(await screen.findByText(title)).toBeTruthy()
