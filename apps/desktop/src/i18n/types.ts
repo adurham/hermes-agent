@@ -826,8 +826,6 @@ export interface Translations {
     hudModifier: {
       title: string
       description: string
-      statusTitle: string
-      ready: string
       permission: string
       unavailable: string
     }

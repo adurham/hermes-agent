@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
+from pathlib import Path
 
 import pytest
 
 from pm.downloader import (Download, DownloadError, DownloadPaused,
-                           HashError, Source)
+                           HashError, Source, replace_when_released)
 
 from tests.pm._range_server import RangeHandler as _Handler, url as _url
 from tests.pm._range_server import dl_server as dl_server
@@ -319,3 +321,102 @@ def test_pause_mid_plan_resumes_to_completion(dl_server, tmp_path):
     dl.run()
     assert da.read_bytes() == p_a
     assert db.read_bytes() == p_b
+
+
+# ── publication: a finished file the OS still holds ──────────
+
+
+def _hold_first_two(replacements: list):
+    """An ``os.replace`` that refuses the first two publications of a download's staged file with
+    the permission error a Windows antivirus or indexing scan raises while it still has the
+    finished file open. Sidecar writes publish through the same call, so the refusal is keyed to
+    the downloader's staging suffix rather than to call order."""
+    real_replace = os.replace
+
+    def held(src, dst):
+        if str(src).endswith(".download") and len(replacements) < 2:
+            replacements.append(src)
+            raise PermissionError(13, "Access is denied")
+        real_replace(src, dst)
+
+    return held
+
+
+def test_replace_waits_out_a_transient_hold(tmp_path, monkeypatch):
+    tmp = tmp_path / "model.download"
+    dest = tmp_path / "model.gguf"
+    tmp.write_bytes(b"weights")
+    refusals = []
+    monkeypatch.setattr(os, "replace", _hold_first_two(refusals))
+
+    replace_when_released(tmp, dest, timeout=5)
+    assert len(refusals) == 2
+    assert dest.read_bytes() == b"weights"
+    assert not tmp.exists()
+
+
+def test_replace_gives_up_with_a_plain_language_error(tmp_path, monkeypatch):
+    """A hold that outlasts the window is reported as a hold — chained to the OS error, and
+    never degraded to a copy of the file."""
+    tmp = tmp_path / "model.download"
+    dest = tmp_path / "model.gguf"
+    tmp.write_bytes(b"weights")
+
+    def always_held(src, dst):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", always_held)
+    with pytest.raises(RuntimeError) as failed:
+        replace_when_released(tmp, dest, timeout=0.3)
+    assert "model.download" in str(failed.value)
+    assert "try again" in str(failed.value).lower()
+    assert isinstance(failed.value.__cause__, PermissionError)
+    assert not dest.exists()
+    assert tmp.read_bytes() == b"weights"  # the finished bytes survive for the retry
+
+
+def test_download_publishes_through_a_held_finished_file(dl_server, tmp_path, monkeypatch):
+    """The publish the OS refuses twice must still land the complete file, and the download
+    must report success — this is the 22 GB model case, not a partial transfer."""
+    body = _payload(4 << 20, b"m")
+    _Handler.payloads["/held"] = body
+    dest = tmp_path / "held.gguf"
+    refusals = []
+    monkeypatch.setattr(os, "replace", _hold_first_two(refusals))
+
+    dl = Download([Source(_url(dl_server, "/held"), dest, _sha(body))],
+                  partials_dir=tmp_path / "partials")
+    dl.run()
+
+    assert len(refusals) == 2
+    assert dest.read_bytes() == body
+    assert not list(tmp_path.glob("*.download"))
+    assert not [p for p in (tmp_path / "partials").iterdir() if p.suffix in (".part", ".ranges")]
+
+
+def test_download_reports_a_hold_that_never_releases(dl_server, tmp_path, monkeypatch):
+    """A stuck hold surfaces the rename error, not the failed cleanup of the partial it could
+    not remove either."""
+    body = _payload(1 << 20, b"h")
+    _Handler.payloads["/stuck"] = body
+    dest = tmp_path / "stuck.gguf"
+    partials = tmp_path / "partials"
+
+    def never_released(staged, target, **kw):
+        raise RuntimeError(f"{staged.name} could not be renamed into place")
+
+    real_unlink = Path.unlink
+
+    def stuck_partial(self, missing_ok=False):
+        if self.suffix in (".part", ".ranges"):
+            raise PermissionError(13, "Access is denied")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr("pm.downloader.replace_when_released", never_released)
+    monkeypatch.setattr(Path, "unlink", stuck_partial)
+
+    dl = Download([Source(_url(dl_server, "/stuck"), dest, _sha(body))],
+                  partials_dir=partials)
+    with pytest.raises(RuntimeError, match="could not be renamed into place"):
+        dl.run()
+    assert not dest.exists()
