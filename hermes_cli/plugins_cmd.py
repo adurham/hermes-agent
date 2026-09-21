@@ -836,13 +836,12 @@ def _install_plugin_core(
         # manifest's update_url is COPIED into the row at install. Check
         # time compares manifest vs tag; a mismatch is needs-fixing and
         # only `hermes plugins trust-update-url` moves the tag.
-        try:
-            manifest = _read_manifest(Path(tmp_target))
-            update_url = (manifest or {}).get("update_url")
-            if isinstance(update_url, str) and update_url.strip():
-                new_metadata[plugin_name]["update_url"] = update_url.strip()
-        except Exception:
-            pass
+        if manifest.get("update_url"):
+            from hermes_cli.plugins_updates import https_update_url
+            try:
+                new_metadata[plugin_name]["update_url"] = https_update_url(manifest["update_url"])
+            except ValueError as exc:
+                raise PluginOperationError(f"Plugin '{plugin_name}' {exc}") from exc
         if catalog_entry is not None:
             new_metadata[plugin_name]["catalog_name"] = catalog_entry.name
             new_metadata[plugin_name]["catalog_tier"] = catalog_entry.tier
@@ -1642,6 +1641,13 @@ def cmd_trust_update_url(name: str) -> None:
             "update_url mismatch."
         )
         return
+    if claimed is not None:
+        from hermes_cli.plugins_updates import https_update_url
+        try:
+            claimed = https_update_url(claimed)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/red] Plugin '{name}' {exc}. Not trusted.")
+            sys.exit(1)
 
     row["update_url"] = claimed
     rows[target.name] = row

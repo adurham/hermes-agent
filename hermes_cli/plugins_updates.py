@@ -339,6 +339,20 @@ def check_pip_plugins(
     return results
 
 
+def https_update_url(url: object) -> str:
+    """Normalize a manifest ``update_url``; raises ValueError unless it is ``https://``.
+
+    The feed picks which commit of the trusted origin gets installed and the gateway fetches
+    it unattended every check interval, so a plaintext ``http://`` (MITM → an old vulnerable
+    commit), ``file://`` or ``ftp://`` feed is refused at install, at trust-update-url AND at
+    the fetch itself (rows saved before this rule existed).
+    """
+    text = str(url or "").strip()
+    if not text.lower().startswith("https://"):
+        raise ValueError(f"update_url must be an https:// URL, got {text!r}")
+    return text
+
+
 def default_fetch(url: str) -> str:
     """The real feed fetcher: url -> text (raises on failure).
 
@@ -347,7 +361,7 @@ def default_fetch(url: str) -> str:
     """
     import urllib.request
 
-    with urllib.request.urlopen(url, timeout=_FETCH_TIMEOUT) as resp:
+    with urllib.request.urlopen(https_update_url(url), timeout=_FETCH_TIMEOUT) as resp:
         data = resp.read(_MAX_FEED_BYTES)
     return data.decode("utf-8", errors="replace")
 
