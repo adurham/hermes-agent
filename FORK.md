@@ -16420,3 +16420,156 @@ confirms no syntax/import breakage.
 **Merge note:** pure fork-local fix — upstream hermes-agent has no
 `agent/fork/anthropic_native_web_search.py` (the trigger) and no
 `server_tool_requests`/usage-anchor machinery for this to apply to.
+
+### Upstream sync — 2026-09-21 (v2026.8.31 → v2026.9.14, 7136 commits, 182 conflict files)
+
+Merged tag `v2026.9.14` into `main` via `sync/upstream-2026-09-14` (merge
+commit `f6edb27b86`; second parent `345cd2b057` — the tag's own release
+commit, "chore(release): v0.21.3 (v2026.9.14)"). Range `v2026.8.31..v2026.9.14`:
+7136 upstream commits — 3.1x the previous largest sync (the 2026-08-31 entry
+above, 2287 commits / 87 conflicts). `fork-merge-plan.py` predicted 182
+conflict files, 6210 likely-merge (both sides touched, no textual overlap)
+files, 602 clean upstream-only files. Pre-merge fork state tagged
+`pre-upstream-sync-v2026.9.14` (pushed to origin as a recoverable anchor).
+
+**Resolution approach.** An orchestrator subagent ran the actual merge:
+recon (confirmed no structural reorg beyond normal churn — 710 renames,
+routine dependency bumps, no Python/framework version floor change), then
+split the 182 conflicts into ~15 disjoint groups by subsystem, resolved via
+delegated children working from per-group guidance files (not raw conflict
+markers), gated on `ast.parse`/`ruff --select F`/zero-marker-grep per group
+before the orchestrator staged them. It hit its iteration cap mid-verification
+after finding and fixing 10 silent-merge defects on its own (dropped system
+prompt on Anthropic OAuth, SQL column/placeholder mismatches, dropped
+`_heartbeat_cross_session_registry` call, a `sys.modules.clear()` collision
+in a test, missing re-exports, and others) — full manual triage picked up
+from there.
+
+**Notable resolutions and merge defects caught (beyond the orchestrator's own 10):**
+
+1. **`agent/anthropic_adapter.py::build_anthropic_kwargs` — system prompt
+   dropped entirely on every Anthropic OAuth request.** The merge's
+   `if system: kwargs["system"] = system` line never landed. Every request
+   would have gone out with no system prompt. Fixed; regression-tested.
+2. **Same file — forced `tool_choice` didn't resolve through the same
+   wire-name mapping as `tools[]`.** A forced tool name (OAuth path) wasn't
+   getting mcp__-prefixed like its corresponding `tools[]` entry, so
+   Anthropic would 400 or mismatch. Deeper gap found on top: CC-aliased
+   builtins (`read_file`→`Read` via `cc_aliases.HERMES_TO_CC`) have a
+   SEPARATE final-name mapping from the generic mcp__ prefix, and
+   `tool_choice` wasn't resolving through that path either — fixed both,
+   with tests covering each mapping.
+3. **`agent/anthropic_message_convert.py::_sanitize_replay_block` reverted a
+   previously-fixed production bug.** New upstream module (the fork's old
+   equivalent lived inline in `anthropic_adapter.py`) dropped unknown block
+   types (`server_tool_use`, `web_search_tool_result`) again instead of the
+   fork's fail-open delegate to `_sanitize_block_for_anthropic_input` — the
+   exact invisible-cost-multiplier bug from 2026-07-24 (session
+   20260723_211736_99ee22, warm memory fact 1486): native web_search causing
+   a second Anthropic-side inference pass, invisible because the evidence
+   for it (the persisted block) got silently erased on replay. Restored the
+   fail-open delegation via a lazy import (the new module is imported BY
+   `anthropic_adapter.py`, so importing back would cycle).
+4. **`agent/anthropic_adapter.py::_model_supports_1m_context`'s allowlist was
+   stale** (missing opus-4-8/opus-5/sonnet-5, which `model_metadata.py`
+   already lists at 1M context) — pre-existing drift from June 2026, not
+   merge-caused, found while verifying a test that happened to exercise it.
+5. **`tools/process_registry_notifications.py` — per-task model/fallback
+   disclosure entirely absent from delegation completion messages.** The
+   pre-merge `_format_async_delegation` (~250 lines inline in
+   `tools/process_registry.py`) had logic so a heterogeneous batch (tasks on
+   different models, or one that silently failed over) named each task's
+   ACTUAL model in the completion message; the post-merge refactor into
+   `tools/process_registry_notifications.py`'s `_preamble`/
+   `_format_batch_delegation` dropped it completely — every completion
+   reported the raw batch-level dispatch default regardless of what any
+   task actually ran on. Restored via a `model_label` override param on
+   `_preamble` plus `_single_completion_model_label`/`_batch_model_label`/
+   `_batch_task_models` helpers, reusing `_result_model_label` from
+   `process_registry.py` (lazy-imported, same cycle concern as #3).
+6. **`tools/delegate_tool.py::delegate_task` lost its `cancel=<delegation_id>`
+   parameter.** The underlying mechanism (`tools.async_delegation.
+   interrupt_by_id`, session-scoped, found/already_done/interrupted
+   tri-state) was never dropped — it's still live and called from `/stop <id>`
+   (CLI and gateway) — but the model-facing `delegate_task(cancel=...)` entry
+   point into it was silently gone. Restored verbatim from the pre-merge
+   shape (same session-ownership scoping, same three response shapes).
+7. **Reconciled a genuine fork-vs-upstream design conflict**, not a bug:
+   upstream shipped a NEW test
+   (`tests/agent/test_empty_terminal_reasoning_surface.py::
+   test_length_cut_reasoning_is_not_promoted`) asserting that a single
+   length-truncated turn with in-progress reasoning-channel content (no
+   visible answer yet) must still get ONE continuation attempt — reasonable,
+   since the next call can produce a real answer. This directly contradicted
+   the fork's 2026-06-16 DeepSeek-V4 fix
+   (`agent/turn_truncation.py::_abort_reason`'s reasoning-channel-exhaustion
+   branch), which aborted on the FIRST such response to stop a model
+   observed re-exhausting its budget on every retry (6x in 15 min, live
+   incident). Both intents are real. Resolved by gating the fork's branch on
+   `length_continue_retries`: fires on the SECOND-and-later occurrence of
+   the symptom within a turn, not the first — one continuation attempt is
+   allowed (satisfying upstream's new test), a repeat is still treated as
+   exhaustion (preserving the fork's fix). Updated the fork's own two
+   regression tests' `api_calls` expectation from 1 to 2 to match.
+8. **`tests/known_failing.txt` had 59 stale nodeids** from this sync's
+   directory reorgs (`tests/cli` → `tests/hermes_cli`, `tests/run_agent` →
+   `tests/agent`, several top-level `tests/test_*.py` → `tests/agent/`).
+   Matching is exact-nodeid (`tests/conftest.py::_load_known_failing`), so a
+   stale path silently stops skipping anything rather than erroring — pure
+   dead weight, invisible until audited. Systematically re-verified every
+   entry (file exists → nodeid collects → actually still fails): 3 remapped
+   to their still-genuinely-failing new path, 39 dropped because the
+   underlying bug had been fixed at some point with nobody noticing (the
+   stale skip just silently no-op'd), 17 dropped because no target survives
+   under any name (method renamed/removed). Net: 402 lines → 356.
+9. **`uv.lock`'s `nemo-relay` constraint was stale** (locked `>=0.7.1,<0.8`
+   against a `pyproject.toml` pin already bumped to `>=0.8.3,<0.9`) — a
+   lockfile that never got regenerated against its own manifest change.
+   `uv lock --upgrade-package nemo-relay` fixed it (incidentally also
+   picked up `hermes-agent` 0.21.0→0.21.3 and a few other legitimate
+   version bumps matching what `pyproject.toml` already specified).
+10. **Desktop: 3 real vitest regressions**, all in files whose SOURCE
+    changed behavior correctly but whose TESTS didn't follow:
+    `use-background-queue-drain.ts`'s validated `getRuntimeIdForStoredSession`
+    getter (a July 2026 fork fix protecting against cross-session misdelivery)
+    replaced a raw `runtimeIdByStoredSessionIdRef` map two tests still
+    constructed the old way; `session-states.ts::focusOpenSession` gained a
+    real upstream feature (lineage-alias matching across compression
+    rotation + a stricter pane-visibility gate) whose test never set up a
+    matching `$layoutTree`; and `voice-prefs.test.ts`'s `vi.spyOn(localStorage,
+    'setItem')` doesn't actually intercept anything under this repo's
+    jsdom/vitest versions — jsdom's `Storage` implements WebIDL named-property
+    access, which shadows an INSTANCE-level spy; must spy on `Storage.prototype`
+    instead. All three are genuinely upstream-authored tests/behavior (byte-
+    identical to pristine `v2026.9.14`), fixed as test bugs, not application code.
+
+**Verified test results.** Mandated scope (`tests/agent/` + `tests/run_agent/`,
+per this file's own "After every merge" section): 692 files, 8543 passed / 14
+failed pre-merge baseline (captured in this exact worktree before the merge,
+`.sync/baseline-pytest-agent-run_agent.log`) → 0 failed after all fixes (14
+pre-existing + regressions found along the way, all resolved or confirmed
+pre-existing-not-merge-caused). Boot smoke
+(`import cli, run_agent, hermes_state, hermes_cli.banner`) passes. Desktop:
+`npx tsc --noEmit` 0 errors (after `npm install` for a new `qrcode` dep this
+sync added); `npx vitest run` clean after the 3 fixes above (one `lsp/
+test_client_e2e.py`-style flake — an LSP process-timing test — noted, not
+merge-related, passes 3/3 in isolation).
+
+**Beyond-mandate finding, NOT yet resolved at merge-commit time.** A full
+(not mandated-scope) test run surfaced 329 failures under `tests/tools/`.
+Triage found most are stale tests against an intentional API redesign
+(`delegate_task`'s old `cancel=`/`model=`/`agent_type=` top-level kwargs vs.
+today's `action=`/`subagent_id=`/`message=` control-plane shape — the latter
+IS the correct, current, live API). But one is a real, substantial
+regression: `tools/delegate_tool.py` lost its ENTIRE per-role credential
+resolution subsystem — a task's `agent_type` no longer resolves through
+`delegation.model_by_role.<role>` to give that task its own model/provider
+bundle; every task in a batch silently gets the same batch-level default
+regardless of role. Separately (same root cause pattern as items 3/5/6
+above — machinery survives, entry point doesn't), `tools/delegation_router.py`
+(637 lines, a complete, well-documented auto-route classifier with
+escalate-only semantics) is fully intact but has ZERO callers anywhere in
+`tools/delegate_tool*.py` — an orphaned module. Restoration dispatched to a
+dedicated subagent in parallel with this write-up; tracked as a follow-up
+commit on this same branch, not blocking the merge commit itself (the
+mandated-scope verification bar above is independently clean).
