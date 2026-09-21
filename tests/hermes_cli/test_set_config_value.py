@@ -1059,7 +1059,7 @@ class TestContainerTypeRefusal:
     echoed it back."""
 
     def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
     def test_string_where_schema_wants_list_is_refused(self, _isolated_hermes_home, capsys):
@@ -1086,7 +1086,7 @@ class TestContainerTypeRefusal:
         # --force keeps its documented meaning: replace a whole mapping section.
         set_config_value("model.aliases", "replaced", force=True)
 
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["custom_providers"] == [{"name": "ok", "base_url": "http://h/v1"}]
         assert saved["model"] == {"default": "bar", "aliases": "replaced"}
@@ -1100,7 +1100,7 @@ class TestContainerTypeRefusal:
         with pytest.raises(SystemExit):
             set_config_value(key, "notacontainer")
 
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved == {"model": {"default": "m"}}
 
@@ -1110,7 +1110,7 @@ class TestContainerTypeRefusal:
 
         set_config_value("agent.disabled_toolsets", "web")
 
-        import yaml as _yaml
+        import hermes_yaml as _yaml
         saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["agent"]["disabled_toolsets"] == ["web"]
 

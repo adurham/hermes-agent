@@ -92,7 +92,8 @@ def _find_agent_browser(*, validate: bool = True) -> str:
 
 
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
-    """Historical updater export: no npx work is performed; relaunch instead."""
+    """Frozen old-updater surface names this module too (the extraction-era home); tools.browser_tool
+    carries the permanent definition. No npx work is performed; relaunch instead."""
     return False
 
 

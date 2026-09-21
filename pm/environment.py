@@ -52,6 +52,26 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
     return InstallError("venv", cause)
 
 
+def _project_name(source: Path) -> str:
+    """``[project].name`` of *source*'s pyproject, on any Python that can run the bootstrap.
+
+    tomllib is 3.11+; the bootstrap runner stages PM's runtime from a system python that may
+    be older, so the one field this module reads is parsed with the stdlib parser when it
+    exists and a table-scoped regex otherwise.
+    """
+    text = (source / "pyproject.toml").read_text(encoding="utf-8-sig")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import re
+        table = re.search(r"(?ms)^\[project\]\s*$(.*?)(?=^\[)", text + "\n[")
+        match = table and re.search(r'(?m)^name\s*=\s*"([^"]+)"', table.group(1))
+        if not match:
+            raise InstallError("venv", f"{source / 'pyproject.toml'} has no [project].name")
+        return match.group(1)
+    return tomllib.loads(text)["project"]["name"]
+
+
 def prune_site_pth(venv_dir: Path) -> None:
     """Drop .pth files that must never execute inside a shipped payload.
 
@@ -273,10 +293,7 @@ class PythonEnvironment:
             # --all-packages has no single selected project in uv, so
             # --no-install-project alone does not exclude the root. Name it
             # explicitly without dropping member dependencies or installations.
-            import tomllib
-
-            project = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8-sig"))
-            command += ["--no-install-project", "--no-install-package", project["project"]["name"]]
+            command += ["--no-install-project", "--no-install-package", _project_name(source)]
         for extra in sorted(set(extras)):
             command += ["--extra", extra]
         for group in sorted(set(groups)):

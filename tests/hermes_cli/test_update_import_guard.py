@@ -234,13 +234,15 @@ def test_untracked_enumeration_failure_is_visible(monkeypatch, probe_root, capsy
 
 
 @pytest.mark.platforms("posix")
-def test_import_guard_is_non_fatal_when_probe_cannot_run(probe_root):
+def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, probe_root):
     """A venv interpreter that exists but cannot be executed must not read as a hung probe:
     spawn failure stays advisory (real ``bounded_probe_run``, real ``Popen``)."""
     venv_python = probe_root / "venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
     venv_python.write_text("#!/bin/sh\nexit 0\n")
     venv_python.chmod(0o644)  # present, not executable -> Popen raises PermissionError
+    (probe_root / "consumer.py").write_text("VALUE = 1\n")
+    monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
     assert update_cmd._validate_critical_modules_import(probe_root) == (True, None, None)
 
 
@@ -288,7 +290,7 @@ def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, probe_
 
 
 def test_import_guard_rejects_module_satisfied_only_by_inherited_pythonpath(
-    monkeypatch, tmp_path
+    monkeypatch, probe_root
 ):
     """A stale checkout on PYTHONPATH must not stand in for a candidate module.
 
@@ -297,7 +299,7 @@ def test_import_guard_rejects_module_satisfied_only_by_inherited_pythonpath(
     fine from there and a candidate lacking it entirely read as healthy
     (#115032).
     """
-    stale = tmp_path / "stale"
+    stale = probe_root / "stale"
     stale.mkdir()
     (stale / "hermes_stale_supply.py").write_text("VALUE = 'from the stale tree'\n")
 
@@ -306,27 +308,27 @@ def test_import_guard_rejects_module_satisfied_only_by_inherited_pythonpath(
     )
     monkeypatch.setenv("PYTHONPATH", str(stale))
 
-    ok, module, error = update_cmd._validate_critical_modules_import(tmp_path)
+    ok, module, error = update_cmd._validate_critical_modules_import(probe_root)
 
     assert ok is False
     assert module == "hermes_stale_supply"
     assert error is not None and "hermes_stale_supply" in error
 
 
-def test_import_guard_accepts_candidate_with_foreign_pythonpath(monkeypatch, tmp_path):
+def test_import_guard_accepts_candidate_with_foreign_pythonpath(monkeypatch, probe_root):
     """The env scrub must not overreach: a candidate that carries the module
     still passes while a foreign PYTHONPATH is set (#115032)."""
-    stale = tmp_path / "stale"
+    stale = probe_root / "stale"
     stale.mkdir()
     (stale / "hermes_stale_supply.py").write_text("VALUE = 'stale'\n")
-    (tmp_path / "hermes_stale_supply.py").write_text("VALUE = 'candidate'\n")
+    (probe_root / "hermes_stale_supply.py").write_text("VALUE = 'candidate'\n")
 
     monkeypatch.setattr(
         update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_stale_supply",)
     )
     monkeypatch.setenv("PYTHONPATH", str(stale))
 
-    assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
+    assert update_cmd._validate_critical_modules_import(probe_root) == (True, None, None)
 
 
 def test_import_guard_flags_missing_first_party_module(monkeypatch, probe_root):

@@ -451,6 +451,7 @@ class TestNativeEnvironmentContracts:
         assert env["PYTHONPATH"] == user_pp
 
 
+    @pytest.mark.platforms("windows")
     def test_base_python_sanitizer_uses_validated_separate_runtime_venv(self, tmp_path, monkeypatch):
         """A base interpreter strips the exact Windows runtime site-packages.
 
@@ -884,6 +885,7 @@ class TestNativeEnvironmentContracts:
         local_pythonpath._strip_hermes_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
+    @pytest.mark.platforms("windows")
     def test_validated_runtime_venv_lexical_after_repo_recovery(self, tmp_path, monkeypatch):
         """uv-base gateway: once the lexical repo alias is recovered, a lexical
         VIRTUAL_ENV (<lexical repo>/venv) validates and its site-packages is

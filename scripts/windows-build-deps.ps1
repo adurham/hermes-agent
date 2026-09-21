@@ -124,6 +124,10 @@ function Initialize-HermesArm64BuildTools {
     # (`env -i`) carry INCLUDE/LIB but not the discovery variables vswhere needs.
     $env:DISTUTILS_USE_SDK = '1'
     $env:MSSdk = '1'
+    # In that mode setuptools takes `link.exe` from PATH. A bash-hosted step (Git for Windows)
+    # puts coreutils' link.exe ahead of MSVC's, so the compiler directory must lead PATH.
+    $linkerDir = Split-Path -Parent $linker
+    if (($env:PATH -split ';')[0] -ne $linkerDir) { $env:PATH = "$linkerDir;$env:PATH" }
 
     # Child builds isolate HOME/USERPROFILE. Keep Rust anchored to the homes
     # used here, including caller-selected locations.

@@ -48,7 +48,8 @@ def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
     hermes.chmod(0o755)
 
     argv_log = tmp_path / "argv.jsonl"
-    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log)}
+    # posix.sh honours an ambient HERMES_HOME; the result file must land where this test looks.
+    env = {**os.environ, "TMPDIR": str(tmp_path), "HERMES_TEST_ARGV": str(argv_log), "HERMES_HOME": str(tmp_path)}
     subprocess.run(
         ["/bin/bash", str(SHIM_DIR / "posix.sh"), "--install-root", str(install_root), "--no-ui", *extra_args],
         env=env,
