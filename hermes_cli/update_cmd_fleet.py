@@ -154,6 +154,9 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
 
 
 _SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
+# Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
+# is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
+_SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
 def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tuple[str, str]] | None:
@@ -240,6 +243,13 @@ def _marker_only_restart_obsolete() -> bool:
     current on the checkout — there is no recorded owed set, so the fleet running the code on disk
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
     ``expected_sha`` by an out-of-band pull.
+
+    A serve/dashboard row whose supervisor owns the restart (Desktop backend, systemd/launchd
+    unit, Windows service) is outside the gateway matrix's evidence, not evidence against it —
+    the same boundary ``_receipt_owed_gateways`` draws for receipts (#115090) and the restart
+    phase draws for the Desktop backend (#111494). Counting it made the warning permanently
+    undischargeable on every host that runs a dashboard. A manual-serve row still needs its
+    durable handoff (``defer_manual_serve``), and an unclassified backend stays fail-closed.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
@@ -263,7 +273,10 @@ def _marker_only_restart_obsolete() -> bool:
             for runtime in runtimes:
                 if not isinstance(runtime, dict):
                     return False
-                if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                if runtime.get("kind") in ("serve", "dashboard") and (
+                    defer_manual_serve(runtime)
+                    or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
+                ):
                     continue
                 if runtime.get("kind") != "gateway":
                     return False

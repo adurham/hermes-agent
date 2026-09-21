@@ -792,6 +792,58 @@ def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypat
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+@pytest.mark.parametrize("supervisor", ["desktop", "systemd", "launchd", "windows-service", "service"])
+def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypatch, capsys, supervisor):
+    """A supervised serve/dashboard row in the marker's inventory is its supervisor's to
+    restart (#115090 for receipts, #111494 for the Desktop backend) — it must not make the
+    gateway warning permanently undischargeable once every gateway serves the pulled SHA."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "supervisor": "systemd"},
+            {"kind": "serve", "profile": "default", "pid": 6161, "supervisor": supervisor,
+             "detail": {"create_time": 1000.0}},
+        ],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, capsys):
+    """Fail-closed stays: a serve row no supervisor owns is still unsettled evidence."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "supervisor": "systemd"},
+            {"kind": "serve", "profile": "default", "pid": 6161, "supervisor": "manual"},
+        ],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
 @pytest.mark.parametrize(
     "disk_sha, fleet",
     [
