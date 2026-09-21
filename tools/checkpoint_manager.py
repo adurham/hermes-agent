@@ -62,7 +62,7 @@ from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from typing import Dict, List, Optional, Set, Tuple
 
-from utils import env_int
+from utils import env_int, rmtree_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -1748,7 +1748,7 @@ def _prune_checkpoints(
                 continue
             try:
                 size = _dir_size_bytes(child)
-                shutil.rmtree(child)
+                rmtree_readonly(child)
                 result["bytes_freed"] += size
                 result["deleted_stale"] += 1
             except OSError as exc:
@@ -1794,7 +1794,7 @@ def _prune_checkpoints(
             continue
         try:
             size = _dir_size_bytes(child)
-            shutil.rmtree(child)
+            rmtree_readonly(child)
             result["bytes_freed"] += size
             if reason == "orphan":
                 result["deleted_orphan"] += 1
@@ -2080,9 +2080,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
 
 
 def _rmtree_force(path: Path) -> None:
-    from hermes_cli.fs_utils import rmtree_force
-
-    rmtree_force(path)
+    rmtree_readonly(path)
 
 
 def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:

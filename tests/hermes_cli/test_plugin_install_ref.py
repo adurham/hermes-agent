@@ -360,7 +360,8 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
 
 
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
-    from hermes_cli.plugins_cmd import _install_plugin_core, _rmtree_force
+    from hermes_cli.plugins_cmd import _install_plugin_core
+    from utils import rmtree_readonly
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -368,7 +369,7 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     target, _manifest, _name = _install_plugin_core(
         repo.as_uri(), force=False, ref=old_sha
     )
-    _rmtree_force(target)
+    rmtree_readonly(target)
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 
