@@ -42,8 +42,11 @@ def isolated_probe_environment(monkeypatch):
 def _probe_root(tmp_path):
     root = tmp_path / "runner-root"
     scripts = root / "scripts"
-    scripts.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py", scripts)
+    (scripts / "ci").mkdir(parents=True, exist_ok=True)
+    real = Path(__file__).resolve().parents[2] / "scripts"
+    shutil.copy2(real / "run_tests_parallel.py", scripts)
+    # The runner shares the platforms() spec resolver with the CI lane selector.
+    shutil.copy2(real / "ci" / "list_os_marked_tests.py", scripts / "ci")
     return root
 
 
@@ -565,3 +568,26 @@ def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:
     assert mine != theirs
     assert mine.is_dir() and theirs.is_dir()
     assert mine.parent == tmp_path and theirs.parent == tmp_path
+
+
+def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Path) -> None:
+    """A green local run must say which platforms() tests were skipped and where
+    they run; specs are resolved (posix is not off-host on Linux or macOS)."""
+    probe_dir = _make_probe_dir(tmp_path)
+    (probe_dir / "test_gated.py").write_text(
+        "import pytest\n\n"
+        "@pytest.mark.platforms('not linux')\ndef test_elsewhere():\n    assert True\n\n"
+        "@pytest.mark.platforms('posix')\ndef test_posix():\n    assert True\n\n"
+        "@pytest.mark.platforms('windows')\ndef test_windows():\n    assert True\n",
+        encoding="utf-8",
+    )
+    proc = _run_runner(probe_dir)
+    notes = [line for line in proc.stdout.splitlines() if "SKIPPED on this host" in line]
+    host = {"linux": "linux", "darwin": "macos", "win32": "windows"}[sys.platform]
+    off_host = {"windows"} - {host}
+    if host == "linux":
+        off_host.add("not linux")
+    if host == "windows":
+        off_host.add("posix")
+    assert {n.split("platforms(")[1].split(")")[0].strip("'") for n in notes} == off_host, proc.stdout
+    assert all("they run on the" in n for n in notes), proc.stdout
