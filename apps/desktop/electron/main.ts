@@ -16176,7 +16176,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 const ownsAmbientCue: ReturnType<typeof createAmbientClaimArbiter> = createAmbientClaimArbiter()
 ipcMain.handle('hermes:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown): boolean => ownsAmbientCue(String(key ?? '')))
 
-registerNativeNotifications({ getMainWindow: (): BrowserWindow | null => mainWindow, focusWindow })
+const nativeNotifications = registerNativeNotifications({ getMainWindow: (): BrowserWindow | null => mainWindow, focusWindow })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the
@@ -16569,6 +16569,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()
+  nativeNotifications.dispose()
   quitFinalization.arm()
 })
 
