@@ -1,0 +1,422 @@
+Upstream has 7136 new commits since last merge:
+
+  345cd2b057 chore(release): v0.21.3 (v2026.9.14)
+  9b419a2d3c fix(state): holder scan resolves symlinked homes; doctor's ro URI escapes reserved chars
+  12173db5b7 fix(state): second-process maintenance on state.db refuses ANY foreign holder
+  4da41c92b4 test(tools): count each tool receipt once and pin the quiet-notify follow-up
+  6f6c741014 test(cli): bind the shared linger budget, the timeout stop, and the finalize skip
+  5d4231997c fix(cli): quiet -Q drain must use the async_delegation delivery ledger
+  d328adf611 fix(bot-mode): strip canonical session env names, keep HERMES_SESSION_* knobs
+  66fa63820d fix(cli): flag the quiet -Q linger as consumed only after the loop runs
+  1f3407aa00 fix(cli): sync session id after quiet -Q follow-up turns
+  30b02bba12 refactor(cli): quiet -Q session binding as a context manager
+  d503526b80 fix(cli): quiet -Q notify loop must not drop owned async_delegation events
+  c429081bcd fix(cli): one shared linger budget for the quiet -Q notify-resume loop
+  314f3d1355 test(bot-mode): pin nested quiet-notify ownership and delivery env isolation
+  9a6c7a9314 fix(bot-mode): resume nested one-shot DMs on the recipient's session
+  5c26cf64b2 chore: author map for xxxigm (PR #110866 bot-mode nested one-shot DM resume)
+  efca6efdc8 refactor(hermes_state): one canonical_sqlite_path
+  afeaabf629 refactor(agent_init): reuse anthropic_adapter._TOOL_STREAMING_BETA
+  e6e4213dbf fix(lifecycle-ledger): pre-stamp sentinels still tell an owner from a PID reuser
+  40087fba7d fix(lifecycle-ledger): a --replace handover is no longer reported as an unclean death
+  8c3a35b69d fix(gateway-windows): bind the attestation to process birth, not the ledger claim
+  ... and 7116 more
+
+Files changed upstream: 6994
+Files changed in fork:  6994
+Files changed in BOTH:  6392 <- potential conflicts
+
+==============================================================================
+MERGE PREDICTION
+==============================================================================
+
+CONFLICTS predicted in 182 files:
+   .github/workflows/ci.yaml
+   .github/workflows/lint.yml
+   AGENTS.md
+   acp_adapter/server.py
+   acp_adapter/session.py
+   agent/account_usage.py
+   agent/agent_init.py
+   agent/agent_runtime_helpers.py
+   agent/anthropic_adapter.py
+   agent/anthropic_credentials.py
+   agent/auxiliary_client.py
+   agent/background_review.py
+   agent/chat_completion_helpers.py
+   agent/context_compressor.py
+   agent/conversation_compression.py
+   agent/conversation_loop.py
+   agent/credential_pool.py
+   agent/credential_sources.py
+   agent/curator.py
+   agent/curator_backup.py
+   agent/display.py
+   agent/error_classifier.py
+   agent/image_routing.py
+   agent/insights.py
+   agent/message_sanitization.py
+   agent/model_metadata.py
+   agent/prompt_builder.py
+   agent/prompt_caching.py
+   agent/rate_limit_tracker.py
+   agent/system_prompt.py
+   agent/thread_scoped_output.py
+   agent/title_generator.py
+   agent/tool_executor.py
+   agent/tool_guardrails.py
+   agent/transports/anthropic.py
+   agent/transports/chat_completions.py
+   agent/transports/codex_app_server_session.py
+   agent/turn_context.py
+   agent/usage_pricing.py
+   agent/web_search_registry.py
+   apps/desktop/package.json
+   apps/desktop/src/app/chat/session-drag.ts
+   apps/desktop/src/app/chat/sidebar/index.tsx
+   apps/desktop/src/app/chat/sidebar/order.test.ts
+   apps/desktop/src/app/chat/sidebar/projects/entered-content.tsx
+   apps/desktop/src/app/chat/sidebar/projects/workspace-group.tsx
+   apps/desktop/src/app/contrib/controller.tsx
+   apps/desktop/src/app/contrib/wiring.tsx
+   apps/desktop/src/app/pet-overlay/pet-overlay-app.tsx
+   apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+   apps/desktop/src/app/session/hooks/use-session-actions/index.ts
+   apps/desktop/src/components/chat/status-section.tsx
+   apps/desktop/src/components/pane-shell/tree/renderer/tree-group.tsx
+   apps/desktop/src/components/pet/use-pet-roam.test.tsx
+   apps/desktop/src/components/ui/pane-tab.tsx
+   apps/desktop/src/store/native-notifications.test.ts
+   apps/desktop/src/store/projects.ts
+   apps/desktop/src/store/prompts.test.ts
+   apps/desktop/src/store/prompts.ts
+   apps/desktop/src/store/session-states.ts
+   apps/desktop/src/store/subagents.ts
+   cli.py
+   gateway/authz_mixin.py
+   gateway/config.py
+   gateway/platforms/api_server.py
+   gateway/platforms/api_server_runs.py
+   gateway/run.py
+   gateway/session_state.py
+   gateway/slash_commands.py
+   hermes_cli/auth.py
+   hermes_cli/banner.py
+   hermes_cli/callbacks.py
+   hermes_cli/cli_agent_setup_mixin.py
+   hermes_cli/cli_commands_mixin.py
+   hermes_cli/clipboard.py
+   hermes_cli/commands.py
+   hermes_cli/config.py
+   hermes_cli/config_defaults.py
+   hermes_cli/config_migrations.py
+   hermes_cli/curator.py
+   hermes_cli/doctor.py
+   hermes_cli/fallback_cmd.py
+   hermes_cli/gateway.py
+   hermes_cli/input_sanitize.py
+   hermes_cli/inventory.py
+   hermes_cli/kanban.py
+   hermes_cli/main.py
+   hermes_cli/model_catalog.py
+   hermes_cli/model_switch.py
+   hermes_cli/models.py
+   hermes_cli/plugins.py
+   hermes_cli/portal_cli.py
+   hermes_cli/profiles.py
+   hermes_cli/providers.py
+   hermes_cli/setup.py
+   hermes_cli/setup_whatsapp_cloud.py
+   hermes_cli/skin_engine.py
+   hermes_cli/subcommands/profile.py
+   hermes_cli/tools_config.py
+   hermes_cli/uninstall.py
+   hermes_cli/update_cmd.py
+   hermes_cli/web_server.py
+   hermes_constants.py
+   hermes_state.py
+   model_tools.py
+   package-lock.json
+   plugins/google_meet/__init__.py
+   plugins/google_meet/cli.py
+   plugins/image_gen/openrouter/__init__.py
+   plugins/memory/holographic/retrieval.py
+   plugins/memory/holographic/store.py
+   plugins/model-providers/anthropic/__init__.py
+   plugins/platforms/a2a/README.md
+   plugins/platforms/a2a/__init__.py
+   plugins/platforms/a2a/adapter.py
+   plugins/platforms/a2a/security.py
+   plugins/platforms/a2a/tools.py
+   plugins/platforms/discord/adapter.py
+   plugins/platforms/sms/adapter.py
+   plugins/spotify/__init__.py
+   plugins/web/ddgs/provider.py
+   plugins/web/tavily/__init__.py
+   plugins/web/tavily/plugin.yaml
+   plugins/web/tavily/provider.py
+   pyproject.toml
+   run_agent.py
+   tests/agent/test_auxiliary_client.py
+   tests/agent/test_auxiliary_main_first.py
+   tests/agent/test_context_compressor.py
+   tests/agent/test_empty_tool_name_loop_dampening.py
+   tests/agent/test_system_prompt.py
+   tests/agent/test_tool_guardrails.py
+   tests/gateway/test_completion_delivery.py
+   tests/hermes_cli/test_setup_blank_slate.py
+   tests/hermes_cli/test_stream_flush_left.py
+   tests/plugins/test_a2a_plugin.py
+   tests/plugins/web/test_web_search_provider_plugins.py
+   tests/tools/test_delegate_summary_budget.py
+   tests/tools/test_mcp_circuit_breaker.py
+   tests/tools/test_mcp_tool.py
+   tests/tools/test_process_wait_clarity.py
+   tests/tools/test_web_tools_config.py
+   tools/async_delegation.py
+   tools/browser_tool.py
+   tools/checkpoint_manager.py
+   tools/delegate_tool.py
+   tools/delegation_live_log.py
+   tools/discord_tool.py
+   tools/feishu_drive_tool.py
+   tools/file_tools.py
+   tools/lazy_deps.py
+   tools/mcp_oauth.py
+   tools/mcp_tool.py
+   tools/memory_tool.py
+   tools/process_registry.py
+   tools/registry.py
+   tools/send_message_tool.py
+   tools/skill_manager_tool.py
+   tools/skills_hub.py
+   tools/skills_tool.py
+   tools/terminal_tool.py
+   tools/todo_tool.py
+   tools/tool_result_storage.py
+   tools/tool_search.py
+   tools/vision_tools.py
+   tools/web_tools.py
+   tools/yuanbao_tools.py
+   toolsets.py
+   tui_gateway/server.py
+   ui-tui/src/app/turnController.ts
+   ui-tui/src/gatewayTypes.ts
+   website/docs/developer-guide/gateway-internals.md
+   website/docs/developer-guide/session-storage.md
+   website/docs/reference/model-catalog.md
+   website/docs/reference/optional-skills-catalog.md
+   website/docs/reference/slash-commands.md
+   website/docs/user-guide/features/kanban.md
+   website/docs/user-guide/features/web-search.md
+   website/docs/user-guide/skills/bundled/research/research-grounded-citations.md
+   website/docs/user-guide/skills/optional/creative/creative-touchdesigner-mcp.md
+   website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/kanban.md
+   website/sidebars.ts
+
+LIKELY-MERGE (both sides changed but no overlap): 6210 files
+   .dockerignore
+   .env.example
+   .gitattributes
+   .github/ISSUE_TEMPLATE/bug_report.yml
+   .github/ISSUE_TEMPLATE/config.yml
+   .github/ISSUE_TEMPLATE/feature_request.yml
+   .github/ISSUE_TEMPLATE/setup_help.yml
+   .github/PULL_REQUEST_TEMPLATE.md
+   .github/actions/detect-changes/action.yml
+   .github/actions/e2e-screen-record/action.yml
+   ... and 6200 more (use --verbose to show all)
+
+CLEAN apply (upstream-only changes): 602 files
+   (use --verbose to list)
+
+==============================================================================
+VERDICT: 182 conflict file(s). Plan resolution before merging.
+Recommended approach:
+  1. git checkout -b merge/upstream-$(date +%Y-%m-%d)
+  2. git merge v2026.9.14
+  3. Resolve conflicts:
+     - .github/workflows/ci.yaml: review case by case
+     - .github/workflows/lint.yml: review case by case
+     - AGENTS.md: review case by case
+     - acp_adapter/server.py: review case by case
+     - acp_adapter/session.py: review case by case
+     - agent/account_usage.py: review case by case
+     - agent/agent_init.py: review case by case
+     - agent/agent_runtime_helpers.py: review case by case
+     - agent/anthropic_adapter.py: take ours for OAuth path; review base-url + beta-gating areas
+     - agent/anthropic_credentials.py: review case by case
+     - agent/auxiliary_client.py: review case by case
+     - agent/background_review.py: review case by case
+     - agent/chat_completion_helpers.py: wholesale-replaced function -- likely take ours wholesale
+     - agent/context_compressor.py: review case by case
+     - agent/conversation_compression.py: review case by case
+     - agent/conversation_loop.py: refusal handler ~line 1273 + fork callouts; review carefully
+     - agent/credential_pool.py: review case by case
+     - agent/credential_sources.py: review case by case
+     - agent/curator.py: review case by case
+     - agent/curator_backup.py: review case by case
+     - agent/display.py: review case by case
+     - agent/error_classifier.py: review case by case
+     - agent/image_routing.py: review case by case
+     - agent/insights.py: review case by case
+     - agent/message_sanitization.py: review case by case
+     - agent/model_metadata.py: review case by case
+     - agent/prompt_builder.py: review case by case
+     - agent/prompt_caching.py: review case by case
+     - agent/rate_limit_tracker.py: review case by case
+     - agent/system_prompt.py: review case by case
+     - agent/thread_scoped_output.py: review case by case
+     - agent/title_generator.py: review case by case
+     - agent/tool_executor.py: review case by case
+     - agent/tool_guardrails.py: review case by case
+     - agent/transports/anthropic.py: review case by case
+     - agent/transports/chat_completions.py: review case by case
+     - agent/transports/codex_app_server_session.py: review case by case
+     - agent/turn_context.py: review case by case
+     - agent/usage_pricing.py: review case by case
+     - agent/web_search_registry.py: review case by case
+     - apps/desktop/package.json: review case by case
+     - apps/desktop/src/app/chat/session-drag.ts: review case by case
+     - apps/desktop/src/app/chat/sidebar/index.tsx: review case by case
+     - apps/desktop/src/app/chat/sidebar/order.test.ts: review case by case
+     - apps/desktop/src/app/chat/sidebar/projects/entered-content.tsx: review case by case
+     - apps/desktop/src/app/chat/sidebar/projects/workspace-group.tsx: review case by case
+     - apps/desktop/src/app/contrib/controller.tsx: review case by case
+     - apps/desktop/src/app/contrib/wiring.tsx: review case by case
+     - apps/desktop/src/app/pet-overlay/pet-overlay-app.tsx: review case by case
+     - apps/desktop/src/app/session/hooks/use-session-actions.test.tsx: review case by case
+     - apps/desktop/src/app/session/hooks/use-session-actions/index.ts: review case by case
+     - apps/desktop/src/components/chat/status-section.tsx: review case by case
+     - apps/desktop/src/components/pane-shell/tree/renderer/tree-group.tsx: review case by case
+     - apps/desktop/src/components/pet/use-pet-roam.test.tsx: review case by case
+     - apps/desktop/src/components/ui/pane-tab.tsx: review case by case
+     - apps/desktop/src/store/native-notifications.test.ts: review case by case
+     - apps/desktop/src/store/projects.ts: review case by case
+     - apps/desktop/src/store/prompts.test.ts: review case by case
+     - apps/desktop/src/store/prompts.ts: review case by case
+     - apps/desktop/src/store/session-states.ts: review case by case
+     - apps/desktop/src/store/subagents.ts: review case by case
+     - cli.py: review case by case
+     - gateway/authz_mixin.py: review case by case
+     - gateway/config.py: review case by case
+     - gateway/platforms/api_server.py: review case by case
+     - gateway/platforms/api_server_runs.py: review case by case
+     - gateway/run.py: review case by case
+     - gateway/session_state.py: review case by case
+     - gateway/slash_commands.py: review case by case
+     - hermes_cli/auth.py: review case by case
+     - hermes_cli/banner.py: review case by case
+     - hermes_cli/callbacks.py: review case by case
+     - hermes_cli/cli_agent_setup_mixin.py: review case by case
+     - hermes_cli/cli_commands_mixin.py: review case by case
+     - hermes_cli/clipboard.py: review case by case
+     - hermes_cli/commands.py: review case by case
+     - hermes_cli/config.py: review case by case
+     - hermes_cli/config_defaults.py: review case by case
+     - hermes_cli/config_migrations.py: review case by case
+     - hermes_cli/curator.py: review case by case
+     - hermes_cli/doctor.py: review case by case
+     - hermes_cli/fallback_cmd.py: review case by case
+     - hermes_cli/gateway.py: review case by case
+     - hermes_cli/input_sanitize.py: review case by case
+     - hermes_cli/inventory.py: review case by case
+     - hermes_cli/kanban.py: review case by case
+     - hermes_cli/main.py: review case by case
+     - hermes_cli/model_catalog.py: review case by case
+     - hermes_cli/model_switch.py: review case by case
+     - hermes_cli/models.py: review case by case
+     - hermes_cli/plugins.py: review case by case
+     - hermes_cli/portal_cli.py: review case by case
+     - hermes_cli/profiles.py: review case by case
+     - hermes_cli/providers.py: review case by case
+     - hermes_cli/setup.py: review case by case
+     - hermes_cli/setup_whatsapp_cloud.py: review case by case
+     - hermes_cli/skin_engine.py: review case by case
+     - hermes_cli/subcommands/profile.py: review case by case
+     - hermes_cli/tools_config.py: review case by case
+     - hermes_cli/uninstall.py: review case by case
+     - hermes_cli/update_cmd.py: review case by case
+     - hermes_cli/web_server.py: review case by case
+     - hermes_constants.py: review case by case
+     - hermes_state.py: review case by case
+     - model_tools.py: review case by case
+     - package-lock.json: review case by case
+     - plugins/google_meet/__init__.py: review case by case
+     - plugins/google_meet/cli.py: review case by case
+     - plugins/image_gen/openrouter/__init__.py: review case by case
+     - plugins/memory/holographic/retrieval.py: review case by case
+     - plugins/memory/holographic/store.py: review case by case
+     - plugins/model-providers/anthropic/__init__.py: review case by case
+     - plugins/platforms/a2a/README.md: review case by case
+     - plugins/platforms/a2a/__init__.py: review case by case
+     - plugins/platforms/a2a/adapter.py: review case by case
+     - plugins/platforms/a2a/security.py: review case by case
+     - plugins/platforms/a2a/tools.py: review case by case
+     - plugins/platforms/discord/adapter.py: review case by case
+     - plugins/platforms/sms/adapter.py: review case by case
+     - plugins/spotify/__init__.py: review case by case
+     - plugins/web/ddgs/provider.py: review case by case
+     - plugins/web/tavily/__init__.py: review case by case
+     - plugins/web/tavily/plugin.yaml: review case by case
+     - plugins/web/tavily/provider.py: review case by case
+     - pyproject.toml: review case by case
+     - run_agent.py: take ours for forwarders; review structural changes
+     - tests/agent/test_auxiliary_client.py: review case by case
+     - tests/agent/test_auxiliary_main_first.py: review case by case
+     - tests/agent/test_context_compressor.py: review case by case
+     - tests/agent/test_empty_tool_name_loop_dampening.py: review case by case
+     - tests/agent/test_system_prompt.py: review case by case
+     - tests/agent/test_tool_guardrails.py: review case by case
+     - tests/gateway/test_completion_delivery.py: review case by case
+     - tests/hermes_cli/test_setup_blank_slate.py: review case by case
+     - tests/hermes_cli/test_stream_flush_left.py: review case by case
+     - tests/plugins/test_a2a_plugin.py: review case by case
+     - tests/plugins/web/test_web_search_provider_plugins.py: review case by case
+     - tests/tools/test_delegate_summary_budget.py: review case by case
+     - tests/tools/test_mcp_circuit_breaker.py: review case by case
+     - tests/tools/test_mcp_tool.py: review case by case
+     - tests/tools/test_process_wait_clarity.py: review case by case
+     - tests/tools/test_web_tools_config.py: review case by case
+     - tools/async_delegation.py: review case by case
+     - tools/browser_tool.py: review case by case
+     - tools/checkpoint_manager.py: review case by case
+     - tools/delegate_tool.py: review case by case
+     - tools/delegation_live_log.py: review case by case
+     - tools/discord_tool.py: review case by case
+     - tools/feishu_drive_tool.py: review case by case
+     - tools/file_tools.py: review case by case
+     - tools/lazy_deps.py: review case by case
+     - tools/mcp_oauth.py: review case by case
+     - tools/mcp_tool.py: review case by case
+     - tools/memory_tool.py: review case by case
+     - tools/process_registry.py: review case by case
+     - tools/registry.py: review case by case
+     - tools/send_message_tool.py: review case by case
+     - tools/skill_manager_tool.py: review case by case
+     - tools/skills_hub.py: review case by case
+     - tools/skills_tool.py: review case by case
+     - tools/terminal_tool.py: review case by case
+     - tools/todo_tool.py: review case by case
+     - tools/tool_result_storage.py: review case by case
+     - tools/tool_search.py: review case by case
+     - tools/vision_tools.py: review case by case
+     - tools/web_tools.py: review case by case
+     - tools/yuanbao_tools.py: review case by case
+     - toolsets.py: review case by case
+     - tui_gateway/server.py: review case by case
+     - ui-tui/src/app/turnController.ts: review case by case
+     - ui-tui/src/gatewayTypes.ts: review case by case
+     - website/docs/developer-guide/gateway-internals.md: review case by case
+     - website/docs/developer-guide/session-storage.md: review case by case
+     - website/docs/reference/model-catalog.md: review case by case
+     - website/docs/reference/optional-skills-catalog.md: review case by case
+     - website/docs/reference/slash-commands.md: review case by case
+     - website/docs/user-guide/features/kanban.md: review case by case
+     - website/docs/user-guide/features/web-search.md: review case by case
+     - website/docs/user-guide/skills/bundled/research/research-grounded-citations.md: review case by case
+     - website/docs/user-guide/skills/optional/creative/creative-touchdesigner-mcp.md: review case by case
+     - website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/kanban.md: review case by case
+     - website/sidebars.ts: review case by case
+  4. Run tests
+  5. Push merge branch and FF main locally before pushing main
