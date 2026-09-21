@@ -1,9 +1,11 @@
 """Invariant: `hermes serve`'s opportunistic auto-archive never opens a WRITABLE
-SessionDB for a profile whose gateway holds the runtime lock (#110405).
+SessionDB for a profile whose gateway is live (#110405).
 
-The lock holder is a real subprocess taking the same ``flock(LOCK_EX)`` on
-``gateway.lock`` that ``gateway.status`` uses, so the guard is exercised against
-kernel lock state rather than a patched predicate.
+The gateway stand-in is a real subprocess: it takes the same ``flock(LOCK_EX)`` on
+``gateway.lock`` that ``gateway.status`` uses, runs under a ``hermes gateway run``
+command line and is recorded in ``gateway.pid``, so ``_check_gateway_running``
+decides on kernel lock state plus live process identity rather than a patched
+predicate.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import time
 
 import pytest
 
-from gateway.status import is_gateway_runtime_lock_active
+from hermes_cli.profiles import _check_gateway_running
 from hermes_cli import web_server_sessions as wss
 
 pytestmark = pytest.mark.skipif(
@@ -23,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 _HOLDER = (
     "import fcntl, sys, time\n"
-    "handle = open(sys.argv[1], 'a+')\n"
+    "handle = open(sys.argv[1], 'a+', encoding='utf-8')\n"
     "fcntl.flock(handle.fileno(), fcntl.LOCK_EX)\n"
     "sys.stdout.write('locked\\n')\n"
     "sys.stdout.flush()\n"
@@ -65,17 +67,24 @@ def archive_probe(tmp_path, monkeypatch):
     return tmp_path, opens, archived
 
 
-def test_serve_auto_archive_defers_to_the_gateway_holding_the_runtime_lock(archive_probe):
+@pytest.mark.spawns_gateway_lookalike  # a flock-holding stub this test reaps by PID
+def test_serve_auto_archive_defers_to_a_live_gateway_for_the_profile(archive_probe):
     tmp_path, opens, archived = archive_probe
+    # argv0 basename `hermes` + the `gateway run` subcommand is what
+    # gateway.status's process-identity check reads off /proc for this PID.
+    entrypoint = tmp_path / "hermes"
+    entrypoint.write_text(_HOLDER, encoding="utf-8")
     lock_path = tmp_path / "gateway.lock"
     holder = subprocess.Popen(
-        [sys.executable, "-c", _HOLDER, str(lock_path)],
+        [sys.executable, str(entrypoint), str(lock_path), "gateway", "run"],
         stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
     )
     stdout = holder.stdout
     assert stdout is not None
     try:
         assert stdout.readline().strip() == "locked"
+        (tmp_path / "gateway.pid").write_text(str(holder.pid), encoding="utf-8")
+        assert _check_gateway_running(tmp_path), "probe did not look like a live gateway"
 
         wss._maybe_auto_archive_for_profile(None)
 
@@ -86,13 +95,13 @@ def test_serve_auto_archive_defers_to_the_gateway_holding_the_runtime_lock(archi
         holder.wait(timeout=10)
         stdout.close()
 
-    # Lock released: the serve-side sweep is the only archiver left and must run.
+    # Gateway gone: the serve-side sweep is the only archiver left and must run.
     deadline = time.monotonic() + 5
-    while is_gateway_runtime_lock_active(lock_path) and time.monotonic() < deadline:
+    while _check_gateway_running(tmp_path) and time.monotonic() < deadline:
         time.sleep(0.05)
     wss._last_auto_archive_check.clear()
 
     wss._maybe_auto_archive_for_profile(None)
 
-    assert opens == [False], "serve must still archive when no gateway holds the lock"
+    assert opens == [False], "serve must still archive when no gateway owns the profile"
     assert len(archived) == 1

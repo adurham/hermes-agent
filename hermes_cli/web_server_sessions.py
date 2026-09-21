@@ -231,13 +231,17 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_archive", False):
             return
-        from gateway.status import is_gateway_runtime_lock_active
+        from hermes_cli.profiles import _check_gateway_running
 
-        # A live gateway owns this profile's store and runs the same sweep in its own
-        # housekeeping. Opening it WRITABLE from `hermes serve` adds a second writer to a
-        # database another process is already archiving, for zero extra coverage (#110405).
-        lock_path = _session_db_path_for_profile(profile).with_name("gateway.lock")
-        if is_gateway_runtime_lock_active(lock_path):
+        # A live gateway owns this profile's store and runs the same sweep on its own
+        # housekeeping tick ("Auto-archive tick" in gateway/run.py, profile-scoped so a
+        # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes
+        # serve` adds a second writer to a database another process is already archiving,
+        # for zero extra coverage (#110405). `_check_gateway_running` is the canonical
+        # per-profile predicate (`_maybe_run_skill_maintenance` below uses it): its
+        # multiplexer rung catches a served secondary, which owns no gateway.pid or lock
+        # of its own and a bare lock-file probe would report stopped.
+        if _check_gateway_running(_session_db_path_for_profile(profile).parent):
             return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:
