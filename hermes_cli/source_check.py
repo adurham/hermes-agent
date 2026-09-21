@@ -162,7 +162,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     result = {"supported": False, "hermesRoot": str(root), "behind": None, "commits": []}
     if stamp.get("source") == "commit-build":
         return {**result, "reason": "commit-build", "message": COMMIT_BUILD_UPDATE_MESSAGE}
-    if stamp.get("payload") in {"bundled", "light"} or (install_root is None and detect_install_method(root) in {"docker", "apt"}):
+    if stamp.get("payload") in {"bundled", "light", "runtime"} or (install_root is None and detect_install_method(root) in {"docker", "apt"}):
         return {**result, "reason": "not-a-git-checkout"}
     if not embedded and not (root / ".git").exists():
         return {**result, "reason": "not-a-git-checkout",

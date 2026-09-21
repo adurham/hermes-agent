@@ -16,6 +16,7 @@ import pytest
     ("bundled", "desktop-app", "microsoft-store", "bundled", "v0.18.0"),
     ("bundled", "desktop-app", "external", "bundled", "v0.18.0"),
     ("light", "desktop-app", "electron-updater", "light", "v0.18.0"),
+    ("runtime", "apt-termux", "external", "runtime", "v0.18.0"),
 ])
 def test_cli_stamp_roundtrip(tmp_path, monkeypatch, variant, distribution, mechanism, payload, tag):
     out = tmp_path / "install-stamp.json"

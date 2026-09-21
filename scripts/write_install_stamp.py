@@ -249,12 +249,17 @@ def build_stamp(
     #               different MSIX packaging identity. Stamps as 'bundled'
     #               so the bundled shape logic (shared userData, steward-
     #               owned updates, no in-app updater) holds for it too.
+    #   runtime   — a self-contained CLI runtime with NO Electron app around
+    #               it (the Termux .deb). It is sealed like 'bundled' but
+    #               must not stamp as one: 'bundled' readers locate an
+    #               enclosing desktop app (bundled_app.resolve_bundle_layout)
+    #               and a tree without one is damage to them.
     # Release artifacts pin a tag. Commit builds never enter an update channel.
     variant = os.environ.get("HERMES_DESKTOP_VARIANT", "").strip()
-    if variant not in ("", "bootstrap", "bundled", "light", "store"):
+    if variant not in ("", "bootstrap", "bundled", "light", "store", "runtime"):
         raise SystemExit(
             f"write_install_stamp: unknown HERMES_DESKTOP_VARIANT {variant!r} "
-            "(expected unset, 'bootstrap', 'bundled', 'light', or 'store')"
+            "(expected unset, 'bootstrap', 'bundled', 'light', 'store', or 'runtime')"
         )
     payload = "bundled" if variant == "store" else (variant or "bootstrap")
     tag = os.environ.get("HERMES_PAYLOAD_TAG") or None

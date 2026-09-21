@@ -186,9 +186,11 @@ printf 'apt\n' > "$PAYLOAD_ABS/app/.install_method"
 
 # The shared stamp writer records the apt-termux update owner.
 # Commit mode exports HERMES_BUILD_COMMIT and leaves the tag empty.
+# 'runtime', not 'bundled': the deb ships a runtime but no Electron app,
+# and 'bundled' readers (data cleanup) go looking for the enclosing app.
 log "Writing app/install-stamp.json"
 HERMES_PAYLOAD_TAG="$TAG" \
-HERMES_DESKTOP_VARIANT=bundled \
+HERMES_DESKTOP_VARIANT=runtime \
 python3 "$REPO_ABS/scripts/write_install_stamp.py" \
     --output "$PAYLOAD_ABS/app/install-stamp.json" \
     --commit "$COMMIT" \
