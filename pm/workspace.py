@@ -170,12 +170,23 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
     return members
 
 
+def _member_key(identity: Path) -> str:
+    """``<plugin dir name>-<sha256(path)[:16]>``: the hash keeps two same-named plugins from
+    different homes apart; the name is what a user sees in uv's conflict text
+    (``hermes-plugin-<key> depends on …``) — a bare hash told them nothing to disable."""
+    import re
+
+    digest = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
+    name = re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
+    return f"{name}-{digest}"
+
+
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
 
-    key = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
+    key = _member_key(identity)
     declaration = read_python_declaration(plugin_dir)
     pyproject = declaration.pyproject
     if pyproject is not None:
