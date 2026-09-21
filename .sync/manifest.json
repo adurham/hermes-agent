@@ -1,0 +1,33 @@
+{
+  "sync_target_tag": "v2026.9.14",
+  "pre_sync_tag": "pre-upstream-sync-v2026.9.14",
+  "pre_sync_main_sha": "1d35eb7e41",
+  "last_synced_tag": "v2026.8.31",
+  "worktree_path": "/Users/adam.durham/repos/hermes-agent-sync-2026-09-14",
+  "branch": "sync/upstream-2026-09-14",
+  "upstream_commits_pulled": 7136,
+  "predicted_conflicts": 182,
+  "predicted_likely_merge_noOverlap": 6210,
+  "predicted_clean_upstream_only": 602,
+  "baseline": {
+    "boot_smoke": "PASS (import cli, run_agent, hermes_state, hermes_cli.banner)",
+    "tsc_noEmit_errors": 0,
+    "pytest_agent_run_agent_dir": {
+      "total_failed": 14,
+      "total_files_with_failures": 8,
+      "files": [
+        "tests/agent/test_auxiliary_explicit_base_anthropic.py",
+        "tests/agent/test_compression_attempt_lifecycle.py",
+        "tests/agent/test_cron_inline_api_call_62151.py",
+        "tests/agent/test_compression_stall_fallback_78981.py",
+        "tests/agent/test_prompt_cache_ttl_propagation.py",
+        "tests/agent/test_title_generator.py",
+        "tests/run_agent/test_anthropic_mid_tool_call_drop.py",
+        "tests/run_agent/test_start_order_gate.py"
+      ],
+      "note": "These are PRE-EXISTING failures on pre-merge main tip (1d35eb7e41), captured in this exact worktree/env before any merge. Full log: .sync/baseline-pytest-agent-run_agent.log. Do NOT count these against the merge unless their failure MODE changes (e.g. different error/traceback) -- diff the mode, not just presence."
+    }
+  },
+  "status": "SETUP_COMPLETE_NOT_MERGED",
+  "files": {}
+}
