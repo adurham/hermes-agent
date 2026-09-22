@@ -1166,3 +1166,57 @@ class CLISessionMixin:
             print(f"Title:          {session_title}")
         print(f"Duration:       {duration_str}")
         print(f"Messages:       {msg_count} ({user_msgs} user, {tool_calls} tool calls)")
+        # getattr, not a direct call: test doubles and wrapper CLIs duck-type this
+        # mixin's summary without inheriting it, and a missing cost line must never
+        # abort the resume hint that precedes it.
+        _cost_line = getattr(self, "_print_exit_summary_cost", None)
+        if callable(_cost_line):
+            _cost_line()
+
+    def _print_exit_summary_cost(self) -> None:
+        """Total conversation spend: the whole compaction lineage + subagents.
+
+        Three partial numbers have to be combined or the printed total silently
+        under-reports:
+
+        * ``agent.session_estimated_cost_usd`` covers only the CURRENT
+          compaction tip — after a compaction the earlier segments' spend lives
+          on other session rows.
+        * ``SessionDB.get_lineage_cost_usd`` sums every row in the compaction
+          chain, but walks compaction edges ONLY — it deliberately does not
+          follow delegate edges.
+        * ``agent.session_subagent_cost_usd`` is the ``delegate_task`` children's
+          spend, folded back onto the parent by ``tools/delegate_tool.py``.
+
+        So the lineage total and the subagent total are disjoint and must be
+        added. Prefer the lineage figure when the DB has one; fall back to the
+        live agent value (tip only) when it doesn't.
+        """
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return
+        try:
+            live_cost = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            lineage_cost = 0.0
+            if self._session_db:
+                with contextlib.suppress(Exception):
+                    lineage_cost = float(
+                        self._session_db.get_lineage_cost_usd(self.session_id) or 0.0)
+            sub_cost = float(getattr(agent, "session_subagent_cost_usd", 0.0) or 0.0)
+            sub_n = int(getattr(agent, "session_subagent_count", 0) or 0)
+            main_cost = lineage_cost if lineage_cost > 0 else live_cost
+            total_cost = main_cost + sub_cost
+            if total_cost <= 0:
+                return
+            cost_str = f"${total_cost:.4f}" if total_cost < 0.01 else f"${total_cost:.2f}"
+            cost_status = getattr(agent, "session_cost_status", "") or ""
+            if cost_status and cost_status != "actual":
+                cost_str = f"{cost_str} ({cost_status})"
+            print(f"Cost:           {cost_str}")
+            if sub_cost > 0 and sub_n > 0:
+                sub_str = f"${sub_cost:.4f}" if sub_cost < 0.01 else f"${sub_cost:.2f}"
+                print(f"  ↳ subagents:  {sub_str} across {sub_n} subagent"
+                      f"{'s' if sub_n != 1 else ''}")
+        except Exception:
+            from cli import logger
+            logger.debug("exit-summary cost roll-up failed", exc_info=True)
