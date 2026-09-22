@@ -252,9 +252,32 @@ def _build_child_agent(
     if _VIS_TOOLSET not in child_toolsets:
         child_toolsets.append(_VIS_TOOLSET)
     child_disabled_toolsets = [name for name in child_disabled_toolsets if name != _VIS_TOOLSET]
+    # Cross-agent stomp prevention: WARN, never block. The repo-editing tools (patch, write_file, git) are the real
+    # safety net, and a hard block on cwd overlap false-positives every time two subagents legitimately work the same
+    # repo on unrelated files. A warning the child sees before it starts editing is the right strength.
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    _collision_warning: Optional[str] = None
+    if workspace_hint:
+        _collisions = []
+        with _quiet("delegate_task: cwd collision scan failed: %s"):
+            from tools.cross_session_transport import find_cwd_collisions
+            _collisions = find_cwd_collisions(workspace_hint)
+        if _collisions:
+            _lines = "\n".join(
+                f"- {c.subagent_id} (owner session: {c.owner_session_id}, status: {c.status}, "
+                f"goal: {(c.goal or 'n/a')[:100]})"
+                for c in _collisions[:5]
+            )
+            _collision_warning = (
+                f"WARNING: {len(_collisions)} other live subagent(s) on this machine are already working in this "
+                f"same directory (or a parent/child of it): {workspace_hint}\n" + _lines
+                + "\n\nCheck list_agents for the current picture before editing files here -- another concurrent "
+                "session's subagent may be mid-edit on the same repo right now."
+            )
     child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        goal, context, workspace_path=workspace_hint, role=effective_role,
+        max_spawn_depth=max_spawn, child_depth=child_depth, agent_type=agent_type,
+        cwd_collision_warning=_collision_warning,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -329,6 +352,10 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Stash the cwd-collision warning (if any) so the dispatch payload can surface it to the PARENT's own turn too,
+    # not just the child's system prompt: a parent that dispatched two conflicting subagents in one turn should see
+    # it immediately, not discover it when the summary lands.
+    child._delegate_cwd_collision_warning = _collision_warning
     # Stash the ruflo persona so _run_single_child can tag delegation_stats with the right
     # role identifier and agent/turn_context.py can read it back per turn. Empty string
     # means the caller passed none — stats land in the "(untagged)" bucket.
