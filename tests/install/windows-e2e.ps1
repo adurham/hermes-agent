@@ -618,6 +618,7 @@ function Invoke-PhaseStage {
         Remove-Item -LiteralPath $WorkRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $WorkRoot "logs") -Force | Out-Null
     # The purge above deleted the redirect gitconfig; re-arm it so the
     # bare-clone below (and everything after) sees the redirect file.
     Set-GitRedirect
