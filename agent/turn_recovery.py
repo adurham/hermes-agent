@@ -1036,6 +1036,19 @@ def compute_error_backoff(
     _retry_after = parse_retry_after_seconds(
         getattr(getattr(api_error, "response", None), "headers", None)
     )
+    # FORK: also refresh rate-limit state from the 429 response headers. This
+    # catches non-Nous 429s (Anthropic native, OpenRouter, ...) that never reach
+    # the genuine-Nous-rate-limit branch in _is_genuine_nous_rate_limit. Without
+    # it, /usage and the streaming heartbeat keep displaying the last-known state
+    # from BEFORE the throttle event, and the 80% hot-zone transition that the
+    # throttle just caused is never emitted.
+    if is_rate_limited:
+        try:
+            agent._capture_rate_limits_from_headers(
+                getattr(getattr(api_error, "response", None), "headers", None)
+            )
+        except Exception:
+            pass
     if _retry_after is None:
         _error_body = getattr(api_error, "body", None)
         if isinstance(_error_body, dict):
@@ -1293,6 +1306,18 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
         from agent.nous_rate_guard import is_genuine_nous_rate_limit, record_nous_rate_limit
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
+        # FORK: refresh rate-limit state from the ERROR response headers BEFORE
+        # classifying the 429. Anthropic / Nous both emit the same ratelimit-*
+        # headers on a 429 as on a 200, so this is the moment the state most
+        # accurately reflects "right now" and the genuine-rate-limit check below
+        # then sees the freshest data instead of last-known. Goes through the fork
+        # helper (not upstream's _capture_rate_limits, which takes a response
+        # object and emits nothing) because only this path fires the one-shot
+        # first-capture INFO and the 80% hot-zone WARN/recovery transitions.
+        try:
+            agent._capture_rate_limits_from_headers(_err_hdrs)
+        except Exception:
+            pass
         _genuine = is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state)
         if _genuine:
             record_nous_rate_limit(headers=_err_hdrs, error_context=error_context)

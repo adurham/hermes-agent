@@ -41,10 +41,25 @@ class StreamingWaitMonitor:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in.
             stale = self._stream_stale_timeout
             _recovery = f"; auto-reconnect at {int(stale)}s" if stale is not None and stale != float("inf") else ""
+            # FORK: rate-limit signal — tells the user whether a stall is plausibly
+            # throttle-related or upstream-only. A hot bucket (>=80%) gets a ⚠ tag;
+            # a healthy state collapses to "limits OK (RPM 47/50)", which beats
+            # silence-and-guessing. Captured up front from the 200 OK headers, so
+            # this lights up immediately rather than waiting for message_start.
+            _rl_bit = ""
+            try:
+                _rl_state = self.agent._rate_limit_state
+                if _rl_state and _rl_state.has_data:
+                    from agent.rate_limit_tracker import format_rate_limit_heartbeat
+                    _fragment = format_rate_limit_heartbeat(_rl_state)
+                    if _fragment:
+                        _rl_bit = f"; {_fragment}"
+            except Exception:
+                pass  # Never let display formatting break the heartbeat.
             self._mon.wait_notice_started_ts = self._mon.last_heartbeat
             self.agent._emit_wait_notice(
                 f"⏳ waiting on {self.api_kwargs.get('model', 'the provider')} — no stream output for {waiting_secs}s "
-                f"(provider may be slow or overloaded, or the model is thinking{_recovery})")
+                f"(provider may be slow or overloaded, or the model is thinking{_rl_bit}{_recovery})")
         else:
             # Chunks are flowing — keep the tracker fresh, leave the display alone.
             self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, no chunks yet)")
