@@ -24,6 +24,11 @@ def ancestors(jobs, name):
     return seen
 
 
+def test_admit_can_read_the_claim_draft():
+    jobs = workflow("stable-release.yml")["jobs"]
+    assert jobs["admit"]["permissions"]["contents"] == "write"
+
+
 def test_release_reuses_whole_ci_and_docker_before_publication():
     jobs = workflow("stable-release.yml")["jobs"]
     assert jobs["ci"]["uses"] == "./.github/workflows/ci.yaml"
