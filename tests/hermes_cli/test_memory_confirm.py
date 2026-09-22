@@ -1,721 +1,352 @@
-"""Tests for hermes_cli/memory_confirm.py — interactive review UI.
+"""Tests for the consolidated memory-proposal review path.
 
-Covers the rendering + input-handling improvements added on top of the
-initial Phase 2 confirm UI:
+The fork used to carry a bespoke 689-line blocking review UI in
+``hermes_cli/memory_confirm.py`` (letter-select, 3-second auto-accept
+countdown, inline cleanup review) that committed straight to the warm store at
+session exit. That was a second review system parallel to upstream's
+write-approval pending store. It is consolidated: ``memory_confirm`` now only
+classifies proposals and **stages** them, and review happens out of band via
+``/memory pending | show | edit | approve | reject``.
 
-  * grammar: "1 entry" vs "N entries"
-  * tier indicator: warm:<category> vs hot:<target>
-  * full-text rendering when N <= 3, truncated when N >= 4
-  * dedup hint: shows the closest existing fact when verdict is NEW but
-    the FTS5 candidate list is non-empty
-  * default-accept rule: blank input accepts all only when N <= 3
-  * `show <letter>`: prints one entry's full content and re-prompts
-  * `reject <letter>`: drops one proposal and re-prompts with renumbered list
+These tests assert the NEW contract. The old UI's tests were not deleted —
+every behavior they protected that still exists (verdict display, existing-fact
+display, edit-before-commit, accept-all/discard-all, never losing a proposal) is
+re-asserted here against the pending store instead of against the removed UI.
 
-The conflict classifier is stubbed out so we don't need a warm DB; we
-inject ConflictVerdict instances directly via a monkeypatched
-``_classify_proposals``.
+Everything runs against a temp HERMES_HOME; the real ~/.hermes is never touched.
 """
 
 from __future__ import annotations
 
-import io
+import json
 from typing import Any, Dict, List
-from unittest.mock import patch
 
 import pytest
 
 from hermes_cli import memory_confirm
+from hermes_cli.write_approval_commands import handle_pending_subcommand
+from tools import write_approval as wa
 from tools.memory_extraction.conflict import ConflictVerdict
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _verdict(
-    kind: str = "NEW",
-    *,
-    matched_id: int | None = None,
-    matched_content: str | None = None,
-    rationale: str = "",
-    candidates: List[Dict[str, Any]] | None = None,
-    merged_content: str | None = None,
-) -> ConflictVerdict:
-    return ConflictVerdict(
-        verdict=kind,
-        matched_id=matched_id,
-        matched_content=matched_content,
-        rationale=rationale,
-        candidates=candidates or [],
-        merged_content=merged_content,
-    )
+@pytest.fixture(autouse=True)
+def hermes_home(tmp_path, monkeypatch):
+    """Point HERMES_HOME at a temp dir for every test in this module."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(wa, "get_hermes_home", lambda: tmp_path)
+    return tmp_path
 
 
-def _proposal(
-    content: str,
-    *,
-    category: str = "general",
-    tier: str | None = None,
-    target: str | None = None,
-    rationale: str = "",
-) -> Dict[str, Any]:
-    p: Dict[str, Any] = {"content": content, "category": category, "rationale": rationale}
-    if tier:
-        p["tier"] = tier
-    if target:
-        p["target"] = target
+def _verdict(kind: str = "NEW", **kw: Any) -> ConflictVerdict:
+    return ConflictVerdict(verdict=kind, rationale=kw.pop("rationale", f"{kind} verdict"), **kw)
+
+
+def _proposal(content: str, verdict: ConflictVerdict | None = None, **kw: Any) -> Dict[str, Any]:
+    p: Dict[str, Any] = {"content": content, "category": kw.pop("category", "general")}
+    p.update(kw)
+    p["verdict"] = verdict or _verdict("NEW")
     return p
 
 
-@pytest.fixture()
-def stub_classifier(monkeypatch):
-    """Stub _classify_proposals so we control verdicts without a warm DB.
-
-    Each test calls ``stub_classifier([(proposal, verdict), ...])`` to
-    register the (proposal, verdict) pairs that the next
-    _interactive_review() call will see.
-    """
-    pairs: List[tuple[Dict[str, Any], ConflictVerdict]] = []
-
-    def _set(items: List[tuple[Dict[str, Any], ConflictVerdict]]) -> List[Dict[str, Any]]:
-        pairs.clear()
-        pairs.extend(items)
-        return [p for p, _ in items]
-
-    def _fake_classify(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # Match by reference order — fake_classify is called on the same
-        # list the test set up via _set().
-        out: List[Dict[str, Any]] = []
-        for p, v in pairs:
-            out.append({**p, "verdict": v})
-        return out
-
-    monkeypatch.setattr(memory_confirm, "_classify_proposals", _fake_classify)
-    return _set
-
-
-@pytest.fixture(autouse=True)
-def force_interactive_review(request, monkeypatch):
-    """Default: bypass the auto-accept countdown so existing tests still
-    reach the input()-driven interactive prompt.
-
-    Tests that explicitly exercise the countdown opt out by adding the
-    ``@pytest.mark.real_countdown`` marker; those tests get the real
-    helper and must monkeypatch ``_countdown_for_review`` themselves
-    (or test it directly).
-    """
-    if "real_countdown" in request.keywords:
-        return
-    monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: True)
+def _payload_of(pending_id: str) -> Dict[str, Any]:
+    rec = wa.get_pending(wa.MEMORY, pending_id)
+    assert rec is not None
+    return rec["payload"]
 
 
 # ---------------------------------------------------------------------------
-# Grammar / pluralization
+# Staging into upstream's pending store
 # ---------------------------------------------------------------------------
 
-class TestPluralization:
-    def test_single_entry_is_singular(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("only one fact"), _verdict("NEW")),
-        ])
-        # blank input → accept all when N <= 3
-        monkeypatch.setattr("builtins.input", lambda *_: "")
-        chosen = memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "1 proposed memory entry from" in out
-        assert "entries from" not in out.split("1 proposed memory entry")[0]
-        assert len(chosen) == 1
+class TestStageProposal:
+    def test_writes_upstream_pending_record_shape(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal("a durable fact"))
+        assert rec is not None
+        path = hermes_home / "pending" / "memory" / f"{rec['id']}.json"
+        assert path.exists(), "proposal must land in $HERMES_HOME/pending/memory/<id>.json"
+        on_disk = json.loads(path.read_text())
+        # Exactly the record shape upstream's stage_write produces.
+        assert set(on_disk) >= {"id", "subsystem", "action", "summary", "origin",
+                                "created_at", "payload"}
+        assert on_disk["subsystem"] == "memory"
+        assert on_disk["action"] == "extraction_proposal"
 
-    def test_multiple_entries_is_plural(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("fact one here"), _verdict("NEW")),
-            (_proposal("fact two here"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "2 proposed memory entries" in out
+    def test_carries_conflict_metadata(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal(
+            "port 8080 over TLS",
+            _verdict("REFINEMENT", matched_id=4, matched_content="port 8080",
+                     merged_content="port 8080 over TLS")))
+        conflict = _payload_of(rec["id"])["conflict"]
+        assert conflict["verdict"] == "REFINEMENT"
+        assert conflict["matched_id"] == 4
+        assert conflict["matched_content"] == "port 8080"
+        assert conflict["merged_content"] == "port 8080 over TLS"
 
+    def test_summary_leads_with_the_verdict(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal("x", _verdict("CONTRADICTION")))
+        assert rec["summary"].startswith("[CONTRADICTION]")
 
-# ---------------------------------------------------------------------------
-# Tier indicator
-# ---------------------------------------------------------------------------
+    def test_warm_is_the_default_tier(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal("a warm fact"))
+        payload = _payload_of(rec["id"])
+        assert payload["tier"] == "warm"
+        assert payload["category"] == "general"
+        assert "target" not in payload, "warm proposals have no hot-tier target"
 
-class TestTierIndicator:
-    def test_warm_tier_shows_category(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("fact in preferences", category="preferences"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "[warm:preferences]" in out
-        # negative: bare category bracket should NOT be present
-        assert "[preferences]" not in out.replace("[warm:preferences]", "")
+    def test_hot_tier_records_its_target(self, hermes_home):
+        rec = memory_confirm.stage_proposal(
+            _proposal("user prefers terse output", tier="hot", target="user"))
+        payload = _payload_of(rec["id"])
+        assert payload["tier"] == "hot" and payload["target"] == "user"
 
-    def test_hot_tier_user_target(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (
-                _proposal("preference fact", tier="hot", target="user"),
-                _verdict("NEW"),
-            ),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "[hot:user]" in out
+    def test_unclassified_proposal_degrades_to_new(self, hermes_home):
+        """A proposal with no verdict must still stage (as NEW), never be dropped."""
+        rec = memory_confirm.stage_proposal({"content": "no verdict attached"})
+        assert rec is not None
+        assert _payload_of(rec["id"])["conflict"]["verdict"] == "NEW"
 
-    def test_hot_tier_default_target_is_memory(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("memory fact", tier="hot"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "[hot:memory]" in out
+    def test_staging_failure_returns_none_without_raising(self, hermes_home, monkeypatch):
+        """A disk failure must not take session exit down with it."""
+        def _boom(*a, **kw):
+            raise OSError("disk full")
+        monkeypatch.setattr(wa, "stage_write", _boom)
+        assert memory_confirm.stage_proposal(_proposal("x")) is None
 
 
 # ---------------------------------------------------------------------------
-# Full-text vs truncated rendering
+# Verdict serialization round trip
 # ---------------------------------------------------------------------------
 
-class TestFullTextRendering:
-    LONG = "the quick brown fox " * 30  # ~600 chars; would normally truncate
+class TestVerdictRoundTrip:
+    def test_round_trips_every_field(self):
+        from tools.memory_extraction import conflict as c
+        original = ConflictVerdict(
+            verdict="CONTRADICTION", matched_id=12, matched_content="old text",
+            rationale="because", merged_content="merged",
+            candidates=[{"fact_id": 1, "content": "cand"}])
+        back = c.verdict_from_dict(json.loads(json.dumps(c.verdict_to_dict(original))))
+        assert (back.verdict, back.matched_id, back.matched_content) == (
+            "CONTRADICTION", 12, "old text")
+        assert (back.rationale, back.merged_content) == ("because", "merged")
+        assert back.candidates == [{"fact_id": 1, "content": "cand"}]
 
-    def test_full_text_when_n_le_3(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal(self.LONG.strip()), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        # Full content should appear (no "..." truncation marker on this entry)
-        assert "the quick brown fox" in out
-        # Truncation marker shouldn't be in the rendered content for show_full
-        # path — _shorten() adds "..." but we only call it for short entries
-        # and matched_content. Verify the long content is wrapped, not cut off.
-        assert out.count("the quick brown fox") >= 5  # appears many times in wrapped form
+    def test_candidates_are_capped(self):
+        from tools.memory_extraction import conflict as c
+        v = ConflictVerdict(verdict="NEW",
+                            candidates=[{"fact_id": i, "content": f"c{i}"} for i in range(10)])
+        assert len(c.verdict_to_dict(v)["candidates"]) == 3
 
-    def test_truncated_when_n_gt_3(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal(self.LONG.strip() + f" entry-{i}-marker"), _verdict("NEW"))
-            for i in range(4)
-        ])
-        # Force a no-op exit; we just want the rendering output
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        # With N=4, _shorten kicks in; the unique markers should NOT all appear
-        # because each entry is truncated to 90 chars
-        markers_seen = sum(1 for i in range(4) if f"entry-{i}-marker" in out)
-        assert markers_seen == 0, "expected truncation to hide the trailing markers"
-        # And ellipsis from _shorten should be present
-        assert "..." in out
+    @pytest.mark.parametrize("bad", [None, {}, "nonsense", {"verdict": None}])
+    def test_missing_or_broken_metadata_degrades_to_new(self, bad):
+        """A hand-edited or older pending record must still approve, as NEW."""
+        from tools.memory_extraction import conflict as c
+        assert c.verdict_from_dict(bad).verdict == "NEW"
 
 
 # ---------------------------------------------------------------------------
-# Dedup hint
+# /memory pending — conflict verdict visible in the listing
 # ---------------------------------------------------------------------------
 
-class TestDedupHint:
-    def test_new_with_candidates_shows_similar(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (
-                _proposal("new fact about cdsdb"),
-                _verdict(
-                    "NEW",
-                    candidates=[{"fact_id": 7, "content": "cdsdb is the TDS storage backend"}],
-                ),
-            ),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "similar to existing:" in out
-        assert "cdsdb is the TDS storage backend" in out
+class TestPendingListing:
+    TAGS = {"NEW": "[+ NEW]", "DUPLICATE": "[= DUPE]",
+            "REFINEMENT": "[~ REFINE]", "CONTRADICTION": "[! CONFLICT]"}
 
-    def test_new_without_candidates_no_hint(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("genuinely new fact"), _verdict("NEW", candidates=[])),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "similar to existing:" not in out
+    @pytest.mark.parametrize("kind", ["NEW", "DUPLICATE", "REFINEMENT", "CONTRADICTION"])
+    def test_every_verdict_is_visible(self, hermes_home, kind):
+        memory_confirm.stage_proposal(_proposal(f"a {kind} fact", _verdict(kind)))
+        assert self.TAGS[kind] in handle_pending_subcommand(wa.MEMORY, ["pending"])
 
+    def test_tier_label_is_visible(self, hermes_home):
+        memory_confirm.stage_proposal(_proposal("warm one", category="preferences"))
+        memory_confirm.stage_proposal(_proposal("hot one", tier="hot", target="user"))
+        out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+        assert "[warm:preferences]" in out and "[hot:user]" in out
 
-# ---------------------------------------------------------------------------
-# Default-accept rule (blank input)
-# ---------------------------------------------------------------------------
+    def test_review_hints_are_shown_for_proposals(self, hermes_home):
+        memory_confirm.stage_proposal(_proposal("x"))
+        out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+        assert "/memory show" in out and "/memory edit" in out
 
-class TestDefaultAccept:
-    def test_blank_accepts_all_when_n_le_3(self, stub_classifier, monkeypatch):
-        proposals = stub_classifier([
-            (_proposal("fact one here"), _verdict("NEW")),
-            (_proposal("fact two here"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "")
-        chosen = memory_confirm._interactive_review(proposals)
-        assert len(chosen) == 2
-
-    def test_blank_re_prompts_when_n_gt_3(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal(f"fact number {i} here padded"), _verdict("NEW"))
-            for i in range(4)
-        ])
-        # First press Enter (no input), then say "none"
-        responses = iter(["", "none"])
-        monkeypatch.setattr("builtins.input", lambda *_: next(responses))
-        chosen = memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "pick letters, or type" in out  # the gentle re-prompt
-        assert chosen == []  # eventually rejected via "none"
-
-    def test_default_label_reflects_size(self, stub_classifier, monkeypatch):
-        # Small batch — prompt should say "[all]"
-        proposals = stub_classifier([
-            (_proposal("only fact"), _verdict("NEW")),
-        ])
-        prompts: List[str] = []
-
-        def _capture(prompt: str = "") -> str:
-            prompts.append(prompt)
-            return "none"
-
-        monkeypatch.setattr("builtins.input", _capture)
-        memory_confirm._interactive_review(proposals)
-        assert any("[all]" in p for p in prompts), prompts
-
-    def test_default_label_for_large_batch(self, stub_classifier, monkeypatch):
-        proposals = stub_classifier([
-            (_proposal(f"fact number {i} here padded"), _verdict("NEW"))
-            for i in range(4)
-        ])
-        prompts: List[str] = []
-
-        def _capture(prompt: str = "") -> str:
-            prompts.append(prompt)
-            return "none"
-
-        monkeypatch.setattr("builtins.input", _capture)
-        memory_confirm._interactive_review(proposals)
-        assert any("no default" in p for p in prompts), prompts
-        # Make sure we DIDN'T also show [all] as the default
-        assert not any("[all]" in p for p in prompts), prompts
+    def test_plain_gated_writes_are_unchanged(self, hermes_home):
+        """Upstream's own staged hot-tier writes carry no verdict and must not get a tag."""
+        wa.stage_write(wa.MEMORY, {"action": "add", "target": "user", "content": "plain"},
+                       summary="add to user profile: plain", origin="foreground")
+        out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+        assert "plain" in out
+        assert not any(t in out for t in self.TAGS.values())
+        assert "/memory show" not in out
 
 
 # ---------------------------------------------------------------------------
-# `show <letter>` and `reject <letter>` actions
+# /memory show — the conflict view (new text AND existing text together)
 # ---------------------------------------------------------------------------
 
-class TestShowAndReject:
-    def test_show_prints_full_content(self, stub_classifier, monkeypatch, capsys):
-        long = "extra long content " * 40 + " sentinel-tail"
-        proposals = stub_classifier([
-            (_proposal("fact a short"), _verdict("NEW")),
-            (_proposal("fact b short"), _verdict("NEW")),
-            (_proposal("fact c short"), _verdict("NEW")),
-            (_proposal(long), _verdict("NEW")),  # forces N=4 → truncated by default
-        ])
-        responses = iter(["show d", "none"])
-        monkeypatch.setattr("builtins.input", lambda *_: next(responses))
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        # The sentinel-tail is at the END of long content and gets truncated
-        # in the default render; `show d` should expose it.
-        assert "sentinel-tail" in out
+class TestShowCommand:
+    def test_contradiction_shows_both_texts(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal(
+            "the primary region is eu-west-2",
+            _verdict("CONTRADICTION", matched_id=3,
+                     matched_content="the primary region is us-east-1")))
+        out = handle_pending_subcommand(wa.MEMORY, ["show", rec["id"]])
+        assert "the primary region is eu-west-2" in out, "new text missing"
+        assert "the primary region is us-east-1" in out, "existing text missing"
+        assert "conflicts with" in out
 
-    def test_reject_drops_entry_and_re_prompts(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("keep this one"), _verdict("NEW")),
-            (_proposal("drop this one"), _verdict("NEW")),
-            (_proposal("also keep this"), _verdict("NEW")),
-        ])
-        # reject letter b, then accept all the rest
-        responses = iter(["reject b", "all"])
-        monkeypatch.setattr("builtins.input", lambda *_: next(responses))
-        chosen = memory_confirm._interactive_review(proposals)
-        contents = [p["content"] for p in chosen]
-        assert "drop this one" not in contents
-        assert "keep this one" in contents
-        assert "also keep this" in contents
-        out = capsys.readouterr().out
-        assert "dropped:" in out
-        assert "2 entries remaining" in out
+    def test_refinement_shows_merged_result(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal(
+            "deploy runs on 8080 over TLS",
+            _verdict("REFINEMENT", matched_id=2, matched_content="deploy runs on 8080",
+                     merged_content="deploy runs on 8080 over TLS")))
+        out = handle_pending_subcommand(wa.MEMORY, ["show", rec["id"]])
+        assert "refines" in out and "merged result if approved:" in out
 
-    def test_reject_invalid_letter_continues(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("fact a"), _verdict("NEW")),
-            (_proposal("fact b"), _verdict("NEW")),
-        ])
-        responses = iter(["reject z", "none"])
-        monkeypatch.setattr("builtins.input", lambda *_: next(responses))
-        memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert "out of range" in out
+    def test_duplicate_names_the_matched_fact(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal(
+            "cdsdb is the TDS backend",
+            _verdict("DUPLICATE", matched_id=9, matched_content="the TDS backend is cdsdb")))
+        out = handle_pending_subcommand(wa.MEMORY, ["show", rec["id"]])
+        assert "duplicate of" in out and "the TDS backend is cdsdb" in out
 
-    def test_reject_last_returns_empty(self, stub_classifier, monkeypatch, capsys):
-        proposals = stub_classifier([
-            (_proposal("only one"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "reject a")
-        chosen = memory_confirm._interactive_review(proposals)
-        out = capsys.readouterr().out
-        assert chosen == []
-        assert "no entries left" in out
+    def test_new_surfaces_the_closest_candidate(self, hermes_home):
+        """The dedup hint the old UI printed for NEW-with-candidates."""
+        rec = memory_confirm.stage_proposal(_proposal(
+            "grafana lives in the obs repo",
+            _verdict("NEW", candidates=[{"fact_id": 4, "content": "obs repo holds monitoring"}])))
+        out = handle_pending_subcommand(wa.MEMORY, ["show", rec["id"]])
+        assert "similar existing fact:" in out and "obs repo holds monitoring" in out
+
+    def test_unknown_id(self, hermes_home):
+        assert "No pending memory write" in handle_pending_subcommand(
+            wa.MEMORY, ["show", "deadbeef"])
+
+    def test_usage_without_id(self, hermes_home):
+        assert "Usage:" in handle_pending_subcommand(wa.MEMORY, ["show"])
+
+    def test_non_proposal_record_renders_plainly(self, hermes_home):
+        rec = wa.stage_write(wa.MEMORY, {"action": "add", "target": "user", "content": "x"},
+                             summary="add to user profile", origin="foreground")
+        out = handle_pending_subcommand(wa.MEMORY, ["show", rec["id"]])
+        assert "action:" in out and "conflicts with" not in out
 
 
 # ---------------------------------------------------------------------------
-# Letter-list happy path still works
+# /memory edit — edit in place before approving
 # ---------------------------------------------------------------------------
 
-class TestLetterList:
-    def test_select_subset(self, stub_classifier, monkeypatch):
-        proposals = stub_classifier([
-            (_proposal("fact a"), _verdict("NEW")),
-            (_proposal("fact b"), _verdict("NEW")),
-            (_proposal("fact c"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr("builtins.input", lambda *_: "a c")
-        chosen = memory_confirm._interactive_review(proposals)
-        assert [p["content"] for p in chosen] == ["fact a", "fact c"]
+class TestEditCommand:
+    def test_edit_rewrites_content_and_summary(self, hermes_home, monkeypatch):
+        monkeypatch.setattr("tools.memory_extraction.conflict.classify",
+                            lambda text, **kw: _verdict("NEW"))
+        rec = memory_confirm.stage_proposal(_proposal("original typoed text"))
+        out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "corrected", "text"])
+        assert "Updated pending memory proposal" in out
+        stored = wa.get_pending(wa.MEMORY, rec["id"])
+        assert stored["payload"]["content"] == "corrected text"
+        assert "corrected text" in stored["summary"]
 
+    def test_edit_reclassifies_the_new_text(self, hermes_home, monkeypatch):
+        """The old verdict described the OLD text; approving under it would be wrong."""
+        seen = {}
 
-# ---------------------------------------------------------------------------
-# _wrap_indented helper
-# ---------------------------------------------------------------------------
+        def _classify(text, **kw):
+            seen["text"] = text
+            return _verdict("DUPLICATE", matched_id=3, matched_content="already known")
 
-class TestWrapIndented:
-    def test_short_text_one_line(self):
-        out = memory_confirm._wrap_indented("short text", indent=">> ", width=80)
-        assert out == ">> short text"
+        monkeypatch.setattr("tools.memory_extraction.conflict.classify", _classify)
+        rec = memory_confirm.stage_proposal(_proposal("first text", _verdict("NEW")))
+        out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "already", "known"])
+        assert seen["text"] == "already known"
+        assert "new verdict: DUPLICATE" in out
+        assert wa.get_pending(wa.MEMORY, rec["id"])["payload"]["conflict"]["verdict"] == "DUPLICATE"
 
-    def test_long_text_wraps_with_indent(self):
-        text = "alpha bravo charlie delta echo foxtrot golf hotel " * 5
-        out = memory_confirm._wrap_indented(text, indent=">> ", width=40)
-        lines = out.splitlines()
-        assert len(lines) > 1
-        for line in lines:
-            assert line.startswith(">> ")
-            # Width check: indent + content shouldn't massively exceed 40
-            # (we don't break words, so an overrun by one word is OK)
-            assert len(line) <= 60
+    def test_failed_reclassify_keeps_edit_and_drops_stale_verdict(self, hermes_home, monkeypatch):
+        def _boom(text, **kw):
+            raise RuntimeError("no LLM")
+        monkeypatch.setattr("tools.memory_extraction.conflict.classify", _boom)
+        rec = memory_confirm.stage_proposal(_proposal("x", _verdict("REFINEMENT", matched_id=1)))
+        out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "brand", "new", "text"])
+        payload = _payload_of(rec["id"])
+        assert payload["content"] == "brand new text"
+        assert payload["conflict"] is None, "a verdict for the pre-edit text must not survive"
+        assert "could not re-classify" in out
 
-    def test_normalizes_newlines(self):
-        out = memory_confirm._wrap_indented("line one\nline two", indent="", width=80)
-        assert "\n" not in out
-        assert out == "line one line two"
+    def test_usage_errors(self, hermes_home):
+        rec = memory_confirm.stage_proposal(_proposal("x"))
+        assert "Usage:" in handle_pending_subcommand(wa.MEMORY, ["edit"])
+        assert "Usage:" in handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"]])
+        assert "No pending memory write" in handle_pending_subcommand(
+            wa.MEMORY, ["edit", "deadbeef", "text"])
 
-
-# ---------------------------------------------------------------------------
-# Auto-accept countdown
-# ---------------------------------------------------------------------------
-
-class TestAutoAcceptCountdown:
-    """The 3-second 'press any key to review' countdown.
-
-    Behavior contract:
-      - Returns False when the timer expires (caller auto-accepts all).
-      - Returns True when the user presses a key (caller falls through
-        to the interactive prompt).
-      - Returns False on non-tty stdin (no human watching → auto-accept
-        immediately, don't gate exit on a wall-clock wait).
-    """
-
-    @pytest.mark.real_countdown
-    def test_non_tty_stdin_auto_accepts(self, monkeypatch):
-        """Gateway / cron / CI redirected stdin must skip the countdown."""
-        import sys
-        # Force isatty False; every other branch should be irrelevant.
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-        # Should return False (timer "expired" — auto-accept all) without
-        # blocking on select or doing tty manipulation.
-        assert memory_confirm._countdown_for_review(seconds=3) is False
-
-    def test_interactive_review_auto_accepts_when_countdown_expires(
-        self, stub_classifier, monkeypatch, capsys,
-    ):
-        """When _countdown_for_review returns False (timer expired), the
-        interactive review must auto-accept all proposals without ever
-        invoking input()."""
-        proposals = stub_classifier([
-            (_proposal("fact one here"), _verdict("NEW")),
-            (_proposal("fact two here"), _verdict("NEW")),
-        ])
-        # Timer expires (no key pressed).
-        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: False)
-        # input() must NOT be called — bomb on attempt.
-        def _bomb(*_, **__):
-            raise AssertionError("input() should not be called when countdown expires")
-        monkeypatch.setattr("builtins.input", _bomb)
-
-        chosen = memory_confirm._interactive_review(proposals)
-        assert len(chosen) == 2
-        # And the proposal contents are preserved
-        assert [p["content"] for p in chosen] == ["fact one here", "fact two here"]
-
-    def test_interactive_review_falls_through_when_countdown_interrupted(
-        self, stub_classifier, monkeypatch,
-    ):
-        """When _countdown_for_review returns True (user pressed a key),
-        the interactive prompt must run as before — input() gets called."""
-        proposals = stub_classifier([
-            (_proposal("fact one here"), _verdict("NEW")),
-        ])
-        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: True)
-        # User picks 'none' at the prompt
-        monkeypatch.setattr("builtins.input", lambda *_: "none")
-
-        chosen = memory_confirm._interactive_review(proposals)
-        assert chosen == []
-
-    @pytest.mark.real_countdown
-    def test_countdown_handles_termios_failure_gracefully(self, monkeypatch):
-        """If termios.tcgetattr raises (rare — non-real-tty that still
-        passes isatty + has a fileno), bail to the interactive path
-        rather than auto-accepting silently. Falls back to True so the
-        user still gets an explicit prompt."""
-        import sys
-
-        # Stub stdin so we don't depend on pytest's capture pseudo-file
-        # (which legitimately doesn't have a fileno).
-        class FakeStdin:
-            def isatty(self):
-                return True
-
-            def fileno(self):
-                return 0  # Doesn't matter — tcgetattr is patched to raise.
-
-        monkeypatch.setattr(sys, "stdin", FakeStdin())
-
-        import termios
-        def _raise(*_):
-            raise termios.error("ENOTTY")
-        monkeypatch.setattr(termios, "tcgetattr", _raise)
-
-        # Should return True (caller falls through to interactive prompt).
-        assert memory_confirm._countdown_for_review(seconds=3) is True
+    def test_edit_refuses_non_proposal_records(self, hermes_home):
+        rec = wa.stage_write(wa.MEMORY, {"action": "add", "target": "user", "content": "x"},
+                             summary="s", origin="foreground")
+        out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "new text"])
+        assert "not an extraction proposal" in out
+        assert _payload_of(rec["id"])["content"] == "x", "record must be left untouched"
 
 
 # ---------------------------------------------------------------------------
-# Cleanup review — proposed removals/merges of EXISTING warm facts
+# Session exit: stage + notify, never block
 # ---------------------------------------------------------------------------
 
-def _cleanup(
-    fact_id: int,
-    action: str = "remove",
-    *,
-    content: str = "an existing stored fact",
-    reason: str = "stale",
-    merge_target_id: int | None = None,
-    merge_target_content: str | None = None,
-    merged_content: str | None = None,
-) -> Dict[str, Any]:
-    a: Dict[str, Any] = {
-        "fact_id": fact_id, "action": action,
-        "content": content, "reason": reason, "category": "general",
-    }
-    if merge_target_id is not None:
-        a["merge_target_id"] = merge_target_id
-        a["merge_target_content"] = merge_target_content or "the surviving fact"
-        a["merged_content"] = merged_content or "combined text"
-    return a
-
-
-@pytest.fixture()
-def tty_stdin(monkeypatch):
-    """Cleanup review refuses to run on non-tty stdin; fake a tty."""
-    monkeypatch.setattr(memory_confirm.sys.stdin, "isatty", lambda: True, raising=False)
-
-
-class TestReviewCleanup:
-    def test_empty_list_returns_empty_without_prompting(self, monkeypatch):
-        def boom(_):
-            raise AssertionError("should not prompt")
-        monkeypatch.setattr("builtins.input", boom)
-        assert memory_confirm._review_cleanup([]) == []
-
-    def test_non_tty_stdin_approves_nothing(self, monkeypatch):
-        monkeypatch.setattr(memory_confirm.sys.stdin, "isatty", lambda: False, raising=False)
-
-        def boom(_):
-            raise AssertionError("should not prompt on non-tty")
-        monkeypatch.setattr("builtins.input", boom)
-        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
-
-    def test_blank_input_defaults_to_none(self, tty_stdin, monkeypatch):
-        """No auto-accept default for deletions — Enter approves nothing."""
-        monkeypatch.setattr("builtins.input", lambda _: "")
-        assert memory_confirm._review_cleanup([_cleanup(1), _cleanup(2)]) == []
-
-    def test_none_approves_nothing(self, tty_stdin, monkeypatch):
-        monkeypatch.setattr("builtins.input", lambda _: "none")
-        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
-
-    def test_all_approves_everything(self, tty_stdin, monkeypatch):
-        monkeypatch.setattr("builtins.input", lambda _: "all")
-        actions = [_cleanup(1), _cleanup(2)]
-        assert memory_confirm._review_cleanup(actions) == actions
-
-    def test_letters_select_subset_with_own_sequence(self, tty_stdin, monkeypatch):
-        monkeypatch.setattr("builtins.input", lambda _: "a c")
-        actions = [_cleanup(1), _cleanup(2), _cleanup(3)]
-        chosen = memory_confirm._review_cleanup(actions)
-        assert [c["fact_id"] for c in chosen] == [1, 3]
-
-    def test_out_of_range_re_prompts(self, tty_stdin, monkeypatch, capsys):
-        replies = iter(["z", "none"])
-        monkeypatch.setattr("builtins.input", lambda _: next(replies))
-        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
-        assert "out of range" in capsys.readouterr().out
-
-    def test_eof_approves_nothing(self, tty_stdin, monkeypatch):
-        def eof(_):
-            raise EOFError
-        monkeypatch.setattr("builtins.input", eof)
-        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
-
-    def test_render_shows_action_content_and_reason(self, tty_stdin, monkeypatch, capsys):
-        monkeypatch.setattr("builtins.input", lambda _: "none")
-        memory_confirm._review_cleanup([
-            _cleanup(42, "remove", content="the old path is /old/x", reason="path moved"),
-        ])
-        out = capsys.readouterr().out
-        assert "Proposed cleanup (1)" in out
-        assert "REMOVE" in out
-        assert "fact 42" in out
-        assert "/old/x" in out
-        assert "path moved" in out
-
-    def test_render_merge_shows_target_and_result(self, tty_stdin, monkeypatch, capsys):
-        monkeypatch.setattr("builtins.input", lambda _: "none")
-        memory_confirm._review_cleanup([
-            _cleanup(7, "merge", merge_target_id=9,
-                     merge_target_content="the surviving fact text",
-                     merged_content="merged result text"),
-        ])
-        out = capsys.readouterr().out
-        assert "MERGE" in out
-        assert "into fact 9" in out
-        assert "merged result text" in out
-
-
-class TestCleanupAutoDeclineCountdown:
-    """Cleanup review has its own countdown, but it times out to the SAFE
-    default ('none') — the opposite polarity from the new-entry countdown,
-    which times out to 'accept all'. This class exists because deletions/
-    merges must never apply themselves just because the user stepped away.
-    """
-
-    def test_countdown_expires_declines_without_prompting(
-        self, tty_stdin, monkeypatch, capsys,
-    ):
-        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: False)
-
-        def _bomb(*_, **__):
-            raise AssertionError("input() should not be called when countdown expires")
-        monkeypatch.setattr("builtins.input", _bomb)
-
-        result = memory_confirm._review_cleanup([_cleanup(1), _cleanup(2)])
-        assert result == []
-        assert "skipped" in capsys.readouterr().out.lower()
-
-    def test_countdown_uses_decline_verb(self, tty_stdin, monkeypatch):
-        """Cleanup must pass its own verb so the on-screen message doesn't
-        claim it's 'auto-accepting' when it actually auto-declines."""
-        captured = {}
-
-        def fake_countdown(*args, **kwargs):
-            captured["seconds"] = kwargs.get("seconds", args[0] if args else None)
-            captured["verb"] = kwargs.get("verb")
-            return False
-
-        monkeypatch.setattr(memory_confirm, "_countdown_for_review", fake_countdown)
-        monkeypatch.setattr("builtins.input", lambda *_: (_ for _ in ()).throw(
-            AssertionError("input() should not be called")
-        ))
-        memory_confirm._review_cleanup([_cleanup(1)])
-        assert captured["verb"] is not None
-        assert "declin" in captured["verb"].lower()
-
-    def test_keypress_falls_through_to_explicit_prompt(
-        self, tty_stdin, monkeypatch,
-    ):
-        """A keypress during the countdown must NOT auto-apply anything —
-        it only unlocks the normal explicit-selection prompt, which still
-        has no blank-input default for cleanup."""
-        monkeypatch.setattr(memory_confirm, "_countdown_for_review", lambda *a, **kw: True)
-        monkeypatch.setattr("builtins.input", lambda _: "all")
-        actions = [_cleanup(1), _cleanup(2)]
-        assert memory_confirm._review_cleanup(actions) == actions
-
-    @pytest.mark.real_countdown
-    def test_non_tty_stdin_still_short_circuits_before_countdown(self, monkeypatch):
-        """Non-tty stdin must drop proposals before ever touching the
-        countdown helper (no human watching at all, not even a wait)."""
-        import sys
-        monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-
-        def _bomb(*_, **__):
-            raise AssertionError("_countdown_for_review should not run on non-tty")
-        monkeypatch.setattr(memory_confirm, "_countdown_for_review", _bomb)
-
-        assert memory_confirm._review_cleanup([_cleanup(1)]) == []
-
-
-class TestConfirmCallbackKeepsListsSeparate:
-    """Accepting new entries must never implicitly accept cleanup."""
-
-    def test_accept_all_entries_with_cleanup_rejected(self, monkeypatch):
-        captured = {}
-
-        def fake_on_session_end(session_id, messages, *, interactive, confirm_callback):
-            captured["result"] = confirm_callback(
-                [{"content": "a new fact"}],
-                [_cleanup(5)],
-            )
-            return {
-                "session_id": session_id, "buffered": 0, "final_proposed": 1,
-                "committed": 1, "skipped": 0, "cleanup_proposed": 1,
-                "cleanup_applied": 0, "cleanup_skipped": 1,
-                "actions": [], "cleanup_actions": [],
-            }
-
+class TestSessionExit:
+    @staticmethod
+    def _wire(monkeypatch, proposals: List[Dict[str, Any]]):
         from tools.memory_extraction import extractor as _ex
+        import tools.memory_extraction.buffer as _buf
         monkeypatch.setattr(_ex, "is_enabled", lambda: True)
-        monkeypatch.setattr(_ex, "on_session_end", fake_on_session_end)
-        monkeypatch.setattr(
-            memory_confirm, "_interactive_review", lambda p: list(p),
-        )
-        monkeypatch.setattr(memory_confirm, "_review_cleanup", lambda c: [])
+        monkeypatch.setattr(_buf, "get_session_entries", lambda sid: list(proposals))
+        monkeypatch.setattr(memory_confirm, "_classify_proposals",
+                            lambda ps: [{**p, "verdict": _verdict("NEW")} for p in ps])
 
-        memory_confirm.confirm_and_commit(
-            "sid", [{"role": "user", "content": "hi"}],
-        )
-        result = captured["result"]
-        assert isinstance(result, dict)
-        assert len(result["entries"]) == 1
-        assert result["cleanup"] == []
+        def _on_session_end(session_id, messages, *, interactive=False, confirm_callback=None):
+            assert interactive and confirm_callback is not None
+            confirm_callback(list(proposals), [])
+            return {"session_id": session_id, "buffered": 0, "final_proposed": len(proposals),
+                    "committed": 0, "skipped": len(proposals), "cleanup_proposed": 0,
+                    "cleanup_applied": 0, "cleanup_skipped": 0,
+                    "actions": [], "cleanup_actions": []}
 
-    def test_callback_returns_both_lists_when_cleanup_approved(self, monkeypatch):
-        captured = {}
-        action = _cleanup(5)
+        monkeypatch.setattr(_ex, "on_session_end", _on_session_end)
 
-        def fake_on_session_end(session_id, messages, *, interactive, confirm_callback):
-            captured["result"] = confirm_callback([{"content": "a new fact"}], [action])
-            return {
-                "session_id": session_id, "buffered": 0, "final_proposed": 1,
-                "committed": 1, "skipped": 0, "cleanup_proposed": 1,
-                "cleanup_applied": 1, "cleanup_skipped": 0,
-                "actions": [], "cleanup_actions": [],
-            }
+    def test_stages_and_commits_nothing_inline(self, hermes_home, monkeypatch):
+        self._wire(monkeypatch, [{"content": "fact one"}, {"content": "fact two"}])
+        summary = memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        assert summary["staged"] == 2
+        assert summary["committed"] == 0, "exit must not commit; the pending store owns these now"
+        assert wa.pending_count(wa.MEMORY) == 2
 
-        from tools.memory_extraction import extractor as _ex
-        monkeypatch.setattr(_ex, "is_enabled", lambda: True)
-        monkeypatch.setattr(_ex, "on_session_end", fake_on_session_end)
-        monkeypatch.setattr(memory_confirm, "_interactive_review", lambda p: list(p))
-        monkeypatch.setattr(memory_confirm, "_review_cleanup", lambda c: list(c))
+    def test_never_blocks_on_input(self, hermes_home, monkeypatch):
+        """The whole point of moving review off the exit path."""
+        self._wire(monkeypatch, [{"content": "fact one"}])
 
+        def _bomb(*a, **kw):
+            raise AssertionError("session exit must never call input()")
+
+        monkeypatch.setattr("builtins.input", _bomb)
         memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
-        assert captured["result"]["cleanup"] == [action]
+
+    def test_staged_proposals_are_not_counted_as_lost(self, hermes_home, monkeypatch):
+        """Staged != skipped — they're deferred, and the count must say so."""
+        self._wire(monkeypatch, [{"content": "fact one"}, {"content": "fact two"}])
+        summary = memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        assert summary["skipped"] == 0
+
+    def test_notice_names_the_review_command(self, hermes_home, monkeypatch, capsys):
+        self._wire(monkeypatch, [{"content": "fact one"}])
+        memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        out = capsys.readouterr().out
+        assert "staged 1 proposal" in out
+        assert "/memory pending" in out
+
+    def test_no_session_id_is_a_noop(self, hermes_home):
+        assert memory_confirm.confirm_and_commit("")["staged"] == 0
+        assert wa.pending_count(wa.MEMORY) == 0
+
+    def test_disabled_extraction_is_a_noop(self, hermes_home, monkeypatch):
+        from tools.memory_extraction import extractor as _ex
+        monkeypatch.setattr(_ex, "is_enabled", lambda: False)
+        assert memory_confirm.confirm_and_commit("sid", [{"role": "user"}])["staged"] == 0
+        assert wa.pending_count(wa.MEMORY) == 0

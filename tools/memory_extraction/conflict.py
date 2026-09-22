@@ -31,6 +31,52 @@ class ConflictVerdict:
     candidates: List[Dict[str, Any]] = field(default_factory=list)
 
 
+# Verdicts cross a process boundary now: the session-exit extraction review stages
+# its proposals into the write-approval pending store (JSON on disk) and a LATER
+# `/memory approve <id>` replays them. The verdict the user actually reviewed must
+# survive that round trip verbatim — re-classifying at approve time would both lie
+# to the user (the classifier is an LLM and a second roll can flip DUPLICATE -> NEW)
+# and pay for the call twice. Same invariant `extractor.on_session_end` already
+# enforces in-process by reusing a pre-attached verdict.
+_VERDICT_FIELDS = ("verdict", "matched_id", "matched_content", "rationale", "merged_content")
+
+
+def verdict_to_dict(verdict: ConflictVerdict) -> Dict[str, Any]:
+    """JSON-safe dict for a ConflictVerdict (round-trips via ``verdict_from_dict``).
+
+    ``candidates`` is capped at the 3 nearest matches: the full FTS5 candidate list is
+    only needed to *make* the call, while the reviewer only ever sees the closest one,
+    and the whole record is written to disk on every staged proposal.
+    """
+    data: Dict[str, Any] = {f: getattr(verdict, f) for f in _VERDICT_FIELDS}
+    data["candidates"] = [
+        {"fact_id": c.get("fact_id"), "content": c.get("content")}
+        for c in (verdict.candidates or [])[:3]
+        if isinstance(c, dict)
+    ]
+    return data
+
+
+def verdict_from_dict(data: Optional[Dict[str, Any]]) -> ConflictVerdict:
+    """Rebuild a ConflictVerdict from ``verdict_to_dict`` output.
+
+    Tolerant by design — a pending record hand-edited or written by an older build
+    must still approve rather than hard-fail, so anything missing/unparseable
+    degrades to a bare NEW verdict (which stores the fact as-is, the safe outcome).
+    """
+    if not isinstance(data, dict):
+        return ConflictVerdict(verdict="NEW", rationale="no conflict metadata on pending record")
+    matched_id = data.get("matched_id")
+    return ConflictVerdict(
+        verdict=str(data.get("verdict") or "NEW").upper(),
+        matched_id=matched_id if isinstance(matched_id, int) else None,
+        matched_content=data.get("matched_content"),
+        rationale=data.get("rationale") or "",
+        merged_content=data.get("merged_content"),
+        candidates=[c for c in (data.get("candidates") or []) if isinstance(c, dict)],
+    )
+
+
 def classify(
     content: str,
     *,
