@@ -53,8 +53,6 @@
         }
       }
     },
-    "rimraf": "file:local-packages/rimraf-shim",
-    "boolean": "file:local-packages/boolean-shim",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "minimatch": "^10.2.5",
