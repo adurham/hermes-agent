@@ -76,8 +76,7 @@ jobs:
         env:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
-          # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2, which is 192 here.
+          # from a single ThreadPoolExecutor, so this value IS the limit.
           #
           # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
           # two repetitions for each value. See run 32549672063:
@@ -90,11 +89,12 @@ jobs:
           #       240       2.5x    140s
           #       288       3.0x    142s
           #
-          # One worker for each core wins. The curve is shallow: 126s to 142s
-          # across a 6x range. The suite has sufficient concurrency at this
-          # size. The remaining time is the slowest files plus the setup.
-          # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          # The suite has since grown to more than 5,000 files. At 96 workers,
+          # two consecutive runs left dozens of first-wave files unable even
+          # to collect before the five-minute cap. Use the measured half-core
+          # point: it was only 12s behind the old winner and avoids launching
+          # one cold pytest import per core at once.
+          HERMES_TEST_WORKERS: 48
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
