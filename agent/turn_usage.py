@@ -11,6 +11,7 @@ model/provider. Logger name stays ``agent.conversation_loop`` for caplog parity.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -61,6 +62,81 @@ def _fold_moa_usage(agent, canonical_usage):
         except Exception as _moa_trace_exc:  # pragma: no cover - defensive
             logger.debug("MoA trace flush failed: %s", _moa_trace_exc)
     return _moa_client, canonical_usage, _moa_ref_cost
+
+
+def _response_request_id(response: Any) -> Any:
+    """FORK: the provider's own request id for this response, for support tickets.
+
+    Pre-merge this read ``_hermes_request_id`` / ``_hermes_routing_headers``,
+    which the fork stashed on the final streamed Message from
+    ``stream.response.headers`` before the context manager closed. Upstream
+    rewrote that streaming path (``agent/chat_completion_helpers.py``) during
+    this sync and both attributes are gone repo-wide, so this reads the
+    identifiers upstream's own API-call log line uses instead:
+
+      * ``response.id`` -- what the log line reports as ``id=``; Anthropic's
+        ``msg_...`` and OpenAI's ``chatcmpl-...`` both land here.
+      * ``response._request_id`` -- the openai/anthropic SDKs attach the HTTP
+        ``request-id`` header here on non-streaming responses.
+      * ``response.headers`` -- any transport that hands the raw headers back.
+
+    Never raises: a missing id degrades the row, it must not break the turn.
+    """
+    for attr in ("id", "_request_id"):
+        with suppress(Exception):
+            value = getattr(response, attr, None)
+            if isinstance(value, str) and value:
+                return value
+    with suppress(Exception):
+        headers = getattr(response, "headers", None)
+        if headers:
+            return headers.get("request-id") or headers.get("x-request-id")
+    return None
+
+
+def _record_api_call_row(agent: Any, response: Any, canonical_usage, *, api_duration: float) -> None:
+    """FORK: write this response's ``api_calls`` row (see ``hermes_state``'s
+    FORK_SCHEMA_SQL). Best-effort -- ``record_api_call`` swallows its own write
+    failures, and this wrapper swallows everything else, because per-call
+    telemetry must never be able to break a turn.
+
+    ``started_at`` is derived as ``ended_at - api_duration`` rather than
+    threaded down from the loop: that keeps ``latency_seconds`` EXACTLY the
+    duration the caller measured (the field that matters) and confines the
+    absolute-timestamp drift to the few ms of usage folding above, without
+    widening ``record_response_usage``'s signature into upstream's caller.
+    """
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not session_db or not session_id:
+        return
+    try:
+        ended_at = time.time()
+        # OpenRouter reports the upstream that actually served the request; upstream's
+        # own log line surfaces it as `upstream=`, so keep it next to the cache split.
+        routing: Dict[str, Any] = {}
+        served_by = getattr(response, "provider", None)
+        if isinstance(served_by, str) and served_by:
+            routing["upstream"] = served_by
+        session_db.record_api_call(
+            session_id,
+            call_seq=agent.session_api_calls,
+            started_at=ended_at - float(api_duration or 0.0),
+            ended_at=ended_at,
+            model=agent.model,
+            provider=agent.provider,
+            input_tokens=canonical_usage.input_tokens,
+            cache_read_tokens=canonical_usage.cache_read_tokens,
+            cache_write_tokens=canonical_usage.cache_write_tokens,
+            output_tokens=canonical_usage.output_tokens,
+            reasoning_tokens=canonical_usage.reasoning_tokens,
+            request_id=_response_request_id(response),
+            stop_reason=getattr(response, "stop_reason", None) or getattr(response, "finish_reason", None),
+            call_type="main",
+            extra={"raw_usage": canonical_usage.raw_usage, "routing": routing},
+        )
+    except Exception:  # pragma: no cover - telemetry must never break a turn
+        logger.debug("api_calls row skipped for session %s", session_id, exc_info=True)
 
 
 def record_response_usage(
@@ -268,6 +344,11 @@ def record_response_usage(
                 "Token persistence failed (session=%s, tokens=%d): %s",
                 agent.session_id, total_tokens, e,
             )
+        # FORK: per-call telemetry. queue_token_counts above accumulates session
+        # TOTALS; this writes one api_calls row with the per-call cache split,
+        # latency and request id. Cumulative totals cannot answer "was THIS turn a
+        # cold prefill?" -- only the per-call cache_read vs cache_write split can.
+        _record_api_call_row(agent, response, canonical_usage, api_duration=api_duration)
 
     if agent.verbose_logging:
         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
