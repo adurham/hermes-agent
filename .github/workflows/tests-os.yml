@@ -81,6 +81,7 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
+          packages: ripgrep
           extras: '["all", "dev", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
           prune-python-cache: true
 
