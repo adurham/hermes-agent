@@ -1,7 +1,7 @@
 name: tamahermes
 repo: https://github.com/ahrazzle/TamaHermes
 subdir: plugins/tamahermes
-sha: a9690e9a88e08201d2bc1601f608fbf61bd335f0
+sha: 5e0e7ae416b0be325c52b57c560a6e8a508831bb
 description: Grow a local TamaHermes pet from real Hermes agent activity.
 maintainer: ahrazzle
 tier: community
