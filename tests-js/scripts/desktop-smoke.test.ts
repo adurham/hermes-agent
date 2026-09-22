@@ -431,8 +431,11 @@ test('update-window process checks use the isolated launch environment, not the 
         { executable, root, origin: 'source', userData: driver },
       )).toThrow('OLD update window did not honor isolated userData')
     } finally {
-      if (prior === undefined) delete process.env.HERMES_DESKTOP_USER_DATA_DIR
-      else process.env.HERMES_DESKTOP_USER_DATA_DIR = prior
+      if (prior === undefined) {
+        delete process.env.HERMES_DESKTOP_USER_DATA_DIR
+      } else {
+        process.env.HERMES_DESKTOP_USER_DATA_DIR = prior
+      }
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

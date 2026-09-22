@@ -233,7 +233,7 @@ def build_stamp(
 
         try:
             dev_display_version = dev_version(_REPO_ROOT)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, ValueError):
             base_version, distance = "0.0.0", 0
         else:
             base_version, separator, development = dev_display_version.partition("+")
