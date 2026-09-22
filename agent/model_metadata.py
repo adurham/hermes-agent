@@ -1816,8 +1816,6 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     from agent.codex_headers import codex_account_headers
     headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
-        
-        
         entries, status = fetch_codex_catalog_entries(
             lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify())
         )
