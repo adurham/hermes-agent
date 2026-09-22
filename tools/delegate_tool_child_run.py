@@ -24,6 +24,25 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+class _DelegationAbandoned(Exception):
+    """Raised when a synchronous delegation's owner stopped waiting for it.
+
+    Distinct from a timeout: the child was NOT over budget, the consumer went away
+    (generic tool deadline abandoning this worker thread, or a parent interrupt).
+    Surfaced as status='abandoned' rather than 'timeout' so the transcript never claims
+    the subagent was too slow when it was actually orphaned.
+    """
+
+# How often a blocking single-child wait re-checks for owner abandonment. Short enough
+# that teardown lands promptly, long enough to be free.
+_ABANDON_POLL_INTERVAL = 1.0
+
+# Heartbeat cycles of unchanged state before re-emitting anyway (~every 2 min on the
+# 30s interval) — the "still alive" backstop.
+_HEARTBEAT_FORCE_EMIT_CYCLES = 4
+# Sentinel for "no line emitted yet": None is a real value (the child is thinking).
+_UNSET_TOOL = object()
+
 def _num(value: Any, default: int = 0) -> int:
     """int() for counters that may be mocks/None on test doubles."""
     return int(value) if isinstance(value, (int, float)) else default
@@ -230,6 +249,9 @@ class _Heartbeat:
         # activity_ts) all froze; thresholds differ idle vs in-tool.
         self.last_seen = {"iter": 0, "tool": None, "ts": None, "stale": 0}
         self.handle = None
+        # User-visible scrollback heartbeat state (see _emit_progress_line).
+        self.child_start = time.monotonic()
+        self.last_emit = {"iter": -1, "tool": _UNSET_TOOL, "quiet": 0}
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
@@ -249,6 +271,7 @@ class _Heartbeat:
         if not touch:
             return None
         desc = f"delegate_task: subagent {task_index} working"
+        child_tool, child_iter, child_max = None, 0, 0
         try:
             child_summary = child.get_activity_summary()
             child_tool = child_summary.get("current_tool")
@@ -280,7 +303,41 @@ class _Heartbeat:
             pass
         with _quiet(None):
             touch(desc)
+        self._emit_progress_line(child_tool, child_iter, child_max)
         return None
+
+    def _emit_progress_line(self, child_tool: Any, child_iter: int, child_max: int) -> None:
+        """Surface what the subagent is doing in the parent's scrollback.
+
+        Without this a long delegation looks frozen (the parent's spinner shows only
+        ``🔀 delegate ... 506.2s``). Piggybacks on the existing heartbeat cycle rather
+        than adding a thread, and routes through ``_emit_status`` so the line reaches
+        both CLI scrollback and the gateway/TUI status channel.
+
+        Suppressed while a swarm board is active: its per-child rows already render
+        model + tool + iter + elapsed in place, so emitting both duplicates state.
+        Headless / non-TUI runs (no board) still get the lines. Deliberately lean —
+        token/cost figures are surfaced on completion, not on every tick.
+        """
+        with _quiet("delegate heartbeat emit failed", exc_info=True):
+            from tools.swarm_board import any_board_active
+
+            emit = getattr(self.parent_agent, "_emit_status", None)
+            if not emit or any_board_active(self.parent_agent):
+                return
+            seen = self.last_emit
+            # Print only on a state change, unless we've been quiet for the backstop
+            # window (the "I'm alive" tick).
+            if child_iter == seen["iter"] and child_tool == seen["tool"] and seen["quiet"] < _HEARTBEAT_FORCE_EMIT_CYCLES:
+                seen["quiet"] += 1
+                return
+            elapsed = int(time.monotonic() - self.child_start)
+            model = getattr(self.child, "model", None) or "?"
+            emit(
+                f"  ┊ 🔀 [{self.task_index}] {model} · {child_tool or 'thinking'} "
+                f"(iter {child_iter}/{child_max}) · {elapsed}s elapsed"
+            )
+            seen.update(iter=child_iter, tool=child_tool, quiet=0)
 
 
 def _start_heartbeat(child: Any, parent_agent: Any, task_index: int) -> _Heartbeat:
@@ -302,6 +359,24 @@ def _register_child(
             owner_session_id = get_session_env("HERMES_UI_SESSION_ID", "") or None
     if owner_session_id and (owner_transport is None or owner_session_record is None):
         owner_transport, owner_session_record = _capture_gateway_steer_authority(owner_session_id)
+    # Register the OWNING conversation as a messaging participant at spawn time: a child
+    # spawned in the same turn as a session_id reassignment would otherwise capture an
+    # owner_session_id nobody has registered yet, and its send_to_parent would fall
+    # through to Transport B's approval gate. Registration is idempotent, so doing it
+    # here too is free.
+    #
+    # Must pass cli= here, not just agent=: register_session_participant preserves an
+    # existing ref and never clobbers a known one with None, but on the VERY FIRST
+    # registration (no idle tick has run yet) a cli=None call creates the entry with no
+    # cli ref at all, and idle-branch delivery (_append_idle_atomically) needs
+    # cli._pending_input. A subagent calling send_to_parent before its parent's next idle
+    # tick would otherwise hit "recipient session is idle but exposes no _pending_input
+    # queue" even though the session resolved correctly in-process. ``_cli_ref`` is set
+    # by cli.py right after agent construction for exactly this back-reference.
+    with _quiet("owner session participant registration failed: %s"):  # never block a spawn over messaging
+        from tools.cross_session_integration import register_session_participant_for
+
+        register_session_participant_for(parent_agent, cli=getattr(parent_agent, "_cli_ref", None))
     _raw_depth = getattr(child, "_delegate_depth", 1)
     _register_subagent({
         "subagent_id": _subagent_id,

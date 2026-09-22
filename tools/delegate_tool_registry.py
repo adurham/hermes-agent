@@ -170,11 +170,43 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
 # Registry record fields never exposed to the TUI/RPC snapshot.
 _PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
 
+def _live_model_fields(record: Dict[str, Any], *, compact: bool = False) -> Dict[str, Any]:
+    """Resolve a registry record's EFFECTIVE model identity.
+
+    The record's ``"model"`` value is a dispatch-time snapshot written once at
+    registration and never rewritten, so it goes stale the moment
+    ``try_activate_fallback()`` swaps the child onto its fallback provider. The
+    record also carries the live child object under ``"agent"``, which is
+    authoritative — read that, and use the snapshot only as the degradation path
+    for a record whose agent ref is gone.
+
+    Returns the six-key wire payload (``model``, ``provider``, ``fallback_active``,
+    ``primary_model``, ``primary_provider``, ``model_label``). Never raises —
+    callers use it inside the registry lock and on display paths.
+    """
+    from agent.failover_state import effective_model_fields
+
+    return effective_model_fields(
+        record.get("agent"), snapshot_model=record.get("model"),
+        snapshot_provider=record.get("provider"), compact=compact,
+    )
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,
-    started_at, tool_count, status, ...}); safe from any thread."""
+    provider, fallback_active, primary_model, primary_provider, model_label,
+    started_at, tool_count, status, ...}); safe from any thread.
+
+    ``model`` is the child's EFFECTIVE model, re-resolved from the live agent object
+    on every call, not the dispatch-time snapshot stored on the record. The ``"agent"``
+    key is stripped from the output (a live object, not serialisable state), so the
+    resolution must happen HERE, before the filter — consumers downstream have no way
+    to do it themselves.
+    """
     with _active_subagents_lock:
-        return [{k: v for k, v in r.items() if k not in _PRIVATE_RECORD_KEYS} for r in _active_subagents.values()]
+        return [
+            {**{k: v for k, v in r.items() if k not in _PRIVATE_RECORD_KEYS}, **_live_model_fields(r)}
+            for r in _active_subagents.values()
+        ]
 
 def _is_descendant_of(child_agent: Any, parent_agent: Any, max_hops: int = 8) -> bool:
     """True when *child_agent* sits below *parent_agent* in the spawn tree (walks the ``_delegate_parent_ref`` weakref
@@ -242,11 +274,22 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
         if not _owns_subagent_record(r, parent_agent):
             continue
         started = r.get("started_at")
+        # Effective model/provider read LIVE off the child agent, not the dispatch-time
+        # snapshot on the record: a child that silently failed over is running on a
+        # different model than the one it was registered with, and reporting the stale
+        # one is how a supervising model ends up reasoning about the wrong runtime.
+        # Same live-read discipline as ``live_transcript`` below.
+        _model_state = _live_model_fields(r)
         entries.append({
             "subagent_id": r.get("subagent_id"),
             "parent_id": r.get("parent_id"),
             "goal": r.get("goal"),
-            "model": r.get("model"),
+            "model": _model_state["model"],
+            "provider": _model_state["provider"],
+            "fallback_active": _model_state["fallback_active"],
+            "primary_model": _model_state["primary_model"],
+            "primary_provider": _model_state["primary_provider"],
+            "model_label": _model_state["model_label"],
             "status": r.get("status"),
             "running_seconds": round(time.time() - started, 1) if isinstance(started, (int, float)) else None,
             "accepting_steer": bool(r.get("accepting_steer", False)),

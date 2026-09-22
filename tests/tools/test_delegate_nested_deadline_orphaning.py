@@ -292,7 +292,11 @@ def test_generic_deadline_still_applies_to_sibling_tools(tmp_path, monkeypatch):
 
     messages: list = []
     try:
-        with patch("run_agent.handle_function_call", side_effect=_dispatch):
+        # Patch the real dispatch seam: upstream re-plumbed tool execution to call
+        # ``model_tools.handle_function_call`` directly. ``run_agent.handle_function_call``
+        # is now only a PEP-562 plugin-compat pointer (see compat_manifest.json), so
+        # patching it no longer intercepts anything and the real tool would run.
+        with patch("model_tools.handle_function_call", side_effect=_dispatch):
             execute_tool_calls_sequential(
                 agent,
                 SimpleNamespace(

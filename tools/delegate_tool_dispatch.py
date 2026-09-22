@@ -23,6 +23,60 @@ from tools.delegate_tool_results import _finalize_child_results
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
+def _owner_abandoned(parent_agent: Any, honor_parent_interrupt: bool) -> bool:
+    """True when nothing is left waiting for this synchronous delegation.
+
+    Two independent abandonment signals, and BOTH must be polled:
+
+    1. ``parent_agent._interrupt_requested`` — a user /stop or a new message
+       interrupting the parent turn.
+    2. The THREAD-LOCAL interrupt bit (``tools.interrupt.is_interrupted()``) — set on
+       this very worker thread by the tool executor when it gives up on the call
+       (generic tool deadline, or a batch abandon). This is the signal that was
+       previously missed: the executor sets the bit, returns a synthetic "timed out"
+       result to the model, and does ``shutdown(wait=False)`` — explicitly documented as
+       leaving the worker "running detached". Polling only signal (1) meant the
+       aggregation loop never learned it had been abandoned, kept joining on its
+       children, and finally returned a fully-formed consolidated result into a Future
+       that no longer had a reader. The children's work was silently discarded and the
+       orchestrator reported "completed" upward. (2026-08-23 incident.)
+
+    Signal (2) is thread-scoped, so it is only meaningful on the thread that actually
+    runs the aggregation — which is where this is called from.
+
+    Both are gated on *honor_parent_interrupt*, precisely the "owned by the caller's
+    turn" flag. A detached background batch passes False: its lifecycle belongs to the
+    async registry and it has a durable consumer in the completion queue, so neither
+    signal applies — and skipping the thread-local read there also avoids a false
+    positive from ident reuse on the async daemon pool.
+    """
+    if not honor_parent_interrupt:
+        return False
+    if getattr(parent_agent, "_interrupt_requested", False) is True:
+        return True
+    try:
+        from tools.interrupt import is_interrupted as _thread_interrupted
+
+        return bool(_thread_interrupted())
+    except Exception:
+        return False
+
+def _teardown_abandoned_children(children: Any, reason: str) -> None:
+    """Hard-interrupt every child of an abandoned delegation. Idempotent.
+
+    Abandonment must be deterministic teardown, never silent orphaning: if nothing will
+    consume this delegation's result, its children must not keep burning tokens against
+    a dead consumer. Best-effort per child so one failure cannot block the rest.
+    """
+    for _entry in children or ():
+        # (task_index, task, child) triples as built by delegate_task; a malformed/short
+        # tuple carries no child and is skipped (never interrupt the tuple itself).
+        _c = (_entry[2] if len(_entry) >= 3 else None) if isinstance(_entry, tuple) else _entry
+        if _c is None:
+            continue
+        with _quiet("Abandoned-child teardown failed", exc_info=True):
+            _signal_child_stop(_c, reason)
+
 
 @dataclass
 class _Batch:
@@ -133,7 +187,14 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
         futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
         while pending:
-            if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
+            if _owner_abandoned(parent_agent, honor_parent_interrupt):
+                # Nothing will read this result: tear the children down rather than
+                # leaving them burning tokens against a dead consumer. Resolved through
+                # the origin module so ``tools.delegate_tool._teardown_abandoned_children``
+                # stays the single patchable/overridable entry point.
+                from tools import delegate_tool as _dt
+
+                _dt._teardown_abandoned_children(batch.children, "Delegation abandoned by its owner")
                 results.extend(_entry_of(f, futures[f]) for f in pending)
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
