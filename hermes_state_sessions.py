@@ -991,6 +991,16 @@ class SessionSessionsMixin:
                 merged["title"] = s.get("title")
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
+            # Cost must be summed across the WHOLE chain (root + every
+            # continuation): the root's own cost and the tip's are each only a
+            # partial, so surfacing either one alone under-reports the
+            # conversation's real spend. ``get_lineage_cost_usd`` (SessionDB,
+            # hermes_state.py) walks the same compaction edges this projection
+            # does. Best-effort: a cost read must never break session listing.
+            try:
+                merged["estimated_cost_usd"] = self.get_lineage_cost_usd(s["id"])
+            except Exception:
+                logger.debug("lineage cost roll-up failed for %s", s["id"], exc_info=True)
             projected.append(merged)
         return projected
 
