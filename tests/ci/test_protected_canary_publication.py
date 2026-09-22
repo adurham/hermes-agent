@@ -47,13 +47,12 @@ def canary(tmp_path, r2_server, monkeypatch):
     (desktop / "product-identity.cjs").symlink_to(ROOT / "apps/desktop/product-identity.cjs")
     monkeypatch.chdir(clone)
     identity = channel_releases.product_identity(tag)
-    minutes = subprocess.check_output([
+    windows_version = subprocess.check_output([
         "node", "--input-type=module", "-e",
-        f"import {{canaryBuildMinutesFor}} from {json.dumps((ROOT / 'scripts/msix-shared.mjs').as_uri())};"
-        f"console.log(canaryBuildMinutesFor({json.dumps(tag)}, Date.UTC(2026, 8, 13) / 1000))",
+        f"import {{nativeQuad}} from {json.dumps((ROOT / 'scripts/msix-shared.mjs').as_uri())};"
+        f"console.log(nativeQuad({json.dumps(tag)}, Date.parse('2026-09-13T00:10:00Z') / 1000))",
     ], text=True).strip()
-    windows_version = tag[1:].split("-", 1)[0] + "." + minutes
-    assert windows_version == "0.1.3.10"
+    assert windows_version == "2026.6120.600.0"
     tools = tmp_path / "tools"
     tools.mkdir()
     driver = tools / "driver.py"
@@ -223,7 +222,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
             assert result.returncode == 0, result.stdout + result.stderr
     resolved = ChannelReader(env["CLOUDFLARE_R2_PUBLIC_URL"], repository=env["GITHUB_REPOSITORY"]).resolve("canary")
     assert resolved.manifest is not None
-    assert resolved.manifest["request"]["windowsVersion"] == "0.1.3.10"
+    assert resolved.manifest["request"]["windowsVersion"] == "2026.6120.600.0"
     assert resolved.manifest["request"]["commit"] == env["RELEASE_COMMIT"]
     assert len(resolved.manifest["packages"]) == 4
     # Bootstrap reads actual receipt-bound artifacts and the promoted native feeds,
@@ -265,14 +264,14 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     _git("tag", newer_tag, cwd=clone)
     _git("push", "origin", newer_tag, cwd=clone)
     newer = {**env, "RELEASE_TAG": newer_tag, "HERMES_PAYLOAD_TAG": newer_tag,
-             "FIXTURE_WINDOWS_VERSION": "0.1.3.11"}
+             "FIXTURE_WINDOWS_VERSION": "2026.6120.660.0"}
     stage_canary(clone, identity, newer, run)
     release.write_text(json.dumps({**published, "tagName": newer_tag}))
     result = run(script, **newer)
     assert result.returncode == 0, result.stdout + result.stderr
     advanced = ChannelReader(env["CLOUDFLARE_R2_PUBLIC_URL"], repository=env["GITHUB_REPOSITORY"]).resolve("canary")
     assert advanced.manifest is not None
-    assert advanced.manifest["request"]["windowsVersion"] == "0.1.3.11"
+    assert advanced.manifest["request"]["windowsVersion"] == "2026.6120.660.0"
     assert advanced.terminal["head"]["sequence"] > resolved.terminal["head"]["sequence"]
     after = dict(r2_server.store)
     release.write_text(json.dumps(published))

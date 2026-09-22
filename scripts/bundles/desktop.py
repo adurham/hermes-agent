@@ -97,22 +97,13 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     run([node, "scripts/build/desktop.mjs", "--source", str(repo), "--icons", str(icons),
          "--stamp", str(desktop / "build/install-stamp.json"), "--native-deps", str(prepared.native),
          "--out", str(desktop / "dist")], cwd=repo, env=env)
-    # Windows file-version and MSIX build-number policy remains with its packager.
+    # The native quad is the build time, for stable and canary both, so there
+    # is no per-channel build number to inject.
     version_args = []
-    if sys.platform == "win32":
-        if request.channel_request is not None:
-            metadata = {"file": request.channel_request["windowsVersion"], "build": None}
-        elif request.tag is None:
-            # The plain version needs no canary build-number override.
-            metadata = {"file": None, "build": None}
-        else:
-            script = "const w=require('./apps/desktop/scripts/windows-file-version.mjs');const m=require('./scripts/msix-shared.mjs');console.log(JSON.stringify({file:w.windowsFileVersion(process.argv[1]),build:process.argv[2]!=='store'&&process.argv[1].includes('-canary.')?m.canaryBuildMinutes(process.argv[1],process.cwd()):null}))"
-            metadata = json.loads(capture([node, "-e", script, request.tag, variant], repo))
-        env.pop("BUILD_NUMBER", None)
-        if metadata["build"] is not None and variant != "store":
-            env["BUILD_NUMBER"] = str(metadata["build"])
-        if metadata["file"]:
-            version_args = [f'-c.extraMetadata.shortVersion={metadata["file"]}', f'-c.extraMetadata.shortVersionWindows={metadata["file"]}']
+    if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
+        script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Math.floor(Date.now()/1000)))"
+        quad = capture([node, "-e", script, request.tag], repo).strip()
+        version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
     require_source(repo, request.commit)
     run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
         env=packaging_environment(env, os.environ, request.target))

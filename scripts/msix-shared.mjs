@@ -81,12 +81,6 @@ export function contentTypeFor(filename) {
 const CANARY_TAG_RE = /^v(\d+\.\d+\.\d+)-canary\.(20\d{6}(?:\d{6})?)$/
 const STABLE_TAG_RE = /^v\d+\.\d+\.\d+$/
 
-// MSIX version components are 16-bit (makeappx rejects >65535). Minutes
-// since the last stable cross it at 45.5 days; a canary cut more than 45
-// days after its stable is a process failure worth surfacing loudly, not a
-// number to clamp (a clamped number would break monotonicity).
-const MAX_BUILD_MINUTES = 45 * 24 * 60
-
 /**
  * @param {string} stamp YYYYMMDD[HHMMSS] UTC stamp
  * @returns {number} epoch seconds
@@ -96,65 +90,6 @@ function stampToEpoch(stamp) {
   if (!parts) return 0
   const [, y, mo, d, h, mi, s] = parts
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h ?? 0), Number(mi ?? 0), Number(s ?? 0)) / 1000
-}
-
-/**
- * List git tags matching `pattern`, newest-first (git's -v:refname sort).
- * @param {string} gitRoot the repo root
- * @param {string} pattern git tag glob, e.g. "v0.27.*"
- * @returns {string[]}
- */
-export function listGitTags(gitRoot, pattern) {
-  return execFileSync('git', ['tag', '--list', pattern, '--sort=-v:refname'], { cwd: gitRoot, encoding: 'utf8' })
-    .split('\n').filter(Boolean)
-}
-
-/**
- * The commit time (epoch seconds) of `tag`, for minutes-since-stable math.
- * @param {string} gitRoot the repo root
- * @param {string} tag a git tag
- * @returns {number}
- */
-export function gitTagCommitTime(gitRoot, tag) {
-  return Number(execFileSync('git', ['log', '-1', '--format=%ct', tag], { cwd: gitRoot, encoding: 'utf8' }).trim())
-}
-
-/**
- * Minutes between a canary tag's UTC stamp and the given stable epoch —
- * the MSIX 4th version component. Null for a stable tag; throws when the
- * stable base is older than 45 days (16-bit component would overflow).
- * @param {string} tag the release tag
- * @param {number} stableEpoch stable tag commit time, epoch seconds
- * @returns {number | null}
- */
-export function canaryBuildMinutesFor(tag, stableEpoch) {
-  const m = CANARY_TAG_RE.exec(String(tag || ''))
-  if (!m) return null
-  const minutes = Math.floor((stampToEpoch(m[2]) - stableEpoch) / 60)
-  if (minutes < 0) return 0
-  if (minutes > MAX_BUILD_MINUTES) {
-    throw new Error(
-      `canary ${tag} is ${Math.floor(minutes / 1440)} days past its stable base — ` +
-      `MSIX versions cap at 16 bits (45 days); cut a stable first`
-    )
-  }
-  return minutes
-}
-
-/**
- * Minutes-since-stable for a canary tag, resolving the stable base from
- * the repo's tags on the same major.minor line.
- * @param {string} tag the release tag
- * @param {string} gitRoot the repo root
- * @returns {number | null}
- */
-export function canaryBuildMinutes(tag, gitRoot) {
-  const m = CANARY_TAG_RE.exec(String(tag || ''))
-  if (!m) return null
-  const majorMinor = m[1].split('.').slice(0, 2).join('.')
-  const stable = listGitTags(gitRoot, `v${majorMinor}.*`).find(t => STABLE_TAG_RE.test(t))
-  if (!stable) return 0 // degenerate: no stable on this line; build number restarts
-  return canaryBuildMinutesFor(tag, gitTagCommitTime(gitRoot, stable))
 }
 
 /** Store reserves revision for itself. Keep its package sequence separate
@@ -174,21 +109,43 @@ export function storePackageVersionAt(epochSeconds) {
   return `${year}.${hourOfYear}.${secondOfHour}.0`
 }
 
-/** @param {string} tag @param {string} gitRoot */
-export function storePackageVersion(tag, gitRoot) {
+/** The native quad for a release, stable or canary: ``year.hourOfYear.secondOfHour.0``.
+
+One derivation for every Windows consumer. The quad is the build time, so a
+later build always sorts above an earlier one and a canary shares its stable's
+quad when they are built at the same instant. There is no minutes-since-stable
+counter, so there is no 45-day cap.
+@param {string} _ref the release ref; accepted so callers name what they stamp
+@param {number} epochSeconds the build time, UTC
+@returns {string}
+*/
+export function nativeQuad(_ref, epochSeconds) {
+  return storePackageVersionAt(epochSeconds)
+}
+
+/** The build time of a release tag: the stamp embedded in a canary tag, or
+ * the tag's own creation time for a stable tag.
+ * @param {string} tag @param {string} gitRoot @returns {number} epoch seconds
+ */
+function releaseEpoch(tag, gitRoot) {
   const canary = CANARY_TAG_RE.exec(tag)
   if (canary) {
     const epoch = stampToEpoch(canary[2])
     const roundtrip = new Date(epoch * 1000).toISOString().replace(/[-:T]/g, '').slice(0, canary[2].length)
     if (roundtrip !== canary[2]) throw new Error('Invalid canary calendar timestamp')
-    return storePackageVersionAt(epoch)
+    return epoch
   }
-  if (!STABLE_TAG_RE.test(tag)) throw new Error('A Store build requires an exact release tag')
   const timestamp = execFileSync('git', ['for-each-ref', '--format=%(creatordate:unix)', `refs/tags/${tag}`], {
     cwd: gitRoot, encoding: 'utf8'
   }).trim()
   if (!/^\d+$/.test(timestamp)) throw new Error(`No immutable release timestamp for ${tag}`)
-  return storePackageVersionAt(Number(timestamp))
+  return Number(timestamp)
+}
+
+/** @param {string} tag @param {string} gitRoot */
+export function storePackageVersion(tag, gitRoot) {
+  if (!CANARY_TAG_RE.test(tag) && !STABLE_TAG_RE.test(tag)) throw new Error('A Store build requires an exact release tag')
+  return nativeQuad(tag, releaseEpoch(tag, gitRoot))
 }
 
 /** The custom template controls package identity, not executable VERSIONINFO.
@@ -256,23 +213,18 @@ export function appIdentity(desktopDir, tag = process.env.HERMES_PAYLOAD_TAG || 
     return { identity, version: `${version}.0`, fileVersion: version, name: identity.artifactNamePascal }
   }
   if (identity.store) {
-    return { identity, version: storePackageVersion(String(tag), repoRoot),
+    return { identity, version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),
       fileVersion: String(tag).slice(1), name: identity.artifactNamePascal }
   }
-  const canary = CANARY_TAG_RE.exec(String(tag))
-  if (canary) {
-    // Manifest + feed version: tag base (0.27.2) + minutes-since-stable.
-    // The artifact FILENAME carries electron-builder's appInfo.version — the
-    // full canary string (HermesBundled-0.27.2-canary.X-win-x64.msix) — so
-    // callers that look files up by name need that string separately.
+  if (CANARY_TAG_RE.test(String(tag)) || (tag && STABLE_TAG_RE.test(tag))) {
     return {
       identity,
-      version: `${canary[1]}.${canaryBuildMinutes(String(tag), repoRoot)}`,
+      version: nativeQuad(String(tag), releaseEpoch(String(tag), repoRoot)),
       fileVersion: String(tag).slice(1),
       name: identity.artifactNamePascal,
     }
   }
-  if (tag && !STABLE_TAG_RE.test(tag)) throw new Error(`Invalid release tag: ${tag}`)
+  if (tag) throw new Error(`Invalid release tag: ${tag}`)
   // Release builds override Electron's version without rewriting package.json.
   const version = tag ? tag.slice(1) : pkg.version
   return {
