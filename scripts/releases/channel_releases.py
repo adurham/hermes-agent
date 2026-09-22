@@ -17,7 +17,6 @@ from scripts.releases import handoff, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 
 NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
-STABLE_NEEDS = ("admit", "ci", "docker", "acceptance", "candidates", "publication", "promote-docker", "promote-bundles", "windows-packaged", "macos-packaged")
 CANARY_NEEDS = ("validate", "build-win32", "build-darwin", "build-linux", "builds-table", "assemble-win32-bundle",
                 "smoke-darwin", "smoke-win32", "smoke-win32-universal", "publish-win32-updater", "publish-darwin-updater")
 
@@ -105,13 +104,27 @@ def admit_transaction(policy: str, env: dict, *, run=stable.output) -> tuple[str
         raise ChannelError("Invalid protected release tag")
     if (policy == "canary-release") != is_canary_tag(tag):
         raise ChannelError("Protected release policy/tag mismatch")
-    if env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+    if env.get("GITHUB_ACTIONS") != "true":
         raise ChannelError("Protected heads require the accepted release workflow")
     default = ""
     if policy == "stable-release":
-        expected = f"{repository}/.github/workflows/stable-release.yml@refs/tags/{tag}"
-        required = STABLE_NEEDS
+        default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
+        claim_tag = env.get("RELEASE_CLAIM_TAG", "")
+        expected = {
+            f"{repository}/.github/workflows/stable-release.yml@refs/tags/{claim_tag}",
+            f"{repository}/.github/workflows/stable-release-publication.yml@refs/heads/{default}",
+        }
+        if (env.get("GITHUB_EVENT_NAME") not in {"workflow_dispatch", "workflow_run", "schedule"}
+                or env.get("GITHUB_WORKFLOW_REF") not in expected):
+            raise ChannelError("Protected publication requires its stable release controller")
+        try:
+            verified_tag, verified_commit, _claim = stable.final_context(env, run=run)
+        except (ValueError, subprocess.CalledProcessError) as error:
+            raise ChannelError(str(error)) from error
+        return verified_tag, verified_commit
     elif policy == "canary-release":
+        if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+            raise ChannelError("Protected heads require the accepted release workflow")
         default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
         expected = f"{repository}/.github/workflows/desktop-bundled-release.yml@refs/heads/{default}"
         required = CANARY_NEEDS
@@ -120,20 +133,17 @@ def admit_transaction(policy: str, env: dict, *, run=stable.output) -> tuple[str
     if env.get("GITHUB_WORKFLOW_REF") != expected:
         raise ChannelError("Protected publication requires its existing release workflow")
     stable.require_success(json.loads(env.get("RELEASE_NEEDS", "{}")), list(required))
-    if policy == "stable-release":
-        tag, commit = stable.check_tag(env, run=run)
-    else:
-        commit = require_commit(env.get("RELEASE_COMMIT"))
-        actual = run(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"])
-        remote = dict(line.split()[::-1] for line in run(
-            ["git", "ls-remote", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"] ).splitlines())
-        if actual != commit or remote.get(f"refs/tags/{tag}^{{}}", remote.get(f"refs/tags/{tag}")) != commit:
-            raise ChannelError("Canary release tag moved")
-        run(["git", "merge-base", "--is-ancestor", commit, f"origin/{default}"])
+    commit = require_commit(env.get("RELEASE_COMMIT"))
+    actual = run(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"])
+    remote = dict(line.split()[::-1] for line in run(
+        ["git", "ls-remote", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"] ).splitlines())
+    if actual != commit or remote.get(f"refs/tags/{tag}^{{}}", remote.get(f"refs/tags/{tag}")) != commit:
+        raise ChannelError("Canary release tag moved")
+    run(["git", "merge-base", "--is-ancestor", commit, f"origin/{default}"])
     release = json.loads(run(["gh", "release", "view", tag, "--repo", repository,
                               "--json", "tagName,isDraft,isPrerelease"]))
     if (release.get("tagName") != tag or release.get("isDraft") is not False
-            or release.get("isPrerelease") is not (policy == "canary-release")):
+            or release.get("isPrerelease") is not True):
         raise ChannelError("Protected head requires the published GitHub release transaction")
     return tag, commit
 
@@ -147,12 +157,49 @@ def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: st
         raise ChannelError("Accepted candidate URL differs from release archive")
     candidate = decode_json(publisher.reader.read_bytes(key, digest))
     stable.validate_candidates(candidate, tag, commit, publisher.public_base)
-    accepted = publisher.store.get("releases/stable/release-candidates.json")
-    if accepted is None or decode_json(accepted[0]) != candidate:
-        raise ChannelError("Stable accepted manifest transaction has not completed")
-    if decode_json(publisher.reader.read_bytes("releases/stable/release-candidates.json")) != candidate:
-        raise ChannelError("Stable accepted manifest is not publicly visible")
     return candidate
+
+
+def stable_head_version(env: dict) -> str | None:
+    """Return the protected stable head's source version, if one exists."""
+    publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), env["GITHUB_REPOSITORY"],
+                                 r2.public_base_url(), authorize=lambda _action, _record: None)
+    current = publisher._read(select_channel(publisher, "stable-release"))
+    if current is None or current[0]["head"] is None:
+        return None
+    head = current[0]["head"]
+    found = publisher.store.get(head["manifestKey"])
+    if found is None or hashlib.sha256(found[0]).hexdigest() != head["sha256"]:
+        raise ChannelError("Stable protected head manifest is unavailable or changed")
+    manifest = json.loads(found[0])
+    return manifest["request"]["version"]
+
+
+def advance_stable(env: dict, release: dict, root: Path) -> dict:
+    """Advance one published release from its immutable tag-scoped receipts."""
+    creds, base, bucket = r2.credentials()
+    store = R2ChannelStore(creds, base, bucket)
+    public_base = r2.public_base_url()
+    key = f"releases/tag/{release['tag']}/release-candidates.json"
+    found = store.get(key)
+    if found is None:
+        raise ChannelError("Stable candidate manifest is unavailable")
+    scoped_env = {
+        **env,
+        "RELEASE_TAG": release["tag"],
+        "RELEASE_COMMIT": release["commit"],
+        "RELEASE_CLAIM_TAG": release["claim_tag"],
+        "RELEASE_CLAIM_OBJECT": release["claim_object"],
+        "CANDIDATE_MANIFEST_URL": f"{public_base}/{key}",
+        "CANDIDATE_MANIFEST_SHA256": hashlib.sha256(found[0]).hexdigest(),
+    }
+    return publish_release("stable-release", scoped_env, root)
+
+
+def promote_stable_feeds(candidate: dict, root: Path, public_base: str) -> None:
+    from scripts.bundles.release_artifacts import promote
+
+    promote(candidate, root, public_base)
 
 
 def verify_bootstrap(request: dict, manifest: dict, base: str, repository: str) -> bool:
@@ -269,7 +316,13 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         return pinned == request and actual == expected
 
     publisher.verify_build = qualified
-    return publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
+    result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
+    if accepted is not None:
+        publisher._write("releases/stable/release-candidates.json", accepted)
+        if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
+            raise ChannelError("Stable candidate pointer read-back differs")
+        promote_stable_feeds(accepted, root, publisher.public_base)
+    return result
 
 
 def main(argv: list[str] | None = None) -> None:

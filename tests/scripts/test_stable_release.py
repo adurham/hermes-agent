@@ -20,12 +20,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def candidates(tag, commit, digest):
     packages = []
+    native_version = f"2026.5761.{100 + int(tag.rsplit('.', 1)[1])}.0"
     for platform in ("windows", "macos"):
         for arch in ("x64", "arm64"):
             packages.append({
                 "platform": platform, "arch": arch, "tag": tag, "commit": commit,
                 "identity": "test.application",
-                "version": f"{tag[1:]}.0" if platform == "windows" else tag[1:],
+                "version": native_version if platform == "windows" else tag[1:],
                 **({"publisher": "CN=Test", "applicationId": "App"} if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
                 "artifact": {"sha256": digest,
                              "url": f"{BASE}/releases/tag/{tag}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
@@ -200,11 +201,17 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
             return "tag"
         if argv[1] == "rev-parse":
             return claim_object if argv[-1] == ref else commit
+        if argv[1] == "tag":
+            return json.dumps({
+                "schema": 1, "version": "1.2.3", "commit": commit,
+                "autopublish": False,
+            })
         return ""
 
     assert check_claim(env, git) == {
         "claim_tag": "v1.2.3-rc", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "commit": commit,
+        "autopublish": False,
     }
     with pytest.raises(ValueError, match="moved"):
         check_claim(env, lambda argv: f"{'c' * 40}\t{ref}\n{commit}\t{ref}^{{}}"
@@ -225,7 +232,11 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     subprocess.run(["git", "commit", "-m", "first"], check=True, capture_output=True)
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, encoding="utf-8").strip()
     subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
-    subprocess.run(["git", "tag", "-a", "v1.2.3-rc", "-m", "claim"], check=True)
+    metadata = json.dumps({
+        "schema": 1, "version": "1.2.3", "commit": actual,
+        "autopublish": False,
+    }, sort_keys=True, separators=(",", ":"))
+    subprocess.run(["git", "tag", "-a", "v1.2.3-rc", "-m", metadata], check=True)
     subprocess.run(["git", "push", "origin", "main", "v1.2.3-rc"], check=True, capture_output=True)
     env.update({"GITHUB_SHA": actual, "RELEASE_CLAIM_OBJECT": subprocess.check_output(
         ["git", "rev-parse", ref], text=True, encoding="utf-8").strip()})
@@ -247,17 +258,23 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
 def test_retarget_release_preserves_the_database_id_and_explicit_draft_policy(publish):
     commit = "a" * 40
     calls = []
+    patched = False
 
     def gh(argv):
+        nonlocal patched
         calls.append(argv)
+        if argv[1:3] == ["api", "--method"]:
+            patched = True
+            return "{}"
         if argv[1:3] == ["api", "repos/example/project/releases/42"]:
             return json.dumps({
-                "id": 42, "tag_name": "v1.2.3", "target_commitish": commit,
-                "prerelease": False, "draft": not publish,
+                "id": 42, "tag_name": "v1.2.3" if patched else "v1.2.3-rc",
+                "target_commitish": commit, "prerelease": False,
+                "draft": not publish if patched else True,
             })
         return "{}"
 
     retarget_release("example/project", 42, "v1.2.3", commit, publish=publish, run=gh)
 
-    assert ["--field", f"draft={str(not publish).lower()}"] == calls[0][-2:]
-    assert calls[1] == ["gh", "api", "repos/example/project/releases/42"]
+    assert ["--field", f"draft={str(not publish).lower()}"] == calls[1][-2:]
+    assert calls[2] == ["gh", "api", "repos/example/project/releases/42"]

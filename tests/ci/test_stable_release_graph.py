@@ -34,9 +34,9 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert required <= ancestors(jobs, "acceptance")
     for name in ("publish-docker", "publish-bundles"):
         assert required <= ancestors(jobs, name)
-    for name in ("promote-docker", "promote-bundles"):
-        assert {"publish-docker", "publish-bundles", "publication"} <= ancestors(jobs, name)
-    assert {"promote-docker", "promote-bundles"} <= ancestors(jobs, "complete")
+    assert {"publish-docker", "publish-bundles", "publication"} <= ancestors(jobs, "promote-docker")
+    assert "promote-docker" in ancestors(jobs, "complete")
+    assert "promote-bundles" not in jobs
     for name in ("acceptance", "publication", "complete"):
         assert jobs[name]["if"] == "always()"
 
@@ -55,7 +55,7 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     assert release["on"]["workflow_dispatch"]["inputs"]["autopublish"]["required"] == "true"
     assert {"claim-tag", "claim-object", "tag", "commit", "version", "release-id"} <= \
         set(jobs["admit"]["outputs"])
-    for name in ("candidates", "publish-bundles", "promote-bundles"):
+    for name in ("candidates", "publish-bundles"):
         call = jobs[name]["with"]
         assert call["tag"] == "${{ needs.admit.outputs.tag }}"
         assert call["claim-tag"] == "${{ needs.admit.outputs.claim-tag }}"
@@ -65,4 +65,25 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     complete = jobs["complete"]["steps"]
     final = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Create the final tag"))
     render = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Render the admitted"))
-    assert final < render
+    reconcile = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Reconcile ordered"))
+    assert final < render < reconcile
+
+
+def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
+    stable = workflow("stable-release.yml")
+    publication = workflow("stable-release-publication.yml")
+
+    assert stable["concurrency"] == publication["concurrency"] == {
+        "group": "stable-release", "cancel-in-progress": "false",
+    }
+    assert {"workflow_dispatch", "workflow_run", "schedule"} <= set(publication["on"])
+    assert publication["on"]["workflow_run"] == {
+        "workflows": ["Stable Release"], "types": ["completed"],
+    }
+    reconcile = publication["jobs"]["reconcile"]
+    assert reconcile["environment"] == "release-signing"
+    assert publication["permissions"] == {"contents": "write", "actions": "read"}
+    assert "conclusion != 'success'" in reconcile["if"]
+    checkout = reconcile["steps"][0]
+    assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
+    assert checkout["with"]["persist-credentials"] == "false"

@@ -98,8 +98,6 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
             raise ValueError(f"Invalid candidate digest or identity: {target}")
         if item["platform"] == "windows":
             windows_version(item.get("version", ""))
-            if item["version"] != f"{tag[1:]}.0":
-                raise ValueError("Stable Windows package version must match its release tag")
             if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
                 raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
         elif item["platform"] == "macos":
@@ -170,6 +168,20 @@ def output(argv: list[str]) -> str:
     return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
 
 
+def _claim_metadata(raw: str, *, version: str, commit: str) -> dict:
+    try:
+        metadata = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError("Stable claim metadata is invalid") from error
+    expected = {"schema": 1, "version": version, "commit": commit}
+    if (not isinstance(metadata, dict)
+            or any(metadata.get(key) != value for key, value in expected.items())
+            or not isinstance(metadata.get("autopublish"), bool)
+            or set(metadata) != {*expected, "autopublish"}):
+        raise ValueError("Stable claim metadata is invalid")
+    return metadata
+
+
 def check_claim(env: dict, run=output) -> dict:
     """Bind the run to one remote annotated claim object and its commit."""
     claim_tag, commit = env.get("RELEASE_CLAIM_TAG"), env.get("GITHUB_SHA")
@@ -192,7 +204,7 @@ def check_claim(env: dict, run=output) -> dict:
             or (expected_object and remote_object != expected_object)
             or run(["git", "rev-parse", "HEAD"]) != commit):
         raise ValueError("Stable claim tag or checkout moved")
-    run(["git", "fetch", "origin", "main"])
+    run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"])
 
     def on_main(sha: str) -> bool:
         try:
@@ -202,7 +214,10 @@ def check_claim(env: dict, run=output) -> dict:
         return True
 
     admitted = admit_claim(claim_tag, commit, on_main=on_main)
-    return {**admitted, "claim_object": local_object}
+    raw_metadata = run(["git", "tag", "-l", claim_tag, "--format=%(contents)"])
+    metadata = _claim_metadata(raw_metadata, version=admitted["version"], commit=commit)
+    return {**admitted, "claim_object": local_object,
+            "autopublish": metadata["autopublish"]}
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
@@ -211,6 +226,61 @@ def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
     if not isinstance(tag, str) or tag != claim["tag"]:
         raise ValueError("Stable payload tag differs from the admitted claim")
     return tag, claim["commit"], claim
+
+
+def final_context(env: dict, run=output) -> tuple[str, str, dict]:
+    """Verify the final annotated receipt, its claim, and published release."""
+    repository = env.get("GITHUB_REPOSITORY", "")
+    tag = env.get("RELEASE_TAG", "")
+    commit = env.get("RELEASE_COMMIT", "")
+    claim_tag = env.get("RELEASE_CLAIM_TAG", "")
+    claim_object = env.get("RELEASE_CLAIM_OBJECT", "")
+    require_stable_identity(tag, commit)
+    admitted = admit_claim(claim_tag, commit, on_main=lambda _commit: True)
+    if admitted["tag"] != tag or not SHA.fullmatch(claim_object):
+        raise ValueError("Final release differs from its claim")
+
+    refs = {}
+    for line in run(["git", "ls-remote", "origin",
+                     f"refs/tags/{claim_tag}", f"refs/tags/{claim_tag}^{{}}",
+                     f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"]).splitlines():
+        sha, ref = line.split()
+        refs[ref] = sha
+    if (refs.get(f"refs/tags/{claim_tag}") != claim_object
+            or refs.get(f"refs/tags/{claim_tag}^{{}}") != commit
+            or refs.get(f"refs/tags/{tag}^{{}}") != commit
+            or not refs.get(f"refs/tags/{tag}")):
+        raise ValueError("Final release tag custody changed")
+
+    run(["git", "fetch", "origin", "+refs/heads/main:refs/remotes/origin/main",
+         f"+refs/tags/{claim_tag}:refs/tags/{claim_tag}",
+         f"+refs/tags/{tag}:refs/tags/{tag}"])
+    for receipt, expected_object in ((claim_tag, claim_object),
+                                     (tag, refs[f"refs/tags/{tag}"])):
+        local_object = run(["git", "rev-parse", f"refs/tags/{receipt}"])
+        if local_object != expected_object or run(["git", "cat-file", "-t", local_object]) != "tag":
+            raise ValueError("Final release local tag differs from the remote")
+    run(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
+    claim = _claim_metadata(
+        run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
+        version=admitted["version"], commit=commit,
+    )
+    final = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
+    expected = {
+        "schema": 1, "version": admitted["version"], "commit": commit,
+        "claimTag": claim_tag, "claimTagObject": claim_object,
+        "autopublish": claim["autopublish"],
+    }
+    if final != expected:
+        raise ValueError("Final tag metadata differs from its claim")
+    release = json.loads(run([
+        "gh", "api", f"repos/{repository}/releases/tags/{tag}",
+    ]))
+    if (release.get("tag_name") != tag or release.get("draft") is not False
+            or release.get("prerelease") is not False or not release.get("published_at")):
+        raise ValueError("Stable channel requires the published final release")
+    return tag, commit, {**admitted, "claim_object": claim_object,
+                         "autopublish": claim["autopublish"]}
 
 
 def emit(values: dict, env: dict) -> None:
@@ -314,6 +384,7 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, run=output) -> str:
             message = json.dumps({
                 "schema": 1, "version": tag[1:], "commit": commit,
                 "claimTag": claim["claim_tag"], "claimTagObject": claim["claim_object"],
+                "autopublish": claim["autopublish"],
             }, sort_keys=True, separators=(",", ":"))
             run([
                 "git", "-c", "user.name=Hermes Release Automation",
@@ -349,10 +420,15 @@ def _autopublish(value: str | None) -> bool:
 def retarget_release(repository: str, release_id: int, tag: str, commit: str, *, publish: bool,
                      run=output) -> None:
     endpoint = f"repos/{repository}/releases/{release_id}"
+    current = json.loads(run(["gh", "api", endpoint]))
+    if (current.get("id") == release_id and current.get("tag_name") == tag
+            and current.get("prerelease") is False and current.get("draft") is False):
+        return
     run([
         "gh", "api", "--method", "PATCH", endpoint,
         "--raw-field", f"tag_name={tag}", "--raw-field", f"target_commitish={commit}",
-        "--field", "prerelease=false", "--field", f"draft={str(not publish).lower()}",
+        "--field", "prerelease=false", "--raw-field", "make_latest=true",
+        "--field", f"draft={str(not publish).lower()}",
     ])
     release = json.loads(run(["gh", "api", endpoint]))
     if (release.get("id") != release_id or release.get("tag_name") != tag
@@ -369,8 +445,9 @@ def complete(env: dict) -> None:
     release_id = env.get("RELEASE_ID", "")
     if not str(release_id).isdigit():
         raise ValueError("Stable release database ID is required")
-    publish = _autopublish(env.get("AUTOPUBLISH"))
-    retarget_release(env["GITHUB_REPOSITORY"], int(release_id), tag, commit, publish=publish)
+    if _autopublish(env.get("AUTOPUBLISH")) is not claim["autopublish"]:
+        raise ValueError("Workflow autopublish input differs from the immutable claim")
+    retarget_release(env["GITHUB_REPOSITORY"], int(release_id), tag, commit, publish=False)
 
 
 def main(argv: list[str] | None = None, env: dict | None = None) -> None:

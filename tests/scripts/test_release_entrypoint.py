@@ -3,6 +3,7 @@
 The claim is the tag push, and it pushes exactly the claim ref. A release that
 never starts is an error, not a warning the operator has to notice.
 """
+import json
 import subprocess
 
 import pytest
@@ -49,6 +50,12 @@ def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(sourc
     assert result["commit"] == commit
     assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5-rc"
     assert git(source, "rev-parse", "v0.21.5-rc^{commit}") == commit
+    assert json.loads(git(source, "tag", "-l", "v0.21.5-rc", "--format=%(contents)")) == {
+        "autopublish": True,
+        "commit": commit,
+        "schema": 1,
+        "version": "0.21.5",
+    }
     assert calls == [
         ["gh", "release", "create", "v0.21.5-rc", "--repo", "example/hermes-agent",
          "--verify-tag", "--draft", "--generate-notes", "--title", "Hermes Agent v0.21.5"],
@@ -89,16 +96,18 @@ def test_a_dispatch_that_never_starts_is_an_error(source):
     assert "v0.21.5-rc" in git(source, "tag", "--list")
 
 
-def test_publish_flips_a_green_draft_and_abandon_keeps_the_claim(source):
+def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
     from scripts.releases.entrypoint import abandon, publish
 
     commit = git(source, "rev-parse", "HEAD")
     _claim(source, "0.21.5", commit)
     calls = []
-    published = publish("0.21.5", repo=source, repository="example/hermes-agent",
-                        green=lambda tag: tag == "v0.21.5", edit=calls.append)
-    assert published["flipped"] == "v0.21.5"
-    assert calls == [["gh", "release", "edit", "v0.21.5", "--repo", "example/hermes-agent", "--draft=false"]]
+    published = publish("0.21.5", repository="example/hermes-agent", dispatch=calls.append)
+    assert published["requested"] == "v0.21.5"
+    assert calls == [[
+        "gh", "workflow", "run", "stable-release-publication.yml",
+        "--repo", "example/hermes-agent", "--raw-field", "version=0.21.5",
+    ]]
 
     abandoned = abandon("0.21.5", repo=source, repository="example/hermes-agent", delete=calls.append)
     assert abandoned["burned"] == "0.21.5"

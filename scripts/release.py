@@ -2913,6 +2913,14 @@ def main():
     release_cmd.add_argument("--autopublish", action="store_true",
                              help="Publish on green instead of leaving a draft")
     release_cmd.add_argument("--remote", type=str)
+    publish_cmd = subcommands.add_parser(
+        "publish", help="Publish a green stable release through the ordered sequencer")
+    publish_cmd.add_argument("--version", required=True)
+    publish_cmd.add_argument("--remote", type=str)
+    abandon_cmd = subcommands.add_parser(
+        "abandon", help="Delete a stable draft while retaining its spent claim")
+    abandon_cmd.add_argument("--version", required=True)
+    abandon_cmd.add_argument("--remote", type=str)
     from scripts.releases.channel_build import add_arguments, validate_arguments, cmd_channel
 
     add_arguments(parser)
@@ -2921,6 +2929,14 @@ def main():
     if args.command == "release":
         from scripts.releases.entrypoint import cmd_release
         cmd_release(args)
+        return
+    if args.command == "publish":
+        from scripts.releases.entrypoint import cmd_publish
+        cmd_publish(args)
+        return
+    if args.command == "abandon":
+        from scripts.releases.entrypoint import cmd_abandon
+        cmd_abandon(args)
         return
     if validate_arguments(parser, args):
         cmd_channel(args)

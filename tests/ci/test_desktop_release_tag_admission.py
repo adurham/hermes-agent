@@ -13,6 +13,7 @@ unreviewed commit must never reach the signing build. Two layers are tested:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -179,9 +180,18 @@ def _run_admission(clone: Path, tag: str, claim_tag: str) -> subprocess.Complete
     )
 
 
+def _claim_message(clone: Path) -> str:
+    return json.dumps({
+        "schema": 1,
+        "version": "0.1.2",
+        "commit": _git("rev-parse", "HEAD", cwd=clone),
+        "autopublish": False,
+    }, sort_keys=True, separators=(",", ":"))
+
+
 def test_claim_on_origin_main_is_admitted_and_exports_the_full_sha(tmp_path: Path):
     _origin, clone = _seed_repo(tmp_path)
-    _git("tag", "-a", "v0.1.2-rc", "-m", "claim", cwd=clone)
+    _git("tag", "-a", "v0.1.2-rc", "-m", _claim_message(clone), cwd=clone)
     _git("push", "origin", "refs/tags/v0.1.2-rc", cwd=clone)
 
     proc = _run_admission(clone, "v0.1.2", "v0.1.2-rc")
@@ -198,7 +208,7 @@ def test_claim_not_on_origin_main_is_refused(tmp_path: Path):
     (clone / "rogue.txt").write_text("unreviewed\n", encoding="utf-8")
     _git("add", "-A", cwd=clone)
     _git("commit", "-m", "rogue", cwd=clone)
-    _git("tag", "-a", "v0.1.2-rc", "-m", "claim", cwd=clone)
+    _git("tag", "-a", "v0.1.2-rc", "-m", _claim_message(clone), cwd=clone)
     _git("push", "origin", "refs/tags/v0.1.2-rc", cwd=clone)
 
     proc = _run_admission(clone, "v0.1.2", "v0.1.2-rc")

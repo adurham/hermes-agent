@@ -6,6 +6,7 @@ because a burned version is never retried under the same number.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -67,7 +68,13 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     _require_ancestry(repo, commit)
     version = derive_next_version(published=None, claims=_claims(repo), bump=bump)
     tag = f"v{version}-rc"
-    _git(repo, "tag", "-a", tag, commit, "-m", f"claim v{version}")
+    claim = json.dumps({
+        "schema": 1,
+        "version": version,
+        "commit": commit,
+        "autopublish": autopublish,
+    }, sort_keys=True, separators=(",", ":"))
+    _git(repo, "tag", "-a", tag, commit, "-m", claim)
     _git(repo, "push", remote, f"refs/tags/{tag}")
     url = f"https://github.com/{repository}/releases/tag/{tag}"
     try:
@@ -86,13 +93,18 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "autopublish": autopublish}
 
 
-def publish(version: str, *, repo: Path, repository: str, green, edit) -> dict:
-    """Flip a green waiting draft. The flip is the publish; nothing rebuilds."""
+def publish(version: str, *, repository: str, dispatch) -> dict:
+    """Request ordered publication through the one production sequencer."""
     tag = f"v{version}"
-    if not green(tag):
-        raise ReleaseRefused(f"{version} is not green — refusing to publish")
-    edit(["gh", "release", "edit", tag, "--repo", repository, "--draft=false"])
-    return {"flipped": tag}
+    from hermes_cli.update_channel import STABLE_TAG_RE
+
+    if not STABLE_TAG_RE.fullmatch(tag):
+        raise ReleaseRefused(f"{version} is not a stable version")
+    dispatch([
+        "gh", "workflow", "run", "stable-release-publication.yml",
+        "--repo", repository, "--raw-field", f"version={version}",
+    ])
+    return {"requested": tag}
 
 
 def abandon(version: str, *, repo: Path, repository: str, delete) -> dict:
@@ -120,3 +132,31 @@ def cmd_release(args) -> None:
     result = release(commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
                      execute=execute, autopublish=args.autopublish)
     print(result["url"])
+
+
+def _command_repository(args) -> tuple[Path, str]:
+    from scripts import release as release_script
+
+    repo = release_script.REPO_ROOT
+    remote = release_script.resolve_push_remote(args.remote)
+    repository = release_script.remote_github_repo(remote)
+    if not repository:
+        raise SystemExit(f"release: remote {remote!r} does not point at a GitHub repository")
+    return repo, repository
+
+
+def _execute(repo: Path, command: list[str]) -> None:
+    completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
+    if completed.returncode != 0:
+        raise ReleaseRefused(completed.stderr.strip() or "release command failed")
+
+
+def cmd_publish(args) -> None:
+    repo, repository = _command_repository(args)
+    publish(args.version, repository=repository, dispatch=lambda command: _execute(repo, command))
+
+
+def cmd_abandon(args) -> None:
+    repo, repository = _command_repository(args)
+    abandon(args.version, repo=repo, repository=repository,
+            delete=lambda command: _execute(repo, command))
