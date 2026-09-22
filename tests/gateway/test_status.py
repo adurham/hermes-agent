@@ -1170,6 +1170,7 @@ class TestScopedLockTakeover:
             "_read_process_cmdline",
             lambda _pid: "python -m hermes_cli.main gateway run",
         )
+        monkeypatch.setattr(status, "_snapshot_gateway_children", lambda _pid: [])
         calls = []
 
         def terminate(pid, *, force=False):

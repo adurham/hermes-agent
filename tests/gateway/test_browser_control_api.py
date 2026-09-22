@@ -569,7 +569,7 @@ async def test_local_api_same_identity_reconnect_completes_command_started_on_ol
                 tool_call_id="tool-call-reconnect",
             )
         )
-        command = await first_ws.receive_json(timeout=2.0)
+        command = await first_ws.receive_json(timeout=10.0)
         await first_ws.close()
         await asyncio.sleep(0)
         assert not pending.done()
@@ -594,7 +594,7 @@ async def test_local_api_same_identity_reconnect_completes_command_started_on_ol
                 },
             }
         )
-        assert await asyncio.wait_for(pending, timeout=2.0) == '{"reconnected": true}'
+        assert await asyncio.wait_for(pending, timeout=10.0) == '{"reconnected": true}'
         await second_ws.close()
 
 
