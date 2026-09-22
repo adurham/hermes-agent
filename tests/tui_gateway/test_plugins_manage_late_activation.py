@@ -39,7 +39,7 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     events: list = []
     manager.on_plugin_loaded(events.append)
     with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
-         patch("hermes_cli.plugins_cmd._install_python_dependencies_quietly", return_value=[]), \
+         patch("hermes_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
          patch("gateway.control_socket.reload_gateway_plugins", return_value=None):  # no gateway running
         resp = server.handle_request({"id": "1", "method": "plugins.manage",
                                       "params": {"action": "install", "repo": "owner/late-mcp", "enable": True}})
