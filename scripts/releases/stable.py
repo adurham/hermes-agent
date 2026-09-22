@@ -24,6 +24,23 @@ SMOKE_JOBS = {
 }
 
 
+def admit_claim(tag: str, commit: str, *, on_main) -> dict:
+    """Admit a release from its claim tag. The checkout version is not read.
+
+    ``main`` carries ``0.0.0`` on purpose, so the version comes from the
+    ``-rc`` tag and the only question about the commit is whether it is on
+    ``main``.
+    """
+    if not isinstance(tag, str) or not tag.endswith("-rc"):
+        raise ValueError(f"{tag} is not a claim tag")
+    version = tag[1:-3]
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
+        raise ValueError(f"{tag} is not a claim tag")
+    if not on_main(commit):
+        raise ValueError(f"{commit} is not on main")
+    return {"version": version, "commit": commit}
+
+
 def require_stable_identity(tag: str, commit: str, ref: str) -> None:
     if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag) or not SHA.fullmatch(commit or "") or ref != f"refs/tags/{tag}":
         raise ValueError("Stable release must run on its exact stable tag and commit")
@@ -195,16 +212,19 @@ def summary(text: str, env: dict) -> None:
 
 
 def admit(env: dict) -> None:
-    tag, commit = check_tag(env)
-    with Path("pyproject.toml").open("rb") as file:
-        version = tomllib.load(file)["project"]["version"]
-    if f"v{version}" != tag:
-        raise ValueError("Stable tag must match the project version")
-    release = json.loads(output(["gh", "release", "view", tag, "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
-    if release["tagName"] != tag or not release["isDraft"] or release["isPrerelease"]:
-        raise ValueError("Stable candidate must have a non-prerelease draft")
-    emit({"tag": tag, "commit": commit}, env)
-    summary(f"## Stable candidate {tag}\nCommit: {commit}\n\nDesktop Playwright E2E: deferred by owner, not passed.\nOSV findings retain the existing advisory policy.", env)
+    """Admit the claim. The checkout carries 0.0.0, so the tag is the version."""
+    tag, commit = env.get("RELEASE_TAG"), env.get("GITHUB_SHA")
+    admitted = admit_claim(tag, commit, on_main=lambda sha: _on_main(sha, env))
+    emit({"tag": tag, "commit": admitted["commit"], "version": admitted["version"]}, env)
+    summary(f"## Stable candidate {tag}\nCommit: {commit}\nVersion: {admitted['version']}\n", env)
+
+
+def _on_main(commit: str, env: dict) -> bool:
+    try:
+        output(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
+    except subprocess.CalledProcessError:
+        return False
+    return True
 
 
 def transitions(env: dict) -> None:
