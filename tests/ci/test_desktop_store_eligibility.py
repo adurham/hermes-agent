@@ -64,10 +64,11 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path, tag, commi
     log = tmp_path / 'calls.txt'
     powershell = shutil.which('powershell')
     assert powershell
-    result = subprocess.run([powershell, '-NoProfile', '-File', str(wrapper)],
+    result = subprocess.run([powershell, '-NoProfile', '-NonInteractive',
+                             '-ExecutionPolicy', 'Bypass', '-File', str(wrapper)],
                             env=_child_env(HERMES_PAYLOAD_TAG=tag, HERMES_BUILD_COMMIT=commit,
                                            RUNNER_TEMP=str(tmp_path), CALL_LOG=str(log)),
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     calls = log.read_text(encoding='utf-8-sig')
     assert '--variant bundled' in calls

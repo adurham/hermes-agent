@@ -148,4 +148,5 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
     assert "source" not in fleet[0]
-    assert fleet[0]["state"] == "stale"
+    assert fleet[0]["state"] == "unknown"
+    assert fleet[0]["code_sha"] is None
