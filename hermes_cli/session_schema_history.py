@@ -32,6 +32,38 @@ from typing import Callable, Iterator, Optional, Sequence
 
 Edit = tuple  # ("+", column, previous_column_or_None) | ("-", column)
 
+# ── FORK ────────────────────────────────────────────────────────────────
+# Columns the FORK adds to upstream-owned tables, and the upstream event
+# index at (or after) which a real store can physically carry them.
+#
+# Source of truth for the column NAMES is ``hermes_state.FORK_TABLE_COLUMNS``
+# (kept out of SCHEMA_SQL so upstream table edits never collide on merge).
+# They are ALTER-ADDed by ``SessionDB._reconcile_columns`` on every open, so
+# a fork store's physical order is "upstream snapshot N, then the fork
+# columns appended" -- a layout the pure-upstream replay can never produce.
+#
+# The index is the events-list position that was current when the fork
+# shipped the column, i.e. the EARLIEST upstream snapshot a store carrying
+# it can have been reconciled against:
+#
+#   messages.anthropic_content_blocks  -- fork 69444061b9 (2026-07-18);
+#     messages event 11 (2026-07-11) was the newest upstream event then,
+#     event 12 landed 2026-07-19. (Upstream itself briefly declared this
+#     column inline at events 08/09; those layouts are already covered by
+#     the replay and are NOT what this entry is about.)
+#   sessions.compression_attempts_total -- fork 37f15a7529 (2026-08-28);
+#     sessions event 24 (2026-08-15) was the newest upstream event then,
+#     event 25 landed 2026-09-02.
+#
+# Do NOT lower an index to "be safe": it multiplies the candidate graph the
+# salvage lane walks without making any real store recognisable. When the
+# fork adds a column to an upstream table, add it here with the index of
+# the newest event in that table's list at the time.
+FORK_COLUMN_ARRIVALS: dict[str, tuple[tuple[str, int], ...]] = {
+    "messages": (("anthropic_content_blocks", 11),),
+    "sessions": (("compression_attempts_total", 24),),
+}
+
 
 @dataclass(frozen=True)
 class _TableHistory:
@@ -53,7 +85,53 @@ def _apply(columns: list[str], edits: Sequence[Edit]) -> None:
 
 
 def declared_snapshots(table: str) -> list[tuple[str, ...]]:
-    """Every declared column order the table has shipped with, oldest first."""
+    """Every declared column order the table has shipped with, oldest first.
+
+    FORK: interleaved with the fork variant of each snapshot (see
+    ``FORK_COLUMN_ARRIVALS``). The fork ALTER-ADDs its own columns from
+    ``hermes_state.FORK_TABLE_COLUMNS`` in the same startup reconcile pass
+    that applies SCHEMA_SQL's, so a real fork store's physical order is an
+    upstream snapshot with the fork columns appended at whatever width the
+    table had when that release first opened the store. Those layouts are
+    NOT reachable from the upstream-only snapshots, so without this the
+    salvage lane cannot recognise any fork store by name -- and, worse,
+    confidently maps it to a same-width UPSTREAM layout instead (proven:
+    a torn 27-column fork ``messages`` record mapped
+    ``anthropic_content_blocks`` into ``display_order``,
+    ``effect_disposition`` into ``timestamp``, and 4 more).
+
+    Each fork variant is emitted immediately after the upstream snapshot it
+    derives from, so ``reachable_physical_layouts``' prefix-chain walk
+    (which only extends a layout using LATER snapshots) reaches both
+    "created pure-upstream, later opened by the fork" and "created by the
+    fork" chains.
+    """
+
+    history = SCHEMA_HISTORY[table]
+    arrivals = FORK_COLUMN_ARRIVALS.get(table, ())
+    columns = list(history.base)
+    snapshots: list[tuple[str, ...]] = []
+
+    def _emit(index: int, upstream: tuple[str, ...]) -> None:
+        snapshots.append(upstream)
+        # Fork columns that already existed when this upstream snapshot shipped.
+        fork_cols = tuple(
+            column for column, first_index in arrivals
+            if index >= first_index and column not in upstream
+        )
+        if fork_cols:
+            snapshots.append(upstream + fork_cols)
+
+    _emit(0, tuple(columns))
+    for index, (_label, edits) in enumerate(history.events, start=1):
+        _apply(columns, edits)
+        _emit(index, tuple(columns))
+    return snapshots
+
+
+def upstream_declared_snapshots(table: str) -> list[tuple[str, ...]]:
+    """``declared_snapshots`` without the fork variants -- the pure SCHEMA_SQL
+    replay the ordering test in ``tests/hermes_cli/`` checks."""
 
     history = SCHEMA_HISTORY[table]
     columns = list(history.base)
@@ -65,7 +143,10 @@ def declared_snapshots(table: str) -> list[tuple[str, ...]]:
 
 
 def current_declared_columns(table: str) -> tuple[str, ...]:
-    return declared_snapshots(table)[-1]
+    """Today's SCHEMA_SQL-declared order (upstream only -- the ordering test
+    compares this against a live ``executescript(SCHEMA_SQL)``, which does not
+    include the fork's ALTER-ADDed columns)."""
+    return upstream_declared_snapshots(table)[-1]
 
 
 def reachable_physical_layouts(
