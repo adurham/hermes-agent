@@ -47,13 +47,22 @@ def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(sourc
 
     commit = git(source, "rev-parse", "HEAD")
     calls = []
+
+    def execute(command):
+        calls.append(command)
+        if command[:3] == ["gh", "run", "list"]:
+            return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
+                                "headBranch": "v0.21.5-rc", "status": "queued"}])
+        return ""
+
     result = release(commit, bump="patch", repo=source, remote="origin",
-                     repository="example/hermes-agent", execute=calls.append, autopublish=True)
+                     repository="example/hermes-agent", execute=execute, autopublish=True)
 
     assert result["version"] == "0.21.5"
     assert result["tag"] == "v0.21.5-rc"
     assert result["commit"] == commit
     assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5-rc"
+    assert result["final_url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5"
     assert git(source, "rev-parse", "v0.21.5-rc^{commit}") == commit
     claim = json.loads(git(source, "tag", "-l", "v0.21.5-rc", "--format=%(contents)"))
     assert isinstance(claim.pop("claimEpoch"), int)
@@ -68,10 +77,31 @@ def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(sourc
          "--verify-tag", "--draft", "--generate-notes", "--title", "Hermes Agent v0.21.5"],
         ["gh", "workflow", "run", "stable-release.yml", "--ref", "v0.21.5-rc",
          "--repo", "example/hermes-agent", "--raw-field", "tag=v0.21.5-rc"],
+        ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow", "stable-release.yml",
+         "--branch", "v0.21.5-rc", "--json", "databaseId,url,headBranch,status"],
     ]
+    assert result["run_url"] == "https://github.com/example/hermes-agent/actions/runs/7"
     # The claim push names the claim ref and nothing else.
     pushed = git(source, "ls-remote", "origin", "refs/tags/v0.21.5-rc")
     assert pushed.startswith(git(source, "rev-parse", "v0.21.5-rc"))
+
+
+def test_release_output_names_the_wait_and_the_publish_step():
+    from scripts.releases.entrypoint import next_steps
+
+    result = {"version": "0.21.5", "tag": "v0.21.5-rc", "autopublish": False,
+              "run_url": "https://github.com/example/hermes-agent/actions/runs/7",
+              "final_url": "https://github.com/example/hermes-agent/releases/tag/v0.21.5"}
+    text = next_steps(result)
+    assert "Workflow: " + result["run_url"] in text
+    assert "The release workflow started on v0.21.5-rc." in text
+    assert "Wait for that workflow to finish." in text
+    assert result["final_url"] in text
+    assert "python scripts/release.py publish --version 0.21.5 --remote origin" in text
+
+    automatic = next_steps({**result, "autopublish": True})
+    assert "Autopublish is on." in automatic
+    assert "publish --version" not in automatic
 
 
 def test_a_commit_behind_an_outstanding_claim_is_refused(source):
@@ -123,6 +153,21 @@ def test_a_dispatch_that_never_starts_is_an_error(source):
     assert "v0.21.5-rc" in git(source, "tag", "--list")
 
 
+def test_publish_and_abandon_output_name_the_result():
+    from scripts.releases.entrypoint import abandon_steps, publish_steps
+
+    published = publish_steps({"version": "0.21.5", "repository": "example/hermes-agent",
+                               "run_url": "https://github.com/example/hermes-agent/actions/runs/9"})
+    assert "Requested publication of v0.21.5." in published
+    assert "Workflow: https://github.com/example/hermes-agent/actions/runs/9" in published
+    assert "moves the stable channel" in published
+
+    abandoned = abandon_steps({"burned": "0.21.5", "tag": "v0.21.5-rc"})
+    assert "Deleted the draft for v0.21.5." in abandoned
+    assert "v0.21.5-rc" in abandoned
+    assert "cannot be reused" in abandoned
+
+
 def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
     from scripts.releases.entrypoint import ReleaseRefused, abandon, publish
 
@@ -131,6 +176,8 @@ def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
     calls = []
     published = publish("0.21.5", repository="example/hermes-agent", dispatch=calls.append)
     assert published["requested"] == "v0.21.5"
+    assert published["version"] == "0.21.5"
+    assert published["repository"] == "example/hermes-agent"
     assert calls == [[
         "gh", "workflow", "run", "stable-release-publication.yml",
         "--repo", "example/hermes-agent", "--raw-field", "version=0.21.5",
@@ -144,6 +191,7 @@ def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
     abandoned = abandon("0.21.5", repo=source, repository="example/hermes-agent",
                         delete=calls.append, inspect=inspect)
     assert abandoned["burned"] == "0.21.5"
+    assert abandoned["tag"] == "v0.21.5"
     assert calls[-1] == ["gh", "release", "delete", "v0.21.5", "--repo", "example/hermes-agent", "--yes"]
     assert "v0.21.5-rc" in git(source, "tag", "--list")
 

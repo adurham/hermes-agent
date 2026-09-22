@@ -143,10 +143,40 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
             "--raw-field", f"tag={tag}",
         ])
+        found = execute([
+            "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
+            "--branch", tag, "--json", "databaseId,url,headBranch,status",
+        ])
     except Exception as exc:
         raise ReleaseRefused(f"release {tag} never started: {exc}") from exc
+    run_url = _dispatched_run(found, tag)
     return {"version": version, "tag": tag, "commit": commit, "url": url,
-            "autopublish": autopublish}
+            "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
+            "run_url": run_url, "autopublish": autopublish}
+
+
+def _dispatched_run(raw: str, tag: str) -> str:
+    """The run URL for the claim ref. Empty when the list has no such run yet."""
+    try:
+        rows = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return ""
+    matched = [row for row in rows if isinstance(row, dict) and row.get("headBranch") == tag and row.get("url")]
+    if len(matched) != 1:
+        return ""
+    return str(matched[0]["url"])
+
+
+def _latest_run(raw: str) -> str:
+    """The URL of the newest listed run. Empty when the list names none."""
+    try:
+        rows = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return ""
+    for row in rows:
+        if isinstance(row, dict) and row.get("url"):
+            return str(row["url"])
+    return ""
 
 
 def _release_view(tag: str, repository: str, inspect) -> dict | None:
@@ -185,7 +215,7 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
         "gh", "workflow", "run", "stable-release-publication.yml",
         "--repo", repository, "--raw-field", f"version={version}",
     ])
-    return {"requested": tag}
+    return {"requested": tag, "version": version, "repository": repository}
 
 
 def abandon(version: str, *, repo: Path, repository: str, delete, inspect=None) -> dict:
@@ -198,7 +228,25 @@ def abandon(version: str, *, repo: Path, repository: str, delete, inspect=None) 
             raise ReleaseRefused(f"stable {version} has no single release draft to abandon")
         tag = rows[0]["tagName"]
     delete(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
-    return {"burned": version}
+    return {"burned": version, "tag": tag, "repository": repository}
+
+
+def next_steps(result: dict) -> str:
+    """Say what started, what the operator waits for, and the next action."""
+    version = result["version"]
+    lines = [
+        f"Claimed v{version}. The release workflow started on {result['tag']}.",
+        f"Workflow: {result['run_url']}" if result.get("run_url") else "Workflow: the run is not listed yet. Open the Actions tab for this claim.",
+        "Wait for that workflow to finish. It builds and tests this commit.",
+        f"When it is green, the release notes are at {result['final_url']}.",
+    ]
+    if result["autopublish"]:
+        lines.append("Autopublish is on. A green workflow publishes the release. You do not run publish.")
+    else:
+        lines.append("Autopublish is off. The release stays a draft.")
+        lines.append("Edit the notes at that page, then publish the release to push this build live:")
+        lines.append(f"    python scripts/release.py publish --version {version} --remote origin")
+    return "\n".join(lines)
 
 
 def cmd_release(args) -> None:
@@ -216,6 +264,7 @@ def cmd_release(args) -> None:
         completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "release command failed")
+        return completed.stdout
 
     from scripts.releases.versioning import published_stable_version
     result = release(
@@ -224,6 +273,7 @@ def cmd_release(args) -> None:
         published=published_stable_version(repository),
     )
     print(result["url"])
+    print(next_steps(result))
 
 
 def _command_repository(args) -> tuple[Path, str]:
@@ -250,17 +300,45 @@ def _inspect(repo: Path, command: list[str]) -> str:
     return completed.stdout
 
 
+def publish_steps(result: dict) -> str:
+    """Say that publication was requested, and where to watch it."""
+    version = result["version"]
+    lines = [
+        f"Requested publication of v{version}.",
+        f"Workflow: {result['run_url']}" if result.get("run_url") else "Workflow: the run is not listed yet. Open the Actions tab.",
+        "Wait for that workflow to finish. It publishes the draft and moves the stable channel.",
+        f"The release page is https://github.com/{result['repository']}/releases/tag/v{version}.",
+    ]
+    return "\n".join(lines)
+
+
+def abandon_steps(result: dict) -> str:
+    """Say that the draft is gone and the version cannot be reused."""
+    version = result["burned"]
+    return "\n".join([
+        f"Deleted the draft for v{version}.",
+        f"The claim tag {result['tag']} stays, so v{version} is spent.",
+        "The next release takes the next version. This one cannot be reused.",
+    ])
+
+
 def cmd_publish(args) -> None:
     repo, repository = _command_repository(args)
     from scripts.releases.versioning import published_stable_version
-    publish(args.version, repository=repository,
-            dispatch=lambda command: _execute(repo, command),
-            inspect=lambda command: _inspect(repo, command),
-            head_version=lambda: published_stable_version(repository))
+    result = publish(args.version, repository=repository,
+                     dispatch=lambda command: _execute(repo, command),
+                     inspect=lambda command: _inspect(repo, command),
+                     head_version=lambda: published_stable_version(repository))
+    listed = _inspect(repo, [
+        "gh", "run", "list", "--repo", repository, "--workflow", "stable-release-publication.yml",
+        "--json", "databaseId,url,headBranch,status", "--limit", "1",
+    ])
+    print(publish_steps({**result, "run_url": _latest_run(listed)}))
 
 
 def cmd_abandon(args) -> None:
     repo, repository = _command_repository(args)
-    abandon(args.version, repo=repo, repository=repository,
-            delete=lambda command: _execute(repo, command),
-            inspect=lambda command: _inspect(repo, command))
+    result = abandon(args.version, repo=repo, repository=repository,
+                     delete=lambda command: _execute(repo, command),
+                     inspect=lambda command: _inspect(repo, command))
+    print(abandon_steps(result))

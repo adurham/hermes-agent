@@ -222,6 +222,9 @@ def cmd_build_commit(args) -> None:
         result = subprocess.run(command, cwd=release.REPO_ROOT, capture_output=True, text=True,  # windows-footgun: ok — encoding and replacement policy are on the next line.
                                 encoding="utf-8", errors="replace", check=True, timeout=60)
         print((result.stdout or "").strip() or f"Dispatched commit build {commit}. No release was created.")
+        print("Wait for that workflow to finish. It builds this commit and uploads the bundles.")
+        print(f"The builds page is {page}.")
+        print("This build does not publish a release and does not move a channel.")
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         stderr = ""
         if isinstance(exc, subprocess.CalledProcessError):

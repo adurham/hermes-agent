@@ -2554,7 +2554,10 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         return
     if not dispatch_desktop_build(tag, repository):
         raise SystemExit(1)
-    print(f"✓ Resumed canary publication for {tag}.")
+    print(f"Resumed canary publication for {tag}.")
+    print(f"Workflow: https://github.com/{repository}/actions/workflows/desktop-bundled-release.yml")
+    print("Wait for that workflow to finish. It builds this canary and publishes the draft when the build is green.")
+    print(f"The draft is at https://github.com/{repository}/releases/tag/{tag}.")
 
 
 def cmd_canary(args) -> None:
@@ -2692,7 +2695,8 @@ def prune_old_canaries(args) -> None:
         else:
             print(f"⚠ Could not delete {tag}: {result.stderr.strip()}")
     if not args.publish:
-        print("Dry run complete. To delete, add --publish")
+        print("Dry run complete. No release was deleted.")
+        print("Run the same command with --publish to delete the tags above.")
 
 
 def main():
