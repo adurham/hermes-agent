@@ -1,18 +1,22 @@
-"""Regression tests for Bug 1: duplicate scrollback heartbeat lines while a
-swarm board is rendering.
+"""Regression tests for duplicate scrollback heartbeat lines while the live
+subagent dock is rendering.
 
-Root cause (see ``tools/swarm_board.py::any_board_active`` docstring): the
-old suppression gate in ``delegate_tool.py`` read
-``parent_agent._swarm_board`` — a SINGLE per-agent slot. Concurrent
-``delegate_task()`` calls on the same parent overwrite and clear that slot
-(the single-child teardown at the bottom of ``_execute_and_aggregate``
-unconditionally did ``parent_agent._swarm_board = None``), so a sibling
-batch's still-rendering board would silently open the heartbeat emit gate.
-The fix reads the CLI host's ``_swarm_boards`` LIST instead — the same
-collection the widget actually renders from.
+Root cause (see ``tools/delegate_tool_registry.py::subagent_dock_active``): the
+suppression gate must read the state the WIDGET actually renders from, not a
+per-agent slot a concurrent sibling dispatch can clear out from under it. The
+original bug read ``parent_agent._swarm_board`` — a SINGLE per-agent slot that
+concurrent ``delegate_task()`` calls overwrite and clear — so a sibling batch's
+still-rendering rows would silently open the heartbeat emit gate and the user
+got duplicate output.
 
-These tests are hermetic: no network, no subprocesses, no real sleeps beyond
-a monkeypatched ~20ms heartbeat interval.
+Ported from the swarm-board era (2026-09-22): the board those tests gated on was
+retired in favour of upstream's ``hermes_cli/cli_subagent_monitor`` dock, which
+now renders the same per-child model/status/tool/elapsed state. The invariants
+are unchanged — only the widget (and therefore the authoritative collection,
+``cli._subagent_monitor.entries``) is different.
+
+These tests are hermetic: no network, no subprocesses, no real sleeps beyond a
+monkeypatched ~20ms heartbeat interval.
 """
 from __future__ import annotations
 
@@ -21,47 +25,32 @@ import time
 import weakref
 from unittest.mock import MagicMock
 
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Shared fakes
 # ---------------------------------------------------------------------------
 
 
-class FakeCLI:
-    """Minimal stand-in for the CLI host, modeled on
-    ``tests/tools/test_swarm_board.py::_StubCLI``. Carries the authoritative
-    ``_swarm_boards`` LIST the real widget renders from.
+class _FakeMonitor:
+    """Stand-in for ``hermes_cli.cli_subagent_monitor.SubagentMonitor``.
+
+    Only ``entries`` matters to the gate — it is the list the dock widget
+    renders from, and the same list ``install_dock``'s visibility filter reads.
     """
 
     def __init__(self):
-        self._swarm_boards: list = []
-        self.show_calls = []
-        self.hide_calls = 0
+        self.entries: list = []
+
+
+class FakeCLI:
+    """Minimal stand-in for the CLI host carrying a live dock."""
+
+    def __init__(self):
+        self._subagent_monitor = _FakeMonitor()
         self.invalidate_calls = 0
 
-    def _swarm_board_show(self, board):
-        if board not in self._swarm_boards:
-            self._swarm_boards.append(board)
-        self.show_calls.append(board)
-
-    def _swarm_board_hide(self, board):
-        try:
-            self._swarm_boards.remove(board)
-        except ValueError:
-            pass
-        self.hide_calls += 1
-
-    def _invalidate_app(self):
+    def _invalidate(self):
         self.invalidate_calls += 1
-
-
-class _FakeBoard:
-    """Stand-in for a live SwarmBoard row-source; only ``is_active`` matters
-    to the (pre-fix) single-slot gate."""
-
-    is_active = True
 
 
 class _StubChild:
@@ -106,7 +95,7 @@ class _StubChild:
 
 def _make_parent(cli):
     """A plain object (not MagicMock) so getattr-based probing behaves like
-    a real AIAgent: unset attributes raise/aren't magically truthy."""
+    a real AIAgent: unset attributes aren't magically truthy."""
 
     class _Parent:
         pass
@@ -116,92 +105,71 @@ def _make_parent(cli):
     p._touch_activity = MagicMock()
     p._current_task_id = None
     p._emit_status = MagicMock()
-    p._swarm_board = None
     return p
 
 
-def _run_child_with_race(monkeypatch, *, hang_seconds, clear_slot_after):
-    """Drive the real ``_run_single_child`` while simulating the sibling
-    teardown race: the board is published (both on the CLI list and the
-    parent's single slot), then partway through the run the slot alone is
-    cleared -- exactly what the old unconditional
-    ``parent_agent._swarm_board = None`` teardown did to a SIBLING batch's
-    still-active board.
-    """
+def _heartbeat_lines(parent):
+    return [
+        line
+        for line in (c.args[0] for c in parent._emit_status.call_args_list if c.args)
+        if "🔀" in line and "elapsed" in line
+    ]
+
+
+def _patch_heartbeat(monkeypatch):
     from tools import delegate_tool
 
     monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.02)
     monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: None)
     monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 10_000)
     monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IN_TOOL", 10_000)
-
-    cli = FakeCLI()
-    board = _FakeBoard()
-    cli._swarm_boards.append(board)  # board is still rendering on the widget
-
-    parent = _make_parent(cli)
-    parent._swarm_board = board  # this call's own slot, initially set
-
-    child = _StubChild(hang_seconds=hang_seconds)
-
-    def _clear_slot_midflight():
-        time.sleep(clear_slot_after)
-        # Simulate the sibling race: null the SLOT only. The board stays
-        # live in cli._swarm_boards the whole time.
-        parent._swarm_board = None
-
-    racer = threading.Thread(target=_clear_slot_midflight, daemon=True)
-    racer.start()
-
-    result = delegate_tool._run_single_child(
-        task_index=0,
-        goal="test goal",
-        child=child,
-        parent_agent=parent,
-    )
-    racer.join(timeout=2.0)
-    return parent, cli, result
+    return delegate_tool
 
 
 class TestHeartbeatSuppressionDuringSiblingRace:
-    def test_no_duplicate_heartbeat_lines_while_sibling_board_active(
-        self, monkeypatch
-    ):
-        """THE REGRESSION TEST. Fails on pre-fix code (single-slot gate),
-        passes after the fix (list-based any_board_active gate)."""
-        parent, cli, result = _run_child_with_race(
-            monkeypatch, hang_seconds=0.35, clear_slot_after=0.05
+    def test_no_duplicate_heartbeat_lines_while_dock_rendering(self, monkeypatch):
+        """THE REGRESSION TEST.
+
+        A sibling dispatch mutating per-agent state mid-run must NOT reopen the
+        emit gate while the dock still has rows on screen. The gate reads the
+        dock's own entry list, so a racing mutation of anything else on the
+        parent cannot affect it.
+        """
+        delegate_tool = _patch_heartbeat(monkeypatch)
+
+        cli = FakeCLI()
+        # The dock is rendering a row for this tree the whole time.
+        cli._subagent_monitor.entries = [{"subagent_id": "sa-0-fakeXY"}]
+        parent = _make_parent(cli)
+        child = _StubChild(hang_seconds=0.35)
+
+        def _sibling_teardown_race():
+            time.sleep(0.05)
+            # A concurrent sibling dispatch finishing mid-run: it tears down its
+            # OWN per-agent display state. The dock's entries — the thing
+            # actually on screen for this tree — are untouched, so the gate must
+            # stay closed. Reading per-agent state here instead was the bug.
+            parent._sibling_dispatch_done = True
+
+        racer = threading.Thread(target=_sibling_teardown_race, daemon=True)
+        racer.start()
+        result = delegate_tool._run_single_child(
+            task_index=0, goal="test goal", child=child, parent_agent=parent,
         )
+        racer.join(timeout=2.0)
 
         assert result["status"] == "completed"
-        # The board never left cli._swarm_boards for the CLI's list, so the
-        # heartbeat gate must have stayed CLOSED the entire time, even after
-        # the slot got nulled by the "sibling" teardown race.
-        emitted_lines = [
-            call.args[0]
-            for call in parent._emit_status.call_args_list
-            if call.args
-        ]
-        heartbeat_lines = [
-            line for line in emitted_lines if "🔀" in line and "elapsed" in line
-        ]
-        assert heartbeat_lines == [], (
-            f"expected zero heartbeat lines while sibling board active, got: "
-            f"{heartbeat_lines!r}"
+        assert _heartbeat_lines(parent) == [], (
+            "expected zero heartbeat lines while the dock is rendering, got: "
+            f"{_heartbeat_lines(parent)!r}"
         )
 
-    def test_heartbeat_emits_when_board_truly_gone(self, monkeypatch):
-        """Sanity control: when the board is ACTUALLY torn down (removed
-        from cli._swarm_boards too, not just the slot), the heartbeat must
-        resume -- this proves the gate isn't just permanently stuck closed."""
-        from tools import delegate_tool
+    def test_heartbeat_emits_when_dock_empty(self, monkeypatch):
+        """Sanity control: with no rows on the dock the heartbeat must resume --
+        this proves the gate isn't just permanently stuck closed."""
+        delegate_tool = _patch_heartbeat(monkeypatch)
 
-        monkeypatch.setattr(delegate_tool, "_HEARTBEAT_INTERVAL", 0.02)
-        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: None)
-        monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IDLE", 10_000)
-        monkeypatch.setattr(delegate_tool, "_HEARTBEAT_STALE_CYCLES_IN_TOOL", 10_000)
-
-        cli = FakeCLI()  # no board ever added -- headless-equivalent state
+        cli = FakeCLI()  # monitor present but no entries -- nothing on screen
         parent = _make_parent(cli)
         child = _StubChild(hang_seconds=0.15)
 
@@ -209,36 +177,32 @@ class TestHeartbeatSuppressionDuringSiblingRace:
             task_index=0, goal="test goal", child=child, parent_agent=parent,
         )
         assert result["status"] == "completed"
-        emitted_lines = [
-            call.args[0]
-            for call in parent._emit_status.call_args_list
-            if call.args
-        ]
-        heartbeat_lines = [
-            line for line in emitted_lines if "🔀" in line and "elapsed" in line
-        ]
-        assert heartbeat_lines, "expected heartbeat lines to emit when no board is active"
+        assert _heartbeat_lines(parent), (
+            "expected heartbeat lines to emit when the dock shows nothing"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Unit tests for any_board_active
+# Unit tests for subagent_dock_active
 # ---------------------------------------------------------------------------
 
 
-class TestAnyBoardActive:
-    def test_true_via_cli_list_on_agent(self):
-        from tools.swarm_board import any_board_active
+class TestSubagentDockActive:
+    def test_true_via_cli_monitor_on_agent(self):
+        from tools.delegate_tool_registry import subagent_dock_active
 
         cli = FakeCLI()
-        cli._swarm_boards.append(_FakeBoard())
+        cli._subagent_monitor.entries = [{"subagent_id": "sa-0"}]
         agent = type("A", (), {"_cli_ref": cli})()
-        assert any_board_active(agent) is True
+        assert subagent_dock_active(agent) is True
 
     def test_true_via_delegate_parent_ref_weakref_chain(self):
-        from tools.swarm_board import any_board_active
+        """A nested orchestrator subagent has no ``_cli_ref`` of its own -- the
+        gate must walk the delegation weakref chain to reach the CLI host."""
+        from tools.delegate_tool_registry import subagent_dock_active
 
         cli = FakeCLI()
-        cli._swarm_boards.append(_FakeBoard())
+        cli._subagent_monitor.entries = [{"subagent_id": "sa-0"}]
 
         class _Root:
             pass
@@ -252,27 +216,43 @@ class TestAnyBoardActive:
         child = _Child()
         child._delegate_parent_ref = weakref.ref(root)
 
-        assert any_board_active(child) is True
+        assert subagent_dock_active(child) is True
 
-    def test_false_when_no_cli_ref_and_empty_slot_headless_contract(self):
-        """THE HEADLESS CONTRACT: headless/gateway runs with no reachable
-        CLI host and no board slot must still emit heartbeats."""
-        from tools.swarm_board import any_board_active
+    def test_false_when_dock_has_no_rows(self):
+        from tools.delegate_tool_registry import subagent_dock_active
 
-        agent = type("A", (), {})()  # no _cli_ref, no _swarm_board
-        assert any_board_active(agent) is False
+        agent = type("A", (), {"_cli_ref": FakeCLI()})()
+        assert subagent_dock_active(agent) is False
 
-    def test_false_for_noop_board_in_slot(self):
-        from tools.swarm_board import _NoopBoard, any_board_active
+    def test_false_when_no_cli_ref_headless_contract(self):
+        """THE HEADLESS CONTRACT: headless/gateway runs with no reachable CLI
+        host must still emit heartbeats."""
+        from tools.delegate_tool_registry import subagent_dock_active
 
-        agent = type("A", (), {"_swarm_board": _NoopBoard()})()
-        assert any_board_active(agent) is False
+        agent = type("A", (), {})()  # no _cli_ref at all
+        assert subagent_dock_active(agent) is False
 
     def test_false_for_magicmock_parent(self):
-        """LOAD-BEARING: a bare MagicMock() auto-creates every attribute,
-        so a naive gate would see a truthy '_swarm_boards' / 'is_active'
-        and wrongly suppress heartbeats for real headless test doubles.
-        The isinstance(list) / `is True` checks must reject it."""
-        from tools.swarm_board import any_board_active
+        """LOAD-BEARING: a bare MagicMock() auto-creates every attribute, so a
+        duck-typed truthiness check would see a 'monitor' with 'entries' and
+        wrongly suppress heartbeats for real headless test doubles. The
+        isinstance(list) check must reject it."""
+        from tools.delegate_tool_registry import subagent_dock_active
 
-        assert any_board_active(MagicMock()) is False
+        assert subagent_dock_active(MagicMock()) is False
+
+    def test_false_for_dead_weakref_in_chain(self):
+        """A parent that has been garbage-collected ends the walk rather than
+        raising -- the child then reports 'no dock' and keeps its heartbeats."""
+        from tools.delegate_tool_registry import subagent_dock_active
+
+        class _Root:
+            pass
+
+        root = _Root()
+        ref = weakref.ref(root)
+        child = type("C", (), {})()
+        child._delegate_parent_ref = ref
+        del root
+
+        assert subagent_dock_active(child) is False

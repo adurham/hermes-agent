@@ -170,6 +170,76 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
 # Registry record fields never exposed to the TUI/RPC snapshot.
 _PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
 
+# Live-activity fields the progress relay mirrors onto a running child's record
+# (see ``mirror_subagent_activity``). Previously these existed ONLY on a
+# ``tools/swarm_board.py`` row object, so the registry — and therefore every
+# consumer reading it, including the CLI subagent dock — could not see them.
+_ACTIVITY_FIELDS = frozenset({"status", "tool_count", "last_tool", "last_note"})
+
+def mirror_subagent_activity(subagent_id: Optional[str], **fields: Any) -> bool:
+    """Mirror live per-child activity onto the registry record. True when it landed.
+
+    The registry is the single source every subagent surface reads (the CLI dock,
+    the full-screen monitor, ``delegate_task(action="list")``, the gateway/TUI
+    snapshot). Before this, the record carried only what ``_register_subagent``
+    stamped once at dispatch: ``status`` was frozen at ``"running"`` for a child's
+    entire life, and ``tool_count`` / ``last_tool`` were written by one narrow
+    inline block in the progress relay while ``last_note`` was never written at
+    all. The richer state — a ``waiting_on_children`` status, a running tool
+    tally, the latest note — lived exclusively on a per-dispatch swarm-board row
+    object, which is why retiring that board required promoting these fields to
+    the registry rather than dropping them.
+
+    Only ``_ACTIVITY_FIELDS`` are writable, only for an already-registered id, and
+    ``None`` values are ignored so a partial update never blanks a good value.
+    Never raises: this sits on the progress hot path, where a display-state write
+    must not be able to take down a running delegation.
+    """
+    if not subagent_id:
+        return False
+    updates = {k: v for k, v in fields.items() if k in _ACTIVITY_FIELDS and v is not None}
+    if not updates:
+        return False
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if record is None:
+            return False
+        record.update(updates)
+        return True
+
+def subagent_dock_active(agent: Any, max_hops: int = 8) -> bool:
+    """True when a live CLI subagent dock is rendering rows for *agent*'s tree.
+
+    Replaces ``tools.swarm_board.any_board_active``. Same question, same
+    weakref-chain walk (``_delegate_parent_ref``, bounded for the same reason
+    ``_is_descendant_of`` is), different widget: the authoritative signal is now
+    the dock's monitor holding entries, since the dock renders the per-child
+    model / status / tool / elapsed state the swarm board used to own.
+
+    ``_cli_ref`` is stamped by ``cli.py`` on the TOP-LEVEL agent only, so a nested
+    orchestrator subagent has to walk up to find the host. No CLI host reachable
+    (gateway, headless, library, piped run) is False — those surfaces have no dock
+    and must keep their scrollback progress lines.
+
+    LOAD-BEARING: ``entries`` must be a real list before it is believed. A bare
+    ``MagicMock()`` parent auto-creates every attribute, so a duck-typed
+    truthiness check reports "a dock is rendering" for any test double and
+    wrongly suppresses the heartbeat lines a headless run depends on. Same
+    ``isinstance`` discipline the predecessor gate
+    (``swarm_board.any_board_active``) carried, for the same reason.
+    """
+    cur = agent
+    for _ in range(max_hops + 1):
+        if cur is None:
+            return False
+        entries = getattr(getattr(getattr(cur, "_cli_ref", None), "_subagent_monitor", None), "entries", None)
+        if isinstance(entries, list):
+            return len(entries) > 0
+        ref = getattr(cur, "_delegate_parent_ref", None)
+        # weakref.ref is callable and returns None once the referent dies.
+        cur = ref() if callable(ref) else None
+    return False
+
 def _live_model_fields(record: Dict[str, Any], *, compact: bool = False) -> Dict[str, Any]:
     """Resolve a registry record's EFFECTIVE model identity.
 
@@ -284,6 +354,17 @@ def _list_payload(parent_agent: Any) -> Dict[str, Any]:
             "subagent_id": r.get("subagent_id"),
             "parent_id": r.get("parent_id"),
             "goal": r.get("goal"),
+            # Delegation nesting depth + the live activity the progress relay
+            # mirrors in (``mirror_subagent_activity``). Emitted so a consumer
+            # can render the spawn tree and per-child work state rather than a
+            # flat list of goals: the CLI dock nests a grandchild under the
+            # orchestrator that spawned it and shows its tool tally / latest
+            # note, which is what the retired swarm board used to provide off a
+            # separate, CLI-only data path.
+            "depth": r.get("depth"),
+            "tool_count": r.get("tool_count"),
+            "last_tool": r.get("last_tool"),
+            "last_note": r.get("last_note"),
             "model": _model_state["model"],
             "provider": _model_state["provider"],
             "fallback_active": _model_state["fallback_active"],

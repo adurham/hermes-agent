@@ -6,6 +6,40 @@ import time
 
 from prompt_toolkit.utils import get_cwidth
 
+# Per-status glyph. A child sitting inside a blocking nested ``delegate_task``
+# is NOT "running" in the same sense as one doing its own work — without the
+# distinction a nested orchestrator's row looked exactly as busy as the workers
+# it was merely waiting on, which is misleading when supervising a multi-level
+# swarm. The status strings are the ones the progress relay mirrors onto the
+# registry record (``tools/delegate_tool_progress._ChildProgressRelay``).
+_STATUS_GLYPH = {
+    'queued': '⏸',
+    'starting': '⏳',
+    'running': '🔀',
+    'waiting_on_children': '👥',
+    'summarizing': '📝',
+    'completed': '✅',
+    'ok': '✅',
+    'failed': '❌',
+    'error': '❌',
+    'timeout': '⏱',
+    'interrupted': '⛔',
+}
+
+# Statuses meaning "this row is done" — used by the overflow summary to report
+# how many HIDDEN rows are still doing work.
+_TERMINAL_STATUSES = frozenset({'completed', 'ok', 'failed', 'error', 'timeout', 'interrupted'})
+
+# Spaces of indent per nesting level. 2 reads as a hierarchy without eating the
+# (already tight) horizontal budget a row shares with model, status and tool.
+_INDENT_WIDTH = 2
+
+# Hard ceiling on rendered indentation. ``delegation.max_spawn_depth`` bounds
+# real nesting well below this, but a display path must not be the thing that
+# breaks when a config raises it — past this level rows stack at the same indent
+# instead of marching off the right edge.
+_MAX_RENDER_DEPTH = 4
+
 
 def _clip(value, width):
     text = ' '.join(str(value or '').split())
@@ -18,6 +52,158 @@ def _clip(value, width):
             break
         result += char
     return result + ('…' if width else '')
+
+
+def format_elapsed(seconds):
+    """Elapsed time, switching to ``MmSSs`` past 60s.
+
+    Mirrors ``cli.py::_render_spinner_text``'s rollover format (minutes NOT
+    zero-padded, seconds zero-padded — ``1m05s``, ``12m09s``) so every live
+    counter in the TUI reads the same way once it crosses a minute, instead of
+    the dock being the one place still showing a bare growing ``421s``.
+    """
+    try:
+        seconds = max(0.0, float(seconds or 0))
+    except (TypeError, ValueError):
+        return '0s'
+    if seconds < 60:
+        return f'{seconds:.0f}s'
+    minutes, secs = divmod(int(seconds), 60)
+    return f'{minutes}m{secs:02d}s'
+
+
+def shorten_model(model):
+    """Strip a ``provider/model`` prefix down to the model slug.
+
+    Applied to BOTH halves of a fallback label — shortening only the effective
+    model renders ``⚠ ollama-cloud/glm-5.3→claude-opus-5``, blowing the row's
+    width budget with the one part the user least needs.
+    """
+    text = str(model or '').strip()
+    if not text:
+        return ''
+    return text.split('/', 1)[1] if '/' in text else text
+
+
+def model_label(row):
+    """The row's model identity, marked when the child silently failed over.
+
+    Compact form (``⚠ primary→effective``) because this shares one line with
+    status, tool and elapsed. Reads the fields ``_list_payload`` already
+    resolves LIVE off the child agent, so a child that failed over mid-run
+    shows what it is actually running on, not its dispatch-time snapshot.
+    """
+    from agent.failover_state import format_model_label
+
+    return format_model_label(
+        shorten_model(row.get('model')) or '?',
+        fallback_active=row.get('fallback_active'),
+        primary_model=shorten_model(row.get('primary_model')),
+        compact=True,
+    )
+
+
+def order_rows_for_display(rows):
+    """Group rows into parent → child order with EFFECTIVE depths.
+
+    Returns ``(row, depth)`` pairs. The registry hands back a flat list scoped
+    to the caller's spawn tree, which can span several concurrent dispatches and
+    several nesting levels; plain input order can interleave a grandchild with
+    an unrelated top-level child — right depth, wrong neighbours.
+
+    Effective depth is computed from parent links actually PRESENT in this set,
+    not from the record's declared ``depth``: a child whose parent already
+    finished and left the registry renders as a root rather than floating at an
+    indent under nothing. Every input row appears exactly once; duplicate ids
+    and parent cycles are handled defensively.
+    """
+    if not rows:
+        return []
+
+    by_id = {}
+    for row in rows:
+        by_id.setdefault(row.get('subagent_id'), row)
+
+    children, roots = {}, []
+    for row in rows:
+        parent = row.get('parent_id')
+        if parent and parent in by_id and by_id[parent] is not row:
+            children.setdefault(parent, []).append(row)
+        else:
+            roots.append(row)
+
+    ordered, seen = [], set()
+
+    def emit(row, depth):
+        # id()-keyed, not subagent_id-keyed: duplicate-id rows are distinct
+        # objects that should each render once.
+        if id(row) in seen:
+            return
+        seen.add(id(row))
+        ordered.append((row, depth))
+        # Past the indent ceiling keep descending but stop deepening.
+        nxt = depth if depth >= _MAX_RENDER_DEPTH else depth + 1
+        for child in children.get(row.get('subagent_id'), ()):
+            emit(child, nxt)
+
+    for root in roots:
+        emit(root, 0)
+    # Safety net: anything unreachable from a root (a cycle among non-root rows)
+    # still renders, as a root, so no row is ever dropped.
+    for row in rows:
+        if id(row) not in seen:
+            emit(row, 0)
+    return ordered
+
+
+def row_activity(row, width=None):
+    """The work-state half of a row: status glyph, model, tool tally, last tool.
+
+    Everything here comes from the registry record the progress relay mirrors
+    into (``mirror_subagent_activity``), which is what lets the dock show the
+    per-child detail that previously existed only on the retired swarm board.
+
+    ``width`` degrades the row gracefully instead of letting the outer clip
+    truncate it from the right, which would drop the most operationally useful
+    field first. On a narrow terminal the segments are shed in reverse priority
+    order — tool tally, then model, then status — so "what is this child doing
+    right now" (the last tool) survives longest. Upstream's dock showed the tool
+    at 32 columns and a regression test pins that; the added signals must not
+    cost it.
+    """
+    status = row.get('status') or 'starting'
+    glyph = _STATUS_GLYPH.get(status, '🔀')
+    count = row.get('tool_count')
+    tool = str(row.get('last_tool') or '').strip()
+    if tool.startswith('mcp_'):
+        tool = tool[4:]
+
+    # (segment, droppable) in render order; dropped right-to-left by priority.
+    tally = f"{count} tool{'' if count == 1 else 's'}" if isinstance(count, int) else None
+    last = f'last: {tool}' if tool else None
+    candidates = [f'{glyph} {model_label(row)}', status, tally, last]
+    # Priority: keep the last tool, then status, then model, then the tally.
+    drop_order = [2, 0, 1]
+
+    parts = [p for p in candidates if p]
+    if width is None:
+        return ' · '.join(parts)
+    for index in drop_order:
+        rendered = ' · '.join(p for p in candidates if p)
+        if get_cwidth(rendered) <= width:
+            return rendered
+        candidates[index] = None
+    return ' · '.join(p for p in candidates if p) or status
+
+
+def row_prefix(depth):
+    """Indent + elbow marking a row as a child of the row above it.
+
+    Top-level rows keep the exact unindented format; nesting is legible without
+    relying on colour.
+    """
+    depth = max(0, min(int(depth or 0), _MAX_RENDER_DEPTH))
+    return (' ' * (_INDENT_WIDTH * depth)) + '└─ ' if depth else ''
 
 
 class SubagentMonitor:
@@ -41,19 +227,25 @@ class SubagentMonitor:
         parent = getattr(self.cli, 'agent', None)
         entries = _list_payload(parent)['subagents'] if parent is not None else []
         # The scoped control-plane snapshot supplies authority and transcript paths;
-        # its matching public lifecycle record supplies the latest observed tool.
+        # its matching public lifecycle record supplies the latest observed activity.
         activity = {r['subagent_id']: r for r in list_active_subagents()} if entries else {}
         for row in entries:
             live = activity.get(row['subagent_id'], {})
             row['elapsed'] = max(0, int(now - live.get('started_at', now)))
-            row['last_tool'] = live.get('last_tool') or ''
+            row['last_tool'] = live.get('last_tool') or row.get('last_tool') or ''
             row.pop('running_seconds', None)
-        signature = json.dumps(entries, sort_keys=True, default=str)
+        # Parent → child ordering with effective depths, so the dock renders the
+        # spawn tree rather than a flat list. Done once per refresh (not per
+        # paint) because both the dock and the full-screen roster render from it
+        # and ``entries`` is also what the signature/selection logic walks.
+        self.entries = [
+            dict(row, display_depth=depth) for row, depth in order_rows_for_display(entries)
+        ]
+        signature = json.dumps(self.entries, sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
-        self.entries = entries
         if self.selected is None:
-            self.selected_id = entries[0]['subagent_id'] if entries else None
+            self.selected_id = self.entries[0]['subagent_id'] if self.entries else None
         return changed
 
     def invalidate(self):
@@ -110,12 +302,25 @@ class SubagentMonitor:
         heading = f' Subagents · {len(self.entries)} live · Ctrl+T expand · F7 collapse'
         lines = [_clip(heading, columns)]
         for row in self.entries[:count]:
-            activity = f"{row['elapsed']}s · " + (f"last: {row['last_tool']}" if row['last_tool'] else row.get('status') or 'starting')
+            # Status glyph + live model identity (fallback-marked) + tool tally
+            # + last tool, then the goal in whatever space remains. Elapsed
+            # rolls over to MmSSs past a minute, matching every other TUI
+            # counter. The activity is width-budgeted so a narrow terminal sheds
+            # the least useful field rather than clipping the last tool away.
+            prefix = row_prefix(row.get('display_depth'))
+            elapsed = format_elapsed(row.get('elapsed'))
+            budget = max(0, columns - get_cwidth(prefix) - get_cwidth(elapsed) - 12)
+            activity = f"{elapsed} · {row_activity(row, width=budget)}"
             # Reserve activity even on narrow terminals; task names use the remainder.
-            goal_width = max(3, columns - get_cwidth(activity) - 5)
-            lines.append(_clip(f" ● {_clip(row.get('goal'), goal_width)} · {activity}", columns))
+            goal_width = max(3, columns - get_cwidth(activity) - get_cwidth(prefix) - 5)
+            lines.append(_clip(f" {prefix}{_clip(row.get('goal'), goal_width)} · {activity}", columns))
         if hidden:
-            lines.append(_clip(f' +{hidden} more · Ctrl+T all subagents', columns))
+            # Break out how many hidden rows are still working: "8 hidden, all
+            # finished" and "8 hidden, all running" are very different situations
+            # for someone watching a live dock.
+            live = sum(1 for r in self.entries[count:] if r.get('status') not in _TERMINAL_STATUSES)
+            suffix = f' ({live} running)' if live else ''
+            lines.append(_clip(f' +{hidden} more{suffix} · Ctrl+T all subagents', columns))
         return '\n'.join(' ' + line for line in lines)
 
 
@@ -156,11 +361,15 @@ def build_monitor_application(monitor, **kwargs):
         rows = []
         for row in monitor.entries:
             selected = row['subagent_id'] == monitor.selected_id
-            prefix = f"{row['elapsed']}s · {row.get('status') or 'starting'} · "
-            activity = f" · last: {row['last_tool']}" if row.get('last_tool') else ''
-            goal_width = max(0, size.columns - 2 - get_cwidth(prefix + activity))
+            # Same signal set as the dock (glyph, live model + fallback marker,
+            # status, tool tally, last tool, MmSSs elapsed) plus the lineage
+            # indent, so switching between the two surfaces reads identically.
+            prefix = f"{row_prefix(row.get('display_depth'))}{format_elapsed(row.get('elapsed'))} · {row_activity(row)} · "
+            note = str(row.get('last_note') or '').strip()
+            suffix = f' · {note}' if note else ''
+            goal_width = max(0, size.columns - 2 - get_cwidth(prefix + suffix))
             goal = _clip(row.get('goal') or row['subagent_id'], goal_width)
-            text = f"{'❯' if selected else ' '} " + _clip(prefix + goal + activity, max(0, size.columns - 2))
+            text = f"{'❯' if selected else ' '} " + _clip(prefix + goal + suffix, max(0, size.columns - 2))
             # Pad selection in terminal cells, not codepoints (task names may be wide).
             text += ' ' * max(0, size.columns - get_cwidth(text))
             rows.append(('class:subagent-dock.selected' if selected else '', text + '\n'))

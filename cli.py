@@ -3421,10 +3421,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._pending_resume_sessions = None  # armed by a bare `/resume`; the next bare number selects
         self._pending_agent_seed = None  # one-shot seed from a slash handler
         self._secret_deadline = 0
-        # FORK: active swarm boards (delegate_task multi-agent display). A list, not a slot:
-        # concurrent delegate_task() batches each get their own SwarmBoard and the widget
-        # renders every board's rows concatenated. Mutated only by _swarm_board_show/_hide.
-        self._swarm_boards: list = []
         self._tool_start_time: float = 0.0
         self._pending_tool_info: dict = {}  # function_name -> [(preview, args)] for stacked scrollback
         self._spinner_text = self._command_status = ""
@@ -3672,7 +3668,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # 2 columns as the existing YOLO/steer badges.
         #
         # Compact form ("primary→effective") is deliberately NOT used here:
-        # the bar is far tighter than a swarm-board row, and the primary is
+        # the bar is far tighter than a subagent dock row, and the primary is
         # already recoverable from the fallback_* fields below.
         _fallback_state = {"fallback_active": False, "primary_model": None,
                            "primary_provider": None, "provider": None}
@@ -4182,7 +4178,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         Height twin of ``_get_tui_terminal_width`` — same prompt_toolkit-first
         ordering and same reason (the TUI layout knows its real size; shutil
         can report stale/fallback values, notably on Termux/mobile shells).
-        Used to bound the swarm board's row budget so a wide/deep delegation
+        Used to bound the subagent dock's row budget so a wide/deep delegation
         tree can't grow that panel until it crowds out the conversation.
         """
         try:
@@ -4190,148 +4186,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             return get_app().output.get_size().rows
         except Exception:
             return shutil.get_terminal_size(default).lines
-
-    def _swarm_board_show(self, board) -> None:
-        """Add ``board`` to the active list so its rows render above the spinner.
-
-        A list, not a single slot: multiple ``delegate_task()`` batches can
-        be running concurrently (e.g. a background batch still in flight
-        when a second one starts) and each gets its own board.  Without
-        this, the second batch's ``_swarm_board_show`` used to overwrite the
-        single ``self._swarm_board`` slot, silently dropping the first
-        batch's rows from the widget for as long as both were active.
-        """
-        if board not in self._swarm_boards:
-            self._swarm_boards.append(board)
-        self._invalidate_app()
-
-    def _swarm_board_hide(self, board) -> None:
-        """Remove ``board`` from the active list.  The widget hides on the next frame.
-
-        Only removes the SPECIFIC board being torn down — a batch finishing
-        while a sibling batch is still running must not blank the display
-        out from under the still-active one.
-        """
-        try:
-            self._swarm_boards.remove(board)
-        except ValueError:
-            pass  # already removed / hide fired twice — not fatal
-        self._invalidate_app()
-
-    def _build_swarm_board_widget(self):
-        """Live multi-row panel for in-flight ``delegate_task`` batches.
-
-        Reads rows from ``self._swarm_boards`` (a LIST — see
-        ``tools/swarm_board.py::SwarmBoard``'s class docstring: each concurrent
-        ``delegate_task()`` batch gets its own board instance, and this widget
-        concatenates rows from every board currently active). Renders one line
-        per active subagent inside the same bronze bordered panel the
-        clarify/approval/sudo widgets use, so it reads as a self-contained
-        widget rather than blending into scrollback. The ConditionalContainer
-        filter collapses it to zero height when no swarm is running.
-
-        Restored here after the v2026.9.14 upstream sync dropped the widget
-        construction: the producers (``tools/delegate_tool_progress.py``,
-        ``tools/delegate_tool_child_run.py``) kept writing rows into
-        ``_swarm_boards``, but nothing painted them.
-        """
-        cli_ref = self
-
-        def _all_swarm_rows():
-            # Snapshot the board list itself before iterating — show/hide run on
-            # subagent worker threads and can mutate the list concurrently with
-            # this render-thread read.
-            rows = []
-            for board in list(cli_ref._swarm_boards):
-                try:
-                    rows.extend(board.get_rows_snapshot())
-                except Exception:
-                    continue
-            return rows
-
-        def _swarm_board_rows() -> list:
-            """Text rows, hierarchy-ordered and capped to a bounded height.
-
-            Three steps, all in ``tools/swarm_board.py`` so they stay testable
-            without a prompt_toolkit app:
-
-            1. ``order_rows_for_display`` regroups the flat concatenation into
-               parent -> child order with effective depths. Rows from a nested
-               orchestrator's board live on a DIFFERENT board object than the
-               orchestrator's own row, so raw concatenation could interleave a
-               grandchild with an unrelated concurrent top-level dispatch —
-               right depth, wrong neighbours.
-            2. ``resolve_max_board_rows`` derives the line budget from the live
-               terminal height.
-            3. ``collapse_rows_to_limit`` renders with per-depth indentation and
-               replaces any overflow with one "+N more subagents" line, so the
-               panel's height is bounded no matter how wide or deep the
-               delegation tree gets.
-            """
-            rows = _all_swarm_rows()
-            if not rows:
-                return []
-            from tools.swarm_board import (
-                collapse_rows_to_limit as _collapse_swarm_rows,
-                order_rows_for_display as _order_swarm_rows,
-                resolve_max_board_rows as _max_swarm_rows,
-            )
-            entries = _order_swarm_rows(rows)
-            return _collapse_swarm_rows(
-                entries, _max_swarm_rows(HermesCLI._get_tui_terminal_height())
-            )
-
-        def _swarm_board_box_width(rows: list) -> int:
-            term_cols = HermesCLI._get_tui_terminal_width()
-            longest = max([HermesCLI._panel_cwidth(r) for r in rows] + [20])
-            inner = min(longest + 4, max(24, term_cols - 6))
-            return inner + 2
-
-        def get_swarm_board_text():
-            rows = _swarm_board_rows()
-            if not rows:
-                return []
-            box_width = _swarm_board_box_width(rows)
-            inner_width = max(0, box_width - 2)
-            fragments = [('class:swarm-border', '╭' + ('─' * box_width) + '╮\n')]
-            for row in rows:
-                # Trim BEFORE padding — an untrimmed row overflows the box on a
-                # narrow terminal (same fix the todo/clarify panels carry).
-                text = HermesCLI._trim_status_bar_text(row, inner_width)
-                fragments.append(('class:swarm-border', '│ '))
-                fragments.append(('class:hint', HermesCLI._panel_ljust(text, inner_width)))
-                fragments.append(('class:swarm-border', ' │\n'))
-            fragments.append(('class:swarm-border', '╰' + ('─' * box_width) + '╯\n'))
-            return fragments
-
-        def get_swarm_board_height():
-            """Panel height: rendered rows + 2 border lines, hard-bounded.
-
-            ``_swarm_board_rows()`` is already capped by
-            ``collapse_rows_to_limit``, so this can never exceed
-            ``resolve_max_board_rows(...) + 2`` no matter how many subagents are
-            active across how many concurrent boards. A raw ``len(rows) + 2``
-            over every row of every board grew the panel one line per active
-            subagent without limit.
-            """
-            rows = _swarm_board_rows()
-            if not rows:
-                return 0
-            return len(rows) + 2  # +2 for the top/bottom border lines
-
-        # Exposed on the instance so the widget's render path is reachable from
-        # tests and from wrapper CLIs without rebuilding the whole layout.
-        self.get_swarm_board_text = get_swarm_board_text
-        self.get_swarm_board_height = get_swarm_board_height
-
-        return ConditionalContainer(
-            Window(
-                content=FormattedTextControl(get_swarm_board_text),
-                height=get_swarm_board_height,
-                wrap_lines=False,
-            ),
-            filter=Condition(lambda: len(cli_ref._swarm_boards) > 0),
-        )
 
     def _invalidate_app(self) -> None:
         """Ask prompt_toolkit to schedule a re-render.
@@ -5424,8 +5278,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
     * ``agent.interleaved_thinking`` — ``agent_init`` only does a post-construction
       attribute assignment for this flag, so setting it here is equivalent to passing
       ``interleaved_thinking=`` to ``AIAgent(...)``.
-    * ``agent._cli_ref`` — the back-reference ``tools/swarm_board.py`` walks to find the
-      CLI from a (sub)agent. Set last so a partially built agent is never reachable.
+    * ``agent._cli_ref`` — the back-reference ``tools/delegate_tool_registry.py`` walks to
+      find the CLI from a (sub)agent. Set last so a partially built agent is never reachable.
         """
         if not super()._init_agent(
             model_override=model_override,
@@ -8900,7 +8754,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         reasoning_picker_widget=None,
         command_palette_widget=None,
         spinner_widget=None,
-        swarm_board_widget=None,
         todo_board_widget=None,
         spacer,
         status_bar,
@@ -8917,14 +8770,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         this method.  Override this only when you need full control over widget
         ordering.
 
-        ``swarm_board_widget`` and ``_subagent_dock_widget`` follow the same
-        "built elsewhere, hung off ``self``" pattern the stash panel and pet
-        widget use: ``_tui_build_layout`` populates them before calling this,
-        and a direct call on a CLI that never built a layout simply filters the
-        missing ones out.
+        ``_subagent_dock_widget`` follows the same "built elsewhere, hung off
+        ``self``" pattern the stash panel and pet widget use: ``install_dock``
+        populates it before the layout is built, and a direct call on a CLI that
+        never built a layout simply filters the missing ones out.
         """
-        if swarm_board_widget is None:
-            swarm_board_widget = getattr(self, "_swarm_board_widget", None)
         return [
             item for item in [
                 Window(height=0),
@@ -8936,7 +8786,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 model_picker_widget,
                 reasoning_picker_widget,
                 command_palette_widget,
-                swarm_board_widget,
                 todo_board_widget,
                 spinner_widget,
                 spacer,
@@ -8953,62 +8802,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 completions_menu,
             ] if item is not None
         ]
-
-    def _tui_build_layout(self, kb):
-        """Build the swarm board before delegating to the mixin's layout builder.
-
-        The mixin's ``_tui_build_layout`` has no ``swarm_board_widget``
-        parameter, so the board is stashed on ``self`` here and picked up by
-        ``_build_tui_layout_children`` above — the same seam ``install_dock``
-        uses for ``_subagent_dock_widget``.
-        """
-        self._swarm_board_widget = self._build_swarm_board_widget()
-        return super()._tui_build_layout(kb)
-
-    def _tui_set_base_style(self):
-        """Mixin defaults plus the fork-only ``swarm-border`` class.
-
-        The swarm board's panel border reuses the same bronze the
-        clarify/approval/sudo borders use; without the class registered the
-        fragments render unstyled.
-        """
-        super()._tui_set_base_style()
-        self._tui_style_base.setdefault('swarm-border', '#CD7F32')
-
-    def _tui_spinner_loop(self):
-        """Mixin's repaint loop plus the fork's idle swarm-board tick.
-
-        Upstream repaints only while a slash command is running. That leaves
-        the normal shape of a BACKGROUND ``delegate_task`` dispatch ("keep
-        chatting while a subagent runs") with a frozen board: each row's
-        elapsed time is computed live off ``time.time()`` in ``_Row.elapsed()``,
-        but board mutations only ``_notify()`` on register/update/finish, which
-        fire on tool-call boundaries rather than on a clock. Without this tick
-        the on-screen timer only advanced when a child happened to emit a tool
-        event. One invalidate re-renders the full concatenated row set, so the
-        cost is flat regardless of how many boards/rows/nested subagent boards
-        are active.
-        """
-        while not self._should_exit:
-            if not self._app:
-                time.sleep(0.1)
-                continue
-            monitor = getattr(self, "_subagent_monitor", None)
-            if monitor is not None:
-                monitor.tick()
-            if self._command_running:
-                self._invalidate(min_interval=0.1)
-                time.sleep(0.1)
-            elif getattr(self, "_swarm_boards", None):
-                # Tick once a second — matches the "increments every second"
-                # expectation and the cadence of every other live counter.
-                self._invalidate(min_interval=1.0)
-                time.sleep(0.5)
-            else:
-                # Never repaint the idle prompt on a timer: in non-full-screen mode background
-                # redraws fight tmux/Ghostty/cmux viewport restoration after focus changes and
-                # visually move the input area. Input/agent events invalidate explicitly.
-                time.sleep(0.2)
 
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
