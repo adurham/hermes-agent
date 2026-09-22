@@ -13,8 +13,6 @@ from collections.abc import MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
-from hermes_platform.host.runtime import _detect_container, is_container, is_termux, is_wsl  # noqa: F401
-
 _profile_fallback_warned: bool = False
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERRIDE", default=_UNSET)
@@ -1081,6 +1079,34 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
         import logging
         logging.getLogger(__name__).warning("Unknown reasoning_effort '%s', using default (medium)", effort)
     return result
+
+
+def is_termux() -> bool:
+    """Delegate Termux detection without making the bootstrap constants module depend on the full package."""
+    from hermes_platform.host.runtime import is_termux as detect
+
+    return detect()
+
+
+def is_wsl() -> bool:
+    """Delegate WSL detection without making the bootstrap constants module depend on the full package."""
+    from hermes_platform.host.runtime import is_wsl as detect
+
+    return detect()
+
+
+def is_container() -> bool:
+    """Delegate container detection without making the bootstrap constants module depend on the full package."""
+    from hermes_platform.host.runtime import is_container as detect
+
+    return detect()
+
+
+def _detect_container() -> bool:
+    """Keep the historical test seam while delegating canonical detection."""
+    from hermes_platform.host.runtime import _detect_container as detect
+
+    return detect()
 
 
 def windows_path_to_wsl(path: str) -> str | None:
