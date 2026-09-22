@@ -13,6 +13,12 @@ test('stable keeps the store quad while canary uses yy.mmdd.hh.mmss', () => {
   assert.equal(nativeQuad('v0.21.4+canary.20260922T001403Z', EPOCH), '26.922.0.1403')
 })
 
+test('historical release identities are rejected', () => {
+  assert.throws(() => nativeQuad('v0.21.4-canary.20260922T001403Z', EPOCH))
+  assert.throws(() => nativeQuad('v2026.9.21', EPOCH))
+  assert.throws(() => nativeQuad('v2026.9.21+canary.20260922T001403Z', EPOCH))
+})
+
 test('a later canary sorts above an earlier canary across a month boundary', () => {
   const earlier = nativeQuad(
     'v0.21.4+canary.20260131T235959Z',
@@ -29,7 +35,7 @@ test('a later canary sorts above an earlier canary across a month boundary', () 
 
 test('every field stays inside 16 bits', () => {
   for (const stamp of ['2026-01-01T00:00:00Z', '2026-12-31T23:59:59Z', '2028-12-31T23:59:59Z']) {
-    for (const ref of ['v0.21.5', `v0.21.4+canary.${stamp.replace(/[-:T]/g, '').slice(0, 15)}Z`]) {
+    for (const ref of ['v0.21.5', `v0.21.4+canary.${stamp.replace(/[-:]/g, '').replace('.000', '')}`]) {
       const parts = nativeQuad(ref, Date.parse(stamp) / 1000).split('.').map(Number)
       assert.equal(parts.length, 4)
       assert.ok(parts.every(value => value >= 0 && value <= 65535))

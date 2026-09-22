@@ -40,7 +40,8 @@ def canary(tmp_path, r2_server, monkeypatch):
     _, clone = _seed_repo(tmp_path)
     commit = _git("rev-parse", "HEAD", cwd=clone)
     tag = "v0.1.2+canary.20260913T001000Z"
-    _git("tag", tag, cwd=clone)
+    _git("tag", "-a", tag, "-m", '{"schema":1}', cwd=clone)
+    tag_object = _git("rev-parse", f"{tag}^{{tag}}", cwd=clone)
     _git("push", "origin", tag, cwd=clone)
     desktop = clone / "apps/desktop"
     desktop.mkdir(parents=True)
@@ -90,6 +91,7 @@ def canary(tmp_path, r2_server, monkeypatch):
            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REPOSITORY": "NousResearch/hermes-agent",
            "GITHUB_WORKFLOW_REF": "NousResearch/hermes-agent/.github/workflows/desktop-bundled-release.yml@refs/heads/main",
            "RELEASE_TAG": tag, "TAG": tag, "HERMES_PAYLOAD_TAG": tag,
+           "RELEASE_TAG_OBJECT": tag_object,
            "RELEASE_COMMIT": commit, "RELEASE_PHASE": "", "HERMES_DESKTOP_VARIANT": "bundled",
            "HERMES_BUILD_COMMIT": "", "CHANNEL_BUILD": "", "R2_DISPOSABLE_RUN": "",
            "CLOUDFLARE_R2_PUBLIC_URL": base,
@@ -105,9 +107,15 @@ def canary(tmp_path, r2_server, monkeypatch):
 def native_leg(root, identity, env, platform, arch):
     root.mkdir(parents=True, exist_ok=True)
     version = env["RELEASE_TAG"][1:]
-    stamp = {"tag": env["RELEASE_TAG"], "commit": env["RELEASE_COMMIT"]}
+    stamp = {
+        "tag": env["RELEASE_TAG"], "commit": env["RELEASE_COMMIT"],
+        "baseVersion": env["RELEASE_TAG"][1:],
+    }
     artifact = identity["artifactNamePascal"]
     if platform == "win32":
+        (root / f"version-info-{arch}.json").write_text(json.dumps({
+            "productVersion": env["FIXTURE_WINDOWS_VERSION"],
+        }))
         with zipfile.ZipFile(root / f"{artifact}-{version}-win-{arch}.msix", "w") as package:
             package.writestr("AppxManifest.xml", f'<Package><Identity Name="{identity["msixAppIdWithOrg"]}" Publisher="CN=Fixture" Version="{env["FIXTURE_WINDOWS_VERSION"]}" ProcessorArchitecture="{arch}"/><Applications><Application Id="{identity["appNamePascal"]}"/><Application Id="CLI"><VisualElements AppListEntry="none"/></Application></Applications></Package>')
             package.writestr("app/resources/install-stamp.json", json.dumps(stamp))
@@ -179,7 +187,7 @@ def stage_canary(clone, identity, env, run):
 def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_server, monkeypatch, tmp_path):
     clone, identity, env, run = canary
     bundle = stage_canary(clone, identity, env, run)
-    script = step_script("publish-canary", "Advance protected canary head from the published release")
+    script = step_script("publish-canary", "Publish the admitted canary and advance its protected head")
     before = dict(r2_server.store)
     for job in workflow_job("publish-canary")["needs"]:
         for outcome in ("failure", "skipped", "cancelled", None):
@@ -193,11 +201,16 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
             assert r2_server.store == before
     release = Path(env["FIXTURE_RELEASE"])
     published = json.loads(release.read_text())
-    for bad in ({**published, "isDraft": True}, {**published, "isPrerelease": False}):
+    for bad in ({**published, "isPrerelease": False},):
         release.write_text(json.dumps(bad))
         result = run(script)
-        assert result.returncode != 0 and "published" in result.stderr
+        assert result.returncode != 0 and "prerelease" in result.stderr
         assert r2_server.store == before
+    release.write_text(json.dumps({**published, "isDraft": True}))
+    result = run(script, RELEASE_TAG_OBJECT="b" * 40)
+    assert result.returncode != 0 and "moved" in result.stderr
+    assert json.loads(release.read_text())["isDraft"] is True
+    assert r2_server.store == before
     release.write_text(json.dumps(published))
     prefix = f"releases/tag/{env['RELEASE_TAG']}/"
     for key in (prefix + "metadata-windows-arm64.json", prefix + bundle.name):
@@ -213,8 +226,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
         assert r2_server.store == corrupted
         r2_server.store[key] = saved
     assert r2_server.store == before
-    # Replay all final publication shell in its declared order, including edit
-    # followed by the controller's independent published-release read-back.
+    # The controller owns the draft flip and its independent custody read-back.
     release.write_text(json.dumps({**published, "isDraft": True}))
     for step in workflow_job("publish-canary")["steps"]:
         if "run" in step:
@@ -261,9 +273,11 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     # A later canary really advances the existing head and native quad, rather
     # than merely succeeding at the empty-channel bootstrap case.
     newer_tag = "v0.1.2+canary.20260913T001100Z"
-    _git("tag", newer_tag, cwd=clone)
+    _git("tag", "-a", newer_tag, "-m", '{"schema":1}', cwd=clone)
+    newer_object = _git("rev-parse", f"{newer_tag}^{{tag}}", cwd=clone)
     _git("push", "origin", newer_tag, cwd=clone)
     newer = {**env, "RELEASE_TAG": newer_tag, "HERMES_PAYLOAD_TAG": newer_tag,
+             "RELEASE_TAG_OBJECT": newer_object,
              "FIXTURE_WINDOWS_VERSION": "26.913.0.1100"}
     stage_canary(clone, identity, newer, run)
     release.write_text(json.dumps({**published, "tagName": newer_tag}))
@@ -280,7 +294,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     assert r2_server.store == after
     # A moved published tag must not retarget the accepted release, even on retry.
     _git("commit", "--allow-empty", "-m", "new source", cwd=clone)
-    _git("tag", "-f", env["RELEASE_TAG"], cwd=clone)
+    _git("tag", "-f", "-a", env["RELEASE_TAG"], "-m", '{"schema":1}', cwd=clone)
     _git("push", "--force", "origin", env["RELEASE_TAG"], cwd=clone)
     result = run(script)
     assert result.returncode != 0 and "moved" in result.stderr

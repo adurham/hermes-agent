@@ -188,11 +188,14 @@ def _claim_message(clone: Path) -> str:
         "version": "0.1.2",
         "commit": _git("rev-parse", "HEAD", cwd=clone),
         "autopublish": False,
+        "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
 
 
-def test_claim_on_origin_main_is_admitted_and_exports_the_full_sha(tmp_path: Path):
+def test_claim_on_origin_main_is_admitted_and_exports_the_full_sha(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _origin, clone = _seed_repo(tmp_path)
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "@1790000000 +0000")
     _git("tag", "-a", "v0.1.2-rc", "-m", _claim_message(clone), cwd=clone)
     _git("push", "origin", "refs/tags/v0.1.2-rc", cwd=clone)
 

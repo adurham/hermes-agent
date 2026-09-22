@@ -35,6 +35,7 @@ const {
 // invariant lives in product-identity.cjs:33-34/58-68.
 /** @type {NonNullable<typeof storeMsix> | undefined} */
 const storeMsixWhenStore = storeMsix
+const releaseBuild = Boolean(process.env.HERMES_PAYLOAD_TAG)
 
 /**
  * The store MSIX packaging identity. Callers must only invoke this when
@@ -245,7 +246,8 @@ module.exports = {
     // time, so typecheck/test imports don't touch the filesystem.
     customExtensionsPath: 'build/msix-extensions.xml',
     customManifestPath: store ? 'build/store-msix-manifest.xml'
-      : channelRequest || appNamePascal !== artifactNamePascal ? 'build/msix-manifest.xml' : 'assets/msix-manifest.xml',
+      : releaseBuild || channelRequest || appNamePascal !== artifactNamePascal
+        ? 'build/msix-manifest.xml' : 'assets/msix-manifest.xml',
     // Hermes state is deliberately shared with unpackaged CLI/gateway
     // processes. Pair the manifest's disabled virtualization properties with
     // the restricted capability that permits unvirtualized AppData/HKCU writes.

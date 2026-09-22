@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import re
+import tomllib
 from pathlib import Path
 
 
@@ -46,6 +48,11 @@ def stamp(tree: Path, version: str, release_date: str) -> list[Path]:
     _rewrite(pyproject, r'^version\s*=\s*"[^"]+"', f'version = "{version}"', count=1, flags=re.MULTILINE)
     touch(pyproject)
 
+    nix_package = tree / "nix" / "hermes-agent.nix"
+    _rewrite(nix_package, r'^  version \? "[^"]+",', f'  version ? "{version}",',
+             count=1, flags=re.MULTILINE)
+    touch(nix_package)
+
     desktop = tree / "apps" / "desktop" / "package.json"
     _rewrite(desktop, r'("version"\s*:\s*)"[^"]+"', rf'\g<1>"{version}"', count=1)
     touch(desktop)
@@ -54,6 +61,8 @@ def stamp(tree: Path, version: str, release_date: str) -> list[Path]:
     # desktop workspace entry mirrors the release.
     lock = tree / "package-lock.json"
     _rewrite(lock, r'("apps/desktop"\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*)"[^"]+"',
+             rf'\g<1>"{version}"', count=1)
+    _rewrite(lock, r'("apps/bootstrap-installer"\s*:\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*)"[^"]+"',
              rf'\g<1>"{version}"', count=1)
     touch(lock)
 
@@ -74,17 +83,46 @@ def stamp(tree: Path, version: str, release_date: str) -> list[Path]:
         _rewrite(path, pattern, replacement, count=1, flags=flags)
         touch(path)
 
+    validate_bootstrap_version(tree, version)
     return written
+
+
+def validate_bootstrap_version(tree: Path, version: str) -> None:
+    installer = tree / "apps" / "bootstrap-installer"
+    package = json.loads((installer / "package.json").read_text(encoding="utf-8-sig"))
+    tauri = json.loads((installer / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8-sig"))
+    cargo = tomllib.loads((installer / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8-sig"))
+    root_lock = json.loads((tree / "package-lock.json").read_text(encoding="utf-8-sig"))
+    values = {
+        "workspace package": package.get("version"),
+        "Tauri config": tauri.get("version"),
+        "Cargo package": cargo.get("package", {}).get("version"),
+        "workspace lock": root_lock.get("packages", {}).get("apps/bootstrap-installer", {}).get("version"),
+    }
+    cargo_lock = installer / "src-tauri" / "Cargo.lock"
+    if cargo_lock.exists():
+        lock = tomllib.loads(cargo_lock.read_text(encoding="utf-8-sig"))
+        values["Cargo lock"] = next(
+            (item.get("version") for item in lock.get("package", [])
+             if item.get("name") in {"bootstrap-installer", "hermes-bootstrap"}), None)
+    mismatches = {name: value for name, value in values.items() if value != version}
+    if mismatches:
+        raise ValueError(f"Bootstrap installer version differs from {version}: {mismatches}")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tree", type=Path, required=True)
     parser.add_argument("--version", required=True)
-    now = dt.datetime.now(dt.UTC)
-    parser.add_argument("--release-date", default=f"{now.year}.{now.month}.{now.day}")
+    parser.add_argument("--release-date")
+    parser.add_argument("--release-epoch", type=int)
     args = parser.parse_args(argv)
-    stamp(args.tree.resolve(), args.version, args.release_date)
+    if args.release_date and args.release_epoch is not None:
+        parser.error("--release-date and --release-epoch are mutually exclusive")
+    instant = (dt.datetime.fromtimestamp(args.release_epoch, tz=dt.UTC)
+               if args.release_epoch is not None else dt.datetime.now(dt.UTC))
+    release_date = args.release_date or f"{instant.year}.{instant.month}.{instant.day}"
+    stamp(args.tree.resolve(), args.version, release_date)
 
 
 if __name__ == "__main__":

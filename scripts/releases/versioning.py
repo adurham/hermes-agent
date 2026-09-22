@@ -6,10 +6,54 @@ CalVer tag is a valid three-component version and would win every ``max()``.
 """
 from __future__ import annotations
 
+import re
+
 from hermes_cli.update_channel import STABLE_TAG_RE
 
 SEED = "0.21.4"
 BUMPS = ("major", "minor", "patch")
+
+
+def published_channel_identity(repository: str, channel: str, *, base_url: str | None = None,
+                               reader_type=None) -> tuple[str, str] | None:
+    """Resolve one validated protected channel's payload version and commit."""
+    from hermes_cli.release_channels import ChannelNotFound, ChannelReader
+    from scripts.releases.r2 import public_base_url
+
+    if channel not in {"stable", "canary"}:
+        raise ValueError("Expected a protected release channel")
+    reader_type = reader_type or ChannelReader
+    try:
+        resolved = reader_type(base_url or public_base_url(), repository=repository).resolve(channel)
+    except ChannelNotFound:
+        return None
+    if resolved.manifest is None:
+        return None
+    if resolved.terminal.get("policy") != f"{channel}-release":
+        raise ValueError(f"{channel.title()} channel has the wrong publication policy")
+    request = resolved.manifest["request"]
+    version, commit = request.get("version"), request.get("commit")
+    if not isinstance(version, str) or not isinstance(commit, str) or not re.fullmatch(r"[a-f0-9]{40}", commit):
+        raise ValueError(f"{channel.title()} channel has an invalid published identity")
+    return version, commit
+
+
+def published_stable_identity(repository: str, *, base_url: str | None = None,
+                              reader_type=None) -> tuple[str, str | None]:
+    """Resolve the protected stable identity, falling back only before it exists."""
+    found = published_channel_identity(
+        repository, "stable", base_url=base_url, reader_type=reader_type,
+    )
+    if found is None:
+        return SEED, None
+    version, commit = found
+    if version_from_tag("v" + version) is None:
+        raise ValueError("Stable channel has an invalid source version")
+    return version, commit
+
+
+def published_stable_version(repository: str, *, base_url: str | None = None, reader_type=None) -> str:
+    return published_stable_identity(repository, base_url=base_url, reader_type=reader_type)[0]
 
 
 def version_from_tag(ref: str) -> str | None:

@@ -34,6 +34,11 @@ on:
         required: false
         type: string
         default: ''
+      release-epoch:
+        description: "Immutable stable claim tagger epoch."
+        required: false
+        type: string
+        default: ''
     outputs:
       manifest-digest:
         description: "Immutable digest of the published versioned multi-arch manifest."
@@ -164,7 +169,10 @@ jobs:
         if: needs.mode.outputs.release == 'true'
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-        run: python3 scripts/releases/stamping.py --tree . --version "$RELEASE_VERSION"
+          RELEASE_EPOCH: ${{ inputs.release-epoch }}
+        run: >-
+          python3 scripts/releases/stamping.py --tree . --version "$RELEASE_VERSION"
+          --release-epoch "$RELEASE_EPOCH"
 
       - name: Write install stamp
         run: python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci
@@ -247,6 +255,15 @@ jobs:
           # count to the core count.
           HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
 
+      - name: Verify release image identity
+        if: needs.mode.outputs.phase == 'test'
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          actual="$(docker run --rm --entrypoint python "${IMAGE_NAME}:test" -c \
+            'import json; print(json.load(open("/opt/hermes/install-stamp.json"))["baseVersion"])')"
+          test "$actual" = "$RELEASE_VERSION"
+
       # ---------------------------------------------------------------------
       # Release 'test' phase only: hand the EXACT tested bytes to the publish
       # phase via actions artifacts. No registry push, no credentials here.
@@ -295,8 +312,8 @@ jobs:
   # This job is the sole Docker Hub credential boundary for merges.
   #
   # NOTE: main pushes tag :main ONLY. :latest is a user-facing stable alias
-  # now; it moves only in the release 'promote' phase after the parent's
-  # global release gate, so a main push can never advance the stable channel.
+  # now; the ordered publication controller moves it only after the global
+  # release gate, so a main push can never advance the stable channel.
   # ---------------------------------------------------------------------------
   publish:
     if: >-
@@ -605,18 +622,36 @@ jobs:
           for arch in amd64 arm64; do
             args+=("${IMAGE_NAME}@$(cat "${arch}.digest")")
           done
-          for i in 1 2 3; do
-            if docker buildx imagetools create \
-              -t "${IMAGE_NAME}:${RELEASE_TAG}" \
-              "${args[@]}"; then
-              break
-            fi
-            if [ "$i" = 3 ]; then
-              echo "::error::imagetools create failed after 3 attempts"
-              exit 1
-            fi
-            sleep 20
-          done
+          verify_manifest() {
+            python3 - "$1" amd64.digest arm64.digest <<'PY'
+          import json, pathlib, sys
+
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = {pathlib.Path(path).read_text().strip() for path in sys.argv[2:]}
+          actual = {row.get("digest") for row in manifest.get("manifests", [])}
+          if actual != expected:
+              raise SystemExit(f"versioned Docker manifest differs: expected {sorted(expected)}, got {sorted(actual)}")
+          PY
+          }
+          if docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}" --raw > existing.json 2>/dev/null; then
+            verify_manifest existing.json
+            echo "Verified existing immutable ${IMAGE_NAME}:${RELEASE_TAG}"
+          else
+            for i in 1 2 3; do
+              if docker buildx imagetools create \
+                -t "${IMAGE_NAME}:${RELEASE_TAG}" \
+                "${args[@]}"; then
+                break
+              fi
+              if [ "$i" = 3 ]; then
+                echo "::error::imagetools create failed after 3 attempts"
+                exit 1
+              fi
+              sleep 20
+            done
+          fi
+          docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}" --raw > verified.json
+          verify_manifest verified.json
 
       - name: Record manifest-list digest
         id: list

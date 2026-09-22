@@ -15,7 +15,9 @@ files on `main`.
    the published release family seeded at `0.21.4` and every spent claim.
 2. Push an annotated `vMAJOR.MINOR.PATCH-rc` claim atomically, create one
    non-prerelease GitHub draft for it, and dispatch `Stable Release` on that exact
-   claim ref. The claim message binds its commit and autopublish policy.
+   claim ref. The claim message binds its commit, autopublish policy, and one
+   monotonically allocated epoch. That epoch is the release date and native
+   packaging clock for every matrix leg and retry.
 3. Admit the exact remote annotated tag-object SHA, peeled commit, `GITHUB_REF`,
    `GITHUB_SHA`, checked-out `HEAD`, and ancestry on `origin/main`.
 4. Run the whole source, Docker, Nix, PM bundle, install/update, Termux, Windows,
@@ -54,6 +56,11 @@ Start from an exact commit already on remote `main`:
 python scripts/release.py release --commit "$(git rev-parse origin/main)" --bump patch --remote origin
 ```
 
+`--bump` defaults to `patch`; pass `minor` or `major` only when that change is
+intentional. The selected commit must descend from or equal the highest claim's
+source. Equality lets a burned release be superseded without an unrelated code
+change; an ancestor or unrelated sibling is refused.
+
 Add `--autopublish` to publish immediately when the claim becomes the oldest
 green release. Without it, the release stays a draft until an explicit publish
 or a later green claim forces ordered resolution.
@@ -70,18 +77,28 @@ python scripts/release.py abandon --version 0.21.5 --remote origin
 `publish` performs a synchronous supersession preflight, then dispatches the same
 ordered controller used by automatic recovery. It refuses a known burned version
 below a newer published release. `abandon` deletes only the draft; it deliberately
-keeps the `-rc` tag so derivation cannot reuse that version.
+keeps the `-rc` and any final receipt so derivation cannot reuse that version.
+The sequencer derives that missing-draft state as burned rather than recording a
+separate abandonment flag.
 
 Do not manually dispatch `Stable Release` from a final tag. Recovery keeps the
 original claim ref, object SHA, commit, draft database ID, and autopublish policy.
 
 ## Failure and recovery
 
-A failed stable run waits 15 minutes, then reruns only failed jobs in the same
-GitHub Actions run. At most two retries are admitted (run attempts 2 and 3).
+A failed stable run becomes retry-eligible after 15 minutes, then reruns only
+failed jobs in the same GitHub Actions run. The quarter-hour reconciler applies
+only the oldest unresolved eligible retry, because GitHub keeps only one pending
+run in the shared stable-release concurrency group. It does not occupy a runner
+during the backoff. At most two retries are admitted (run attempts 2 and 3).
 After attempt 3 fails, the claim is burned and the sequencer may resolve later
-claims. The hourly publication controller recovers a lost retry request or a
-crash between any publication mutations.
+claims. The same controller recovers a lost retry request or a crash between any
+publication mutations.
+
+A newly pushed claim with no observed workflow run remains unresolved for one
+hour. This grace window covers the non-atomic draft and dispatch steps. After the
+hour, a still-unstarted claim is derived as burned. No claim is burned during the
+normal creation window.
 
 Desktop and Termux handoffs live in the immutable R2 tag archive. Each producer
 writes a `handoff-<target>.json` receipt containing the tag, commit, paths, sizes,
@@ -96,6 +113,19 @@ Windows, macOS, and Termux candidate jobs stage packages and metadata under
 Immutable uploads accept an existing object only when its bytes match. If an
 archive object, final-tag digest, versioned Docker tag, or read-back differs, stop
 recovery rather than replacing the accepted candidate.
+
+The candidate manifest binds the admitted claim epoch. Admission recomputes the
+stable Windows quad from that epoch and rejects a merely well-formed but incorrect
+MSIX, executable VERSIONINFO, or App Installer version. Native admission also
+reads the Electron artifact filename and macOS plist from the built packages. The
+acceptance graph stamps an isolated bootstrap-installer tree, asks Cargo to read
+the resulting Tauri package version, builds and inspects Python wheel/sdist
+metadata and filenames, and checks the Nix and Docker runtime identities. Any
+consumer-facing `0.0.0` or mismatched version fails the gate.
+
+The annotated final tag binds the GitHub release database ID admitted with the
+claim. Deleting that release burns the transaction: a replacement draft with the
+same tag name cannot be retargeted or published by reconciliation.
 
 The desktop workflow's optional `termux_upgrade_from_tag` input names an exact
 published release with a Termux R2 handoff. Explicit non-publishing desktop builds
@@ -114,8 +144,16 @@ Receipt tags do not create GitHub releases and do not trigger workflows.
 Canary source identity is only
 `v<stable>+canary.<YYYYMMDDTHHMMSSZ>`. Build metadata intentionally makes it
 SemVer-equal to its stable core; the protected channel record and embedded UTC
-timestamp decide progression. Every `main` push queues a canary run with
+timestamp decide progression. Desktop clients treat that validated channel
+sequence as the update authority rather than asking SemVer to order build
+metadata. Every `main` push queues a canary run with
 `cancel-in-progress: false`. Historical `-canary.` identities are unsupported.
+If a process stops after pushing the canary tag, rerunning the command verifies
+the exact remote tag object, repairs the missing draft, and redispatches until the
+protected canary head receipts that tag.
+The protected publication controller verifies that exact annotated tag object
+before it flips the GitHub prerelease from draft to public, reads both states back,
+and only then advances the R2 head.
 
 ## Canary and one-off desktop identities
 
@@ -235,12 +273,15 @@ provenance. The next run combines those records with its candidate manifest
 and uses the existing native bundled-update drivers.
 
 For an existing stable release that predates this metadata, supply
-`baseline-manifest` as an HTTPS URL on the configured R2 public origin to an
-equivalent manifest of its actual published packages. Manifest redirects must
-stay on the same origin. The baseline tag must be a published stable release,
-package identities must agree, and versions must increase. Stable Windows
-packages use electron-builder's `storePackageVersionAt` timestamp policy
-(`year.hourOfYear.secondOfHour.0`), independently of the SemVer payload tag.
+`baseline-manifest` as an HTTPS URL on the configured R2 public origin to a
+current schema-2 manifest of its actual published packages and successful native
+smoke results. Schema-1 candidates are rejected; there is no legacy admission
+path. Manifest redirects must stay on the same origin. The baseline tag must be
+a published stable release, package identities must agree, and versions must
+increase. Stable Windows
+packages use electron-builder's `storePackageVersionAt` policy over the admitted
+claim tag object's immutable tagger timestamp (`year.hourOfYear.secondOfHour.0`),
+independently of the SemVer payload tag.
 Missing baseline
 artifacts are a blocker, not permission to fabricate or skip acceptance.
 See [the bundled update contract](https://github.com/NousResearch/hermes-agent/blob/main/tests/install/BUNDLED_UPDATES.md).

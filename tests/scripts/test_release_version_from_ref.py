@@ -54,3 +54,23 @@ def test_published_head_beats_the_seed():
 
 def test_claim_beats_a_lower_published_head():
     assert derive_next_version(published="0.21.5", claims=["v0.21.7-rc"], bump="patch") == "0.21.8"
+
+
+def test_canary_base_comes_from_the_validated_protected_stable_head():
+    from scripts.releases.versioning import published_stable_version
+
+    class Reader:
+        def __init__(self, base, repository):
+            assert base == "https://assets.example"
+            assert repository == "example/hermes-agent"
+
+        def resolve(self, name):
+            assert name == "stable"
+            return type("Resolution", (), {
+                "terminal": {"policy": "stable-release"},
+                "manifest": {"request": {"version": "0.21.7", "commit": "a" * 40}},
+            })()
+
+    assert published_stable_version(
+        "example/hermes-agent", base_url="https://assets.example", reader_type=Reader,
+    ) == "0.21.7"

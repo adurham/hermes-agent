@@ -12,7 +12,9 @@ on:
     workflows: ['Stable Release']
     types: [completed]
   schedule:
-    - cron: '17 * * * *'
+    # Failed attempts become retry-eligible after 15 minutes. Quarter-hour
+    # reconciliation applies the retry without occupying a runner for the backoff.
+    - cron: '*/15 * * * *'
 
 concurrency:
   group: stable-release
@@ -42,11 +44,6 @@ jobs:
         with:
           toolchain: node
           cache-python: false
-      - name: Wait before retrying failed stable jobs
-        if: >-
-          github.event_name == 'workflow_run' &&
-          github.event.workflow_run.run_attempt < 3
-        run: sleep 900
       - name: Set up Docker Buildx for ordered alias promotion
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to Docker Hub for ordered alias promotion

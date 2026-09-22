@@ -15,7 +15,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { appIdentity, storeManifestTemplate } from '../../../scripts/msix-shared.mjs'
+import { appIdentity, nativeManifestTemplate, storeManifestTemplate } from '../../../scripts/msix-shared.mjs'
 
 
 const require = createRequire(import.meta.url)
@@ -31,6 +31,9 @@ export default async function beforeBuild() {
   stageMsixAssets()
   writeMsixExtensions()
   if (store) stageStoreManifest(path.join(import.meta.dirname, '..'), process.env.HERMES_PAYLOAD_TAG)
+  else if (process.env.HERMES_PAYLOAD_TAG) {
+    stageReleaseManifest(path.join(import.meta.dirname, '..'), process.env.HERMES_PAYLOAD_TAG)
+  }
 
   return false
 }
@@ -63,6 +66,18 @@ export function stageStoreManifest(desktop, tag) {
   fs.mkdirSync(path.dirname(output), { recursive: true })
   fs.writeFileSync(output, storeManifestTemplate(template, version), 'utf8')
   return output
+}
+
+export function stageReleaseManifest(desktop, tag) {
+  const generated = path.join(desktop, 'build/msix-manifest.xml')
+  const { identity, version } = appIdentity(desktop, tag)
+  const source = identity.appNamePascal === identity.artifactNamePascal || !fs.existsSync(generated)
+    ? path.join(desktop, 'assets/msix-manifest.xml')
+    : generated
+  const template = fs.readFileSync(source, 'utf8')
+  fs.mkdirSync(path.dirname(generated), { recursive: true })
+  fs.writeFileSync(generated, nativeManifestTemplate(template, version), 'utf8')
+  return generated
 }
 
 function writeMsixExtensions() {

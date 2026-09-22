@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 
 from hermes_cli.release_channels import (
     ChannelError, build_prefix, canonical_json, validate_identity,
@@ -92,7 +93,18 @@ def match_accepted_packages(manifest: dict, accepted: dict) -> None:
         raise ChannelError("Accepted packages do not declare retirement receiver support")
 
 
-def admit_transaction(policy: str, env: dict, *, run=stable.output) -> tuple[str, str]:
+def canary_windows_version(tag: str) -> str:
+    from hermes_cli.update_channel import canary_timestamp
+
+    stamp = canary_timestamp(tag)
+    if stamp is None:
+        raise ChannelError("Invalid canary release identity")
+    instant = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return f"{instant.year % 100}.{int(f'{instant.month:02d}{instant.day:02d}')}.{instant.hour}.{int(f'{instant.minute:02d}{instant.second:02d}')}"
+
+
+def admit_transaction(policy: str, env: dict, *, require_published: bool = False,
+                      run=stable.output) -> tuple[str, str]:
     """A callable CLI is not permission to bypass the existing workflow gate."""
     from scripts.releases.semver import is_release_version
     from hermes_cli.release_channels import require_commit, validate_repository
@@ -134,21 +146,31 @@ def admit_transaction(policy: str, env: dict, *, run=stable.output) -> tuple[str
         raise ChannelError("Protected publication requires its existing release workflow")
     stable.require_success(json.loads(env.get("RELEASE_NEEDS", "{}")), list(required))
     commit = require_commit(env.get("RELEASE_COMMIT"))
+    expected_object = require_commit(env.get("RELEASE_TAG_OBJECT"))
+    try:
+        local_object = run(["git", "rev-parse", f"refs/tags/{tag}^{{tag}}"])
+    except subprocess.CalledProcessError as error:
+        raise ChannelError("Canary release tag must be annotated") from error
     actual = run(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"])
     remote = dict(line.split()[::-1] for line in run(
         ["git", "ls-remote", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"] ).splitlines())
-    if actual != commit or remote.get(f"refs/tags/{tag}^{{}}", remote.get(f"refs/tags/{tag}")) != commit:
+    if (local_object != expected_object or actual != commit
+            or remote.get(f"refs/tags/{tag}") != expected_object
+            or remote.get(f"refs/tags/{tag}^{{}}") != commit):
         raise ChannelError("Canary release tag moved")
     run(["git", "merge-base", "--is-ancestor", commit, f"origin/{default}"])
     release = json.loads(run(["gh", "release", "view", tag, "--repo", repository,
                               "--json", "tagName,isDraft,isPrerelease"]))
-    if (release.get("tagName") != tag or release.get("isDraft") is not False
+    if (release.get("tagName") != tag or not isinstance(release.get("isDraft"), bool)
             or release.get("isPrerelease") is not True):
+        raise ChannelError("Protected head requires its exact GitHub prerelease transaction")
+    if require_published and release["isDraft"]:
         raise ChannelError("Protected head requires the published GitHub release transaction")
     return tag, commit
 
 
-def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: str) -> dict:
+def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: str,
+                    release_epoch: int) -> dict:
     from hermes_cli.release_channels import decode_json, require_sha256
 
     digest = require_sha256(env.get("CANDIDATE_MANIFEST_SHA256"))
@@ -156,7 +178,7 @@ def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: st
     if env.get("CANDIDATE_MANIFEST_URL") != publisher.public_base + "/" + key:
         raise ChannelError("Accepted candidate URL differs from release archive")
     candidate = decode_json(publisher.reader.read_bytes(key, digest))
-    stable.validate_candidates(candidate, tag, commit, publisher.public_base)
+    stable.validate_candidates(candidate, tag, commit, publisher.public_base, release_epoch)
     return candidate
 
 
@@ -267,13 +289,12 @@ def verify_canary_outputs(request: dict, manifest: dict, reader) -> None:
 
 
 def publish_release(policy: str, env: dict, root: Path) -> dict:
-    from scripts.releases.commit_build import version_at
-
     tag, commit = admit_transaction(policy, env)
     if env.get("R2_DISPOSABLE_RUN"):
         raise ChannelError("Disposable receiver builds cannot enter production release publication")
     publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), env["GITHUB_REPOSITORY"],
-                                 r2.public_base_url(), authorize=lambda action, record: admit_transaction(policy, env))
+                                 r2.public_base_url(), authorize=lambda action, record:
+                                 admit_transaction(policy, env, require_published=True))
     name = select_channel(publisher, policy)
     identity = product_identity(tag)
     current = publisher._read(name)
@@ -282,20 +303,34 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         identity["token"] = current[0]["identity"]["token"]
         if identity != current[0]["identity"]:
             raise ChannelError("Protected R2 identity differs from the existing product")
-    accepted = accepted_stable(publisher, env, tag, commit) if policy == "stable-release" else None
+    release_epoch = stable.final_context(env)[2]["claim_epoch"] if policy == "stable-release" else None
+    accepted = accepted_stable(publisher, env, tag, commit, release_epoch) \
+        if release_epoch is not None else None
     handoff.fetch(tag, commit, list(NATIVE_LEGS), root,
                   ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
     native = read_native_receipts(root, tag, commit)
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
+    if policy == "canary-release":
+        expected_windows = canary_windows_version(tag)
+        if (windows["version"] != expected_windows
+                or windows.get("executableVersion") != expected_windows):
+            raise ChannelError("Canary Windows version differs from its release timestamp")
+        stable.output(["gh", "release", "edit", tag, "--repo", env["GITHUB_REPOSITORY"],
+                       "--draft=false"])
+        if admit_transaction(policy, env, require_published=True) != (tag, commit):
+            raise ChannelError("Canary GitHub release publication did not preserve custody")
 
     def release_gate(request: dict) -> bool:
-        if admit_transaction(policy, env) != (tag, commit):
+        if admit_transaction(policy, env, require_published=True) != (tag, commit):
             return False
         if policy == "stable-release":
-            return accepted_stable(publisher, env, tag, commit) == accepted
+            if release_epoch is None:
+                raise ChannelError("Stable release epoch is unavailable")
+            return accepted_stable(publisher, env, tag, commit, release_epoch) == accepted
         return True
 
-    request = publisher.allocate_protected(name, commit, version_at(None, commit), release_tag=tag,
+    source_version = tag[1:].split("+", 1)[0]
+    request = publisher.allocate_protected(name, commit, source_version, release_tag=tag,
                                            version=tag[1:], windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/")
@@ -319,12 +354,12 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         return pinned == request and actual == expected
 
     publisher.verify_build = qualified
-    result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
     if accepted is not None:
         publisher._write("releases/stable/release-candidates.json", accepted)
         if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
             raise ChannelError("Stable candidate pointer read-back differs")
         promote_stable_feeds(accepted, root, publisher.public_base)
+    result = publisher.promote_protected(request["buildId"], policy=policy, release_gate=release_gate)
     return result
 
 

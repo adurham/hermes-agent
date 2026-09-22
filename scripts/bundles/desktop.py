@@ -65,6 +65,8 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     variant = select_variant(prepared, variant)
     repo, node = request.source, str(prepared.node)
     env = build_environment(prepared, variant, os.environ)
+    if request.release_epoch is not None:
+        env["HERMES_RELEASE_EPOCH"] = str(request.release_epoch)
     desktop = repo / "apps/desktop"
     targets = {"win32": ["--win", "msix"], "darwin": ["--mac", "dmg", "zip"], "linux": ["--linux", "AppImage"]}[sys.platform]
     package_args = ["--prepared", str(prepared.packager), "--native-deps", str(prepared.native),
@@ -93,11 +95,9 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     run([node, "scripts/build/desktop.mjs", "--source", str(repo), "--icons", str(icons),
          "--stamp", str(desktop / "build/install-stamp.json"), "--native-deps", str(prepared.native),
          "--out", str(desktop / "dist")], cwd=repo, env=env)
-    # The native quad is the build time, for stable and canary both, so there
-    # is no per-channel build number to inject.
     version_args = []
     if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
-        script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Math.floor(Date.now()/1000)))"
+        script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
         quad = capture([node, "-e", script, request.tag], repo).strip()
         version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
     require_source(repo, request.commit)

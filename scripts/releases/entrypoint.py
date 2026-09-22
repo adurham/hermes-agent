@@ -7,10 +7,12 @@ because a burned version is never retried under the same number.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 
-from scripts.releases.versioning import derive_next_version
+from scripts.releases.versioning import SEED, derive_next_version
 
 WORKFLOW = "stable-release.yml"
 
@@ -84,8 +86,6 @@ def _require_ancestry(repo: Path, commit: str) -> None:
     if highest is None:
         return
     version, claimed = highest
-    if commit == claimed:
-        return
     ancestor = subprocess.run(
         ["git", "merge-base", "--is-ancestor", claimed, commit], cwd=repo, capture_output=True)
     if ancestor.returncode != 0:
@@ -93,21 +93,35 @@ def _require_ancestry(repo: Path, commit: str) -> None:
             f"{version} already claimed at {claimed} — publish or abandon it first")
 
 
+def _next_claim_epoch(repo: Path) -> int:
+    epochs = _git(repo, "for-each-ref", "refs/tags/v*-rc", "--format=%(taggerdate:unix)")
+    previous = [int(value) for value in epochs.splitlines() if value.isdigit()]
+    return max(int(time.time()), max(previous, default=0) + 1)
+
+
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
-            execute, autopublish: bool = False) -> dict:
+            execute, autopublish: bool = False, published: str = SEED) -> dict:
     """Claim the derived version, cut its draft, and start the gate."""
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
     _require_ancestry(repo, commit)
-    version = derive_next_version(published=None, claims=_claims(repo), bump=bump)
+    version = derive_next_version(
+        published=published, claims=_claims(repo), bump=bump,
+    )
     tag = f"v{version}-rc"
+    claim_epoch = _next_claim_epoch(repo)
     claim = json.dumps({
         "schema": 1,
         "version": version,
         "commit": commit,
         "autopublish": autopublish,
+        "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
-    _git(repo, "tag", "-a", tag, commit, "-m", claim)
+    subprocess.check_output(
+        ["git", "tag", "-a", tag, commit, "-m", claim], cwd=repo,
+        text=True, encoding="utf-8",
+        env={**os.environ, "GIT_COMMITTER_DATE": f"@{claim_epoch} +0000"},
+    )
     try:
         _git(repo, "push", remote, f"refs/tags/{tag}")
     except subprocess.CalledProcessError as error:
@@ -128,7 +142,6 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         execute([
             "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
             "--raw-field", f"tag={tag}",
-            "--raw-field", f"autopublish={str(autopublish).lower()}",
         ])
     except Exception as exc:
         raise ReleaseRefused(f"release {tag} never started: {exc}") from exc
@@ -136,39 +149,38 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "autopublish": autopublish}
 
 
-def _preflight_publish(version: str, repository: str, inspect) -> None:
-    from scripts.releases.versioning import version_from_tag
+def _release_view(tag: str, repository: str, inspect) -> dict | None:
+    try:
+        return json.loads(inspect([
+            "gh", "release", "view", tag, "--repo", repository,
+            "--json", "tagName,isDraft,isPrerelease",
+        ]))
+    except ReleaseRefused as exc:
+        if "not found" in str(exc).lower():
+            return None
+        raise
 
-    rows = json.loads(inspect([
-        "gh", "release", "list", "--repo", repository, "--limit", "100",
-        "--json", "tagName,isDraft,isPrerelease",
-    ]))
+
+def _preflight_publish(version: str, repository: str, inspect, head_version) -> None:
     requested = tuple(map(int, version.split(".")))
-    published = []
-    family = False
-    for row in rows:
-        tag = row.get("tagName")
-        family = family or tag in {f"v{version}", f"v{version}-rc"}
-        parsed = version_from_tag(tag)
-        if parsed and row.get("isDraft") is False and row.get("isPrerelease") is False:
-            published.append((tuple(map(int, parsed.split("."))), parsed))
-    newer = [found for key, found in published if key > requested]
-    if newer:
-        latest = max(newer, key=lambda item: tuple(map(int, item.split("."))))
-        raise ReleaseRefused(f"stable {version} is burned or superseded by {latest}")
-    if not family:
+    head = head_version()
+    if head and tuple(map(int, head.split("."))) >= requested:
+        raise ReleaseRefused(f"stable {version} is burned or superseded by {head}")
+    rows = [row for tag in (f"v{version}", f"v{version}-rc")
+            if (row := _release_view(tag, repository, inspect)) is not None]
+    if len(rows) != 1:
         raise ReleaseRefused(f"stable {version} is burned or has no release draft")
 
 
-def publish(version: str, *, repository: str, dispatch, inspect=None) -> dict:
+def publish(version: str, *, repository: str, dispatch, inspect=None, head_version=None) -> dict:
     """Request ordered publication through the one production sequencer."""
     tag = f"v{version}"
     from hermes_cli.update_channel import STABLE_TAG_RE
 
     if not STABLE_TAG_RE.fullmatch(tag):
         raise ReleaseRefused(f"{version} is not a stable version")
-    if inspect is not None:
-        _preflight_publish(version, repository, inspect)
+    if inspect is not None and head_version is not None:
+        _preflight_publish(version, repository, inspect, head_version)
     dispatch([
         "gh", "workflow", "run", "stable-release-publication.yml",
         "--repo", repository, "--raw-field", f"version={version}",
@@ -176,9 +188,16 @@ def publish(version: str, *, repository: str, dispatch, inspect=None) -> dict:
     return {"requested": tag}
 
 
-def abandon(version: str, *, repo: Path, repository: str, delete) -> dict:
+def abandon(version: str, *, repo: Path, repository: str, delete, inspect=None) -> dict:
     """Delete the draft. The claim tag stays, so the version is spent."""
-    delete(["gh", "release", "delete", f"v{version}-rc", "--repo", repository, "--yes"])
+    tag = f"v{version}-rc"
+    if inspect is not None:
+        rows = [row for candidate in (f"v{version}", tag)
+                if (row := _release_view(candidate, repository, inspect)) is not None]
+        if len(rows) != 1 or rows[0].get("isDraft") is not True:
+            raise ReleaseRefused(f"stable {version} has no single release draft to abandon")
+        tag = rows[0]["tagName"]
+    delete(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
     return {"burned": version}
 
 
@@ -198,8 +217,12 @@ def cmd_release(args) -> None:
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "release command failed")
 
-    result = release(commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
-                     execute=execute, autopublish=args.autopublish)
+    from scripts.releases.versioning import published_stable_version
+    result = release(
+        commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
+        execute=execute, autopublish=args.autopublish,
+        published=published_stable_version(repository),
+    )
     print(result["url"])
 
 
@@ -229,12 +252,15 @@ def _inspect(repo: Path, command: list[str]) -> str:
 
 def cmd_publish(args) -> None:
     repo, repository = _command_repository(args)
+    from scripts.releases.versioning import published_stable_version
     publish(args.version, repository=repository,
             dispatch=lambda command: _execute(repo, command),
-            inspect=lambda command: _inspect(repo, command))
+            inspect=lambda command: _inspect(repo, command),
+            head_version=lambda: published_stable_version(repository))
 
 
 def cmd_abandon(args) -> None:
     repo, repository = _command_repository(args)
     abandon(args.version, repo=repo, repository=repository,
-            delete=lambda command: _execute(repo, command))
+            delete=lambda command: _execute(repo, command),
+            inspect=lambda command: _inspect(repo, command))

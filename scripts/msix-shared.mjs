@@ -73,8 +73,9 @@ export function contentTypeFor(filename) {
   return undefined
 }
 
-const CANARY_TAG_RE = /^v(\d+\.\d+\.\d+)\+canary\.(20\d{6}T\d{6}Z)$/
-const STABLE_TAG_RE = /^v\d+\.\d+\.\d+$/
+const VERSION_CORE = '(?:0|[1-9]\\d{0,2})\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)'
+const CANARY_TAG_RE = new RegExp(`^v(${VERSION_CORE})\\+canary\\.(20\\d{6}T\\d{6}Z)$`)
+const STABLE_TAG_RE = new RegExp(`^v${VERSION_CORE}$`)
 
 /**
  * @param {string} stamp YYYYMMDDTHHMMSSZ
@@ -131,9 +132,9 @@ while remaining monotonic across month boundaries.
 @returns {string}
 */
 export function nativeQuad(ref, epochSeconds) {
-  return /(?:\+|-)canary\./.test(ref)
-    ? canaryPackageVersionAt(epochSeconds)
-    : storePackageVersionAt(epochSeconds)
+  if (CANARY_TAG_RE.test(ref)) return canaryPackageVersionAt(epochSeconds)
+  if (STABLE_TAG_RE.test(ref)) return storePackageVersionAt(epochSeconds)
+  throw new Error('Native package version requires a current release tag')
 }
 
 /** The build time of a release tag: the stamp embedded in a canary tag, or
@@ -148,12 +149,33 @@ function releaseEpoch(tag, gitRoot) {
     const compact = new Date(epoch * 1000).toISOString().replace(/[-:T]/g, '').replace(/\.000Z$/, '')
     const expected = `${compact.slice(0, 8)}T${compact.slice(8)}Z`
     if (expected !== stamp) throw new Error('Invalid canary calendar timestamp')
+    const supplied = process.env.HERMES_RELEASE_EPOCH
+    if (supplied !== undefined && Number(supplied) !== epoch) throw new Error('Canary release epoch differs from its tag')
     return epoch
   }
-  const timestamp = execFileSync('git', ['for-each-ref', '--format=%(creatordate:unix)', `refs/tags/${tag}`], {
-    cwd: gitRoot, encoding: 'utf8'
-  }).trim()
-  if (!/^\d+$/.test(timestamp)) throw new Error(`No immutable release timestamp for ${tag}`)
+  const supplied = process.env.HERMES_RELEASE_EPOCH
+  if (supplied !== undefined) {
+    if (!/^\d+$/.test(supplied)) throw new Error('Invalid immutable release epoch')
+    return Number(supplied)
+  }
+  const claim = process.env.RELEASE_CLAIM_TAG
+  if (claim && claim !== `${tag}-rc`) throw new Error('Stable claim tag differs from its payload tag')
+  const claimObject = process.env.RELEASE_CLAIM_OBJECT
+  let timestamp
+  let timestampTag = tag
+  if (claim) {
+    timestampTag = claim
+    if (!/^[a-f0-9]{40}$/.test(claimObject || '')) throw new Error('Stable claim object is missing')
+    const actual = execFileSync('git', ['rev-parse', `refs/tags/${claim}`], { cwd: gitRoot, encoding: 'utf8' }).trim()
+    if (actual !== claimObject) throw new Error('Stable claim object differs from its tag')
+    const metadata = execFileSync('git', ['cat-file', '-p', claimObject], { cwd: gitRoot, encoding: 'utf8' })
+    timestamp = /^tagger .* (\d+) [+-]\d{4}$/m.exec(metadata)?.[1]
+  } else {
+    timestamp = execFileSync('git', ['for-each-ref', '--format=%(creatordate:unix)', `refs/tags/${tag}`], {
+      cwd: gitRoot, encoding: 'utf8'
+    }).trim()
+  }
+  if (!/^\d+$/.test(timestamp || '')) throw new Error(`No immutable release timestamp for ${timestampTag}`)
   return Number(timestamp)
 }
 
@@ -170,7 +192,14 @@ export function storeManifestTemplate(template, version) {
   if (!/^[1-9]\d*\.\d+\.\d+\.0$/.test(version) || version.split('.').some(part => Number(part) > 65535)) {
     throw new Error('Store package version must have a nonzero major, 16-bit fields and zero revision')
   }
-  if (template.split('${version}').length !== 2) throw new Error('MSIX template must have one version macro')
+  return nativeManifestTemplate(template, version)
+}
+
+export function nativeManifestTemplate(template, version) {
+  if (!/^[1-9]\d*\.\d+\.\d+\.\d+$/.test(version) || version.split('.').some(part => Number(part) > 65535)) {
+    throw new Error('Native package version must contain four 16-bit numeric fields')
+  }
+  if (template.split('${version}').length !== 2) throw new Error('MSIX template must contain exactly one version macro')
   return template.replace('${version}', version)
 }
 

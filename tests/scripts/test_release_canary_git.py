@@ -16,18 +16,30 @@ def canary_repo(tmp_path, monkeypatch, release_repo):
     git("remote", "add", "origin", "https://github.com/fixture/release")
 
     calls = []
+    drafts = set()
+    published = set()
     actual_run = subprocess.run
 
     def run(argv, *args, **kwargs):
         if argv[0] != "gh":
-            if argv[:2] == ["git", "push"]:
+            if argv[:2] in (["git", "push"], ["git", "ls-remote"]):
                 argv = ["git", "-c", f"url.{remote.as_uri()}.insteadOf=https://github.com/fixture/release", *argv[1:]]
             return actual_run(argv, *args, **kwargs)
         calls.append(argv)
         if argv[1:3] == ["release", "create"]:
             assert git("--git-dir", str(remote), "rev-parse", argv[3] + "^{commit}") == git("rev-parse", "HEAD")
+            drafts.add(argv[3])
+        elif argv[1:3] == ["release", "view"]:
+            if argv[3] not in drafts:
+                return subprocess.CompletedProcess(argv, 1, "", "not found")
+            return subprocess.CompletedProcess(
+                argv, 0,
+                '{"tagName":"' + argv[3] + '","isDraft":true,"isPrerelease":true}\n', "",
+            )
         elif argv[1:3] == ["workflow", "run"]:
-            assert any(call[1:3] == ["release", "create"] for call in calls)
+            assert any(call[1:3] in (["release", "create"], ["release", "view"])
+                       for call in calls)
+            published.add(next(value.removeprefix("tag=") for value in argv if value.startswith("tag=")))
         else:
             assert argv[1:3] == ["repo", "view"]
         return subprocess.CompletedProcess(argv, 0, stdout="main\n", stderr="")
@@ -36,6 +48,15 @@ def canary_repo(tmp_path, monkeypatch, release_repo):
     which = release.shutil.which
     monkeypatch.setattr(release.shutil, "which", lambda name: "gh" if name == "gh" else which(name))
     monkeypatch.setattr(release, "generate_changelog", lambda *args, **kwargs: "fixture notes")
+    from scripts.releases import versioning
+    monkeypatch.setattr(versioning, "published_stable_identity", lambda repository: ("1.2.3", None))
+    monkeypatch.setattr(
+        versioning, "published_channel_identity",
+        lambda _repository, _channel: (
+            (release.get_last_canary_tag()[1:], git("rev-parse", "HEAD"))
+            if release.get_last_canary_tag() in published else None
+        ),
+    )
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     return git, remote, calls
 
@@ -44,6 +65,7 @@ def test_canary_cut_keeps_the_stable_core_and_dispatches_exactly_once(canary_rep
     git, remote, calls = canary_repo
     git("commit", "--allow-empty", "-qm", "stable")
     git("tag", "v1.2.3")
+    git("tag", "v9.9.9")
     git("commit", "--allow-empty", "-qm", "feat: next")
     tag = "v1.2.3+canary.20260818T103000Z"
     args = SimpleNamespace(
@@ -64,7 +86,8 @@ def test_canary_cut_keeps_the_stable_core_and_dispatches_exactly_once(canary_rep
 
     calls.clear()
     release.cmd_canary(args)
-    assert calls == []
+    assert not any(call[1:3] in (["release", "create"], ["workflow", "run"])
+                   for call in calls)
 
 
 def test_unchanged_head_does_not_cut_another_timestamp(canary_repo):
@@ -79,7 +102,25 @@ def test_unchanged_head_does_not_cut_another_timestamp(canary_repo):
     second = SimpleNamespace(date="20260818T103001Z", publish=True, no_changelog=True, remote="origin")
     release.cmd_canary(second)
 
-    assert calls == []
+    assert not any(call[1:3] in (["release", "create"], ["workflow", "run"])
+                   for call in calls)
+
+
+def test_incomplete_canary_redispatches_the_existing_receipt(canary_repo, monkeypatch):
+    git, _remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    args = SimpleNamespace(date="20260818T103000Z", publish=True, no_changelog=True, remote="origin")
+    release.cmd_canary(args)
+    calls.clear()
+
+    from scripts.releases import versioning
+    monkeypatch.setattr(versioning, "published_channel_identity", lambda *_args: None)
+    release.cmd_canary(args)
+
+    assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
+    assert not any(call[1:3] == ["release", "create"] for call in calls)
 
 
 def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, capsys):

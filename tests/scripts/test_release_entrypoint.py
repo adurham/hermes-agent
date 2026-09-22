@@ -6,7 +6,6 @@ never starts is an error, not a warning the operator has to notice.
 import json
 import subprocess
 import threading
-import time
 
 import pytest
 
@@ -33,9 +32,13 @@ def source(tmp_path):
     return repo
 
 
-def _claim(repo, version, commit, actor="release-bot", when="2026-09-22T00:14:00Z"):
+def _claim(repo, version, commit):
+    metadata = json.dumps({
+        "schema": 1, "version": version, "commit": commit,
+        "autopublish": False, "claimEpoch": 1_790_000_000,
+    }, sort_keys=True, separators=(",", ":"))
     git(repo, "tag", "-a", f"v{version}-rc", commit, "-m",
-        f"claim v{version}\n\nactor: {actor}\nwhen: {when}")
+        metadata)
     git(repo, "push", "--quiet", "origin", f"refs/tags/v{version}-rc")
 
 
@@ -52,7 +55,9 @@ def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(sourc
     assert result["commit"] == commit
     assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5-rc"
     assert git(source, "rev-parse", "v0.21.5-rc^{commit}") == commit
-    assert json.loads(git(source, "tag", "-l", "v0.21.5-rc", "--format=%(contents)")) == {
+    claim = json.loads(git(source, "tag", "-l", "v0.21.5-rc", "--format=%(contents)"))
+    assert isinstance(claim.pop("claimEpoch"), int)
+    assert claim == {
         "autopublish": True,
         "commit": commit,
         "schema": 1,
@@ -62,8 +67,7 @@ def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(sourc
         ["gh", "release", "create", "v0.21.5-rc", "--repo", "example/hermes-agent",
          "--verify-tag", "--draft", "--generate-notes", "--title", "Hermes Agent v0.21.5"],
         ["gh", "workflow", "run", "stable-release.yml", "--ref", "v0.21.5-rc",
-         "--repo", "example/hermes-agent", "--raw-field", "tag=v0.21.5-rc",
-         "--raw-field", "autopublish=true"],
+         "--repo", "example/hermes-agent", "--raw-field", "tag=v0.21.5-rc"],
     ]
     # The claim push names the claim ref and nothing else.
     pushed = git(source, "ls-remote", "origin", "refs/tags/v0.21.5-rc")
@@ -71,7 +75,7 @@ def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(sourc
 
 
 def test_a_commit_behind_an_outstanding_claim_is_refused(source):
-    from scripts.releases.entrypoint import ReleaseRefused, release
+    from scripts.releases.entrypoint import ReleaseRefused, _require_ancestry, release
 
     earlier = git(source, "rev-parse", "HEAD")
     git(source, "commit", "--allow-empty", "--quiet", "-m", "later")
@@ -82,6 +86,27 @@ def test_a_commit_behind_an_outstanding_claim_is_refused(source):
         release(earlier, bump="patch", repo=source, remote="origin",
                 repository="example/hermes-agent", execute=lambda _cmd: pytest.fail("must not execute"))
     assert "v0.21.6-rc" not in git(source, "tag", "--list")
+
+    _require_ancestry(source, git(source, "rev-parse", "v0.21.5-rc^{commit}"))
+
+
+def test_successive_claims_reserve_increasing_native_epochs(source):
+    from scripts.releases.entrypoint import release
+
+    first = git(source, "rev-parse", "HEAD")
+    release(first, bump="patch", repo=source, remote="origin",
+            repository="example/hermes-agent", execute=lambda _command: None)
+    git(source, "commit", "--allow-empty", "--quiet", "-m", "next")
+    git(source, "push", "--quiet", "origin", "main")
+    second = git(source, "rev-parse", "HEAD")
+    release(second, bump="patch", repo=source, remote="origin",
+            repository="example/hermes-agent", execute=lambda _command: None)
+
+    first_epoch = int(git(source, "for-each-ref", "refs/tags/v0.21.5-rc",
+                          "--format=%(taggerdate:unix)"))
+    second_epoch = int(git(source, "for-each-ref", "refs/tags/v0.21.6-rc",
+                           "--format=%(taggerdate:unix)"))
+    assert second_epoch > first_epoch
 
 
 def test_a_dispatch_that_never_starts_is_an_error(source):
@@ -94,7 +119,7 @@ def test_a_dispatch_that_never_starts_is_an_error(source):
     with pytest.raises(ReleaseRefused, match="never started"):
         release(git(source, "rev-parse", "HEAD"), bump="patch", repo=source, remote="origin",
                 repository="example/hermes-agent", execute=refuse)
-    # The claim stands: a failed start burns the version rather than retrying it.
+    # The claim stands unresolved; reconciliation burns it only after its grace period.
     assert "v0.21.5-rc" in git(source, "tag", "--list")
 
 
@@ -111,19 +136,23 @@ def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
         "--repo", "example/hermes-agent", "--raw-field", "version=0.21.5",
     ]]
 
-    abandoned = abandon("0.21.5", repo=source, repository="example/hermes-agent", delete=calls.append)
+    def inspect(command):
+        if "v0.21.5" in command:
+            return json.dumps({"tagName": "v0.21.5", "isDraft": True, "isPrerelease": False})
+        raise ReleaseRefused("not found")
+
+    abandoned = abandon("0.21.5", repo=source, repository="example/hermes-agent",
+                        delete=calls.append, inspect=inspect)
     assert abandoned["burned"] == "0.21.5"
-    assert calls[-1] == ["gh", "release", "delete", "v0.21.5-rc", "--repo", "example/hermes-agent", "--yes"]
+    assert calls[-1] == ["gh", "release", "delete", "v0.21.5", "--repo", "example/hermes-agent", "--yes"]
     assert "v0.21.5-rc" in git(source, "tag", "--list")
 
     with pytest.raises(ReleaseRefused, match="burned or superseded by 0\\.21\\.6"):
         publish(
             "0.21.5", repository="example/hermes-agent",
             dispatch=lambda _command: pytest.fail("superseded publish must not dispatch"),
-            inspect=lambda _command: json.dumps([
-                {"tagName": "v0.21.5-rc", "isDraft": True, "isPrerelease": False},
-                {"tagName": "v0.21.6", "isDraft": False, "isPrerelease": False},
-            ]),
+            inspect=lambda _command: pytest.fail("superseded publish must not inspect drafts"),
+            head_version=lambda: "0.21.6",
         )
 
 
@@ -146,13 +175,20 @@ def test_concurrent_claim_loser_reports_the_remote_winner_and_the_version_stays_
     git(left, "checkout", "--quiet", old)
 
     barrier = threading.Barrier(2)
+    winner_pushed = threading.Event()
     original_git = entrypoint._git
 
     def racing_git(repo, *args):
         if args[:2] == ("push", "origin") and args[-1] == "refs/tags/v0.21.5-rc":
             barrier.wait(timeout=10)
             if repo == left:
-                time.sleep(0.1)
+                if not winner_pushed.wait(timeout=10):
+                    raise TimeoutError("winning claim did not finish")
+            else:
+                try:
+                    return original_git(repo, *args)
+                finally:
+                    winner_pushed.set()
         return original_git(repo, *args)
 
     monkeypatch.setattr(entrypoint, "_git", racing_git)

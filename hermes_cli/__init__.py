@@ -49,4 +49,3 @@ def _ensure_utf8():
 
 
 _ensure_utf8()
-__release_rev_count__ = 40643

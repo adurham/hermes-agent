@@ -285,7 +285,6 @@ def test_stable_phase_and_canary_gates_require_smoke_but_preserve_other_phases(t
         'candidate': ['validate', 'build-win32', 'build-darwin', 'assemble-win32-bundle',
                       'smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'termux-deb', 'candidate-manifest'],
         'publish': ['validate', 'stable-publish', 'stable-store'],
-        'promote': ['validate', 'stable-promote'],
     }
     for phase, selected in required.items():
         needs = {name: {'result': 'success' if name in selected else 'skipped'}

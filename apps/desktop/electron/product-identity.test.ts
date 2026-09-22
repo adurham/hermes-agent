@@ -211,6 +211,10 @@ test('packaging isolates boot metadata and executable names without renaming rel
   const stable: PackagingConfiguration = load()
   assert.equal(stable.extraMetadata.productName || pkg.productName, pkg.productName)
 
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0'
+  process.env.HERMES_BUILD_COMMIT = ''
+  assert.equal(load().msix.customManifestPath, 'build/msix-manifest.xml')
+
   for (const build of ['canary', 'abcdef1234567890abcdef1234567890abcdef12']) {
     process.env.HERMES_PAYLOAD_TAG = build === 'canary' ? 'v0.28.0+canary.20260818T000000Z' : ''
     process.env.HERMES_BUILD_COMMIT = build === 'canary' ? '' : build
@@ -238,6 +242,10 @@ test('packaging isolates boot metadata and executable names without renaming rel
     assert.equal(appInfo.productFilename, identity.windowsExecutableName)
     assert.equal(config.mac.extendInfo.CFBundleExecutable, config.executableName)
     assert.equal(config.artifactName, stable.artifactName)
+    assert.equal(
+      config.msix.customManifestPath,
+      'build/msix-manifest.xml'
+    )
 
     const {
       appIdentity

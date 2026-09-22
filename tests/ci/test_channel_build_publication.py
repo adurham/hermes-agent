@@ -36,7 +36,7 @@ def staged_channel(tmp_path, r2_server, request, monkeypatch):
     from scripts.releases.r2_scope import R2Scope
     base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
     if getattr(request, "param", ""):
-        monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765-1" if request.param == "receiver" else request.param)
+        monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765" if request.param == "receiver" else request.param)
         monkeypatch.setenv("GITHUB_REPOSITORY_ID", "12345")
         monkeypatch.setenv("CLOUDFLARE_R2_PUBLIC_URL", base)
     scope = R2Scope.configured()
@@ -255,7 +255,7 @@ def test_workflow_promotion_missing_native_gate_does_not_write(tmp_path, r2_serv
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("staged_channel", ["", "98765-1"], indirect=True)
+@pytest.mark.parametrize("staged_channel", ["", "98765"], indirect=True)
 def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_channel):
     request, _ = staged_channel
     from scripts.releases.r2_scope import R2Scope
@@ -453,7 +453,7 @@ def test_receiver_allocation_uses_official_identity_only_inside_scope(tmp_path):
         pub = publisher(url)
         with pytest.raises(ValueError, match="disposable"):
             allocate_receivers(pub, "a" * 40, "1.2.3", "a" * 40)
-        scope = R2Scope("ci-disposable/12345/17-1/")
+        scope = R2Scope("ci-disposable/12345/17/")
         pub.store.scope = scope
         pub.public_base += "/" + scope.prefix.rstrip("/")
         from hermes_cli.release_channels import ChannelReader

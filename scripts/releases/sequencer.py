@@ -23,6 +23,7 @@ SHA256 = re.compile(r"[a-f0-9]{64}")
 DOCKER_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF = timedelta(minutes=15)
+CLAIM_GRACE = timedelta(hours=1)
 
 
 def _key(version: str) -> tuple[int, int, int]:
@@ -32,11 +33,10 @@ def _key(version: str) -> tuple[int, int, int]:
 
 def plan(claims: list[dict], *, head: str | None,
          requested_version: str | None = None) -> list[dict]:
-    """Return eligible draft flips followed by each ordered head advance."""
+    """Return each eligible draft flip immediately followed by its head advance."""
     ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
     head_key = _key(head) if head is not None else None
-    flips: list[dict] = []
-    advances: list[dict] = []
+    steps: list[dict] = []
     flush_green_chain = False
 
     for index, claim in enumerate(ordered):
@@ -50,7 +50,7 @@ def plan(claims: list[dict], *, head: str | None,
             raise ValueError(f"refusing to move the head backwards from {head}")
 
         if state == "published":
-            advances.append({"advance": version})
+            steps.append({"advance": version})
             continue
         if state == "burned":
             continue
@@ -59,22 +59,25 @@ def plan(claims: list[dict], *, head: str | None,
         if state != "green":
             raise ValueError(f"unknown claim state {state!r}")
 
-        has_later_live_claim = any(
-            later["state"] != "burned" for later in ordered[index + 1:]
-        )
+        has_later_green_claim = False
+        for later in ordered[index + 1:]:
+            if later["state"] == "running":
+                break
+            if later["state"] == "green":
+                has_later_green_claim = True
+                break
         eligible = (
             claim.get("autopublish", False)
             or version == requested_version
-            or has_later_live_claim
+            or has_later_green_claim
             or flush_green_chain
         )
         if not eligible:
             break
-        flips.append({"flip": version})
-        advances.append({"advance": version})
-        flush_green_chain = flush_green_chain or has_later_live_claim
+        steps.extend(({"flip": version}, {"advance": version}))
+        flush_green_chain = flush_green_chain or has_later_green_claim
 
-    return flips + advances
+    return steps
 
 
 def output(argv: list[str]) -> str:
@@ -114,10 +117,14 @@ def _utc(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def classify_runs(runs: list[dict]) -> tuple[str, dict | None]:
+def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
+                  now: datetime | None = None) -> tuple[str, dict | None]:
     """Keep failed claims live until two failed-job retries are exhausted."""
     if not runs:
-        return "burned", None
+        if claimed_at is None:
+            raise ValueError("A claim without a workflow needs its immutable claim time")
+        now = now or datetime.now(timezone.utc)
+        return ("running", None) if now < claimed_at + CLAIM_GRACE else ("burned", None)
     run_ids = {row.get("id") for row in runs}
     if len(run_ids) != 1 or None in run_ids:
         raise ValueError("Stable claim owns multiple workflow runs")
@@ -142,17 +149,37 @@ def classify_runs(runs: list[dict]) -> tuple[str, dict | None]:
 
 
 def retry_due(records: list[dict], *, now: datetime | None = None) -> list[dict]:
-    """Return bounded failed-job retries whose backoff has elapsed."""
+    """Return the oldest unresolved retry once its backoff has elapsed."""
     now = now or datetime.now(timezone.utc)
-    retries = []
     for record in records:
+        if record.get("state") != "running":
+            continue
         retry = record.get("retry")
-        if retry is not None and retry["due_at"] <= now:
-            retries.append({
+        if retry is None or retry["due_at"] > now:
+            return []
+        return [{
                 "version": record["version"], "run_id": retry["run_id"],
                 "attempt": retry["attempt"] + 1,
-            })
-    return retries
+        }]
+    return []
+
+
+def classify_final_release(tag: str, claim_tag: str, release: dict | None) -> tuple[str, bool]:
+    """Derive green/published/abandoned state from the exact GitHub release."""
+    if release is None:
+        return "burned", False
+    if release.get("prerelease") is not False:
+        raise ValueError(f"{tag} has no valid GitHub release")
+    needs_retarget = release.get("tag_name") == claim_tag
+    if release.get("tag_name") not in {claim_tag, tag}:
+        raise ValueError(f"{tag} release identity changed")
+    if release.get("draft") is True:
+        return "green", needs_retarget
+    if release.get("draft") is False and release.get("published_at"):
+        if needs_retarget:
+            raise ValueError(f"{claim_tag} was published before final retargeting")
+        return "published", False
+    raise ValueError(f"{tag} release state is invalid")
 
 
 def _remote_tags(run=output) -> dict[str, dict[str, str]]:
@@ -181,6 +208,8 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
 
 def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
+    from scripts.releases.stable import tagger_epoch
+
     run(["git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*"])
     refs = _remote_tags(run)
     releases = _release_rows(repository, run)
@@ -197,12 +226,16 @@ def discover(repository: str, run=output) -> list[dict]:
         version = tag[1:]
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
+        claim_epoch = claim.get("claimEpoch")
         expected_claim = {
             "schema": 1, "version": version, "commit": commit,
-            "autopublish": claim.get("autopublish"),
+            "autopublish": claim["autopublish"], "claimEpoch": claim_epoch,
         }
-        if claim != expected_claim or not isinstance(claim["autopublish"], bool):
-            raise ValueError(f"{claim_tag} metadata differs from its ref")
+        if (claim != expected_claim or not isinstance(claim["autopublish"], bool)
+                or not isinstance(claim_epoch, int) or claim_epoch <= 0):
+            raise ValueError(f"{claim_tag} metadata is invalid")
+        if tagger_epoch(claim_ref["object"], run) != claim_epoch:
+            raise ValueError(f"{claim_tag} epoch differs from its annotated tagger timestamp")
 
         family_releases = [row for row in releases if row.get("tag_name") in {claim_tag, tag}]
         if len(family_releases) > 1:
@@ -223,26 +256,20 @@ def discover(repository: str, run=output) -> list[dict]:
                 "schema": 1, "version": version, "commit": commit,
                 "claimTag": claim_tag, "claimTagObject": claim_ref["object"],
                 "autopublish": claim["autopublish"],
+                "claimEpoch": claim_epoch,
+                "releaseId": final.get("releaseId"),
                 "candidateManifestSha256": final.get("candidateManifestSha256"),
                 "dockerManifestDigest": final.get("dockerManifestDigest"),
             }
             if (final != expected_final
+                    or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
                     or not SHA256.fullmatch(final["candidateManifestSha256"] or "")
                     or not DOCKER_DIGEST.fullmatch(final["dockerManifestDigest"] or "")):
                 raise ValueError(f"{tag} metadata differs from {claim_tag}")
-            if release is None or release.get("prerelease") is not False:
-                raise ValueError(f"{tag} has no valid GitHub release")
-            needs_retarget = release.get("tag_name") == claim_tag
-            if release.get("tag_name") not in {claim_tag, tag}:
-                raise ValueError(f"{tag} release identity changed")
-            if release.get("draft") is True:
-                state = "green"
-            elif release.get("draft") is False and release.get("published_at"):
-                if needs_retarget:
-                    raise ValueError(f"{claim_tag} was published before final retargeting")
-                state = "published"
+            if release is None or release.get("id") != final["releaseId"]:
+                state, needs_retarget = "burned", False
             else:
-                raise ValueError(f"{tag} release state is invalid")
+                state, needs_retarget = classify_final_release(tag, claim_tag, release)
         else:
             if release is not None and (release.get("tag_name") != claim_tag
                                         or release.get("draft") is not True
@@ -250,7 +277,10 @@ def discover(repository: str, run=output) -> list[dict]:
                 raise ValueError(f"{claim_tag} draft state is invalid")
             matching_runs = [row for row in workflow_runs
                              if row.get("head_branch") == claim_tag and row.get("head_sha") == commit]
-            state, retry = classify_runs(matching_runs)
+            state, retry = classify_runs(
+                matching_runs,
+                claimed_at=datetime.fromtimestamp(claim_epoch, tz=timezone.utc),
+            )
 
         records.append({
             "version": version,
@@ -308,13 +338,6 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
     steps = plan(records, head=head, requested_version=requested)
     by_version = {record["version"]: record for record in records}
 
-    for step in steps:
-        if "flip" not in step:
-            continue
-        record = by_version[step["flip"]]
-        stable.retarget_release(repository, record["release_id"], record["tag"],
-                                record["commit"], publish=True, run=run)
-
     if advance_head is None:
         def production_advance(record: dict) -> None:
             docker.promote_stable(record["tag"], record["docker_manifest_digest"])
@@ -323,7 +346,11 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
         advance_head = production_advance
 
     for step in steps:
-        if "advance" in step:
+        if "flip" in step:
+            record = by_version[step["flip"]]
+            stable.retarget_release(repository, record["release_id"], record["tag"],
+                                    record["commit"], publish=True, run=run)
+        else:
             advance_head(by_version[step["advance"]])
 
     final = {record["version"]: record for record in discover(repository, run)}

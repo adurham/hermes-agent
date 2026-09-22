@@ -432,20 +432,31 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         # Exercise the real controller, HTTP receipt downloader, immutable feeds,
         # manifest and final CAS; only GitHub admission and generated product facts
         # are fixture inputs (no native signature acceptance is claimed here).
-        from scripts.releases import r2, commit_build
-        monkeypatch.setattr(channel_releases, "admit_transaction", lambda policy, env: (tag, commit))
+        from scripts.releases import r2
+        monkeypatch.setattr(channel_releases, "admit_transaction",
+                            lambda policy, env, **_kwargs: (tag, commit))
+        monkeypatch.setattr(channel_releases.stable, "final_context",
+                            lambda env: (tag, commit, {"claim_epoch": 1_787_965_323}))
         monkeypatch.setattr(channel_releases, "accepted_stable", lambda *args: accepted)
-        monkeypatch.setattr(channel_releases, "promote_stable_feeds", lambda *args: None)
+        promotion_attempts = [0]
+        def promote_stable_feeds(*args):
+            promotion_attempts[0] += 1
+            if promotion_attempts[0] == 1:
+                raise ChannelError("fixture feed failure")
+        monkeypatch.setattr(channel_releases, "promote_stable_feeds", promote_stable_feeds)
         monkeypatch.setattr(channel_releases, "product_identity", lambda tag: dict(identity))
-        monkeypatch.setattr(commit_build, "version_at", lambda *args: "2.0.0")
         monkeypatch.setattr(r2, "credentials", lambda: (pub.store.creds, url, "bucket"))
         monkeypatch.setattr(r2, "public_base_url", lambda: base)
         def put(**kwargs):
             pub.store.put(kwargs["key"], __import__("pathlib").Path(kwargs["file"]).read_bytes())
         monkeypatch.setattr(r2, "put", put)
+        with pytest.raises(ChannelError, match="fixture feed failure"):
+            channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "failed")
+        assert pub._read("released")[0]["head"] is None
         result = channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "downloaded")
         assert result["name"] == "released"
         assert pub.reader.resolve("released").manifest == manifest
+        assert manifest["request"]["sourceVersion"] == "2.0.0"
         before = dict(objects)
         assert channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "retry") == result
         assert objects == before
@@ -489,23 +500,25 @@ def test_protected_transaction_refuses_custom_workflow_and_unpublished_release(m
         pub = publisher(url)
         # Exercise HTTPS authority validation through the loopback transport.
         pub.public_base = "https://releases.example"
-        candidate = {"schema": 2, "tag": tag, "commit": commit,
+        release_epoch = 1_787_965_323
+        candidate = {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
                      "smoke_results": {job: {"result": "success"} for job in channel_releases.stable.SMOKE_JOBS},
                      "packages": []}
         for platform in ("macos", "windows"):
             for arch in ("arm64", "x64"):
                 candidate["packages"].append({"platform": platform, "arch": arch, "tag": tag, "commit": commit,
-                    "version": "2.0.0" if platform == "macos" else "2.0.0.0", "identity": "fixture.identity",
+                    "version": "2.0.0" if platform == "macos" else "2026.5761.123.0", "identity": "fixture.identity",
+                    **({"executableVersion": "2026.5761.123.0"} if platform == "windows" else {}),
                     "teamId": "ABCDEFGHIJ", "publisher": "CN=Fixture", "applicationId": "Fixture",
                     "artifact": {"url": f"{pub.public_base}/releases/tag/{tag}/fixture-{arch}." + ("zip" if platform == "macos" else "msixbundle"), "sha256": "d" * 64}})
         raw = canonical_json(candidate)
         key = f"releases/tag/{tag}/release-candidates.json"
         objects[key] = raw
         candidate_env = {"CANDIDATE_MANIFEST_SHA256": hashlib.sha256(raw).hexdigest(), "CANDIDATE_MANIFEST_URL": pub.public_base + "/" + key}
-        assert channel_releases.accepted_stable(pub, candidate_env, tag, commit) == candidate
+        assert channel_releases.accepted_stable(pub, candidate_env, tag, commit, release_epoch) == candidate
         faults["stale_public"] = b"{}"
         with pytest.raises(ChannelError):
-            channel_releases.accepted_stable(pub, candidate_env, tag, commit)
+            channel_releases.accepted_stable(pub, candidate_env, tag, commit, release_epoch)
 
 
 def test_request_inputs_are_rejected_before_allocating():
@@ -520,3 +533,9 @@ def test_request_inputs_are_rejected_before_allocating():
         with pytest.raises(ChannelError):
             pub.allocate("validation", "not-a-sha", "1.0.0")
         assert objects == before
+
+
+def test_canary_native_version_is_derived_from_the_current_tag():
+    from scripts.releases.channel_releases import canary_windows_version
+
+    assert canary_windows_version("v0.27.1+canary.20260829T010203Z") == "26.829.1.203"

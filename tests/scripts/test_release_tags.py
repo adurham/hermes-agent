@@ -1,4 +1,4 @@
-"""Release-tag policy: new releases use semver, old CalVer tags remain readable."""
+"""Release-tag policy accepts only the current stable and canary grammars."""
 
 import importlib.util
 from pathlib import Path
@@ -12,10 +12,6 @@ _SPEC = importlib.util.spec_from_file_location("hermes_release", _RELEASE_PATH)
 assert _SPEC and _SPEC.loader
 release = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(release)
-
-
-def test_release_tag_uses_the_semver_version():
-    assert release.release_tag_for_version("0.20.0") == "v0.20.0"
 
 
 def test_every_stable_selector_rejects_legacy_calver_tags():
@@ -49,16 +45,14 @@ def release_repo(tmp_path, monkeypatch):
     return lambda *args: git(tmp_path, *args)
 
 
-def test_real_tag_order_and_remote_selection(release_repo):
+def test_canary_tag_order_and_remote_selection(release_repo):
     git = release_repo
-    assert release.get_last_tag() is None and release.get_last_canary_tag() is None
+    assert release.get_last_canary_tag() is None
     for tag in ('v2026.7.7', 'v2026.7.20'):
         git('tag', tag)
-    assert release.get_last_tag() == 'v2026.7.20'
     for tag in ('v0.9.0', 'v0.20.0', 'v0.19.0', 'v0.20.0+canary.20260818T090000Z',
                 'v0.20.0+canary.20260818T171500Z'):
         git('tag', tag)
-    assert release.get_last_tag() == 'v0.20.0'
     assert release.get_last_canary_tag() == 'v0.20.0+canary.20260818T171500Z'
     with pytest.raises(SystemExit, match='no git remotes'):
         release.resolve_push_remote(None)

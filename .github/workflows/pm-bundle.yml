@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: ''
+      release-epoch:
+        description: 'Immutable stable claim tagger epoch.'
+        required: false
+        type: string
+        default: ''
       ref:
         description: 'Git ref to bundle (default: the triggering commit, github.sha)'
         required: false
@@ -64,6 +69,7 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     env:
       HERMES_PAYLOAD_VERSION: ${{ inputs.release == true && inputs.version || '' }}
+      HERMES_RELEASE_EPOCH: ${{ inputs.release == true && inputs.release-epoch || '' }}
     # Leave time for setup, cache saves and smoke tests around the wheel build.
     timeout-minutes: 180
     strategy:

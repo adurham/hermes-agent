@@ -64,7 +64,7 @@ def _auth(**kwargs):
 
 
 def test_disposable_scope_streams_lists_and_never_touches_production(r2_server, tmp_path, monkeypatch):
-    monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765-1")
+    monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765")
     monkeypatch.setenv("GITHUB_REPOSITORY_ID", "12345")
     scope = R2Scope.configured()
     root = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"

@@ -41,10 +41,13 @@ def test_a_newer_green_release_flushes_the_older_waiting_draft():
     ), head="0.21.4")
 
     assert _flips(steps) == ["0.21.5", "0.21.6"]
-    assert steps[-2:] == [{"advance": "0.21.5"}, {"advance": "0.21.6"}]
+    assert steps == [
+        {"flip": "0.21.5"}, {"advance": "0.21.5"},
+        {"flip": "0.21.6"}, {"advance": "0.21.6"},
+    ]
 
 
-def test_green_progress_before_a_running_blocker_is_preserved():
+def test_a_running_newer_claim_does_not_flush_a_held_draft():
     from scripts.releases.sequencer import plan
 
     steps = plan(_claims(
@@ -53,12 +56,29 @@ def test_green_progress_before_a_running_blocker_is_preserved():
         ("0.21.7", "green", True),
     ), head="0.21.4")
 
-    assert _flips(steps) == ["0.21.5"]
-    assert steps[-1] == {"advance": "0.21.5"}
+    assert steps == []
     assert plan(_claims(
         ("0.21.5", "running", False),
         ("0.21.6", "green", True),
     ), head="0.21.4") == []
+    assert plan(_claims(
+        ("0.21.5", "green", False),
+        ("0.21.6", "published", False),
+    ), head="0.21.4") == []
+
+
+def test_unstarted_claim_waits_for_its_grace_period_before_burning():
+    from datetime import datetime, timedelta, timezone
+
+    from scripts.releases.sequencer import classify_runs
+
+    claimed = datetime(2026, 9, 22, 1, 0, tzinfo=timezone.utc)
+    assert classify_runs([], claimed_at=claimed, now=claimed + timedelta(minutes=59)) == (
+        "running", None,
+    )
+    assert classify_runs([], claimed_at=claimed, now=claimed + timedelta(hours=1)) == (
+        "burned", None,
+    )
 
 
 def test_failed_run_retries_twice_after_backoff_before_burning():
@@ -73,9 +93,16 @@ def test_failed_run_retries_twice_after_backoff_before_burning():
     }
     state, retry = classify_runs([failed])
     assert state == "running"
+    assert retry is not None
     assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}], now=now) == [{
         "version": "0.21.5", "run_id": 42, "attempt": 2,
     }]
+    newer = dict(retry)
+    newer["run_id"] = 43
+    assert retry_due([
+        {"version": "0.21.5", "state": state, "retry": retry},
+        {"version": "0.21.6", "state": state, "retry": newer},
+    ], now=now) == [{"version": "0.21.5", "run_id": 42, "attempt": 2}]
     failed["run_attempt"] = 2
     state, retry = classify_runs([failed])
     assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}], now=now)[0]["attempt"] == 3
@@ -84,7 +111,9 @@ def test_failed_run_retries_twice_after_backoff_before_burning():
 
 
 def test_a_burned_claim_is_spent_and_skipped():
-    from scripts.releases.sequencer import plan
+    from scripts.releases.sequencer import classify_final_release, plan
+
+    assert classify_final_release("v0.21.5", "v0.21.5-rc", None) == ("burned", False)
 
     steps = plan(_claims(
         ("0.21.5", "burned", False),
@@ -119,8 +148,8 @@ def test_explicit_publish_uses_the_same_oldest_first_plan():
         ("0.21.6", "green", False),
     ), head="0.21.4", requested_version="0.21.6") == [
         {"flip": "0.21.5"},
-        {"flip": "0.21.6"},
         {"advance": "0.21.5"},
+        {"flip": "0.21.6"},
         {"advance": "0.21.6"},
     ]
 
@@ -150,9 +179,13 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
     for index, version in enumerate(("0.21.5", "0.21.6"), start=1):
         claim_tag, tag = f"v{version}-rc", f"v{version}"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
-        claim = {"schema": 1, "version": version, "commit": commit, "autopublish": False}
+        claim = {
+            "schema": 1, "version": version, "commit": commit,
+            "autopublish": False, "claimEpoch": 1_790_000_000 + index,
+        }
         final = {
             **claim, "claimTag": claim_tag, "claimTagObject": claim_object,
+            "releaseId": index,
             "candidateManifestSha256": "a" * 64,
             "dockerManifestDigest": "sha256:" + "b" * 64,
         }
@@ -177,6 +210,10 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
             return tags[argv[-1].removeprefix("refs/tags/")][0]
         if argv[:3] == ["git", "cat-file", "-t"]:
             return "tag"
+        if argv[:3] == ["git", "cat-file", "-p"]:
+            epoch = next(message["claimEpoch"] for object_id, _target, message in tags.values()
+                         if object_id == argv[3])
+            return f"tagger Fixture <fixture@example.test> {epoch} +0000\n"
         if argv[:3] == ["git", "tag", "-l"]:
             return json.dumps(tags[argv[3]][2])
         if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
@@ -197,6 +234,13 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
 
     head = ["0.21.4"]
 
+    releases[0]["id"] = 99
+    assert reconcile(
+        {"GITHUB_REPOSITORY": "example/project"},
+        run=run, read_head=lambda: head[0], advance_head=lambda _record: None,
+    ) == []
+    releases[0]["id"] = 1
+
     def advance(record):
         events.append(("advance", record["tag"]))
         head[0] = record["version"]
@@ -207,10 +251,10 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
     )
 
     assert steps == [
-        {"flip": "0.21.5"}, {"flip": "0.21.6"},
-        {"advance": "0.21.5"}, {"advance": "0.21.6"},
+        {"flip": "0.21.5"}, {"advance": "0.21.5"},
+        {"flip": "0.21.6"}, {"advance": "0.21.6"},
     ]
     assert events == [
-        ("flip", "v0.21.5"), ("flip", "v0.21.6"),
-        ("advance", "v0.21.5"), ("advance", "v0.21.6"),
+        ("flip", "v0.21.5"), ("advance", "v0.21.5"),
+        ("flip", "v0.21.6"), ("advance", "v0.21.6"),
     ]

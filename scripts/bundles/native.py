@@ -181,8 +181,15 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     build_env = os.environ if env is None else env
     if version := build_env.get("HERMES_PAYLOAD_VERSION"):
         from scripts.releases.stamping import stamp
-        now = dt.datetime.now(dt.UTC)
-        release_date = build_env.get("HERMES_RELEASE_DATE") or f"{now.year}.{now.month}.{now.day}"
+        epoch = build_env.get("HERMES_RELEASE_EPOCH")
+        if epoch:
+            if not epoch.isdigit():
+                raise ValueError("HERMES_RELEASE_EPOCH must be an integer")
+            instant = dt.datetime.fromtimestamp(int(epoch), tz=dt.UTC)
+        else:
+            instant = dt.datetime.now(dt.UTC)
+        release_date = (build_env.get("HERMES_RELEASE_DATE")
+                        or f"{instant.year}.{instant.month}.{instant.day}")
         stamp(repo_dir, version, release_date)
 
     names = [

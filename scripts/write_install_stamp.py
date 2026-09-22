@@ -72,13 +72,17 @@ def _run_git(*args: str, cwd: str | Path = _REPO_ROOT) -> str | None:
 
 
 def _parse_release_metadata() -> tuple[str | None, str | None]:
-    """Read __version__ and __release_date__ from hermes_cli/__init__.py."""
+    """Read generated release identity and the source release date."""
     try:
-        text = (_REPO_ROOT / "hermes_cli" / "__init__.py").read_text(encoding="utf-8-sig")
+        init = (_REPO_ROOT / "hermes_cli" / "__init__.py").read_text(encoding="utf-8-sig")
     except OSError:
         return None, None
-    version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)
-    date = re.search(r'__release_date__\s*=\s*["\']([^"\']+)["\']', text)
+    try:
+        generated = (_REPO_ROOT / "hermes_cli" / "_version.py").read_text(encoding="utf-8-sig")
+    except OSError:
+        generated = init
+    version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', generated)
+    date = re.search(r'__release_date__\s*=\s*["\']([^"\']+)["\']', init)
     return (version.group(1) if version else None, date.group(1) if date else None)
 
 
@@ -169,6 +173,7 @@ def build_stamp(
             f"write_install_stamp: invalid --update-mechanism {update_mechanism!r} "
             f"(expected one of {', '.join(UPDATE_MECHANISMS)})"
         )
+    base_version_was_explicit = base_version is not None
     _base_version, _release_date = _parse_release_metadata()
     if base_version is None:
         base_version = _base_version
@@ -221,7 +226,20 @@ def build_stamp(
     if dirty is None:
         dirty = _resolve_dirty_from_git()
 
-    # Distance: explicit > computed from git
+    dev_display_version = None
+    if (distance is None and not base_version_was_explicit
+            and base_version in {None, "0.0.0"} and commit != FALLBACK_COMMIT):
+        from scripts.releases.distance import dev_version
+
+        try:
+            dev_display_version = dev_version(_REPO_ROOT)
+        except subprocess.CalledProcessError:
+            base_version, distance = "0.0.0", 0
+        else:
+            base_version, separator, development = dev_display_version.partition("+")
+            distance = int(development.split(".", 1)[0]) if separator else 0
+
+    # Distance: explicit > reachable final release > release metadata fallback.
     if distance is None:
         distance = _compute_distance(base_version, _release_date)
 
@@ -230,10 +248,10 @@ def build_stamp(
         commit_date = _resolve_commit_date_from_git()
 
     # Display version
-    display_version = base_version or ""
-    if distance is not None and distance > 0:
+    display_version = dev_display_version or base_version or ""
+    if dev_display_version is None and distance is not None and distance > 0:
         display_version = f"{display_version}+{distance}"
-    elif dirty and distance is None:
+    elif dev_display_version is None and dirty and distance is None:
         display_version = f"{display_version}+?"
 
     # The desktop artifact kind, from the one build-time selector

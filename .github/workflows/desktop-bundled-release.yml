@@ -166,6 +166,8 @@ env:
   # One dispatch: a disposable-mode run leases its namespace by run id alone
   # (no attempt suffix) so "re-run failed jobs" re-enters the same namespace.
   R2_DISPOSABLE_RUN: ${{ inputs.disposable_run || (inputs.disposable_channel != '' && github.run_id) || '' }}
+  RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+  RELEASE_CLAIM_OBJECT: ${{ inputs.claim-object }}
 
 jobs:
   validate:
@@ -189,7 +191,9 @@ jobs:
       # publish in parallel by design — different feed files).
       channel: ${{ steps.admission.outputs.channel }}
       sha: ${{ steps.admission.outputs.sha }}
+      tag-object: ${{ steps.admission.outputs.tag-object }}
       payload-version: ${{ steps.admission.outputs.payload-version }}
+      release-epoch: ${{ steps.admission.outputs.release-epoch }}
       receiver-candidate: ${{ steps.admission.outputs.receiver-candidate }}
       public-root: ${{ steps.admission.outputs.public-root }}
       public-base: ${{ steps.admission.outputs.public-base }}
@@ -304,7 +308,7 @@ jobs:
             echo "::error::either tag or build_commit is required"; exit 1
           fi
           case "$RELEASE_PHASE" in
-            candidate|publish|promote)
+            candidate|publish)
               python -m scripts.releases.stable verify
               exit 0
               ;;
@@ -342,8 +346,19 @@ jobs:
             exit 1
           fi
           echo "tag $TAG resolves to $SHA (on origin/main)"
+          TAG_OBJECT="$(git rev-parse --verify "$TAG^{tag}")" || {
+            echo "::error::$TAG must be an annotated tag"; exit 1;
+          }
+          echo "tag-object=$TAG_OBJECT" >> "$GITHUB_OUTPUT"
           case "$TAG" in
-            *+canary.*) echo "channel=canary" >> "$GITHUB_OUTPUT" ;;
+            *+canary.*)
+              echo "channel=canary" >> "$GITHUB_OUTPUT"
+              python - "$TAG" >> "$GITHUB_OUTPUT" <<'PY'
+          import datetime as dt, sys
+          instant = dt.datetime.strptime(sys.argv[1].split("+canary.", 1)[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.UTC)
+          print(f"release-epoch={int(instant.timestamp())}")
+          PY
+              ;;
             *)          echo "channel=stable" >> "$GITHUB_OUTPUT" ;;
           esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -375,6 +390,7 @@ jobs:
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
@@ -720,6 +736,7 @@ jobs:
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
@@ -1492,6 +1509,7 @@ jobs:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      HERMES_RELEASE_EPOCH: ${{ needs.validate.outputs.release-epoch }}
       # termux_build.sh gates on `gh release view <tag>` (refuse to build
       # before the release exists); gh needs GH_TOKEN or it errors out and
       # the gate misreads that as "release not found".
@@ -2023,6 +2041,7 @@ jobs:
       manifest-sha256: ${{ steps.manifest.outputs.manifest-sha256 }}
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      HERMES_RELEASE_EPOCH: ${{ needs.validate.outputs.release-epoch }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -2192,19 +2211,13 @@ jobs:
         with:
           toolchain: node
           cache-python: false
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-          echo "Published $TAG"
-      # The controller rechecks native job results, the remote tag and published
-      # GitHub release before any R2 head write; receipts bind the exact bytes.
-      - name: Advance protected canary head from the published release
+      # The controller rechecks native job results and exact remote tag custody,
+      # publishes and reads back the prerelease, then advances R2.
+      - name: Publish the admitted canary and advance its protected head
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG_OBJECT: ${{ needs.validate.outputs.tag-object }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}

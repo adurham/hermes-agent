@@ -10,6 +10,7 @@ import sys
 import tomllib
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -31,10 +32,12 @@ def admit_claim(tag: str, commit: str, *, on_main) -> dict:
     ``-rc`` tag and the only question about the commit is whether it is on
     ``main``.
     """
+    from scripts.releases.versioning import version_from_tag
+
     if not isinstance(tag, str) or not tag.endswith("-rc"):
         raise ValueError(f"{tag} is not a claim tag")
-    version = tag[1:-3]
-    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
+    version = version_from_tag(tag[:-3])
+    if version is None:
         raise ValueError(f"{tag} is not a claim tag")
     if not on_main(commit):
         raise ValueError(f"{commit} is not on main")
@@ -68,17 +71,26 @@ def successful_smoke_results(needs: object) -> dict:
     return results
 
 
+def stable_windows_version(epoch: object) -> str:
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        raise ValueError("Stable release epoch must be a non-negative integer")
+    instant = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    start = datetime(instant.year, 1, 1, tzinfo=timezone.utc)
+    hour_of_year = (instant - start).days * 24 + instant.hour
+    second_of_hour = instant.minute * 60 + instant.second
+    return f"{instant.year}.{hour_of_year}.{second_of_hour}.0"
+
+
 def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
-                        *, allow_legacy: bool = False) -> dict:
+                        release_epoch: int | None = None) -> dict:
     require_stable_identity(tag, commit)
-    if manifest.get("schema") not in (1, 2) or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
+    if manifest.get("schema") != 2 or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
-    if manifest["schema"] == 1:
-        # A published baseline supplies old package identities, not new smoke evidence.
-        if not allow_legacy:
-            raise ValueError("Legacy candidate has no bound smoke admission; build a new candidate tag")
-    else:
-        successful_smoke_results(manifest.get("smoke_results"))
+    successful_smoke_results(manifest.get("smoke_results"))
+    admitted_epoch = manifest.get("releaseEpoch")
+    expected_windows_version = stable_windows_version(admitted_epoch)
+    if release_epoch is not None and admitted_epoch != release_epoch:
+        raise ValueError("Candidate release epoch differs from the admitted claim")
     prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{tag}/")
     if prefix.scheme != "https" or prefix.username or prefix.password or not prefix.netloc:
         raise ValueError("Public release origin must use HTTPS")
@@ -97,12 +109,17 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
         if not DIGEST.fullmatch(artifact.get("sha256", "")) or not item.get("identity"):
             raise ValueError(f"Invalid candidate digest or identity: {target}")
         if item["platform"] == "windows":
-            windows_version(item.get("version", ""))
+            if (item.get("version") != expected_windows_version
+                    or item.get("executableVersion") != expected_windows_version):
+                raise ValueError("Windows candidate version differs from the admitted release epoch")
+            windows_version(item["version"])
             if not item.get("publisher") or not item.get("applicationId") or not url.path.endswith(".msixbundle"):
                 raise ValueError("Windows candidate needs publisher, applicationId and MSIX bundle")
         elif item["platform"] == "macos":
             if item.get("version") != tag[1:] or not re.fullmatch(r"[A-Z0-9]{10}", item.get("teamId", "")) or not url.path.endswith(".zip"):
                 raise ValueError("macOS candidate needs matching version, signing team and app ZIP")
+        elif item.get("version") != f"{tag[1:]}-1":
+            raise ValueError("Termux candidate version differs from the admitted release")
         rows[target] = item
     if any(target not in rows for target in DESKTOP_TARGETS):
         raise ValueError("Candidate manifest must cover Windows and macOS on both architectures")
@@ -119,7 +136,7 @@ def windows_version(value: str) -> tuple[int, ...]:
 
 
 def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[dict]:
-    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base, allow_legacy=True)
+    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base)
     new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base)
     result = []
     for target in DESKTOP_TARGETS:
@@ -177,9 +194,25 @@ def _claim_metadata(raw: str, *, version: str, commit: str) -> dict:
     if (not isinstance(metadata, dict)
             or any(metadata.get(key) != value for key, value in expected.items())
             or not isinstance(metadata.get("autopublish"), bool)
-            or set(metadata) != {*expected, "autopublish"}):
+            or not isinstance(metadata.get("claimEpoch"), int)
+            or metadata["claimEpoch"] <= 0
+            or set(metadata) != {*expected, "autopublish", "claimEpoch"}):
         raise ValueError("Stable claim metadata is invalid")
     return metadata
+
+
+def tagger_epoch(tag_object: str, run=output) -> int:
+    body = run(["git", "cat-file", "-p", tag_object])
+    tagger = next((line for line in body.splitlines() if line.startswith("tagger ")), None)
+    if tagger is None:
+        raise ValueError("Stable claim has no tagger timestamp")
+    try:
+        epoch = int(tagger.rsplit(" ", 2)[1])
+    except (IndexError, ValueError) as error:
+        raise ValueError("Stable claim tagger timestamp is invalid") from error
+    if epoch <= 0:
+        raise ValueError("Stable claim tagger timestamp is invalid")
+    return epoch
 
 
 def check_claim(env: dict, run=output) -> dict:
@@ -216,8 +249,11 @@ def check_claim(env: dict, run=output) -> dict:
     admitted = admit_claim(claim_tag, commit, on_main=on_main)
     raw_metadata = run(["git", "tag", "-l", claim_tag, "--format=%(contents)"])
     metadata = _claim_metadata(raw_metadata, version=admitted["version"], commit=commit)
+    claim_epoch = tagger_epoch(local_object, run)
+    if metadata["claimEpoch"] != claim_epoch:
+        raise ValueError("Stable claim epoch differs from its annotated tagger timestamp")
     return {**admitted, "claim_object": local_object,
-            "autopublish": metadata["autopublish"]}
+            "autopublish": metadata["autopublish"], "claim_epoch": claim_epoch}
 
 
 def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
@@ -270,21 +306,27 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         "schema": 1, "version": admitted["version"], "commit": commit,
         "claimTag": claim_tag, "claimTagObject": claim_object,
         "autopublish": claim["autopublish"],
+        "claimEpoch": claim["claimEpoch"],
+        "releaseId": final.get("releaseId"),
         "candidateManifestSha256": final.get("candidateManifestSha256"),
         "dockerManifestDigest": final.get("dockerManifestDigest"),
     }
     if (final != expected
+            or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
             or not DIGEST.fullmatch(final["candidateManifestSha256"] or "")
             or not re.fullmatch(r"sha256:[a-f0-9]{64}", final["dockerManifestDigest"] or "")):
         raise ValueError("Final tag metadata differs from its claim")
     release = json.loads(run([
         "gh", "api", f"repos/{repository}/releases/tags/{tag}",
     ]))
-    if (release.get("tag_name") != tag or release.get("draft") is not False
+    if (release.get("id") != final["releaseId"] or release.get("tag_name") != tag
+            or release.get("draft") is not False
             or release.get("prerelease") is not False or not release.get("published_at")):
         raise ValueError("Stable channel requires the published final release")
     return tag, commit, {**admitted, "claim_object": claim_object,
                          "autopublish": claim["autopublish"],
+                         "claim_epoch": claim["claimEpoch"],
+                         "release_id": final["releaseId"],
                          "candidate_manifest_sha256": final["candidateManifestSha256"],
                          "docker_manifest_digest": final["dockerManifestDigest"]}
 
@@ -332,7 +374,7 @@ def admit(env: dict) -> None:
     emit({
         "claim-tag": admitted["claim_tag"], "claim-object": admitted["claim_object"],
         "tag": admitted["tag"], "commit": admitted["commit"], "version": admitted["version"],
-        "release-id": release["databaseId"],
+        "release-id": release["databaseId"], "release-epoch": admitted["claim_epoch"],
     }, env)
     summary(
         f"## Stable candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
@@ -343,17 +385,18 @@ def admit(env: dict) -> None:
 
 def verify(env: dict) -> None:
     """Revalidate claim custody in a reusable privileged workflow."""
-    tag, commit, _claim = stable_context(env)
-    emit({"tag": tag, "sha": commit, "channel": "stable", "payload-version": tag[1:]}, env)
+    tag, commit, claim = stable_context(env)
+    emit({"tag": tag, "sha": commit, "channel": "stable", "payload-version": tag[1:],
+          "release-epoch": claim["claim_epoch"]}, env)
 
 
 def transitions(env: dict) -> None:
     from scripts.releases.r2 import put
 
-    tag, commit, _claim = stable_context(env)
+    tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base)
+    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
     try:
         previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
                                  expected_origin=base)
@@ -379,33 +422,38 @@ def transitions(env: dict) -> None:
 
 
 def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha256: str,
-                    docker_manifest_digest: str) -> dict:
+                    docker_manifest_digest: str, release_id: int) -> dict:
     if not DIGEST.fullmatch(candidate_manifest_sha256):
         raise ValueError("Final tag candidate manifest digest is invalid")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", docker_manifest_digest):
         raise ValueError("Final tag Docker manifest digest is invalid")
+    if not isinstance(release_id, int) or release_id <= 0:
+        raise ValueError("Final tag release database ID is invalid")
     return {
         "schema": 1, "version": tag[1:], "commit": commit,
         "claimTag": claim["claim_tag"], "claimTagObject": claim["claim_object"],
         "autopublish": claim["autopublish"],
+        "claimEpoch": claim["claim_epoch"],
+        "releaseId": release_id,
         "candidateManifestSha256": candidate_manifest_sha256,
         "dockerManifestDigest": docker_manifest_digest,
     }
 
 
 def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_sha256: str,
-                     docker_manifest_digest: str, run=output) -> str:
+                     docker_manifest_digest: str, release_id: int, run=output) -> str:
     """Create or verify the immutable annotated final tag."""
     require_stable_identity(tag, commit)
+    expected = _final_metadata(
+        tag, commit, claim, candidate_manifest_sha256, docker_manifest_digest, release_id,
+    )
     ref = f"refs/tags/{tag}"
     remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
     if not remote_raw:
         try:
             local_object = run(["git", "rev-parse", "--verify", ref])
         except subprocess.CalledProcessError:
-            message = json.dumps(_final_metadata(
-                tag, commit, claim, candidate_manifest_sha256, docker_manifest_digest,
-            ), sort_keys=True, separators=(",", ":"))
+            message = json.dumps(expected, sort_keys=True, separators=(",", ":"))
             run([
                 "git", "-c", "user.name=Hermes Release Automation",
                 "-c", "user.email=release-bot@users.noreply.github.com",
@@ -413,7 +461,8 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
             ])
         else:
             if (run(["git", "cat-file", "-t", local_object]) != "tag"
-                    or run(["git", "rev-parse", f"{ref}^{{commit}}"]) != commit):
+                    or run(["git", "rev-parse", f"{ref}^{{commit}}"]) != commit
+                    or json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"])) != expected):
                 raise ValueError("Local final tag collision")
         run(["git", "push", "origin", ref])
         remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
@@ -429,16 +478,9 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
     if local_object != tag_object or run(["git", "cat-file", "-t", local_object]) != "tag":
         raise ValueError("Final stable tag object differs from the verified remote")
     metadata = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
-    if metadata != _final_metadata(
-            tag, commit, claim, candidate_manifest_sha256, docker_manifest_digest):
+    if metadata != expected:
         raise ValueError("Final stable tag metadata differs from the accepted artifacts")
     return tag_object
-
-
-def _autopublish(value: str | None) -> bool:
-    if value not in {"true", "false"}:
-        raise ValueError("AUTOPUBLISH must be exactly true or false")
-    return value == "true"
 
 
 def retarget_release(repository: str, release_id: int, tag: str, commit: str, *, publish: bool,
@@ -464,17 +506,16 @@ def complete(env: dict) -> None:
     tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base)
+    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
+    release_id = env.get("RELEASE_ID", "")
+    if not str(release_id).isdigit():
+        raise ValueError("Stable release database ID is required")
     ensure_final_tag(
         tag, commit, claim,
         candidate_manifest_sha256=env["CANDIDATE_MANIFEST_SHA256"],
         docker_manifest_digest=env.get("DOCKER_MANIFEST_DIGEST", ""),
+        release_id=int(release_id),
     )
-    release_id = env.get("RELEASE_ID", "")
-    if not str(release_id).isdigit():
-        raise ValueError("Stable release database ID is required")
-    if _autopublish(env.get("AUTOPUBLISH")) is not claim["autopublish"]:
-        raise ValueError("Workflow autopublish input differs from the immutable claim")
     retarget_release(env["GITHUB_REPOSITORY"], int(release_id), tag, commit, publish=False)
 
 

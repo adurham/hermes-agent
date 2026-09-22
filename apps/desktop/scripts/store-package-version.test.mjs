@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test, vi } from 'vitest'
 import { appIdentity, storeManifestTemplate, storePackageVersion, storePackageVersionAt } from '../../../scripts/msix-shared.mjs'
-import { stageStoreManifest } from './before-build.mjs'
+import { stageReleaseManifest, stageStoreManifest } from './before-build.mjs'
 import { AppInfo } from '../../../node_modules/app-builder-lib/dist/appInfo.js'
 import { substituteManifestMacros } from '../../../node_modules/app-builder-lib/dist/targets/win/winAppUtil.js'
 
@@ -47,6 +47,20 @@ test('Store manifest and envelope agree while executable app semver and sideload
 
 })
 
+test.each(['v0.27.1', 'v0.27.1+canary.20260907T001800Z'])(
+  'ordinary release manifest %s carries the admitted native quad',
+  tag => {
+    const { app } = fixture()
+    const identity = appIdentity(app, tag)
+    if (tag.includes('+canary.')) {
+      fs.mkdirSync(path.join(app, 'build'), { recursive: true })
+      fs.copyFileSync(path.join(app, 'assets/msix-manifest.xml'), path.join(app, 'build/msix-manifest.xml'))
+    }
+    const staged = fs.readFileSync(stageReleaseManifest(app, tag), 'utf8')
+    expect(/<Identity\b[^>]*Version="([^"]+)"/.exec(staged)[1]).toBe(identity.version)
+  }
+)
+
 test('Store calendar ordering survives minute, hour, day and year boundaries and rejects reserved revision', () => {
   const seconds = [
     '2026-09-07T00:17:18Z', '2026-09-07T00:17:19Z', '2026-09-07T00:18:00Z',
@@ -65,6 +79,26 @@ test('Store calendar ordering survives minute, hour, day and year boundaries and
   expect(() => storeManifestTemplate('${version}', '0.27.1.0')).toThrow()
   expect(() => storePackageVersionAt(NaN)).toThrow()
   expect(() => storePackageVersion('v0.27.1+canary.20260231T000000Z', '.')).toThrow('Invalid canary')
+})
+
+test('stable candidate identity uses the admitted claim epoch before the final tag exists', () => {
+  const { root, app } = fixture()
+  execFileSync('git', ['tag', '-d', 'v0.27.1'], { cwd: root, stdio: 'pipe' })
+  execFileSync('git', ['tag', '-a', 'v0.27.1-rc', '-m', 'claim'], {
+    cwd: root,
+    env: { ...process.env, GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' },
+    stdio: 'pipe'
+  })
+  const epoch = Date.parse('2026-09-07T00:18:00Z') / 1000
+  vi.stubEnv('RELEASE_CLAIM_TAG', 'v0.27.1-rc')
+  vi.stubEnv('RELEASE_CLAIM_OBJECT', execFileSync('git', ['rev-parse', 'v0.27.1-rc'], {
+    cwd: root, encoding: 'utf8'
+  }).trim())
+  try {
+    expect(appIdentity(app, 'v0.27.1').version).toBe(storePackageVersionAt(epoch))
+  } finally {
+    vi.unstubAllEnvs()
+  }
 })
 
 test('commit builds cannot stage a Store manifest', () => {

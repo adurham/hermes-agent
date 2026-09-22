@@ -292,12 +292,9 @@ def validate_arguments(parser, args) -> bool:
     if args.retire_channel and not all(retirement):
         parser.error("--retire-channel requires --to and --minimum-version")
     if (not args.channel and args.build_commit) or any((
-        args.bump,
         args.canary,
         args.prune_canaries,
-        args.first_release,
         args.date,
-        args.output,
         args.no_changelog,
     )):
         parser.error(
