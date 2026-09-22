@@ -3,8 +3,14 @@
 import os
 import sys
 
-__version__ = "1.0.0"
 __release_date__ = "2026.9.21"
+
+# A checkout carries no version. The release stamps ``_version.py`` into the build
+# tree; without it the tree reports the placeholder, never a number read from git.
+try:
+    from hermes_cli._version import __version__  # type: ignore[import-not-found]
+except ImportError:
+    __version__ = "0.0.0"
 
 
 def _ensure_utf8():
