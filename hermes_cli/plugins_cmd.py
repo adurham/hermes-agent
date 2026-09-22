@@ -762,6 +762,26 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
+def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
+    if not (tree / "plugin.json").is_file():
+        return
+    from hermes_cli.agent_plugins import load_agent_plugin
+    from hermes_platform.resolver.availability import availability
+
+    try:
+        package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
+    except ValueError as exc:
+        raise PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.") from exc
+    for server_name, server_decl in package.server_declarations.items():
+        result = availability(server_decl.declaration)
+        if result.offerable:
+            continue
+        found = f", found version {result.version}" if result.version else ""
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
+        )
+
+
 def _install_plugin_core(
     identifier: str,
     *,
@@ -829,6 +849,7 @@ def _install_plugin_core(
                 raise PluginOperationError(
                     "--no-deps cannot replace an active plugin. Retry without --no-deps; "
                     "PM must prepare its dependencies before publication.")
+        _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
         if before_swap is not None:
             before_swap(manifest, tmp_target)
 

@@ -2,6 +2,8 @@
 
 
 
+
+
 [project]
 name = "hermes-agent"
 version = "1.0.0"
@@ -786,6 +788,8 @@ include = [
   "plugins.*",
   "providers",
   "providers.*",
+  "hermes_platform",
+  "hermes_platform.*",
   "pm",
   "pm.*",
   "tools",
