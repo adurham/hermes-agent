@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Host-built helper. Windows uses its in-box .NET Framework compiler; no SDK download.
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -95,6 +95,17 @@ export function buildHudModifierMonitor({
     return output
   } catch (error) {
     rmSync(output, { force: true }) // Never keep a stale helper after a failed rebuild.
+    // Packaged ASAR output omits empty directories. Leaving native/linux-* behind
+    // makes the packaged renderer differ from its compiler receipt, so source
+    // installs report a healthy desktop bundle as stale when X11 headers are
+    // unavailable. Remove only empty ancestors; stop at the product root.
+    for (let directory = dirname(output); directory !== resolve(distDir); directory = dirname(directory)) {
+      try {
+        rmdirSync(directory)
+      } catch {
+        break
+      }
+    }
     if (platform !== 'linux') throw error
     console.warn('[hud-modifier] unavailable: native build needs a C compiler, libx11-dev and libxi-dev; desktop packaging continues')
     console.warn(String(error.stderr || error.message))
