@@ -34,6 +34,7 @@ import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
 import { updateWindowEnvironment } from './smoke-env.mjs';
+import { sourceRuntimeSettleCommand } from './source-runtime-settle.mjs';
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,
@@ -92,18 +93,11 @@ function log(msg) {
  * @param {Record<string, string>} env
  */
 function settleSourceRuntime(root, env) {
-  const suffix = process.platform === 'win32' ? '.exe' : '';
-  const candidates = [
-    path.join(root, '.hermes', 'bin', `hermes${suffix}`),
-    process.platform === 'win32'
-      ? path.join(root, 'venv', 'Scripts', 'hermes.exe')
-      : path.join(root, 'venv', 'bin', 'hermes'),
-  ];
-  const launcher = candidates.find((candidate) => fs.existsSync(candidate));
-  if (!launcher) throw new Error(`no source launcher available to settle ${root}`);
+  const invocation = sourceRuntimeSettleCommand(root, env);
   log('settling source runtime under the captured launch environment');
-  execFileSync(launcher, ['status'], {
+  execFileSync(invocation.command, invocation.args, {
     cwd: root, env, stdio: 'inherit', timeout: 20 * 60_000,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 }
 

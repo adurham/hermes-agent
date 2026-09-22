@@ -17,6 +17,7 @@ import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../..
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
 
 import { type SmokeEnvironment, smokeEnvironment, within } from './smoke-env.mjs'
+import { sourceRuntimeSettleCommand } from './source-runtime-settle.mjs'
 
 const require = createRequire(import.meta.url)
 const { pickAppWindow }: { pickAppWindow: (app: ElectronApplication, log: (message: string) => void) => Promise<Page> } = require('./update-ui.cjs')
@@ -201,20 +202,10 @@ function captureBackendLogs(homes: readonly string[], outDir: string, phase: str
 export function settleSourceDesktopRuntime(options: SmokeOptions, launch: Launch): void {
   if (options.origin !== 'source' || options.phase !== 'new') { return }
 
-  const suffix = process.platform === 'win32' ? '.exe' : ''
-  const candidates = [
-    path.join(options.root, '.hermes', 'bin', `hermes${suffix}`),
-    process.platform === 'win32'
-      ? path.join(options.root, 'venv', 'Scripts', 'hermes.exe')
-      : path.join(options.root, 'venv', 'bin', 'hermes'),
-  ]
-
-  const launcher = candidates.find((candidate: string): boolean => fs.existsSync(candidate))
-  if (!launcher) { throw new Error(`No source launcher available to settle ${options.root}`) }
-
-  const result = spawnSync(launcher, ['status'], {
+  const invocation = sourceRuntimeSettleCommand(options.root, launch.env)
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: options.root, env: launch.env, encoding: 'utf8', timeout: 20 * 60_000,
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: 16 * 1024 * 1024, windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   })
 
   const transcript = [result.stdout, result.stderr].filter(Boolean).join('')
