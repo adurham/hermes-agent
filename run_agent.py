@@ -1673,54 +1673,6 @@ def _classify_anthropic_stream_phase(
         return "queued/prefilling, server alive (pings flowing)"
     return "queued/prefilling (no pings yet)"
 
-# Read-only tools with no shared mutable session state.
-_PARALLEL_SAFE_TOOLS = frozenset({
-    "ha_get_state",
-    "ha_list_entities",
-    "ha_list_services",
-    "read_file",
-    "search_files",
-    "session_search",
-    "skill_view",
-    "skills_list",
-    "vision_analyze",
-    "web_extract",
-    "web_search",
-})
-
-# File tools can run concurrently when they target independent paths.
-_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
-
-# Tools that mutate files on disk.  Used by the per-turn verifier that
-# surfaces silently-failed file edits so the model can't over-claim success.
-# Imported above as `_FILE_MUTATING_TOOLS` from `agent.tool_result_classification`.
-
-# Maximum number of concurrent worker threads for parallel tool execution.
-_MAX_TOOL_WORKERS = 8
-
-# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
-# process, not once per AIAgent instantiation.  Without this, long-running
-# gateway processes leak one OS thread per incoming message and eventually
-# exhaust the system thread limit (RuntimeError: can't start new thread).
-_openrouter_prewarm_done = threading.Event()
-
-# Patterns that indicate a terminal command may modify/delete files.
-_DESTRUCTIVE_PATTERNS = re.compile(
-    r"""(?:^|\s|&&|\|\||;|`)(?:
-        rm\s|rmdir\s|
-        cp\s|install\s|
-        mv\s|
-        sed\s+-i|
-        truncate\s|
-        dd\s|
-        shred\s|
-        git\s+(?:reset|clean|checkout)\s
-    )""",
-    re.VERBOSE,
-)
-# Output redirects that overwrite files (> but not >>)
-_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
-
 def main(
     query: str = None, model: str = "", api_key: str = None, base_url: str = "", max_turns: int = 10,
     enabled_toolsets: str = None, disabled_toolsets: str = None, list_tools: bool = False,
