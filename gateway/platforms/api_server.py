@@ -1132,7 +1132,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if raw_port is None:
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
-        self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         # Optional multi-principal auth — if API_SERVER_KEYS_FILE points at a
         # YAML/JSON map of {principal_name: bearer_token}, _check_auth resolves
         # the inbound bearer to a principal name and stashes it on the request
