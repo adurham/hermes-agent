@@ -1302,7 +1302,8 @@ jobs:
     cache-mode: read
     timeout-minutes: 45
     permissions:
-      contents: read
+      contents: write
+      actions: read
     env:
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -1940,12 +1941,14 @@ jobs:
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
-      contents: read
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Runs from the admitted commit so the renderer matches the built bytes.
           ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
       - name: Render the full expected-binary matrix
         env:
           HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -1973,6 +1976,23 @@ jobs:
             --summary-commit "$RELEASE_COMMIT" --repo "$GITHUB_REPOSITORY" \
             --summary-out "$GITHUB_STEP_SUMMARY" \
             --summary-failed-legs "$failed" --run-url "$RUN_URL"
+      - name: Return to the trusted receipt controller
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Publish the post-build commit receipt
+        env:
+          BUILD_COMMIT: ${{ needs.validate.outputs.sha }}
+          TAG: ''
+          RELEASE_PHASE: ''
+          UPLOAD_RELEASE: 'false'
+          TERMUX_UPGRADE_FROM_TAG: ''
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RELEASE_NEEDS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+        run: python -m scripts.releases.commit_build receipt
 
   candidate-manifest:
     name: Stage verified stable candidate artifacts

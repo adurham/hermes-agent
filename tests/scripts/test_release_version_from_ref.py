@@ -20,8 +20,8 @@ def test_final_tag_is_its_version():
     "v0.21.4+canary.20260922T001400Z",
     "v2026.9.21",
     "canary-0.21.4+canary.20260922T001400Z",
-    "channel-preview-20260922T001400Z",
-    "commit-abcdef1-20260922T001400Z",
+    "v0.0.7+channel.20260922T001400Z.98765",
+    "v0.0.0+commit.20260922T001400Z.98766",
 ])
 def test_non_final_refs_are_not_versions(ref):
     assert version_from_tag(ref) is None

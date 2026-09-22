@@ -183,7 +183,14 @@ def run_shell(tmp_path, r2_server, script, env, *, cwd=None):
     python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} "$@"\n', encoding="utf-8")
     python.chmod(0o755)
     gh = tools / "gh"
-    gh.write_text('#!/bin/sh\n[ "$1" = api ] || exit 3\nprintf "write\\n"\n', encoding="utf-8")
+    gh.write_text(
+        '#!/bin/sh\n[ "$1" = api ] || exit 3\n'
+        'case "$2" in\n'
+        '  */actions/runs/*) printf \'{"id":98765,"event":"workflow_dispatch",'
+        '"status":"in_progress","head_branch":"main","head_sha":"%s",'
+        '"created_at":"2026-09-22T01:23:45Z"}\\n\' "$GITHUB_SHA" ;;\n'
+        '  *) printf "write\\n" ;;\n'
+        'esac\n', encoding="utf-8")
     gh.chmod(0o755)
     return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=cwd or tmp_path,
                           env={**os.environ, **env, "PATH": str(tools) + os.pathsep + os.environ["PATH"]},
@@ -265,7 +272,8 @@ def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_c
            "RELEASE_NEEDS": json.dumps({name: {"result": "success"} for name in channel_publish.REQUIRED_JOBS}),
            "DEFAULT_BRANCH": "main", "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
            "GITHUB_WORKFLOW_REF": "fixture/repo/.github/workflows/desktop-bundled-release.yml@refs/heads/main",
-           "GITHUB_SHA": request["commit"], "GITHUB_ACTOR": "fixture", "GITHUB_TRIGGERING_ACTOR": "fixture"}
+           "GITHUB_SHA": request["commit"], "GITHUB_ACTOR": "fixture", "GITHUB_TRIGGERING_ACTOR": "fixture",
+           "GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "98765"}
     prefix = scope.prefix + handoff.channel_prefix(request)
     if scope.prefix:
         env["CLOUDFLARE_R2_PUBLIC_URL"] = os.environ["CLOUDFLARE_R2_PUBLIC_URL"]
@@ -304,6 +312,16 @@ def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_c
         assert result.returncode == 0, result.stdout + result.stderr
         evidence = json.loads((tmp_path / "scoped-smoke/out/download.json").read_text())
         assert evidence["request"] == request
+    else:
+        tag = "v0.0.7+channel.20260922T012345Z.98765"
+        assert _git("tag", "--list", tag, cwd=tmp_path / "clone") == tag
+        receipt = json.loads(_git("tag", "-l", tag, "--format=%(contents)", cwd=tmp_path / "clone"))
+        assert receipt == {
+            "schema": 1, "kind": "channel", "tag": tag, "version": request["version"],
+            "commit": request["commit"], "runId": "98765", "runCreatedAt": "2026-09-22T01:23:45Z",
+            "details": {"buildId": request["buildId"], "channel": request["channel"],
+                        "requestSha256": hashlib.sha256(canonical_json(request)).hexdigest()},
+        }
     # A retired publisher can stage immutable diagnostics, but never revive its pointer.
     retired = {**stored, "state": "retired", "destination": "stable", "minimumVersion": "1.2.3",
                "lastHead": stored["head"], "destinationHead": stored["head"], "receiverProtocol": 1,
