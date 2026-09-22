@@ -77,6 +77,19 @@ export function isolateUpdateWindowEnvironment(env) {
   return { ...env, HERMES_DESKTOP_USER_DATA_DIR: isolated };
 }
 
+/**
+ * Route Electron's native ProcessSingleton before app JavaScript requests the lock.
+ * Older packaged apps honor the environment override after Electron has initialized,
+ * which can still leave Playwright attached to a lock-losing secondary instance.
+ * @param {string[]} args
+ * @param {string} userData
+ * @returns {string[]}
+ */
+export function isolatedElectronArgs(args, userData) {
+  const prefix = '--user-data-dir=';
+  return [`${prefix}${userData}`, ...args.filter((arg) => !arg.startsWith(prefix))];
+}
+
 // Source updater processes still need the git redirect; smokeEnvironment keeps
 // it while removing driver activation, credentials and remote/backend overrides.
 /** @param {NodeJS.ProcessEnv} inherited @param {string} root @param {'source'|'bundled'} origin */

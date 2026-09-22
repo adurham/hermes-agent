@@ -4,7 +4,14 @@ import path from 'node:path'
 
 import { expect, test } from 'vitest'
 
-import { isolateUpdateWindowEnvironment } from '../../tests/install/e2e-assets/smoke-env.mjs'
+import { isolatedElectronArgs, isolateUpdateWindowEnvironment } from '../../tests/install/e2e-assets/smoke-env.mjs'
+
+test('the update window pins its isolated route before Electron requests the singleton lock', (): void => {
+  expect(isolatedElectronArgs(
+    ['--no-sandbox', '--user-data-dir=/stale/route', '--inspect=0'],
+    '/isolated/route',
+  )).toEqual(['--user-data-dir=/isolated/route', '--no-sandbox', '--inspect=0'])
+})
 
 test('the update window clones userData without inheriting another Electron singleton', (): void => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'update-window-userdata-'))

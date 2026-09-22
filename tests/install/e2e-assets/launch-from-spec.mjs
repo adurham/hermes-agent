@@ -33,7 +33,7 @@ import { prepareWindowForInput } from './window-input.cjs';
 import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
-import { isolateUpdateWindowEnvironment, updateWindowEnvironment } from './smoke-env.mjs';
+import { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } from './smoke-env.mjs';
 import { sourceRuntimeSettleCommand } from './source-runtime-settle.mjs';
 
 /**
@@ -148,7 +148,7 @@ async function main() {
   phase('launch');
   const app = await _electron.launch({
     executablePath: launch.executablePath,
-    args: launch.args,
+    args: isolatedElectronArgs(launch.args, launchEnv.HERMES_DESKTOP_USER_DATA_DIR),
     cwd: launch.cwd,
     env: launchEnv,
   });
