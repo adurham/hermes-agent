@@ -436,6 +436,18 @@ class TestClaudeCodeBackendAvailability:
         """``_is_backend_available("claude-code")`` defers to the plugin's
         ``_is_configured`` helper. With claude installed + authed, return True."""
         from tools import web_tools
+        from plugins.web.claude_code.provider import ClaudeCodeWebProvider
+        from agent.web_search_registry import register_provider
+
+        # Same suite-ordering hazard as
+        # test_check_web_api_key_true_when_claude_code_configured below:
+        # _is_backend_available() resolves non-legacy backends through the
+        # web_search_registry, which only knows providers whose plugin
+        # register(ctx) hook has run. The conftest plugin-manager reset
+        # leaves the registry empty, so without an explicit registration
+        # this falls through to the built-in probe table and returns False.
+        # register_provider() is explicitly safe to call repeatedly.
+        register_provider(ClaudeCodeWebProvider())
         with patch("plugins.web.claude_code.provider.shutil.which",
                    return_value="/usr/local/bin/claude"), \
              patch("plugins.web.claude_code.provider.subprocess.run",
