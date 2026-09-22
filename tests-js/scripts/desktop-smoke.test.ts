@@ -300,6 +300,50 @@ test('driver strips caller secrets and records missing executables as failure wi
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
 
+test.runIf(process.platform !== 'win32')('NEW source smoke settles the clean runtime before Electron launch', async (): Promise<void> => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-source-settle-'))
+  const root = path.join(workspace, 'source')
+  const home = path.join(workspace, 'home')
+  const out = path.join(workspace, 'out')
+  const userData = path.join(workspace, 'user-data')
+  const exe = path.join(root, 'fake-desktop')
+  const launcher = path.join(root, '.hermes', 'bin', 'hermes')
+  const witness = path.join(workspace, 'settled')
+
+  try {
+    fs.mkdirSync(path.dirname(launcher), { recursive: true })
+    fs.writeFileSync(exe, '#!/bin/sh\nexit 1\n')
+    fs.chmodSync(exe, 0o755)
+    fs.writeFileSync(launcher, `#!/bin/sh
+set -eu
+[ "$1" = status ]
+[ "$HERMES_HOME" = ${JSON.stringify(home)} ]
+[ "$HOME" = ${JSON.stringify(path.join(home, '.desktop-smoke-home'))} ]
+[ -z "\${PM_E2E_LEAK-}" ]
+printf 'clean source runtime settled\\n'
+: > ${JSON.stringify(witness)}
+`)
+    fs.chmodSync(launcher, 0o755)
+
+    const refuseLaunch = async (): Promise<never> => {
+      expect(fs.existsSync(witness)).toBe(true)
+      throw new Error('launch observed settled runtime')
+    }
+
+    const prior = process.env.PM_E2E_LEAK
+    process.env.PM_E2E_LEAK = 'must be stripped'
+
+    try {
+      await expect(runInstalledDesktopSmoke({ exe, root, origin: 'source', home, 'user-data': userData,
+        out, phase: 'new', 'expect-commit': 'a'.repeat(40) }, refuseLaunch)).rejects.toThrow('launch observed settled runtime')
+    } finally {
+      if (prior === undefined) { delete process.env.PM_E2E_LEAK } else { process.env.PM_E2E_LEAK = prior }
+    }
+
+    expect(fs.readFileSync(path.join(out, 'desktop-source-settle-new.log'), 'utf8')).toContain('clean source runtime settled')
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }) }
+})
+
 test('predictSmokeHermesHome replays the bundle banner through the shared resolver', (): void => {
   const launchEnv = { HERMES_HOME: '/pinned/home', HERMES_DESKTOP_USER_DATA_DIR: '/pinned/userdata', LOCALAPPDATA: 'C:/Users/runner/AppData/Local' }
   // No baked env: the driver's own HERMES_HOME pin wins.

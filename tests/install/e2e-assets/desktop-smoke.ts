@@ -1,6 +1,7 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
-import os from 'node:os'
 import { createRequire } from 'node:module'
+import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -12,9 +13,10 @@ import { resolveDesktopHermesHome } from '../../../apps/desktop/electron/data-pa
 import { applyBundleEnvironment } from '../../../apps/desktop/scripts/bundle-env.mjs'
 import { readChatIdentity, runDesktopChatSmoke, waitForChatReady } from '../../../tests-js/scripts/desktop-chat-smoke.ts'
 import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from '../../../tests-js/scripts/desktop-smoke-process.ts'
-import { type SmokeEnvironment, smokeEnvironment, within } from './smoke-env.mjs'
 import { validateMockUrl, writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config.ts'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server.ts'
+
+import { type SmokeEnvironment, smokeEnvironment, within } from './smoke-env.mjs'
 
 const require = createRequire(import.meta.url)
 const { pickAppWindow }: { pickAppWindow: (app: ElectronApplication, log: (message: string) => void) => Promise<Page> } = require('./update-ui.cjs')
@@ -188,6 +190,42 @@ function captureBackendLogs(homes: readonly string[], outDir: string, phase: str
   }
 }
 
+/**
+ * A source update can be current under the CI driver's inherited environment
+ * but still owe a dependency/product refresh in the clean app environment.
+ * If Electron owns that first clean startup, its backend replaces the running
+ * bundle and Electron intentionally relaunches; Playwright then reports the
+ * expected renderer teardown as "Target crashed/closed". Settle the source
+ * runtime before Electron starts, using the exact environment it will inherit.
+ */
+export function settleSourceDesktopRuntime(options: SmokeOptions, launch: Launch): void {
+  if (options.origin !== 'source' || options.phase !== 'new') { return }
+
+  const suffix = process.platform === 'win32' ? '.exe' : ''
+  const candidates = [
+    path.join(options.root, '.hermes', 'bin', `hermes${suffix}`),
+    process.platform === 'win32'
+      ? path.join(options.root, 'venv', 'Scripts', 'hermes.exe')
+      : path.join(options.root, 'venv', 'bin', 'hermes'),
+  ]
+
+  const launcher = candidates.find((candidate: string): boolean => fs.existsSync(candidate))
+  if (!launcher) { throw new Error(`No source launcher available to settle ${options.root}`) }
+
+  const result = spawnSync(launcher, ['status'], {
+    cwd: options.root, env: launch.env, encoding: 'utf8', timeout: 20 * 60_000,
+    maxBuffer: 16 * 1024 * 1024,
+  })
+
+  const transcript = [result.stdout, result.stderr].filter(Boolean).join('')
+  fs.writeFileSync(path.join(options.out, `desktop-source-settle-${options.phase}.log`), redact(transcript))
+  if (result.error) { throw result.error }
+
+  if (result.status !== 0) {
+    throw new Error(`Source runtime settle failed: exit=${result.status}, signal=${result.signal}`)
+  }
+}
+
 async function gracefulClose(app: ElectronApplication): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -258,6 +296,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
       launch.env.XDG_DATA_HOME, launch.env.XDG_CACHE_HOME]) {
       fs.mkdirSync(dir, { recursive: true })
     }
+    settleSourceDesktopRuntime(options, launch)
     selectLocal(options['user-data'])
     if (!options['mock-url']) { mock = await startMockServer() }
     const mockUrl = validateMockUrl(options['mock-url'] ?? mock!.url)
