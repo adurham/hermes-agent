@@ -406,3 +406,94 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+class TestValidationPhaseWiresCCArgTranslation:
+    """Call-site coverage for the CC alias fast-path in the REAL validation phase.
+
+    ``TestCCArgsTranslationAfterRepair`` above exercises
+    ``_translate_cc_args_after_repair`` in isolation, which is why it kept
+    passing when the v2026.9.14 decomposition of ``conversation_loop.py`` into
+    ``turn_*.py`` dropped the CALL to it from the repair loop: the helper was
+    fine, nothing invoked it. These tests drive
+    ``agent.turn_tool_validation.validate_tool_calls`` -- the function the loop
+    actually calls -- so a future refactor that disconnects the helper again
+    fails here instead of silently shipping untranslated CC args to the handler.
+    """
+
+    @staticmethod
+    def _stub(valid_names):
+        from run_agent import AIAgent
+        printed = []
+        stub = SimpleNamespace(
+            valid_tool_names=set(valid_names),
+            log_prefix="",
+            _invalid_tool_retries=0,
+            _last_repair_silent=False,
+            _uniquify_tool_call_ids=lambda tcs: None,
+            _buffer_vprint=lambda *a, **k: None,
+            _vprint=lambda *a, **k: printed.append(a[0] if a else ""),
+            _buffer_status=lambda *a, **k: None,
+            _emit_status=lambda *a, **k: None,
+        )
+        stub._repair_tool_call = AIAgent._repair_tool_call.__get__(stub, AIAgent)
+        stub._translate_cc_args_after_repair = (
+            AIAgent._translate_cc_args_after_repair.__get__(stub, AIAgent)
+        )
+        return stub, printed
+
+    @staticmethod
+    def _validate(stub, tcs):
+        from agent.turn_tool_validation import validate_tool_calls
+        return validate_tool_calls(
+            stub, SimpleNamespace(tool_calls=tcs, content=None), "tool_calls",
+            messages=[], conversation_history=None,
+            api_call_count=1, effective_task_id=None,
+        )
+
+    @staticmethod
+    def _tc(name, args_json):
+        return SimpleNamespace(
+            id="toolu_1", type="function",
+            function=SimpleNamespace(name=name, arguments=args_json),
+        )
+
+    def test_read_alias_args_translated_by_validation_phase(self):
+        """``Read({"file_path": ...})`` must leave validation as
+        ``read_file({"path": ...})`` -- name AND args."""
+        import json
+        stub, _ = self._stub({"read_file", "terminal"})
+        tc = self._tc("Read", '{"file_path": "/tmp/x", "offset": 5}')
+        self._validate(stub, [tc])
+        assert tc.function.name == "read_file"
+        assert json.loads(tc.function.arguments) == {"path": "/tmp/x", "offset": 5}
+
+    def test_bash_alias_args_translated_by_validation_phase(self):
+        """Same contract for Bash -> terminal (ms timeout -> seconds)."""
+        import json
+        stub, _ = self._stub({"terminal", "read_file"})
+        tc = self._tc("Bash", '{"command": "ls", "run_in_background": true, "timeout": 5000}')
+        self._validate(stub, [tc])
+        assert tc.function.name == "terminal"
+        args = json.loads(tc.function.arguments)
+        assert args["command"] == "ls"
+        assert args["background"] is True
+        assert args["timeout"] == 5
+
+    def test_cc_alias_repair_is_silent(self):
+        """CC alias hits are well-known: the validation phase must honor
+        ``_last_repair_silent`` and print no "Auto-repaired" line."""
+        stub, printed = self._stub({"read_file"})
+        self._validate(stub, [self._tc("Read", '{"file_path": "/tmp/x"}')])
+        assert printed == [], f"CC alias repair should be silent, printed {printed!r}"
+
+    def test_non_cc_repair_still_announced_and_args_untouched(self):
+        """A genuine hallucination (not a CC alias) still announces the repair
+        and its args are left alone -- translation is CC-only."""
+        import json
+        stub, printed = self._stub({"read_file"})
+        tc = self._tc("read-file", '{"path": "/tmp/x"}')
+        self._validate(stub, [tc])
+        assert tc.function.name == "read_file"
+        assert json.loads(tc.function.arguments) == {"path": "/tmp/x"}
+        assert any("Auto-repaired" in p for p in printed), printed
