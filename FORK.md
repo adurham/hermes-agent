@@ -1438,8 +1438,10 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   hot-tier audit (`agent/hot_tier_audit.py`): 0 upstream.
 - cross-session visibility stack (`tools/cross_session_*.py`,
   `tools/cross_session_integration.py`, `hermes_cli/subcommands/agents.py`,
-  `hermes_cli/submit.py`, `hermes_cli/agents_inbox.py`,
+  `hermes_cli/agents_inbox.py`,
   `hermes_cli/delegation_stats.py`, `hermes_cli/mcp_gateway.py`): 0 upstream
+  (`hermes_cli/submit.py` was in this list until it was RETIRED — see the
+  `hermes submit` → `hermes peer run` consolidation entry below)
   (upstream "cross-session"/"Transport A" hits are unrelated: approval-prompt
   transports and session_search prompt text — read, not keyword-matched).
 - provider/auth layer: `agent/cc_aliases.py`, `agent/google_oauth.py`,
@@ -1733,7 +1735,7 @@ already-streamed content, a different mechanism and layer); `skill_recall` /
 `google_oauth` / `gemini_cloudcode_adapter` / the `exo` provider plugin /
 `claude_code` web plugin / `swarm_board` / `anthropic_native_web_search`;
 `personas` / `model_tiers` / `model_by_role` / `reasoning_effort_by_role`;
-`submit.py` / `agents_inbox` / `delegation_stats` / `memory_confirm` /
+`agents_inbox` / `delegation_stats` / `memory_confirm` /
 `agent_messaging_bridge` / `mcp_gateway`; the fork's anthropic rate-limit
 header schema additions; and the bare-XML tool-call recovery net in
 `conversation_loop.py`.
@@ -9446,7 +9448,7 @@ will never touch them.
 || `hermes_cli/memory_confirm.py` | Memory confirmation dialogs (warm-tier memory verify-before-save). |
 || `hermes_cli/personas.py` | Fork-only persona management (`/persona` slash command). |
 || `hermes_cli/ruflo_agents.py` | Fork-only ruflo agent type catalog. |
-|| `hermes_cli/submit.py` | Fork-only CLI submit flow for interactive proposal confirmation. |
+|| `hermes_cli/submit.py` | **RETIRED 2026-09-22** (owner-approved consolidation, commits `071c694df7` + the follow-up). Superseded by upstream's `hermes peer run` (`hermes_cli/subcommands/peer.py`), which had converged on the same `POST /v1/runs` mechanism and was already strictly better on one axis (it sends an `Idempotency-Key` submit.py never had, and probes `/v1/capabilities` to warn when a peer can't durably replay a run). The three capabilities submit.py uniquely had were ported onto `peer.py` first, as fork-only enhancements that leave every upstream path untouched: (1) SSE `--tail` streaming, now `peer run --tail` plus a new `peer tail <target> <run_id>` action, rebased on peer.py's `run_id` model and routed through the same `open_credentialed_url` redirect policy as every other peer request (submit.py used raw httpx with no such protection — a security gain, not just a port); (2) the permissive credential chain, WIDENED onto upstream's registry rather than replacing it — `--url`/`--api-key` for an ad-hoc gateway, and the reserved target name `default` resolving `HERMES_GATEWAY_URL` → `~/.hermes/.env` → the built-in default; an *unregistered* name still hard-fails, so a typo can never silently route a prompt to the wrong machine, and a *registered* peer never falls back to the gateway-wide key (that would weaken the registry's per-peer guarantee); (3) session-less operation as `run --no-session`, an opt-out — upstream's forced canonical "Bot Chat" stays the DEFAULT because that transcript is the point of the bot-to-bot DM feature (cross-turn continuity + a human-inspectable record on the remote machine). Also carried over: `-f/--file`, `--instructions`, `-q`. `hermes submit` itself remains for ONE release as a deprecation shim (`hermes_cli/main.py::cmd_submit`) that prints the translated `hermes peer run` command and exits 2; delete the shim, its parser, `_BUILTIN_SUBCOMMANDS["submit"]` and `tests/hermes_cli/test_submit_shim.py` together. Equivalent: `hermes submit "x"` → `hermes peer run default "x" --no-session`. |
 || `plugins/model-providers/exo/` | First-class exo provider profile (`custom:exo` provider type). |
 || `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. |
 || `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. |

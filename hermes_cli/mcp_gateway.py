@@ -6,7 +6,8 @@ stdio. Lets the model submit fire-and-forget jobs at the gateway,
 poll status, tail events, and stop runs — without ever asking the
 user for a curl invocation.
 
-Configuration (same precedence as `hermes submit`):
+Configuration (same precedence as `hermes peer run`'s widened chain,
+which replaced the retired `hermes submit`):
   HERMES_GATEWAY_URL          default: https://hermes-gw-01.tail19c543.ts.net
   HERMES_GATEWAY_API_KEY      bearer token (the "default" laptop principal)
   API_SERVER_KEY              legacy alias accepted as fallback
@@ -60,7 +61,8 @@ def _resolve_base_url() -> str:
 
 
 def _resolve_bearer() -> str:
-    """Bearer token — same chain `hermes submit` uses."""
+    """Bearer token — the same chain `hermes peer run` uses for an
+    unregistered target (`hermes submit`, retired, used this chain first)."""
     return (
         os.getenv("HERMES_GATEWAY_API_KEY")
         or os.getenv("API_SERVER_KEY")
