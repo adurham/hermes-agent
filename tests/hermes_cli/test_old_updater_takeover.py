@@ -78,6 +78,59 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     assert "desktop" not in handoff and "assume_yes" not in handoff
 
 
+@pytest.mark.live_system_guard_bypass
+def test_shipped_post_swap_argv_enters_takeover_before_current_cli(tmp_path):
+    """The 2026.9.21 updater starts HEAD as ``hermes update <flags> --post-swap FILE``.
+
+    That command must reach the historical takeover before current launch preparation or
+    argparse: both belong to the replacement updater and may require dependencies the old
+    environment has not installed yet.
+    """
+    source = Path(__file__).resolve().parents[2]
+    root = tmp_path / "updated checkout"
+    package = root / "hermes_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "main.py").write_text(
+        "import hermes_bootstrap\nraise AssertionError('current CLI parsed a legacy continuation')\n",
+        encoding="utf-8",
+    )
+    for relative in ("hermes_bootstrap.py", "hermes_cli/update_handoff.py", "hermes_cli/_old_updater.py"):
+        shutil.copy2(source / relative, root / relative)
+    (package / "_update_takeover.py").write_text(
+        "import json, sys\nfrom pathlib import Path\n"
+        "request = json.loads(Path(sys.argv[1]).read_text())\n"
+        "assert request['desktop'] is True\n"
+        "assert request['assume_yes'] is True\n"
+        "assert request['argv'][1:] == ['update', '--yes', '--no-gateway-restart', "
+        "'--branch', 'main', '--post-swap', request['legacy_handoff']]\n"
+        "Path(sys.argv[2]).write_text(json.dumps({'resume_handled': True}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    handoff = home / "post_swap_3185.json"
+    payload = {
+        "legacy_handoff": str(handoff),
+        "gateway_mode": False,
+        "had_desktop_app_before_update": True,
+        "windows_gateway_resume": None,
+        "plan": {"install_method": "git"},
+        "receipt": {"update_id": "old-correlation", "outcome": "running"},
+    }
+    handoff.write_text(json.dumps(payload), encoding="utf-8")
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("HERMES_", "PYTHON", "UV_"))}
+    env.update(HOME=str(home), HERMES_HOME=str(home))
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "hermes_cli.main", "update", "--yes",
+         "--no-gateway-restart", "--branch", "main", "--post-swap", str(handoff)],
+        cwd=root, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not handoff.exists()
+
+
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
 @pytest.mark.parametrize("desktop", [None, False, True])

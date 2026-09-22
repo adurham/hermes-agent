@@ -105,6 +105,25 @@ def _takeover_request(payload: dict[str, Any], argv_tail: list[str] | None) -> d
     return request
 
 
+def _continue_legacy_post_swap(handoff_path: str | Path, *, argv_tail: list[str]) -> int:
+    """Complete the command shape shipped before PM owned source updates.
+
+    Those releases start the replacement checkout as ``hermes update <flags>
+    --post-swap FILE``. The replacement bootstrap calls this before importing
+    its PM or CLI graph, then the existing takeover child prepares and finishes
+    the update entirely on replacement code.
+    """
+    payload = read_handoff(handoff_path)
+    try:
+        Path(handoff_path).unlink()
+    except OSError:
+        pass
+    from hermes_cli._old_updater import _run_child
+
+    code, _completed = _run_child(_takeover_request(payload, argv_tail))
+    return int(code)
+
+
 def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: list[str] | None = None) -> int | None:
     """Run the post-swap tail in a child interpreter on the pulled code.
 
