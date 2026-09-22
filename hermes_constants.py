@@ -815,8 +815,10 @@ def apply_secure_dir_policy(path) -> None:
     win (#117347): managed installs are left exactly as the package manager / activation
     script set them (#77579); in a container only an explicit ``HERMES_HOME_MODE`` is applied
     (a bind-mounted data dir is often shared with sibling containers, #10757); elsewhere
-    ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) overrides the mode. ``HERMES_UID`` /
-    ``HERMES_GID`` ownership is applied when those env vars are set (#34107).
+    ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) is passed to the host's ``chmod``. Special
+    bits may be cleared by the host filesystem (macOS commonly clears setgid on directories
+    whose group the caller does not belong to). ``HERMES_UID`` / ``HERMES_GID`` ownership is
+    applied when those env vars are set (#34107).
 
     Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
