@@ -95,14 +95,15 @@ def match_accepted_packages(manifest: dict, accepted: dict) -> None:
 
 def admit_transaction(policy: str, env: dict, *, run=stable.output) -> tuple[str, str]:
     """A callable CLI is not permission to bypass the existing workflow gate."""
-    from scripts.releases.semver import is_valid_version
+    from scripts.releases.semver import is_release_version
     from hermes_cli.release_channels import require_commit, validate_repository
+    from hermes_cli.update_channel import is_canary_tag
 
     repository = validate_repository(env.get("GITHUB_REPOSITORY"))
     tag = env.get("RELEASE_TAG", "")
-    if not tag.startswith("v") or not is_valid_version(tag[1:]):
+    if not tag.startswith("v") or not is_release_version(tag[1:]):
         raise ChannelError("Invalid protected release tag")
-    if (policy == "canary-release") != ("-canary." in tag):
+    if (policy == "canary-release") != is_canary_tag(tag):
         raise ChannelError("Protected release policy/tag mismatch")
     if env.get("GITHUB_ACTIONS") != "true" or env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
         raise ChannelError("Protected heads require the accepted release workflow")
@@ -160,7 +161,8 @@ def verify_bootstrap(request: dict, manifest: dict, base: str, repository: str) 
     tag = request.get("releaseTag", "")
     if not tag or manifest.get("request") != request:
         raise ChannelError("Bootstrap requires published release metadata")
-    canary = "-canary." in tag
+    from hermes_cli.update_channel import is_canary_tag
+    canary = is_canary_tag(tag)
     reader = ChannelReader(base, repository)
     if canary:
         verify_canary_outputs(request, manifest, reader)

@@ -73,20 +73,16 @@ export function contentTypeFor(filename) {
   return undefined
 }
 
-// The canary tag base + embedded UTC stamp: v0.27.2-canary.20260829034013
-// (8- or 14-digit; the shorter legacy form is midnight of that day). The
-// base is the next PATCH over the newest stable, so the first three MSIX
-// components come from it (0.27.2) and outversion the stable line
-// structurally — cross-line monotonicity is free.
-const CANARY_TAG_RE = /^v(\d+\.\d+\.\d+)-canary\.(20\d{6}(?:\d{6})?)$/
+const CANARY_TAG_RE = /^v(\d+\.\d+\.\d+)\+canary\.(20\d{6}T\d{6}Z)$/
 const STABLE_TAG_RE = /^v\d+\.\d+\.\d+$/
 
 /**
- * @param {string} stamp YYYYMMDD[HHMMSS] UTC stamp
+ * @param {string} stamp YYYYMMDDTHHMMSSZ
  * @returns {number} epoch seconds
  */
 function stampToEpoch(stamp) {
-  const parts = /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/.exec(stamp)
+  const compact = stamp.replace('T', '').replace(/Z$/, '')
+  const parts = /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?$/.exec(compact)
   if (!parts) return 0
   const [, y, mo, d, h, mi, s] = parts
   return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h ?? 0), Number(mi ?? 0), Number(s ?? 0)) / 1000
@@ -147,9 +143,11 @@ export function nativeQuad(ref, epochSeconds) {
 function releaseEpoch(tag, gitRoot) {
   const canary = CANARY_TAG_RE.exec(tag)
   if (canary) {
-    const epoch = stampToEpoch(canary[2])
-    const roundtrip = new Date(epoch * 1000).toISOString().replace(/[-:T]/g, '').slice(0, canary[2].length)
-    if (roundtrip !== canary[2]) throw new Error('Invalid canary calendar timestamp')
+    const stamp = canary[2]
+    const epoch = stampToEpoch(stamp)
+    const compact = new Date(epoch * 1000).toISOString().replace(/[-:T]/g, '').replace(/\.000Z$/, '')
+    const expected = `${compact.slice(0, 8)}T${compact.slice(8)}Z`
+    if (expected !== stamp) throw new Error('Invalid canary calendar timestamp')
     return epoch
   }
   const timestamp = execFileSync('git', ['for-each-ref', '--format=%(creatordate:unix)', `refs/tags/${tag}`], {

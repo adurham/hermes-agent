@@ -88,7 +88,7 @@ test('baked runtime identity never evaluates ambient build selectors', async ():
 
 test('nonstable runtime pins userData before the app name can change', async (): Promise<void> => {
   const stable: ProductIdentity = await identityForVariant('bundled')
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-canary.20260818'
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
   const canary: ProductIdentity = await identityForVariant('bundled')
   const runtime: { applyDesktopIdentity: typeof applyDesktopIdentity } = await import('./product-identity')
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-userdata-'))
@@ -138,7 +138,7 @@ test.each([
     const identities: ProductIdentity[] = [stable]
 
     for (const [tag, commit, expectedCli, expectedChannel] of [
-      ['v1.2.3-canary.20260818', '', `${cli}-canary`, canaryChannel],
+      ['v1.2.3+canary.20260818T000000Z', '', `${cli}-canary`, canaryChannel],
       ['', 'abcdef1234567890abcdef1234567890abcdef12', `${cli}-abcdef1`, null],
       ['', '1234567890abcdef1234567890abcdef12345678', `${cli}-1234567`, null]
     ] as const) {
@@ -212,7 +212,7 @@ test('packaging isolates boot metadata and executable names without renaming rel
   assert.equal(stable.extraMetadata.productName || pkg.productName, pkg.productName)
 
   for (const build of ['canary', 'abcdef1234567890abcdef1234567890abcdef12']) {
-    process.env.HERMES_PAYLOAD_TAG = build === 'canary' ? 'v0.28.0-canary.20260818' : ''
+    process.env.HERMES_PAYLOAD_TAG = build === 'canary' ? 'v0.28.0+canary.20260818T000000Z' : ''
     process.env.HERMES_BUILD_COMMIT = build === 'canary' ? '' : build
     const identity: ProductIdentity = await identityForVariant('bundled')
     const config: PackagingConfiguration = load()
@@ -275,7 +275,7 @@ test('store inherits the bundled app identity (shared userData) but swaps the MS
 })
 
 test('nonstable builds cannot claim the official Store package', async (): Promise<void> => {
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0-canary.20260818'
+  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
   await assert.rejects(identityForVariant('store'), /Store.*stable/)
   delete process.env.HERMES_PAYLOAD_TAG
   process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'

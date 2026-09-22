@@ -96,7 +96,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to bundle (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS). Must exist on the repo.'
+        description: 'Release tag to bundle (vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ). Must exist on the repo.'
         required: false
         type: string
         default: ''
@@ -299,11 +299,11 @@ jobs:
               [ "$GITHUB_REF" = "refs/tags/$TAG" ] || exit 1
               [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || exit 1
               ;;
-            '') [[ "$TAG" == *-canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
+            '') [[ "$TAG" == *+canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
             *) echo 'Unknown release phase' >&2; exit 1 ;;
           esac
           case "$TAG" in
-            v[0-9]*.[0-9]*.[0-9]*-canary.20[0-9][0-9][0-9][0-9][0-9][0-9]*)
+            v[0-9]*.[0-9]*.[0-9]*+canary.20[0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
               echo "canary tag: $TAG"
               ;;
             v[0-9]*.[0-9]*.[0-9]*)
@@ -315,7 +315,7 @@ jobs:
               fi
               ;;
             *)
-              echo "::error::'$TAG' is not a release tag (vX.Y.Z or vX.Y.0-canary.YYYYMMDDHHMMSS)"
+              echo "::error::'$TAG' is not a release tag (vX.Y.Z or vX.Y.Z+canary.YYYYMMDDTHHMMSSZ)"
               exit 1
               ;;
           esac
@@ -334,7 +334,7 @@ jobs:
           fi
           echo "tag $TAG resolves to $SHA (on origin/main)"
           case "$TAG" in
-            *-canary.*) echo "channel=canary" >> "$GITHUB_OUTPUT" ;;
+            *+canary.*) echo "channel=canary" >> "$GITHUB_OUTPUT" ;;
             *)          echo "channel=stable" >> "$GITHUB_OUTPUT" ;;
           esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -559,7 +559,7 @@ jobs:
         run: |
           python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*-canary.*") {
+          if (-not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*") {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -621,7 +621,7 @@ jobs:
         # appears after the selected packages (including Store on stable) upload.
         run: |
           args=(--include '*.msix')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *-canary.* ]]; }; then
+          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
@@ -951,7 +951,7 @@ jobs:
         # Per-arch feed inputs stay in the tag archive until both legs pass.
         run: |
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *-canary.* ]]; }; then
+          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
@@ -1365,8 +1365,9 @@ jobs:
         run: |
           node --input-type=module -e '
             import identity from "./apps/desktop/product-identity.cjs";
-            import { OUT_OF_STORE_PUBLISHER } from "./scripts/msix-shared.mjs";
-            console.log(JSON.stringify({identity: identity.msixAppIdWithOrg, publisher: OUT_OF_STORE_PUBLISHER}));
+            import { appIdentity, OUT_OF_STORE_PUBLISHER } from "./scripts/msix-shared.mjs";
+            const build = appIdentity(process.cwd() + "/apps/desktop");
+            console.log(JSON.stringify({identity: identity.msixAppIdWithOrg, publisher: OUT_OF_STORE_PUBLISHER, version: build.version}));
           ' > staged/expected-identity.json
           python - <<'PY'
           import json, os, re
@@ -1381,8 +1382,8 @@ jobs:
               raise ValueError('Missing assembly version in receipt-bound bundle name')
           version = match[1]
           if (any(str(int(part)) != part or int(part) > 65535 for part in version.split('.'))
-                  or version.rsplit('.', 1)[0] != os.environ['HERMES_PAYLOAD_TAG'].split('-')[0].removeprefix('v')):
-              raise ValueError('Assembly version differs from the release tag base')
+                  or version != expected['version']):
+              raise ValueError('Assembly version differs from the admitted build identity')
           # publish-appinstaller compares this version to the baked envelope.
           main(['publish-appinstaller', '--root', 'staged', '--bundle', str(bundle),
                 '--tag', os.environ['HERMES_PAYLOAD_TAG'], '--variant', 'bundled',
@@ -2151,7 +2152,7 @@ jobs:
       always()
       && inputs.build_commit == '' && inputs.channel == ''
       && inputs.upload_release == true
-      && contains(inputs.tag, '-canary.')
+      && contains(inputs.tag, '+canary.')
       && needs.build-win32.result == 'success'
       && needs.build-darwin.result == 'success'
       && needs.build-linux.result == 'success'

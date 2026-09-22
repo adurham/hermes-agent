@@ -71,7 +71,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
         validate_candidates(old, old["tag"], old["commit"], BASE)
     new = candidates("v1.2.4", "b" * 40, "2" * 64)
     require_stable_identity(new["tag"], new["commit"], "refs/tags/v1.2.4")
-    for tag, ref in [("v1.2.4", "refs/heads/main"), ("v1.2.4-canary.20260907143420", "refs/tags/v1.2.4-canary.20260907143420")]:
+    for tag, ref in [("v1.2.4", "refs/heads/main"), ("v1.2.4+canary.20260907T143420Z", "refs/tags/v1.2.4+canary.20260907T143420Z")]:
         with pytest.raises(ValueError):
             require_stable_identity(tag, new["commit"], ref)
     transitions = plan_transitions(old, new, BASE)

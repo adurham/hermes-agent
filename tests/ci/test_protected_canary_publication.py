@@ -39,7 +39,7 @@ def step_script(job, name):
 def canary(tmp_path, r2_server, monkeypatch):
     _, clone = _seed_repo(tmp_path)
     commit = _git("rev-parse", "HEAD", cwd=clone)
-    tag = "v0.1.3-canary.20260913001000"
+    tag = "v0.1.2+canary.20260913T001000Z"
     _git("tag", tag, cwd=clone)
     _git("push", "origin", tag, cwd=clone)
     desktop = clone / "apps/desktop"
@@ -260,7 +260,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     assert r2_server.store == after
     # A later canary really advances the existing head and native quad, rather
     # than merely succeeding at the empty-channel bootstrap case.
-    newer_tag = "v0.1.3-canary.20260913001100"
+    newer_tag = "v0.1.2+canary.20260913T001100Z"
     _git("tag", newer_tag, cwd=clone)
     _git("push", "origin", newer_tag, cwd=clone)
     newer = {**env, "RELEASE_TAG": newer_tag, "HERMES_PAYLOAD_TAG": newer_tag,

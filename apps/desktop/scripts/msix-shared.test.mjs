@@ -57,10 +57,10 @@ test('stable and canary use their own native build-time quads', () => {
   })
   try {
     const stable = msix.appIdentity(desktop, 'v0.27.1')
-    const canary = msix.appIdentity(desktop, 'v0.27.2-canary.20260829010203')
+    const canary = msix.appIdentity(desktop, 'v0.27.1+canary.20260829T010203Z')
     assert.equal(stable.version, '2026.5761.123.0')
     assert.equal(canary.version, '26.829.1.203')
-    assert.equal(canary.fileVersion, '0.27.2-canary.20260829010203')
+    assert.equal(canary.fileVersion, '0.27.1+canary.20260829T010203Z')
   } finally {
     fs.rmSync(desktop, { recursive: true, force: true })
   }

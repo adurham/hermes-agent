@@ -115,7 +115,7 @@ def test_source_admission_rejects_dirty_checkout_and_invalid_store_before_writes
     source, commit = _project(tmp_path)
     work = tmp_path / "work"
     cache = tmp_path / "cache"
-    for tag, selected in [(None, commit), ("v1.2.0-canary.20260911120000", None)]:
+    for tag, selected in [(None, commit), ("v1.2.0+canary.20260911T120000Z", None)]:
         with pytest.raises(ValueError, match="Store.*stable"):
             BuildRequest.create(source, tag=tag, commit=selected, variant="store", work=work, cache=cache, bundle_env={})
     (source / "package.json").write_text("{}", encoding="utf-8")

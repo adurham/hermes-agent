@@ -25,11 +25,12 @@ def capture(argv: list[str], repo: Path) -> str:
 
 
 def release_version(repo: Path, tag: str) -> str:
+    from hermes_cli.update_channel import is_canary_tag
     from scripts.termux.deb_version import channel_for_tag
 
     channel_for_tag(tag)  # shared release tag grammar, not a second version parser
     version = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8-sig"))["project"]["version"]
-    if "-canary." not in tag and tag != "v" + version:
+    if not is_canary_tag(tag) and tag != "v" + version:
         raise ValueError(f"tag {tag} does not match project version {version}")
     return tag[1:]
 

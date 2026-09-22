@@ -55,11 +55,11 @@ def test_real_tag_order_and_remote_selection(release_repo):
     for tag in ('v2026.7.7', 'v2026.7.20'):
         git('tag', tag)
     assert release.get_last_tag() == 'v2026.7.20'
-    for tag in ('v0.9.0', 'v0.20.0', 'v0.19.0', 'v0.21.0-canary.20260818090000',
-                'v0.21.0-canary.20260818171500', 'v0.21.0-canary.20260818'):
+    for tag in ('v0.9.0', 'v0.20.0', 'v0.19.0', 'v0.20.0+canary.20260818T090000Z',
+                'v0.20.0+canary.20260818T171500Z'):
         git('tag', tag)
     assert release.get_last_tag() == 'v0.20.0'
-    assert release.get_last_canary_tag() == 'v0.21.0-canary.20260818171500'
+    assert release.get_last_canary_tag() == 'v0.20.0+canary.20260818T171500Z'
     with pytest.raises(SystemExit, match='no git remotes'):
         release.resolve_push_remote(None)
     git('remote', 'add', 'origin', 'https://github.com/o/r')

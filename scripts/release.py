@@ -36,7 +36,10 @@ from pathlib import Path
 # is import-light: only os/sys + version constants).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from hermes_cli.update_channel import _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date  # noqa: E402
+from hermes_cli.update_channel import (  # noqa: E402
+    _CANARY_TAG_RE, STABLE_TAG_RE, canary_tag_for_date, canary_timestamp,
+    is_canary_tag,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "hermes_cli" / "__init__.py"
@@ -2248,15 +2251,13 @@ def remote_github_repo(remote: str) -> str | None:
     return match.group(1) if match else None
 
 
-# Stable tags are matched with STABLE_TAG_RE and canary prerelease tags
+# Stable tags are matched with STABLE_TAG_RE and canary tags
 # with _CANARY_TAG_RE, both imported from hermes_cli.update_channel — the
 # single authority for both tag shapes (the stable major is capped at three
-# digits so legacy CalVer tags like v2026.7.20 never match; the canary shape
-# is v<major>.<minor>.<any patch>-canary.<YYYYMMDDHHMMSS>, plus the legacy
-# date-only form). The suffix keeps canaries out of every stable selector.
-# Second precision so manual fires can publish several canaries per day;
-# the identifier is pure numeric and fixed-length, so semver prerelease
-# comparison (numeric) and lexical sort both order it chronologically.
+# digits so historical CalVer tags like v2026.7.20 never match; the canary
+# identity is the exact stable core plus full UTC build metadata.
+# Second precision allows several canaries per day; the fixed-width UTC stamp
+# sorts chronologically even though SemVer ignores it for precedence.
 
 
 def release_tag_for_version(semver: str) -> str:
@@ -2280,14 +2281,10 @@ def get_last_tag():
 
 
 def get_last_canary_tag():
-    """The newest canary tag, or None. Date order == version order within
-    one minor; across minors the -v:refname sort already ranks the newer
-    minor first."""
-    tags = git("tag", "--list", "v[0-9]*-canary.*", "--sort=-v:refname")
-    for tag in (tags.split("\n") if tags else []):
-        if _CANARY_TAG_RE.fullmatch(tag):
-            return tag
-    return None
+    """The newest canonical canary receipt, by embedded build time."""
+    raw = git("tag", "--list", "v*+canary.*")
+    tags = [tag for tag in (raw.split("\n") if raw else []) if is_canary_tag(tag)]
+    return max(tags, key=lambda tag: canary_timestamp(tag) or "", default=None)
 
 
 def get_current_version():
@@ -2716,33 +2713,13 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     return "\n".join(lines)
 
 
-def _canary_timestamp(tag: str) -> str | None:
-    """The YYYYMMDD[HHMMSS] UTC stamp embedded in a canary tag, or None."""
-    if not _CANARY_TAG_RE.fullmatch(tag):
-        return None
-    return tag.split("-canary.", 1)[1]
-
-
-def _stamp_epoch(stamp: str) -> int | None:
-    """Epoch seconds for a YYYYMMDD or YYYYMMDDHHMMSS UTC stamp."""
-    try:
-        if len(stamp) == 14:
-            return int(datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp())
-        if len(stamp) == 8:
-            return int(datetime.strptime(stamp, "%Y%m%d").replace(tzinfo=timezone.utc).timestamp())
-    except ValueError:
-        pass
-    return None
-
-
 def cmd_canary(args) -> None:
-    """--canary: tag + draft today's canary prerelease.
+    """--canary: tag + draft a canary source identity.
 
-    Owns ALL the tag math (the workflow passes only --publish/--remote):
-    next-MINOR over the newest stable tag, dated suffix, changelog since
-    the last canary (or last stable for the first one). No version-file
-    bump, no commit — the tag points at HEAD as-is, and the stamp's
-    displayVersion carries the canary version from the tag.
+    The source identity is the newest stable version plus a full UTC timestamp
+    in SemVer build metadata. It therefore compares equal to that stable; only
+    the R2 canary head moves subscribers. No version-file bump or commit is
+    created — the receipt tag points at HEAD as-is.
 
     Created as a DRAFT prerelease, for the same reason the stable path
     drafts: a published release with no installers attached is a release
@@ -2756,7 +2733,7 @@ def cmd_canary(args) -> None:
     canary — the skip-if-no-new-commits gate lives HERE, not in workflow
     YAML.
     """
-    date_utc = args.date or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    date_utc = args.date or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     stable_tag = get_last_tag()
     if stable_tag is None:
         print("✗ No stable release tag exists; a canary needs a stable line to version over.")
@@ -2770,25 +2747,6 @@ def cmd_canary(args) -> None:
         print(f"✓ {tag_name} already exists — nothing to do.")
         return
 
-    # The canary MSIX build number is minutes-since-the-last-stable (see
-    # msix-shared.mjs). Two canaries of the same LINE cut within the SAME
-    # minute would share a build number → identical MSIX version → App
-    # Installer refuses the second over the first. Refuse the second cut
-    # loudly instead of shipping an uninstallable equal-version package.
-    # (A same-minute cut on a NEW line — after a fresh stable — is fine: the
-    # patch bump already outversions the old line, so no collision.)
-    prev_ts = _canary_timestamp(prev_canary) if prev_canary else None
-    same_line = bool(prev_canary) and prev_canary.split("-canary.", 1)[0] == tag_name.split("-canary.", 1)[0]
-    prev_min = _stamp_epoch(prev_ts) // 60 if prev_ts and _stamp_epoch(prev_ts) is not None else None
-    cur_min = _stamp_epoch(date_utc) // 60 if _stamp_epoch(date_utc) is not None else None
-    if same_line and prev_min is not None and prev_min == cur_min:
-        print(
-            f"✗ {tag_name} is in the same minute as {prev_canary} — they would "
-            "share an MSIX build number (minutes since the last stable). Wait a "
-            "minute and re-run."
-        )
-        return
-
     if prev_canary:
         head = git("rev-parse", "HEAD")
         if head and head == git("rev-parse", f"{prev_canary}^{{commit}}"):
@@ -2799,23 +2757,6 @@ def cmd_canary(args) -> None:
     if not commits:
         print(f"✓ No new commits since {since} — nothing to do.")
         return
-
-    # MSIX version components are 16-bit (makeappx rejects >65535). The
-    # canary build number is minutes-since-the-last-stable, which crosses
-    # the cap at 45.5 days. A canary cut on a stable base older than 45
-    # days cannot carry a legal build number — fail loudly, never clamp (a
-    # clamped number would break monotonicity and the update path).
-    stable_epoch = git("log", "-1", "--format=%ct", stable_tag)
-    canary_epoch = _stamp_epoch(date_utc)
-    if stable_epoch.isdigit() and canary_epoch is not None:
-        days_old = (canary_epoch - int(stable_epoch)) / 86400
-        if days_old > 45:
-            print(
-                f"✗ {stable_tag} is {days_old:.1f} days old — a canary cut now "
-                "would overflow the 16-bit MSIX build number (minutes since "
-                "this stable). Cut a stable release first."
-            )
-            sys.exit(1)
 
     version = tag_name.lstrip("v")
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
@@ -2868,9 +2809,10 @@ def cmd_canary(args) -> None:
         sys.exit(1)
     changelog_file.unlink(missing_ok=True)
     print(f"✓ Canary prerelease drafted: {result.stdout.strip()}")
-    # The build stages the installers to the R2 bucket and, for a canary
-    # tag, publishes it when the whole matrix is green.
-    dispatch_desktop_build(tag_name, gh_repo)
+    # The build stages the installers to the R2 bucket and publishes only when
+    # the full matrix is green. A release that never starts is a hard failure.
+    if not dispatch_desktop_build(tag_name, gh_repo):
+        raise SystemExit(1)
     # Record the tag for any workflow step that wants it. release.py
     # starts the build itself, so nothing consumes this today; it stays
     # because a step output is the cheap, conventional handle for "which
@@ -2881,28 +2823,29 @@ def cmd_canary(args) -> None:
             f.write(f"tag={tag_name}\n")
 
 
+def _canary_date(tag: str) -> str | None:
+    """The YYYYMMDD receipt date for a canonical canary tag."""
+    if not is_canary_tag(tag):
+        return None
+    return tag.split("+canary.", 1)[1][:8]
+
+
 def prune_old_canaries(args) -> None:
     """--prune-canaries: delete canary releases+tags older than 14 days.
 
     Keep-on-doubt: any parse failure keeps the release. The keep window is
-    dated by the tag's own YYYYMMDD suffix, not the release timestamp, so
-    a re-published old tag never resets its clock.
+    dated by the tag's own UTC suffix, not the release timestamp, so a
+    re-published old tag never resets its clock.
     """
     push_remote = resolve_push_remote(args.remote)
     gh_repo = remote_github_repo(push_remote)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y%m%d")
 
-
-    tags = git("tag", "--list", "v[0-9]*-canary.*", "--sort=-v:refname")
+    tags = git("tag", "--list", "v*+canary.*", "--sort=-creatordate")
     doomed = []
     for tag in (tags.split("\n") if tags else []):
-        m = _CANARY_TAG_RE.fullmatch(tag)
-        # Compare on the DATE prefix only: the suffix may be 8 (legacy) or
-        # 14 (timestamped) digits, and a 14-digit string compared against
-        # an 8-digit cutoff would be decided by length, not by day.
-        # (_CANARY_TAG_RE carries no capture group, so slice the suffix
-        # out of the tag itself.)
-        if m and tag.split("-canary.", 1)[1][:8] < cutoff:
+        date = _canary_date(tag)
+        if date is not None and date < cutoff:
             doomed.append(tag)
     if not doomed:
         print("✓ No canaries older than 14 days.")
@@ -2931,8 +2874,8 @@ def main():
     parser.add_argument("--bump", choices=["major", "minor", "patch"],
                         help="Which semver component to bump")
     parser.add_argument("--canary", action="store_true",
-                        help="Tag + publish today's canary prerelease "
-                             "(v<stable.minor+1>.0-canary.<YYYYMMDDHHMMSS>); no-op when "
+                        help="Tag + publish a stable-core canary "
+                             "(v<stable>+canary.<YYYYMMDDTHHMMSSZ>); no-op when "
                              "HEAD has no new commits since the last canary")
     parser.add_argument("--build-commit", type=str, metavar="REV",
                         help="Preview an exact-commit build into releases/commit/<sha>/ on R2. "
