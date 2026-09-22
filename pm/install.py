@@ -741,13 +741,17 @@ def _store_path_dirs() -> list[str]:
     return dirs
 
 
-def activate() -> list[str]:
+def activate(*, allow_incomplete: bool = False) -> list[str]:
     """Make the installed store usable: prepend its tool dirs to
     os.environ['PATH'] so reactive `shutil.which('git'|'bash'|'ffmpeg'|...)`
     resolves the bundled binaries. The gate is `check()` — if the store is
     broken, refuse to inject (fail fast rather than serving a partial PATH).
     Return the check's problems, or an empty list on success, so startup
     callers can report the verdict without checking the store twice.
+
+    ``allow_incomplete`` is the install-time exception: tools are published
+    before the venv sync, so a missing venv must not hide the tools the sync
+    is about to build against. A missing tool still refuses.
 
     This is the ONE sanctioned global PATH write: PATH is the discovery
     contract every `which` reads, not a tool-specific env leak. Store-first
@@ -756,6 +760,8 @@ def activate() -> list[str]:
     import os
 
     problems = check()
+    if allow_incomplete:
+        problems = [problem for problem in problems if not problem.startswith("venv:")]
     if problems:
         return problems
     dirs = _store_path_dirs()

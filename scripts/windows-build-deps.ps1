@@ -1,7 +1,14 @@
 # Native build dependencies are separate from PM's application environment.
 function Invoke-HermesBuildCommand {
     param([string]$Command, [string[]]$Arguments)
-    $executable = (Get-Command $Command -CommandType Application -ErrorAction Stop).Source
+    # Windows PowerShell 5.1 returns every match from Get-Command even without
+    # -All. .Source on that array is every path joined by a space, and the call
+    # operator then treats the joined string as one program name. Git for
+    # Windows puts git.exe in both cmd\ and bin\, so a bare lookup is that bug.
+    $executable = @(Get-Command $Command -CommandType Application -ErrorAction Stop | Select-Object -First 1)[0].Source
+    if ($executable -isnot [string] -or -not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+        throw "Could not resolve a single executable for $Command (got: $executable)"
+    }
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'

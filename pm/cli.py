@@ -15,7 +15,7 @@ from pm.install import _facts, _lockfile, _store, ensure, stage_only
 from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
-from pm.registry import get_package, source_install_packages
+from pm.registry import get_package, source_install_packages, tool_roots
 from pm.store import ALL_TARGETS, current_target, hash_url
 from pm.update import Resolved, resolve_package, reuse_index_responses
 
@@ -165,11 +165,31 @@ def cmd_install(args) -> int:
     # Source-install launchers require the store interpreter, even though
     # Python remains optional when provisioning individual tools.
     extras = list(dict.fromkeys(getattr(args, "extra", None) or ()))
+    tools_only = bool(getattr(args, "tools_only", False))
+    if tools_only and (extras or cross_target or args.names):
+        print("✗ --tools-only installs the tool closure and then stops; it does not take names, --extra, or --target")
+        return 1
     if extras and cross_target:
         print("✗ --extra syncs this install's venv and cannot combine with --target")
         return 1
     names = args.names if args.names or extras else source_install_packages(_lockfile().names())
-    failed = _install_names(names, target=cross_target)
+    # Tools before the venv. A bare `pm install` used to install tools and
+    # sync the venv in one breath, so a native build (Windows ARM64 source
+    # wheels) resolved compilers and git from the host PATH. Publish every
+    # tool first and put it on PATH; sync only after that.
+    tool_names = names if args.names else tool_roots(names)
+    failed = _install_names(tool_names, target=cross_target)
+    if failed:
+        return 1
+    if not cross_target and (not args.names or tools_only):
+        from pm.install import activate
+
+        problems = activate(allow_incomplete=True)
+        if problems:
+            print(f"✗ tools not on PATH before venv sync: {'; '.join(problems)}", flush=True)
+            return 1
+    if tools_only:
+        return 0
     if extras or not args.names:
         from pm.install import sync_venv
 
@@ -549,6 +569,8 @@ def main(argv=None) -> int:
     p.add_argument("names", nargs="*")
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
+    p.add_argument("--tools-only", action="store_true",
+                   help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument(
         "--target",
         help="stage for a cross target (e.g. linux-arm64-bionic on a glibc "
