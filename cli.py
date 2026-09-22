@@ -4218,6 +4218,121 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             pass  # already removed / hide fired twice — not fatal
         self._invalidate_app()
 
+    def _build_swarm_board_widget(self):
+        """Live multi-row panel for in-flight ``delegate_task`` batches.
+
+        Reads rows from ``self._swarm_boards`` (a LIST — see
+        ``tools/swarm_board.py::SwarmBoard``'s class docstring: each concurrent
+        ``delegate_task()`` batch gets its own board instance, and this widget
+        concatenates rows from every board currently active). Renders one line
+        per active subagent inside the same bronze bordered panel the
+        clarify/approval/sudo widgets use, so it reads as a self-contained
+        widget rather than blending into scrollback. The ConditionalContainer
+        filter collapses it to zero height when no swarm is running.
+
+        Restored here after the v2026.9.14 upstream sync dropped the widget
+        construction: the producers (``tools/delegate_tool_progress.py``,
+        ``tools/delegate_tool_child_run.py``) kept writing rows into
+        ``_swarm_boards``, but nothing painted them.
+        """
+        cli_ref = self
+
+        def _all_swarm_rows():
+            # Snapshot the board list itself before iterating — show/hide run on
+            # subagent worker threads and can mutate the list concurrently with
+            # this render-thread read.
+            rows = []
+            for board in list(cli_ref._swarm_boards):
+                try:
+                    rows.extend(board.get_rows_snapshot())
+                except Exception:
+                    continue
+            return rows
+
+        def _swarm_board_rows() -> list:
+            """Text rows, hierarchy-ordered and capped to a bounded height.
+
+            Three steps, all in ``tools/swarm_board.py`` so they stay testable
+            without a prompt_toolkit app:
+
+            1. ``order_rows_for_display`` regroups the flat concatenation into
+               parent -> child order with effective depths. Rows from a nested
+               orchestrator's board live on a DIFFERENT board object than the
+               orchestrator's own row, so raw concatenation could interleave a
+               grandchild with an unrelated concurrent top-level dispatch —
+               right depth, wrong neighbours.
+            2. ``resolve_max_board_rows`` derives the line budget from the live
+               terminal height.
+            3. ``collapse_rows_to_limit`` renders with per-depth indentation and
+               replaces any overflow with one "+N more subagents" line, so the
+               panel's height is bounded no matter how wide or deep the
+               delegation tree gets.
+            """
+            rows = _all_swarm_rows()
+            if not rows:
+                return []
+            from tools.swarm_board import (
+                collapse_rows_to_limit as _collapse_swarm_rows,
+                order_rows_for_display as _order_swarm_rows,
+                resolve_max_board_rows as _max_swarm_rows,
+            )
+            entries = _order_swarm_rows(rows)
+            return _collapse_swarm_rows(
+                entries, _max_swarm_rows(HermesCLI._get_tui_terminal_height())
+            )
+
+        def _swarm_board_box_width(rows: list) -> int:
+            term_cols = HermesCLI._get_tui_terminal_width()
+            longest = max([HermesCLI._panel_cwidth(r) for r in rows] + [20])
+            inner = min(longest + 4, max(24, term_cols - 6))
+            return inner + 2
+
+        def get_swarm_board_text():
+            rows = _swarm_board_rows()
+            if not rows:
+                return []
+            box_width = _swarm_board_box_width(rows)
+            inner_width = max(0, box_width - 2)
+            fragments = [('class:swarm-border', '╭' + ('─' * box_width) + '╮\n')]
+            for row in rows:
+                # Trim BEFORE padding — an untrimmed row overflows the box on a
+                # narrow terminal (same fix the todo/clarify panels carry).
+                text = HermesCLI._trim_status_bar_text(row, inner_width)
+                fragments.append(('class:swarm-border', '│ '))
+                fragments.append(('class:hint', HermesCLI._panel_ljust(text, inner_width)))
+                fragments.append(('class:swarm-border', ' │\n'))
+            fragments.append(('class:swarm-border', '╰' + ('─' * box_width) + '╯\n'))
+            return fragments
+
+        def get_swarm_board_height():
+            """Panel height: rendered rows + 2 border lines, hard-bounded.
+
+            ``_swarm_board_rows()`` is already capped by
+            ``collapse_rows_to_limit``, so this can never exceed
+            ``resolve_max_board_rows(...) + 2`` no matter how many subagents are
+            active across how many concurrent boards. A raw ``len(rows) + 2``
+            over every row of every board grew the panel one line per active
+            subagent without limit.
+            """
+            rows = _swarm_board_rows()
+            if not rows:
+                return 0
+            return len(rows) + 2  # +2 for the top/bottom border lines
+
+        # Exposed on the instance so the widget's render path is reachable from
+        # tests and from wrapper CLIs without rebuilding the whole layout.
+        self.get_swarm_board_text = get_swarm_board_text
+        self.get_swarm_board_height = get_swarm_board_height
+
+        return ConditionalContainer(
+            Window(
+                content=FormattedTextControl(get_swarm_board_text),
+                height=get_swarm_board_height,
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: len(cli_ref._swarm_boards) > 0),
+        )
+
     def _invalidate_app(self) -> None:
         """Ask prompt_toolkit to schedule a re-render.
 
@@ -4769,6 +4884,13 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
+            # Reasoning box closed: if no RESPONSE box is live, release any agent
+            # status lines _agent_status_print parked (it holds on either box).
+            # Guarded, because when a response box is still live the release
+            # belongs at ITS footer, in _flush_stream.
+            if not getattr(self, "_stream_box_live", False):
+                self._release_held_status_lines()
+
             # Flush any content that was deferred while reasoning was rendering.
             deferred = getattr(self, "_deferred_content", "")
             if deferred:
@@ -4957,6 +5079,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             if not text:
                 return
             self._stream_box_opened = True
+            # Held-status-line gate: _agent_status_print (cli_stream_mixin) parks
+            # agent status lines while a box is LIVE and releases them at the
+            # footer, so a "✓ [set n · i/N]" from another thread never lands
+            # between two paragraphs of the reply. Cleared in _flush_stream.
+            self._stream_box_live = True
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -5165,6 +5292,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
+        # Box is closed: release any agent status lines parked by
+        # _agent_status_print while it was live, so they print AFTER the footer
+        # instead of between two paragraphs of the reply.
+        self._stream_box_live = False
+        self._release_held_status_lines()
+
         # Drain any messages that were queued while the box was open
         # (e.g. "Queued for the next turn" confirmations the user
         # triggered mid-stream).  Now that the box is closed they can
@@ -5241,6 +5374,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        # No box is live at turn start; also clears any status lines still
+        # parked from a turn that errored out before its footer.
+        self._stream_box_live = False
+        self._held_status_lines = []
 
     def _install_tool_callbacks(self) -> None:
         """Install tool callbacks that need the live prompt UI."""
@@ -6325,16 +6462,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         if getattr(self, "_app", None):
             return ChatConsole()
         return self.console
-
-    @staticmethod
-    def _resolve_personality_prompt(value) -> str:
-        """Accept string or dict personality value; return system prompt string.
-
-        Delegates to hermes_cli.personality (single owner of rendering).
-        """
-        from hermes_cli.personality import render_personality_prompt
-
-        return render_personality_prompt(value)
 
 
     # canonical command -> (method name, pass cmd_original?). Absent commands resolve to
@@ -8453,28 +8580,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             )
             return "timeout"
 
-    def _computer_use_approval_callback(self, action: str, args: dict, summary: str) -> str:
-        """Adapt the generic approval UI for the computer_use tool.
-
-        The computer_use handler expects verdicts of the form
-        `approve_once` | `approve_session` | `always_approve` | `deny`.
-        The CLI's built-in approval UI returns `once` | `session` | `always`
-        | `deny`. Translate between the two.
-        """
-        # Build a command-ish string so the existing UI renders something
-        # meaningful. `summary` is already a one-line human description.
-        verdict = self._approval_callback(
-            command=f"computer_use: {summary}",
-            description=f"Allow computer_use to perform `{action}`?",
-        )
-        return {
-            "once": "approve_once",
-            "session": "approve_session",
-            "always": "always_approve",
-            "deny": "deny",
-            "timeout": "timeout",
-        }.get(verdict, "deny")
-
     def _get_approval_display_fragments(self):
         """Render the dangerous-command approval panel for the prompt_toolkit UI.
 
@@ -8811,7 +8916,15 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         Wrapper CLIs typically override ``_get_extra_tui_widgets`` instead of
         this method.  Override this only when you need full control over widget
         ordering.
+
+        ``swarm_board_widget`` and ``_subagent_dock_widget`` follow the same
+        "built elsewhere, hung off ``self``" pattern the stash panel and pet
+        widget use: ``_tui_build_layout`` populates them before calling this,
+        and a direct call on a CLI that never built a layout simply filters the
+        missing ones out.
         """
+        if swarm_board_widget is None:
+            swarm_board_widget = getattr(self, "_swarm_board_widget", None)
         return [
             item for item in [
                 Window(height=0),
@@ -8830,6 +8943,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 *self._get_extra_tui_widgets(),
                 getattr(self, "_pet_widget", None),
                 getattr(self, "_stash_panel_widget", None),
+                getattr(self, "_subagent_dock_widget", None),
                 status_bar,
                 input_rule_top,
                 image_bar,
@@ -8839,6 +8953,62 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 completions_menu,
             ] if item is not None
         ]
+
+    def _tui_build_layout(self, kb):
+        """Build the swarm board before delegating to the mixin's layout builder.
+
+        The mixin's ``_tui_build_layout`` has no ``swarm_board_widget``
+        parameter, so the board is stashed on ``self`` here and picked up by
+        ``_build_tui_layout_children`` above — the same seam ``install_dock``
+        uses for ``_subagent_dock_widget``.
+        """
+        self._swarm_board_widget = self._build_swarm_board_widget()
+        return super()._tui_build_layout(kb)
+
+    def _tui_set_base_style(self):
+        """Mixin defaults plus the fork-only ``swarm-border`` class.
+
+        The swarm board's panel border reuses the same bronze the
+        clarify/approval/sudo borders use; without the class registered the
+        fragments render unstyled.
+        """
+        super()._tui_set_base_style()
+        self._tui_style_base.setdefault('swarm-border', '#CD7F32')
+
+    def _tui_spinner_loop(self):
+        """Mixin's repaint loop plus the fork's idle swarm-board tick.
+
+        Upstream repaints only while a slash command is running. That leaves
+        the normal shape of a BACKGROUND ``delegate_task`` dispatch ("keep
+        chatting while a subagent runs") with a frozen board: each row's
+        elapsed time is computed live off ``time.time()`` in ``_Row.elapsed()``,
+        but board mutations only ``_notify()`` on register/update/finish, which
+        fire on tool-call boundaries rather than on a clock. Without this tick
+        the on-screen timer only advanced when a child happened to emit a tool
+        event. One invalidate re-renders the full concatenated row set, so the
+        cost is flat regardless of how many boards/rows/nested subagent boards
+        are active.
+        """
+        while not self._should_exit:
+            if not self._app:
+                time.sleep(0.1)
+                continue
+            monitor = getattr(self, "_subagent_monitor", None)
+            if monitor is not None:
+                monitor.tick()
+            if self._command_running:
+                self._invalidate(min_interval=0.1)
+                time.sleep(0.1)
+            elif getattr(self, "_swarm_boards", None):
+                # Tick once a second — matches the "increments every second"
+                # expectation and the cadence of every other live counter.
+                self._invalidate(min_interval=1.0)
+                time.sleep(0.5)
+            else:
+                # Never repaint the idle prompt on a timer: in non-full-screen mode background
+                # redraws fight tmux/Ghostty/cmux viewport restoration after focus changes and
+                # visually move the input area. Input/agent events invalidate explicitly.
+                time.sleep(0.2)
 
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
