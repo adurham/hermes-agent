@@ -325,10 +325,16 @@ rebuild. A setup failure returns an error before changing the activated shell
 environment, including when re-sourcing an already active environment.
 
 After sync, activation prepends installed PM tools to `PATH` and sets
-`PYTHONPATH` to this checkout and its selected dependency tree. It does not
-change an OS-wide PATH or activate a conventional venv prompt.
+`PYTHONPATH` to this checkout and its selected dependency tree. It also
+defines `hermes` as a shell function for this worktree. The function runs
+this checkout's CLI and hides the installed command, including an MSIX alias.
+It runs only while the shell is inside this worktree and refuses outside it,
+so a sibling worktree does not inherit the command. The prompt gains a prefix
+naming the branch, and drops it outside the tree. It does not
+change an OS-wide PATH or install a conventional venv prompt.
 Start in a clean shell rather than nesting this inside another venv.
-`deactivate` restores the environment values captured by the activation script.
+`deactivate` restores the environment values captured by the activation script,
+and removes the function and the prompt prefix.
 It does not uninstall packages or stop processes that you started.
 
 Verify the interpreter and source before doing work:
@@ -338,7 +344,7 @@ python -c "import sys, pm; print(sys.executable); print(pm.__file__)"
 python -c "import httpx; print(httpx.__file__)"
 node --version
 npm --version
-python hermes --version
+hermes --version
 ```
 
 `python` must resolve to the PM store interpreter. `pm.__file__` must point
@@ -348,13 +354,14 @@ attention, even if `source ./activate` itself returned successfully.
 
 ### Work on this source tree
 
-Use checkout-qualified commands so a global `hermes` command or MSIX alias
-cannot run a different installation:
+`hermes` is this worktree's CLI while the shell is inside it. Outside the
+worktree the function refuses, so it cannot run another checkout's tree or
+fall through to an installed command:
 
 ```bash
-python hermes setup
-python hermes
-python hermes --tui
+hermes setup
+hermes
+hermes --tui
 python -m pm.cli status
 ```
 

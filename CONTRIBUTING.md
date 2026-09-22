@@ -125,20 +125,22 @@ Bash:
 
 ```bash
 source ./activate
-python hermes --version
+hermes --version
 ```
 
 PowerShell:
 
 ```powershell
 . .\activate.ps1
-python hermes --version
+hermes --version
 ```
 
-Run `python hermes` for this checkout, not a global `hermes` alias. PM activation
+Run `hermes` for this checkout. Activation defines it as a function for this
+worktree, so it hides a global `hermes` command or MSIX alias and refuses
+outside the worktree. PM activation
 syncs tools and Python dependencies before adding them to the shell. It does not
 install JS workspaces or rewrite launchers and shell configuration. `deactivate`
-restores the prior shell environment.
+restores the prior shell environment and removes the function.
 
 ### Manual development and test environment
 
@@ -176,7 +178,7 @@ This test environment does not replace PM's application selection or tool
 store. Do not point a bundled app at it or install into an MSIX payload.
 
 For an isolated development instance, select a disposable `HERMES_HOME` before
-starting the source command. Use `python hermes setup` to configure it rather
+starting the source command. Use `hermes setup` to configure it rather
 than copying production credentials into the checkout.
 
 ### JavaScript workspaces and website

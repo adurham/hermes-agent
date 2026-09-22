@@ -65,13 +65,87 @@ foreach ($key in $global:_hermesKeys) {
 foreach ($property in $composed.PSObject.Properties) {
     Set-Item -Path "env:$($property.Name)" -Value ([string]$property.Value)
 }
+# This checkout, not whichever `hermes` PATH finds. A function beats PATH,
+# an alias, and the MSIX execution alias. It runs only while the shell is
+# inside this worktree.
+$global:_hermesWorktree = $repo
+# The branch names the worktree. A checkout cannot share a branch with another.
+# git's "not a repository" is not an activation failure: the directory name is
+# the label, and the command still refuses outside this tree.
+$branch = $null
+try { $branch = & git -C $repo rev-parse --abbrev-ref HEAD 2>$null } catch { $branch = $null }
+if ($branch -and $branch -ne 'HEAD') {
+    $global:_hermesWorktreeName = $branch
+} else {
+    $global:_hermesWorktreeName = Split-Path -Leaf $repo
+}
+if (Test-Path function:prompt) {
+    $global:_hermesSavedPrompt = (Get-Item function:prompt).ScriptBlock
+} else {
+    $global:_hermesSavedPrompt = $null
+}
+
+function global:_hermesWorktreeHere {
+    # Prompt calls this after every command. Keep the user's exit code.
+    $saved = $global:LASTEXITCODE
+    $top = $null
+    try { $top = & git rev-parse --show-toplevel 2>$null } catch { $top = $null }
+    $global:LASTEXITCODE = $saved
+    if (-not $top) { return $false }
+    $here = [System.IO.Path]::GetFullPath($top).TrimEnd('\')
+    $root = [System.IO.Path]::GetFullPath($global:_hermesWorktree).TrimEnd('\')
+    return $here.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function global:hermes {
+    if (-not (_hermesWorktreeHere)) {
+        $here = (Get-Location).Path
+        Write-Error "hermes: $here is outside $($global:_hermesWorktree); refusing (the installed command is hidden while this checkout is active)" -ErrorAction Continue
+        $global:LASTEXITCODE = 1
+        return
+    }
+    Push-Location -LiteralPath $global:_hermesWorktree
+    try {
+        $py = $env:PYTHON
+        if (-not $py) {
+            foreach ($candidate in @(
+                '.venv\Scripts\python.exe', 'venv\Scripts\python.exe',
+                '.venv\bin\python', 'venv\bin\python'
+            )) {
+                if (Test-Path -LiteralPath $candidate) { $py = $candidate; break }
+            }
+        }
+        if (-not $py) { $py = 'python' }
+        & $py hermes @args
+    } finally {
+        Pop-Location
+    }
+}
+
+function global:prompt {
+    $prefix = ''
+    if (_hermesWorktreeHere) { $prefix = "($($global:_hermesWorktreeName)) " }
+    if ($global:_hermesSavedPrompt) {
+        return $prefix + (& $global:_hermesSavedPrompt)
+    }
+    return "$prefix$($(Get-Location).Path)> "
+}
+
 function global:deactivate {
     foreach ($key in $global:_hermesKeys) {
         $saved = $global:_hermesSaved[$key]
         if ($saved.WasSet) { Set-Item -Path "env:$key" -Value $saved.Value }
         else { Remove-Item -Path "env:$key" -ErrorAction SilentlyContinue }
     }
+    if ($global:_hermesSavedPrompt) {
+        Set-Item -Path function:prompt -Value $global:_hermesSavedPrompt
+    } else {
+        Remove-Item function:prompt -ErrorAction SilentlyContinue
+    }
     $global:_hermesKeys = $null
     $global:_hermesSaved = $null
-    Remove-Item function:deactivate
+    $global:_hermesWorktree = $null
+    $global:_hermesWorktreeName = $null
+    $global:_hermesSavedPrompt = $null
+    Remove-Item function:deactivate, function:hermes, function:_hermesWorktreeHere -ErrorAction SilentlyContinue
 }

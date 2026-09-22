@@ -79,14 +79,14 @@ En Bash, desde la raíz del repositorio:
 
 ```bash
 source ./activate
-python hermes --version
+hermes --version
 ```
 
 En PowerShell:
 
 ```powershell
 . .\activate.ps1
-python hermes --version
+hermes --version
 ```
 
 ### Entorno independiente de pruebas
