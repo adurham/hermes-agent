@@ -18,10 +18,26 @@ export function assertUpdateWindowBackendOrigin(backend, identity, root, origin)
 }
 
 /**
+ * Assert the OLD process against the exact environment passed to Electron.
+ * The driver's process environment still names the pre-clone userData path.
+ */
+export function assertUpdateWindowProcess(running, options) {
+  if (!options.userData || fs.realpathSync(running.userData) !== fs.realpathSync(options.userData)) {
+    throw new Error('OLD update window did not honor isolated userData');
+  }
+  if (fs.realpathSync(running.executable) !== fs.realpathSync(options.executable)) {
+    throw new Error('OLD update window executable differs from the installed app');
+  }
+  if (options.origin === 'bundled' && fs.realpathSync(path.join(running.resources, 'agent-payload')) !== fs.realpathSync(options.root)) {
+    throw new Error('OLD update window resources differ from the installed payload');
+  }
+}
+
+/**
  * @param {import('@playwright/test').ElectronApplication} app
  * @param {import('@playwright/test').Page} page
  * @param {{mockUrl: string, outDir: string, expectCommit: string,
- *   origin: 'source'|'bundled', root: string, executable: string}} options
+ *   origin: 'source'|'bundled', root: string, executable: string, userData: string}} options
  */
 export async function runUpdateWindowChat(app, page, options) {
   const receiptPath = path.join(options.outDir, 'desktop-chat-old.json');
@@ -32,15 +48,7 @@ export async function runUpdateWindowChat(app, page, options) {
       userData: electronApp.getPath('userData'),
     }));
     const { userData } = running;
-    if (!process.env.HERMES_DESKTOP_USER_DATA_DIR || fs.realpathSync(userData) !== fs.realpathSync(process.env.HERMES_DESKTOP_USER_DATA_DIR)) {
-      throw new Error('OLD update window did not honor isolated userData');
-    }
-    if (fs.realpathSync(running.executable) !== fs.realpathSync(options.executable)) {
-      throw new Error('OLD update window executable differs from the installed app');
-    }
-    if (options.origin === 'bundled' && fs.realpathSync(path.join(running.resources, 'agent-payload')) !== fs.realpathSync(options.root)) {
-      throw new Error('OLD update window resources differ from the installed payload');
-    }
+    assertUpdateWindowProcess(running, options);
     await waitForChatReady(page);
     const identity = await readChatIdentity(page);
     const connection = await page.evaluate(() => window.hermesDesktop.getConnection());

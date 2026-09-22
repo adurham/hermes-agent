@@ -163,6 +163,7 @@ async function main() {
     mockUrl: values['mock-url'], outDir: values['chat-out'],
     expectCommit: values['old-sha'],
     root: values['repo-dir'], origin: 'source', executable: launch.executablePath,
+    userData: launchEnv.HERMES_DESKTOP_USER_DATA_DIR,
   });
 
   if (values['no-update']) {

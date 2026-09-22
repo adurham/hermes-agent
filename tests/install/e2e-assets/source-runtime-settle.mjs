@@ -25,11 +25,20 @@ export function sourceRuntimeSettleCommand(root, env, platform = process.platfor
   if (platform !== 'win32' || path.extname(launcher).toLowerCase() !== '.cmd') {
     return { launcher, command: launcher, args: ['status'], windowsVerbatimArguments: false };
   }
-  if (launcher.includes('"')) throw new Error('Source launcher path contains an invalid quote');
-  const command = env.ComSpec || env.COMSPEC
-    || (env.SystemRoot ? path.join(env.SystemRoot, 'System32', 'cmd.exe') : 'cmd.exe');
-  // /s applies cmd.exe's documented outer-quote stripping to this one command
-  // string. The doubled outer quotes keep a launcher path containing spaces
-  // intact while `status` remains a separate command-file argument.
-  return { launcher, command, args: ['/d', '/s', '/c', `""${launcher}" status"`], windowsVerbatimArguments: true };
+  void env;
+  // PM's fallback command launcher embeds the Python bootstrap in a base64
+  // `-c` argument. Running that .cmd through cmd.exe constrains the already
+  // long command to 8191 characters; a source update's clean-interpreter
+  // relaunch then exceeds CreateProcess' limit as well. Use the launcher's
+  // selected Python to run the source bootstrap by file instead. This drives
+  // the same lazy source-update completion without nesting either command.
+  const commandFile = fs.readFileSync(launcher, 'utf8');
+  const generated = commandFile.match(/^\s*@?"([^"\r\n]+)"\s+-I(?:\s|$)/m);
+  if (!generated) throw new Error(`Unrecognized source command launcher: ${launcher}`);
+  const command = generated[1];
+  const bootstrap = path.join(root, 'hermes_bootstrap.py');
+  if (!fs.existsSync(command)) throw new Error(`Source launcher Python does not exist: ${command}`);
+  if (!fs.existsSync(bootstrap)) throw new Error(`Source bootstrap does not exist: ${bootstrap}`);
+  const code = `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`;
+  return { launcher, command, args: ['-I', '-B', '-c', code], windowsVerbatimArguments: false };
 }
