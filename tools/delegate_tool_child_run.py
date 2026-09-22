@@ -509,6 +509,11 @@ def _build_result_entry(
         "api_calls": result.get("api_calls", 0),
         "duration_seconds": duration,
         "model": _str_or_none(getattr(child, "model", None)),
+        # Model-visible delegation identity: "what did this child actually run as".
+        # model= alone is ambiguous when several roles share one default model. Empty
+        # string (a persona-less dispatch) normalises to None, not "".
+        "role": _str_or_none(getattr(child, "_delegate_role", None)) or None,
+        "agent_type": _str_or_none(getattr(child, "_delegate_agent_type", None)) or None,
         "exit_reason": exit_reason,
         # A budget-exhausted child still returns a summary (status stays
         # "completed"), so the parent needs this explicit flag.

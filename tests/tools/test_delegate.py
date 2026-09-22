@@ -694,8 +694,14 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # hermes_state_registry.acquire() canonicalizes via Path.resolve()
+                # (its "one shared SessionDB per RESOLVED path per process" invariant,
+                # which is what prevents two writer connections on one file). On macOS
+                # that rewrites /var/... to /private/var/..., so the contract this test
+                # states -- the parent's database FILE -- is same-file, not same-string.
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    os.path.realpath(str(child_db.db_path)),
+                    os.path.realpath(str(parent_db.db_path)),
                 )
             finally:
                 if child_db is not None:

@@ -78,12 +78,11 @@ def _normalize_task_list(
         tasks = None
 
     if tasks and isinstance(tasks, list):
-        if len(tasks) > max_children:
-            return None, (
-                f"Too many tasks: {len(tasks)} provided, but max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
-            )
+        # Batch size is unbounded; CONCURRENCY is not. Extras beyond
+        # max_concurrent_children queue in the dispatch ThreadPoolExecutor
+        # (delegate_tool_dispatch._run_children_parallel, max_workers=batch.max_children)
+        # and start as slots free up. Rejecting an over-cap batch here would force the
+        # model to pre-shard work against a cap it cannot see.
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "role": top_role}]
