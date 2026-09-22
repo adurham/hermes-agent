@@ -71,7 +71,7 @@ export function buildHudModifierMonitor({
       execFileSync(resolveWindowsFrameworkCompiler(), [
         '/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/warnaserror+',
         '/reference:System.Windows.Forms.dll', `/out:${staging}`,
-        source('hud-modifier-monitor-win.cs'), source('hud-modifier-gesture.cs')
+        nativeSource('hud-modifier-monitor-win.cs'), nativeSource('hud-modifier-gesture.cs')
       ], { stdio: 'pipe', timeout: 120_000 })
     } else {
       execFileSync(
