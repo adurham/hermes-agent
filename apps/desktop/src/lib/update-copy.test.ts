@@ -87,9 +87,9 @@ describe('resolveUpdateCopy', () => {
         target: 'client',
         shownItems: 0,
         mechanism: 'electron-updater',
-        latestTag: 'v0.29.0-canary.20260906000000',
+        latestTag: 'v0.29.0+canary.20260906T000000Z',
         copy
       }).body
-    ).toBe(copy.availableBodyRelease('v0.29.0-canary.20260906000000'))
+    ).toBe(copy.availableBodyRelease('v0.29.0+canary.20260906T000000Z'))
   })
 })

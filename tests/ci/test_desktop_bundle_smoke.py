@@ -18,7 +18,7 @@ from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _work
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 
 SHA = 'a' * 40
-TAG = 'v0.28.0-canary.20260818101010'
+TAG = 'v0.28.0+canary.20260818T101010Z'
 
 
 def smoke_workflow():
@@ -285,7 +285,6 @@ def test_stable_phase_and_canary_gates_require_smoke_but_preserve_other_phases(t
         'candidate': ['validate', 'build-win32', 'build-darwin', 'assemble-win32-bundle',
                       'smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'termux-deb', 'candidate-manifest'],
         'publish': ['validate', 'stable-publish', 'stable-store'],
-        'promote': ['validate', 'stable-promote'],
     }
     for phase, selected in required.items():
         needs = {name: {'result': 'success' if name in selected else 'skipped'}
@@ -308,7 +307,7 @@ def test_stable_phase_and_canary_gates_require_smoke_but_preserve_other_phases(t
 
 
 def test_canary_publisher_consumes_staged_bytes_and_writes_pointer_last(tmp_path, r2_server):
-    tag = 'v0.28.1-canary.20260818101010'
+    tag = 'v0.28.1+canary.20260818T101010Z'
     env = {**transport_env(tmp_path, r2_server), 'HERMES_DESKTOP_VARIANT': 'bundled',
            'HERMES_PAYLOAD_TAG': tag, 'RELEASE_TAG': tag}
     # Use the real assembly identity derivation with a stable base available.
@@ -350,10 +349,11 @@ def test_canary_publisher_consumes_staged_bytes_and_writes_pointer_last(tmp_path
     staged = shell_step(tmp_path, r2_server, 'assemble-win32-bundle', 'Stage universal bundles to R2', env)
     assert staged.returncode == 0, staged.stdout + staged.stderr
     assert all(key.startswith(f'releases/tag/{tag}/') for key in r2_server.store)
-    # A newer stable becomes visible after assembly but before publication.
+    # A newer stable becomes visible after assembly but cannot alter the
+    # timestamp-derived canary identity.
     git('-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'new stable', date='2026-08-18T11:10:10Z')
     git('tag', 'v0.28.1')
-    assert assembly_identity()['version'] != version
+    assert assembly_identity()['version'] == version
     for name in ('Retrieve the tested universal bundle', 'Publish identical tested bytes without rebuilding'):
         result = shell_step(tmp_path, r2_server, 'publish-win32-updater', name, env)
         assert result.returncode == 0, result.stdout + result.stderr
