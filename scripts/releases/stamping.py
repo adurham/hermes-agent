@@ -14,8 +14,10 @@ from pathlib import Path
 def _rewrite(path: Path, pattern: str, replacement: str, *, count: int = 0, flags: int = 0) -> None:
     if not path.exists():
         return
-    text = path.read_text(encoding="utf-8-sig")
-    path.write_text(re.sub(pattern, replacement, text, count=count, flags=flags), encoding="utf-8")
+    raw = path.read_bytes()
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    text = raw.decode("utf-8-sig").replace("\r\n", "\n")
+    path.write_bytes(re.sub(pattern, replacement, text, count=count, flags=flags).replace("\n", newline).encode("utf-8"))
 
 
 def stamp(tree: Path, version: str, release_date: str) -> list[Path]:
