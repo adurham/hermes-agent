@@ -1833,12 +1833,49 @@ def cmd_gateway(args):
 
 
 def cmd_submit(args):
-    """Submit a prompt to a remote hermes gateway."""
-    from hermes_cli.submit import submit_command, tail_only_command
+    """Deprecation shim: `hermes submit` was consolidated into `hermes peer run`.
 
-    if getattr(args, "tail_run", None):
-        sys.exit(tail_only_command(args))
-    sys.exit(submit_command(args))
+    Retired (owner-approved consolidation): the fork's hermes_cli/submit.py and
+    upstream's `hermes peer run` had converged on the same POST /v1/runs
+    mechanism, and peer.py now carries submit.py's --tail streaming, its
+    flag/env/.env/default credential chain (reserved target name `default`) and
+    its session-less mode (`--no-session`). One release of this shim, printing
+    the translated command, rather than a hard break -- then delete it.
+    """
+    target = "default"
+    rewritten = ["hermes", "peer", "run", target]
+    if prompt := " ".join(getattr(args, "prompt", None) or []):
+        rewritten.append(f'"{prompt}"')
+    if tail_run := getattr(args, "tail_run", None):
+        rewritten = ["hermes", "peer", "tail", target, tail_run]
+    else:
+        for flag, value in (("--file", getattr(args, "file", None)),
+                            ("--instructions", getattr(args, "instructions", None)),
+                            ("--url", getattr(args, "gateway_url", None)),
+                            ("--api-key", getattr(args, "api_key", None))):
+            if value:
+                rewritten += [flag, str(value)]
+        rewritten.append("--no-session")
+        if getattr(args, "tail", False):
+            rewritten.append("--tail")
+        if getattr(args, "quiet", False):
+            rewritten.append("-q")
+
+    print(
+        "`hermes submit` is retired -- it was consolidated into `hermes peer run`, "
+        "which now has its --tail streaming, its credential chain and a "
+        "session-less mode.\n\nRun this instead:\n\n  "
+        + " ".join(rewritten)
+        + "\n\nNotes:\n"
+        "  * target `default` resolves HERMES_GATEWAY_URL / ~/.hermes/.env / the\n"
+        "    built-in default gateway -- no `hermes peer add` needed.\n"
+        "  * --no-session reproduces submit's behavior (no remote 'Bot Chat');\n"
+        "    drop it to get a durable, human-inspectable remote transcript.\n"
+        "  * a message positional must come BEFORE any flag (or use --file/stdin).\n"
+        "  * see `hermes peer run --help`.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def cmd_mcp_gateway(args):
@@ -3373,15 +3410,20 @@ def _build_cli_parser():
     )
 
     # =========================================================================
-    # submit command — fire a prompt at a remote gateway and exit (fork)
+    # submit command — RETIRED, consolidated into `hermes peer run` (fork).
+    # Kept for one release as a deprecation shim that prints the translated
+    # `hermes peer run` invocation and exits 2. Delete the parser, cmd_submit
+    # and the _BUILTIN_SUBCOMMANDS entry together when the shim goes.
     # =========================================================================
     submit_parser = subparsers.add_parser(
         "submit",
-        help="Submit a prompt to a remote hermes gateway and exit",
+        help="RETIRED — use `hermes peer run default \"...\" --no-session` instead",
         description=(
-            "POST a prompt to the configured gateway's /v1/runs endpoint, "
-            "print the run_id, and exit. Use --tail to also stream SSE events "
-            "until the run completes; ctrl-C detaches without stopping the run."
+            "Retired: consolidated into `hermes peer run`, which now carries "
+            "this command's --tail SSE streaming, its flag/env/.env/default "
+            "credential chain (via the reserved target name `default`) and its "
+            "session-less mode (--no-session). This shim prints the equivalent "
+            "`hermes peer run` command and exits 2."
         ),
     )
     submit_parser.add_argument(
@@ -3399,27 +3441,24 @@ def _build_cli_parser():
     )
     submit_parser.add_argument(
         "--gateway-url",
-        help="Override the gateway base URL (default: HERMES_GATEWAY_URL env "
-             "or https://hermes-gw-01.tail19c543.ts.net).",
+        help="Override the gateway base URL (now `hermes peer run --url`).",
     )
     submit_parser.add_argument(
         "--api-key",
-        help="Override the bearer token (default: HERMES_GATEWAY_API_KEY or "
-             "API_SERVER_KEY from env / ~/.hermes/.env).",
+        help="Override the bearer token (now `hermes peer run --api-key`).",
     )
     submit_parser.add_argument(
         "--tail", action="store_true",
-        help="After submitting, stream the SSE event feed until the run ends. "
-             "Ctrl-C detaches without stopping the run.",
+        help="Stream SSE events until the run ends (now `hermes peer run --tail`).",
     )
     submit_parser.add_argument(
         "--tail-run",
         metavar="RUN_ID",
-        help="Skip submission; just tail the event feed for an existing run.",
+        help="Tail an existing run (now `hermes peer tail <target> <run_id>`).",
     )
     submit_parser.add_argument(
         "--quiet", "-q", action="store_true",
-        help="Print only the run_id (machine-friendly, suitable for $(…)).",
+        help="Print only the run_id (now `hermes peer run -q`).",
     )
     submit_parser.set_defaults(func=cmd_submit)
 
