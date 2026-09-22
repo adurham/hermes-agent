@@ -677,6 +677,7 @@ export const en: Translations = {
       'view.toggleStatusbar': 'Toggle status bar',
       'view.toggleTabStrip': 'Toggle tabs',
       'view.toggleProfileRail': 'Toggle profile rail',
+      'view.toggleSimpleMode': 'Toggle Simple mode',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -4280,6 +4281,20 @@ export const en: Translations = {
       commentTitle: n => `Comment ${n}`,
       saveComment: 'Save',
       cancelComment: 'Cancel comment'
+    }
+  },
+
+  interfaceMode: {
+    title: 'Interface mode',
+    hint: 'Changes what is shown, not what Hermes can do.',
+    sessionNote: 'Set by Simple mode. A change here lasts for this session; switch to Advanced to make it yours.',
+    simple: {
+      label: 'Simple',
+      description: 'For talking to Hermes. Sidebar and chat; no terminal, file or diff panes.'
+    },
+    advanced: {
+      label: 'Advanced',
+      description: 'For developers. Terminal, files, diffs, statusbar and layouts, as you set them.'
     }
   },
 
