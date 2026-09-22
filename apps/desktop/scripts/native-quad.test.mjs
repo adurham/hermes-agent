@@ -8,24 +8,31 @@ import { nativeQuad } from '../../../scripts/msix-shared.mjs'
 // holds 14*60+3 = 843 seconds.
 const EPOCH = Date.parse('2026-09-22T00:14:03Z') / 1000
 
-test('a stable release and a canary built at the same instant share one quad', () => {
+test('stable keeps the store quad while canary uses yy.mmdd.hh.mmss', () => {
   assert.equal(nativeQuad('v0.21.5', EPOCH), '2026.6336.843.0')
-  assert.equal(nativeQuad('v0.21.4+canary.20260922T001403Z', EPOCH), '2026.6336.843.0')
+  assert.equal(nativeQuad('v0.21.4+canary.20260922T001403Z', EPOCH), '26.922.0.1403')
 })
 
-test('a later build sorts above an earlier one, stable or canary', () => {
-  const earlier = nativeQuad('v0.21.5', EPOCH).split('.').map(Number)
-  const later = nativeQuad('v0.21.4+canary.20260922T001404Z', EPOCH + 1).split('.').map(Number)
+test('a later canary sorts above an earlier canary across a month boundary', () => {
+  const earlier = nativeQuad(
+    'v0.21.4+canary.20260131T235959Z',
+    Date.parse('2026-01-31T23:59:59Z') / 1000
+  ).split('.').map(Number)
+  const later = nativeQuad(
+    'v0.21.4+canary.20260201T000000Z',
+    Date.parse('2026-02-01T00:00:00Z') / 1000
+  ).split('.').map(Number)
   const first = later.findIndex((value, index) => value !== earlier[index])
   assert.ok(first >= 0)
   assert.ok(later[first] > earlier[first])
 })
 
-test('every field stays inside 16 bits and the revision stays zero', () => {
+test('every field stays inside 16 bits', () => {
   for (const stamp of ['2026-01-01T00:00:00Z', '2026-12-31T23:59:59Z', '2028-12-31T23:59:59Z']) {
-    const parts = nativeQuad('v0.21.5', Date.parse(stamp) / 1000).split('.').map(Number)
-    assert.equal(parts.length, 4)
-    assert.ok(parts.every(value => value >= 0 && value <= 65535))
-    assert.equal(parts[3], 0)
+    for (const ref of ['v0.21.5', `v0.21.4+canary.${stamp.replace(/[-:T]/g, '').slice(0, 15)}Z`]) {
+      const parts = nativeQuad(ref, Date.parse(stamp) / 1000).split('.').map(Number)
+      assert.equal(parts.length, 4)
+      assert.ok(parts.every(value => value >= 0 && value <= 65535))
+    }
   }
 })

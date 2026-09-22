@@ -109,18 +109,35 @@ export function storePackageVersionAt(epochSeconds) {
   return `${year}.${hourOfYear}.${secondOfHour}.0`
 }
 
-/** The native quad for a release, stable or canary: ``year.hourOfYear.secondOfHour.0``.
+/** Canary package quad: ``yy.mmdd.hh.mmss`` in UTC.
+ * @param {number} epochSeconds immutable build time in UTC
+ * @returns {string}
+ */
+export function canaryPackageVersionAt(epochSeconds) {
+  const date = new Date(epochSeconds * 1000)
+  if (!Number.isInteger(epochSeconds) || !Number.isFinite(date.getTime())) {
+    throw new Error('Canary package version needs a valid immutable build timestamp')
+  }
+  const yy = date.getUTCFullYear() % 100
+  const mmdd = (date.getUTCMonth() + 1) * 100 + date.getUTCDate()
+  const hh = date.getUTCHours()
+  const mmss = date.getUTCMinutes() * 100 + date.getUTCSeconds()
+  return `${yy}.${mmdd}.${hh}.${mmss}`
+}
 
-One derivation for every Windows consumer. The quad is the build time, so a
-later build always sorts above an earlier one and a canary shares its stable's
-quad when they are built at the same instant. There is no minutes-since-stable
-counter, so there is no 45-day cap.
-@param {string} _ref the release ref; accepted so callers name what they stamp
+/** The native quad for a release.
+
+Stable Store packages retain ``year.hourOfYear.secondOfHour.0``. Canary uses
+``yy.mmdd.hh.mmss`` so its four numeric fields show the UTC build time directly
+while remaining monotonic across month boundaries.
+@param {string} ref the release ref whose native package is being stamped
 @param {number} epochSeconds the build time, UTC
 @returns {string}
 */
-export function nativeQuad(_ref, epochSeconds) {
-  return storePackageVersionAt(epochSeconds)
+export function nativeQuad(ref, epochSeconds) {
+  return /(?:\+|-)canary\./.test(ref)
+    ? canaryPackageVersionAt(epochSeconds)
+    : storePackageVersionAt(epochSeconds)
 }
 
 /** The build time of a release tag: the stamp embedded in a canary tag, or

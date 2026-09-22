@@ -1,6 +1,6 @@
-// msix-shared — the native quad (the build time) is the package version for
-// stable and canary both. The git-backed lookup is deterministic here because
-// node:child_process.execFileSync is mocked.
+// msix-shared — native package versions come from the immutable build time.
+// Stable keeps the Store quad; canary uses yy.mmdd.hh.mmss. The git-backed
+// lookup is deterministic here because node:child_process.execFileSync is mocked.
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -48,7 +48,7 @@ test('explicit stable tag owns the package version, independent of checkout meta
   }
 })
 
-test('a stable tag and a canary stamp the same quad when built together', () => {
+test('stable and canary use their own native build-time quads', () => {
   const desktop = makeFakeDesktop('0.27.1')
   const epoch = Math.floor(Date.UTC(2026, 7, 29, 1, 2, 3) / 1000)
   execFileSync.mockImplementation((cmd, args) => {
@@ -59,7 +59,7 @@ test('a stable tag and a canary stamp the same quad when built together', () => 
     const stable = msix.appIdentity(desktop, 'v0.27.1')
     const canary = msix.appIdentity(desktop, 'v0.27.2-canary.20260829010203')
     assert.equal(stable.version, '2026.5761.123.0')
-    assert.equal(canary.version, stable.version)
+    assert.equal(canary.version, '26.829.1.203')
     assert.equal(canary.fileVersion, '0.27.2-canary.20260829010203')
   } finally {
     fs.rmSync(desktop, { recursive: true, force: true })
