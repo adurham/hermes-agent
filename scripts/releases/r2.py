@@ -687,6 +687,8 @@ def put_object(
         remote_size = match.group(1)
     if str(remote_size) != str(size):
         raise R2RequestError("HEAD", key, head.status, f"size mismatch (remote {remote_size}, local {size})")
+    from scripts.releases.upload_summary import note
+    note(key)
     print(f"OK r2: {key} ({size} bytes)")
 
 

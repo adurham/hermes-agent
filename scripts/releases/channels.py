@@ -57,6 +57,8 @@ class R2ChannelStore:
             # Lost success responses and conditional retries are settled by exact bytes.
             current = self.get(key)
             if current is not None and current[0] == body:
+                from scripts.releases.upload_summary import note
+                note(self.scope.key(key))
                 return
             if isinstance(exc, r2.R2RequestError) and exc.status == 412:
                 raise ChannelConflict(f"Channel write conflict: {key}") from exc
@@ -64,6 +66,8 @@ class R2ChannelStore:
         current = self.get(key)
         if current is None or current[0] != body:
             raise ChannelConflict(f"Channel changed before authenticated readback: {key}")
+        from scripts.releases.upload_summary import note
+        note(self.scope.key(key))
 
     def keys(self, prefix: str) -> list[str]:
         keys, seen = [], set()
