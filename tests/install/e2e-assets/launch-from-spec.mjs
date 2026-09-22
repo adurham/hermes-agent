@@ -33,7 +33,7 @@ import { prepareWindowForInput } from './window-input.cjs';
 import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
-import { updateWindowEnvironment } from './smoke-env.mjs';
+import { isolateUpdateWindowEnvironment, updateWindowEnvironment } from './smoke-env.mjs';
 
 /**
  * @typedef {{argv: string[], cwd: string, env: Record<string, string>,
@@ -146,9 +146,10 @@ async function main() {
   /** @type {LaunchSpec} */
   const spec = JSON.parse(fs.readFileSync(values.spec, 'utf8'));
   const launch = resolveLaunch(spec);
-  const launchEnv = updateWindowEnvironment(launch.env, values['repo-dir'], 'source');
-  settleSourceRuntime(values['repo-dir'], launchEnv);
-  log(`launching ${launch.executablePath} (shape: ${spec.matchedShape})`);
+  const capturedEnv = updateWindowEnvironment(launch.env, values['repo-dir'], 'source');
+  settleSourceRuntime(values['repo-dir'], capturedEnv);
+  const launchEnv = isolateUpdateWindowEnvironment(capturedEnv);
+  log(`launching ${launch.executablePath} (shape: ${spec.matchedShape}, isolated userData: ${launchEnv.HERMES_DESKTOP_USER_DATA_DIR})`);
 
   phase('launch');
   const app = await _electron.launch({
