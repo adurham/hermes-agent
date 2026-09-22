@@ -407,6 +407,14 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     # them right away and not only in the consolidated completion.
     if batch.roster_warnings:
         payload["model_roster_warnings"] = list(batch.roster_warnings)
+    # Cwd-collision heads-up on the parent's OWN turn, before any child summary comes back. isinstance-guarded (not
+    # bare truthiness) because MagicMock doubles auto-vivify any attribute access into a Mock object.
+    _collision_notes = [
+        w for (_, _, _c) in batch.children
+        if isinstance((w := getattr(_c, "_delegate_cwd_collision_warning", None)), str) and w
+    ]
+    if _collision_notes:
+        payload["cwd_collision_warnings"] = _collision_notes
     return payload
 
 def _units_of(batch: _Batch) -> List[_Batch]:

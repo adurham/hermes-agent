@@ -589,6 +589,13 @@ def _build_result_entry(
         # string (a persona-less dispatch) normalises to None, not "".
         "role": _str_or_none(getattr(child, "_delegate_role", None)) or None,
         "agent_type": _str_or_none(getattr(child, "_delegate_agent_type", None)) or None,
+        # The cwd-collision heads-up this child was spawned with (cross_session_transport.find_cwd_collisions), if
+        # any — lets the parent's own turn see it immediately rather than only once the child's summary comes back
+        # having (hopefully) self-reported the same thing. isinstance-guarded, not a bare getattr/None check:
+        # MagicMock test doubles auto-vivify an unset attribute into a Mock rather than returning the default.
+        "cwd_collision_warning": (
+            _w if isinstance((_w := getattr(child, "_delegate_cwd_collision_warning", None)), str) else None
+        ),
         "exit_reason": exit_reason,
         # A budget-exhausted child still returns a summary (status stays
         # "completed"), so the parent needs this explicit flag.

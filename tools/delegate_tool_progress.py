@@ -148,12 +148,34 @@ _NESTED_CHILDREN_NOTE = (
 
 def _build_child_system_prompt(
     goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
-    max_spawn_depth: int = 2, child_depth: int = 1,
+    max_spawn_depth: int = 2, child_depth: int = 1, agent_type: Optional[str] = None,
+    cwd_collision_warning: Optional[str] = None,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
-    can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    can't confabulate nesting.
+
+    ``agent_type``, when set, prepends the matching ruflo persona prompt so the child inherits the curated
+    researcher/coder/reviewer brief backing that role. Discovery is best-effort: an unknown agent_type (or a missing
+    personas install) falls through silently to the standard generic prompt.
+
+    ``cwd_collision_warning`` is a pre-formatted heads-up that another live subagent (any owning session,
+    machine-wide) already works in this child's workspace directory or a parent/child of it
+    (``tools/cross_session_transport.find_cwd_collisions``, called by the spawn path right before this function).
+    Surfaced near the task itself rather than buried after the boilerplate — it has to be seen before the child
+    starts editing files, not after a stomp already happened."""
+    parts: List[str] = []
+    # Optional ruflo persona prefix, read from the discovered .md body (frontmatter stripped).
+    if agent_type:
+        persona = None
+        with _quiet("subagent: persona lookup failed for agent_type=%s: %s", agent_type):
+            from hermes_cli.ruflo_agents import lookup_agent
+            persona = lookup_agent(agent_type)
+        if persona is not None:
+            persona_prompt = persona.load_prompt().strip()
+            if persona_prompt:
+                parts.append(f"# RUFLO PERSONA: {persona.name} ({persona.category})\n" + persona_prompt + "\n\n---\n")
+    parts.extend(["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"])
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -174,6 +196,10 @@ def _build_child_system_prompt(
             _ctx_files = build_context_files_prompt(cwd=str(workspace_path), skip_soul=True)
         if _ctx_files.strip():
             parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
+    if cwd_collision_warning:
+        # Right after the workspace path, ahead of the generic boilerplate: the child has to see this before it
+        # starts editing files, not buried past instructions it will skim.
+        parts.append(f"\n{cwd_collision_warning}")
     parts.append(_COMPLETION_INSTRUCTIONS)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE

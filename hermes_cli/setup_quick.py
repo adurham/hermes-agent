@@ -291,6 +291,19 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
         on_error=lambda exc: print_warning(f"Skill setup step encountered an error: {exc}"),
     )
 
+    # Bundled personas — ALWAYS seeded (core delegation infrastructure). Unlike skills, the delegation personas
+    # (pm / sr-coder / mid-coder / jr-coder / reviewer) are not optional: they back delegate_task's agent_type and
+    # must survive a wipe, so they seed unconditionally rather than behind the opt-in prompt above.
+    try:
+        from tools.personas_sync import sync_personas
+        result = sync_personas(quiet=True)
+        copied = len(result.get("copied", [])) if isinstance(result, dict) else 0
+        if copied:
+            print_success(f"Seeded {copied} bundled personas.")
+    except Exception as exc:
+        logger.debug("blank-slate persona handling error: %s", exc)
+        print_warning(f"Persona setup step encountered an error: {exc}")
+
     # Walk through enabling additional tools
     print_header("Tools", gap=True)
     _info("Pick exactly which additional toolsets to turn on.",
