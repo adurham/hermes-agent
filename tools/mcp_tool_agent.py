@@ -42,6 +42,27 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     return enabled, disabled
 
 
+def _latch_tool_search_sticky(agent, new_defs: list) -> None:
+    """FORK: set ``agent._tool_search_ever_activated`` once a rebuild's tool-defs
+    actually show the tool_search bridge tools.
+
+    Latched here, BEFORE ``_publish_tool_snapshot``, so a concurrent caller that
+    reads the flag immediately after the publish already sees it set. One-way:
+    never cleared back to False (see ``tools/tool_search.py::assemble_tool_defs``
+    -- off->on still requires clearing the real threshold, only on->off is
+    suppressed). Mirrors the identical latch in ``agent/agent_init.py`` after the
+    build-time ``get_tool_definitions`` call.
+    """
+    if getattr(agent, "_tool_search_ever_activated", False):
+        return
+    try:
+        from tools.tool_search import tool_defs_show_bridge
+        if tool_defs_show_bridge(new_defs):
+            agent._tool_search_ever_activated = True
+    except Exception:  # noqa: BLE001 - observability latch, never fatal
+        logger.debug("tool_search sticky latch skipped", exc_info=True)
+
+
 def _tool_defs_content_changed(agent, new_defs: list) -> bool:
     """Byte-level diff of the serialized tool arrays (dynamic schemas change CONTENT under
     stable names); False if either side fails to serialize."""
@@ -107,8 +128,19 @@ def refresh_agent_mcp_tools(
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
-    new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
+    new_defs = list(get_tool_definitions(
+        enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode,
+        # FORK: thread the per-conversation sticky tool_search latch. Without it this
+        # rebuild recomputes the activate/deactivate decision from the live global
+        # registry, so an unrelated MCP reconnect (exactly what most callers of this
+        # function are reacting to) can drop the deferrable-token total back under
+        # threshold and flip the bridge tools OUT of the wire tools array mid-
+        # conversation -- which Anthropic rejects for any previous-turn tool_use block
+        # naming them. See tools/tool_search.py::assemble_tool_defs.
+        sticky_active=bool(getattr(agent, "_tool_search_ever_activated", False)),
+    ) or [])
     new_names = {_def_name(t) for t in new_defs}
+    _latch_tool_search_sticky(agent, new_defs)
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
