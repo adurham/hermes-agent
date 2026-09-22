@@ -683,10 +683,27 @@ function Invoke-PhaseInstallGui {
     $proof = Join-Path $ProofRoot $(if ($Mode -eq "install") { "install-gui" } else { "update-gui-installer" })
     New-Item -ItemType Directory -Path $proof -Force | Out-Null
 
-    # The production installer, from the website. This is the binary users
-    # double-click, run EXACTLY as shipped: its own pinned install.ps1, its
-    # own baked BUILD_PIN_COMMIT. The only environmental difference is the
-    # git URL redirect to serve.git.
+    # The production installer binary comes from the website. Pair its script
+    # input with the source revision it will materialize. A branch-following
+    # installer can otherwise run today's install.ps1 against OLD, whose tree
+    # legitimately lacks helpers added later (for example
+    # apps/desktop/scripts/ensure-rolldown-binding.mjs). The bootstrap's public
+    # dev-source seam changes only script resolution. The GUI binary and cloned
+    # source remain the real artifacts under test.
+    $bootstrapRoot = Join-Path $WorkRoot "bootstrap-source-$Mode"
+    $bootstrapScripts = Join-Path $bootstrapRoot "scripts"
+    New-Item -ItemType Directory -Path $bootstrapScripts -Force | Out-Null
+    $installScript = Join-Path $bootstrapScripts "install.ps1"
+    (Invoke-Git @("-C", $RepoRoot, "show", "$ExpectedSha`:scripts/install.ps1")) -join "`n" |
+        Set-Content -LiteralPath $installScript -Encoding UTF8
+    Copy-Item $installScript (Join-Path $proof "bootstrap-install-script.ps1") -Force
+    $scriptBlob = Invoke-Git @("-C", $RepoRoot, "rev-parse", "$ExpectedSha`:scripts/install.ps1")
+    @(
+        "source_commit=$ExpectedSha"
+        "script_blob=$scriptBlob"
+    ) | Set-Content -LiteralPath (Join-Path $proof "bootstrap-install-script.txt") -Encoding ASCII
+    Write-Host "  bootstrap script is scripts/install.ps1 from $ExpectedLabel ($ExpectedSha)"
+
     $setupExe = Join-Path $WorkRoot "Hermes-Setup.exe"
     if (-not (Test-Path -LiteralPath $setupExe)) {
         Write-Host "  downloading $SetupExeUrl"
@@ -708,9 +725,6 @@ function Invoke-PhaseInstallGui {
     Copy-Item -Path (Join-Path $AssetsDir "install-and-launch.ahk"), (Join-Path $AssetsDir "install-button.png"), (Join-Path $AssetsDir "launch-button.png") -Destination $AhkDir -Force
 
     $env:HERMES_HOME = $HermesHome
-    # As shipped: NO dev-root override, no pin override. Ensure a stray
-    # local dev checkout can't hijack resolution.
-    Remove-Item Env:HERMES_SETUP_DEV_REPO_ROOT -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null
 
     $recorder = Start-DesktopRecorder (Join-Path $proof "desktop-frames")
@@ -718,8 +732,21 @@ function Invoke-PhaseInstallGui {
     try {
         Save-DesktopScreenshot (Join-Path $proof "00-before-installer.png")
 
-        # Launch the REAL installer, headed -- exactly a double-click.
-        $installer = Start-Process -FilePath $setupExe -PassThru
+        # Launch the real headed installer. Scope the paired script source to
+        # this process only so later product launches cannot inherit it.
+        $previousSetupSource = $env:HERMES_SETUP_DEV_REPO_ROOT
+        $env:HERMES_SETUP_DEV_REPO_ROOT = $bootstrapRoot
+        try {
+            $installer = Start-Process -FilePath $setupExe -PassThru
+        }
+        finally {
+            if ($null -eq $previousSetupSource) {
+                Remove-Item Env:HERMES_SETUP_DEV_REPO_ROOT -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:HERMES_SETUP_DEV_REPO_ROOT = $previousSetupSource
+            }
+        }
         Write-Host "  Hermes-Setup.exe launched (pid $($installer.Id))"
 
         # Drive it: Install click -> wait -> Launch click -> Hermes.exe window.
