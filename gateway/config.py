@@ -563,12 +563,6 @@ class GatewayConfig:
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
-    # When every configured messaging platform fails to connect at startup, upstream marks the
-    # gateway ``startup_failed`` and lets launchd/systemd restart it; with a single revoked
-    # credential (a rotated Discord bot token) that is a tight crash loop. True = log the
-    # failures and continue in cron-only mode (the ``no platforms enabled`` path); the affected
-    # platforms stay in the retry queue and reconnect if the credential comes back.
-    run_without_messaging_platforms: bool = False
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -642,8 +636,6 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
-            "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
-            "run_without_messaging_platforms": self.run_without_messaging_platforms,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
@@ -730,9 +722,6 @@ class GatewayConfig:
             loop_watchdog_max_strikes=max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), {"pair", "ignore"}, "pair"),
-            run_without_messaging_platforms=_coerce_bool(
-                data.get("run_without_messaging_platforms"), False
-            ),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
@@ -767,15 +756,6 @@ def load_gateway_config() -> GatewayConfig:
     gw_data = config_loader.load_legacy_gateway_json(_home)
     try:
         config_loader.load_yaml_layer(_home, gw_data)
-        # Fork addition re-homed onto upstream's extracted loader: the pre-extraction
-        # monolith bridged ``run_without_messaging_platforms`` from the top-level YAML here.
-        # ``_TOPLEVEL_BRIDGE`` in gateway/config_loader.py is the natural insertion point, but
-        # that file is outside this change's scope, so the presence-bridge is applied here
-        # against the same overlay ``load_yaml_layer`` consumed (top-level key only, matching
-        # the fork's original semantics).
-        _yaml_cfg = config_loader.read_yaml_layers(_home)
-        if isinstance(_yaml_cfg, dict) and "run_without_messaging_platforms" in _yaml_cfg:
-            gw_data["run_without_messaging_platforms"] = _yaml_cfg["run_without_messaging_platforms"]
     except Exception as e:
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
