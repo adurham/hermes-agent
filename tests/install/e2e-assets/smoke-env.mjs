@@ -53,6 +53,30 @@ export function smokeEnvironment(inherited, home, userData) {
   };
 }
 
+const SINGLETON_FILES = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie']);
+
+/**
+ * Give the independently driven update window its own Electron instance route.
+ * The cloned state keeps the real connection and desktop preferences, while
+ * HERMES_HOME remains shared so the app updates the actual installed runtime.
+ *
+ * @template {Record<string, string>} T
+ * @param {T & {HERMES_DESKTOP_USER_DATA_DIR: string}} env
+ * @returns {T & {HERMES_DESKTOP_USER_DATA_DIR: string}}
+ */
+export function isolateUpdateWindowEnvironment(env) {
+  const source = env.HERMES_DESKTOP_USER_DATA_DIR;
+  const isolated = fs.mkdtempSync(path.join(path.dirname(source), `${path.basename(source)}-app-update-`));
+  fs.cpSync(source, isolated, {
+    recursive: true,
+    filter: (candidate) => {
+      const relative = path.relative(source, candidate);
+      return relative === '' || relative.includes(path.sep) || !SINGLETON_FILES.has(relative);
+    },
+  });
+  return { ...env, HERMES_DESKTOP_USER_DATA_DIR: isolated };
+}
+
 // Source updater processes still need the git redirect; smokeEnvironment keeps
 // it while removing driver activation, credentials and remote/backend overrides.
 /** @param {NodeJS.ProcessEnv} inherited @param {string} root @param {'source'|'bundled'} origin */
