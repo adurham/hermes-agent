@@ -53,12 +53,14 @@ export function smokeEnvironment(inherited, home, userData) {
   };
 }
 
-const SINGLETON_FILES = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie']);
+const UPDATE_WINDOW_STATE = ['connection.json', 'connections.json'];
 
 /**
  * Give the independently driven update window its own Electron instance route.
- * The cloned state keeps the real connection and desktop preferences, while
- * HERMES_HOME remains shared so the app updates the actual installed runtime.
+ * Copy only Hermes-owned connection contracts. Cloning Chromium's profile
+ * carries browser locks and process state from the prior app into a supposedly
+ * isolated launch. HERMES_HOME remains shared so the app updates the actual
+ * installed runtime.
  *
  * @template {Record<string, string>} T
  * @param {T & {HERMES_DESKTOP_USER_DATA_DIR: string}} env
@@ -67,13 +69,10 @@ const SINGLETON_FILES = new Set(['SingletonLock', 'SingletonSocket', 'SingletonC
 export function isolateUpdateWindowEnvironment(env) {
   const source = env.HERMES_DESKTOP_USER_DATA_DIR;
   const isolated = fs.mkdtempSync(path.join(path.dirname(source), `${path.basename(source)}-app-update-`));
-  fs.cpSync(source, isolated, {
-    recursive: true,
-    filter: (candidate) => {
-      const relative = path.relative(source, candidate);
-      return relative === '' || relative.includes(path.sep) || !SINGLETON_FILES.has(relative);
-    },
-  });
+  for (const filename of UPDATE_WINDOW_STATE) {
+    const from = path.join(source, filename);
+    if (fs.existsSync(from)) fs.copyFileSync(from, path.join(isolated, filename));
+  }
   return { ...env, HERMES_DESKTOP_USER_DATA_DIR: isolated };
 }
 

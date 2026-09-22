@@ -13,11 +13,12 @@ test('the update window pins its isolated route before Electron requests the sin
   )).toEqual(['--user-data-dir=/isolated/route', '--no-sandbox', '--inspect=0'])
 })
 
-test('the update window clones userData without inheriting another Electron singleton', (): void => {
+test('the update window carries Hermes connection state without cloning Chromium state', (): void => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'update-window-userdata-'))
   const userData = path.join(root, 'electron-user-data')
   fs.mkdirSync(userData)
   fs.writeFileSync(path.join(userData, 'connections.json'), '{"primary":"local"}\n')
+  fs.writeFileSync(path.join(userData, 'Local State'), 'chromium-owned\n')
 
   for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
     fs.symlinkSync(path.join(root, `${name}-target`), path.join(userData, name))
@@ -37,6 +38,7 @@ test('the update window clones userData without inheriting another Electron sing
     expect(captured.HERMES_DESKTOP_USER_DATA_DIR).toBe(userData)
     expect(isolated.HERMES_HOME).toBe(captured.HERMES_HOME)
     expect(fs.readFileSync(path.join(isolatedUserData, 'connections.json'), 'utf8')).toBe('{"primary":"local"}\n')
+    expect(fs.existsSync(path.join(isolatedUserData, 'Local State'))).toBe(false)
 
     for (const name of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
       expect(() => fs.lstatSync(path.join(isolatedUserData, name))).toThrow()
