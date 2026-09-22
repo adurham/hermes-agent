@@ -297,6 +297,7 @@ export interface Translations {
       openaiRejectedApiKey: string
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
+      rpcOutOfSync: string
       restartHermesFailed: string
     }
     actions: {
