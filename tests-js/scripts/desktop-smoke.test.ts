@@ -7,6 +7,8 @@ import yaml from 'js-yaml'
 import { expect, test } from 'vitest'
 
 import { candidateSmokeHermesHomes, predictSmokeHermesHome, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
+import { sourceRuntimeSettleCommand } from '../../tests/install/e2e-assets/source-runtime-settle.mjs'
+import { assertUpdateWindowBackendOrigin } from '../../tests/install/e2e-assets/update-window-chat.mjs'
 
 import { assertChatCommit, newCompletedPair, readMockPrompts, type TranscriptMessage } from './desktop-chat-smoke.ts'
 import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from './desktop-smoke-process.ts'
@@ -199,6 +201,24 @@ test('a platform that cannot read the backend environment proves ownership by th
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
 
+test('OLD update-window source provenance carries its verified app identity to the listener check', (): void => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-old-owner-origin-'))
+  try {
+    const root = path.join(home, 'hermes-agent')
+    const other = path.join(home, 'other-tree')
+    fs.mkdirSync(root, { recursive: true })
+    fs.mkdirSync(other, { recursive: true })
+    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'),
+      command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
+    expect((): void => {
+      assertUpdateWindowBackendOrigin(backend, { hermesRoot: root }, root, 'source')
+    }).not.toThrow()
+    expect((): void => {
+      assertUpdateWindowBackendOrigin(backend, { hermesRoot: other }, root, 'source')
+    }).toThrow('resolved another source installation')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+})
+
 test('source launch restores only an explicitly captured exact editable root', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-source-'))
   const specPath = path.join(home, 'launch.json')
@@ -341,6 +361,49 @@ printf 'clean source runtime settled\\n'
     }
 
     expect(fs.readFileSync(path.join(out, 'desktop-source-settle-new.log'), 'utf8')).toContain('clean source runtime settled')
+  } finally { fs.rmSync(workspace, { recursive: true, force: true }) }
+})
+
+test('Windows source settle prefers the current cmd launcher over a stale historical exe', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-'))
+  try {
+    const bin = path.join(root, '.hermes', 'bin')
+    fs.mkdirSync(bin, { recursive: true })
+    const current = path.join(bin, 'hermes.cmd')
+    fs.writeFileSync(current, '@echo off\r\n')
+    fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
+    const invocation = sourceRuntimeSettleCommand(root, { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, 'win32')
+    expect(invocation).toEqual({
+      launcher: current,
+      command: 'C:\\Windows\\System32\\cmd.exe',
+      args: ['/d', '/s', '/c', `""${current}" status"`],
+      windowsVerbatimArguments: true,
+    })
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test.runIf(process.platform === 'win32')('Windows source settle executes a cmd launcher whose path contains spaces', (): void => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-live-'))
+  const root = path.join(workspace, 'source with spaces')
+  try {
+    const bin = path.join(root, '.hermes', 'bin')
+    const witness = path.join(workspace, 'settled.txt')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'hermes.cmd'), [
+      '@echo off',
+      'if not "%~1"=="status" exit /b 91',
+      `>"${witness}" echo current-cmd`,
+      'exit /b 0',
+      '',
+    ].join('\r\n'))
+    fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
+    const invocation = sourceRuntimeSettleCommand(root, process.env)
+    const result = spawnSync(invocation.command, invocation.args, {
+      cwd: root, env: process.env, encoding: 'utf8', windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    })
+    expect(result.status, result.stderr || String(result.error)).toBe(0)
+    expect(fs.readFileSync(witness, 'utf8').trim()).toBe('current-cmd')
   } finally { fs.rmSync(workspace, { recursive: true, force: true }) }
 })
 
