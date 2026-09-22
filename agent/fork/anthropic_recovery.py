@@ -16,6 +16,16 @@ Two related fork-specific paths:
    CC-alias fast-path renames CC names to hermes names BEFORE dispatch,
    so this helper translates the ARGS too (``file_path`` → ``path``,
    ``run_in_background`` → ``background``, etc.).
+
+Retired: ``is_anthropic_refusal`` (removed 2026-09-22).  It detected
+``stop_reason == "refusal"`` on the anthropic_messages path to enter the
+fork's refusal ladder.  Upstream now maps that stop_reason itself —
+``agent/transports/anthropic.py``'s ``_STOP_REASON_MAP`` turns
+``"refusal"`` into ``finish_reason="content_filter"``, which
+``agent/turn_response_check.py`` (byte-identical to upstream) routes into
+``agent/turn_truncation.py::handle_content_policy_refusal``, the same rung
+this predicate used to feed.  The scrub above is a DIFFERENT thing and is
+still live: it is the ladder's middle rung, called from that handler.
 """
 
 from __future__ import annotations
@@ -130,23 +140,3 @@ def translate_cc_args_after_repair(agent, tc, original_name: str) -> None:
 
     if translated is not parsed_args:
         tc.function.arguments = json.dumps(translated)
-
-
-# ── Refusal detection ────────────────────────────────────────────────
-
-
-def is_anthropic_refusal(agent, response) -> bool:
-    """True when an Anthropic-native response is a content-policy refusal.
-
-    Fork-only: the refusal-recovery ladder (fallback → history sanitize →
-    give-up) in ``conversation_loop`` keys off this. Extracted here so the
-    detection predicate — the part upstream's loop rewrites would collide
-    with — lives on the fork-only side. The loop-control (continue/return,
-    loop-var resets) stays inline in conversation_loop because it is tightly
-    coupled to that function's local state.
-    """
-    return (
-        getattr(agent, "api_mode", None) == "anthropic_messages"
-        and response is not None
-        and getattr(response, "stop_reason", None) == "refusal"
-    )

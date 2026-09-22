@@ -1746,6 +1746,10 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # FORK: one-shot guard for the refusal ladder's history-scrub rung (see
+    # agent/turn_truncation.py::handle_content_policy_refusal). Per TURN, not per
+    # attempt: re-scrubbing finds nothing new and just burns another API call.
+    agent._refusal_sanitize_attempted = False
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
