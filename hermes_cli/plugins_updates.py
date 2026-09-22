@@ -137,16 +137,22 @@ def check_provenanced(
     ls_remote: Callable[[str], str],
 ) -> CheckResult:
     """Check local provenance before contacting its approved update source."""
-    if (prov.row or {}).get("catalog_name"):
+    row = prov.row or {}
+    catalog_value = row.get("catalog")
+    catalog: dict = catalog_value if isinstance(catalog_value, dict) else {}
+    catalog_name = catalog.get("name") or row.get("catalog_name")
+    if catalog_name:
         from hermes_cli.plugin_catalog import find_removed, get_live_catalog_entry
 
-        row = prov.row
         result = CheckResult(name=prov.name, klass="catalog", current=row.get("revision"))
-        removed = find_removed(row["catalog_name"]) or find_removed(str(row.get("source", "")).split("#", 1)[0])
+        removed = None if row.get("allow_removed") is True else (
+            find_removed(str(catalog_name))
+            or find_removed(str(catalog.get("repo") or row.get("source", "")).split("#", 1)[0])
+        )
         if removed:
             result.reason = f"removed from catalog: {removed.reason}"
             return result
-        entry = get_live_catalog_entry(row["catalog_name"])
+        entry = get_live_catalog_entry(str(catalog_name))
         if entry is None:
             result.reason = "catalog entry is unavailable; installed pin retained"
             return result

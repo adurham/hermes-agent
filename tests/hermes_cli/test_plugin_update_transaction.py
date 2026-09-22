@@ -245,7 +245,7 @@ def test_successful_update_publishes_matching_code_and_durable_workspace(install
     def no_network(*args):
         raise AssertionError("catalog pin must not consult a custom update source")
 
-    if record.get("catalog_name"):
+    if (record.get("catalog") or {}).get("name"):
         state["sha"] = _version(repo, "3.0.0")
         check = next(row for row in run_checks(home / "plugins", include_pip=False,
                                               fetch=no_network, ls_remote=no_network)

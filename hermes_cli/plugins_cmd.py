@@ -768,15 +768,19 @@ def _install_plugin_core(
     force: bool,
     ref: Optional[str] = None,
     scan_decision_cb=None,
-    catalog_entry=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
+    catalog: Optional[dict] = None,
+    allow_removed: bool = False,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
     *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
     only when the checked-out revision is exactly that sha. *python_deps* False refuses
-    active replacements; it never bypasses PM dependency admission."""
+    active replacements; it never bypasses PM dependency admission. *catalog*
+    (``{"name", "repo", "tier", "pin"}``) is recorded on the install-metadata record with the
+    checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it.
+    *allow_removed* records that the user knowingly bypassed the kill list."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
@@ -828,9 +832,10 @@ def _install_plugin_core(
                 f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
                 "--ref <40-character commit SHA> to change its source or revision.")
 
-        new_metadata = {
-            **old_metadata,
-            plugin_name: {"pinned": requested_revision is not None, "revision": installed_revision, "source": source},
+        record: dict[str, object] = {
+            "pinned": requested_revision is not None,
+            "revision": installed_revision,
+            "source": source,
         }
         # Saved update_url tag (settled: claims vs provenance): the
         # manifest's update_url is COPIED into the row at install. Check
@@ -839,12 +844,16 @@ def _install_plugin_core(
         if manifest.get("update_url"):
             from hermes_cli.plugins_updates import https_update_url
             try:
-                new_metadata[plugin_name]["update_url"] = https_update_url(manifest["update_url"])
+                record["update_url"] = https_update_url(manifest["update_url"])
             except ValueError as exc:
                 raise PluginOperationError(f"Plugin '{plugin_name}' {exc}") from exc
-        if catalog_entry is not None:
-            new_metadata[plugin_name]["catalog_name"] = catalog_entry.name
-            new_metadata[plugin_name]["catalog_tier"] = catalog_entry.tier
+        if catalog:
+            record["catalog"] = {**catalog, "sha": installed_revision}
+            from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar_record
+            write_catalog_sidecar_record(tmp_target, catalog, installed_revision)
+        if allow_removed:
+            record["allow_removed"] = True
+        new_metadata = {**old_metadata, plugin_name: record}
         from hermes_cli.plugins_transaction import publish_plugin
 
         try:
@@ -913,12 +922,12 @@ def cmd_install(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, ref=ref, allow_removed=True, scan_decision_cb=_interactive_scan_decision,
+                entry, force=force, ref=ref, allow_removed=allow_removed, scan_decision_cb=_interactive_scan_decision,
                 python_deps=not no_deps)
         else:
             target, installed_manifest, installed_name = _install_plugin_core(
                 identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
-                python_deps=not no_deps)
+                python_deps=not no_deps, allow_removed=allow_removed)
     except PluginOperationError as e:
         _fail(console, f"[red]{'Blocked' if isinstance(e, PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _looks_like_plugin_dir(target):
@@ -1000,6 +1009,9 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
         raise PluginOperationError(pinned_msg(install_record))
     if not (target / ".git").exists():
         raise PluginOperationError(not_git_msg())
+    # A URL install whose name/repo later landed on the kill list must not keep pulling new code.
+    from hermes_cli import plugins_cmd_catalog as catalog
+    catalog.refuse_if_installed_removed(target.name, target)
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
@@ -1244,6 +1256,13 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         _fail(console, _unknown_plugin_message(name))
     key, source = resolved
     _refuse_legacy_relay(key)
+    if source != "bundled":
+        # Activating recalled code is the same act as installing it (`plugins/AGENTS.md`: kill list).
+        from hermes_cli import plugins_cmd_catalog as catalog
+        try:
+            catalog.refuse_if_installed_removed(key, _user_installed_plugin_dir(key.rsplit("/", 1)[-1]))
+        except PluginOperationError as exc:
+            _fail(console, f"[red]Error:[/red] {exc}")
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
@@ -2162,7 +2181,7 @@ def dashboard_install_plugin(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=True)
+                entry, force=force, allow_removed=False)
         else:
             target, installed_manifest, installed_name = _install_plugin_core(
                 identifier, force=force, ref=(ref or "").strip() or None)
@@ -2298,10 +2317,11 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     sidecar = catalog.catalog_install_record(target)
     try:
         if sidecar:
-            sha, changed = catalog.repin_catalog_plugin(target, sidecar)
-            warnings: list[str] = []
-            deps = _python_dependency_summary(target, warnings) if changed else []
-            return {"ok": True, "name": name, "sha": sha, "unchanged": not changed,
+            result = catalog.repin_catalog_plugin(target, sidecar)
+            warnings = list(result.warnings)
+            new_target = target.parent / result.installed_name
+            deps = _python_dependency_summary(new_target, warnings) if result.changed else []
+            return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
                     "python_dependencies": deps, "warnings": warnings}
         msg = _pull_plugin_update(
             target,

@@ -74,7 +74,13 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
             f"Update declined: {reason}. The installed plugin and active environment are unchanged.")
 
 
-def update_plugin(target: Path, *, catalog_entry=None, interactive: bool = False) -> str:
+def update_plugin(
+    target: Path,
+    *,
+    catalog_entry=None,
+    interactive: bool = False,
+    preserved_files: Path | None = None,
+) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
@@ -82,7 +88,7 @@ def update_plugin(target: Path, *, catalog_entry=None, interactive: bool = False
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
-    from hermes_cli.plugins_cmd_catalog import raise_if_removed
+    from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
     from pm.store import tree_digest
 
     target = target.resolve()
@@ -110,7 +116,7 @@ def update_plugin(target: Path, *, catalog_entry=None, interactive: bool = False
                 raise pc.PluginOperationError("Update feed must select a commit or the recorded Git source.")
             if feed.get("min_hermes"):
                 pc._check_manifest_version({"requires_hermes": feed["min_hermes"]}, target.name)
-    raise_if_removed(target.name, source.split("#", 1)[0])
+    refuse_if_installed_removed(target.name, target)
     before = tree_digest(target)
     with tempfile.TemporaryDirectory(prefix=".update-", dir=target.parent) as directory:
         staged = Path(directory) / "plugin"
@@ -119,16 +125,23 @@ def update_plugin(target: Path, *, catalog_entry=None, interactive: bool = False
                 git_url, subdir = pc._resolve_git_url(source)
                 revision = pc._clone_plugin_repo(staged, git_url, catalog_entry.sha)
                 staged = pc._resolve_subdir_within(staged, subdir) if subdir else staged
-                # Catalog re-pins cannot discard edits to a currently installed tree.
-                if (target / ".git").is_dir():
-                    git = pc._resolve_git_executable()
-                    changed = pc._git_or_raise(git, target, "status", "--porcelain", "--untracked-files=normal",
-                                               failure_prefix="Could not inspect plugin edits: ")
-                    if changed.stdout.strip():
-                        raise pc.PluginOperationError("Catalog plugin has local changes; save them before updating.")
                 output = f"Updated to catalog pin {revision}"
-                record.update(catalog_name=catalog_entry.name, catalog_tier=catalog_entry.tier,
-                              pinned=True, source=pc._canonical_source(git_url, subdir))
+                catalog_record = {
+                    "name": catalog_entry.name,
+                    "repo": catalog_entry.repo,
+                    "tier": catalog_entry.tier,
+                    "pin": catalog_entry.sha,
+                    "sha": revision,
+                }
+                record.update(
+                    catalog=catalog_record,
+                    pinned=True,
+                    source=pc._canonical_source(git_url, subdir),
+                )
+                record.pop("catalog_name", None)
+                record.pop("catalog_tier", None)
+                from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar_record
+                write_catalog_sidecar_record(staged, catalog_record, revision)
             else:
                 # Copy Git metadata and local changes. Autostash only ever touches the copy.
                 shutil.copytree(target, staged, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
@@ -144,19 +157,35 @@ def update_plugin(target: Path, *, catalog_entry=None, interactive: bool = False
                     if not ok:
                         raise pc.PluginOperationError(output)
                 revision = pc._git_head_revision(staged, pc._resolve_git_executable())
+            if preserved_files is not None and preserved_files.exists():
+                shutil.copytree(preserved_files, staged, dirs_exist_ok=True)
             manifest = pc._read_manifest_for_install(staged)
-            if manifest.get("name", target.name) != target.name:
+            installed_name = str(manifest.get("name") or target.name)
+            if catalog_entry is None and installed_name != target.name:
                 raise pc.PluginOperationError("The updated plugin changed its installed name; reinstall it explicitly.")
-            pc._check_manifest_version(manifest, target.name)
+            try:
+                new_target = pc._sanitize_plugin_name(installed_name, target.parent)
+            except ValueError as exc:
+                raise pc.PluginOperationError(str(exc)) from exc
+            if new_target != target and new_target.exists():
+                raise pc.PluginOperationError(
+                    f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
+            pc._check_manifest_version(manifest, installed_name)
             pc._scan_plugin_tree(staged, source, force=False)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:
                 raise pc.PluginOperationError("Plugin files changed while preparing the update; retry.")
             record["revision"] = revision
-            if tree_digest(staged) == before:
+            if new_target == target and tree_digest(staged) == before:
                 return output
-            publish_plugin(staged, target, metadata, {**metadata, target.name: record}, target_digest=before)
+            publish_plugin(
+                staged,
+                new_target,
+                metadata,
+                {**metadata, installed_name: record},
+                target_digest=before if new_target == target else None,
+            )
             return output
         except pc.PluginOperationError:
             raise

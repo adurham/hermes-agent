@@ -87,6 +87,11 @@ def test_find_removed_matches_name_or_normalized_repo(tmp_path):
     assert pc.find_removed("evil", tmp_path).reason == "malware"
     assert pc.find_removed("https://github.com/x/EVIL/", tmp_path) is not None
     assert pc.find_removed("https://github.com/x/fine", tmp_path) is None
+    # Scheme/host/user spellings are not identity: every git way of naming the repo is blocked.
+    for spelling in ("git@github.com:x/evil.git", "ssh://git@github.com/x/evil", "http://github.com/x/evil",
+                     "https://www.github.com/x/evil/", "git://github.com/x/evil.git"):
+        assert pc.find_removed(spelling, tmp_path) is not None, spelling
+    assert pc.find_removed("git@gitlab.com:x/evil.git", tmp_path) is None  # different host stays distinct
 
 
 @pytest.mark.parametrize("stale", [False, True])
