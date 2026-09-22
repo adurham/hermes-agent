@@ -249,6 +249,22 @@ def _print_completion_line(parent_agent: Any, spinner_ref: Any, line: str, conso
 def _short(text: str, n: int) -> str:
     return (text[:n] + "...") if len(text) > n else text
 
+# Streamed thinking text that reads like the START of a final answer (not embedded in a
+# tool call's rationale). Flips a swarm-board row "running" → "summarizing" so a user can
+# tell children that are nearly done from those still iterating. Heuristic: patterns are
+# the ones the personas hermes ships actually emit when wrapping up.
+_SUMMARY_PHASE_PREFIXES = (
+    "## summary", "# summary", "**summary**", "## final", "# final", "## conclusion",
+    "# conclusion", "## findings", "# findings", "final answer", "perfect. task complete",
+    "task complete", "task is complete", "here's the summary", "here is the summary",
+    "here's my summary", "here is my summary",
+)
+
+def _looks_like_summary_phase(text: str) -> bool:
+    """True when streamed thinking text reads like the start of a final answer."""
+    head = (text or "").lstrip().lower()
+    return bool(head) and any(head.startswith(p) for p in _SUMMARY_PHASE_PREFIXES)
+
 
 class _ChildProgressRelay:
     """Callable relaying one child's events to the parent display. CLI: prints tree-view lines above the parent's
@@ -260,16 +276,87 @@ class _ChildProgressRelay:
 
     def __init__(
         self, task_index: int, goal: str, spinner: Any, parent_cb: Any, task_count: int,
-        subagent_id, parent_id, depth, model, toolsets, session_ref,
+        subagent_id, parent_id, depth, model, toolsets, session_ref, agent_ref=None, parent_agent=None,
     ) -> None:
         self.task_index, self.task_count, self.goal_label = task_index, task_count, (goal or "").strip()
         # session_ref is a SHARED dict filled in later by the caller — keep the identity.
         self.spinner, self.parent_cb, self.session_ref = spinner, parent_cb, session_ref if session_ref is not None else {}
+        # Kept to resolve this row's OWNING swarm board per event (never the
+        # caller's mutable ``_swarm_board`` slot — a concurrent sibling steals it).
+        self.parent_agent = parent_agent
         self.subagent_id, self.parent_id, self.depth, self.model, self.toolsets = (
             subagent_id, parent_id, depth, model, toolsets
         )
+        # agent_ref is a SHARED mutable slot (same late-binding pattern as session_ref,
+        # since the relay is constructed BEFORE the child agent exists) into which the
+        # caller drops a weakref to the child. Keep the identity, never copy.
+        self.agent_ref = agent_ref
         self.batch: List[str] = []
         self.tool_count = 0  # per-subagent running counter
+
+    def _current_board(self):
+        """The SwarmBoard that OWNS this row, looked up at event-fire time.
+
+        The relay is built while the children are still being constructed — before the
+        orchestrator enters the ``SwarmBoard.maybe_start`` context that publishes the
+        board — so capturing at construction time would always see None. Resolution is
+        by row OWNERSHIP, never "which board is current": an agent can have several
+        boards active at once, and ``update()`` silently drops writes for a row id it
+        doesn't hold. Deliberately NOT memoised — the registry is also how teardown is
+        observed, so a cached board would keep absorbing writes after it was hidden.
+        """
+        if not self.subagent_id:
+            return None
+        with _quiet("Swarm board owner lookup failed: %s"):
+            from tools.swarm_board import board_for_row
+
+            return board_for_row(self.parent_agent, self.subagent_id)
+        return None
+
+    def _live_identity(self) -> Dict[str, Any]:
+        """The child's CURRENT model/provider + fallback state.
+
+        Re-read per event, never cached: ``try_activate_fallback()`` swaps
+        ``agent.model``/``agent.provider`` in place mid-run and
+        ``restore_primary_runtime()`` swaps them back, so a value baked in at
+        construction time is wrong for the entire remainder of a failed-over run.
+        Degrades to the dispatch-time ``model`` when the child agent doesn't exist yet
+        (the first events fire during build) or its weakref has died.
+        """
+        from agent.failover_state import effective_model_fields
+
+        holder = self.agent_ref.get("agent") if self.agent_ref else None
+        return effective_model_fields(holder, snapshot_model=self.model)
+
+    def _board_model_kwargs(self) -> Dict[str, Any]:
+        """Board-row model state to ride along on an existing update() call.
+
+        ``register()`` stamps a row's model once at dispatch; nothing else ever rewrote
+        it, so a child that silently failed over kept rendering the model it started on.
+        Rather than adding a polling thread, re-sync the row on the board writes this
+        relay ALREADY makes. Returns ``{}`` when the child isn't resolvable yet, so the
+        row keeps its registration value instead of being blanked.
+        """
+        identity = self._live_identity()
+        if identity["model"] is None:
+            return {}
+        return {
+            "model": identity["model"], "fallback_active": identity["fallback_active"],
+            "primary_model": identity["primary_model"],
+        }
+
+    def _board_update(self, **kwargs) -> Any:
+        """Write to this row's owning board (model identity re-synced), if one exists.
+
+        Returns the board when the write landed, else None — callers use that to fall
+        back to spinner chatter.
+        """
+        board = self._current_board()
+        if board is None:
+            return None
+        with _quiet("Swarm board update failed: %s"):
+            board.update(self.subagent_id, **{**kwargs, **self._board_model_kwargs()})
+        return board
 
     def _prefix(self) -> str:
         # The batch tag is resolved lazily from session_ref: the relay is built
@@ -282,7 +369,16 @@ class _ChildProgressRelay:
 
     def _identity_kwargs(self) -> Dict[str, Any]:
         kw: Dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
-        kw.update({k: getattr(self, k) for k in ("subagent_id", "parent_id", "depth", "model") if getattr(self, k) is not None})
+        kw.update({k: getattr(self, k) for k in ("subagent_id", "parent_id", "depth") if getattr(self, k) is not None})
+        # Live model identity (see _live_identity). ``model`` keeps its existing
+        # "omit when unknown" contract so a caller that passed no model and has no
+        # child agent yet still emits no model key at all.
+        identity = self._live_identity()
+        for key in ("model", "provider"):
+            if identity[key] is not None:
+                kw[key] = identity[key]
+        for key in ("fallback_active", "primary_model", "primary_provider", "model_label"):
+            kw[key] = identity[key]
         if self.toolsets is not None:
             kw["toolsets"] = list(self.toolsets)
         # child_session_id / delegation_id are filled into the shared ref once
@@ -313,7 +409,8 @@ class _ChildProgressRelay:
 
     # ── Lifecycle events emitted by the orchestrator itself ──
     def _on_start(self, tool_name, preview, args, kwargs):
-        if self.goal_label:
+        # Board row when one owns this subagent, else CLI tree chatter.
+        if self._board_update(status="running") is None and self.goal_label:
             self._tree_line(f"🔀 {_short(self.goal_label, 55)}")
         self._relay("subagent.start", preview=preview or self.goal_label or "", **kwargs)
 
@@ -335,7 +432,13 @@ class _ChildProgressRelay:
     # ── DelegateEvent handlers ──
     def _on_thinking(self, tool_name, preview, args, kwargs):
         text = preview or tool_name or ""
-        self._tree_line(f'💭 "{_short(text, 55)}"')
+        # When the streamed text starts looking like the final answer, flip status to
+        # "summarizing" so a supervisor can tell "wrapping up" from "still iterating".
+        update = {"last_tool": "thinking", "last_note": _short(text, 55)}
+        if _looks_like_summary_phase(text):
+            update["status"] = "summarizing"
+        if self._board_update(**update) is None:
+            self._tree_line(f'💭 "{_short(text, 55)}"')
         self._relay("subagent.thinking", preview=text)
 
     def _on_progress(self, tool_name, preview, args, kwargs):
@@ -343,7 +446,12 @@ class _ChildProgressRelay:
         # (no tool-emoji lookup) and relay upward without re-batching.
         summary_text = tool_name or preview or ""
         if summary_text:
-            self._tree_line(f"🔀 {summary_text}")
+            board = self._current_board()
+            if board is not None:
+                with _quiet("Swarm board update failed: %s"):
+                    board.note(self.subagent_id, summary_text)
+            else:
+                self._tree_line(f"🔀 {summary_text}")
         if self.parent_cb:
             with _quiet("Parent callback relay failed: %s"):
                 self.parent_cb("subagent_progress", f"{self._prefix()}{summary_text}")
@@ -356,7 +464,14 @@ class _ChildProgressRelay:
                 if rec is not None:
                     rec["tool_count"] = self.tool_count
                     rec["last_tool"] = tool_name or ""
-        if self.spinner:
+        # A nested delegate_task blocks this row's own agent loop until its
+        # grandchildren finish — it isn't "running" in the same sense as a normal
+        # tool call, so surface that distinctly (see swarm_board._STATUS_GLYPH).
+        board = self._board_update(
+            tool_count=self.tool_count, last_tool=tool_name or "",
+            status="waiting_on_children" if tool_name == "delegate_task" else "running",
+        )
+        if self.spinner and board is None:
             from agent.display import get_tool_emoji
             line = f"{get_tool_emoji(tool_name or '')} {tool_name}"
             short = _short(preview, 35) if preview else ""
@@ -377,6 +492,7 @@ def _build_child_progress_callback(
     task_index: int, goal: str, parent_agent, task_count: int = 1, *, subagent_id: Optional[str] = None,
     parent_id: Optional[str] = None, depth: Optional[int] = None, model: Optional[str] = None,
     toolsets: Optional[List[str]] = None, session_ref: Optional[Dict[str, Any]] = None,
+    agent_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Relay for one child's events (see ``_ChildProgressRelay``), or None when the parent has neither a spinner nor a
     progress callback — the child then runs with no progress callback at all (zero behavior change)."""
@@ -389,4 +505,5 @@ def _build_child_progress_callback(
         session_ref["_parent_scope"] = parent_agent
     return _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
+        agent_ref, parent_agent,
     )

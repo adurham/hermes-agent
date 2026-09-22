@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
-    _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    _ABANDON_POLL_INTERVAL, _ChildRun, _DelegationAbandoned, _attach_child, _build_child_goal_message,
+    _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
@@ -34,7 +35,9 @@ from tools.delegate_tool_config import (  # noqa: F401
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
-from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_dispatch import (  # noqa: F401
+    _Batch, _announce_batch, _capture_origin, _owner_abandoned, _run_batch, _teardown_abandoned_children,
+)
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -221,6 +224,34 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+
+    # Cross-agent messaging (docs/design/local-agent-messaging.md): a child gets
+    # send_to_parent ONLY under background=true. A synchronous child's parent is blocked
+    # inside the batch polling loop and cannot act on anything it sends, so shipping the
+    # schema would be pure token cost. send_agent_message (the recipient-taking tool) is
+    # never granted to a subagent in any mode; it stays parent/session-only.
+    from tools.agent_messaging_contract import TOOLSET_NAME as _MSG_TOOLSET, TOOLSET_NAME_VISIBILITY as _VIS_TOOLSET
+
+    if background:
+        if _MSG_TOOLSET not in child_toolsets:
+            child_toolsets.append(_MSG_TOOLSET)
+        child_disabled_toolsets = [name for name in child_disabled_toolsets if name != _MSG_TOOLSET]
+    else:
+        child_toolsets = [t for t in child_toolsets if t != _MSG_TOOLSET]
+        if _MSG_TOOLSET not in child_disabled_toolsets:
+            child_disabled_toolsets.append(_MSG_TOOLSET)
+
+    # Read-only agent/subagent visibility (list_agents), UNCONDITIONAL on background —
+    # unlike the SEND tools above there is no "parent's thread is blocked, can't react"
+    # reason to withhold a read-only lookup from a synchronous child. A synchronous
+    # subagent doing file edits is the common working-directory-collision case this
+    # exists to catch. Overrides even an inherited disable: delegation plumbing granted
+    # to every spawned child, not a per-session opt-in (2026-08-11: this toolset started
+    # life folded into cross_session and background-gated by copy-paste from the SEND
+    # tools' rationale, which starved every synchronous child of it).
+    if _VIS_TOOLSET not in child_toolsets:
+        child_toolsets.append(_VIS_TOOLSET)
+    child_disabled_toolsets = [name for name in child_disabled_toolsets if name != _VIS_TOOLSET]
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -232,10 +263,15 @@ def _build_child_agent(
     # Shared ref: session_id once the child exists, delegation_id once
     # delegate_task stamps it — both ride on every relayed event.
     child_session_ref: Dict[str, Any] = {}
+    # Same late-binding slot for the child object itself: the relay is built before the
+    # child exists, and every relayed event re-reads its LIVE model/provider so a mid-run
+    # failover shows up on the wire instead of the dispatch-time snapshot.
+    child_agent_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
         model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
+        agent_ref=child_agent_ref,
     )
     rt = _resolve_child_runtime(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
@@ -310,6 +346,13 @@ def _build_child_agent(
         rt.get("provider") or "unknown", child_depth, goal,
     )
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    # Late-bind the child into the progress relay's shared slot (see child_agent_ref).
+    # Weakref so the relay never keeps a finished child alive; some test doubles aren't
+    # weakref-able, so fall back to a strong ref rather than losing the identity.
+    try:
+        child_agent_ref["agent"] = weakref.ref(child)
+    except TypeError:
+        child_agent_ref["agent"] = child
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
