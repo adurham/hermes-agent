@@ -1,13 +1,13 @@
 name: hermes-zh
 repo: https://github.com/Cody292/hermes-zh
-sha: 79444da07bf7d3e970fe71206a0f7e4867791bd1
-description: 官方正规生命周期·免改源码 Simplified Chinese 简体中文汉化插件，覆盖 102 条指令菜单、审批卡、动词汉化与 380 条 Tips 精翻
+sha: 14cc7c9da33d3c78f0ef7eb79f7c8b77b6f484e9
+description: "Official-lifecycle Simplified Chinese localization plugin for Hermes Agent. Provides comprehensive UI, approval cards, slash commands, and tips translations without altering core source code. 官方原生生命周期·免改源码 Simplified Chinese 简体中文汉化插件。"
 maintainer: Cody292
 tier: community
 category: general
 requires_hermes: '>=0.19'
 docs_url: https://github.com/Cody292/hermes-zh
-version: "0.1.0"
+version: "0.1.1"
 platforms: []
 capabilities:
   provides_tools: []
