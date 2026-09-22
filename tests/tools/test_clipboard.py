@@ -176,13 +176,11 @@ class TestIsWsl:
     def setup_method(self):
         # Reset the cache in the module that owns _is_wsl.
         host_runtime._wsl_detected = None
-        _is_wsl.__globals__["_wsl_detected"] = None
 
     def teardown_method(self):
         # Reset again after the test so we don't leak a cached value
         # (True/False) into whichever test runs next.
         host_runtime._wsl_detected = None
-        _is_wsl.__globals__["_wsl_detected"] = None
 
     @pytest.mark.parametrize("content, expected", [
         ("Linux version 5.15.0 (microsoft-standard-WSL2)", True),
@@ -192,14 +190,14 @@ class TestIsWsl:
         ("Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)", False),
     ])
     def test_detection_from_proc_version(self, content, expected):
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
+        with patch.dict(host_runtime.is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is expected
 
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
         opener = mock_open(read_data=content)
-        with patch.dict(_is_wsl.__globals__, {"open": opener}):
+        with patch.dict(host_runtime.is_wsl.__globals__, {"open": opener}):
             assert _is_wsl() is True
             assert _is_wsl() is True
             opener.assert_called_once()  # only read once
