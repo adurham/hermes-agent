@@ -83,6 +83,30 @@ function log(msg) {
   console.log(`[launch-from-spec] ${msg}`);
 }
 
+/**
+ * Settle source runtime/package replacement before Playwright owns Electron.
+ * A first non-metadata startup may replace the packaged app and relaunch it;
+ * doing that after `_electron.launch` attaches loses the inspection pipe.
+ *
+ * @param {string} root
+ * @param {Record<string, string>} env
+ */
+function settleSourceRuntime(root, env) {
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const candidates = [
+    path.join(root, '.hermes', 'bin', `hermes${suffix}`),
+    process.platform === 'win32'
+      ? path.join(root, 'venv', 'Scripts', 'hermes.exe')
+      : path.join(root, 'venv', 'bin', 'hermes'),
+  ];
+  const launcher = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!launcher) throw new Error(`no source launcher available to settle ${root}`);
+  log('settling source runtime under the captured launch environment');
+  execFileSync(launcher, ['status'], {
+    cwd: root, env, stdio: 'inherit', timeout: 20 * 60_000,
+  });
+}
+
 // Coarse phase marker for the self-deadline's post-mortem line.
 let currentPhase = 'init';
 /** @param {string} p */
@@ -122,6 +146,8 @@ async function main() {
   /** @type {LaunchSpec} */
   const spec = JSON.parse(fs.readFileSync(values.spec, 'utf8'));
   const launch = resolveLaunch(spec);
+  const launchEnv = updateWindowEnvironment(launch.env, values['repo-dir'], 'source');
+  settleSourceRuntime(values['repo-dir'], launchEnv);
   log(`launching ${launch.executablePath} (shape: ${spec.matchedShape})`);
 
   phase('launch');
@@ -129,7 +155,7 @@ async function main() {
     executablePath: launch.executablePath,
     args: launch.args,
     cwd: launch.cwd,
-    env: updateWindowEnvironment(launch.env, values['repo-dir'], 'source'),
+    env: launchEnv,
   });
   const window = await pickAppWindow(app, log);
   await window.screenshot({ path: `${values.spec}.window.png` }).catch(() => {});
