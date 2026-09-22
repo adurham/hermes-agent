@@ -54,9 +54,15 @@ def _format_warm_status() -> Optional[str]:
 
     Returns ``None`` when the warm tier is empty or unavailable — callers append the
     result conditionally so the system prompt stays clean for users who haven't migrated.
+
+    Also ``None`` when ``memory.provider: holographic`` is registered: the provider
+    contributes its own "# Holographic Memory" block over the very same facts, and
+    advertising both would tell the model it has two memories when it has one.
     """
     try:
-        from tools.memory_warm import get_warm_store
+        from tools.memory_warm import get_warm_store, holographic_provider_is_registered
+        if holographic_provider_is_registered():
+            return None
         n = get_warm_store().count()
     except Exception:
         return None
@@ -88,9 +94,31 @@ MemoryStore.format_for_system_prompt = _format_for_system_prompt
 
 
 def _get_warm_store_or_error():
-    """Return the warm-tier store, or a ``tool_error`` JSON if unavailable."""
+    """Return the warm-tier store, or a ``tool_error`` JSON if unavailable.
+
+    Refuses when ``memory.provider: holographic`` is registered. Both paths open the
+    SAME ``memory_store.db`` and the SAME rows, so serving both to the model gives it
+    two names for one memory (``memory(tier="warm", ...)`` and ``fact_store``) and it
+    will double-write, or rate through one surface what it recalled through the other.
+    The provider wins because it strictly dominates: search, probe, related, reason,
+    contradict, plus automatic ``MemoryManager.prefetch_all`` push.
+
+    Internal fork plumbing (hot-tier-audit demote, LLM extraction, session-pin,
+    auto-feedback) deliberately bypasses this gate by calling ``get_warm_store()``
+    directly — those are this process's own writes over shared rows, not a rival
+    surface exposed to the model.
+    """
     try:
-        from tools.memory_warm import get_warm_store
+        from tools.memory_warm import get_warm_store, holographic_provider_is_registered
+        if holographic_provider_is_registered():
+            return None, tool_error(
+                "Warm-tier actions are disabled because memory.provider is set to "
+                "'holographic', which serves the same facts through fact_store / "
+                "fact_feedback (with entity probe, structural related, multi-entity "
+                "reason and contradiction checks). Use those instead. Hot-tier "
+                "memory actions are unaffected.",
+                success=False,
+            )
         return get_warm_store(), None
     except Exception as e:
         return None, tool_error(

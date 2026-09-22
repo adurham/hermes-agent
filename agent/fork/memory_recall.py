@@ -156,9 +156,28 @@ def extract_query_candidate(
 
 
 def _get_warm_count() -> int:
-    """Return the warm-tier indexed-fact count, or 0 if unavailable."""
+    """Return the warm-tier indexed-fact count, or 0 if unavailable.
+
+    Returns 0 — which disables the nudge entirely, since every fire path checks
+    for a non-empty store — when ``memory.provider: holographic`` is registered.
+    Two reasons: the provider already PUSHES relevant facts into every non-trivial
+    turn via ``MemoryManager.prefetch_all``, so a pull nudge is redundant; and the
+    warm-tier ``memory(action="recall")`` the nudge asks for is refused under the
+    mutual-exclusion guard, so nudging would be advice the model cannot take.
+
+    RETAIN-NOT-RETIRE (migration decision): with NO provider configured — the
+    default, and the only configuration in which the warm tier is the model's
+    memory — `prefetch_all` never runs, because `MemoryManager` is only
+    constructed when `memory.provider` is non-empty (agent/agent_init.py). The
+    nudge is therefore the ONLY push signal the warm tier has, not a duplicate
+    of one. It also does something prefetch_all does not: fire on explicit user
+    directives ("remember when we...", "we hit this before") rather than only on
+    the turn's own text.
+    """
     try:
-        from tools.memory_warm import get_warm_store
+        from tools.memory_warm import get_warm_store, holographic_provider_is_registered
+        if holographic_provider_is_registered():
+            return 0
         return int(get_warm_store().count())
     except Exception:
         return 0

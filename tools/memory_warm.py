@@ -91,6 +91,34 @@ def _holo_plugin_config() -> Dict[str, Any]:
         return {}
 
 
+def holographic_provider_is_registered() -> bool:
+    """True when ``memory.provider: holographic`` is configured.
+
+    MUTUAL EXCLUSION. The warm tier and the holographic *provider* are now two
+    front doors onto the SAME rows in the SAME SQLite file (the store's shared
+    connection registry even hands them one connection). That is safe for
+    locking but NOT safe for the model: with both live it sees
+    ``memory(tier="warm", action=recall/feedback/...)`` and
+    ``fact_store``/``fact_feedback`` as independent memories, and can
+    double-write, recall through one and rate through the other, or "fix" a
+    fact in one surface and re-read the stale reasoning from the other.
+
+    When the provider is registered it wins — it strictly dominates the
+    warm-tier tool surface (search + probe + related + reason + contradict,
+    plus `MemoryManager.prefetch_all` push) — so the warm tier withdraws its
+    MODEL-FACING actions. Internal callers (hot-tier-audit demote, LLM fact
+    extraction, session-pin, auto-feedback) keep using ``get_warm_store()``
+    directly: they are one process's own plumbing over the same rows, not a
+    second surface offered to the model.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        provider = cfg_get(load_config_readonly(), "memory", "provider", default="") or ""
+        return str(provider).strip().lower() == "holographic"
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # WarmStore — the public API used by tools/memory_tool.py
 # ---------------------------------------------------------------------------
