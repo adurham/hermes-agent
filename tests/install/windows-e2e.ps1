@@ -1190,8 +1190,19 @@ function Assert-UserShims {
     }
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if ($userPath) {
-        Assert-True ($userPath -like "*$(Join-Path $HermesHome 'bin')*") `
-            "the USER PATH still exposes $(Join-Path $HermesHome 'bin')"
+        # The fixture home contains ``..`` while Windows can persist the same
+        # directory canonically. Compare path identities, not raw substrings.
+        $expectedUserBin = [IO.Path]::GetFullPath((Join-Path $HermesHome 'bin')).TrimEnd('\')
+        $userPathEntries = @(
+            foreach ($entry in ($userPath -split ';')) {
+                if (-not $entry) { continue }
+                $expanded = [Environment]::ExpandEnvironmentVariables($entry)
+                try { [IO.Path]::GetFullPath($expanded).TrimEnd('\') }
+                catch { $expanded.TrimEnd('\') }
+            }
+        )
+        Assert-True ($userPathEntries -icontains $expectedUserBin) `
+            "the USER PATH still exposes $expectedUserBin (actual: $userPath)"
     }
 }
 
