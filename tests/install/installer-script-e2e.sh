@@ -248,12 +248,27 @@ close_running_desktop() {
   for pid in $(pgrep -f "$pattern" 2>/dev/null); do
     kill "$pid" 2>/dev/null || true
   done
-  while [ "$waited" -lt 15 ]; do
-    pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+  while [ "$waited" -lt 30 ]; do
+    pgrep -f "$pattern" >/dev/null 2>&1 || break
     sleep 0.5
     waited=$((waited + 1))
   done
-  printf 'warning: a desktop instance from this install survived termination\n' >&2
+  if pgrep -f "$pattern" >/dev/null 2>&1; then
+    for pid in $(pgrep -f "$pattern" 2>/dev/null); do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+    sleep 1
+  fi
+  pgrep -f "$pattern" >/dev/null 2>&1 \
+    && fail "a desktop instance from this install survived termination"
+
+  # The install stamp is logged before requestSingleInstanceLock; a launch that
+  # prints only that stamp is Electron's silent secondary-instance path. After
+  # every matching process is gone, these isolated-route artifacts are stale,
+  # not user data, and must not reject Playwright's lock-owning launch.
+  rm -f "$HERMES_DESKTOP_USER_DATA_DIR/SingletonLock" \
+    "$HERMES_DESKTOP_USER_DATA_DIR/SingletonSocket" \
+    "$HERMES_DESKTOP_USER_DATA_DIR/SingletonCookie"
 }
 
 # The redirect must stay at TRANSPORT level. `hermes update` resolves its
