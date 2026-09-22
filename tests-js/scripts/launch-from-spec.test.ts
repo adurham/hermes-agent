@@ -4,13 +4,27 @@ import path from 'node:path'
 
 import { expect, test } from 'vitest'
 
-import { isolatedElectronArgs, isolateUpdateWindowEnvironment } from '../../tests/install/e2e-assets/smoke-env.mjs'
+import { isolatedElectronArgs, isolateUpdateWindowEnvironment, smokeEnvironment } from '../../tests/install/e2e-assets/smoke-env.mjs'
 
 test('the update window pins its isolated route before Electron requests the singleton lock', (): void => {
   expect(isolatedElectronArgs(
     ['--no-sandbox', '--user-data-dir=/stale/route', '--inspect=0'],
     '/isolated/route',
   )).toEqual(['--user-data-dir=/isolated/route', '--no-sandbox', '--inspect=0'])
+})
+
+test.runIf(process.platform !== 'win32')('the launch environment keeps Chromium singleton sockets below the Unix path limit', (): void => {
+  const inheritedTemp = path.join(path.sep, 'deep'.repeat(40))
+
+  const env = smokeEnvironment(
+    { TEMP: inheritedTemp, TMP: inheritedTemp, TMPDIR: inheritedTemp },
+    '/isolated/hermes-home',
+    '/isolated/user-data',
+  )
+
+  expect(env.TEMP).toBe(env.TMPDIR)
+  expect(env.TMP).toBe(env.TMPDIR)
+  expect(Buffer.byteLength(path.join(env.TMPDIR, 'scoped_dirXXXXXX', 'SingletonSocket'))).toBeLessThan(108)
 })
 
 test('the update window carries Hermes connection state without cloning Chromium state', (): void => {

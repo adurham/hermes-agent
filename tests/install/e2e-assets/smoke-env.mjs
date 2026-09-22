@@ -3,6 +3,7 @@
 // runs it under a bare `node` with no workspace install, so nothing here may
 // import Playwright, zod, or the TypeScript smoke modules.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 /**
@@ -39,12 +40,16 @@ export function smokeEnvironment(inherited, home, userData) {
     }
     clean[key] = value;
   }
+  const electronTemp = process.platform === 'win32' ? os.tmpdir() : '/tmp';
   return {
     ...clean, HOME: path.join(home, '.desktop-smoke-home'), USERPROFILE: path.join(home, '.desktop-smoke-home'),
     XDG_CONFIG_HOME: path.join(home, '.desktop-smoke-home', '.config'),
     XDG_DATA_HOME: path.join(home, '.desktop-smoke-home', '.local', 'share'),
     XDG_CACHE_HOME: path.join(home, '.desktop-smoke-home', '.cache'),
     HERMES_HOME: home, HERMES_DESKTOP_USER_DATA_DIR: userData,
+    // Chromium puts ProcessSingleton's Unix socket below TMPDIR. Deep CI
+    // workspaces exceed sockaddr_un.sun_path before Electron reaches ready.
+    TEMP: electronTemp, TMP: electronTemp, TMPDIR: electronTemp,
     // app.close() cannot answer a native modal. This bypasses confirmation only;
     // normal backend teardown and the driver's process-exit checks still run.
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
