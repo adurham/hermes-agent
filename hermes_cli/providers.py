@@ -135,9 +135,6 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
     "lmstudio": ("lmstudio", "lm-studio", "lm_studio"), "custom": ("ollama",),
     "local": ("vllm", "llamacpp", "llama.cpp", "llama-cpp"),
-    "google-gemini-cli": ("gemini-cli", "gemini-oauth"),
-    "google-antigravity": ("antigravity", "antigravity-oauth", "antigravity-cli",
-                           "google-antigravity-oauth", "agy", "agy-cli"),
 }
 ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 
@@ -151,7 +148,6 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)", "opencode-free": "OpenCode Free",
-    "google-gemini-cli": "Google (Antigravity)",
 }
 
 

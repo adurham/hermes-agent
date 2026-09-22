@@ -4947,16 +4947,6 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
-def _resolve_google_gemini_cli_branch(req: _ResolveRequest) -> _ResolveResult:
-    """FORK — Google Code Assist (Gemini CLI / Antigravity) OAuth. Registered in hermes_cli.auth as
-    ``oauth_external``; without a dedicated branch it falls to the generic oauth_external arm,
-    returns (None, None), and silently re-routes every aux task to the Step-2 fallback."""
-    from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
-    model = req.model or "gemini-3.1-pro-preview"
-    return _route_client(req, GeminiCloudCodeClient(model=model),
-                         _normalize_resolved_model(model, req.provider))
-
-
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -5264,8 +5254,6 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
     "xai-oauth": _resolve_xai_oauth_branch,
-    # FORK: Google Code Assist (Gemini CLI) — see _resolve_google_gemini_cli_branch.
-    "google-gemini-cli": _resolve_google_gemini_cli_branch,
     "custom": _resolve_custom_branch,
 }
 
