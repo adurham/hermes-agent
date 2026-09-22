@@ -18,7 +18,8 @@ name: Desktop Bundled Release
 #     (needs build-win32): all downloadable builds stage without touching feeds.
 #   smoke-darwin / smoke-win32 / smoke-win32-universal → native install + chat
 #   publish-win32-updater                   → tested canary bytes + feed
-#     (needs BOTH Windows smoke matrices); stable promotion stays separately gated.
+#     (needs BOTH Windows smoke matrices); stable promotion is sequenced by
+#     the stable publication controller after GitHub publication.
 #   stable-store                           → verified Store submission
 #     (needs stable-publish): materialize the immutable accepted Store bundle
 #     and submit via the MSStore CLI without rebuilding.
@@ -2108,31 +2109,6 @@ jobs:
           test -f "${files[0]}"
           msstore publish "${files[0]}" -id "$MS_STORE_PRODUCT_ID"
 
-  stable-promote:
-    name: Promote verified stable bundle channels
-    needs: validate
-    if: inputs.release-phase == 'promote'
-    runs-on: ubuntu-latest-32-core
-    environment: release-signing
-    timeout-minutes: 90
-    env:
-      RELEASE_TAG: ${{ inputs.tag }}
-      CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
-      GH_TOKEN: ${{ github.token }}
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: ./.github/actions/setup-pm
-        with:
-          cache-python: false
-      - run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.bundles.release_artifacts promote --root verified
-
   stable-phase-result:
     name: Stable bundle phase completed
     if: always() && inputs.release-phase != ''
@@ -2148,8 +2124,7 @@ jobs:
         termux-deb,
         candidate-manifest,
         stable-publish,
-        stable-store,
-        stable-promote
+        stable-store
       ]
     runs-on: ubuntu-24.04
     steps:
@@ -2167,7 +2142,6 @@ jobs:
           phases = {
               'candidate': ['validate', 'build-win32', 'build-darwin', 'assemble-win32-bundle', 'smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'termux-deb', 'candidate-manifest'],
               'publish': ['validate', 'stable-publish', 'stable-store'],
-              'promote': ['validate', 'stable-promote'],
           }
           require_success(json.loads(os.environ['RELEASE_NEEDS']), phases[os.environ['RELEASE_PHASE']])
           PY

@@ -184,6 +184,9 @@ def advance_stable(env: dict, release: dict, root: Path) -> dict:
     found = store.get(key)
     if found is None:
         raise ChannelError("Stable candidate manifest is unavailable")
+    digest = hashlib.sha256(found[0]).hexdigest()
+    if digest != release.get("candidate_manifest_sha256"):
+        raise ChannelError("Stable candidate manifest differs from the final release receipt")
     scoped_env = {
         **env,
         "RELEASE_TAG": release["tag"],
@@ -191,7 +194,7 @@ def advance_stable(env: dict, release: dict, root: Path) -> dict:
         "RELEASE_CLAIM_TAG": release["claim_tag"],
         "RELEASE_CLAIM_OBJECT": release["claim_object"],
         "CANDIDATE_MANIFEST_URL": f"{public_base}/{key}",
-        "CANDIDATE_MANIFEST_SHA256": hashlib.sha256(found[0]).hexdigest(),
+        "CANDIDATE_MANIFEST_SHA256": digest,
     }
     return publish_release("stable-release", scoped_env, root)
 

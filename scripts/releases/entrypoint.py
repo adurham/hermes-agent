@@ -32,6 +32,37 @@ def _claim_commit(repo: Path, tag: str) -> str:
     return _git(repo, "rev-parse", f"{tag}^{{commit}}")
 
 
+def _refresh_claims(repo: Path, remote: str) -> None:
+    _git(
+        repo, "fetch", remote,
+        "+refs/heads/main:refs/remotes/hermes-release/main",
+        "+refs/tags/v*-rc:refs/tags/v*-rc",
+    )
+
+
+def _require_remote_main(repo: Path, commit: str) -> None:
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/hermes-release/main"],
+        cwd=repo, capture_output=True,
+    )
+    if result.returncode != 0:
+        raise ReleaseRefused(f"{commit} is not on origin/main")
+
+
+def _claim_collision(repo: Path, remote: str, tag: str, error: Exception) -> ReleaseRefused:
+    subprocess.run(["git", "tag", "--delete", tag], cwd=repo, capture_output=True)
+    try:
+        _git(repo, "fetch", remote, f"+refs/tags/{tag}:refs/tags/{tag}")
+        details = _git(
+            repo, "for-each-ref", f"refs/tags/{tag}",
+            "--format=%(taggername)|%(taggerdate:iso-strict)|%(*objectname)",
+        )
+    except subprocess.CalledProcessError:
+        return ReleaseRefused(f"claim {tag} could not be pushed: {error}")
+    actor, when, commit = details.split("|", 2)
+    return ReleaseRefused(f"{tag} was claimed by {actor} at {when} for {commit}")
+
+
 def _highest_claim(repo: Path) -> tuple[str, str] | None:
     """The highest-version outstanding claim, as (version, commit)."""
     from scripts.releases.versioning import version_from_tag
@@ -65,6 +96,8 @@ def _require_ancestry(repo: Path, commit: str) -> None:
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False) -> dict:
     """Claim the derived version, cut its draft, and start the gate."""
+    _refresh_claims(repo, remote)
+    _require_remote_main(repo, commit)
     _require_ancestry(repo, commit)
     version = derive_next_version(published=None, claims=_claims(repo), bump=bump)
     tag = f"v{version}-rc"
@@ -75,7 +108,17 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "autopublish": autopublish,
     }, sort_keys=True, separators=(",", ":"))
     _git(repo, "tag", "-a", tag, commit, "-m", claim)
-    _git(repo, "push", remote, f"refs/tags/{tag}")
+    try:
+        _git(repo, "push", remote, f"refs/tags/{tag}")
+    except subprocess.CalledProcessError as error:
+        raise _claim_collision(repo, remote, tag, error) from error
+    ref = f"refs/tags/{tag}"
+    remote_ref = dict(line.split()[::-1] for line in _git(
+        repo, "ls-remote", remote, ref, f"{ref}^{{}}",
+    ).splitlines())
+    if (remote_ref.get(ref) != _git(repo, "rev-parse", ref)
+            or remote_ref.get(f"{ref}^{{}}") != commit):
+        raise ReleaseRefused(f"claim {tag} did not persist with exact remote custody")
     url = f"https://github.com/{repository}/releases/tag/{tag}"
     try:
         execute([
@@ -93,13 +136,39 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             "autopublish": autopublish}
 
 
-def publish(version: str, *, repository: str, dispatch) -> dict:
+def _preflight_publish(version: str, repository: str, inspect) -> None:
+    from scripts.releases.versioning import version_from_tag
+
+    rows = json.loads(inspect([
+        "gh", "release", "list", "--repo", repository, "--limit", "100",
+        "--json", "tagName,isDraft,isPrerelease",
+    ]))
+    requested = tuple(map(int, version.split(".")))
+    published = []
+    family = False
+    for row in rows:
+        tag = row.get("tagName")
+        family = family or tag in {f"v{version}", f"v{version}-rc"}
+        parsed = version_from_tag(tag)
+        if parsed and row.get("isDraft") is False and row.get("isPrerelease") is False:
+            published.append((tuple(map(int, parsed.split("."))), parsed))
+    newer = [found for key, found in published if key > requested]
+    if newer:
+        latest = max(newer, key=lambda item: tuple(map(int, item.split("."))))
+        raise ReleaseRefused(f"stable {version} is burned or superseded by {latest}")
+    if not family:
+        raise ReleaseRefused(f"stable {version} is burned or has no release draft")
+
+
+def publish(version: str, *, repository: str, dispatch, inspect=None) -> dict:
     """Request ordered publication through the one production sequencer."""
     tag = f"v{version}"
     from hermes_cli.update_channel import STABLE_TAG_RE
 
     if not STABLE_TAG_RE.fullmatch(tag):
         raise ReleaseRefused(f"{version} is not a stable version")
+    if inspect is not None:
+        _preflight_publish(version, repository, inspect)
     dispatch([
         "gh", "workflow", "run", "stable-release-publication.yml",
         "--repo", repository, "--raw-field", f"version={version}",
@@ -151,9 +220,18 @@ def _execute(repo: Path, command: list[str]) -> None:
         raise ReleaseRefused(completed.stderr.strip() or "release command failed")
 
 
+def _inspect(repo: Path, command: list[str]) -> str:
+    completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
+    if completed.returncode != 0:
+        raise ReleaseRefused(completed.stderr.strip() or "release inspection failed")
+    return completed.stdout
+
+
 def cmd_publish(args) -> None:
     repo, repository = _command_repository(args)
-    publish(args.version, repository=repository, dispatch=lambda command: _execute(repo, command))
+    publish(args.version, repository=repository,
+            dispatch=lambda command: _execute(repo, command),
+            inspect=lambda command: _inspect(repo, command))
 
 
 def cmd_abandon(args) -> None:

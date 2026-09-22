@@ -242,7 +242,11 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         ["git", "rev-parse", ref], text=True, encoding="utf-8").strip()})
     claim = check_claim(env)
     assert claim["commit"] == actual
-    final_object = ensure_final_tag("v1.2.3", actual, claim)
+    final_object = ensure_final_tag(
+        "v1.2.3", actual, claim,
+        candidate_manifest_sha256="c" * 64,
+        docker_manifest_digest="sha256:" + "d" * 64,
+    )
     remote_final = subprocess.check_output(
         ["git", "ls-remote", "origin", "refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"],
         text=True, encoding="utf-8",

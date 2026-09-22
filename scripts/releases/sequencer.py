@@ -12,11 +12,17 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from hermes_cli.update_channel import STABLE_TAG_RE
 
 CLAIM_TAG_RE = re.compile(r"^(v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-rc$")
+SHA256 = re.compile(r"[a-f0-9]{64}")
+DOCKER_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF = timedelta(minutes=15)
 
 
 def _key(version: str) -> tuple[int, int, int]:
@@ -31,6 +37,7 @@ def plan(claims: list[dict], *, head: str | None,
     head_key = _key(head) if head is not None else None
     flips: list[dict] = []
     advances: list[dict] = []
+    flush_green_chain = False
 
     for index, claim in enumerate(ordered):
         version = claim["version"]
@@ -59,11 +66,13 @@ def plan(claims: list[dict], *, head: str | None,
             claim.get("autopublish", False)
             or version == requested_version
             or has_later_live_claim
+            or flush_green_chain
         )
         if not eligible:
             break
         flips.append({"flip": version})
         advances.append({"advance": version})
+        flush_green_chain = flush_green_chain or has_later_live_claim
 
     return flips + advances
 
@@ -96,6 +105,54 @@ def _workflow_runs(repository: str, run=output) -> list[dict]:
             raise ValueError("GitHub workflow runs response is invalid")
         rows.extend(page["workflow_runs"])
     return rows
+
+
+def _utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Workflow timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def classify_runs(runs: list[dict]) -> tuple[str, dict | None]:
+    """Keep failed claims live until two failed-job retries are exhausted."""
+    if not runs:
+        return "burned", None
+    run_ids = {row.get("id") for row in runs}
+    if len(run_ids) != 1 or None in run_ids:
+        raise ValueError("Stable claim owns multiple workflow runs")
+    latest = max(runs, key=lambda row: row.get("run_attempt", 0))
+    attempt = latest.get("run_attempt")
+    if not isinstance(attempt, int) or attempt < 1:
+        raise ValueError("Stable workflow run attempt is invalid")
+    if latest.get("status") != "completed":
+        return "running", None
+    if latest.get("conclusion") == "success":
+        raise ValueError("Stable workflow succeeded without a final tag")
+    if attempt >= MAX_ATTEMPTS:
+        return "burned", None
+    updated_at = latest.get("updated_at")
+    if not isinstance(updated_at, str):
+        raise ValueError("Failed stable workflow has no completion time")
+    return "running", {
+        "run_id": latest["id"],
+        "attempt": attempt,
+        "due_at": _utc(updated_at) + RETRY_BACKOFF,
+    }
+
+
+def retry_due(records: list[dict], *, now: datetime | None = None) -> list[dict]:
+    """Return bounded failed-job retries whose backoff has elapsed."""
+    now = now or datetime.now(timezone.utc)
+    retries = []
+    for record in records:
+        retry = record.get("retry")
+        if retry is not None and retry["due_at"] <= now:
+            retries.append({
+                "version": record["version"], "run_id": retry["run_id"],
+                "attempt": retry["attempt"] + 1,
+            })
+    return retries
 
 
 def _remote_tags(run=output) -> dict[str, dict[str, str]]:
@@ -153,6 +210,8 @@ def discover(repository: str, run=output) -> list[dict]:
         release = family_releases[0] if family_releases else None
         final_ref = refs.get(tag)
         needs_retarget = False
+        final = None
+        retry = None
 
         if final_ref is not None:
             if set(final_ref) != {"object", "commit"}:
@@ -164,8 +223,12 @@ def discover(repository: str, run=output) -> list[dict]:
                 "schema": 1, "version": version, "commit": commit,
                 "claimTag": claim_tag, "claimTagObject": claim_ref["object"],
                 "autopublish": claim["autopublish"],
+                "candidateManifestSha256": final.get("candidateManifestSha256"),
+                "dockerManifestDigest": final.get("dockerManifestDigest"),
             }
-            if final != expected_final:
+            if (final != expected_final
+                    or not SHA256.fullmatch(final["candidateManifestSha256"] or "")
+                    or not DOCKER_DIGEST.fullmatch(final["dockerManifestDigest"] or "")):
                 raise ValueError(f"{tag} metadata differs from {claim_tag}")
             if release is None or release.get("prerelease") is not False:
                 raise ValueError(f"{tag} has no valid GitHub release")
@@ -187,12 +250,7 @@ def discover(repository: str, run=output) -> list[dict]:
                 raise ValueError(f"{claim_tag} draft state is invalid")
             matching_runs = [row for row in workflow_runs
                              if row.get("head_branch") == claim_tag and row.get("head_sha") == commit]
-            if any(row.get("status") != "completed" for row in matching_runs):
-                state = "running"
-            elif any(row.get("conclusion") == "success" for row in matching_runs):
-                raise ValueError(f"{claim_tag} succeeded without a final tag")
-            else:
-                state = "burned"
+            state, retry = classify_runs(matching_runs)
 
         records.append({
             "version": version,
@@ -204,6 +262,9 @@ def discover(repository: str, run=output) -> list[dict]:
             "commit": commit,
             "release_id": release.get("id") if release else None,
             "needs_retarget": needs_retarget,
+            "candidate_manifest_sha256": final["candidateManifestSha256"] if final else None,
+            "docker_manifest_digest": final["dockerManifestDigest"] if final else None,
+            "retry": retry if final_ref is None else None,
         })
 
     return sorted(records, key=lambda record: _key(record["version"]))
@@ -211,10 +272,29 @@ def discover(repository: str, run=output) -> list[dict]:
 
 def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
-    from scripts.releases import channel_releases, stable
+    from scripts.releases import channel_releases, docker, stable
 
     repository = env["GITHUB_REPOSITORY"]
     records = discover(repository, run)
+    retries = retry_due(records)
+    if retries:
+        for retry in retries:
+            endpoint = f"repos/{repository}/actions/runs/{retry['run_id']}"
+            run([
+                "gh", "api", "--method", "POST",
+                f"{endpoint}/rerun-failed-jobs",
+            ])
+            for attempt in range(6):
+                current = json.loads(run(["gh", "api", endpoint]))
+                if (current.get("id") == retry["run_id"]
+                        and current.get("run_attempt") == retry["attempt"]
+                        and current.get("status") != "completed"):
+                    break
+                if attempt < 5:
+                    time.sleep(5)
+            else:
+                raise ValueError(f"Stable retry {retry['run_id']} did not enter attempt {retry['attempt']}")
+        return [{"retry": retry["version"], "attempt": retry["attempt"]} for retry in retries]
     for record in records:
         if record["needs_retarget"]:
             stable.retarget_release(repository, record["release_id"], record["tag"],
@@ -237,6 +317,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
 
     if advance_head is None:
         def production_advance(record: dict) -> None:
+            docker.promote_stable(record["tag"], record["docker_manifest_digest"])
             with tempfile.TemporaryDirectory() as directory:
                 channel_releases.advance_stable(env, record, Path(directory))
         advance_head = production_advance

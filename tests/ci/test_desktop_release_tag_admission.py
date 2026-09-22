@@ -60,7 +60,9 @@ def test_signing_jobs_pin_source_and_controller_revisions_not_mutable_tags():
                 continue
             ref = step.get("with", {}).get("ref")
             expected = "${{ needs.validate.outputs.sha }}"
-            if name in {"publish-channel"} or step.get("if") == "needs.validate.outputs.channel-build != ''":
+            if (name in {"publish-channel"}
+                    or step.get("if") == "needs.validate.outputs.channel-build != ''"
+                    or step.get("name") == "Return to the trusted receipt controller"):
                 expected = "${{ github.sha }}"
             elif name == "validate":
                 expected = "${{ (inputs.build_commit != '' || inputs.channel != '' || inputs.release-phase != '') && github.sha || inputs.tag }}"

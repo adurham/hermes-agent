@@ -11,17 +11,16 @@ on:
   # this same workflow, never across a workflow boundary.
   #
   # The ``release: published`` trigger was REMOVED on purpose: a GitHub release
-  # event must never rebuild or rewrite the stable Docker channel. Versioned
-  # tags, candidate tags and the stable/latest aliases are published only
-  # through the staged release path (workflow_call below), which the parent
-  # stable-release workflow gates behind full CI + package acceptance.
+  # event must never rebuild or rewrite the stable Docker channel. This staged
+  # path publishes only immutable version tags; the ordered stable publication
+  # controller moves stable/latest from the receipt-bound registry digest.
   pull_request:
   push:
     branches: [main]
   workflow_call:
     inputs:
       release-phase:
-        description: "Stable-release phase: 'test', 'publish' or 'promote'. Empty keeps the standalone triggers."
+        description: "Stable-release phase: 'test' or 'publish'. Empty keeps the standalone triggers."
         required: false
         type: string
         default: ''
@@ -35,6 +34,10 @@ on:
         required: false
         type: string
         default: ''
+    outputs:
+      manifest-digest:
+        description: "Immutable digest of the published versioned multi-arch manifest."
+        value: ${{ jobs.release-publish-manifest.outputs.digest }}
 
 permissions:
   contents: read
@@ -43,7 +46,7 @@ permissions:
 # its own image.  PR runs reuse a PR-scoped group with
 # cancel-in-progress: true so rapid pushes to the same PR collapse to
 # the latest commit. Release runs include the run_id: several reusable calls
-# (test/publish/promote) of this workflow live inside ONE parent run, and a
+# (test/publish) of this workflow live inside ONE parent run, and a
 # shared group would cancel the parent mid-release.
 concurrency:
   group: docker-${{ github.event.pull_request.number || github.ref }}-${{ inputs.release-phase || 'standalone' }}
@@ -71,7 +74,7 @@ jobs:
           case "$PHASE" in
             '')   echo "phase=standalone" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT" ;;
             test) echo "phase=test"        >> "$GITHUB_OUTPUT"; echo "release=true"  >> "$GITHUB_OUTPUT" ;;
-            publish|promote)
+            publish)
                   echo "phase=$PHASE"      >> "$GITHUB_OUTPUT"; echo "release=true"  >> "$GITHUB_OUTPUT" ;;
             *)    echo "::error::Invalid release-phase input: $PHASE"; exit 1 ;;
           esac
@@ -379,8 +382,8 @@ jobs:
   # This is a registry-side operation — no building, no layer re-push —
   # so it runs in ~30 seconds.
   #
-  # Main pushes tag :main only. :latest is reserved for the release 'promote'
-  # phase (see release-promote below).
+  # Main pushes tag :main only. :latest is reserved for the ordered stable
+  # publication controller.
   # ---------------------------------------------------------------------------
   merge:
     if: >-
@@ -550,14 +553,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Assemble the versioned multi-arch manifest list from the pushed per-arch
-  # digests and emit the reference/digest manifest artifact consumed by the
-  # promote phase. Registry-side only; nothing is rebuilt.
+  # Assemble the immutable versioned multi-arch manifest and expose its digest
+  # to the parent release receipt. Registry-side only; nothing is rebuilt.
   release-publish-manifest:
     name: Assemble versioned manifest and digest receipt
     if: needs.mode.outputs.phase == 'publish'
     needs: [mode, release-publish]
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.list.outputs.digest }}
     timeout-minutes: 15
     environment: container-publish
     env:
@@ -670,7 +674,7 @@ jobs:
   release-phase-gate:
     name: Docker phase requirements met
     if: always() && inputs.release-phase != ''
-    needs: [mode, build, release-publish, release-publish-manifest, release-promote]
+    needs: [mode, build, release-publish, release-publish-manifest]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -680,7 +684,6 @@ jobs:
           BUILD: ${{ needs.build.result }}
           RELEASE_PUBLISH: ${{ needs.release-publish.result }}
           RELEASE_MANIFEST: ${{ needs.release-publish-manifest.result }}
-          RELEASE_PROMOTE: ${{ needs.release-promote.result }}
           MODE: ${{ needs.mode.result }}
         run: |
           set -euo pipefail
@@ -697,107 +700,5 @@ jobs:
               [ "$RELEASE_MANIFEST" = success ] || failures+=("release-publish-manifest=$RELEASE_MANIFEST")
               [ "${#failures[@]}" -eq 0 ] || { printf '::error::%s\n' "${failures[@]}"; exit 1; }
               ;;
-            promote)
-              test "$RELEASE_PROMOTE" = success
-              ;;
             *) echo "::error::Unknown phase $PHASE"; exit 1 ;;
           esac
-
-  # Release 'promote' phase: runs ONLY after the parent's global release gate
-  # (all bundle/acceptance/publication jobs succeeded). Repoints the
-  # user-facing stable aliases (stable AND latest) at the exact tested
-  # manifest-list digest from the publish phase, then reads the aliases back
-  # from the registry and fails if they do not resolve to that digest.
-  # This is the ONLY place in this workflow where stable/latest can move.
-  release-promote:
-    name: Promote stable Docker aliases
-    if: needs.mode.outputs.phase == 'promote'
-    needs: [mode]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: container-publish
-    env:
-      RELEASE_TAG: ${{ inputs.tag }}
-    steps:
-      - name: Checkout release code (helper scripts only)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Download release manifest from the publish phase (same run)
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: docker-publish-manifest-${{ inputs.tag }}
-          path: /tmp/manifest
-
-      - name: Verify tested manifest identity
-        run: python3 -m scripts.releases.docker verify \
-          --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" /tmp/manifest/manifest.json
-
-      - name: Set up Docker Buildx
-        id: buildx
-        continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Set up Docker Buildx (retry)
-        if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Promote stable and latest to the tested digest
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-        run: |
-          set -euo pipefail
-          LIST_DIGEST="$(python3 -c 'import json;print(json.load(open("/tmp/manifest/manifest.json"))["list-digest"])')"
-          for i in 1 2 3; do
-            if docker buildx imagetools create \
-              -t "${IMAGE_NAME}:stable" \
-              -t "${IMAGE_NAME}:latest" \
-              "${IMAGE_NAME}@${LIST_DIGEST}"; then
-              break
-            fi
-            if [ "$i" = 3 ]; then
-              echo "::error::imagetools create (promote) failed after 3 attempts"
-              exit 1
-            fi
-            sleep 20
-          done
-
-      - name: Read back and verify the stable aliases
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-        run: |
-          set -euo pipefail
-          EXPECTED="$(python3 -c 'import json;print(json.load(open("/tmp/manifest/manifest.json"))["list-digest"])')"
-          sleep 10  # eventual consistency of just-created aliases
-          for alias in stable latest; do
-            for i in 1 2 3; do
-              got="$(docker buildx imagetools inspect "${IMAGE_NAME}:${alias}" \
-                --format '{{json .Manifest.Digest}}' | tr -d '"')" && break
-              [ "$i" = 3 ] && { echo "::error::inspect ${alias} failed 3 times"; exit 1; }
-              sleep 20
-            done
-            if [ "$got" != "$EXPECTED" ]; then
-              echo "::error::Alias ${alias} resolves to ${got}, expected ${EXPECTED}"
-              exit 1
-            fi
-            echo "${IMAGE_NAME}:${alias} -> ${got} (verified)"
-          done
-
-      - name: Promote receipt
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-        run: |
-          set -euo pipefail
-          {
-            echo "image: ${IMAGE_NAME}"
-            echo "tag: ${RELEASE_TAG}"
-            echo "digest: $(python3 -c 'import json;print(json.load(open("/tmp/manifest/manifest.json"))["list-digest"])')"
-            echo "aliases: stable,latest"
-          } | tee /tmp/manifest/promote-receipt.txt

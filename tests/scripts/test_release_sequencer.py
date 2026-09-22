@@ -40,8 +40,8 @@ def test_a_newer_green_release_flushes_the_older_waiting_draft():
         ("0.21.6", "green", False),
     ), head="0.21.4")
 
-    assert _flips(steps) == ["0.21.5"]
-    assert steps[-1] == {"advance": "0.21.5"}
+    assert _flips(steps) == ["0.21.5", "0.21.6"]
+    assert steps[-2:] == [{"advance": "0.21.5"}, {"advance": "0.21.6"}]
 
 
 def test_green_progress_before_a_running_blocker_is_preserved():
@@ -55,6 +55,32 @@ def test_green_progress_before_a_running_blocker_is_preserved():
 
     assert _flips(steps) == ["0.21.5"]
     assert steps[-1] == {"advance": "0.21.5"}
+    assert plan(_claims(
+        ("0.21.5", "running", False),
+        ("0.21.6", "green", True),
+    ), head="0.21.4") == []
+
+
+def test_failed_run_retries_twice_after_backoff_before_burning():
+    from datetime import datetime, timezone
+
+    from scripts.releases.sequencer import classify_runs, retry_due
+
+    now = datetime(2026, 9, 22, 1, 30, tzinfo=timezone.utc)
+    failed = {
+        "id": 42, "status": "completed", "conclusion": "failure",
+        "run_attempt": 1, "updated_at": "2026-09-22T01:14:59Z",
+    }
+    state, retry = classify_runs([failed])
+    assert state == "running"
+    assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}], now=now) == [{
+        "version": "0.21.5", "run_id": 42, "attempt": 2,
+    }]
+    failed["run_attempt"] = 2
+    state, retry = classify_runs([failed])
+    assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}], now=now)[0]["attempt"] == 3
+    failed["run_attempt"] = 3
+    assert classify_runs([failed]) == ("burned", None)
 
 
 def test_a_burned_claim_is_spent_and_skipped():
@@ -125,7 +151,11 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
         claim_tag, tag = f"v{version}-rc", f"v{version}"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
         claim = {"schema": 1, "version": version, "commit": commit, "autopublish": False}
-        final = {**claim, "claimTag": claim_tag, "claimTagObject": claim_object}
+        final = {
+            **claim, "claimTag": claim_tag, "claimTagObject": claim_object,
+            "candidateManifestSha256": "a" * 64,
+            "dockerManifestDigest": "sha256:" + "b" * 64,
+        }
         tags[claim_tag] = (claim_object, commit, claim)
         tags[tag] = (final_object, commit, final)
         releases.append({

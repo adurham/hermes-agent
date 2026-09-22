@@ -5,6 +5,8 @@ never starts is an error, not a warning the operator has to notice.
 """
 import json
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -97,7 +99,7 @@ def test_a_dispatch_that_never_starts_is_an_error(source):
 
 
 def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
-    from scripts.releases.entrypoint import abandon, publish
+    from scripts.releases.entrypoint import ReleaseRefused, abandon, publish
 
     commit = git(source, "rev-parse", "HEAD")
     _claim(source, "0.21.5", commit)
@@ -113,3 +115,74 @@ def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
     assert abandoned["burned"] == "0.21.5"
     assert calls[-1] == ["gh", "release", "delete", "v0.21.5-rc", "--repo", "example/hermes-agent", "--yes"]
     assert "v0.21.5-rc" in git(source, "tag", "--list")
+
+    with pytest.raises(ReleaseRefused, match="burned or superseded by 0\\.21\\.6"):
+        publish(
+            "0.21.5", repository="example/hermes-agent",
+            dispatch=lambda _command: pytest.fail("superseded publish must not dispatch"),
+            inspect=lambda _command: json.dumps([
+                {"tagName": "v0.21.5-rc", "isDraft": True, "isPrerelease": False},
+                {"tagName": "v0.21.6", "isDraft": False, "isPrerelease": False},
+            ]),
+        )
+
+
+def test_concurrent_claim_loser_reports_the_remote_winner_and_the_version_stays_spent(
+        source, tmp_path, monkeypatch):
+    from scripts.releases import entrypoint
+    from scripts.releases.versioning import derive_next_version
+
+    old = git(source, "rev-parse", "HEAD")
+    git(source, "commit", "--allow-empty", "--quiet", "-m", "later")
+    git(source, "push", "--quiet", "origin", "main")
+    new = git(source, "rev-parse", "HEAD")
+    origin = git(source, "remote", "get-url", "origin")
+    left, right = tmp_path / "left", tmp_path / "right"
+    git(tmp_path, "clone", "--quiet", origin, str(left))
+    git(tmp_path, "clone", "--quiet", origin, str(right))
+    for clone in (left, right):
+        git(clone, "config", "user.name", "Test")
+        git(clone, "config", "user.email", "test@example.test")
+    git(left, "checkout", "--quiet", old)
+
+    barrier = threading.Barrier(2)
+    original_git = entrypoint._git
+
+    def racing_git(repo, *args):
+        if args[:2] == ("push", "origin") and args[-1] == "refs/tags/v0.21.5-rc":
+            barrier.wait(timeout=10)
+            if repo == left:
+                time.sleep(0.1)
+        return original_git(repo, *args)
+
+    monkeypatch.setattr(entrypoint, "_git", racing_git)
+    outcomes = {}
+
+    def claim(name, repo, commit):
+        try:
+            outcomes[name] = entrypoint.release(
+                commit, bump="patch", repo=repo, remote="origin",
+                repository="example/hermes-agent", execute=lambda _command: None,
+            )
+        except Exception as error:
+            outcomes[name] = error
+
+    threads = [
+        threading.Thread(target=claim, args=("old", left, old)),
+        threading.Thread(target=claim, args=("new", right, new)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert outcomes["new"]["commit"] == new
+    assert isinstance(outcomes["old"], entrypoint.ReleaseRefused)
+    assert "was claimed by Test" in str(outcomes["old"])
+    assert new in str(outcomes["old"])
+    assert git(left, "rev-parse", "v0.21.5-rc^{commit}") == new
+
+    fresh = tmp_path / "fresh"
+    git(tmp_path, "clone", "--quiet", origin, str(fresh))
+    claims = git(fresh, "tag", "--list", "v*-rc").splitlines()
+    assert derive_next_version(published=None, claims=claims, bump="patch") == "0.21.6"

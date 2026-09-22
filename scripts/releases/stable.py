@@ -270,8 +270,12 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         "schema": 1, "version": admitted["version"], "commit": commit,
         "claimTag": claim_tag, "claimTagObject": claim_object,
         "autopublish": claim["autopublish"],
+        "candidateManifestSha256": final.get("candidateManifestSha256"),
+        "dockerManifestDigest": final.get("dockerManifestDigest"),
     }
-    if final != expected:
+    if (final != expected
+            or not DIGEST.fullmatch(final["candidateManifestSha256"] or "")
+            or not re.fullmatch(r"sha256:[a-f0-9]{64}", final["dockerManifestDigest"] or "")):
         raise ValueError("Final tag metadata differs from its claim")
     release = json.loads(run([
         "gh", "api", f"repos/{repository}/releases/tags/{tag}",
@@ -280,7 +284,9 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
             or release.get("prerelease") is not False or not release.get("published_at")):
         raise ValueError("Stable channel requires the published final release")
     return tag, commit, {**admitted, "claim_object": claim_object,
-                         "autopublish": claim["autopublish"]}
+                         "autopublish": claim["autopublish"],
+                         "candidate_manifest_sha256": final["candidateManifestSha256"],
+                         "docker_manifest_digest": final["dockerManifestDigest"]}
 
 
 def emit(values: dict, env: dict) -> None:
@@ -372,7 +378,23 @@ def transitions(env: dict) -> None:
     emit(matrices, env)
 
 
-def ensure_final_tag(tag: str, commit: str, claim: dict, run=output) -> str:
+def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha256: str,
+                    docker_manifest_digest: str) -> dict:
+    if not DIGEST.fullmatch(candidate_manifest_sha256):
+        raise ValueError("Final tag candidate manifest digest is invalid")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", docker_manifest_digest):
+        raise ValueError("Final tag Docker manifest digest is invalid")
+    return {
+        "schema": 1, "version": tag[1:], "commit": commit,
+        "claimTag": claim["claim_tag"], "claimTagObject": claim["claim_object"],
+        "autopublish": claim["autopublish"],
+        "candidateManifestSha256": candidate_manifest_sha256,
+        "dockerManifestDigest": docker_manifest_digest,
+    }
+
+
+def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_sha256: str,
+                     docker_manifest_digest: str, run=output) -> str:
     """Create or verify the immutable annotated final tag."""
     require_stable_identity(tag, commit)
     ref = f"refs/tags/{tag}"
@@ -381,11 +403,9 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, run=output) -> str:
         try:
             local_object = run(["git", "rev-parse", "--verify", ref])
         except subprocess.CalledProcessError:
-            message = json.dumps({
-                "schema": 1, "version": tag[1:], "commit": commit,
-                "claimTag": claim["claim_tag"], "claimTagObject": claim["claim_object"],
-                "autopublish": claim["autopublish"],
-            }, sort_keys=True, separators=(",", ":"))
+            message = json.dumps(_final_metadata(
+                tag, commit, claim, candidate_manifest_sha256, docker_manifest_digest,
+            ), sort_keys=True, separators=(",", ":"))
             run([
                 "git", "-c", "user.name=Hermes Release Automation",
                 "-c", "user.email=release-bot@users.noreply.github.com",
@@ -408,6 +428,10 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, run=output) -> str:
         local_object = run(["git", "rev-parse", ref])
     if local_object != tag_object or run(["git", "cat-file", "-t", local_object]) != "tag":
         raise ValueError("Final stable tag object differs from the verified remote")
+    metadata = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
+    if metadata != _final_metadata(
+            tag, commit, claim, candidate_manifest_sha256, docker_manifest_digest):
+        raise ValueError("Final stable tag metadata differs from the accepted artifacts")
     return tag_object
 
 
@@ -441,7 +465,11 @@ def complete(env: dict) -> None:
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base)
-    ensure_final_tag(tag, commit, claim)
+    ensure_final_tag(
+        tag, commit, claim,
+        candidate_manifest_sha256=env["CANDIDATE_MANIFEST_SHA256"],
+        docker_manifest_digest=env.get("DOCKER_MANIFEST_DIGEST", ""),
+    )
     release_id = env.get("RELEASE_ID", "")
     if not str(release_id).isdigit():
         raise ValueError("Stable release database ID is required")

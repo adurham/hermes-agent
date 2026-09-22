@@ -27,16 +27,15 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert jobs["ci"]["uses"] == "./.github/workflows/ci.yaml"
     assert jobs["ci"]["with"]["release"] == "true"
     assert "secrets" not in jobs["ci"]
-    assert jobs["docker"]["uses"] == jobs["publish-docker"]["uses"] == jobs["promote-docker"]["uses"]
+    assert jobs["docker"]["uses"] == jobs["publish-docker"]["uses"]
     assert jobs["docker"]["with"]["release-phase"] == "test"
     assert "ci" in ancestors(jobs, "docker")
     required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged", "macos-packaged", "termux-checks", "windows-live", "candidates"}
     assert required <= ancestors(jobs, "acceptance")
     for name in ("publish-docker", "publish-bundles"):
         assert required <= ancestors(jobs, name)
-    assert {"publish-docker", "publish-bundles", "publication"} <= ancestors(jobs, "promote-docker")
-    assert "promote-docker" in ancestors(jobs, "complete")
-    assert "promote-bundles" not in jobs
+    assert {"publish-docker", "publish-bundles", "publication"} <= ancestors(jobs, "complete")
+    assert "promote-docker" not in jobs and "promote-bundles" not in jobs
     for name in ("acceptance", "publication", "complete"):
         assert jobs[name]["if"] == "always()"
 
@@ -64,6 +63,8 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
         assert jobs[name]["with"]["version"] == "${{ needs.admit.outputs.version }}"
     complete = jobs["complete"]["steps"]
     final = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Create the final tag"))
+    assert complete[final]["env"]["DOCKER_MANIFEST_DIGEST"] == \
+        "${{ needs.publish-docker.outputs.manifest-digest }}"
     render = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Render the admitted"))
     reconcile = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Reconcile ordered"))
     assert final < render < reconcile
@@ -82,8 +83,10 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     }
     reconcile = publication["jobs"]["reconcile"]
     assert reconcile["environment"] == "release-signing"
-    assert publication["permissions"] == {"contents": "write", "actions": "read"}
+    assert publication["permissions"] == {"contents": "write", "actions": "write"}
     assert "conclusion != 'success'" in reconcile["if"]
     checkout = reconcile["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     assert checkout["with"]["persist-credentials"] == "false"
+    wait = next(step for step in reconcile["steps"] if step.get("name", "").startswith("Wait before"))
+    assert wait["run"] == "sleep 900"
