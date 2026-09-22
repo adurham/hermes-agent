@@ -8,7 +8,6 @@ import os
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -320,25 +319,6 @@ class _ChildProgressRelay:
         self.batch: List[str] = []
         self.tool_count = 0  # per-subagent running counter
 
-    def _current_board(self):
-        """The SwarmBoard that OWNS this row, looked up at event-fire time.
-
-        The relay is built while the children are still being constructed — before the
-        orchestrator enters the ``SwarmBoard.maybe_start`` context that publishes the
-        board — so capturing at construction time would always see None. Resolution is
-        by row OWNERSHIP, never "which board is current": an agent can have several
-        boards active at once, and ``update()`` silently drops writes for a row id it
-        doesn't hold. Deliberately NOT memoised — the registry is also how teardown is
-        observed, so a cached board would keep absorbing writes after it was hidden.
-        """
-        if not self.subagent_id:
-            return None
-        with _quiet("Swarm board owner lookup failed: %s"):
-            from tools.swarm_board import board_for_row
-
-            return board_for_row(self.parent_agent, self.subagent_id)
-        return None
-
     def _live_identity(self) -> Dict[str, Any]:
         """The child's CURRENT model/provider + fallback state.
 
@@ -354,35 +334,32 @@ class _ChildProgressRelay:
         holder = self.agent_ref.get("agent") if self.agent_ref else None
         return effective_model_fields(holder, snapshot_model=self.model)
 
-    def _board_model_kwargs(self) -> Dict[str, Any]:
-        """Board-row model state to ride along on an existing update() call.
+    def _mirror_activity(self, **kwargs) -> bool:
+        """Mirror this child's live activity onto its registry record.
 
-        ``register()`` stamps a row's model once at dispatch; nothing else ever rewrote
-        it, so a child that silently failed over kept rendering the model it started on.
-        Rather than adding a polling thread, re-sync the row on the board writes this
-        relay ALREADY makes. Returns ``{}`` when the child isn't resolvable yet, so the
-        row keeps its registration value instead of being blanked.
+        Returns True when a CLI subagent dock is rendering this tree, so callers
+        can skip the scrollback chatter that would otherwise duplicate what the
+        dock already shows in place. False (no dock: gateway, headless, piped)
+        keeps the tree lines.
+
+        The mirror itself happens either way — the registry is not a display
+        cache, it is the single source ``delegate_task(action="list")``, the
+        gateway/TUI snapshot and the dock all read, and a headless run benefits
+        from an accurate ``status`` / ``tool_count`` just as much.
+
+        Model identity is deliberately NOT mirrored: the registry re-resolves it
+        live off the child agent on every read (``_live_model_fields``), so
+        unlike the retired swarm board's row objects — separate copies that went
+        stale the moment a child failed over, and needed an explicit re-sync
+        pushed onto every write — there is nothing here to keep in sync.
         """
-        identity = self._live_identity()
-        if identity["model"] is None:
-            return {}
-        return {
-            "model": identity["model"], "fallback_active": identity["fallback_active"],
-            "primary_model": identity["primary_model"],
-        }
+        from tools.delegate_tool_registry import mirror_subagent_activity, subagent_dock_active
 
-    def _board_update(self, **kwargs) -> Any:
-        """Write to this row's owning board (model identity re-synced), if one exists.
-
-        Returns the board when the write landed, else None — callers use that to fall
-        back to spinner chatter.
-        """
-        board = self._current_board()
-        if board is None:
-            return None
-        with _quiet("Swarm board update failed: %s"):
-            board.update(self.subagent_id, **{**kwargs, **self._board_model_kwargs()})
-        return board
+        with _quiet("Subagent activity mirror failed: %s"):
+            mirror_subagent_activity(self.subagent_id, **kwargs)
+        with _quiet("Subagent dock probe failed: %s"):
+            return subagent_dock_active(self.parent_agent)
+        return False
 
     def _prefix(self) -> str:
         # The batch tag is resolved lazily from session_ref: the relay is built
@@ -435,8 +412,8 @@ class _ChildProgressRelay:
 
     # ── Lifecycle events emitted by the orchestrator itself ──
     def _on_start(self, tool_name, preview, args, kwargs):
-        # Board row when one owns this subagent, else CLI tree chatter.
-        if self._board_update(status="running") is None and self.goal_label:
+        # Dock row when one is rendering this subagent, else CLI tree chatter.
+        if not self._mirror_activity(status="running") and self.goal_label:
             self._tree_line(f"🔀 {_short(self.goal_label, 55)}")
         self._relay("subagent.start", preview=preview or self.goal_label or "", **kwargs)
 
@@ -463,7 +440,7 @@ class _ChildProgressRelay:
         update = {"last_tool": "thinking", "last_note": _short(text, 55)}
         if _looks_like_summary_phase(text):
             update["status"] = "summarizing"
-        if self._board_update(**update) is None:
+        if not self._mirror_activity(**update):
             self._tree_line(f'💭 "{_short(text, 55)}"')
         self._relay("subagent.thinking", preview=text)
 
@@ -472,11 +449,9 @@ class _ChildProgressRelay:
         # (no tool-emoji lookup) and relay upward without re-batching.
         summary_text = tool_name or preview or ""
         if summary_text:
-            board = self._current_board()
-            if board is not None:
-                with _quiet("Swarm board update failed: %s"):
-                    board.note(self.subagent_id, summary_text)
-            else:
+            # The note lands on the registry record either way; the return value
+            # only decides whether the dock already shows it in place.
+            if not self._mirror_activity(last_note=_short(summary_text, 60)):
                 self._tree_line(f"🔀 {summary_text}")
         if self.parent_cb:
             with _quiet("Parent callback relay failed: %s"):
@@ -484,20 +459,21 @@ class _ChildProgressRelay:
 
     def _on_tool_started(self, tool_name, preview, args, kwargs):
         self.tool_count += 1
-        if self.subagent_id is not None:
-            with _active_subagents_lock:
-                rec = _active_subagents.get(self.subagent_id)
-                if rec is not None:
-                    rec["tool_count"] = self.tool_count
-                    rec["last_tool"] = tool_name or ""
         # A nested delegate_task blocks this row's own agent loop until its
         # grandchildren finish — it isn't "running" in the same sense as a normal
-        # tool call, so surface that distinctly (see swarm_board._STATUS_GLYPH).
-        board = self._board_update(
+        # tool call, so surface that distinctly (the dock renders a separate
+        # glyph for it; see hermes_cli/cli_subagent_monitor._STATUS_GLYPH).
+        #
+        # One write covers what used to be two: an inline
+        # ``_active_subagents[...]`` mutation for tool_count/last_tool plus a
+        # separate swarm-board row update for the status. Both now go to the
+        # registry record through ``mirror_subagent_activity``, under the same
+        # lock the inline block already took.
+        docked = self._mirror_activity(
             tool_count=self.tool_count, last_tool=tool_name or "",
             status="waiting_on_children" if tool_name == "delegate_task" else "running",
         )
-        if self.spinner and board is None:
+        if self.spinner and not docked:
             from agent.display import get_tool_emoji
             line = f"{get_tool_emoji(tool_name or '')} {tool_name}"
             short = _short(preview, 35) if preview else ""

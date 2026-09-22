@@ -314,16 +314,17 @@ class _Heartbeat:
         than adding a thread, and routes through ``_emit_status`` so the line reaches
         both CLI scrollback and the gateway/TUI status channel.
 
-        Suppressed while a swarm board is active: its per-child rows already render
-        model + tool + iter + elapsed in place, so emitting both duplicates state.
-        Headless / non-TUI runs (no board) still get the lines. Deliberately lean —
-        token/cost figures are surfaced on completion, not on every tick.
+        Suppressed while the CLI subagent dock is showing this tree: its per-child
+        rows already render model + status + tool + elapsed in place, so emitting
+        both duplicates state. Headless / non-TUI runs (no dock) still get the
+        lines. Deliberately lean — token/cost figures are surfaced on completion,
+        not on every tick.
         """
         with _quiet("delegate heartbeat emit failed", exc_info=True):
-            from tools.swarm_board import any_board_active
+            from tools.delegate_tool_registry import subagent_dock_active
 
             emit = getattr(self.parent_agent, "_emit_status", None)
-            if not emit or any_board_active(self.parent_agent):
+            if not emit or subagent_dock_active(self.parent_agent):
                 return
             seen = self.last_emit
             # Print only on a state change, unless we've been quiet for the backstop

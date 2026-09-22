@@ -299,48 +299,89 @@ def test_progress_events_survive_a_dead_child_weakref():
 
 
 # ---------------------------------------------------------------------------
-# board re-sync — contract 4's push half
+# dock re-sync — contract 4's push half
 # ---------------------------------------------------------------------------
 
 
-class _RecordingBoard:
-    """Captures update() kwargs so the push can be asserted without a CLI."""
+def test_progress_path_activity_carries_live_model_state_to_the_dock(monkeypatch):
+    """A failed-over child's row reports its EFFECTIVE model, live.
 
-    def __init__(self):
-        self.updates = []
+    CONTRACT CHANGE (2026-09-22), deliberate, not a weakened assertion. This
+    previously asserted a *push*: the progress path re-stamped model /
+    fallback_active / primary_model onto a ``tools/swarm_board.py`` row on every
+    write, because a board row was a separate copy that ``register()`` stamped
+    once and nothing else rewrote — so without the push a failed-over row stayed
+    frozen on its dispatch-time model.
 
-    def update(self, subagent_id, **kwargs):
-        self.updates.append((subagent_id, kwargs))
-
-    def note(self, *a, **k):
-        pass
-
-    def finish(self, *a, **k):
-        pass
-
-
-def test_progress_path_pushes_updated_model_state_to_the_board(monkeypatch):
-    """board.register() stamps the model once; nothing rewrote it, so a
-    failed-over row stayed frozen. The re-sync rides on the board writes the
-    callback already makes — no new polling thread."""
-    import tools.swarm_board as swarm_board
+    That board was retired in favour of the ``cli_subagent_monitor`` dock, whose
+    feed (``_list_payload``) re-resolves model identity LIVE off the child agent
+    on every read. There is no second copy to keep in sync, so there is no push
+    to assert; the invariant that actually matters — the surface reports what
+    the child is really running on, after a mid-run failover — is asserted here
+    directly, end to end through the real progress path and the real feed.
+    """
+    from tools.delegate_tool_registry import _list_payload
 
     parent = _CapturingParent()
-    child = _StubChild()
-    board = _RecordingBoard()
-    monkeypatch.setattr(swarm_board, "board_for_row", lambda *a, **k: board)
+    child = _StubChild(parent=parent)
+    _register("sa-fb-11", child, model="glm-5.3")
+    try:
+        agent_ref = {"agent": weakref.ref(child)}
+        cb = _build_child_progress_callback(
+            0, "goal", parent, 1, subagent_id="sa-fb-11", model="glm-5.3",
+            agent_ref=agent_ref,
+        )
+        # Fail over, then drive a real progress event through the relay.
+        child.fail_over()
+        cb("tool.started", "search_files")
 
-    agent_ref = {"agent": weakref.ref(child)}
-    cb = _build_child_progress_callback(
-        0, "goal", parent, 1, subagent_id="sa-fb-11", model="glm-5.3",
-        agent_ref=agent_ref,
-    )
-    child.fail_over()
-    cb("subagent.start")
+        row = next(
+            r for r in _list_payload(parent)["subagents"]
+            if r["subagent_id"] == "sa-fb-11"
+        )
+        # Model identity: live, not the dispatch-time snapshot.
+        assert row["model"] == "claude-opus-5"
+        assert row["fallback_active"] is True
+        assert row["primary_model"] == "glm-5.3"
+        # Activity the relay mirrored in, which the dock renders beside it.
+        assert row["tool_count"] == 1
+        assert row["last_tool"] == "search_files"
+        assert row["status"] == "running"
+    finally:
+        _unregister_subagent("sa-fb-11")
 
-    assert board.updates, "the progress path made no board write"
-    sid, kwargs = board.updates[-1]
-    assert sid == "sa-fb-11"
-    assert kwargs["model"] == "claude-opus-5"
-    assert kwargs["fallback_active"] is True
-    assert kwargs["primary_model"] == "glm-5.3"
+
+def test_nested_delegate_task_marks_the_row_waiting_on_children():
+    """A row blocked inside its own nested ``delegate_task`` is not "running".
+
+    Ported from the swarm board, which was the only surface that made this
+    distinction; without it a nested orchestrator's row looked exactly as busy
+    as the workers it was merely waiting on.
+    """
+    from tools.delegate_tool_registry import _list_payload
+
+    parent = _CapturingParent()
+    child = _StubChild(parent=parent)
+    _register("sa-fb-12", child, model="glm-5.3")
+    try:
+        cb = _build_child_progress_callback(
+            0, "goal", parent, 1, subagent_id="sa-fb-12", model="glm-5.3",
+            agent_ref={"agent": weakref.ref(child)},
+        )
+        cb("tool.started", "delegate_task")
+        row = next(
+            r for r in _list_payload(parent)["subagents"]
+            if r["subagent_id"] == "sa-fb-12"
+        )
+        assert row["status"] == "waiting_on_children"
+
+        # A normal tool call afterwards returns the row to plain "running".
+        cb("tool.started", "read_file")
+        row = next(
+            r for r in _list_payload(parent)["subagents"]
+            if r["subagent_id"] == "sa-fb-12"
+        )
+        assert row["status"] == "running"
+        assert row["tool_count"] == 2
+    finally:
+        _unregister_subagent("sa-fb-12")
