@@ -106,7 +106,8 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
 
 @pytest.mark.platforms('windows', 'posix')
 def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, capsys):
-    node_source = Path(shutil.which('node') or pytest.fail('node is required'))
+    node_source = Path(shutil.which('node') or pytest.fail('node is required')).resolve()
+    node_source_entry = node_source.parent if os.name == 'nt' else node_source.parents[1]
     npm_source = Path(shutil.which('npm.cmd' if os.name == 'nt' else 'npm') or pytest.fail('npm is required')).resolve()
     npm_source = npm_source.parent / 'node_modules/npm' if os.name == 'nt' else npm_source.parents[1]
     if not (npm_source / 'bin/npm-cli.js').is_file():
@@ -126,9 +127,11 @@ def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, cap
         target = current_target()
         runtime = root / 'store'
         node_entry = runtime / 'node-fixture'
+        # A node installation is a tree, not necessarily a standalone binary:
+        # macOS releases keep libnode beside it. Preserve the installed runtime
+        # while supplying npm separately so the dependency leg remains explicit.
+        shutil.copytree(node_source_entry, node_entry, ignore=shutil.ignore_patterns('node_modules'))
         node_binary = node_entry / ('node.exe' if os.name == 'nt' else 'bin/node')
-        node_binary.parent.mkdir(parents=True)
-        shutil.copy2(node_source, node_binary)
         bundled_npm = node_entry / ('node_modules/npm' if os.name == 'nt' else 'lib/node_modules/npm')
         shutil.copytree(npm_source, bundled_npm)
         for directory in (bundled_npm, *bundled_npm.rglob('*')):
