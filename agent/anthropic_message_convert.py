@@ -280,7 +280,13 @@ def _replay_text(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # model-visible noise next to real blocks.
     if _is_blank_text_block(b):
         return None
-    return _carry_cache_control(_text_block_with_citations(b["text"], b.get("citations")), b)
+    block = _carry_cache_control(_text_block_with_citations(b["text"], b.get("citations")), b)
+    # FORK: strip citations on this (verbatim-replay) path only. A native-web-search citation
+    # can outlive the web_search_tool_result it references once the fork's server-tool orphan
+    # pass removes a split pair. See agent/fork/anthropic_server_tool_passes.strip_replay_citations
+    # for the full rationale and the honest caveat.
+    from agent.fork.anthropic_server_tool_passes import strip_replay_citations
+    return strip_replay_citations(block)
 
 
 def _replay_thinking(b: Dict[str, Any]) -> Dict[str, Any]:
@@ -404,6 +410,10 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
         if replayed:
             return {"role": "assistant", "content": replayed}
     blocks = _extract_preserved_thinking_blocks(m)
+    # FORK: Anthropic server-side tool blocks (native web_search / tool_search) the transport
+    # stashed on the message must be re-emitted before this turn's text and tool_use blocks.
+    from agent.fork.anthropic_server_tool_passes import preserve_server_tool_blocks
+    blocks.extend(preserve_server_tool_blocks(m))
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
     # exactly the blank block).
@@ -721,6 +731,11 @@ def convert_messages_to_anthropic(
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
+    # FORK: Anthropic server-tool passes (native web_search / tool_search pairing, ordering and
+    # orphan rules). Positioned exactly where they ran in the fork's retired converter — after the
+    # thinking-signature ladder, before screenshot eviction and the blank-block scrub.
+    from agent.fork.anthropic_server_tool_passes import apply_server_tool_passes
+    apply_server_tool_passes(result)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
     return system, result

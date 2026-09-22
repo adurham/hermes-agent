@@ -3,6 +3,88 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Converter consolidation: retired the fork's vendored Anthropic converter — 2026-09-14 (owner-approved)
+
+**Decision:** adopt upstream's `agent/anthropic_message_convert.py` as the one
+true OpenAI→Anthropic message converter and delete the fork's vendored copy
+(`agent/fork/anthropic_messages.py`, 790 lines), re-applying only the genuinely
+fork-only server-tool passes on top. This supersedes the T2.2 hard-fork boundary.
+
+**Why.** T2.2 moved the fork's ~540-line converter out of `anthropic_adapter.py`
+because upstream's extract-method refactors kept tangling with it (the worst
+conflict in both 2026-05 syncs). By v2026.9.14 upstream had independently
+reimplemented essentially all of it — ordered-block replay, orphan stripping in
+both directions, `_ensure_leading_user_turn`, the full thinking-signature ladder
+(third-party / Kimi / DeepSeek / Nous Portal), screenshot eviction, blank-block
+scrubbing — carrying the fork's own rationale comments verbatim, and decomposed
+into named helpers instead of one 700-line function. The vendored copy had
+stopped being a shield and become a liability: it had silently fallen behind in
+**three** places (below). Two parallel converters were live at once — the
+adapter's forwarder pointed at the fork's, while `agent/transports/anthropic.py`
+already called upstream's directly.
+
+**What was genuinely fork-only** — seven Anthropic *server-tool* passes, existing
+purely to serve native web search (`agent/fork/anthropic_native_web_search.py`),
+now in `agent/fork/anthropic_server_tool_passes.py` with the 400 each prevents
+documented: (1) `server_tool_blocks` re-emission on the recomposition path,
+(2) tool_search result input-shape normalization, (3) cross-message result
+relocation, (4) same-message native-web_search orphan stripping, (5) dropping a
+`server_tool_use` whose result never arrived, (6) result-type canonicalization,
+(7) client-`tool_use`-to-tail reordering.
+
+**Three seams** in upstream's module, each a lazy import into the fork module:
+`_replay_text` (citation strip), `_convert_assistant_message` (pass 1), and one
+`apply_server_tool_passes(result)` call at the end of
+`convert_messages_to_anthropic` — positioned exactly where the passes ran in the
+retired converter (after the thinking-signature ladder, before screenshot
+eviction). Upstream has no extension point for this; three named seams was the
+smallest honest wiring.
+
+**Three regressions fixed for free** by adopting upstream's logic, each confirmed
+behaviorally (not just by reading code) with a 59-scenario differential harness:
+1. **`_model_name_is_deepseek_thinking` (upstream `0543fa2f1b`) was missing.** A
+   DeepSeek thinking model reached via a *generic* third-party Anthropic relay
+   took the strip-everything path, discarding the unsigned thinking blocks
+   DeepSeek requires for message-history validation. The fork keyed only on the
+   `/anthropic` URL; upstream also recognizes the model name.
+2. **`citations` on replayed text blocks** were preserved by upstream and
+   silently dropped by the fork — see the deliberate divergence note below.
+3. **`_anthropic_content_blocks` back-compat stash on tool messages** was honored
+   by upstream and ignored by the fork, which flattened a multimodal tool result
+   to its text summary and lost the image entirely.
+
+**One deliberate divergence retained.** Upstream keeps `citations` when replaying
+a stored text block; the fork strips them (`strip_replay_citations`, scoped to the
+verbatim-replay path only — the recomposition path keeps them, matching both
+upstream and the retired fork converter). Kept because pass (4) can remove a
+`web_search_tool_result` whose partner went missing, leaving a surviving text
+block with a dangling `encrypted_index`. Honest caveat recorded in the code: the
+400 the original fork comment cited was observed during orphaned web_search
+replay and never isolated to citations specifically, so this is conservative
+rather than proven-necessary; revisiting it safely needs live-API verification
+plus per-message citation invalidation. Pinned by a test so a future sync can't
+silently flip it.
+
+**Verification.** Differential harness over 59 scenarios (every pass, both replay
+paths, all endpoint families): **53/59 byte-identical** to the retired fork
+converter, and the only 6 differences are exactly the three regression fixes
+above. `comm -23` FAILED-list diff over the message-conversion / thinking /
+screenshot / orphan / native-web-search / tool_search suites: **zero new
+failures** (845 passed; the one failure, a Linux-X11 computer_use test, fails
+identically on the pre-change tree). 29 new tests in
+`tests/agent/fork/test_anthropic_server_tool_passes.py` (behaviour contracts for
+all 7 passes + the 3 regressions) and
+`tests/agent/fork/test_native_web_search_pipeline_e2e.py` (full
+`build_anthropic_kwargs` path: conversion → native tool injection → wire
+kwargs). Anti-tautology check: **11 of 23** pass-contract tests correctly fail
+against the pre-consolidation tree; the 12 that still pass are precisely the
+ones asserting deliberately-unchanged behaviour.
+
+**Merge note:** on conflict take **theirs** for upstream's converter, then
+re-apply the three seams. The 7 passes must be ported as a unit — dropping one
+without the others re-introduces a 400 (see the 2026-07-24 native-web-search
+orphan section).
+
 ### `consult` failed at exactly 420.0s, repeatedly — 2026-09-10
 
 **Symptom (user-reported, screenshot):** `consult 420.0s [error]` in the CLI.
@@ -1446,7 +1528,7 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   transports and session_search prompt text — read, not keyword-matched).
 - provider/auth layer: `agent/cc_aliases.py`, `agent/google_oauth.py`,
   `agent/gemini_cloudcode_adapter.py`, `plugins/model-providers/exo/*`,
-  `agent/fork/anthropic_messages.py`/`anthropic_recovery.py`/
+  `agent/fork/anthropic_server_tool_passes.py`/`anthropic_recovery.py`/
   `diagnostics.py`/`_mixin.py`: 0 upstream.
 - nudges/recall: `skill_recall`/`memory_recall`/`memory_session_pin`/
   `consult_nudge` re-confirmed (spot-check).
@@ -9432,7 +9514,7 @@ will never touch them.
 | `agent/fork/memory_session_pin.py` | Session-pin — keeps selected warm-tier facts visible in the system prompt for the rest of the current session (gone on restart). Exposes `memory(action='pin'/'unpin'/'pinned', fact_id=N)`. Config: `agent.memory.session_pin_max_count`/`max_chars`. |
 | `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
 | `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation + `is_anthropic_refusal` detection predicate (T2.3) |
-| `agent/fork/anthropic_messages.py` | The fork's ~540-line `convert_messages_to_anthropic` OpenAI→Anthropic converter (T2.2). Moved out of `anthropic_adapter.py` so upstream's converter refactors can't tangle with it. |
+| `agent/fork/anthropic_server_tool_passes.py` | The fork's Anthropic **server-tool** passes for native web search / tool_search (pairing, ordering, orphan and type-canonicalization rules), plus the deliberate verbatim-replay citation strip. Replaced `agent/fork/anthropic_messages.py` (the fork's ~540-line vendored `convert_messages_to_anthropic`) in the 2026-09-14 sync: upstream's `agent/anthropic_message_convert.py` converged on and overtook the fork converter, so the fork now layers ONLY these passes on top of upstream's implementation. See "Converter consolidation" below. |
 | `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
@@ -9874,12 +9956,15 @@ halves stripped, tool_search orphan-drop still works. Total in that file:
 27 passed. Regression: full anthropic sweep
 (`pytest tests/agent/ -k anthropic`) = 461 passed, 2 skipped.
 
-**Merge note:** same as the parent native-web-search section — both the new
-pass and the existing one live entirely in `agent/fork/anthropic_messages.py`,
-which never conflicts. If a future sync converges this module back to
-upstream's converter (extremely unlikely; the converter is the T2.2 hard-fork
-boundary), the orphan-stripping passes must be ported across as a unit (drop
-one without the other and you re-introduce this 400).
+**Merge note (UPDATED 2026-09-14 — the unlikely case happened):** this section's
+own prediction came true. The 2026-09-14 sync converged the converter back onto
+upstream's and deleted `agent/fork/anthropic_messages.py`; both orphan-stripping
+passes were ported across as a unit into
+`agent/fork/anthropic_server_tool_passes.py` (`_strip_web_search_orphans` and
+`_drop_unpaired_server_tool_use`, whose result-id set still spans BOTH the
+tool_search and web_search families). Regression coverage for exactly this 400 is
+pinned by `test_web_search_paired_use_not_misclassified_as_unpaired`. See
+"Converter consolidation" at the top of this file.
 
 
 ### Fork-only feature — 2026-06-18 (exo-scoped auxiliary delegation)
@@ -11624,13 +11709,21 @@ just take either side and run `uv lock`.
     SELECT still carry `anthropic_content_blocks` interleaved with upstream columns.
     These are additive "keep-both" merges (overriding the whole method would be a
     bigger liability). Consumer reads BY NAME (`row["col"]`) so column order is safe.
-* `agent/anthropic_adapter.py` — **converter defused by T2.2.** The ~540-line
-  `convert_messages_to_anthropic` (vs upstream's ~63) now lives in
-  `agent/fork/anthropic_messages.py`; the adapter has a 2-line forwarder. Upstream's
-  extract-method refactors of its own converter can no longer tangle with it — on
-  conflict, take-ours on the forwarder. The block/tool/content helpers stay in the
-  adapter (some upstream-shared); the fork converter binds them via a lazy
-  `from agent import anthropic_adapter` import (also breaks the circular dep).
+* `agent/anthropic_adapter.py` — **converter CONSOLIDATED onto upstream (2026-09-14,
+  supersedes T2.2).** The fork's vendored `convert_messages_to_anthropic` and the
+  adapter's forwarder are both GONE; the adapter now simply re-exports upstream's
+  `agent/anthropic_message_convert.convert_messages_to_anthropic` via its existing
+  module-level import. Upstream independently reimplemented everything the fork
+  converter had (ordered-block replay, orphan stripping, `_ensure_leading_user_turn`,
+  the full thinking-signature ladder, screenshot eviction) and went further, so
+  keeping a vendored copy was pure liability — it had silently fallen behind in three
+  places. The fork's genuinely fork-only server-tool passes are layered back on via
+  three small seams in upstream's module (`_replay_text`, `_convert_assistant_message`,
+  and one call at the end of `convert_messages_to_anthropic`), all delegating to
+  `agent/fork/anthropic_server_tool_passes.py`. On conflict: take-theirs on upstream's
+  converter, re-apply the three seams. The block/tool/content helpers stay in the
+  adapter (some upstream-shared) and the fork pass module binds them via a lazy import
+  (breaks the circular dep).
   Still take "ours" for CC wire-shape edits (alias translation, metadata blob, billing header, SSE observer). Tool naming: the fork DELIBERATELY does
   NOT prepend `mcp_` to bare tool names (registers MCP tools as `mcp__server__tool`);
   upstream re-adds single-underscore prefixing every few syncs — take ours, drop

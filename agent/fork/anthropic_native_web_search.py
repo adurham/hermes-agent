@@ -21,7 +21,7 @@ Meanwhile Anthropic exposes a *native server-side* web search tool
 Anthropic runs the search on its own infrastructure, and the results
 stream back as ``server_tool_use`` / ``web_search_tool_result`` blocks.
 The adapter already knows how to STORE and reconcile those result blocks
-(``anthropic_adapter`` lines ~2230-2540 + ``agent/fork/anthropic_messages.py``)
+(``anthropic_adapter`` + ``agent/fork/anthropic_server_tool_passes.py``)
 — but nothing ever put the native tool *definition* on the request wire,
 so the capability was half-built and never reachable.
 
