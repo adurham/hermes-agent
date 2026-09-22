@@ -1,175 +1,47 @@
-"""CLI confirm UI for Phase 2 auto-memory proposals.
+"""Session-exit staging of LLM-extracted memory proposals.
 
-Called from cli.py's exit handler (before shutdown_memory_provider).
-Shows the user a list of proposed memory entries, asks which to accept
-edit / reject, and commits accepted ones via the conflict-resolution
-pipeline.
+Called from cli.py's exit handler (before shutdown_memory_provider). Runs the
+session-end extraction pass, classifies each proposal against existing warm
+facts, and **stages** the results into the shared write-approval pending store
+(``<HERMES_HOME>/pending/memory/<id>.json``) for review with
+``/memory pending | show <id> | edit <id> … | approve <id>|all | reject <id>|all``.
 
-Design:
-  * BLOCKS the exit by ~1-2 LLM calls + user input. That's intentional —
-    the user is exiting; they have a moment to review.
-  * Single Q-press to accept all, single d-press to discard all, batch
-    mode for power users.
-  * Edit support: pick an entry by letter, get prompt-toolkit input
-    pre-populated with the proposal, edit and re-submit.
-  * Each entry shows the conflict verdict (NEW / DUPLICATE / REFINEMENT
-    / CONTRADICTION) before the user decides. Contradictions surface
-    BOTH the new and existing fact text.
+History: this module used to own a bespoke 689-line blocking review UI at
+session exit (letter-select, 3-second auto-accept countdown, in-place edit)
+that committed straight to the warm store — a second, parallel review system
+next to upstream's pending-approval mechanism, which already gated the agent's
+own memory writes the same way for the same reason. The two are consolidated:
+proposals now flow through upstream's store and commands, and the fork's
+genuinely additive capabilities (the conflict verdict a proposal was reviewed
+under, the side-by-side existing-fact view, edit-before-approve) ride along as
+enrichments of the pending record rather than a separate UI. See
+``tools/memory_tool.py::_apply_extraction_proposal`` for the replay side.
 
-The UI is plain-print + input(). prompt_toolkit niceties are nice but
-this runs on session exit when the prompt_toolkit session may already
-be torn down.
+What is left here is the staging adapter and a non-blocking exit notice:
+exiting a session must never wait on a human, which is the whole point of
+moving the review off the exit path.
 """
 
 from __future__ import annotations
 
 import logging
-import sys
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
 def _shorten(text: str, width: int = 90) -> str:
-    text = text.strip().replace("\n", " ")
-    if len(text) <= width:
-        return text
-    return text[: width - 3] + "..."
-
-
-def _wrap_indented(text: str, indent: str = "      ", width: int = 100) -> str:
-    """Render full text wrapped to ``width`` and prefixed by ``indent`` per line.
-
-    Used when we have only a handful of proposals and want the user to see
-    the entire content rather than a truncated head. Newlines in the source
-    are normalized to spaces first so the rendered block is one logical
-    paragraph wrapped to terminal width.
-    """
-    flat = text.strip().replace("\n", " ")
-    if len(flat) <= width:
-        return f"{indent}{flat}"
-    out: List[str] = []
-    line: str = ""
-    for word in flat.split():
-        if not line:
-            line = word
-            continue
-        if len(line) + 1 + len(word) > width:
-            out.append(line)
-            line = word
-        else:
-            line = f"{line} {word}"
-    if line:
-        out.append(line)
-    return "\n".join(f"{indent}{ln}" for ln in out)
-
-
-def _print_separator() -> None:
-    print("─" * 78, flush=True)
-
-
-def _countdown_for_review(seconds: int = 3, verb: str = "Auto-accepting all") -> bool:
-    """Block briefly with a 'press any key to review' countdown.
-
-    Returns True when the user pressed a key (caller should fall through
-    to the interactive prompt) or False when the timer ran out (caller's
-    timeout behavior is up to it — new-entry review auto-accepts on
-    timeout, cleanup review auto-DECLINES on timeout; see callers).
-
-    ``verb`` customizes the leading phrase of the on-screen countdown
-    (e.g. "Auto-accepting all" vs "Auto-declining cleanup") so the two
-    call sites don't show a misleading message for their actual timeout
-    behavior.
-
-    On a non-tty (CI, gateway, redirected stdin), returns False
-    immediately — there's no human watching to press anything, and we
-    don't want to gate session exit on a 3-second wait.
-
-    Falls back to the regular interactive prompt (returning True) on any
-    error: the goal is to never accidentally drop proposals because
-    raw-mode tty manipulation hit a corner case.
-    """
-    import sys
-    import time
-    try:
-        # Stdin must be a real tty — gateway/cron/CI all run with
-        # redirected stdin and select would block forever or report
-        # spurious readiness.
-        if not sys.stdin.isatty():
-            return False
-    except Exception:
-        return False
-
-    try:
-        import select
-        import termios
-        import tty
-    except Exception:
-        # Windows or other platforms without termios — skip the
-        # countdown, hand control straight to the interactive prompt.
-        return True
-
-    try:
-        fd = sys.stdin.fileno()
-    except (ValueError, OSError, Exception):
-        # Pseudo-files (pytest capture, some IDE consoles) raise on
-        # fileno(). Treat as non-tty and auto-accept.
-        return False
-    try:
-        original = termios.tcgetattr(fd)
-    except termios.error:
-        return True  # Not a real terminal — bail to interactive path.
-
-    interrupted = False
-    try:
-        tty.setcbreak(fd)
-        end = time.monotonic() + seconds
-        while True:
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                break
-            # Refresh the inline countdown each second.
-            ticks = int(remaining) + 1
-            sys.stdout.write(
-                f"\r{verb} in {ticks}s — press any key to review... "
-            )
-            sys.stdout.flush()
-            ready, _, _ = select.select([sys.stdin], [], [], min(1.0, remaining))
-            if ready:
-                # Drain the keystroke so it doesn't bleed into the next
-                # prompt's input buffer.
-                try:
-                    sys.stdin.read(1)
-                except Exception:
-                    pass
-                interrupted = True
-                break
-    finally:
-        try:
-            termios.tcsetattr(fd, termios.TCSADRAIN, original)
-        except termios.error:
-            pass
-        # Clear the countdown line so the next print starts on a clean row.
-        sys.stdout.write("\r" + " " * 78 + "\r")
-        sys.stdout.flush()
-    return interrupted
+    text = (text or "").strip().replace("\n", " ")
+    return text if len(text) <= width else text[: width - 3] + "..."
 
 
 def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Run conflict classification on each proposal. Returns annotated list.
+    """Annotate each proposal with a ``verdict`` (ConflictVerdict).
 
-    Each annotated entry has the original fields plus:
-        verdict: ConflictVerdict
-        outcome: dict (the would-be apply_verdict result, NOT applied)
-
-    Shows a spinner while this runs — each entry can trigger its own LLM
-    classification call (``conflict.classify``), so with several proposals
-    this step can legitimately take a few seconds with nothing else printed.
-    Without visible progress here, a user watching the terminal only ever
-    sees the static "reviewing proposals..." banner (printed by the caller)
-    for the whole duration, which reads as a hang. The spinner is
-    best-effort: any failure to construct/drive it silently degrades to no
-    progress indicator rather than blocking classification.
+    Shows a spinner: each entry can trigger its own LLM classification call
+    (``conflict.classify``), so with several proposals this legitimately takes a
+    few seconds with nothing else printed. Best-effort — any failure to build or
+    drive the spinner degrades to no progress indicator rather than blocking.
     """
     from tools.memory_extraction import conflict
 
@@ -189,8 +61,7 @@ def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 v = conflict.classify(p["content"])
             except Exception as e:
                 logger.warning("memory confirm: classify failed: %s", e)
-                from tools.memory_extraction.conflict import ConflictVerdict
-                v = ConflictVerdict(verdict="NEW", rationale=f"classify failed: {e}")
+                v = conflict.ConflictVerdict(verdict="NEW", rationale=f"classify failed: {e}")
             annotated.append({**p, "verdict": v})
     finally:
         if spinner is not None:
@@ -201,40 +72,60 @@ def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return annotated
 
 
-def _commit_proposal(p: Dict[str, Any]) -> Dict[str, Any]:
+def stage_proposal(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Stage one classified proposal into the write-approval pending store.
+
+    The payload is exactly what ``apply_memory_pending`` needs to replay the
+    write, plus the conflict metadata the reviewer needs to judge it. Returns the
+    pending record, or None if staging failed (logged, never raised — a lost
+    proposal must not take session exit down with it).
+    """
+    from tools import write_approval as wa
     from tools.memory_extraction import conflict
-    return conflict.apply_verdict(
-        p["verdict"], p, auto_commit=True,
-    )
+
+    attached = proposal.get("verdict")
+    verdict: conflict.ConflictVerdict = (
+        attached if isinstance(attached, conflict.ConflictVerdict)
+        else conflict.ConflictVerdict(verdict="NEW", rationale="unclassified proposal"))
+    tier = (proposal.get("tier") or "warm").lower()
+    payload = {
+        "action": "extraction_proposal",
+        "tier": tier,
+        "content": proposal.get("content") or "",
+        "category": proposal.get("category") or "general",
+        "tags": proposal.get("tags") or "",
+        "rationale": proposal.get("rationale") or "",
+        "conflict": conflict.verdict_to_dict(verdict),
+    }
+    if tier == "hot":
+        payload["target"] = proposal.get("target") or "memory"
+    try:
+        return wa.stage_write(
+            wa.MEMORY, payload,
+            summary=f"[{verdict.verdict}] {_shorten(payload['content'], 120)}",
+            origin=wa.current_origin())
+    except Exception as e:
+        logger.warning("memory confirm: failed to stage proposal: %s", e, exc_info=True)
+        return None
 
 
 def confirm_and_commit(
     session_id: str,
     final_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Run the confirm UI. Returns a summary dict matching on_session_end.
+    """Run the session-end extraction pass and stage its proposals for review.
 
-    Safe to call when there are no pending proposals — just returns a
-    summary with all-zero counts.
+    Returns the ``on_session_end`` summary dict. Safe to call with no pending
+    proposals — returns all-zero counts. Never blocks on user input.
     """
     summary: Dict[str, Any] = {
-        "session_id": session_id,
-        "buffered": 0,
-        "final_proposed": 0,
-        "committed": 0,
-        "skipped": 0,
-        "cleanup_proposed": 0,
-        "cleanup_applied": 0,
-        "cleanup_skipped": 0,
-        "actions": [],
-        "cleanup_actions": [],
+        "session_id": session_id, "buffered": 0, "final_proposed": 0, "committed": 0,
+        "skipped": 0, "cleanup_proposed": 0, "cleanup_applied": 0, "cleanup_skipped": 0,
+        "actions": [], "cleanup_actions": [], "staged": 0,
     }
     if not session_id:
         return summary
 
-    # Step 1: get the current buffer + run final extraction pass to
-    # reconcile. We piggyback on the existing on_session_end logic but
-    # pass our own confirm_callback.
     try:
         from tools.memory_extraction import extractor, buffer as _buf
     except Exception as e:
@@ -244,26 +135,13 @@ def confirm_and_commit(
     if not extractor.is_enabled():
         return summary
 
-    buffered = _buf.get_session_entries(session_id)
-    if not buffered and not final_messages:
+    if not _buf.get_session_entries(session_id) and not final_messages:
         return summary
 
-    print()
-    _print_separator()
-    print("Memory: reviewing proposals from this session...")
-    _print_separator()
+    staged: List[Dict[str, Any]] = []
 
-    # The session-end extraction pass below makes a real LLM call
-    # (extractor._call_extraction_llm via on_session_end) that can take
-    # several seconds — previously nothing printed between the banner
-    # above and the proposal list, which read as a hang (the process
-    # looked frozen even though it was actively waiting on the LLM).
-    # Spinner covers ONLY that initial extraction pass: on_session_end
-    # calls confirm_callback synchronously partway through, and
-    # _interactive_review prints its own output (+ its own classify
-    # spinner) — so the callback stops this spinner as its first action,
-    # before _interactive_review renders anything, to avoid two spinners
-    # animating over each other on the same terminal line.
+    # The session-end extraction pass makes a real LLM call that can take several
+    # seconds; without a spinner the process reads as frozen.
     _spinner = None
     try:
         from agent.display import KawaiiSpinner
@@ -272,418 +150,60 @@ def confirm_and_commit(
     except Exception:
         _spinner = None
 
-    def _confirm_callback(
+    def _stage_callback(
         proposals: List[Dict[str, Any]],
         cleanup: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        # Stop the extraction spinner before _classify_proposals starts its own,
+        # so two spinners never animate over the same terminal line.
         if _spinner is not None:
             try:
                 _spinner.stop("")
             except Exception:
                 pass
-        approved = _interactive_review(proposals)
-        approved_cleanup = _review_cleanup(cleanup or [])
-        return {"entries": approved, "cleanup": approved_cleanup}
+        for p in _classify_proposals(proposals):
+            record = stage_proposal(p)
+            if record is not None:
+                staged.append(record)
+        # Approve nothing inline: every proposal is now owned by the pending
+        # store, and returning it here would commit it a second time.
+        return {"entries": [], "cleanup": []}
 
     try:
         summary = extractor.on_session_end(
             session_id, final_messages or [],
-            interactive=True,
-            confirm_callback=_confirm_callback,
+            interactive=True, confirm_callback=_stage_callback,
         )
     finally:
-        # No-op if the callback already stopped it (the common case); this
-        # only fires when on_session_end returned/raised before ever
-        # invoking confirm_callback (e.g. the extraction LLM call itself
-        # failed) — the spinner's own ``running`` guard makes a repeat
-        # stop() call harmless either way.
         if _spinner is not None:
             try:
                 _spinner.stop("")
             except Exception:
                 pass
 
-    print()
-    _print_separator()
-    proposed_total = summary["final_proposed"]
-    proposed_noun = "entry" if proposed_total == 1 else "entries"
-    print(
-        f"Memory: committed {summary['committed']} of "
-        f"{proposed_total} proposed {proposed_noun}."
-    )
-    if summary["committed"]:
-        for action in summary["actions"]:
-            tag = {
-                "stored": "+",
-                "refined": "~",
-                "deduplicated": "=",
-                "superseded": "!",
-            }.get(action.get("outcome", ""), "?")
-            print(f"  {tag} {_shorten(action.get('content') or '')}")
-    if summary.get("cleanup_applied"):
-        print(
-            f"Memory: applied {summary['cleanup_applied']} of "
-            f"{summary.get('cleanup_proposed', 0)} proposed cleanup action(s)."
-        )
-        for action in summary.get("cleanup_actions") or []:
-            tag = {
-                "cleanup_removed": "-",
-                "cleanup_merged": "&",
-                "cleanup_merged_source_retained": "&",
-            }.get(action.get("outcome", ""), "?")
-            print(f"  {tag} fact {action.get('fact_id')}: {action.get('reason') or ''}")
-    _print_separator()
+    summary["staged"] = len(staged)
+    # ``skipped`` counts proposals the extractor did not commit; staged ones are
+    # deferred rather than dropped, so don't report them as lost.
+    if staged:
+        summary["skipped"] = max(0, summary.get("skipped", 0) - len(staged))
+    _print_staged_notice(staged, summary)
     return summary
 
 
-def _render_cleanup_action(i: int, action: Dict[str, Any]) -> None:
-    """Print one cleanup proposal.
+def _print_staged_notice(staged: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
+    """Non-blocking exit notice: what was staged, and how to review it.
 
-    Cleanup uses its OWN letter sequence starting at ``a``, independent of
-    the new-entry list, so the two review steps never share a namespace and
-    a stray letter from the first prompt can't select a deletion in the
-    second.
+    Deliberately a notice and not a prompt — session exit never waits on a human.
     """
-    letter = chr(ord("a") + i)
-    kind = (action.get("action") or "").lower()
-    tag = "- REMOVE" if kind == "remove" else "& MERGE"
-    category = action.get("category") or "general"
-    print(f"  [{letter}] [{tag}] [warm:{category}] fact {action.get('fact_id')}")
-    print(_wrap_indented(action.get("content") or ""))
-    if kind == "merge":
-        target = action.get("merge_target_content") or ""
-        if target:
-            print(
-                f"      into fact {action.get('merge_target_id')}: "
-                f"{_shorten(target, 80)}"
-            )
-        merged = action.get("merged_content") or ""
-        if merged:
-            print(f"      result:   {_shorten(merged, 80)}")
-    if action.get("reason"):
-        print(f"      reason: {action['reason']}")
-
-
-def _review_cleanup(
-    cleanup: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Interactive review of proposed cleanup of EXISTING warm facts.
-
-    Rendered as a separate, clearly-labelled "Proposed cleanup (N):" section
-    AFTER the new-entry review, with its own ``a, b, c`` letter sequence.
-
-    Deliberate differences from the new-entry flow, because these actions
-    DELETE or rewrite facts the user already has:
-
-      * There IS an auto-decline countdown (mirrors the new-entry flow's
-        auto-accept), but it times out to the SAFE default — 'none' — not
-        to applying the cleanup. A silent/away user never has facts
-        deleted or rewritten out from under them; they're just prompted
-        again next session. Pressing any key during the countdown falls
-        through to the normal explicit-selection prompt below (which
-        still has no blank-input default — Enter just re-prompts there).
-      * The default on EOF / Ctrl-C / non-tty stdin is to approve NOTHING.
-      * Accepting new entries via 'all' in the previous step does NOT
-        accept cleanup — the two lists are never mixed.
-    """
-    if not cleanup:
-        return []
-
-    try:
-        if not sys.stdin.isatty():
-            # No human watching — never delete facts unattended.
-            logger.debug(
-                "memory cleanup: non-tty stdin, dropping %d proposal(s)", len(cleanup)
-            )
-            return []
-    except Exception:
-        return []
-
-    remaining = list(cleanup)
-
+    if summary.get("cleanup_applied"):
+        print(f"Memory: applied {summary['cleanup_applied']} cleanup action(s).")
+    if not staged:
+        return
+    noun = "proposal" if len(staged) == 1 else "proposals"
     print()
-    _print_separator()
-    print(f"Proposed cleanup ({len(remaining)}) of EXISTING stored facts:")
-    print()
-    for i, action in enumerate(remaining):
-        _render_cleanup_action(i, action)
-    print()
-
-    # Auto-decline countdown. Unlike the new-entry countdown, timing out
-    # here means dropping ALL cleanup proposals (safe default) — never
-    # auto-applying a deletion/merge. Any keypress falls through to the
-    # explicit prompt below.
-    if not _countdown_for_review(seconds=8, verb="Auto-declining cleanup"):
-        print("(no input — cleanup skipped, no facts changed)")
-        return []
-
-    print("Choices:")
-    print("  letters (e.g. 'a c') — apply those cleanup actions")
-    print("  'all' — apply every cleanup action listed")
-    print("  'none' — apply nothing (default; proposals dropped)")
-    print()
-
-    while True:
-        try:
-            raw = input("Apply which cleanup? [none]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\n(skipping cleanup — no facts changed)")
-            return []
-
-        if not raw or raw in ("none", "skip"):
-            return []
-
-        if raw == "all":
-            return remaining
-
-        chosen: List[Dict[str, Any]] = []
-        invalid = False
-        for tok in raw.replace(",", " ").split():
-            if len(tok) != 1:
-                print(f"  invalid token {tok!r}")
-                invalid = True
-                break
-            idx = ord(tok) - ord("a")
-            if not (0 <= idx < len(remaining)):
-                print(f"  out of range: {tok!r}")
-                invalid = True
-                break
-            chosen.append(remaining[idx])
-        if not invalid:
-            return chosen
-
-
-def _interactive_review(
-    proposals: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Interactive triage. Returns the user-approved subset.
-
-    Each proposal is enriched with a conflict verdict before the user
-    sees it so they can make informed decisions on REFINEMENT /
-    CONTRADICTION cases.
-
-    Display rules:
-      - When N <= 3, content is shown in full (wrapped to terminal width)
-        rather than truncated, since the user can easily read all of it.
-      - When N >= 4, content is shortened to fit one line; the user can
-        run ``show <letter>`` to expand a single entry.
-      - Each entry shows its tier+target (warm-tier categories or hot
-        tier targets like ``hot:user`` / ``hot:memory``) so accept-all
-        doesn't quietly bloat the always-loaded prompt budget.
-      - Existing entries with semantic overlap (REFINEMENT / DUPLICATE /
-        CONTRADICTION) display the matched fact text inline so the user
-        can spot near-duplicate accretion before approving.
-
-    Auto-accept countdown:
-      - After rendering the proposals, a 3-second "press any key to
-        review" countdown runs. If the user presses anything, control
-        falls through to the interactive prompt as before. If the timer
-        expires, all proposals are auto-accepted. This is the fast path
-        for the common case where the user is just exiting and the
-        proposals look fine; the explicit prompt remains available for
-        edits / rejects / partial accepts.
-      - Non-tty stdin (gateway, cron, CI) skips the countdown and
-        auto-accepts immediately — no human watching means no point
-        gating exit on a wall-clock wait.
-    """
-    if not proposals:
-        return []
-
-    annotated = _classify_proposals(proposals)
-    n = len(annotated)
-    show_full = n <= 3
-
-    # Grammar: "1 entry" vs "N entries"
-    noun = "entry" if n == 1 else "entries"
-
-    print()
-    print(f"{n} proposed memory {noun} from this session:")
-    print()
-
-    for i, p in enumerate(annotated):
-        _render_proposal(i, p, show_full=show_full)
-
-    print()
-
-    # Auto-accept countdown. Returns True when the user wants to review
-    # interactively, False when the timer expired and we should accept
-    # everything as-shown.
-    if not _countdown_for_review(seconds=3):
-        return annotated
-
-    print("Choices:")
-    if show_full:
-        print("  letters (e.g. 'a c') — accept those entries")
-    else:
-        print("  letters (e.g. 'a c d') — accept those entries")
-        print("  'show <letter>' — print one entry's full content")
-    print("  'all' — accept everything")
-    print("  'none' — reject everything (proposals dropped)")
-    print("  'reject <letter>' — drop a single entry, then re-prompt")
-    print("  'edit <letter>' — edit one entry's content before deciding")
-    print("  'skip' — leave proposals in the buffer for next session")
-    print()
-
-    # Prompt default. For N <= 3, "all" is the safe default (the user has
-    # seen every entry in full). For larger batches, force an explicit
-    # selection — pressing Enter with no input is a no-op.
-    default_label = "all" if show_full else "no default — pick letters"
-    prompt_str = f"Accept which? [{default_label}]: "
-
-    while True:
-        try:
-            raw = input(prompt_str).strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print("\n(skipping — proposals remain buffered)")
-            return []
-
-        if not raw:
-            if show_full:
-                return annotated
-            print("  pick letters, or type 'all' / 'none' / 'skip'")
-            continue
-
-        if raw == "all":
-            return annotated
-
-        if raw == "none":
-            return []
-
-        if raw == "skip":
-            # Re-stash will happen automatically when we return [] AND
-            # auto_commit_session_end is False.
-            return []
-
-        if raw.startswith("show "):
-            idx = _resolve_letter(raw.split(" ", 1)[1].strip(), len(annotated))
-            if idx is None:
-                continue
-            print()
-            _render_proposal(idx, annotated[idx], show_full=True)
-            print()
-            continue
-
-        if raw.startswith("reject "):
-            idx = _resolve_letter(raw.split(" ", 1)[1].strip(), len(annotated))
-            if idx is None:
-                continue
-            dropped = annotated.pop(idx)
-            print(f"  dropped: {_shorten(dropped['content'])}")
-            if not annotated:
-                print("  (no entries left)")
-                return []
-            # Re-render the remaining list with fresh letters and re-prompt.
-            print()
-            print(f"{len(annotated)} entries remaining:")
-            print()
-            new_show_full = len(annotated) <= 3
-            for j, q in enumerate(annotated):
-                _render_proposal(j, q, show_full=new_show_full)
-            print()
-            continue
-
-        if raw.startswith("edit "):
-            idx = _resolve_letter(raw.split(" ", 1)[1].strip(), len(annotated))
-            if idx is None:
-                continue
-            current = annotated[idx]["content"]
-            print(f"\nCurrent: {current}")
-            try:
-                new_text = input("New text (blank = keep existing): ").strip()
-            except (EOFError, KeyboardInterrupt):
-                continue
-            if new_text:
-                annotated[idx]["content"] = new_text
-                # Re-run classification with the edited content
-                from tools.memory_extraction import conflict
-                annotated[idx]["verdict"] = conflict.classify(new_text)
-                print(f"  edited; new verdict: {annotated[idx]['verdict'].verdict}")
-            continue
-
-        # Letter list
-        chosen: List[Dict[str, Any]] = []
-        invalid = False
-        for tok in raw.replace(",", " ").split():
-            if len(tok) != 1:
-                print(f"  invalid token {tok!r}")
-                invalid = True
-                break
-            idx = ord(tok) - ord("a")
-            if not (0 <= idx < len(annotated)):
-                print(f"  out of range: {tok!r}")
-                invalid = True
-                break
-            chosen.append(annotated[idx])
-        if not invalid:
-            return chosen
-
-
-def _resolve_letter(letter: str, count: int) -> Optional[int]:
-    """Validate a single-letter selector, print an error and return None on failure."""
-    if not letter or len(letter) != 1:
-        print(f"  invalid letter {letter!r}")
-        return None
-    idx = ord(letter) - ord("a")
-    if not (0 <= idx < count):
-        print(f"  out of range: {letter!r}")
-        return None
-    return idx
-
-
-def _render_proposal(i: int, p: Dict[str, Any], *, show_full: bool) -> None:
-    """Print one annotated proposal with tier indicator + dedup hint.
-
-    ``show_full=True`` renders the content wrapped to terminal width;
-    ``False`` truncates to one line (used in dense lists).
-    """
-    letter = chr(ord("a") + i)
-    v = p["verdict"]
-    verdict_tag = {
-        "NEW": "+ NEW",
-        "DUPLICATE": "= DUPE",
-        "REFINEMENT": "~ REFINE",
-        "CONTRADICTION": "! CONFLICT",
-    }.get(v.verdict, v.verdict)
-
-    # Tier indicator. All Phase 2 auto-extracted proposals currently land
-    # in the warm tier (extractor.on_session_end → conflict.apply_verdict
-    # → warm_store.add). If a proposal carries an explicit ``tier``/``target``
-    # field (e.g. from a future hot-tier extractor), surface it here
-    # instead so the user can tell warm:preferences from hot:user at a
-    # glance.
-    tier = (p.get("tier") or "warm").lower()
-    if tier == "hot":
-        tier_label = f"hot:{p.get('target') or 'memory'}"
-    else:
-        tier_label = f"warm:{p.get('category') or 'general'}"
-
-    if show_full:
-        # Header line with metadata, then the full content wrapped below.
-        print(f"  [{letter}] [{verdict_tag}] [{tier_label}]")
-        print(_wrap_indented(p["content"]))
-    else:
-        print(f"  [{letter}] [{verdict_tag}] [{tier_label}] {_shorten(p['content'])}")
-
-    if v.verdict == "REFINEMENT" and v.matched_content:
-        print(f"      existing: {_shorten(v.matched_content, 80)}")
-        if v.merged_content:
-            print(f"      merged:   {_shorten(v.merged_content, 80)}")
-
-    # Dedup hint for non-REFINEMENT/DUPLICATE/CONTRADICTION cases. When
-    # the conflict classifier returned NEW but FTS5 surfaced candidates
-    # with token overlap, flag the closest one so the user can manually
-    # spot near-duplicate accretion the LLM missed.
-    if v.verdict == "NEW" and v.candidates:
-        top = v.candidates[0]
-        existing_text = top.get("content") or ""
-        if existing_text:
-            print(f"      similar to existing: {_shorten(existing_text, 80)}")
-
-    if v.verdict == "DUPLICATE" and v.matched_content:
-        print(f"      duplicate of: {_shorten(v.matched_content, 80)}")
-
-    if v.verdict == "CONTRADICTION" and v.matched_content:
-        print(f"      conflicts with: {_shorten(v.matched_content, 80)}")
-
-    if p.get("rationale"):
-        print(f"      reason: {p['rationale']}")
+    print(f"Memory: staged {len(staged)} {noun} for review.")
+    for record in staged[:5]:
+        print(f"  {record['id']}  {record.get('summary', '')}")
+    if len(staged) > 5:
+        print(f"  … and {len(staged) - 5} more")
+    print("  Review: /memory pending   Apply all: /memory approve all")

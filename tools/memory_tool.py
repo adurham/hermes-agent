@@ -724,12 +724,60 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
     return {"success": False, "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
 
 
+def _apply_extraction_proposal(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+    """Replay a staged LLM-extraction proposal (``/memory approve`` on a session-exit review).
+
+    Unlike the hot-tier actions around it, a warm proposal is applied through the
+    extraction pipeline's conflict resolver so DUPLICATE/REFINEMENT/CONTRADICTION
+    still do the right thing (dedupe / merge into the matched fact / supersede it)
+    instead of blindly appending a new row.
+
+    The verdict is rehydrated from the record, never recomputed: the user approved
+    the verdict they were SHOWN at stage time, and the classifier is an LLM whose
+    second roll can disagree with its first (see ``conflict.verdict_to_dict``).
+    """
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return {"success": False, "error": "Staged proposal has no content."}
+
+    # tier=hot proposals are ordinary MEMORY.md/USER.md adds — no warm store involved.
+    if (payload.get("tier") or "warm").lower() == "hot":
+        return _STORE_ACTIONS["add"][0](store, payload.get("target") or "memory", content, "")
+
+    try:
+        from tools.memory_extraction import conflict
+    except Exception as e:
+        return {"success": False, "error": f"Memory extraction unavailable: {e}"}
+
+    verdict = conflict.verdict_from_dict(payload.get("conflict"))
+    try:
+        # auto_commit=True: the review already happened (at stage time, and again
+        # when the user ran /memory approve) — a CONTRADICTION must now be applied,
+        # not deferred back into a second pending state.
+        outcome = conflict.apply_verdict(verdict, {
+            "content": content,
+            "category": payload.get("category") or "general",
+            "tags": payload.get("tags") or "",
+        }, auto_commit=True)
+    except Exception as e:
+        logger.warning("Failed to apply staged memory proposal: %s", e, exc_info=True)
+        return {"success": False, "error": str(e)}
+    return {"success": True, "tier": "warm", "verdict": verdict.verdict,
+            "outcome": outcome.get("action"), "fact_id": outcome.get("fact_id")}
+
+
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve)."""
     action, target = payload.get("action"), payload.get("target", "memory")
+    # Warm-tier extraction proposals don't write through MemoryStore at all, so the
+    # hot-tier target check below doesn't apply to them (their 'target' is unset).
+    if action == "extraction_proposal" and (payload.get("tier") or "warm").lower() != "hot":
+        return _apply_extraction_proposal(payload, store)
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
+    if action == "extraction_proposal":
+        return _apply_extraction_proposal(payload, store)
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action not in _STORE_ACTIONS:
