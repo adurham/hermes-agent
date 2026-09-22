@@ -116,13 +116,6 @@ try:
 except Exception:
     msvcrt = None
 
-# Fork-only provider endpoints (not in hermes_cli/auth_constants.py upstream).
-# Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
-DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
-
-# Google Antigravity OAuth (Antigravity Code Assist backend)
-DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL = "antigravity-pa://google"
-
 
 def is_actual_local_base_url(base_url: str) -> bool:
     """Return True for Actual's loopback local API endpoint."""
@@ -190,13 +183,6 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
         "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
     ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
-    # Fork-only: Google Cloud Code Assist / Antigravity OAuth providers.
-    ProviderConfig(
-        "google-gemini-cli", "agy/antigravity cli", "oauth_external",
-        inference_base_url=DEFAULT_GEMINI_CLOUDCODE_BASE_URL),
-    ProviderConfig(
-        "google-antigravity", "Google Antigravity (OAuth)", "oauth_external",
-        inference_base_url=DEFAULT_ANTIGRAVITY_CLOUDCODE_BASE_URL),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
     ("copilot", "GitHub Copilot", DEFAULT_GITHUB_MODELS_BASE_URL,
      ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), "COPILOT_API_BASE_URL"),
