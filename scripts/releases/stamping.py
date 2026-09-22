@@ -7,6 +7,8 @@ placeholder version.
 """
 from __future__ import annotations
 
+import argparse
+import datetime as dt
 import re
 from pathlib import Path
 
@@ -29,9 +31,16 @@ def stamp(tree: Path, version: str, release_date: str) -> list[Path]:
             written.append(path)
 
     init = tree / "hermes_cli" / "__init__.py"
-    _rewrite(init, r'__version__\s*=\s*"[^"]+"', f'__version__ = "{version}"')
     _rewrite(init, r'__release_date__\s*=\s*"[^"]+"', f'__release_date__ = "{release_date}"')
     touch(init)
+
+    generated = tree / "hermes_cli" / "_version.py"
+    generated.write_text(
+        '"""Generated release identity. Do not commit."""\n\n'
+        f'__version__ = "{version}"\n',
+        encoding="utf-8",
+    )
+    written.append(generated)
 
     pyproject = tree / "pyproject.toml"
     _rewrite(pyproject, r'^version\s*=\s*"[^"]+"', f'version = "{version}"', count=1, flags=re.MULTILINE)
@@ -66,3 +75,17 @@ def stamp(tree: Path, version: str, release_date: str) -> list[Path]:
         touch(path)
 
     return written
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tree", type=Path, required=True)
+    parser.add_argument("--version", required=True)
+    now = dt.datetime.now(dt.UTC)
+    parser.add_argument("--release-date", default=f"{now.year}.{now.month}.{now.day}")
+    args = parser.parse_args(argv)
+    stamp(args.tree.resolve(), args.version, args.release_date)
+
+
+if __name__ == "__main__":
+    main()

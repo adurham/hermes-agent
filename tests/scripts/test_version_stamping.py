@@ -13,7 +13,7 @@ import pytest
 def _tree(root: Path) -> None:
     (root / "hermes_cli").mkdir()
     (root / "hermes_cli" / "__init__.py").write_text(
-        '__version__ = "0.0.0"\n__release_date__ = "2026.1.1"\n', encoding="utf-8")
+        '__release_date__ = "2026.1.1"\n', encoding="utf-8")
     (root / "pyproject.toml").write_text('version = "0.0.0"\n', encoding="utf-8")
     desktop = root / "apps" / "desktop"
     desktop.mkdir(parents=True)
@@ -51,8 +51,8 @@ def test_stamping_writes_the_build_tree_and_leaves_the_source_tree(tmp_path):
     assert (source / "pyproject.toml").read_text(encoding="utf-8") == before
     assert 'version = "0.21.5"' in (build / "pyproject.toml").read_text(encoding="utf-8")
     init = (build / "hermes_cli" / "__init__.py").read_text(encoding="utf-8")
-    assert '__version__ = "0.21.5"' in init
     assert '__release_date__ = "2026.9.22"' in init
+    assert '__version__ = "0.21.5"' in (build / "hermes_cli" / "_version.py").read_text(encoding="utf-8")
     assert json.loads((build / "apps" / "desktop" / "package.json").read_text())["version"] == "0.21.5"
     # The lockfile root stays; only the desktop workspace entry moves.
     lock = json.loads((build / "package-lock.json").read_text())

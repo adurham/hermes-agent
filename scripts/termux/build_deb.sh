@@ -32,6 +32,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 REPO=""
 TAG=""
 COMMIT_MODE=""
+RELEASE_COMMIT=""
 PAYLOAD=""
 OUT=""
 TUI_PRODUCT=""
@@ -45,6 +46,7 @@ while [ "$#" -gt 0 ]; do
         --repo) REPO="${2:?}"; shift 2 ;;
         --tag) TAG="${2:?}"; shift 2 ;;
         --commit) COMMIT_MODE="${2:?}"; shift 2 ;;
+        --release-commit) RELEASE_COMMIT="${2:?}"; shift 2 ;;
         --payload) PAYLOAD="${2:?}"; shift 2 ;;
         --tui-product) TUI_PRODUCT="${2:?}"; shift 2 ;;
         --out) OUT="${2:?}"; shift 2 ;;
@@ -52,7 +54,9 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 [ -n "$REPO" ] && [ -n "$PAYLOAD" ] && [ -n "$OUT" ] || usage
-{ [ -n "$TAG" ] || [ -n "$COMMIT_MODE" ]; } && { [ -z "$TAG" ] || [ -z "$COMMIT_MODE" ]; } || usage
+{ [ -n "$TAG" ] || [ -n "$COMMIT_MODE" ]; } || usage
+{ [ -z "$TAG" ] || [ -z "$COMMIT_MODE" ]; } || usage
+[ -z "$RELEASE_COMMIT" ] || { [ -n "$TAG" ] && [ -z "$COMMIT_MODE" ]; } || usage
 
 for tool in python3 git docker dpkg-deb jq; do
     command -v "$tool" >/dev/null || fail "missing tool: $tool"
@@ -66,26 +70,33 @@ REPO_ABS="$(cd "$REPO" && pwd)"
 PAYLOAD_ABS="$(cd "$PAYLOAD" && pwd)"
 
 # Resolve source identity before writing output or changing payload files.
-# Commit mode requires the checkout HEAD and staged version to agree.
-if [ -n "$COMMIT_MODE" ]; then
-    [[ "$COMMIT_MODE" =~ ^[a-f0-9]{40}$ ]] || fail "--commit requires an exact full 40-character SHA"
+# Commit and pre-final stable modes require the checkout HEAD and staged version to agree.
+if [ -n "$COMMIT_MODE" ] || [ -n "$RELEASE_COMMIT" ]; then
+    SELECTED_COMMIT="${RELEASE_COMMIT:-$COMMIT_MODE}"
+    [[ "$SELECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]] || fail "commit identity requires an exact full 40-character SHA"
     COMMIT="$(git -C "$REPO_ABS" rev-parse HEAD)" || fail "not a git checkout: $REPO_ABS"
-    [ "$COMMIT" = "$COMMIT_MODE" ] || fail "checkout HEAD $(echo "$COMMIT" | cut -c1-12) is not the requested commit"
-    PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$PAYLOAD_ABS/app/pyproject.toml" <<'PY'
+    [ "$COMMIT" = "$SELECTED_COMMIT" ] || fail "checkout HEAD $(echo "$COMMIT" | cut -c1-12) is not the requested commit"
+    PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$PAYLOAD_ABS/app/pyproject.toml" "$TAG" <<'PY'
 import sys, tomllib
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from scripts.releases.commit_build import version_at
-version = version_at(Path(sys.argv[2]), sys.argv[3])
+version = sys.argv[5][1:] if sys.argv[5] else version_at(Path(sys.argv[2]), sys.argv[3])
 staged = tomllib.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))["project"]["version"]
 if staged != version:
     raise ValueError("payload version does not match the admitted commit")
 print(version)
 PY
     )" || fail "commit version validation failed"
-    DEB_VERSION="${PY_VERSION}+commit${COMMIT_MODE:0:12}"
-    export HERMES_PAYLOAD_TAG=""
-    export HERMES_BUILD_COMMIT="$COMMIT_MODE"
+    if [ -n "$RELEASE_COMMIT" ]; then
+        DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
+        export HERMES_PAYLOAD_TAG="$TAG"
+        unset HERMES_BUILD_COMMIT
+    else
+        DEB_VERSION="${PY_VERSION}+commit${COMMIT_MODE:0:12}"
+        export HERMES_PAYLOAD_TAG=""
+        export HERMES_BUILD_COMMIT="$COMMIT_MODE"
+    fi
 else
     unset HERMES_BUILD_COMMIT
     COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
@@ -106,7 +117,7 @@ PKG="hermes-agent"
 
 # [1] Version derivation: tag mode uses the pure function in deb_version.py
 # (tested separately). Commit mode derives it from pyproject above.
-if [ -z "$COMMIT_MODE" ]; then
+if [ -z "$COMMIT_MODE" ] && [ -z "$RELEASE_COMMIT" ]; then
     log "Deriving Debian version from tag $TAG"
     DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
 fi

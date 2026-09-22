@@ -99,7 +99,7 @@ class BuildRequest:
     @classmethod
     def create(cls, source: Path, *, tag: str | None, commit: str | None, variant: str,
                work: Path, cache: Path, bundle_env: dict[str, str | None],
-               channel_request: dict | None = None) -> BuildRequest:
+               channel_request: dict | None = None, release_commit: str | None = None) -> BuildRequest:
         from pm.store import current_target
         from scripts.bundles.desktop import release_version
         from scripts.releases.bundle_env import validate
@@ -139,7 +139,8 @@ class BuildRequest:
         else:
             assert tag is not None  # The exclusive selection was checked above.
             version = release_version(source, tag)
-            commit = git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
+            commit = require_commit(release_commit) if release_commit else \
+                git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         require_source(source, commit)
         if channel_request is not None:
             if version != channel_request["sourceVersion"]:

@@ -47,3 +47,22 @@ def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
     assert checks <= set(jobs["all-checks-pass"]["needs"])
     assert jobs["e2e-desktop"]["if"] == "false"
     assert "workflow_call" in workflow("ci.yaml")["on"]
+
+
+def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase():
+    release = workflow("stable-release.yml")
+    jobs = release["jobs"]
+    assert release["on"]["workflow_dispatch"]["inputs"]["autopublish"]["required"] == "true"
+    assert {"claim-tag", "claim-object", "tag", "commit", "version", "release-id"} <= \
+        set(jobs["admit"]["outputs"])
+    for name in ("candidates", "publish-bundles", "promote-bundles"):
+        call = jobs[name]["with"]
+        assert call["tag"] == "${{ needs.admit.outputs.tag }}"
+        assert call["claim-tag"] == "${{ needs.admit.outputs.claim-tag }}"
+        assert call["claim-object"] == "${{ needs.admit.outputs.claim-object }}"
+    for name in ("docker", "nix", "pm-bundle"):
+        assert jobs[name]["with"]["version"] == "${{ needs.admit.outputs.version }}"
+    complete = jobs["complete"]["steps"]
+    final = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Create the final tag"))
+    render = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Render the admitted"))
+    assert final < render

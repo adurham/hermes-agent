@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,14 +23,10 @@ def capture(argv: list[str], repo: Path) -> str:
     return subprocess.check_output(argv, cwd=repo, text=True, encoding="utf-8").strip()
 
 
-def release_version(repo: Path, tag: str) -> str:
-    from hermes_cli.update_channel import is_canary_tag
+def release_version(_repo: Path, tag: str) -> str:
     from scripts.termux.deb_version import channel_for_tag
 
     channel_for_tag(tag)  # shared release tag grammar, not a second version parser
-    version = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8-sig"))["project"]["version"]
-    if not is_canary_tag(tag) and tag != "v" + version:
-        raise ValueError(f"tag {tag} does not match project version {version}")
     return tag[1:]
 
 
@@ -117,6 +112,7 @@ def main() -> None:
     parser.add_argument("--commit", dest="commit_build", default=None,
                         help="Commit-only build: exact full 40-char SHA the checkout is at; "
                              "version comes from the target pyproject, no tag is referenced")
+    parser.add_argument("--release-commit", help="Admitted commit for a stable tag not created until green")
     parser.add_argument("--channel-request", type=Path, help="Immutable admitted channel request JSON")
     parser.add_argument("--variant", choices=["bundled", "store", "light"])
     parser.add_argument("--repo", type=Path, default=ROOT)
@@ -129,7 +125,8 @@ def main() -> None:
     builder_args = [v for v in args.builder_args if v != "--"]
     try:
         if args.prepared:
-            if args.tag or args.commit_build or args.channel_request or args.prepare_only or args.work or args.cache:
+            if (args.tag or args.commit_build or args.release_commit or args.channel_request
+                    or args.prepare_only or args.work or args.cache):
                 parser.error("--prepared supplies the complete build request")
             build_prepared(args.prepared, builder_args, args.variant)
         else:
@@ -141,7 +138,8 @@ def main() -> None:
                                           cache=args.cache or args.repo / ".cache/desktop-inputs",
                                           bundle_env=decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", "")),
                                           channel_request=json.loads(args.channel_request.read_text(encoding="utf-8-sig"))
-                                          if args.channel_request else None)
+                                          if args.channel_request else None,
+                                          release_commit=args.release_commit)
             if args.prepare_only and builder_args:
                 parser.error("builder arguments belong to the build phase")
             result = prepare(request)

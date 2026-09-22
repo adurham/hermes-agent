@@ -38,12 +38,13 @@ def admit_claim(tag: str, commit: str, *, on_main) -> dict:
         raise ValueError(f"{tag} is not a claim tag")
     if not on_main(commit):
         raise ValueError(f"{commit} is not on main")
-    return {"version": version, "commit": commit}
+    return {"claim_tag": tag, "tag": f"v{version}", "version": version, "commit": commit}
 
 
-def require_stable_identity(tag: str, commit: str, ref: str) -> None:
-    if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag) or not SHA.fullmatch(commit or "") or ref != f"refs/tags/{tag}":
-        raise ValueError("Stable release must run on its exact stable tag and commit")
+def require_stable_identity(tag: str, commit: str) -> None:
+    """Validate the final payload identity without requiring its future ref."""
+    if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag) or not SHA.fullmatch(commit or ""):
+        raise ValueError("Invalid stable payload identity")
 
 
 def require_success(needs: dict, required: list[str]) -> None:
@@ -69,7 +70,7 @@ def successful_smoke_results(needs: object) -> dict:
 
 def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
                         *, allow_legacy: bool = False) -> dict:
-    require_stable_identity(tag, commit, f"refs/tags/{tag}")
+    require_stable_identity(tag, commit)
     if manifest.get("schema") not in (1, 2) or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
     if manifest["schema"] == 1:
@@ -169,17 +170,47 @@ def output(argv: list[str]) -> str:
     return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
 
 
-def check_tag(env: dict, run=output) -> tuple[str, str]:
-    tag, commit = env.get("RELEASE_TAG"), env.get("GITHUB_SHA")
-    require_stable_identity(tag, commit, env.get("GITHUB_REF"))
-    actual = run(["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"])
-    remote = dict(line.split()[::-1] for line in run(["git", "ls-remote", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"] ).splitlines())
-    remote_commit = remote.get(f"refs/tags/{tag}^{{}}", remote.get(f"refs/tags/{tag}"))
-    if actual != commit or remote_commit != commit or run(["git", "rev-parse", "HEAD"]) != commit:
-        raise ValueError("Release tag or checkout moved")
+def check_claim(env: dict, run=output) -> dict:
+    """Bind the run to one remote annotated claim object and its commit."""
+    claim_tag, commit = env.get("RELEASE_CLAIM_TAG"), env.get("GITHUB_SHA")
+    if not isinstance(claim_tag, str) or env.get("GITHUB_REF") != f"refs/tags/{claim_tag}":
+        raise ValueError("Stable release must run on its exact claim ref")
+    if not isinstance(commit, str) or not SHA.fullmatch(commit):
+        raise ValueError("Stable claim needs an exact commit")
+    claim_ref = f"refs/tags/{claim_tag}"
+    local_object = run(["git", "rev-parse", claim_ref])
+    local_commit = run(["git", "rev-parse", f"{claim_ref}^{{commit}}"])
+    if run(["git", "cat-file", "-t", local_object]) != "tag":
+        raise ValueError("Stable claim must be an annotated tag")
+    remote = dict(line.split()[::-1] for line in run(
+        ["git", "ls-remote", "origin", claim_ref, f"{claim_ref}^{{}}"]
+    ).splitlines())
+    remote_object = remote.get(claim_ref)
+    remote_commit = remote.get(f"{claim_ref}^{{}}")
+    expected_object = env.get("RELEASE_CLAIM_OBJECT")
+    if (local_commit != commit or remote_commit != commit or remote_object != local_object
+            or (expected_object and remote_object != expected_object)
+            or run(["git", "rev-parse", "HEAD"]) != commit):
+        raise ValueError("Stable claim tag or checkout moved")
     run(["git", "fetch", "origin", "main"])
-    run(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
-    return tag, commit
+
+    def on_main(sha: str) -> bool:
+        try:
+            run(["git", "merge-base", "--is-ancestor", sha, "origin/main"])
+        except subprocess.CalledProcessError:
+            return False
+        return True
+
+    admitted = admit_claim(claim_tag, commit, on_main=on_main)
+    return {**admitted, "claim_object": local_object}
+
+
+def stable_context(env: dict, run=output) -> tuple[str, str, dict]:
+    claim = check_claim(env, run=run)
+    tag = env.get("RELEASE_TAG")
+    if not isinstance(tag, str) or tag != claim["tag"]:
+        raise ValueError("Stable payload tag differs from the admitted claim")
+    return tag, claim["commit"], claim
 
 
 def emit(values: dict, env: dict) -> None:
@@ -199,7 +230,7 @@ def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str
     """The page and package promoter consume the same pinned admission."""
     if not DIGEST.fullmatch(digest or ""):
         raise ValueError("Pinned candidate manifest digest is required")
-    require_stable_identity(tag, commit, f"refs/tags/{tag}")
+    require_stable_identity(tag, commit)
     manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{tag}/release-candidates.json",
                              digest, expected_origin=public_base)
     validate_candidates(manifest, tag, commit, public_base)
@@ -213,24 +244,37 @@ def summary(text: str, env: dict) -> None:
 
 def admit(env: dict) -> None:
     """Admit the claim. The checkout carries 0.0.0, so the tag is the version."""
-    tag, commit = env.get("RELEASE_TAG"), env.get("GITHUB_SHA")
-    admitted = admit_claim(tag, commit, on_main=lambda sha: _on_main(sha, env))
-    emit({"tag": tag, "commit": admitted["commit"], "version": admitted["version"]}, env)
-    summary(f"## Stable candidate {tag}\nCommit: {commit}\nVersion: {admitted['version']}\n", env)
+    admitted = check_claim(env)
+    repository = env["GITHUB_REPOSITORY"]
+    release = json.loads(output([
+        "gh", "release", "view", admitted["claim_tag"], "--repo", repository,
+        "--json", "databaseId,tagName,isDraft,isPrerelease",
+    ]))
+    if (release.get("tagName") != admitted["claim_tag"] or release.get("isDraft") is not True
+            or release.get("isPrerelease") is not False or not isinstance(release.get("databaseId"), int)):
+        raise ValueError("Stable claim must already own one non-prerelease draft")
+    emit({
+        "claim-tag": admitted["claim_tag"], "claim-object": admitted["claim_object"],
+        "tag": admitted["tag"], "commit": admitted["commit"], "version": admitted["version"],
+        "release-id": release["databaseId"],
+    }, env)
+    summary(
+        f"## Stable candidate {admitted['claim_tag']}\nCommit: {admitted['commit']}\n"
+        f"Version: {admitted['version']}\nPayload tag: {admitted['tag']}\n",
+        env,
+    )
 
 
-def _on_main(commit: str, env: dict) -> bool:
-    try:
-        output(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
-    except subprocess.CalledProcessError:
-        return False
-    return True
+def verify(env: dict) -> None:
+    """Revalidate claim custody in a reusable privileged workflow."""
+    tag, commit, _claim = stable_context(env)
+    emit({"tag": tag, "sha": commit, "channel": "stable", "payload-version": tag[1:]}, env)
 
 
 def transitions(env: dict) -> None:
     from scripts.releases.r2 import put
 
-    tag, commit = check_tag(env)
+    tag, commit, _claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base)
@@ -258,22 +302,75 @@ def transitions(env: dict) -> None:
     emit(matrices, env)
 
 
-def complete(env: dict) -> None:
-    from scripts.releases.r2 import put
+def ensure_final_tag(tag: str, commit: str, claim: dict, run=output) -> str:
+    """Create or verify the immutable annotated final tag."""
+    require_stable_identity(tag, commit)
+    ref = f"refs/tags/{tag}"
+    remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
+    if not remote_raw:
+        try:
+            local_object = run(["git", "rev-parse", "--verify", ref])
+        except subprocess.CalledProcessError:
+            message = json.dumps({
+                "schema": 1, "version": tag[1:], "commit": commit,
+                "claimTag": claim["claim_tag"], "claimTagObject": claim["claim_object"],
+            }, sort_keys=True, separators=(",", ":"))
+            run([
+                "git", "-c", "user.name=Hermes Release Automation",
+                "-c", "user.email=release-bot@users.noreply.github.com",
+                "tag", "-a", tag, commit, "-m", message,
+            ])
+        else:
+            if (run(["git", "cat-file", "-t", local_object]) != "tag"
+                    or run(["git", "rev-parse", f"{ref}^{{commit}}"]) != commit):
+                raise ValueError("Local final tag collision")
+        run(["git", "push", "origin", ref])
+        remote_raw = run(["git", "ls-remote", "origin", ref, f"{ref}^{{}}"])
+    remote = dict(line.split()[::-1] for line in remote_raw.splitlines())
+    tag_object, peeled = remote.get(ref), remote.get(f"{ref}^{{}}")
+    if not tag_object or peeled != commit:
+        raise ValueError("Final stable tag points at the wrong commit or is lightweight")
+    try:
+        local_object = run(["git", "rev-parse", ref])
+    except subprocess.CalledProcessError:
+        run(["git", "fetch", "origin", f"{ref}:{ref}"])
+        local_object = run(["git", "rev-parse", ref])
+    if local_object != tag_object or run(["git", "cat-file", "-t", local_object]) != "tag":
+        raise ValueError("Final stable tag object differs from the verified remote")
+    return tag_object
 
-    tag, commit = check_tag(env)
+
+def _autopublish(value: str | None) -> bool:
+    if value not in {"true", "false"}:
+        raise ValueError("AUTOPUBLISH must be exactly true or false")
+    return value == "true"
+
+
+def retarget_release(repository: str, release_id: int, tag: str, commit: str, *, publish: bool,
+                     run=output) -> None:
+    endpoint = f"repos/{repository}/releases/{release_id}"
+    run([
+        "gh", "api", "--method", "PATCH", endpoint,
+        "--raw-field", f"tag_name={tag}", "--raw-field", f"target_commitish={commit}",
+        "--field", "prerelease=false", "--field", f"draft={str(not publish).lower()}",
+    ])
+    release = json.loads(run(["gh", "api", endpoint]))
+    if (release.get("id") != release_id or release.get("tag_name") != tag
+            or release.get("prerelease") is not False or release.get("draft") is not (not publish)):
+        raise ValueError("Stable release retarget did not persist")
+
+
+def complete(env: dict) -> None:
+    tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base)
-    file = Path(env["RUNNER_TEMP"]) / "release-candidates.json"
-    file.write_text(json.dumps(candidate), encoding="utf-8")
-    put(tag=tag, key="releases/stable/release-candidates.json", key_is_full=True, file=file)
-    if read_manifest(f"{base}/releases/stable/release-candidates.json") != candidate:
-        raise ValueError("Stable manifest read-back mismatch")
-    output(["gh", "release", "edit", tag, "--repo", env["GITHUB_REPOSITORY"], "--draft=false"])
-    release = json.loads(output(["gh", "release", "view", tag, "--repo", env["GITHUB_REPOSITORY"], "--json", "isDraft"]))
-    if release["isDraft"]:
-        raise ValueError("Stable release remained a draft")
+    ensure_final_tag(tag, commit, claim)
+    release_id = env.get("RELEASE_ID", "")
+    if not str(release_id).isdigit():
+        raise ValueError("Stable release database ID is required")
+    publish = _autopublish(env.get("AUTOPUBLISH"))
+    retarget_release(env["GITHUB_REPOSITORY"], int(release_id), tag, commit, publish=publish)
 
 
 def main(argv: list[str] | None = None, env: dict | None = None) -> None:
@@ -284,9 +381,9 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
         summary("\n".join(f"- {name}: {needs.get(name, {}).get('result', 'missing')}" for name in argv[1:]), env)
         require_success(needs, argv[1:])
         return
-    commands = {"admit": admit, "transitions": transitions, "complete": complete}
+    commands = {"admit": admit, "verify": verify, "transitions": transitions, "complete": complete}
     if len(argv) != 1 or argv[0] not in commands:
-        raise ValueError("Expected admit, gate, transitions or complete")
+        raise ValueError("Expected admit, verify, gate, transitions or complete")
     commands[argv[0]](env)
 
 

@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: ''
+      version:
+        description: "Release version stamped into the isolated image build context."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -151,6 +156,12 @@ jobs:
           # Release calls are dispatched on the stable tag: pin to the exact
           # candidate commit, never a mutable branch ref.
           ref: ${{ needs.mode.outputs.release == 'true' && github.sha || '' }}
+
+      - name: Stamp release build context
+        if: needs.mode.outputs.release == 'true'
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 scripts/releases/stamping.py --tree . --version "$RELEASE_VERSION"
 
       - name: Write install stamp
         run: python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci

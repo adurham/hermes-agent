@@ -80,6 +80,12 @@ on:
       tag:
         required: true
         type: string
+      claim-tag:
+        default: ''
+        type: string
+      claim-object:
+        default: ''
+        type: string
       release-phase:
         required: true
         type: string
@@ -192,7 +198,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ (inputs.build_commit != '' || inputs.channel != '') && github.sha || inputs.tag }}
+          ref: ${{ (inputs.build_commit != '' || inputs.channel != '' || inputs.release-phase != '') && github.sha || inputs.tag }}
           # Full checkout, always. Commit admission (require_pushed) needs the
           # full graph AND every pushed branch ref fetched into
           # refs/remotes/origin/* — a depth-1 checkout fetches only github.sha,
@@ -247,6 +253,9 @@ jobs:
         id: admission
         env:
           TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+          RELEASE_CLAIM_OBJECT: ${{ inputs.claim-object }}
           BUILD_COMMIT: ${{ inputs.build_commit }}
           CHANNEL_BUILD: ${{ steps.allocate.outputs.channel_build || '' }}
           CHANNEL_REQUEST_SHA256: ${{ steps.allocate.outputs.channel_request_sha256 || '' }}
@@ -295,9 +304,8 @@ jobs:
           fi
           case "$RELEASE_PHASE" in
             candidate|publish|promote)
-              [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
-              [ "$GITHUB_REF" = "refs/tags/$TAG" ] || exit 1
-              [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || exit 1
+              python -m scripts.releases.stable verify
+              exit 0
               ;;
             '') [[ "$TAG" == *+canary.* ]] || { echo 'Use Stable Release for stable tags' >&2; exit 1; } ;;
             *) echo 'Unknown release phase' >&2; exit 1 ;;
@@ -367,6 +375,7 @@ jobs:
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       # Signature outputs are separate from the prepared dependency snapshot.
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
@@ -461,6 +470,7 @@ jobs:
         run: |
           args=(--tag "$HERMES_PAYLOAD_TAG")
           if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
+          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
           if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           python scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
             --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
@@ -710,6 +720,7 @@ jobs:
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
@@ -789,6 +800,7 @@ jobs:
         run: |
           args=(--tag "$HERMES_PAYLOAD_TAG")
           if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
+          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
           if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
             --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
@@ -1477,6 +1489,7 @@ jobs:
     env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       # termux_build.sh gates on `gh release view <tag>` (refuse to build
       # before the release exists); gh needs GH_TOKEN or it errors out and
       # the gate misreads that as "release not found".
@@ -1636,7 +1649,13 @@ jobs:
         # termux_build.sh lands wheelhouse/ + index.json + SHA256SUMS in the
         # payload root, where build_deb.sh's --no-index pip install finds it.
         run: |
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+          if [ -n "${HERMES_RELEASE_COMMIT:-}" ]; then
+            bash scripts/termux/termux_build.sh \
+              --repo . \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --release-commit "$HERMES_RELEASE_COMMIT" \
+              --out termux-build/payload
+          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
             # The checkout is the admitted commit. No release tag is required.
             bash scripts/termux/termux_build.sh \
               --repo . \
@@ -1671,7 +1690,14 @@ jobs:
         # Native dependency staging stays above; .deb validation still runs
         # in a fresh pinned container with no opt-out.
         run: |
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+          if [ -n "${HERMES_RELEASE_COMMIT:-}" ]; then
+            python3 scripts/termux/build.py \
+              --repo . \
+              --tag "$HERMES_PAYLOAD_TAG" \
+              --release-commit "$HERMES_RELEASE_COMMIT" \
+              --payload termux-build/payload \
+              --out termux-build/deb
+          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
             python3 scripts/termux/build.py \
               --repo . \
               --commit "$HERMES_BUILD_COMMIT" \
@@ -2086,12 +2112,6 @@ jobs:
         with:
           cache-python: false
       - run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.bundles.release_artifacts promote --root verified
-      - name: Render the admitted candidate smoke results
-        env:
-          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-        run: |
-          python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT"
 
   stable-phase-result:
     name: Stable bundle phase completed

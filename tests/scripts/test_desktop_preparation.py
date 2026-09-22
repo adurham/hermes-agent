@@ -29,6 +29,19 @@ def _project(tmp_path: Path) -> tuple[Path, str]:
     return source, commit
 
 
+def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tmp_path):
+    from scripts.bundles.desktop_prepare import BuildRequest
+
+    source, commit = _project(tmp_path)
+    request = BuildRequest.create(
+        source, tag="v1.2.4", commit=None, release_commit=commit, variant="bundled",
+        work=tmp_path / "work", cache=tmp_path / "cache", bundle_env={},
+    )
+
+    assert request.commit == commit
+    assert request.version == "1.2.4"
+
+
 def test_prepared_input_roundtrip_rejects_mutation_and_foreign_source(tmp_path):
     from scripts.bundles.desktop_prepare import BuildRequest, PreparedDesktop
 

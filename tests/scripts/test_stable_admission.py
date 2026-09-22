@@ -13,7 +13,10 @@ def test_admission_reads_the_version_from_the_claim():
     commit = "a" * 40
     admitted = admit_claim("v0.21.5-rc", commit, on_main=lambda sha: sha == commit)
 
-    assert admitted == {"version": "0.21.5", "commit": commit}
+    assert admitted == {
+        "claim_tag": "v0.21.5-rc", "tag": "v0.21.5",
+        "version": "0.21.5", "commit": commit,
+    }
 
 
 def test_admission_refuses_a_claim_for_a_commit_off_main():
