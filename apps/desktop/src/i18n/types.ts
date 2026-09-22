@@ -186,6 +186,7 @@ export interface Translations {
       writeFailed: string
       refreshFailed: string
       disconnectNoAccount: string
+      disconnectRefused: string
     }
     add: {
       action: string
@@ -230,6 +231,7 @@ export interface Translations {
       removeServerBody: string
       appSwitch: (name: string) => string
       waysTitle: (name: string) => string
+      wayNotConnected: (name: string) => string
       wayHosted: string
       bothOn: (name: string) => string
       turnOffLocal: string
