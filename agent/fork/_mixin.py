@@ -50,10 +50,6 @@ class ForkForwardersMixin:
         from agent.fork.anthropic_recovery import is_anthropic_refusal
         return is_anthropic_refusal(self, response)
 
-    def _record_usage_history(self, canonical_usage) -> None:
-        """Forwarder — see ``agent.fork.diagnostics.record_usage_history``."""
-        from agent.fork.diagnostics import record_usage_history
-        return record_usage_history(self, canonical_usage)
     # Tool names that count as a "risky operation" for the skill-recall
     # reminder.  Source-of-truth lives in ``agent.fork.skill_recall``;
     # we re-export here so callers / tests reach it as ``AIAgent._RISKY_TOOL_NAMES``.
