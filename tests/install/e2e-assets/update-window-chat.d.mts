@@ -13,7 +13,19 @@ export interface UpdateWindowChatOptions {
   origin: 'source' | 'bundled'
   root: string
   executable: string
+  userData: string
 }
+
+export interface UpdateWindowProcess {
+  executable: string
+  resources: string
+  userData: string
+}
+
+export function assertUpdateWindowProcess(
+  running: UpdateWindowProcess,
+  options: Pick<UpdateWindowChatOptions, 'executable' | 'origin' | 'root' | 'userData'>,
+): void
 
 export function assertUpdateWindowBackendOrigin(
   backend: NativeProcess,

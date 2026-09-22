@@ -8,7 +8,7 @@ import { expect, test } from 'vitest'
 
 import { candidateSmokeHermesHomes, predictSmokeHermesHome, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
 import { sourceRuntimeSettleCommand } from '../../tests/install/e2e-assets/source-runtime-settle.mjs'
-import { assertUpdateWindowBackendOrigin } from '../../tests/install/e2e-assets/update-window-chat.mjs'
+import { assertUpdateWindowBackendOrigin, assertUpdateWindowProcess } from '../../tests/install/e2e-assets/update-window-chat.mjs'
 
 import { assertChatCommit, newCompletedPair, readMockPrompts, type TranscriptMessage } from './desktop-chat-smoke.ts'
 import { assertBackendOrigin, localBackendProcess, readBundledBundleEnv, readInstallationCommit } from './desktop-smoke-process.ts'
@@ -364,47 +364,77 @@ printf 'clean source runtime settled\\n'
   } finally { fs.rmSync(workspace, { recursive: true, force: true }) }
 })
 
-test('Windows source settle prefers the current cmd launcher over a stale historical exe', (): void => {
+test('Windows source settle bypasses the current cmd launcher beside a stale historical exe', (): void => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-'))
   try {
     const bin = path.join(root, '.hermes', 'bin')
     fs.mkdirSync(bin, { recursive: true })
     const current = path.join(bin, 'hermes.cmd')
-    fs.writeFileSync(current, '@echo off\r\n')
+    const python = path.join(root, 'managed python', 'python.exe')
+    fs.mkdirSync(path.dirname(python), { recursive: true })
+    fs.writeFileSync(python, '')
+    const bootstrap = path.join(root, 'hermes_bootstrap.py')
+    fs.writeFileSync(bootstrap, '')
+    fs.writeFileSync(current, `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
     fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
     const invocation = sourceRuntimeSettleCommand(root, { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, 'win32')
     expect(invocation).toEqual({
       launcher: current,
-      command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', `""${current}" status"`],
-      windowsVerbatimArguments: true,
+      command: python,
+      args: ['-I', '-B', '-c', `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`],
+      windowsVerbatimArguments: false,
     })
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test.runIf(process.platform === 'win32')('Windows source settle executes a cmd launcher whose path contains spaces', (): void => {
+test('Windows source settle bypasses the generated cmd command line', (): void => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-live-'))
   const root = path.join(workspace, 'source with spaces')
   try {
     const bin = path.join(root, '.hermes', 'bin')
     const witness = path.join(workspace, 'settled.txt')
     fs.mkdirSync(bin, { recursive: true })
-    fs.writeFileSync(path.join(bin, 'hermes.cmd'), [
-      '@echo off',
-      'if not "%~1"=="status" exit /b 91',
-      `>"${witness}" echo current-cmd`,
-      'exit /b 0',
-      '',
-    ].join('\r\n'))
+    const pythonProbe = spawnSync('python', ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' })
+    expect(pythonProbe.status, pythonProbe.stderr || String(pythonProbe.error)).toBe(0)
+    const python = pythonProbe.stdout.trim()
+    fs.writeFileSync(path.join(bin, 'hermes.cmd'), `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
+    fs.writeFileSync(path.join(root, 'hermes_bootstrap.py'), `from pathlib import Path\nPath(${JSON.stringify(witness)}).write_text('direct-bootstrap\\n')\n`)
     fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
-    const invocation = sourceRuntimeSettleCommand(root, process.env)
+    const invocation = sourceRuntimeSettleCommand(root, process.env, 'win32')
     const result = spawnSync(invocation.command, invocation.args, {
       cwd: root, env: process.env, encoding: 'utf8', windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     })
     expect(result.status, result.stderr || String(result.error)).toBe(0)
-    expect(fs.readFileSync(witness, 'utf8').trim()).toBe('current-cmd')
+    expect(fs.readFileSync(witness, 'utf8').trim()).toBe('direct-bootstrap')
   } finally { fs.rmSync(workspace, { recursive: true, force: true }) }
+})
+
+test('update-window process checks use the isolated launch environment, not the driver environment', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-update-window-process-'))
+  try {
+    const executable = path.join(root, 'Hermes')
+    const isolated = path.join(root, 'isolated-user-data')
+    const driver = path.join(root, 'driver-user-data')
+    fs.writeFileSync(executable, '')
+    fs.mkdirSync(isolated)
+    fs.mkdirSync(driver)
+    const prior = process.env.HERMES_DESKTOP_USER_DATA_DIR
+    process.env.HERMES_DESKTOP_USER_DATA_DIR = driver
+    try {
+      expect(() => assertUpdateWindowProcess(
+        { executable, resources: root, userData: isolated },
+        { executable, root, origin: 'source', userData: isolated },
+      )).not.toThrow()
+      expect(() => assertUpdateWindowProcess(
+        { executable, resources: root, userData: isolated },
+        { executable, root, origin: 'source', userData: driver },
+      )).toThrow('OLD update window did not honor isolated userData')
+    } finally {
+      if (prior === undefined) delete process.env.HERMES_DESKTOP_USER_DATA_DIR
+      else process.env.HERMES_DESKTOP_USER_DATA_DIR = prior
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
 test('predictSmokeHermesHome replays the bundle banner through the shared resolver', (): void => {
