@@ -45,11 +45,6 @@ class ForkForwardersMixin:
         from agent.fork.anthropic_recovery import sanitize_messages_for_refusal_retry
         return sanitize_messages_for_refusal_retry(self, messages)
 
-    def _is_anthropic_refusal(self, response) -> bool:
-        """Forwarder — see ``agent.fork.anthropic_recovery.is_anthropic_refusal``."""
-        from agent.fork.anthropic_recovery import is_anthropic_refusal
-        return is_anthropic_refusal(self, response)
-
     # Tool names that count as a "risky operation" for the skill-recall
     # reminder.  Source-of-truth lives in ``agent.fork.skill_recall``;
     # we re-export here so callers / tests reach it as ``AIAgent._RISKY_TOOL_NAMES``.

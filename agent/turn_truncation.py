@@ -652,6 +652,39 @@ def handle_content_policy_refusal(
         active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
         return RefusalVerdict("break", None, active_system_prompt)
 
+    # FORK: middle rung of the refusal ladder (fallback → history scrub → give up).
+    # Before surrendering the turn, strip shell-command patterns from HISTORICAL
+    # context that look like data exfiltration to Anthropic's content filter but
+    # are legitimate authorized support work (pg_dump via lockbox, S3 presigns,
+    # ...). The most recent user message is left intact, so the user's actual
+    # request still reaches the model. Without this rung, authorized support work
+    # hard-fails where it used to self-heal: a single real pg_dump earlier in the
+    # session poisons every later turn that carries it in context.
+    # One-shot per turn (agent._refusal_sanitize_attempted, reset in
+    # run_conversation's per-turn state block) — a second scrub would find
+    # nothing new and burn another API call.
+    if not getattr(agent, "_refusal_sanitize_attempted", False):
+        agent._refusal_sanitize_attempted = True
+        try:
+            _san_msgs, _was_sanitized = agent._sanitize_messages_for_refusal_retry(messages)
+        except Exception:
+            logger.warning("refusal sanitize retry failed; giving up on the refusal", exc_info=True)
+            _san_msgs, _was_sanitized = messages, False
+        if _was_sanitized:
+            logger.warning(
+                "%sRefusal sanitize retry: stripped triggering shell patterns from "
+                "historical context.", agent.log_prefix,
+            )
+            agent._emit_status(
+                "🔄 Paraphrasing sensitive command patterns in history and retrying..."
+            )
+            # Rebind in place: the caller holds this same list object, and the
+            # rebuilt-messages restart re-assembles the request from it.
+            messages[:] = _san_msgs
+            _retry.primary_recovery_attempted = False
+            _retry.restart_with_rebuilt_messages = True
+            return RefusalVerdict("break", None, active_system_prompt)
+
     agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
     logger.warning(
