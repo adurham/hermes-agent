@@ -2918,24 +2918,6 @@ def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
         msg["content"] = new_content
 
 
-def convert_messages_to_anthropic(  # noqa: F811 — fork forwarder deliberately shadows the import
-    messages: List[Dict],
-    base_url: str | None = None,
-    model: str | None = None,
-) -> Tuple[Optional[Any], List[Dict]]:
-    """Forwarder — fork-owned, see ``agent.fork.anthropic_messages``.
-
-    The fork's converter (~540 lines, heavily diverged from upstream's ~63)
-    lives in agent/fork/anthropic_messages.py so upstream's extract-method
-    refactors of its own converter can't tangle with the fork's inline form on
-    merge (the worst conflict in both 2026-05 syncs). The block/tool/content
-    helpers this calls stay here (some upstream-shared) and are bound locally
-    by the fork function via a lazy import.
-    """
-    from agent.fork.anthropic_messages import convert_messages_to_anthropic as _impl
-    return _impl(messages, base_url=base_url, model=model)
-
-
 _TOOL_SEARCH_TOOL_TYPES = {
     "regex": "tool_search_tool_regex_20251119",
     "bm25":  "tool_search_tool_bm25_20251119",
