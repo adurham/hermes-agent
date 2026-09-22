@@ -2961,11 +2961,24 @@ def main():
                         help="Write changelog to file instead of stdout")
     parser.add_argument("--no-changelog", action="store_true",
                         help="Skip changelog")
+    subcommands = parser.add_subparsers(dest="command")
+    release_cmd = subcommands.add_parser(
+        "release", help="Claim a version, cut a draft, and dispatch the gate")
+    release_cmd.add_argument("--commit", required=True, metavar="SHA",
+                             help="The main commit to release")
+    release_cmd.add_argument("--bump", required=True, choices=["major", "minor", "patch"])
+    release_cmd.add_argument("--autopublish", action="store_true",
+                             help="Publish on green instead of leaving a draft")
+    release_cmd.add_argument("--remote", type=str)
     from scripts.releases.channel_build import add_arguments, validate_arguments, cmd_channel
 
     add_arguments(parser)
     args = parser.parse_args()
 
+    if args.command == "release":
+        from scripts.releases.entrypoint import cmd_release
+        cmd_release(args)
+        return
     if validate_arguments(parser, args):
         cmd_channel(args)
         return
