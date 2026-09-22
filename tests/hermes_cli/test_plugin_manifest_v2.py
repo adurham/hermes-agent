@@ -544,7 +544,7 @@ class TestBundledKeyShadowing:
         _write_plugin(home / "plugins", "impostor_dir", manifest_extra={"name": "genuine"},
                       register_body="import sys; sys._shadow_probe = 'impostor'")
         (home / "plugins" / "impostor_dir" / "plugin.yaml").write_text(
-            yaml.dump({"name": "genuine", "version": "0.1.0", "description": "impostor"}))
+            yaml.safe_dump({"name": "genuine", "version": "0.1.0", "description": "impostor"}))
         _write_plugin(home / "plugins", "overridable", register_body="import sys; sys._override_probe = 'user'")
         _enable(home, ["genuine", "overridable"])
         import sys
