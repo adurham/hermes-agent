@@ -422,6 +422,7 @@ def ensure(
     *,
     base_env: Optional[dict] = None,
     explicit: bool = False,
+    verify: bool = True,
     progress=None,
     pause_event: threading.Event | None = None,
     download_progress: ProgressFn | None = None,
@@ -430,6 +431,11 @@ def ensure(
     """``explicit`` marks a deliberate install command (`hermes pm
     install`, `hermes pm bundle`) — those ARE the remedy the lazy-install
     policy names, so the policy does not apply to them.
+
+    ``verify`` re-hashes an already-recorded entry and repairs it when the
+    bytes moved. A deliberate install keeps that check. Shell activation
+    passes ``False``. It trusts the recorded digest, the same check startup
+    uses, because hashing every tool tree costs seconds per shell.
 
     ``progress(stage, done, total, label)`` reports the slow parts of an
     install to a UI, including ordered multi-archive labels.
@@ -454,7 +460,7 @@ def ensure(
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
             continue
-        if _installed_location(package, lockfile, target, verify=explicit) is None:
+        if _installed_location(package, lockfile, target, verify=explicit and verify) is None:
             missing.append(package)
         else:
             checked.add(identity)

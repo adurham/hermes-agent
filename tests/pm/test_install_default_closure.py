@@ -23,10 +23,11 @@ import pm.cli
 
 @pytest.fixture()
 def install_spy(monkeypatch):
-    calls = {"names": None, "sync_extras": None, "activated": []}
+    calls = {"names": None, "verified": None, "sync_extras": None, "activated": []}
 
-    def fake_install_names(names, target=None):
+    def fake_install_names(names, target=None, *, verify=True):
         calls["names"] = list(names)
+        calls["verified"] = verify
         return 0
 
     def fake_sync_venv(extras=None, **kwargs):
@@ -66,6 +67,29 @@ def test_tools_only_publishes_tools_and_stops_before_the_venv(install_spy):
     assert "venv" not in install_spy["names"]
     assert install_spy["sync_extras"] is None
     assert install_spy["activated"] == [{"allow_incomplete": True}]
+
+
+def test_trust_recorded_skips_the_byte_check_and_still_syncs(install_spy):
+    assert pm.cli.cmd_install(argparse.Namespace(
+        names=None, extra=[], target=None, tools_only=False, trust_recorded=True)) == 0
+    assert "python" in install_spy["names"]
+    assert install_spy["verified"] is False
+    assert install_spy["sync_extras"] == ["all"]
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"names": ["ripgrep"], "extra": [], "target": None, "tools_only": False, "trust_recorded": True},
+     "--trust-recorded"),
+    ({"names": None, "extra": ["dev"], "target": None, "tools_only": False, "trust_recorded": True},
+     "--trust-recorded"),
+    ({"names": None, "extra": [], "target": "linux-x64", "tools_only": False, "trust_recorded": True},
+     "--target"),
+])
+def test_trust_recorded_refuses_a_narrowed_install(install_spy, capsys, kwargs, message):
+    assert pm.cli.cmd_install(argparse.Namespace(**kwargs)) == 1
+    assert message in capsys.readouterr().out
+    assert install_spy["names"] is None
+    assert install_spy["sync_extras"] is None
 
 
 def test_a_missing_tool_blocks_the_venv_sync(install_spy, monkeypatch, capsys):

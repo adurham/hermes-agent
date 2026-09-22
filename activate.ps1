@@ -1,4 +1,5 @@
 # Source this file to sync and apply the PM environment; deactivate restores it.
+# Trusts the recorded tool digest. `hermes pm install` re-checks the bytes.
 $ErrorActionPreference = 'Stop'
 
 $OutputEncoding = [System.Console]::OutputEncoding = [System.Console]::InputEncoding = [System.Text.Encoding]::UTF8

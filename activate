@@ -13,7 +13,9 @@
 # keeps its own command. A prompt prefix names the worktree.
 #
 # Sync through setup before selecting the environment. PM owns freshness;
-# activation does not maintain a second dependency stamp.
+# activation does not maintain a second dependency stamp. It trusts the
+# recorded tool digest instead of re-hashing every entry. `hermes pm
+# install` and `hermes update` keep that check.
 # ============================================================================
 _HERMES_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Setup runs in a child: failures must not exit or partially activate the

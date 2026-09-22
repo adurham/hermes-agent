@@ -319,9 +319,11 @@ The leading dot and space in PowerShell are required. Executing
 The POSIX script uses Bash syntax. Use Bash for this recipe rather than `sh`,
 fish, or assuming that a Zsh startup file has Bash semantics.
 
-Each activation invokes PM's install/sync path. PM reuses current tools and
-dependency generations; missing or stale inputs can require downloads and a
-rebuild. A setup failure returns an error before changing the activated shell
+Each activation invokes PM's install/sync path and trusts the recorded tool
+digest instead of re-hashing every entry. PM still installs a missing tool and
+rebuilds a stale dependency generation; a deliberate install keeps the byte
+check. Run `python -m pm.cli install` or `hermes update` to re-check realized
+bytes. A setup failure returns an error before changing the activated shell
 environment, including when re-sourcing an already active environment.
 
 After sync, activation prepends installed PM tools to `PATH` and sets

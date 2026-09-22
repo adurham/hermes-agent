@@ -164,7 +164,7 @@ echo -e "${CYAN}→${NC} (first run on a fresh checkout can take 1-5 minutes)"
 "$uv" python install --no-bin "$py_version"
 boot_py="$("$uv" python find --managed-python "$py_version")"
 boot_py="${boot_py%$'\r'}"
-if ! "$boot_py" -m pm.cli install; then
+if ! "$boot_py" -m pm.cli install ${runtime_only:+--trust-recorded}; then
     echo -e "${RED}✗${NC} pm install failed — see output above."
     exit 1
 fi

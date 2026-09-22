@@ -124,7 +124,7 @@ def _live_progress(name: str):
     return report
 
 
-def _install_names(names: list[str], target: str | None = None) -> int:
+def _install_names(names: list[str], target: str | None = None, *, verify: bool = True) -> int:
     from pm.install import _install_operation
 
     failed = 0
@@ -137,7 +137,7 @@ def _install_names(names: list[str], target: str | None = None) -> int:
                     entry = stage_only(name, target)
                     print(f"✓ {name} (staged for {target}: {entry.name})")
                 else:
-                    ensure(name, explicit=True, progress=progress, _operation=operation)
+                    ensure(name, explicit=True, verify=verify, progress=progress, _operation=operation)
                     if name == "python":
                         from hermes_cli.venv_sync import publish_launchers
 
@@ -166,8 +166,12 @@ def cmd_install(args) -> int:
     # Python remains optional when provisioning individual tools.
     extras = list(dict.fromkeys(getattr(args, "extra", None) or ()))
     tools_only = bool(getattr(args, "tools_only", False))
+    trust_recorded = bool(getattr(args, "trust_recorded", False))
     if tools_only and (extras or cross_target or args.names):
         print("✗ --tools-only installs the tool closure and then stops; it does not take names, --extra, or --target")
+        return 1
+    if trust_recorded and (extras or cross_target or args.names):
+        print("✗ --trust-recorded installs the default closure and then stops; it does not take names, --extra, or --target")
         return 1
     if extras and cross_target:
         print("✗ --extra syncs this install's venv and cannot combine with --target")
@@ -178,7 +182,7 @@ def cmd_install(args) -> int:
     # wheels) resolved compilers and git from the host PATH. Publish every
     # tool first and put it on PATH; sync only after that.
     tool_names = names if args.names else tool_roots(names)
-    failed = _install_names(tool_names, target=cross_target)
+    failed = _install_names(tool_names, target=cross_target, verify=not trust_recorded)
     if failed:
         return 1
     if not cross_target and (not args.names or tools_only):
@@ -571,6 +575,9 @@ def main(argv=None) -> int:
                    help="enable a declared dependency extra in the venv (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
+    p.add_argument("--trust-recorded", action="store_true",
+                   help="trust the recorded tool digest instead of re-hashing every entry. "
+                        "shell activation only. a deliberate install re-checks the bytes")
     p.add_argument(
         "--target",
         help="stage for a cross target (e.g. linux-arm64-bionic on a glibc "

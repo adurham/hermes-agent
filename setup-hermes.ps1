@@ -88,7 +88,7 @@ try {
     # The closure pm install would provision, minus the venv. A bare
     # `pm install` also syncs the venv, and that sync must not run until the
     # compiler environment below is on PATH.
-    & $bootPy.Trim() -m pm.cli install --tools-only
+    & $bootPy.Trim() -m pm.cli install --tools-only $(if ($RuntimeOnly) { '--trust-recorded' })
     if ($LASTEXITCODE -ne 0) { throw 'pm tool install failed - see output above.' }
 } finally {
     Pop-Location
@@ -102,12 +102,13 @@ if ($arch -eq 'arm64') {
 
 # The venv sync. Tools are already on PATH inside that process (pm install
 # publishes them before syncing); the compiler env set above is inherited.
+# Activation trusts the recorded tool digest. A direct setup re-checks it.
 # ---------------------------------------------------------------------------
 Write-Host 'Installing dependencies via pm (hash-verified via uv.lock)...' -ForegroundColor Cyan
 Write-Host '(first run on a fresh checkout can take 1-5 minutes)'
 Push-Location $repo
 try {
-    & $bootPy.Trim() -m pm.cli install
+    & $bootPy.Trim() -m pm.cli install $(if ($RuntimeOnly) { '--trust-recorded' })
     if ($LASTEXITCODE -ne 0) { throw 'pm install failed - see output above.' }
 } finally {
     Pop-Location
