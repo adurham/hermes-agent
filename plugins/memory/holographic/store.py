@@ -178,37 +178,41 @@ class MemoryStore:
             self._rebuild_bank(category or self._one("SELECT category FROM facts WHERE fact_id = ?", (fact_id,))["category"])
             return True
 
-    def search_facts(self, query: str, category: str | None = None, min_trust: float = 0.3,
-                     limit: int = 10) -> list[dict]:
-        """FTS5 keyword search ordered by rank then trust; bumps retrieval_count on every hit.
+    def bump_retrieval_counts(self, fact_ids: "list[int]") -> int:
+        """Increment ``retrieval_count`` for each id; returns how many rows were touched.
 
-        FORK: the query is sanitized here (FTS5 AND-joins a bare multi-word MATCH, which zeroes out
-        recall on prose) via the retriever's own sanitizer — imported lazily to avoid a
-        store->retrieval import cycle. A pure-punctuation / all-stopword query makes the sanitizer
-        fall back to the RAW query, which is not valid MATCH syntax; detect that (no quoted phrase
-        survived) and answer "no matches" instead of letting sqlite3 raise OperationalError.
+        Retrieval accounting is a property of a DELIBERATE recall, not of ranking, so the
+        retriever never calls this — the caller that actually surfaced facts to someone does
+        (see ``tools/memory_warm.py``). Keeping it here rather than in ``FactRetriever.search``
+        means an always-on prefetch can't silently inflate the counter that
+        ``tools/memory_extraction/conflict.py`` reads to break duplicate ties.
         """
+        ids = [int(i) for i in fact_ids or []]
+        if not ids:
+            return 0
         with self._lock:
-            query = query.strip()
-            if not query:
-                return []
-            from plugins.memory.holographic.retrieval import FactRetriever
-            match_query = FactRetriever._sanitize_fts_query(query)
-            if not match_query or '"' not in match_query:
-                return []
-            category_clause = "AND f.category = ? " if category is not None else ""
-            params = [match_query, min_trust] + ([category] if category is not None else []) + [limit]
-            sql = ("SELECT f.fact_id, f.content, f.category, f.tags, f.trust_score, f.retrieval_count, "
-                   "f.helpful_count, f.created_at, f.updated_at FROM facts f "
-                   "JOIN facts_fts fts ON fts.rowid = f.fact_id "
-                   f"WHERE facts_fts MATCH ? AND f.trust_score >= ? {category_clause}"
-                   "ORDER BY fts.rank, f.trust_score DESC LIMIT ?")
-            results = [dict(r) for r in self._conn.execute(sql, params).fetchall()]
-            if results:
-                ids = [r["fact_id"] for r in results]
-                self._write(f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
-                            f"WHERE fact_id IN ({','.join('?' * len(ids))})", ids)
-            return results
+            self._write(f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
+                        f"WHERE fact_id IN ({','.join('?' * len(ids))})", ids)
+            return len(ids)
+
+    def get_fact(self, fact_id: int) -> "dict | None":
+        """Single fact row as a plain dict (no ``hrr_vector``), or None when absent."""
+        with self._lock:
+            row = self._one("SELECT fact_id, content, category, tags, trust_score, retrieval_count, "
+                            "helpful_count, created_at, updated_at FROM facts WHERE fact_id = ?", (fact_id,))
+            return dict(row) if row is not None else None
+
+    def find_fact_id_by_content(self, content: str) -> "int | None":
+        """fact_id of an EXACT content match, or None. ``content`` is UNIQUE, so callers use
+        this to tell an insert from a silent duplicate-collapse before calling ``add_fact``."""
+        with self._lock:
+            row = self._one("SELECT fact_id FROM facts WHERE content = ?", ((content or "").strip(),))
+            return int(row["fact_id"]) if row is not None else None
+
+    def count_facts(self) -> int:
+        """Total number of indexed facts."""
+        with self._lock:
+            return int(self._one("SELECT COUNT(*) AS n FROM facts")["n"])
 
     def remove_fact(self, fact_id: int) -> bool:
         """Delete a fact and its entity links. Returns True if the row existed."""
