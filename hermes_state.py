@@ -1628,12 +1628,28 @@ class SessionDB(
                             f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
                         )
                     except sqlite3.OperationalError as exc:
-                        # Expected: "duplicate column name" from a race or
-                        # re-run.  Unexpected: "Cannot add a NOT NULL column
-                        # with default value NULL" from a schema mistake.
-                        # Log at DEBUG so it's visible in agent.log.
-                        logger.debug(
-                            "reconcile %s.%s: %s", table_name, col_name, exc,
+                        # Classify exactly like SessionSchemaMixin._reconcile_columns
+                        # (hermes_state_schema.py). Logging everything at DEBUG meant a
+                        # busy/locked ALTER on anthropic_content_blocks or
+                        # compression_attempts_total left the store PERMANENTLY
+                        # half-reconciled -- "no such column" on every read -- because the
+                        # lock-patience wrapper never learned the init had failed.
+                        message = str(exc).lower()
+                        if "duplicate column" in message:
+                            # A sibling process won the ADD race; store is correct.
+                            logger.debug(
+                                "reconcile %s.%s: %s", table_name, col_name, exc,
+                            )
+                            continue
+                        if "locked" in message or "busy" in message:
+                            # Re-raise so the lock-patience wrapper retries init.
+                            raise
+                        # Anything else (e.g. "Cannot add a NOT NULL column with default
+                        # value NULL" from a bad FORK_TABLE_COLUMNS type) strands the store
+                        # behind the fork schema -- be loud, matching upstream.
+                        logger.warning(
+                            "reconcile %s.%s failed; store remains behind FORK_TABLE_COLUMNS: %s",
+                            table_name, col_name, exc,
                         )
 
     def get_compression_attempts_total(self, session_id: str) -> int:
