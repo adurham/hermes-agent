@@ -318,9 +318,20 @@ def _handle_warm_action(
             warm_category = args_category or "general"
         # Find the hot entry first (without removing it), so we don't
         # delete-without-write if warm add fails.
-        with hot_store._file_lock(hot_store._path_for(hot_target)):  # type: ignore[attr-defined]
-            hot_store._reload_target(hot_target)  # type: ignore[attr-defined]
-            entries = hot_store._entries_for(hot_target)  # type: ignore[attr-defined]
+        # v2026.9.14 extracted MemoryStore into tools/memory_tool_store.py and
+        # dropped ``_reload_target`` (its reload is inlined in ``_mutate``), so the
+        # old call raised AttributeError and demote was dead. Re-read from disk the
+        # way ``_mutate`` does — same lock, same raw snapshot, same de-dup — so a
+        # concurrently-edited MEMORY.md can't hand us a stale in-memory entry list.
+        _hot_path = hot_store._path_for(hot_target)  # type: ignore[attr-defined]
+        with hot_store._file_lock(_hot_path):  # type: ignore[attr-defined]
+            _raw, _read_ok = hot_store._read_raw_checked(_hot_path)  # type: ignore[attr-defined]
+            if not _read_ok:
+                return tool_error(
+                    f"Could not read {_hot_path.name}; refusing to demote.", success=False,
+                )
+            entries = list(dict.fromkeys(hot_store._parse_entries(_raw)))  # type: ignore[attr-defined]
+            hot_store._set_entries(hot_target, entries)  # type: ignore[attr-defined]
             matches = [e for e in entries if args_old_text in e]
         if not matches:
             return tool_error(
