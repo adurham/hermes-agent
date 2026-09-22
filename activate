@@ -90,7 +90,7 @@ for k, v in json.load(sys.stdin).items():
 # alias, and a hashed command, including the MSIX execution alias.
 __HERMES_WORKTREE="$_hermes_repo"
 # The branch names the worktree. A checkout cannot share a branch with another.
-__HERMES_WORKTREE_NAME="$(git -C "$_hermes_repo" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+__HERMES_WORKTREE_NAME="$(git -C "$_hermes_repo" rev-parse --abbrev-ref HEAD 2>/dev/null || :)"
 if [ -z "$__HERMES_WORKTREE_NAME" ] || [ "$__HERMES_WORKTREE_NAME" = HEAD ]; then
     __HERMES_WORKTREE_NAME="$(basename "$_hermes_repo")"
 fi
