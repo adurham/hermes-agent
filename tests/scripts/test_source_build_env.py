@@ -17,6 +17,7 @@ def _stamp_probe(tmp_path, shell):
     repo = tmp_path / "installed source"
     for relative in (
         "scripts/write_install_stamp.py", "hermes_cli/__init__.py",
+        "scripts/releases/distance.py", "scripts/releases/versioning.py",
         "hermes_cli/update_channel.py", "hermes_cli/release_channels.py",
         "pm/paths.py", "pm/environments.py",
         "hermes_cli/steward.py", "hermes_constants.py",
@@ -40,6 +41,7 @@ def _stamp_probe(tmp_path, shell):
     git("add", ".")
     git("commit", "-qm", "OLD")
     old = git("rev-parse", "HEAD")
+    git("tag", "v1.0.0", old)
     git("commit", "--allow-empty", "-qm", "NEW")
     new = git("rev-parse", "HEAD")
     # Control: this is the real stamp writer's CI preference, not a source-text assertion.
@@ -138,6 +140,10 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
         stamp = json.loads(Path(env["PROBE_OUT"]).read_text(encoding="utf-8-sig"))
         assert (stamp["commit"], stamp["branch"], stamp["source"], stamp["payload"]) == (
             sha, "installed", "local", "bootstrap")
+        distance = 0 if sha == old else 1
+        display = "1.0.0" if distance == 0 else f"1.0.0+1.g{sha[:7]}"
+        assert (stamp["baseVersion"], stamp["distance"], stamp["displayVersion"]) == (
+            "1.0.0", distance, display)
         child = json.loads(Path(env["PROBE_ENV"]).read_text(encoding="utf-8-sig"))
         assert not overrides.keys() & child.keys()
         assert child["GIT_CONFIG_GLOBAL"] == env["GIT_CONFIG_GLOBAL"]
