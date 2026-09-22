@@ -53,7 +53,8 @@ from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
 from tools.delegate_tool_results import (  # noqa: F401
-    _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
+    _apply_summary_budget, _build_child_preserving_parent_tools, _MIN_SUMMARY_CHARS, _parent_summary_char_budget,
+    _run_child_lifecycle, _summarize_tool_arguments,
 )
 
 _ROLES = frozenset({"leaf", "orchestrator"})
@@ -168,10 +169,21 @@ def _build_child_agent(
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
+    # Per-role max output tokens: a role pinned to another provider carries that
+    # provider's own max_output_tokens, which must not be replaced by the parent's.
+    override_max_tokens: Optional[int] = None,
 
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Per-role fallback (delegation.model_by_role.<role>.fallback): a ONE-ENTRY runtime
+    # fallback chain (the same {provider, model, ...} shape AIAgent.fallback_model accepts),
+    # carrying THIS role's own fallback bundle. When given (even as an empty list) it
+    # REPLACES the standard parent-chain-inheritance precedence rather than combining with
+    # it — a role's fallback is independent of whatever the parent session happens to use.
+    # ``None`` (the default, what every pre-existing caller passes) leaves the existing
+    # precedence untouched, so this parameter is purely additive.
+    override_fallback_chain: Optional[List[Dict[str, Any]]] = None,
     # Configuration block that owns the selected provider/model route. Internal
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
@@ -232,6 +244,16 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
     )
+    # A role's own fallback bundle REPLACES the inherited/pinned chain resolution above
+    # (including an empty list, which means "no runtime fallback for this hop" — used when
+    # the primary credential resolution already failed and we dispatched straight onto the
+    # fallback bundle, so the one hop is already spent).
+    if override_fallback_chain is not None:
+        rt["fallback_model"] = override_fallback_chain
+    # A role pinned to another provider carries that provider's own token ceiling; the
+    # parent's is only the default when the role didn't supply one.
+    if override_max_tokens is not None:
+        rt["max_tokens"] = override_max_tokens
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
@@ -271,6 +293,22 @@ def _build_child_agent(
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    # Stash the ruflo persona so _run_single_child can tag delegation_stats with the right
+    # role identifier and agent/turn_context.py can read it back per turn. Empty string
+    # means the caller passed none — stats land in the "(untagged)" bucket.
+    _dispatch_agent_type = (agent_type or "").strip()
+    child._delegate_agent_type = _dispatch_agent_type
+    # Dispatch-time observability: log WHICH role/persona this child was dispatched as.
+    # model=/provider= alone are ambiguous when several roles share one default model
+    # (e.g. pm and coder both defaulting to glm-5.3), so without this line the dispatched
+    # role was only recoverable from the delegation-stats record AFTER completion — and
+    # not at all for abandoned/errored children. Pairs with the per-turn "conversation
+    # turn:" line in agent/turn_context.py, which reads these same attributes back.
+    logger.info(
+        "delegate_task: spawned subagent id=%s role=%s agent_type=%s model=%s provider=%s depth=%d task=%r",
+        subagent_id, effective_role, _dispatch_agent_type or "none", rt.get("model"),
+        rt.get("provider") or "unknown", child_depth, goal,
+    )
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -368,25 +406,343 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
+def _resolve_role_credentials(entry: dict, parent_agent, cache: dict) -> dict:
+    """Resolve the credential bundle for a per-role ``model_by_role`` entry.
+
+    A ``delegation.model_by_role`` entry may be a dict declaring its own ``provider``
+    (plus optional ``base_url``/``api_key``/``api_mode``), mirroring the shape of
+    ``delegation.by_provider``. Such a role must run on ITS provider, not on the
+    batch-level delegation provider — sending a role's model slug to the batch
+    provider's endpoint is a guaranteed 404.
+
+    Deliberate reuse: this builds a synthetic delegation-config dict and hands it to
+    :func:`_resolve_delegation_credentials`, so the real credential resolution
+    (``resolve_runtime_provider``, API-key checks, pinned-ACP-command preflight) happens
+    in exactly one place. The synthetic cfg carries no ``by_provider`` key, so that
+    branch is skipped.
+
+    Results are memoized on ``cache`` keyed by the credential-bearing fields, so N
+    children on the same role resolve the provider once.
+
+    Raises ValueError (never swallowed) when resolution fails — the caller must refuse
+    the spawn rather than silently fall back.
+    """
+    synthetic_cfg: Dict[str, Any] = {"model": entry.get("model"), "provider": entry.get("provider")}
+    for key in ("base_url", "api_key", "api_mode"):
+        value = entry.get(key)
+        if value:
+            synthetic_cfg[key] = value
+    cache_key = (
+        synthetic_cfg.get("provider"), synthetic_cfg.get("model"), synthetic_cfg.get("base_url"),
+        synthetic_cfg.get("api_key"), synthetic_cfg.get("api_mode"),
+    )
+    if cache_key in cache:
+        return cache[cache_key]
+    resolved = _resolve_delegation_credentials(synthetic_cfg, parent_agent)
+    cache[cache_key] = resolved
+    return resolved
+
+
+def _load_role_maps() -> tuple[Dict[str, Any], Dict[str, Any], Any]:
+    """``(role_model_map, role_entry_map, resolve_role_alias)`` for one delegate_task call.
+
+    Three independent guards on purpose: a missing/failing entry-map API must never take
+    the flattened model map (and therefore auto-route) down with it, and an older
+    hermes_cli without the alias table degrades to "no aliases" rather than taking both
+    role maps down.
+    """
+    try:
+        from hermes_cli.ruflo_agents import get_role_model_map
+        role_model_map = get_role_model_map()
+    except Exception:
+        role_model_map = {}
+    try:
+        from hermes_cli.ruflo_agents import get_role_entry_map
+        role_entry_map = get_role_entry_map()
+    except Exception:
+        role_entry_map = {}
+    try:
+        from hermes_cli.ruflo_agents import resolve_role_alias
+    except Exception:
+        def resolve_role_alias(role: Optional[str]) -> Optional[str]:  # type: ignore[misc]
+            return None
+    return (role_model_map if isinstance(role_model_map, dict) else {},
+            role_entry_map if isinstance(role_entry_map, dict) else {}, resolve_role_alias)
+
+
+def _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent) -> Dict[int, Dict[str, Any]]:
+    """Auto-route verdicts for the whole batch in ONE classifier call.
+
+    Serves two distinct populations (see tools/delegation_router.py's module docstring):
+    tasks with no agent_type (or the explicit opt-in ``agent_type="auto"``) are FULLY
+    routed tier → role → model; tasks that DID state an agent_type ride along only so
+    their tier can be compared — an ESCALATE-ONLY check that can move a task up the
+    ladder, never down. A task with an explicit ``model=`` is in neither population and
+    is never classified at all.
+
+    Fail-open: on ANY failure this returns {} and every task falls through the existing
+    precedence chain, i.e. exactly the behavior before this module existed.
+    """
+    try:
+        from tools.delegation_router import route_task_models
+        provider = (creds.get("provider") or "").strip() or getattr(parent_agent, "provider", None)
+        return route_task_models(task_list, role_model_map, cfg, provider) or {}
+    except Exception:
+        logger.debug("delegate_task: auto-route dispatch failed", exc_info=True)
+        return {}
+
+
+def _resolve_task_routes(
+    task_list, creds, *, cfg, parent_agent, top_role, roster_warnings,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Per-task routing decisions for a whole batch, resolved BEFORE any child is built.
+
+    Returns ``(routes, None)`` — one dict per task carrying its final ``agent_type``,
+    ``model``, credential bundle, runtime fallback chain and auto-route provenance — or
+    ``([], error)`` when a role's provider pin (and its fallback, if any) cannot be
+    resolved. Resolving every task up front is deliberate: a bad role pin on task 3 must
+    refuse the WHOLE spawn, not leave children 1-2 already built and running.
+
+    Precedence per task (load-bearing, see tools/delegation_router.py):
+      explicit ``model=`` → explicit ``agent_type`` role-map → auto-route persona pick
+      → auto-route tier→role→model → ``delegation.model``/``by_provider`` → parent's model
+    """
+    role_model_map, role_entry_map, resolve_role_alias = _load_role_maps()
+    auto_routes = _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent)
+    # The literal agent_type meaning "auto-route this task" — imported from the router
+    # (single source of truth) with a literal fallback so a partially-loaded router
+    # module can never break dispatch.
+    try:
+        from tools.delegation_router import AUTO_AGENT_TYPE
+    except Exception:
+        AUTO_AGENT_TYPE = "auto"
+
+    role_creds_cache: Dict[tuple, dict] = {}
+    routes: List[Dict[str, Any]] = []
+    for i, t in enumerate(task_list):
+        effective_role = _normalize_role(t.get("role") or top_role)
+        # agent_type="auto" is NOT a persona: it is the explicit opt-in to auto-routing,
+        # so it normalises to None here (identical routing to omitting the field — no
+        # bogus model_by_role["auto"] lookup, no "auto" persona prompt) while still
+        # counting as an explicit choice that does not trip the omission warning.
+        stated_agent_type = (t.get("agent_type") or "").strip()
+        agent_type_is_auto = stated_agent_type.lower() == AUTO_AGENT_TYPE
+        agent_type_omitted = not stated_agent_type
+        task_agent_type = None if (agent_type_omitted or agent_type_is_auto) else stated_agent_type
+        task_model_explicit = (t.get("model") or "").strip() or None
+        route = auto_routes.get(i)
+
+        # Auto-route persona pick feeds the SAME task_agent_type variable an explicit
+        # agent_type uses, so it fires both existing effects for free (persona-prompt
+        # injection AND per-role model resolution). Explicit always wins.
+        if task_agent_type is None and route:
+            auto_agent_type = (route.get("agent_type") or "").strip() or None
+            if auto_agent_type:
+                task_agent_type = auto_agent_type
+
+        # Escalate-only override: the task DID state an agent_type and the classifier
+        # judged the work to need a strictly DEEPER tier. Replacing task_agent_type makes
+        # the whole existing machinery (role→model, role→provider pin, role→persona
+        # prompt, role→iteration budget) follow the escalation with no duplicated logic.
+        # The router only ever emits an escalation UPWARD, so a stated choice can never be
+        # silently demoted here.
+        escalation = None
+        if task_agent_type is not None and route and route.get("escalated") and (route.get("agent_type") or "").strip():
+            escalation = {
+                "from": task_agent_type, "to": (route.get("agent_type") or "").strip(),
+                "tier": route.get("tier"), "from_rank": route.get("escalated_from_rank"),
+                "to_rank": route.get("rank"), "reason": route.get("reason"),
+            }
+            task_agent_type = escalation["to"]
+            roster_warnings.append(
+                f"Task {i}: agent_type={escalation['from']!r} was ESCALATED to "
+                f"{escalation['to']!r} (tier {escalation['tier']!r}, rank "
+                f"{escalation['from_rank']}→{escalation['to_rank']}) by the auto-route classifier"
+                + (f": {escalation['reason']}" if escalation.get("reason") else "")
+                + ". Auto-route only ever escalates, never downgrades. Pass an explicit model= to "
+                "bypass classification entirely, or set delegation.auto_route.escalate_only: false "
+                "in config.yaml to disable this check."
+            )
+            logger.warning(
+                "delegate_task: task %d agent_type=%r escalated to %r (tier=%r, rank %s->%s) by auto-route classifier",
+                i, escalation["from"], escalation["to"], escalation["tier"],
+                escalation["from_rank"], escalation["to_rank"],
+            )
+
+        # role= grants CAPABILITY (can this child spawn children) and is entirely
+        # independent of agent_type=, which is what routes the child through
+        # delegation.model_by_role to pick its MODEL. role='orchestrator' with neither
+        # silently inherits the PARENT's model/provider — surface it.
+        if effective_role == "orchestrator" and task_agent_type is None and task_model_explicit is None:
+            roster_warnings.append(
+                f"Task {i}: role='orchestrator' with no agent_type= (and no explicit model=) — this "
+                f"child will silently INHERIT the parent's own model/provider instead of routing "
+                f"through delegation.model_by_role. If you intended a specific configured role's "
+                f"model (e.g. the 'pm' persona), pass agent_type=<role> alongside role='orchestrator'."
+            )
+
+        # Role aliases (hermes_cli.personas.ROLE_ALIASES, e.g. "sr-coder" -> "coder"): a
+        # pure synonym carries no config of its own, so the config key its entry lives
+        # under may differ from the dispatched agent_type. Resolved ONCE and used for BOTH
+        # role-keyed lookups below (model and credential entry) so the two can never
+        # disagree. An explicitly configured alias always wins — the fallback only fires
+        # when the dispatched name has no entry of its own.
+        role_cfg_key = task_agent_type
+        if task_agent_type and not (task_agent_type in role_model_map or task_agent_type in role_entry_map):
+            alias_target = resolve_role_alias(task_agent_type)
+            if alias_target:
+                role_cfg_key = alias_target
+        role_map_model = role_model_map.get(role_cfg_key) if role_cfg_key else None
+
+        # The classifier's model is only a FALLBACK for tasks it was allowed to route:
+        # ones that stated no agent_type (or opted in with "auto"), plus escalations
+        # (where task_agent_type was already replaced, so role_map_model is the escalated
+        # role's own model). For a task whose stated agent_type SURVIVED, a route entry
+        # must not contribute a model at all — otherwise a role with no model_by_role
+        # entry would silently pick up the classifier's tier model, the exact downgrade
+        # path escalate-only exists to prevent.
+        stated_survived = stated_agent_type and not agent_type_is_auto and escalation is None
+        auto_route_model = route.get("model") if (route and not stated_survived) else None
+
+        task_creds = creds
+        task_fallback_chain: Optional[List[Dict[str, Any]]] = None
+        role_entry = role_entry_map.get(role_cfg_key) if role_cfg_key else None
+        role_provider = str(role_entry.get("provider") or "").strip() if isinstance(role_entry, dict) else ""
+        # Per-role fallback: a second full {model, provider, ...} bundle, consulted at
+        # construction time (below) and at runtime (via override_fallback_chain). Only
+        # meaningful alongside a provider pin — a fallback identity with no primary
+        # provider has nothing to be a fallback FOR.
+        role_fallback_entry = role_entry.get("fallback") if (role_provider and isinstance(role_entry, dict)) else None
+        if not isinstance(role_fallback_entry, dict):
+            role_fallback_entry = None
+
+        if role_provider and isinstance(role_entry, dict):
+            try:
+                task_creds = _resolve_role_credentials(role_entry, parent_agent, role_creds_cache)
+            except ValueError as primary_exc:
+                via_alias = f" (dispatched as {task_agent_type!r})" if role_cfg_key != task_agent_type else ""
+                if role_fallback_entry is None:
+                    # Fail loud: falling back to the batch provider here is exactly the
+                    # wrong-model-on-wrong-provider bug this pin exists to prevent. Name
+                    # the CONFIG key (the alias target when the dispatched role is a
+                    # synonym) so the user can find the entry to fix, and name the
+                    # dispatched role too when they differ.
+                    return [], (
+                        f"delegation.model_by_role[{role_cfg_key!r}]{via_alias} pins provider "
+                        f"{role_provider!r} but it could not be resolved: {primary_exc}"
+                    )
+                try:
+                    task_creds = _resolve_role_credentials(role_fallback_entry, parent_agent, role_creds_cache)
+                except ValueError as fallback_exc:
+                    return [], (
+                        f"delegation.model_by_role[{role_cfg_key!r}]{via_alias} pins provider "
+                        f"{role_provider!r} but it could not be resolved: {primary_exc}. "
+                        f"Its configured fallback also could not be resolved: {fallback_exc}"
+                    )
+                # Fallback resolved — dispatch proceeds on ITS bundle. The primary's
+                # role-map model must not leak into the precedence chain now that the
+                # provider underneath it changed; pin role_map_model to the fallback's own
+                # model so the two can never mix. No further runtime fallback for this hop
+                # (the one hop was already spent getting here).
+                role_map_model = task_creds["model"]
+                fb_provider, fb_model = str(task_creds.get("provider") or ""), str(task_creds.get("model") or "")
+                fb_msg = (
+                    f"🔄 Fallback engaged for role {role_cfg_key!r}: primary provider {role_provider!r} "
+                    f"unresolvable ({primary_exc}) — using {fb_model} via {fb_provider} instead"
+                )
+                emit = getattr(parent_agent, "_emit_status", None)
+                if callable(emit):
+                    with _quiet("delegate_task: fallback notice emit failed", exc_info=True):
+                        emit(fb_msg)
+                logger.info(
+                    "delegate_task: role %r primary provider %r unresolvable (%s) — engaged configured fallback %s/%s",
+                    role_cfg_key, role_provider, primary_exc, fb_provider, fb_model,
+                )
+            else:
+                # Primary resolved fine. Attach the role's own fallback as a ONE-ENTRY
+                # runtime chain in the SAME raw shape the top-level fallback_providers
+                # config uses — no eager resolution. AIAgent's existing
+                # try_activate_fallback()/classify_api_error() machinery resolves it lazily
+                # exactly like any other chain entry, only if the ACTUAL model call fails
+                # with a retryable-class error.
+                if role_fallback_entry is not None:
+                    task_fallback_chain = [dict(role_fallback_entry)]
+
+        # INVARIANT: task_model_explicit is FIRST and must stay first. A caller-stated
+        # model= is intent and always wins — it bypasses auto-route AND the escalate-only
+        # tier check entirely (the router never even classifies a task carrying model=).
+        # The config fallback comes from the bundle actually used for THIS child, so a
+        # role-provider child can never inherit the other provider's default model.
+        effective_task_model = task_model_explicit or role_map_model or auto_route_model or task_creds["model"]
+
+        # Silent-omission visibility: a task that stated NEITHER model= nor agent_type=
+        # got its model chosen by something the caller never named. agent_type="auto" is
+        # an explicit opt-in and is deliberately exempt.
+        if agent_type_omitted and task_model_explicit is None and not agent_type_is_auto:
+            if route:
+                decision = (
+                    f"auto-route classifier → tier {route.get('tier')!r} → role "
+                    f"{route.get('role')!r} → model {effective_task_model!r}"
+                )
+                reason = str(route.get("reason") or "").strip()
+                if reason:
+                    decision += f" ({reason})"
+            elif effective_task_model:
+                decision = f"delegation config default → model {effective_task_model!r}"
+            else:
+                decision = "inherited the PARENT's own model/provider"
+            roster_warnings.append(
+                f"Task {i}: no agent_type= and no model= were given, so the model was chosen for "
+                f"you: {decision}. To route deliberately, pass agent_type=<role> (resolved through "
+                f"delegation.model_by_role) or model=<model>; pass agent_type='auto' to opt into "
+                f"automatic routing explicitly and silence this notice."
+            )
+            logger.info(
+                "delegate_task: task %d dispatched with no agent_type= and no model=; routing decision: %s",
+                i, decision,
+            )
+
+        route_info = None
+        if route:
+            route_info = {
+                "tier": route.get("tier"), "role": route.get("role"), "model": route.get("model"),
+                "reason": route.get("reason"), "agent_type": route.get("agent_type"),
+            }
+            if escalation is not None:
+                route_info.update({
+                    "escalated": True, "escalated_from": escalation["from"],
+                    "escalated_from_rank": escalation["from_rank"], "rank": escalation["to_rank"],
+                })
+
+        routes.append({
+            "role": effective_role, "agent_type": task_agent_type, "model": effective_task_model,
+            "creds": task_creds, "fallback_chain": task_fallback_chain, "route_info": route_info,
+        })
+    return routes, None
+
+
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    cfg: Optional[Dict[str, Any]] = None, roster_warnings: Optional[List[str]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
+    # Every per-task credential bundle resolves BEFORE any child is constructed, so a bad
+    # role pin refuses the whole spawn instead of leaving children 1-2 already built.
+    routes, err = _resolve_task_routes(
+        task_list, creds, cfg=cfg if cfg is not None else routing_cfg, parent_agent=parent_agent,
+        top_role=top_role, roster_warnings=roster_warnings if roster_warnings is not None else [],
+    )
+    if err:
+        return [], err
     children = []
     for i, t in enumerate(task_list):
+        _route = routes[i]
+        _creds = _route["creds"]
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -395,11 +751,22 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_route["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_route["role"], agent_type=_route["agent_type"],
+                override_provider=_creds["provider"], override_base_url=_creds["base_url"],
+                override_api_key=_creds["api_key"], override_api_mode=_creds["api_mode"],
+                override_request_overrides=_creds.get("request_overrides"),
+                override_max_tokens=_creds.get("max_output_tokens"),
+                override_acp_command=_creds.get("command"), override_acp_args=_creds.get("args"),
+                override_fallback_chain=_route["fallback_chain"], routing_cfg=routing_cfg,
             )
         except ValueError as exc:
             return [], str(exc)
+        # Auto-route provenance so the result metadata can surface the decision — silent
+        # misrouting must be impossible to hide.
+        if _route["route_info"] is not None:
+            with _quiet("Could not attach auto-route info to child %d", i):
+                child._auto_route_info = _route["route_info"]
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -532,9 +899,82 @@ def _build_model_roster(
     return known, has_config_roster
 
 
+def _guard_task_models(
+    task_list: List[Dict[str, Any]], *, depth: int, known_models: Set[str],
+    has_config_roster: bool, roster_warnings: List[str],
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Validate caller-supplied ``model=`` strings against the live config roster at EVERY
+    delegation depth; ``(guarded_task_list, None)`` or ``([], error)``.
+
+    Semantics per task carrying a non-empty ``model=``:
+      * bare ``model=`` (no agent_type):
+          depth >= 1 → REJECT (role governance: a nested child must route through
+          ``agent_type=``); depth 0 → REJECT when STALE, allow when roster-valid.
+      * ``model=`` alongside ``agent_type=``:
+          depth >= 1 → DROP the model (role resolution wins), warn when STALE;
+          depth 0 → DROP + warn when STALE, keep it (explicit pin wins) when roster-valid.
+
+    FAIL-OPEN: with no config roster there is nothing to be stale AGAINST, so the depth-0
+    validity check is skipped entirely. The nested role-governance rules are NOT gated on
+    the roster — they fire unconditionally. Builds a FRESH list so a model-drop never
+    rewrites the caller's own task dicts.
+    """
+    guarded: List[Dict[str, Any]] = []
+    for i, task in enumerate(task_list):
+        if not isinstance(task, dict):
+            guarded.append(task)
+            continue
+        model_str = str(task.get("model") or "").strip()
+        if not model_str:
+            guarded.append(task)
+            continue
+        has_agent_type = bool((task.get("agent_type") or "").strip())
+        stale = has_config_roster and (_normalize_roster_model(model_str) not in known_models)
+        if not has_agent_type:
+            if depth >= 1:
+                return [], (
+                    f"Task {i}: nested delegation from a subagent requires agent_type= (role "
+                    f"resolution); a bare model= is not allowed. Set agent_type= to route this child "
+                    f"through delegation.model_by_role, or drop model= to let the role map pick the model."
+                )
+            if stale:
+                return [], (
+                    f"Task {i}: model={model_str!r} is not in the current model roster. Use a model "
+                    f"from delegation.by_provider or delegation.model_by_role in config.yaml, or pass "
+                    f"agent_type= to route this child through role resolution."
+                )
+            guarded.append(task)
+            continue
+        # model= alongside agent_type=.
+        if depth >= 1 or stale:
+            if stale:
+                roster_warnings.append(
+                    f"Task {i}: model={model_str!r} is not in the current model roster and was "
+                    f"IGNORED; role resolution (agent_type={task.get('agent_type')!r}) was used "
+                    f"instead. Use a model from delegation.by_provider or delegation.model_by_role "
+                    f"in config.yaml, or drop model= to let the role map pick the model."
+                )
+                logger.warning(
+                    "delegate_task: task %d supplied model=%r which is not in the current model "
+                    "roster; ignoring it in favor of role resolution (agent_type=%r)",
+                    i, model_str, task.get("agent_type"),
+                )
+            else:
+                logger.warning(
+                    "delegate_task: nested delegation task %d supplied both model=%r and "
+                    "agent_type=%r; ignoring model in favor of role resolution",
+                    i, task.get("model"), task.get("agent_type"),
+                )
+            task = {**task, "model": None}
+        # else: depth 0 + roster-valid — keep the model (explicit pin wins).
+        guarded.append(task)
+    return guarded, None
+
+
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
+    model: Optional[str] = None, agent_type: Optional[str] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None, cancel: Optional[str] = None,
@@ -652,6 +1092,35 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
+    task_list = task_list or []  # narrowed: _normalize_task_list only returns None alongside err
+
+    # Top-level model/agent_type are batch-wide DEFAULTS a per-task value overrides. The
+    # single-goal branch folds them into its synthetic task; the batch branch takes caller
+    # dicts verbatim, so seed them here (setdefault, never force) or a caller who set the
+    # model once at the top level silently gets the config default on every child.
+    if (model or agent_type) and task_list:
+        task_list = [
+            {**t, **({"model": t["model"] if t.get("model") else model} if model else {}),
+             **({"agent_type": t["agent_type"] if t.get("agent_type") else agent_type} if agent_type else {})}
+            if isinstance(t, dict) else t
+            for t in task_list
+        ]
+
+    # Model-roster guardrail: validate caller-supplied model= strings against the live
+    # config roster at EVERY depth, closing the depth-0 gap where a stale model string
+    # (e.g. a deprecated slug typed from assistant memory) was silently accepted and a
+    # real subagent ran on it. Warnings ride the same channel as the routing decisions
+    # below, so they land in BOTH the immediate response and the completion event.
+    _roster_warnings: List[str] = []
+    _known_models, _has_config_roster = _build_model_roster(cfg, creds, parent_agent)
+    if not _has_config_roster:
+        logger.debug("delegate_task: no config model roster found; depth-0 model roster validation skipped (fail-open)")
+    task_list, err = _guard_task_models(
+        task_list, depth=depth, known_models=_known_models,
+        has_config_roster=_has_config_roster, roster_warnings=_roster_warnings,
+    )
+    if err:
+        return tool_error(err)
 
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
@@ -666,12 +1135,14 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        cfg=cfg, roster_warnings=_roster_warnings,
     )
     if err:
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        roster_warnings=list(_roster_warnings),
     )
     return _run_batch(batch, background)
 
@@ -934,6 +1405,7 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
+        model=args.get("model"), agent_type=args.get("agent_type"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),

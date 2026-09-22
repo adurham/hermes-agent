@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
@@ -48,6 +48,9 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    # Model-roster drops, silent-omission routing decisions and auto-route escalations
+    # surfaced to the dispatching model in BOTH the immediate response and the completion.
+    roster_warnings: List[str] = field(default_factory=list)
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -187,6 +190,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         combined["live_transcripts"] = unit_paths
     if batch.group is not None:
         combined["group"] = batch.group
+    # Routing decisions the caller never named (roster drops, silent-omission picks,
+    # auto-route escalations) — surfaced so misrouting can't hide.
+    if batch.roster_warnings:
+        combined["model_roster_warnings"] = list(batch.roster_warnings)
     return combined
 
 _SYNC_FALLBACK_NOTES = {
@@ -335,6 +342,10 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     if batch.live_paths:
         payload["live_transcripts"] = list(batch.live_paths)
         payload["live_transcripts_hint"] = _BACKGROUND_NOTES["live_transcripts_hint"]
+    # Surface routing decisions in the immediate dispatch handle too, so the model sees
+    # them right away and not only in the consolidated completion.
+    if batch.roster_warnings:
+        payload["model_roster_warnings"] = list(batch.roster_warnings)
     return payload
 
 def _units_of(batch: _Batch) -> List[_Batch]:

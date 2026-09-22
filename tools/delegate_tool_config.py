@@ -360,6 +360,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         runtime.get("base_url"), api_key, runtime.get("api_mode"),
         _merge_request_overrides(runtime.get("request_overrides"), explicit_request_overrides) or {},
         command=pinned_command, args=list(runtime.get("args") or []),
+        max_output_tokens=runtime.get("max_output_tokens"),
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
