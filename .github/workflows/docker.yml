@@ -164,6 +164,9 @@ jobs:
           # Release calls are dispatched on the stable tag: pin to the exact
           # candidate commit, never a mutable branch ref.
           ref: ${{ needs.mode.outputs.release == 'true' && github.sha || '' }}
+          # Dev identity is the distance from the highest reachable final
+          # release, so the stamp needs both its ancestry and release tags.
+          fetch-depth: 0
 
       - name: Stamp release build context
         if: needs.mode.outputs.release == 'true'

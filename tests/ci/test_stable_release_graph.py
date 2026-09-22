@@ -80,6 +80,13 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     assert final < render < reconcile
 
 
+def test_docker_dev_stamp_checkout_has_release_history():
+    build = workflow("docker.yml")["jobs"]["build"]
+    checkout = next(step for step in build["steps"] if "actions/checkout@" in step.get("uses", ""))
+
+    assert checkout["with"]["fetch-depth"] == "0"
+
+
 def test_release_gates_extract_consumer_facing_versions():
     release_jobs = workflow("stable-release.yml")["jobs"]
     bootstrap = next(
