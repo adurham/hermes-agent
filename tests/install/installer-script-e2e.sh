@@ -239,6 +239,23 @@ desktop_checkpoint() { # phase, expected commit, selected method
     --desktop "$EXPECT_DESKTOP" --method "$3"
 }
 
+# Each Playwright phase must own Electron's single-instance lock. Close all
+# other app processes before a phase. Electron otherwise rejects the second
+# instance before Playwright receives an app-ready event.
+close_running_desktop() {
+  local pattern="$INSTALL_DIR/apps/desktop/release"
+  local pid waited=0
+  for pid in $(pgrep -f "$pattern" 2>/dev/null); do
+    kill "$pid" 2>/dev/null || true
+  done
+  while [ "$waited" -lt 15 ]; do
+    pgrep -f "$pattern" >/dev/null 2>&1 || return 0
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  printf 'warning: a desktop instance from this install survived termination\n' >&2
+}
+
 # The redirect must stay at TRANSPORT level. `hermes update` resolves its
 # update channel from the release archive and validates the record against
 # `git config --get remote.origin.url`; if the configured URL ever looked like
@@ -450,6 +467,7 @@ case "$UPDATE_METHOD" in
     [ -f "$SPEC.captured" ] || fail "hermes desktop exited 0 but no launch was captured at $SPEC"
     ok "captured $(cat "$SPEC.captured") launch spec"
 
+    close_running_desktop
     step "driving the app under Playwright: Settings -> About -> Update now"
     # Use the checkout module closure and current driver Node, not OLD tooling.
     rc=0
@@ -494,27 +512,6 @@ fi
 assert_checkout "$TARGET_SHA" "$TARGET_LABEL"
 assert_user_shims
 user_state_after_upgrade
-
-# The in-app update leaves the app that drove it running: the smoke clicks
-# "Update now" in that very window, and the updater may relaunch it. The
-# post-update checkpoint then launches its OWN instance, and Electron's
-# single-instance lock makes the second process boot, print its install stamp and
-# exit 0 -- which Playwright reports as "electron.launch: Process failed to
-# launch!" with the ws closing at code 1006 and no error text. The checkpoint
-# must own the only instance, so close anything still running from this install.
-close_running_desktop() {
-  local pattern="$INSTALL_DIR/apps/desktop/release"
-  local pid waited=0
-  for pid in $(pgrep -f "$pattern" 2>/dev/null); do
-    kill "$pid" 2>/dev/null || true
-  done
-  while [ "$waited" -lt 15 ]; do
-    pgrep -f "$pattern" >/dev/null 2>&1 || return 0
-    sleep 0.5
-    waited=$((waited + 1))
-  done
-  printf 'warning: a desktop instance from this install survived 15s of termination\n' >&2
-}
 
 preserve_after_upgrade
 env_key_names "after update"
