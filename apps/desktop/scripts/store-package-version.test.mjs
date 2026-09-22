@@ -12,6 +12,12 @@ import { substituteManifestMacros } from '../../../node_modules/app-builder-lib/
 const roots = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 const desktop = fileURLToPath(new URL('../', import.meta.url))
+const gitIdentityEnv = {
+  GIT_AUTHOR_NAME: 'Test',
+  GIT_AUTHOR_EMAIL: 'test@example.invalid',
+  GIT_COMMITTER_NAME: 'Test',
+  GIT_COMMITTER_EMAIL: 'test@example.invalid'
+}
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'store-manifest-'))
@@ -21,8 +27,7 @@ function fixture() {
   fs.copyFileSync(path.join(desktop, 'assets/msix-manifest.xml'), path.join(app, 'assets/msix-manifest.xml'))
   fs.writeFileSync(path.join(app, 'product-identity.cjs'), "module.exports={store:true,artifactNamePascal:'HermesBundled'}\n")
   fs.writeFileSync(path.join(app, 'package.json'), JSON.stringify({ name: 'hermes', version: '0.27.1' }))
-  const env = { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
-    GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid',
+  const env = { ...process.env, ...gitIdentityEnv,
     GIT_AUTHOR_DATE: '2026-09-07T00:18:00Z', GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' }
   for (const args of [['init', '-q'], ['add', '.'], ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], ['tag', 'v0.27.1']]) {
     execFileSync('git', args, { cwd: root, env, stdio: 'pipe' })
@@ -86,7 +91,7 @@ test('stable candidate identity uses the admitted claim epoch before the final t
   execFileSync('git', ['tag', '-d', 'v0.27.1'], { cwd: root, stdio: 'pipe' })
   execFileSync('git', ['tag', '-a', 'v0.27.1-rc', '-m', 'claim'], {
     cwd: root,
-    env: { ...process.env, GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' },
+    env: { ...process.env, ...gitIdentityEnv, GIT_COMMITTER_DATE: '2026-09-07T00:18:00Z' },
     stdio: 'pipe'
   })
   const epoch = Date.parse('2026-09-07T00:18:00Z') / 1000
