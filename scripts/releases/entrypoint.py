@@ -62,7 +62,7 @@ def _require_ancestry(repo: Path, commit: str) -> None:
 
 
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
-            dispatch, autopublish: bool = False) -> dict:
+            execute, autopublish: bool = False) -> dict:
     """Claim the derived version, cut its draft, and start the gate."""
     _require_ancestry(repo, commit)
     version = derive_next_version(published=None, claims=_claims(repo), bump=bump)
@@ -71,7 +71,15 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     _git(repo, "push", remote, f"refs/tags/{tag}")
     url = f"https://github.com/{repository}/releases/tag/{tag}"
     try:
-        dispatch(["gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository])
+        execute([
+            "gh", "release", "create", tag, "--repo", repository,
+            "--verify-tag", "--draft", "--generate-notes", "--title", f"Hermes Agent v{version}",
+        ])
+        execute([
+            "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
+            "--raw-field", f"tag={tag}",
+            "--raw-field", f"autopublish={str(autopublish).lower()}",
+        ])
     except Exception as exc:
         raise ReleaseRefused(f"release {tag} never started: {exc}") from exc
     return {"version": version, "tag": tag, "commit": commit, "url": url,
@@ -104,11 +112,11 @@ def cmd_release(args) -> None:
         raise SystemExit(f"release: remote {remote!r} does not point at a GitHub repository")
     commit = _git(repo, "rev-parse", "--verify", f"{args.commit}^{{commit}}")
 
-    def dispatch(command: list[str]) -> None:
+    def execute(command: list[str]) -> None:
         completed = subprocess.run(command, cwd=repo, capture_output=True, text=True, encoding="utf-8")
         if completed.returncode != 0:
-            raise RuntimeError(completed.stderr.strip() or "workflow dispatch failed")
+            raise RuntimeError(completed.stderr.strip() or "release command failed")
 
     result = release(commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
-                     dispatch=dispatch, autopublish=args.autopublish)
+                     execute=execute, autopublish=args.autopublish)
     print(result["url"])

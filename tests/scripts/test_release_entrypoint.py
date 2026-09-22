@@ -36,21 +36,26 @@ def _claim(repo, version, commit, actor="release-bot", when="2026-09-22T00:14:00
     git(repo, "push", "--quiet", "origin", f"refs/tags/v{version}-rc")
 
 
-def test_release_claims_the_derived_version_and_dispatches(source):
+def test_release_claims_the_derived_version_creates_a_draft_and_dispatches(source):
     from scripts.releases.entrypoint import release
 
     commit = git(source, "rev-parse", "HEAD")
     calls = []
     result = release(commit, bump="patch", repo=source, remote="origin",
-                     repository="example/hermes-agent", dispatch=calls.append)
+                     repository="example/hermes-agent", execute=calls.append, autopublish=True)
 
     assert result["version"] == "0.21.5"
     assert result["tag"] == "v0.21.5-rc"
     assert result["commit"] == commit
     assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5-rc"
     assert git(source, "rev-parse", "v0.21.5-rc^{commit}") == commit
-    assert calls == [["gh", "workflow", "run", "stable-release.yml",
-                      "--ref", "v0.21.5-rc", "--repo", "example/hermes-agent"]]
+    assert calls == [
+        ["gh", "release", "create", "v0.21.5-rc", "--repo", "example/hermes-agent",
+         "--verify-tag", "--draft", "--generate-notes", "--title", "Hermes Agent v0.21.5"],
+        ["gh", "workflow", "run", "stable-release.yml", "--ref", "v0.21.5-rc",
+         "--repo", "example/hermes-agent", "--raw-field", "tag=v0.21.5-rc",
+         "--raw-field", "autopublish=true"],
+    ]
     # The claim push names the claim ref and nothing else.
     pushed = git(source, "ls-remote", "origin", "refs/tags/v0.21.5-rc")
     assert pushed.startswith(git(source, "rev-parse", "v0.21.5-rc"))
@@ -66,19 +71,20 @@ def test_a_commit_behind_an_outstanding_claim_is_refused(source):
 
     with pytest.raises(ReleaseRefused, match="0\\.21\\.5 already claimed"):
         release(earlier, bump="patch", repo=source, remote="origin",
-                repository="example/hermes-agent", dispatch=lambda _cmd: pytest.fail("must not dispatch"))
+                repository="example/hermes-agent", execute=lambda _cmd: pytest.fail("must not execute"))
     assert "v0.21.6-rc" not in git(source, "tag", "--list")
 
 
 def test_a_dispatch_that_never_starts_is_an_error(source):
     from scripts.releases.entrypoint import ReleaseRefused, release
 
-    def refuse(_cmd):
-        raise RuntimeError("workflow dispatch rejected")
+    def refuse(command):
+        if command[1:3] == ["workflow", "run"]:
+            raise RuntimeError("workflow dispatch rejected")
 
     with pytest.raises(ReleaseRefused, match="never started"):
         release(git(source, "rev-parse", "HEAD"), bump="patch", repo=source, remote="origin",
-                repository="example/hermes-agent", dispatch=refuse)
+                repository="example/hermes-agent", execute=refuse)
     # The claim stands: a failed start burns the version rather than retrying it.
     assert "v0.21.5-rc" in git(source, "tag", "--list")
 
