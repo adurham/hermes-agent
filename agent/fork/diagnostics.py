@@ -1,15 +1,10 @@
 """Per-turn diagnostics + provider-specific error hints (fork-only).
 
-Three small helpers that don't share state but are all forked-only
+Two small helpers that don't share state but are both fork-only
 features that don't fit elsewhere:
 
-* ``record_usage_history``     — append per-API-call usage records to
-  ``agent._usage_history`` so post-mortems can spot a cache flush
-  (cache_read drops to ~0 while msg_count keeps climbing) without
-  needing the bloaty ``HERMES_DUMP_REQUESTS`` capture.
-
 * ``tools_signature``          — stable short hash of the current
-  ``agent.tools[]`` for cache-flush diagnostics in the usage history.
+  ``agent.tools[]`` for cache-flush diagnostics.
 
 * ``decorate_xai_entitlement_error`` — append a neutral hint when
   xAI's OAuth surface returns the "entitlement denied" 403, pointing
@@ -21,39 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
-from datetime import datetime
 
-
-def record_usage_history(agent, canonical_usage) -> None:
-    """Append one per-turn usage record to ``agent._usage_history``.
-
-    Record shape: ``{ts, input, cache_read, cache_write, output,
-    msg_count, tools_count, tools_hash}``. ~80 bytes serialized — a
-    2000-turn session adds ~160KB to the session log file. Persisted
-    as part of the session JSON so post-mortems can spot a cache
-    flush without HERMES_DUMP_REQUESTS bodies on disk.
-    """
-    try:
-        record = {
-            "ts": datetime.now().isoformat(timespec="seconds"),
-            "input": int(getattr(canonical_usage, "input_tokens", 0) or 0),
-            "cache_read": int(getattr(canonical_usage, "cache_read_tokens", 0) or 0),
-            "cache_write": int(getattr(canonical_usage, "cache_write_tokens", 0) or 0),
-            "output": int(getattr(canonical_usage, "output_tokens", 0) or 0),
-            "msg_count": len(agent._session_messages or []),
-            "tools_count": len(agent.tools or []),
-            "tools_hash": agent._tools_signature(),
-        }
-        agent._usage_history.append(record)
-        if len(agent._usage_history) > agent._usage_history_cap:
-            # Keep tail — the recent window is what's useful for
-            # diagnosing the current session's behavior.
-            drop = len(agent._usage_history) - agent._usage_history_cap
-            del agent._usage_history[:drop]
-    except Exception as e:
-        if getattr(agent, "verbose_logging", False):
-            logging.debug("Failed to record usage history: %s", e)
 
 # Tool names that count as a "risky operation" for the skill-recall
 # reminder. Tick the counter when one of these runs; when it hits the
@@ -146,13 +109,8 @@ def init_state(agent) -> None:
 
     * ``agent._strip_cache_on_overload`` — opt-in flag for stripping cache
       breakpoints on retry when an overloaded_error fires.
-    * ``agent._usage_history``           — bounded list of per-API-call
-      usage records (used by :func:`record_usage_history`).
-    * ``agent._usage_history_cap``       — soft cap on history length.
     * ``agent._tools_hash_cache``        — memoized (id, hex) tuple of the
       most-recently-hashed tools[].  Cleared when tools change.
     """
     agent._strip_cache_on_overload = False
-    agent._usage_history = []
-    agent._usage_history_cap = 2000
     agent._tools_hash_cache = None
