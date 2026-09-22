@@ -135,9 +135,16 @@ else
     *.zip) unzip -q "$archive" -d "$tmp/tree" ;;
     *) tar -xzf "$archive" -C "$tmp/tree" ;;
   esac
-  # flatten a single wrapping dir (uv tarballs ship uv-<triple>/uv)
-  inner="$(find "$tmp/tree" -mindepth 1 -maxdepth 1)"
-  if [ "$(printf '%s\n' "$inner" | wc -l)" = 1 ] && [ -d "$inner" ]; then
+  # flatten a single wrapping dir (uv tarballs ship uv-<triple>/uv).
+  # BSD find lacks GNU's -mindepth/-maxdepth flags, so enumerate children in
+  # the shell; the two dot globs include hidden entries without matching . or ..
+  inner= inner_count=0
+  for child in "$tmp/tree"/* "$tmp/tree"/.[!.]* "$tmp/tree"/..?*; do
+    [ -e "$child" ] || [ -L "$child" ] || continue
+    inner="$child"
+    inner_count=$((inner_count + 1))
+  done
+  if [ "$inner_count" = 1 ] && [ -d "$inner" ]; then
     mv "$inner" "$tmp/entry"
   else
     mv "$tmp/tree" "$tmp/entry"
