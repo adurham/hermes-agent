@@ -307,6 +307,7 @@ export interface Translations {
       openaiRejectedApiKey: string
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
+      rpcOutOfSync: string
       restartHermesFailed: string
     }
     actions: {
@@ -495,6 +496,7 @@ export interface Translations {
         includesHeading: string
         agentLabel: string
         desktopLabel: string
+        profileLabel: string
         agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
         catalogPinned: (name: string, sha: string) => string
@@ -1593,6 +1595,9 @@ export interface Translations {
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string
+      updateConsentTitle: (name: string) => string
+      updateConsentBody: (name: string, sha: string) => string
+      updateConsentConfirm: string
       uninstall: string
       uninstallTip: (name: string, profile: string) => string
       uninstallConfirmTitle: (name: string) => string
@@ -1606,6 +1611,15 @@ export interface Translations {
       deepLinkCatalogInvalidName: string
       deepLinkCatalogUnknown: (name: string) => string
       deepLinkCatalogUnavailable: string
+      settingsToggle: (name: string) => string
+      settingsForm: {
+        save: string
+        saved: (name: string) => string
+        saveFailed: (name: string) => string
+        optional: string
+        secretSet: string
+        secretStoredAs: (env: string) => string
+      }
     }
     officialCatalog: string
     officialPill: string

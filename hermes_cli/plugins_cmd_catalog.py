@@ -133,9 +133,9 @@ def _adopt_legacy_sidecar(plugin_dir: Path, record: dict) -> Optional[dict]:
 
 
 def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
-    """Catalog provenance of an installed plugin (``catalog_name``/``repo``/``sha``/``tier``), or ``None``
-    for a non-catalog install. Read from the installer-owned metadata record, never from the tree: a
-    URL-installed repo that ships its own ``.hermes-catalog.json`` must not render as a reviewed
+    """Catalog provenance of an installed plugin (``catalog_name``/``repo``/``sha``/``tier``/``pin``), or
+    ``None`` for a non-catalog install. Read from the installer-owned metadata record, never from the
+    tree: a URL-installed repo that ships its own ``.hermes-catalog.json`` must not render as a reviewed
     catalog install nor mark the real entry installed."""
     if not plugin_dir:
         return None
@@ -166,6 +166,14 @@ def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
         return None
     return {"catalog_name": block["name"], "repo": block.get("repo", ""), "sha": block.get("sha", ""),
             "tier": block.get("tier") or "community", "pin": block.get("pin", "")}
+
+
+def at_catalog_pin(sidecar: dict, entry_sha: str) -> bool:
+    """The install satisfies the catalog pin *entry_sha*: HEAD is that commit, or the pin is an
+    annotated tag whose commit was checked out (``sha`` records the peeled commit, ``pin`` the tag
+    object the installer verified). Neither matches after a re-pin or for an off-pin ``--ref`` install."""
+    return bool(entry_sha) and entry_sha in (
+        str(sidecar.get("sha") or "").lower(), str(sidecar.get("pin") or "").lower())
 
 
 def catalog_install_record(plugin_dir) -> Optional[dict]:
@@ -199,7 +207,8 @@ def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry])
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
-                          allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
+                          allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
+                          before_swap=None) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
     pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
@@ -208,7 +217,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed,
+        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed, before_swap=before_swap,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 
@@ -286,13 +295,82 @@ class RepinResult(NamedTuple):
     warnings: list[str]
 
 
-def repin_catalog_plugin(target: Path, sidecar: dict, *, interactive: bool = False) -> RepinResult:
-    """Re-pin a catalog install to the current catalog SHA (never ``git pull``). The force reinstall
-    replaces the whole tree, so the user's untracked/ignored files (installer-created ``config.yaml``,
-    data) are carried into the new tree and edits to TRACKED files are saved under
-    ``<HERMES_HOME>/plugins-backup/<name>-<sha8>/`` with a warning. A manifest rename between pins moves the
-    enabled flag and removes the stale dir. Raises ``PluginOperationError`` when the entry left the catalog."""
-    from hermes_cli.plugins_cmd import PluginOperationError, _plugins_dir
+# Surfaces a re-pin can widen without the user seeing a diff: each is a list of identifiers the
+# new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
+_SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
+                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half"}
+
+
+def plugin_surface(manifest: dict, tree: Path) -> Dict[str, set]:
+    """What an installed tree exposes: declared host capabilities, tools, hooks, Python deps, Desktop half."""
+    from hermes_cli.plugins_cmd import _declared_capabilities_from_manifest
+    manifest = manifest or {}
+
+    def _list(key: str, *alts: str) -> set:
+        for k in (key, *alts):
+            raw = manifest.get(k)
+            if isinstance(raw, list):
+                return {str(x) for x in raw if isinstance(x, (str, int, float))}
+        return set()
+
+    return {
+        "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
+        "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
+        "python_dependencies": _list("python_dependencies"),
+        "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
+    }
+
+
+def surface_delta(old: Dict[str, set], new: Dict[str, set]) -> Dict[str, List[str]]:
+    """``{surface: [added...]}`` for every surface the new tree widens; empty when nothing widened."""
+    return {k: sorted(new.get(k, set()) - old.get(k, set())) for k in _SURFACE_LABELS
+            if new.get(k, set()) - old.get(k, set())}
+
+
+def surface_delta_lines(delta: Dict[str, List[str]]) -> List[str]:
+    return [f"{_SURFACE_LABELS[k]}: {', '.join(v)}" for k, v in delta.items()]
+
+
+class RepinConsentRequired(Exception):
+    """The new pin widens the plugin's surface and no consent was given; nothing was changed on disk.
+    ``delta`` is :func:`surface_delta`'s mapping — surfaces hand it to the user and retry with consent."""
+
+    def __init__(self, name: str, sha: str, delta: Dict[str, List[str]]):
+        self.name, self.sha, self.delta = name, sha, delta
+        super().__init__(
+            f"Updating '{name}' to {sha[:8]} adds {'; '.join(surface_delta_lines(delta))}. Confirm to continue.")
+
+
+def repin_catalog_plugin(
+    target: Path,
+    sidecar: dict,
+    *,
+    interactive: bool = False,
+    consent_cb=None,
+) -> RepinResult:
+    """Re-pin a catalog install to the current catalog SHA (never ``git pull``).
+
+    Publication stays PM-owned and recoverable. Untracked/ignored user files are copied into the
+    staged replacement before publication; tracked edits are backed up under
+    ``<HERMES_HOME>/plugins-backup/<name>-<sha8>/``. A manifest rename moves the selection and removes
+    the stale directory.
+
+    A pin that widens the plugin (new tools, hooks, Python deps, host capabilities or a Desktop half)
+    is a new grant. ``consent_cb(delta) -> bool`` decides before publication; absent or declined raises
+    :class:`RepinConsentRequired` with the installed tree untouched. The immutable catalog pin is
+    previewed separately because the PM update transaction owns and publishes its own staged clone.
+    """
+    from hermes_cli.plugins_cmd import (
+        PluginOperationError,
+        _clone_plugin_repo,
+        _plugins_dir,
+        _read_install_metadata,
+        _read_manifest,
+        _read_manifest_for_install,
+        _resolve_git_url,
+        _resolve_subdir_within,
+    )
+
     catalog_name = str(sidecar["catalog_name"])
     entry = get_live_catalog_entry(catalog_name)
     if entry is None:
@@ -300,10 +378,28 @@ def repin_catalog_plugin(target: Path, sidecar: dict, *, interactive: bool = Fal
             f"Plugin '{catalog_name}' is no longer in the catalog — it may have been removed. "
             "See `hermes plugins info` and the removed blocklist.")
     refuse_if_installed_removed(catalog_name, target)
-    if str(sidecar.get("sha") or "").strip().lower() == entry.sha:
+    if at_catalog_pin(sidecar, entry.sha):
         return RepinResult(entry.sha, False, target.name, [])
+
     local, modified = _local_changes(target)
     old_sha8 = str(sidecar.get("sha") or "old")[:8]
+    installed_surface = plugin_surface(_read_manifest(target), target)
+
+    def _consent_gate(manifest: dict, tree: Path) -> None:
+        delta = surface_delta(installed_surface, plugin_surface(manifest, tree))
+        if delta and not (consent_cb is not None and consent_cb(delta)):
+            raise RepinConsentRequired(catalog_name, entry.sha, delta)
+
+    # The catalog pin is immutable. Preview it before PM begins publication so a widened surface can
+    # be declined without touching the live tree or writing a backup; update_plugin clones the same pin
+    # again and owns validation, dependency preparation, metadata and code publication as one handoff.
+    with tempfile.TemporaryDirectory(prefix=".repin-preview-", dir=_plugins_dir()) as preview_tmp:
+        preview_root = Path(preview_tmp) / "plugin"
+        git_url, subdir = _resolve_git_url(entry.install_identifier)
+        _clone_plugin_repo(preview_root, git_url, entry.sha)
+        preview_target = _resolve_subdir_within(preview_root, subdir) if subdir else preview_root
+        _consent_gate(_read_manifest_for_install(preview_target), preview_target)
+
     with tempfile.TemporaryDirectory(prefix=".repin-", dir=_plugins_dir()) as tmp:
         stash = Path(tmp) / "local"
         _stash_local_files(target, local, stash)
@@ -311,18 +407,23 @@ def repin_catalog_plugin(target: Path, sidecar: dict, *, interactive: bool = Fal
         backup = _plugins_dir().parent / "plugins-backup" / f"{target.name}-{old_sha8}"
         _stash_local_files(target, modified, backup)
         from hermes_cli.plugins_transaction import update_plugin
+
         update_plugin(target, catalog_entry=entry, interactive=interactive, preserved_files=stash)
-        from hermes_cli.plugins_cmd import _read_install_metadata
         matches = []
-        for name, row in _read_install_metadata().items():
+        for installed_name, row in _read_install_metadata().items():
             if not isinstance(row, dict):
                 continue
             block = row.get("catalog")
-            if isinstance(block, dict) and block.get("name") == entry.name and row.get("revision") == entry.sha:
-                matches.append(name)
+            if (
+                isinstance(block, dict)
+                and block.get("name") == entry.name
+                and at_catalog_pin(block, entry.sha)
+            ):
+                matches.append(installed_name)
         if len(matches) != 1:
             raise PluginOperationError(
-                f"Catalog update published but its install record is ambiguous: {matches or 'missing' }.")
+                f"Catalog update published but its install record is ambiguous: {matches or 'missing'}."
+            )
         installed_name = matches[0]
         new_target = target.parent / installed_name
     warnings: list[str] = []
@@ -348,10 +449,31 @@ def repin_catalog_plugin(target: Path, sidecar: dict, *, interactive: bool = Fal
 
 
 def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, interactive: bool = True) -> None:
-    from hermes_cli.plugins_cmd import PluginOperationError, _fail
+    from hermes_cli.plugins_cmd import (
+        PluginOperationError, _ask_yes, _declared_capabilities_from_manifest, _fail, _is_tty, _read_manifest,
+        _run_capability_consent)
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")
+
+    def _confirm_widening(delta: Dict[str, List[str]]) -> bool:
+        console.print(f"\n  [yellow]The new pin of [bold]{name}[/bold] adds:[/yellow]")
+        for line in surface_delta_lines(delta):
+            console.print(f"    {line}")
+        if not interactive or not _is_tty():
+            console.print("  [yellow]Non-interactive session: update NOT applied (fail closed). "
+                          "Re-run `hermes plugins update` in a terminal to review and confirm.[/yellow]")
+            return False
+        return _ask_yes("  Apply this update? [y/N]: ")
+
     try:
-        result = repin_catalog_plugin(target, sidecar, interactive=interactive)
+        result = repin_catalog_plugin(
+            target,
+            sidecar,
+            interactive=interactive,
+            consent_cb=_confirm_widening,
+        )
+    except RepinConsentRequired as exc:
+        _fail(console, f"[yellow]Update of {name} not applied:[/yellow] {exc}")
+        raise SystemExit(1)
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
         raise SystemExit(1)
@@ -359,6 +481,20 @@ def cmd_update_catalog(name: str, target: Path, sidecar: dict, console, *, inter
     console.print(f"[green]✓[/green] Plugin [bold]{result.installed_name}[/bold] {verb} {result.sha[:8]}.")
     for warning in result.warnings:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if result.changed:
+        # PM admitted Python dependencies before publishing the replacement. Host capabilities use
+        # their separate grant store, so additions stay ungranted until the user consents here.
+        new_target = target.parent / result.installed_name
+        declared = _declared_capabilities_from_manifest(_read_manifest(new_target), result.installed_name)
+        if declared:
+            from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
+            if pending_capabilities(result.installed_name, declared) or declared_set_changed(result.installed_name, declared):
+                if interactive:
+                    _run_capability_consent(console, result.installed_name, declared, context="update")
+                else:
+                    console.print(
+                        f"[yellow]Plugin {result.installed_name} has new capabilities; review them with "
+                        f"`hermes plugins capabilities {result.installed_name}`.[/yellow]")
 
 
 
@@ -491,7 +627,7 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
             **entry.to_dict(), "sha_short": entry.sha[:7],
             "capability_summary": entry_capability_summary(entry),
             "installed": local is not None, "installed_sha": installed_sha,
-            "update_available": bool(installed_sha) and installed_sha != entry.sha,
+            "update_available": bool(installed_sha) and not at_catalog_pin(sidecar or {}, entry.sha),
             "runtime_status": local["runtime_status"] if local else None,
         })
     return {
@@ -517,7 +653,7 @@ def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[s
     if pin:
         row["catalog_sha"] = pin
         row["catalog_version"] = versions.get(str(sidecar["catalog_name"])) or None
-        row["update_available"] = bool(installed_sha) and installed_sha != pin
+        row["update_available"] = bool(installed_sha) and not at_catalog_pin(sidecar, pin)
     return row
 
 

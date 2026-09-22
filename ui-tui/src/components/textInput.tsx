@@ -767,6 +767,7 @@ export function TextInput({
   mask,
   mouseApiRef,
   cursorSnapshotRef,
+  ignoreVerticalArrows = false,
   voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   placeholderColor,
@@ -1413,7 +1414,7 @@ export function TextInput({
         return
       }
 
-      if (k.upArrow || k.downArrow) {
+      if ((k.upArrow || k.downArrow) && !ignoreVerticalArrows) {
         flushKeyBurst()
 
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
@@ -1812,6 +1813,8 @@ interface TextInputProps {
   columns?: number
   cursorSnapshotRef?: MutableRefObject<InputCursorSnapshot | null>
   focus?: boolean
+  /** Leave ↑/↓ to the owner: a form that moves field focus with them owns the key, not the field. */
+  ignoreVerticalArrows?: boolean
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void

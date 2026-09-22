@@ -14,8 +14,9 @@ from typing import Any, Dict, List, Optional
 _log = logging.getLogger("hermes_cli.web_server")
 
 def _normalize_memory_provider_name(name: Any) -> str:
+    from agent.memory_provider import is_core_memory_provider
     provider = str(name or "").strip()
-    return "" if provider.lower() in {"built-in", "builtin", "none"} else provider
+    return "" if is_core_memory_provider(provider) else provider
 
 
 def _load_memory_provider(name: str):
