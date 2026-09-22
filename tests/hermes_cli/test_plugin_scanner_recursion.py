@@ -132,7 +132,7 @@ class TestForeignHarnessManifestDirs:
         sp = hermes_home / "plugins" / "superpowers"
         (sp / ".hermes-plugin").mkdir(parents=True)
         (sp / ".hermes-plugin" / "plugin.yaml").write_text(
-            yaml.dump(
+            yaml.safe_dump(
                 {
                     "name": "superpowers",
                     "version": "6.3.0",
