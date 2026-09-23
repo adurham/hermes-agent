@@ -37,8 +37,23 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert jobs["docker"]["uses"] == jobs["publish-docker"]["uses"]
     assert jobs["docker"]["with"]["release-phase"] == "test"
     assert "ci" in ancestors(jobs, "docker")
-    required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged", "macos-packaged", "termux-checks", "windows-live", "candidates", "bootstrap-version"}
+    candidate_calls = ["candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
+                       "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"]
+    required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged", "macos-packaged",
+                "termux-checks", "windows-live", "transitions", "bootstrap-version", *candidate_calls}
     assert required <= ancestors(jobs, "acceptance")
+    # B3: stable calls one build group at a time; the bundle group waits for
+    # both Windows arches, and the Linux groups are not called at all.
+    assert "candidates" not in jobs
+    for name, group in zip(candidate_calls, ("darwin-arm64", "darwin-x64", "win32-arm64",
+                                            "win32-x64", "win32-bundle", "termux")):
+        call = jobs[name]
+        assert call["uses"] == "./.github/workflows/desktop-bundled-release.yml"
+        assert call["with"]["release-phase"] == "candidate"
+        assert call["with"]["jobs"] == group
+        assert {"tag", "claim-tag", "claim-object"} <= set(call["with"])
+    assert {"candidates-win32-arm64", "candidates-win32-x64"} <= set(jobs["candidates-win32-bundle"]["needs"])
+    assert not any("linux" in name for name in jobs)
     # B5: publish-docker starts when the docker tests pass; it does not wait
     # for the acceptance join. publish-bundles still does.
     assert jobs["publish-docker"]["needs"] == ["admit", "docker"]
@@ -65,7 +80,9 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     assert "autopublish" not in release["on"]["workflow_dispatch"]["inputs"]
     assert {"claim-tag", "claim-object", "tag", "commit", "version", "release-id", "release-epoch"} <= \
         set(jobs["admit"]["outputs"])
-    for name in ("candidates", "publish-bundles"):
+    for name in ("publish-bundles", *("candidates-darwin-arm64", "candidates-darwin-x64",
+                                      "candidates-win32-arm64", "candidates-win32-x64",
+                                      "candidates-win32-bundle", "candidates-termux")):
         call = jobs[name]["with"]
         assert call["tag"] == "${{ needs.admit.outputs.tag }}"
         assert call["claim-tag"] == "${{ needs.admit.outputs.claim-tag }}"
@@ -74,6 +91,29 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     assert "release-epoch" in desktop["jobs"]["validate"]["outputs"]
     assert desktop["jobs"]["termux-deb"]["env"]["HERMES_RELEASE_EPOCH"] == \
         "${{ needs.validate.outputs.release-epoch }}"
+    # B3: each build group stages its own receipt before its smoke, and the
+    # receipt URL and digest cross the call boundary as workflow outputs.
+    assert "manifest-url" not in desktop["on"]["workflow_call"]["outputs"]
+    assert "manifest-sha256" not in desktop["on"]["workflow_call"]["outputs"]
+    receipts = {"darwin-arm64": "stage-receipt-darwin-arm64", "darwin-x64": "stage-receipt-darwin-x64",
+                "win32-bundle": "assemble-win32-bundle"}
+    for group, job in receipts.items():
+        producer = desktop["jobs"][job]
+        assert producer["outputs"]["receipt-url"] == "${{ steps.receipt.outputs.receipt-url }}"
+        assert producer["outputs"]["receipt-sha256"] == "${{ steps.receipt.outputs.receipt-sha256 }}"
+        for suffix, output in (("url", "receipt-url"), ("sha256", "receipt-sha256")):
+            expected = "${{ jobs." + job + ".outputs." + output + " }}"
+            assert desktop["on"]["workflow_call"]["outputs"][f"{group}-receipt-{suffix}"]["value"] == expected
+    for name in ("smoke-darwin-arm64", "smoke-darwin-x64"):
+        assert f"stage-receipt-{name.removeprefix('smoke-')}" in desktop["jobs"][name]["needs"]
+    for call, key, output in (("candidates-darwin-arm64", "RECEIPT_DARWIN_ARM64_URL", "darwin-arm64-receipt-url"),
+                              ("candidates-darwin-arm64", "RECEIPT_DARWIN_ARM64_SHA256", "darwin-arm64-receipt-sha256"),
+                              ("candidates-darwin-x64", "RECEIPT_DARWIN_X64_URL", "darwin-x64-receipt-url"),
+                              ("candidates-darwin-x64", "RECEIPT_DARWIN_X64_SHA256", "darwin-x64-receipt-sha256"),
+                              ("candidates-win32-bundle", "RECEIPT_WIN32_BUNDLE_URL", "win32-bundle-receipt-url"),
+                              ("candidates-win32-bundle", "RECEIPT_WIN32_BUNDLE_SHA256", "win32-bundle-receipt-sha256")):
+        expected = "${{ needs." + call + ".outputs." + output + " }}"
+        assert jobs["transitions"]["steps"][-1]["env"][key] == expected
     for name in ("docker", "nix", "pm-bundle"):
         assert jobs[name]["with"]["version"] == "${{ needs.admit.outputs.version }}"
     for name in ("docker", "nix", "pm-bundle"):
@@ -87,8 +127,8 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
                       if step.get("name", "").startswith("Validate the accepted candidate archive"))
     assert "DOCKER_MANIFEST_DIGEST" not in complete[validation]["env"]
     assert "RELEASE_ID" not in complete[validation]["env"]
-    assert complete[validation]["env"]["CANDIDATE_MANIFEST_SHA256"] == \
-        "${{ needs.candidates.outputs.manifest-sha256 }}"
+    # B4 wires the candidate-manifest outputs back into these env entries.
+    assert "CANDIDATE_MANIFEST_SHA256" not in complete[validation]["env"]
     render = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Render the admitted"))
     reconcile = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Reconcile ordered"))
     assert validation < render < reconcile

@@ -5,11 +5,13 @@ import json
 import os
 import subprocess
 import sys
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from tests.scripts.test_release_r2 import r2_server  # noqa: F401
 from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
@@ -655,3 +657,131 @@ def test_edit_draft_release_sends_the_notes_byte_for_byte(tmp_path, monkeypatch)
 
     assert release["body"].strip() == notes
     assert release["tag_name"] == "v1.2.3" and release["draft"] is True
+
+
+# ── B3: stage-receipt ──────────────────────────────────────────────────────
+
+ATTEMPT = "rc.1-v1.2.3"
+RECEIPT_COMMIT = "a" * 40
+WINDOWS_VERSION = "2026.5761.123.0"
+RELEASE_EPOCH = 1_787_965_323
+
+
+def _fake_stable_context():
+    def context(env):
+        return "v1.2.3", RECEIPT_COMMIT, {"claim_tag": ATTEMPT, "claim_object": "0" * 40,
+                                          "claim_epoch": RELEASE_EPOCH}
+    return context
+
+
+def _stage_darwin_handoff(built, arch):
+    from scripts.releases import handoff
+
+    package = f"HermesBundled-1.2.3-mac-{arch}.zip"
+    (built / package).write_bytes(f"signed mac zip: {arch}".encode())
+    metadata = built / f"metadata-macos-{arch}.json"
+    metadata.write_text(json.dumps({
+        "platform": "macos", "arch": arch, "tag": "v1.2.3", "commit": RECEIPT_COMMIT,
+        "baseVersion": "1.2.3", "identity": "Product", "version": "1.2.3",
+        "teamId": "ABCDEFGHIJ", "filename": package,
+    }), encoding="utf-8")
+    handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"darwin-{arch}", built, [package, metadata.name])
+
+
+def _stage_windows_handoff(built, arch, *, with_metadata=True):
+    from scripts.releases import handoff
+
+    package = f"HermesBundled-1.2.3-win-{arch}.msix"
+    (built / package).write_bytes(f"signed msix: {arch}".encode())
+    includes = [package]
+    if with_metadata:
+        metadata = built / f"metadata-windows-{arch}.json"
+        metadata.write_text(json.dumps({
+            "platform": "windows", "arch": arch, "tag": "v1.2.3", "commit": RECEIPT_COMMIT,
+            "baseVersion": "1.2.3", "identity": "Product",
+            "version": WINDOWS_VERSION, "executableVersion": WINDOWS_VERSION,
+            "publisher": "CN=Test", "applicationId": "App",
+        }), encoding="utf-8")
+        includes.append(metadata.name)
+    handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, includes)
+
+
+def _stage_universal_bundle(built):
+    from scripts.releases import handoff
+
+    bundle = built / "Product-1.2.3-win.msixbundle"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("AppxMetadata/AppxBundleManifest.xml",
+                         f'<Bundle><Identity Name="Product" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/>'
+                         '<Packages><Package Type="application" Architecture="arm64"/>'
+                         '<Package Type="application" Architecture="x64"/></Packages></Bundle>')
+    handoff.stage(ATTEMPT, RECEIPT_COMMIT, "windows-universal", built, ["*.msixbundle"])
+
+
+def _receipt_env(tmp_path, base):
+    return {"RELEASE_TAG": "v1.2.3", "CLOUDFLARE_R2_PUBLIC_URL": base,
+            "GITHUB_OUTPUT": str(tmp_path / "output")}
+
+
+def test_stage_receipt_publishes_the_groups_signed_receipt(tmp_path, r2_server, https_origin,
+                                                           monkeypatch, capsys):
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_darwin_handoff(built, "arm64")
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context())
+    stable.main(["stage-receipt", "--receipt", "darwin-arm64"], _receipt_env(tmp_path, https_origin.base))
+
+    stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/darwin-arm64-receipt.json"]
+    receipt = json.loads(stored)
+    assert receipt["tag"] == "v1.2.3" and receipt["archive"] == ATTEMPT
+    assert receipt["releaseEpoch"] == RELEASE_EPOCH
+    assert [f"{row['platform']}/{row['arch']}" for row in receipt["packages"]] == ["macos/arm64"]
+    assert "smoke_results" not in receipt
+    url = f"{https_origin.base}/releases/tag/{ATTEMPT}/darwin-arm64-receipt.json"
+    digest = hashlib.sha256(stored).hexdigest()
+    printed = capsys.readouterr().out
+    assert url in printed and digest in printed
+    emitted = (tmp_path / "output").read_text(encoding="utf-8")
+    assert f"receipt-url={url}" in emitted and f"receipt-sha256={digest}" in emitted
+
+
+def test_stage_receipt_publishes_both_windows_rows_from_the_bundle(tmp_path, r2_server, https_origin,
+                                                                   monkeypatch):
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_windows_handoff(built, "x64")
+    _stage_windows_handoff(built, "arm64")
+    _stage_universal_bundle(built)
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context())
+    stable.main(["stage-receipt", "--receipt", "win32-bundle"], _receipt_env(tmp_path, https_origin.base))
+
+    stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/win32-bundle-receipt.json"]
+    receipt = json.loads(stored)
+    rows = {f"{row['platform']}/{row['arch']}": row for row in receipt["packages"]}
+    assert set(rows) == {"windows/x64", "windows/arm64"}
+    assert all(row["artifact"]["url"].endswith("Product-1.2.3-win.msixbundle") for row in rows.values())
+    assert rows["windows/x64"]["artifact"]["url"].startswith(f"{https_origin.base}/releases/tag/{ATTEMPT}/")
+    assert rows["windows/x64"]["executableVersion"] == WINDOWS_VERSION
+
+
+def test_stage_receipt_refuses_a_bundle_whose_arm64_row_is_absent(tmp_path, r2_server, https_origin,
+                                                                  monkeypatch):
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_windows_handoff(built, "x64")
+    # The arm64 leg staged its bytes but no metadata row: the receipt must refuse.
+    _stage_windows_handoff(built, "arm64", with_metadata=False)
+    _stage_universal_bundle(built)
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context())
+    with pytest.raises(ValueError):
+        stable.main(["stage-receipt", "--receipt", "win32-bundle"], _receipt_env(tmp_path, https_origin.base))
+    assert f"releases/tag/{ATTEMPT}/win32-bundle-receipt.json" not in r2_server.store

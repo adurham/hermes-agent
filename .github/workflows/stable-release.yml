@@ -119,8 +119,8 @@ jobs:
       tag-count: '3'
       exclude-ref: ${{ inputs.tag }}
 
-  candidates:
-    name: Build signed release candidates
+  candidates-darwin-arm64:
+    name: Build signed release candidates (darwin-arm64)
     needs: [admit, ci, docker]
     permissions:
       contents: write
@@ -133,10 +133,91 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
+      jobs: darwin-arm64
+
+  candidates-darwin-x64:
+    name: Build signed release candidates (darwin-x64)
+    needs: [admit, ci, docker]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: darwin-x64
+
+  candidates-win32-arm64:
+    name: Build signed release candidates (win32-arm64)
+    needs: [admit, ci, docker]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: win32-arm64
+
+  candidates-win32-x64:
+    name: Build signed release candidates (win32-x64)
+    needs: [admit, ci, docker]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: win32-x64
+
+  candidates-win32-bundle:
+    name: Build signed release candidates (win32-bundle)
+    needs: [admit, ci, docker, candidates-win32-arm64, candidates-win32-x64]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: win32-bundle
+
+  candidates-termux:
+    name: Build signed release candidates (termux)
+    needs: [admit, ci, docker]
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/desktop-bundled-release.yml
+    with:
+      tag: ${{ needs.admit.outputs.tag }}
+      claim-tag: ${{ needs.admit.outputs.claim-tag }}
+      claim-object: ${{ needs.admit.outputs.claim-object }}
+      release-phase: candidate
+      jobs: termux
 
   transitions:
     name: Pin actual OLD and NEW signed packages
-    needs: [admit, candidates]
+    needs: [admit, candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-bundle]
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
@@ -157,8 +238,12 @@ jobs:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
-          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
+          RECEIPT_DARWIN_ARM64_URL: ${{ needs.candidates-darwin-arm64.outputs.darwin-arm64-receipt-url }}
+          RECEIPT_DARWIN_ARM64_SHA256: ${{ needs.candidates-darwin-arm64.outputs.darwin-arm64-receipt-sha256 }}
+          RECEIPT_DARWIN_X64_URL: ${{ needs.candidates-darwin-x64.outputs.darwin-x64-receipt-url }}
+          RECEIPT_DARWIN_X64_SHA256: ${{ needs.candidates-darwin-x64.outputs.darwin-x64-receipt-sha256 }}
+          RECEIPT_WIN32_BUNDLE_URL: ${{ needs.candidates-win32-bundle.outputs.win32-bundle-receipt-url }}
+          RECEIPT_WIN32_BUNDLE_SHA256: ${{ needs.candidates-win32-bundle.outputs.win32-bundle-receipt-sha256 }}
           BASELINE_MANIFEST_URL: ${{ inputs.baseline-manifest }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -262,7 +347,10 @@ jobs:
   acceptance:
     name: All release acceptance checks pass
     if: always()
-    needs: [admit, ci, docker, nix, pm-bundle, termux-checks, windows-live, install-e2e, candidates, transitions, windows-packaged, macos-packaged, bootstrap-version]
+    needs: [admit, ci, docker, nix, pm-bundle, termux-checks, windows-live, install-e2e,
+            candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-arm64,
+            candidates-win32-x64, candidates-win32-bundle, candidates-termux,
+            transitions, windows-packaged, macos-packaged, bootstrap-version]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -271,7 +359,7 @@ jobs:
       - uses: ./.github/actions/setup-pm
         with:
           cache-python: false
-      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates transitions windows-packaged macos-packaged bootstrap-version
+      - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-darwin-x64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux transitions windows-packaged macos-packaged bootstrap-version
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
 
@@ -289,7 +377,8 @@ jobs:
 
   publish-bundles:
     name: Publish tested bundle artifacts
-    needs: [admit, acceptance, candidates]
+    # B4 wires the candidate-manifest digest back into manifest-sha256.
+    needs: [admit, acceptance]
     permissions:
       contents: write
       actions: read
@@ -301,7 +390,6 @@ jobs:
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: publish
-      manifest-sha256: ${{ needs.candidates.outputs.manifest-sha256 }}
 
   publication:
     name: All artifact publication succeeded
@@ -322,7 +410,7 @@ jobs:
   complete:
     name: Stable release is green
     if: always()
-    needs: [admit, ci, docker, acceptance, candidates, publication, publish-docker, windows-packaged, macos-packaged]
+    needs: [admit, ci, docker, acceptance, publication, publish-docker, windows-packaged, macos-packaged]
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
@@ -341,17 +429,16 @@ jobs:
         with:
           toolchain: node
           cache-python: false
-      - run: python -m scripts.releases.stable gate admit ci docker acceptance candidates publication publish-docker
+      - run: python -m scripts.releases.stable gate admit ci docker acceptance publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
       - name: Validate the accepted candidate archive
+        # B4 wires the candidate-manifest URL and digest outputs here.
         run: python -m scripts.releases.stable complete
         env:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
-          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -362,7 +449,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
-          CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
         run: |
           python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --archive "$RELEASE_CLAIM_TAG" \

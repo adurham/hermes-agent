@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -88,6 +89,17 @@ RECEIPT_TARGETS = {
     "darwin-x64": ("macos/x64",),
     "win32-bundle": ("windows/x64", "windows/arm64"),
 }
+
+# The staged handoffs each receipt is assembled from. The Windows bundle
+# receipt reads the per-arch metadata handoffs plus the universal bundle
+# handoff; fetch() re-verifies every staged byte against its receipt digest,
+# and validate_receipt enforces the signing facts (teamId, publisher).
+RECEIPT_HANDOFFS = {
+    "darwin-arm64": ("darwin-arm64",),
+    "darwin-x64": ("darwin-x64",),
+    "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
+}
+RECEIPT_INCLUDES = ("metadata-*.json", "*.zip", "*.msixbundle")
 
 
 def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
@@ -213,6 +225,81 @@ def plan_receipt_transitions(previous: dict, receipt_manifest: dict, receipt: st
                            receipt_manifest.get("commit"), public_base,
                            archive=receipt_manifest.get("archive"))
     return [_transition_row(target, old[target], new[target]) for target in targets]
+
+
+def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: str,
+                      public_base: str, release_epoch: int) -> dict:
+    """Rebuild one group's manifest rows from its staged, digest-verified handoffs."""
+    from scripts.releases.handoff import fetch, receipt_name
+    from scripts.releases.r2 import staging_key_for
+
+    names = RECEIPT_HANDOFFS.get(receipt)
+    if names is None:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    # Re-downloading the staged bytes proves the group's handoff is complete
+    # and matches its receipt before this receipt is published.
+    fetch(tag=archive, commit=commit, names=list(names), root=root,
+          includes=list(RECEIPT_INCLUDES))
+    digests = {}
+    for name in names:
+        for row in json.loads((root / receipt_name(name)).read_text(encoding="utf-8-sig"))["files"]:
+            digests[row["path"]] = row["sha256"]
+    rows = [json.loads(file.read_text(encoding="utf-8-sig"))
+            for file in sorted(root.glob("metadata-*.json"))]
+    universal = None
+    if receipt == "win32-bundle":
+        bundles = [file.name for file in root.glob("*.msixbundle") if not file.name.startswith("Store-")]
+        if len(bundles) != 1:
+            raise ValueError(f"Expected one universal bundle, found {len(bundles)}")
+        universal = bundles[0]
+    packages = []
+    for row in rows:
+        filename = universal if row["platform"] == "windows" else row.get("filename")
+        if not filename or filename not in digests or not (root / filename).is_file():
+            raise ValueError(f"Receipt {receipt} is missing staged bytes for "
+                             f"{row['platform']}/{row['arch']}")
+        packages.append({
+            key: value for key, value in {
+                **row,
+                "artifact": {"url": f"{public_base.rstrip('/')}/{staging_key_for(archive, filename)}",
+                             "sha256": digests[filename]},
+            }.items() if key != "filename"
+        })
+        if row["platform"] != "windows" and not filename.endswith(".zip"):
+            raise ValueError(f"Receipt {receipt} needs a signed app ZIP for {row['platform']}/{row['arch']}")
+    if receipt == "win32-bundle":
+        from scripts.bundles.release_artifacts import validate_windows_bundle
+
+        validate_windows_bundle(root / universal,
+                                [row for row in rows if row["platform"] == "windows"])
+    return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
+            "archive": archive, "packages": packages}
+
+
+def stage_receipt(env: dict, receipt: str) -> None:
+    """Publish one group's signed receipt into its immutable attempt archive.
+
+    The receipt names exactly that group's rows (decision 11): it is staged
+    before the group's smokes run, so it carries no smoke results, while
+    acceptance still blocks publication.
+    """
+    from scripts.releases.r2 import put
+
+    tag, commit, claim = stable_context(env)
+    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        manifest = _receipt_manifest(root, receipt, tag, commit, archive, base, claim["claim_epoch"])
+        validate_receipt(manifest, receipt, tag, commit, base, claim["claim_epoch"], archive=archive)
+        file = root / f"{receipt}-receipt.json"
+        file.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        put(tag=archive, key=file.name, file=str(file), immutable=True)
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+    url = f"{base}/releases/tag/{archive}/{receipt}-receipt.json"
+    print(url)
+    print(digest)
+    emit({"receipt-url": url, "receipt-sha256": digest}, env)
 
 
 def read_manifest(url: str, expected_hash: str | None = None, *, expected_origin: str | None = None,
@@ -449,14 +536,30 @@ def verify(env: dict) -> None:
           "release-epoch": claim["claim_epoch"]}, env)
 
 
-def transitions(env: dict) -> None:
+RECEIPT_SOURCES = {
+    "darwin-arm64": "RECEIPT_DARWIN_ARM64",
+    "darwin-x64": "RECEIPT_DARWIN_X64",
+    "win32-bundle": "RECEIPT_WIN32_BUNDLE",
+}
+
+
+def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
     from scripts.releases.r2 import put
 
-    tag, commit, claim = stable_context(env)
-    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
-    archive = claim["claim_tag"]
-    candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"], archive=archive)
+    transition = row["transition"]
+    name = f"acceptance-{row['target']}.json"
+    file = Path(env["RUNNER_TEMP"]) / name
+    file.write_text(json.dumps(transition), encoding="utf-8")
+    put(tag=archive, key=name, file=str(file), immutable=True)
+    url = f"{base}/releases/tag/{archive}/{name}"
+    if read_manifest(url) != transition:
+        raise ValueError("Transition manifest read-back mismatch")
+    return {"arch": transition["arch"], "manifest": url, "old": transition["old"]["tag"],
+            "id": row["target"],
+            "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
+
+
+def _published_baseline(env: dict, base: str) -> dict:
     try:
         previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
                                  expected_origin=base)
@@ -467,17 +570,27 @@ def transitions(env: dict) -> None:
     published = json.loads(output(["gh", "release", "view", previous["tag"], "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
     if published["tagName"] != previous["tag"] or published["isDraft"] or published["isPrerelease"]:
         raise ValueError("Upgrade baseline must be a published stable release")
+    return previous
+
+
+def _receipt_from_env(env: dict, receipt: str, prefix: str, base: str) -> dict:
+    digest = env.get(f"{prefix}_SHA256", "")
+    if not DIGEST.fullmatch(digest):
+        raise ValueError(f"Pinned {receipt} receipt digest is required")
+    return read_manifest(env[f"{prefix}_URL"], digest, expected_origin=base)
+
+
+def transitions(env: dict) -> None:
+    tag, commit, claim = stable_context(env)
+    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
+    previous = _published_baseline(env, base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
-    for row in plan_transitions(previous, candidate, base):
-        transition = row["transition"]
-        name = f"acceptance-{row['target']}.json"
-        file = Path(env["RUNNER_TEMP"]) / name
-        file.write_text(json.dumps(transition), encoding="utf-8")
-        put(tag=archive, key=name, file=file, immutable=True)
-        url = f"{base}/releases/tag/{archive}/{name}"
-        if read_manifest(url) != transition:
-            raise ValueError("Transition manifest read-back mismatch")
-        matrices[transition["platform"]]["include"].append({"arch": transition["arch"], "manifest": url, "old": transition["old"]["tag"], "id": row["target"], "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()})
+    for receipt, prefix in RECEIPT_SOURCES.items():
+        receipt_manifest = _receipt_from_env(env, receipt, prefix, base)
+        for row in plan_receipt_transitions(previous, receipt_manifest, receipt, base):
+            matrices[row["transition"]["platform"]]["include"].append(
+                _stage_transition(env, archive, base, row))
     emit(matrices, env)
 
 
@@ -635,9 +748,14 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
         summary("\n".join(f"- {name}: {needs.get(name, {}).get('result', 'missing')}" for name in argv[1:]), env)
         require_success(needs, argv[1:])
         return
+    if argv and argv[0] == "stage-receipt":
+        if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:
+            raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
+        stage_receipt(env, argv[2])
+        return
     commands = {"admit": admit, "verify": verify, "transitions": transitions, "complete": complete}
     if len(argv) != 1 or argv[0] not in commands:
-        raise ValueError("Expected admit, verify, gate, transitions or complete")
+        raise ValueError("Expected admit, verify, gate, transitions, stage-receipt or complete")
     commands[argv[0]](env)
 
 

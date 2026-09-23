@@ -98,12 +98,24 @@ on:
         type: string
         default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
     outputs:
-      manifest-url:
-        value: ${{ jobs.candidate-manifest.outputs.manifest-url }}
-        description: Immutable candidate manifest
-      manifest-sha256:
-        value: ${{ jobs.candidate-manifest.outputs.manifest-sha256 }}
-        description: Digest of the candidate manifest
+      darwin-arm64-receipt-url:
+        value: ${{ jobs.stage-receipt-darwin-arm64.outputs.receipt-url }}
+        description: Immutable darwin-arm64 stable receipt
+      darwin-arm64-receipt-sha256:
+        value: ${{ jobs.stage-receipt-darwin-arm64.outputs.receipt-sha256 }}
+        description: Digest of the darwin-arm64 stable receipt
+      darwin-x64-receipt-url:
+        value: ${{ jobs.stage-receipt-darwin-x64.outputs.receipt-url }}
+        description: Immutable darwin-x64 stable receipt
+      darwin-x64-receipt-sha256:
+        value: ${{ jobs.stage-receipt-darwin-x64.outputs.receipt-sha256 }}
+        description: Digest of the darwin-x64 stable receipt
+      win32-bundle-receipt-url:
+        value: ${{ jobs.assemble-win32-bundle.outputs.receipt-url }}
+        description: Immutable win32-bundle stable receipt
+      win32-bundle-receipt-sha256:
+        value: ${{ jobs.assemble-win32-bundle.outputs.receipt-sha256 }}
+        description: Digest of the win32-bundle stable receipt
   workflow_dispatch:
     inputs:
       tag:
@@ -1198,12 +1210,84 @@ jobs:
         shell: bash
         run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
 
+  stage-receipt-darwin-arm64:
+    name: Stage the darwin-arm64 stable receipt
+    # The receipt is staged at the end of the build join and before the smoke:
+    # the install arm may start against bytes whose smoke has not run yet
+    # (decision 11); acceptance still blocks publication.
+    needs: [validate, build-darwin-arm64]
+    if: >-
+      !cancelled() && inputs.release-phase == 'candidate'
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.validate.outputs.darwin-arm64 == 'true'
+      && needs.build-darwin-arm64.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 15
+    outputs:
+      receipt-url: ${{ steps.receipt.outputs.receipt-url }}
+      receipt-sha256: ${{ steps.receipt.outputs.receipt-sha256 }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          # Claim custody is re-checked in place: full history and the tags.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - id: receipt
+        run: python -m scripts.releases.stable stage-receipt --receipt darwin-arm64
+
+  stage-receipt-darwin-x64:
+    name: Stage the darwin-x64 stable receipt
+    needs: [validate, build-darwin-x64]
+    if: >-
+      !cancelled() && inputs.release-phase == 'candidate'
+      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.build-darwin-x64.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 15
+    outputs:
+      receipt-url: ${{ steps.receipt.outputs.receipt-url }}
+      receipt-sha256: ${{ steps.receipt.outputs.receipt-sha256 }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.validate.outputs.sha }}
+          # Claim custody is re-checked in place: full history and the tags.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: ./.github/actions/setup-pm
+        with:
+          cache-python: false
+      - id: receipt
+        run: python -m scripts.releases.stable stage-receipt --receipt darwin-x64
+
   smoke-darwin-arm64:
     name: Smoke macOS arm64 dmg/zip
-    needs: [validate, build-darwin-arm64]
+    needs: [validate, build-darwin-arm64, stage-receipt-darwin-arm64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin-arm64.result == 'success' && needs.validate.outputs.darwin-arm64 == 'true'
+      && needs.stage-receipt-darwin-arm64.result == 'success'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
@@ -1231,10 +1315,11 @@ jobs:
 
   smoke-darwin-x64:
     name: Smoke macOS x64 dmg/zip
-    needs: [validate, build-darwin-x64]
+    needs: [validate, build-darwin-x64, stage-receipt-darwin-x64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin-x64.result == 'success' && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.stage-receipt-darwin-x64.result == 'success'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
@@ -1329,6 +1414,9 @@ jobs:
     environment: release-signing
     cache-mode: read
     timeout-minutes: 45
+    outputs:
+      receipt-url: ${{ steps.receipt.outputs.receipt-url }}
+      receipt-sha256: ${{ steps.receipt.outputs.receipt-sha256 }}
     env:
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -1488,6 +1576,17 @@ jobs:
             python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           fi
+
+      - name: Stage the stable win32-bundle receipt
+        # Same receipt-before-smoke contract as the darwin arches (decision 11):
+        # the bundle and its per-arch metadata are staged and digest-verified;
+        # acceptance still blocks publication.
+        if: inputs.release-phase == 'candidate'
+        id: receipt
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
+        run: python -m scripts.releases.stable stage-receipt --receipt win32-bundle
 
   publish-channel:
     name: Publish the complete native-smoked channel build
