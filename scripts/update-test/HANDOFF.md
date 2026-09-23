@@ -29,6 +29,6 @@ instructions:
    `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- post --yes`
 
    windows:
-   `& ([scriptblock]::Create((irm "ps1_url1" -Headers @{"Cache-Control"="no-cache"}))) post --yes`
+   `& ([scriptblock]::Create((irm "ps1_url1" -Headers @{"Cache-Control"="no-cache"}))) post -Yes`
 
    this puts hermes back to exactly how it was beforehand.

@@ -32,7 +32,7 @@
   post: skip the confirmation.
 
 .EXAMPLE
-  ./hermes-update-rehearsal.ps1 pre --source <git-url> --ref <branch>
+  ./hermes-update-rehearsal.ps1 pre -Source <git-url> -Ref <branch>
   # ... run `hermes update`, use Hermes, test ...
   ./hermes-update-rehearsal.ps1 post
 
