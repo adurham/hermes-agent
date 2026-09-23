@@ -950,6 +950,7 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
         # Foreground the relaunched Hermes window so the proof screenshot
         # captures IT, not whatever else is on top (the full-desktop grab is
         # otherwise at the mercy of z-order -- an earlier run caught VS Code).
+        $mainProc = $null
         try {
             $mainProc = Get-Process -Name "Hermes" -ErrorAction SilentlyContinue |
                 Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
@@ -963,10 +964,11 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
                 Start-Sleep -Seconds 2
             }
         } catch {}
+        Assert-True ($null -ne $mainProc) "relaunch has a foregroundable desktop window"
         Save-DesktopScreenshot (Join-Path $proof "99-relaunched-desktop.png")
         # Native relaunch and read-only product verification already passed.
         $script:ChatFailure = $true
-        Close-VerifiedDesktop (Get-DesktopExe)
+        Close-VerifiedDesktop (Get-DesktopExe) $mainProc.Id
         @{ phase='new'; launch='post-update-launch'; automaticRelaunch=$true } | ConvertTo-Json |
             Set-Content (Join-Path $ProofRoot 'desktop-chat-new-launch.json')
         Invoke-DesktopCheckpoint 'new' $TargetSha $Route
