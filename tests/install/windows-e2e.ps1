@@ -834,6 +834,15 @@ function Invoke-PhaseInstallGui {
     # The installer Launch proof above must pass before a test-owned launch.
     $script:ChatFailure = $true
     Close-VerifiedDesktop (Get-DesktopExe)
+    # The installer-launched renderer boots before the journey seeds its local
+    # mock provider. Its disposable userData can therefore persist the release's
+    # default OpenRouter choice and override the mock on the checkpoint relaunch.
+    # Reset only this driver-owned pre-checkpoint state; OLD -> HEAD keeps the
+    # state created by the checkpoint itself.
+    if (Test-Path -LiteralPath $env:HERMES_DESKTOP_USER_DATA_DIR) {
+        Remove-Item -LiteralPath $env:HERMES_DESKTOP_USER_DATA_DIR -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $env:HERMES_DESKTOP_USER_DATA_DIR -Force | Out-Null
     $chatPhase = if ($Mode -eq 'install') { 'old' } else { 'new' }
     @{ phase=$chatPhase; launch='post-installer-launch'; handoffProof=$proof } | ConvertTo-Json |
         Set-Content (Join-Path $ProofRoot "desktop-chat-$chatPhase-launch.json")
