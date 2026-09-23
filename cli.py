@@ -8675,38 +8675,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 pass
         self._run_on_app_loop(_do)
 
-    @staticmethod
-    def _combine_interrupt_parts(parts: list):
-        """Merge queued interrupt messages into one ``_pending_input`` payload.
-
-        Each part is either a plain ``str`` or a ``(text, [Path, ...])`` tuple
-        (the latter when the user attached one or more images before hitting
-        Enter). Text is joined with newlines; images from every part are
-        concatenated in order. Returns a ``(text, images)`` tuple when any
-        images are present, otherwise a plain ``str`` — exactly the two shapes
-        the process loop's ``_pending_input`` consumer already unpacks.
-
-        This is the structural replacement for the old ``"\\n".join(parts)``,
-        which raised ``TypeError`` the instant a part was a tuple (image
-        attached), silently dropping the interrupting prompt.
-        """
-        texts: list = []
-        images: list = []
-        for part in parts:
-            if isinstance(part, tuple):
-                p_text = part[0] if len(part) > 0 else ""
-                p_images = part[1] if len(part) > 1 and part[1] else []
-                if p_text:
-                    texts.append(p_text)
-                if p_images:
-                    images.extend(p_images)
-            elif part:
-                texts.append(part)
-        combined_text = "\n".join(texts)
-        if images:
-            return (combined_text, images)
-        return combined_text
-
 
     def _tui_signal_handler(self, signum, frame):
         """SIGHUP/SIGTERM -> graceful shutdown.
