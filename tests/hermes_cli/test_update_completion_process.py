@@ -77,6 +77,10 @@ def transition(tmp_path):
         "from hermes_cli.probe import event\n"
         "def build_update_products(root, *, desktop): event('build', desktop=desktop)\n"
     )
+    (package / "source_stamp.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "write_source_stamp = lambda root: event('stamp')\n"
+    )
     # The shared completion tail is part of the NEW tree the child runs from.
     shutil.copy2(Path(update_completion.__file__).with_name("source_completion.py"),
                  package / "source_completion.py")
