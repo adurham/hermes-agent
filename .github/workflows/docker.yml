@@ -30,12 +30,7 @@ on:
         type: string
         default: ''
       version:
-        description: "Release version stamped into the isolated image build context."
-        required: false
-        type: string
-        default: ''
-      release-epoch:
-        description: "Immutable stable claim tagger epoch."
+        description: "Release version written directly to the image install stamp."
         required: false
         type: string
         default: ''
@@ -168,17 +163,20 @@ jobs:
           # release, so the stamp needs both its ancestry and release tags.
           fetch-depth: 0
 
-      - name: Stamp release build context
-        if: needs.mode.outputs.release == 'true'
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_EPOCH: ${{ inputs.release-epoch }}
-        run: >-
-          python3 scripts/releases/stamping.py --tree . --version "$RELEASE_VERSION"
-          --release-epoch "$RELEASE_EPOCH"
-
       - name: Write install stamp
-        run: python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci
+        env:
+          RELEASE_VERSION: ${{ needs.mode.outputs.release == 'true' && inputs.version || '' }}
+        run: |
+          display="$RELEASE_VERSION"
+          if [ -z "$display" ]; then
+            display="$(python3 -c 'from pathlib import Path; from scripts.releases.distance import dev_version; print(dev_version(Path.cwd()))')"
+          fi
+          base="${display%%+*}"
+          development="${display#*+}"
+          if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci \
+            --base-version "$base" --display-version "$display" --distance "$distance"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -345,9 +343,18 @@ jobs:
     steps:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
 
       - name: Write install stamp
-        run: python3 scripts/write_install_stamp.py --output install-stamp.json --distribution docker --update-mechanism external --source ci
+        run: |
+          display="$(python3 -c 'from pathlib import Path; from scripts.releases.distance import dev_version; print(dev_version(Path.cwd()))')"
+          base="${display%%+*}"
+          development="${display#*+}"
+          if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+          python3 scripts/write_install_stamp.py --output install-stamp.json \
+            --distribution docker --update-mechanism external --source ci \
+            --base-version "$base" --display-version "$display" --distance "$distance"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 

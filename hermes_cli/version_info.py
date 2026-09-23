@@ -1,14 +1,11 @@
-"""Truthful derived build-version metadata for user-facing Hermes displays.
-
-``__version__`` remains the package/API version. This module adds a display
-suffix only when it can prove the number of commits since that release.
+"""Canonical runtime identity for Hermes.
 
 Resolution order:
 1. Install stamp (``install-stamp.json``) — written at build time by
    ``scripts/write_install_stamp.py`` for every packager (Docker, Nix, and
    the desktop app). The stamp is authoritative
    for packaged builds.
-2. Live git — for source/dev installs with a ``.git`` directory.
+2. Live git — for unstamped source/dev installs with a ``.git`` directory.
 3. Unknown — no stamp and no git. The provenance is unknown.
 """
 
@@ -20,8 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from hermes_cli import __release_date__, __version__
 from hermes_cli.steward import UPDATE_MECHANISMS
+from hermes_cli.update_channel import STABLE_TAG_RE
 
 
 @dataclass(frozen=True)
@@ -37,9 +34,15 @@ class VersionInfo:
     distribution: Literal["docker", "nix", "desktop-app"] | None = None
 
 
-def _derived_version(base_version: str, distance: int | None, dirty: bool = False) -> str:
+def _derived_version(
+    base_version: str,
+    distance: int | None,
+    dirty: bool = False,
+    short_commit: str | None = None,
+) -> str:
     if distance and distance > 0:
-        return f"{base_version}+{distance}"
+        suffix = f"{distance}.g{short_commit}" if short_commit else str(distance)
+        return f"{base_version}+{suffix}{'.dirty' if dirty and short_commit else ''}"
     if dirty and distance is None:
         return f"{base_version}+?"
     return base_version
@@ -126,8 +129,13 @@ def _stamp_version_info() -> VersionInfo | None:
     if not commit or set(commit) == {"0"}:
         # All-zero placeholder = fallback stamp, not real provenance.
         return None
+    stamp_source = str(data.get("source") or "")
+    if stamp_source == "git" and (stamp_file.parent / ".git").exists():
+        live_commit = _run_git(stamp_file.parent, "rev-parse", "HEAD")
+        if live_commit and live_commit != commit:
+            return None
 
-    base_version = data.get("baseVersion") or __version__
+    base_version = data.get("baseVersion") or "unknown"
     display_version = data.get("displayVersion") or base_version
     distance = data.get("distance")
     if isinstance(distance, str):
@@ -135,10 +143,9 @@ def _stamp_version_info() -> VersionInfo | None:
 
     # ``source`` describes build provenance, while ``distribution`` identifies
     # the package form users installed. Keep both facts intact for support.
-    stamp_source = str(data.get("source") or "")
     source = (
         cast(Literal["build", "commit-build", "ci", "docker", "fallback", "git", "local", "nix", "unknown"], stamp_source)
-        if stamp_source in {"commit-build", "ci", "docker", "fallback", "local", "nix"}
+        if stamp_source in {"commit-build", "ci", "docker", "fallback", "git", "local", "nix"}
         else "build"
     )
     distribution = data.get("distribution")
@@ -165,7 +172,7 @@ def _stamp_version_info() -> VersionInfo | None:
 # --- Git provenance (source/dev installs) -----------------------------------
 
 
-def _git_version_info(repo_dir: Path) -> VersionInfo:
+def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> VersionInfo:
     commit = _run_git(repo_dir, "rev-parse", "HEAD")
     # A detached HEAD has no branch. Leave the field None: every formatter
     # already prints the commit separately and handles a missing branch.
@@ -178,8 +185,11 @@ def _git_version_info(repo_dir: Path) -> VersionInfo:
         # -uno: skip the untracked-file scan. This runs on the startup-banner
         # path, and a full working-tree walk costs real time on large or cold
         # checkouts. Same semantics as write_install_stamp.py.
+        status_command = ["git", "status", "--porcelain"]
+        if not include_untracked:
+            status_command.append("-uno")
         dirty_result = subprocess.run(
-            ["git", "status", "--porcelain", "-uno"],
+            status_command,
             capture_output=True,
             text=True,
             timeout=3,
@@ -189,18 +199,27 @@ def _git_version_info(repo_dir: Path) -> VersionInfo:
     except (OSError, subprocess.SubprocessError):
         dirty = False
 
-    # New releases are SemVer tags. The release-date fallback lets existing
-    # CalVer-tagged releases display a correct distance during the transition.
-    distance = None
-    for tag in (f"v{__version__}", f"v{__release_date__}"):
-        raw_distance = _run_git(repo_dir, "rev-list", "--count", f"{tag}..HEAD")
-        parsed_distance = _parse_nonnegative(raw_distance)
-        if parsed_distance is not None:
-            distance = parsed_distance
-            break
+    tags = _run_git(repo_dir, "tag", "--merged", "HEAD", "--list", "v[0-9]*")
+    releases = [
+        tag[1:]
+        for tag in (tags or "").splitlines()
+        if STABLE_TAG_RE.fullmatch(tag)
+    ]
+    base_version = (
+        max(releases, key=lambda value: tuple(int(part) for part in value.split(".")))
+        if releases else "unknown"
+    )
+    distance = _parse_nonnegative(
+        _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
+    ) if releases else None
+    short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
+    if base_version == "unknown" and short_commit:
+        display_version = f"git.{short_commit}{'.dirty' if dirty else ''}"
+    else:
+        display_version = _derived_version(base_version, distance, dirty, short_commit)
 
     return VersionInfo(
-        __version__, _derived_version(__version__, distance, dirty), distance, commit, branch, "git", dirty, commit_date
+        base_version, display_version, distance, commit, branch, "git", dirty, commit_date
     )
 
 
@@ -240,7 +259,7 @@ def get_version_info() -> VersionInfo:
 
     # 3. Unknown — no stamp, no git
     if info is None:
-        info = VersionInfo(__version__, __version__, None, None, None, "unknown")
+        info = VersionInfo("unknown", "unknown", None, None, None, "unknown")
 
     _cached_version_info = info
     return info

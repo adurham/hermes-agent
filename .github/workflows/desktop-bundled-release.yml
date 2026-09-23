@@ -1509,7 +1509,6 @@ jobs:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
-      HERMES_RELEASE_EPOCH: ${{ needs.validate.outputs.release-epoch }}
       # termux_build.sh gates on `gh release view <tag>` (refuse to build
       # before the release exists); gh needs GH_TOKEN or it errors out and
       # the gate misreads that as "release not found".

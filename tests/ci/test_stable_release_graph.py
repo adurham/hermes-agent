@@ -68,14 +68,14 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
         assert call["claim-object"] == "${{ needs.admit.outputs.claim-object }}"
     desktop = workflow("desktop-bundled-release.yml")
     assert "release-epoch" in desktop["jobs"]["validate"]["outputs"]
-    assert desktop["jobs"]["termux-deb"]["env"]["HERMES_RELEASE_EPOCH"] == \
-        "${{ needs.validate.outputs.release-epoch }}"
-    for name in ("docker", "nix", "pm-bundle"):
+    assert "HERMES_RELEASE_EPOCH" not in desktop["jobs"]["termux-deb"]["env"]
+    for name in ("docker", "nix"):
         assert jobs[name]["with"]["version"] == "${{ needs.admit.outputs.version }}"
-    for name in ("docker", "nix", "pm-bundle"):
-        assert jobs[name]["with"]["release-epoch"] == "${{ needs.admit.outputs.release-epoch }}"
-    assert jobs["publish-docker"]["with"]["release-epoch"] == \
-        "${{ needs.admit.outputs.release-epoch }}"
+    assert "version" not in jobs["pm-bundle"]["with"]
+    assert "release-epoch" not in jobs["docker"]["with"]
+    assert "release-epoch" not in jobs["nix"]["with"]
+    assert "release-epoch" not in jobs["pm-bundle"]["with"]
+    assert "release-epoch" not in jobs["publish-docker"]["with"]
     complete = jobs["complete"]["steps"]
     final = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Create the final tag"))
     assert complete[final]["env"]["DOCKER_MANIFEST_DIGEST"] == \
@@ -98,8 +98,9 @@ def test_release_gates_extract_consumer_facing_versions():
         step["run"] for step in release_jobs["bootstrap-version"]["steps"]
         if step.get("name") == "Stamp and verify the Cargo and Tauri release identity"
     )
-    assert "uv build --wheel --sdist" in bootstrap
-    assert "wheel_version != expected or sdist_version != expected" in bootstrap
+    assert "cargo metadata" in bootstrap
+    assert "tauri.conf.json" in bootstrap
+    assert "uv build --wheel --sdist" not in bootstrap
 
     docker = workflow("docker.yml")["jobs"]
     image_check = next(
@@ -115,6 +116,17 @@ def test_release_gates_extract_consumer_facing_versions():
     )
     assert '"$package/bin/hermes" --version' in nix_check
     assert "actual != expected" in nix_check
+
+
+def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():
+    docker_steps = workflow("docker.yml")["jobs"]["build"]["steps"]
+    assert not any(step.get("name") == "Stamp release build context" for step in docker_steps)
+    write = next(step["run"] for step in docker_steps if step.get("name") == "Write install stamp")
+    assert "--base-version" in write and "--display-version" in write
+
+    nix_steps = workflow("nix.yml")["jobs"]["flake-check"]["steps"]
+    prepare = next(step["run"] for step in nix_steps if step.get("name") == "Prepare isolated release source")
+    assert "scripts/releases/stamping.py" in prepare
 
 
 def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():

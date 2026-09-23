@@ -23,7 +23,8 @@ def test_cli_stamp_roundtrip(tmp_path, monkeypatch, variant, distribution, mecha
     script = Path(__file__).resolve().parents[2] / "scripts/write_install_stamp.py"
     env = {**os.environ, "HERMES_DESKTOP_VARIANT": variant, "HERMES_PAYLOAD_TAG": "v0.18.0", "HERMES_BUILD_COMMIT": ""}
     args = [sys.executable, str(script), "--output", str(out), "--commit", "d" * 40,
-            "--source", "ci", "--update-mechanism", mechanism]
+            "--source", "ci", "--base-version", "0.18.0", "--distance", "0",
+            "--update-mechanism", mechanism]
     if distribution:
         args += ["--distribution", distribution]
     result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30)
@@ -32,6 +33,7 @@ def test_cli_stamp_roundtrip(tmp_path, monkeypatch, variant, distribution, mecha
     assert {key: data[key] for key in ("source", "distribution", "updateMechanism", "payload", "tag", "commit")} == {
         "source": "ci", "distribution": distribution, "updateMechanism": mechanism,
         "payload": payload, "tag": tag, "commit": "d" * 40}
+    assert data["baseVersion"] == data["displayVersion"] == "0.18.0"
     from hermes_cli.version_info import _stamp_version_info
     from hermes_cli.venv_sync import _is_sealed
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
@@ -70,8 +72,29 @@ def test_invalid_variant_cannot_emit_stamp(tmp_path, variant, tag, error):
     out = tmp_path / "install-stamp.json"
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve().parents[2] / "scripts/write_install_stamp.py"),
-         "--output", str(out), "--commit", "d" * 40, "--update-mechanism", "self"],
+         "--output", str(out), "--commit", "d" * 40, "--base-version", "0.18.0",
+         "--update-mechanism", "self"],
         env={**os.environ, "HERMES_DESKTOP_VARIANT": variant, "HERMES_PAYLOAD_TAG": tag, "HERMES_BUILD_COMMIT": ""},
         capture_output=True, text=True, timeout=30)
     assert result.returncode != 0 and error in result.stderr
     assert not out.exists()
+
+
+def test_packaged_identity_requires_a_direct_version_and_ignores_project_metadata(tmp_path, monkeypatch):
+    from scripts import write_install_stamp
+
+    (tmp_path / "hermes_cli").mkdir()
+    (tmp_path / "hermes_cli" / "_version.py").write_text('__version__ = "9.9.9"\n', encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "8.8.8"\n', encoding="utf-8")
+    monkeypatch.setattr(write_install_stamp, "_REPO_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="base version"):
+        write_install_stamp.build_stamp(
+            update_mechanism="external", commit="d" * 40, source="ci",
+        )
+    stamp = write_install_stamp.build_stamp(
+        update_mechanism="external", commit="d" * 40, source="ci",
+        base_version="1.2.3", distance=0,
+    )
+
+    assert stamp["baseVersion"] == stamp["displayVersion"] == "1.2.3"

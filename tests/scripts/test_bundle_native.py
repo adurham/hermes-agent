@@ -118,7 +118,8 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
                      digest=tree_digest(entry))
     canonical_before = {name: tree_digest(canonical / facts.get(name)["entry"]) for name in selected}
     canonical_facts = (canonical / "facts.json").read_bytes()
-    env = {**os.environ, "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "UV_CACHE_DIR": str(tmp_path / "cache")}
+    env = {**os.environ, "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never",
+           "UV_CACHE_DIR": str(tmp_path / "cache"), "HERMES_PAYLOAD_VERSION": "9.9.9"}
     subprocess.run([uv, "lock", "--python", sys.executable], cwd=repo, env=env, check=True, capture_output=True)
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
@@ -244,6 +245,8 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     assert calls[0]["all_extras"] is True
     assert calls[0]["cache"] == tmp_path / "cache"
     assert (output / "hermes-agent/pyproject.toml").is_file()
+    assert 'version="1.0.0"' in (output / "hermes-agent/pyproject.toml").read_text()
+    assert not (output / "hermes-agent/hermes_cli/_version.py").exists()
     assert not (output / "hermes-agent/untracked").exists()
     assert not (output / "hermes-agent/.git").exists()
     facts = Facts(output / "tools/facts.json")

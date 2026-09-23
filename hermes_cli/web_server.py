@@ -33,8 +33,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__
 from hermes_cli.config import load_config
+from hermes_cli.version_info import get_version_info
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -308,7 +308,7 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.

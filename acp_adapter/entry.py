@@ -98,9 +98,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _print_version() -> None:
-    from hermes_cli import __version__ as hermes_version
+    from hermes_cli.version_info import get_version_info
 
-    print(hermes_version)
+    print(get_version_info().derived_version)
 
 
 def _run_check() -> None:
