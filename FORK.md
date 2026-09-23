@@ -17464,3 +17464,63 @@ does not re-litigate them from scratch.
   in-tree caller was the removed `record_usage_history`, but it stays exported
   via the `_mixin` forwarder; noted as a follow-up rather than widened into
   that commit's scope.
+
+---
+
+### Fork-only fix — 2026-09-23 (aux fallback chain never engaged on a subscription/entitlement 403 — consult died on the bare error instead of falling back to GLM 5.3)
+
+**Symptom:** user-reported live. With the Claude Max subscription paused,
+every Anthropic call returns HTTP 403 `oauth_not_allowed_for_organization`.
+The `consult` tool (pinned `claude-fable-5-1` primary, `glm-5.3` fallback,
+in BOTH the `anthropic` and `ollama-cloud` aux blocks) failed outright in
+~0.5s with "no second opinion available" — the configured GLM fallback was
+never tried. Confirmed from `agent.log`: repeated
+`Auxiliary consult: using anthropic (claude-fable-5-1)` lines each followed
+immediately by the 403, and zero `Auxiliary consult: ... trying fallback`
+lines all day. 38 occurrences of the 403 in one log.
+
+**Root cause:** `_is_payment_error()` in `agent/auxiliary_client.py` gates
+the whole fallback path (`should_fallback` -> `is_capacity_error` ->
+`_try_configured_fallback_chain`). Its keyword set covered Ollama's
+"requires a subscription" and the quota-exhaustion family, but had no
+keyword matching Anthropic's OAuth-org block body — so a 403 here was
+neither payment nor rate-limit nor connection, `should_fallback` stayed
+False, and for an explicit-provider pin the configured chain was skipped
+entirely and the error surfaced unchanged. The MAIN chat path already
+handles this exact body as an entitlement failure
+(`agent_runtime_helpers._is_entitlement_failure`, added for #26847), so aux
+was the asymmetric gap: main knew the account lacks entitlement, aux
+treated it as a dead end.
+
+**Fix:** added the subscription/entitlement-403 keyword family to
+`_is_payment_error`: `"not allowed for this organization"`,
+`"oauth authentication is currently not allowed"`, `"subscription is
+inactive"`, `"subscription lapsed"`, `"subscription has been paused"`,
+`"subscription paused"`. A genuine permission 403 with no
+subscription/entitlement signal still classifies as False (negative test
+added), so non-capacity permission errors are not silently converted into
+fallback hops. Considered-and-rejected: a bare `"entitlement"` keyword
+(dropped — too broad, would also catch unrelated provider prose), and
+loosening the explicit-provider gate (the existing payment-classification
+route is the established mechanism; the missing keyword was the actual
+defect).
+
+**Files:** `agent/auxiliary_client.py` (`_is_payment_error` keyword set),
+`tests/agent/test_auxiliary_client.py` (3 new tests in `TestIsPaymentError`:
+`test_403_anthropic_oauth_org_block_is_payment` using the verbatim live
+error body, `test_403_subscription_lapsed_keywords_are_payment`,
+`test_403_generic_permission_denied_is_not_payment`).
+
+**Verification:** `pytest tests/agent/test_auxiliary_client.py` — 194
+passed, zero regressions (12 in the payment class). Live end-to-end,
+out-of-process (fresh interpreter, so the patched module loads; the running
+session's in-memory copy is unchanged until it restarts):
+`call_llm(task='consult')` with no overrides logged
+`Auxiliary: marking anthropic unhealthy for 600s (payment / credit error)`
+then `Auxiliary fallback engaged for task 'consult': primary provider
+'anthropic' failed (payment error) — using glm-5.3 via ollama-cloud
+instead`, and returned a response with `model == "glm-5.3"`.
+
+**Merge note:** upstream-relevant (the classifier and the fallback chain are
+upstream code; the OAuth-org-block body is Anthropic-wide, not fork-local),
+so this is a candidate to send upstream — unlike the 2026-09-10 entry above.
