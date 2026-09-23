@@ -1,7 +1,8 @@
 """Tests for MCP tool-handler circuit-breaker recovery.
 
-The circuit breaker in ``tools/mcp_tool.py`` is intended to short-circuit
-calls to an MCP server that has failed ``_CIRCUIT_BREAKER_THRESHOLD``
+The circuit breaker in ``tools/mcp_tool_handlers.py`` is intended to
+short-circuit calls to an MCP server that has failed
+``_CIRCUIT_BREAKER_THRESHOLD``
 consecutive times, then *transition back to a usable state* once the
 server has had time to recover (or an explicit reconnect succeeds).
 
@@ -223,20 +224,21 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
 
 
 def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_path):
-    """A half-open probe against a non-recycled-stdio server with no live
-    session must lazy-spawn via ``_ensure_server_connected`` and, when that
-    spawn fails, return a clean connect-failure error — NOT write into a
-    dead pipe or permanently re-arm the breaker.
+    """A half-open probe against a server with no live session must fail
+    CLEANLY and ask the server task to rebuild the transport — NOT write into
+    a dead pipe, hang, or permanently re-arm the breaker.
 
-    This is the #16788 wedge for the *non-recycled* dead-session case.
-    Recycled stdio servers take the older ``_request_lazy_reconnect``
-    signal-and-wait path (covered by
-    ``test_half_open_dead_session_recovers_after_reconnect`` below and by
-    ``test_run_loop_parks_instead_of_exiting_then_revives``); this test's
-    stub explicitly forces ``_is_recycled_stdio() == False`` (see
-    ``_install_stub_server``), so it must exercise
-    ``_ensure_server_connected``'s lazy-spawn-and-fail-cleanly contract
-    instead of the reconnect-event signal.
+    This is the #16788 wedge for the dead-session case. Before the
+    v2026.9.14 split the non-recycled branch lazy-spawned inline via the
+    fork-only ``_ensure_server_connected`` and reported "failed to connect";
+    that function is gone and ``_acquire_call_server``
+    (tools/mcp_tool_handlers.py) now serves BOTH branches by signalling
+    ``_reconnect_event``, which the server run loop awaits and acts on
+    (``MCPServerRunMixin._event_waiters`` -> teardown -> rebuild). The
+    invariants under test are unchanged and asserted below: a bounded error
+    payload rather than a dead-pipe write, a breaker bump so the next call
+    short-circuits, and the reconnect actually being REQUESTED (the stub
+    counts ``set()`` calls) rather than the failure being swallowed.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -246,24 +248,25 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
     server = _install_stub_server(mcp_tool, "srv", None)
     # Simulate a dead/parked transport: no live session.
     server.session = None
-    # _ensure_server_connected needs a real running MCP loop to schedule its
-    # connect attempt on (unlike the recycled-stdio path, it doesn't have a
-    # fallback for _mcp_loop=None -- see tools/mcp_tool.py's
-    # `_run_on_mcp_loop`, which raises immediately when the loop isn't
-    # running rather than hanging).
-    mcp_tool._ensure_mcp_loop()
-    # The server must be present in the live MCP config for
-    # _ensure_server_connected to even attempt a spawn (added since this
-    # test was first written) -- the stub above only registers "srv" in the
-    # in-memory _servers registry, not in any real config.yaml.
+    # The handler needs a real running MCP loop to schedule transport work on
+    # (``_run_on_mcp_loop`` raises immediately when the loop isn't running
+    # rather than hanging). The loop helpers moved to tools/mcp_tool_loop.py
+    # in the v2026.9.14 split.
+    monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
+    _mcp_loop._ensure_mcp_loop()
+    # The server must be present in the live MCP config for the connect path
+    # to even be attempted -- the stub above only registers "srv" in the
+    # in-memory _servers registry, not in any real config.yaml. Both hooks
+    # now live in the post-decomposition modules (tools/mcp_tool_config.py,
+    # tools/mcp_tool_discovery.py) rather than on tools.mcp_tool.
     monkeypatch.setattr(
-        mcp_tool, "_load_mcp_config", lambda: {"srv": {"enabled": True}}
+        "tools.mcp_tool_config._load_mcp_config", lambda: {"srv": {"enabled": True}}
     )
 
     async def _fail_connect(name, config):
         raise ConnectionRefusedError("stub transport refused")
 
-    monkeypatch.setattr(mcp_tool, "_connect_server", _fail_connect)
+    monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fail_connect)
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -283,14 +286,15 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
         result = handler({})
         parsed = json.loads(result)
 
-        # Clean, bounded-time connect-failure error -- not a hang, not a
-        # write into a dead pipe. _ensure_server_connected's own failure
-        # path (see tools/mcp_tool.py) reports "failed to connect", not
-        # "reconnect" -- that wording belongs to the recycled-stdio
-        # _request_lazy_reconnect path, a different branch this stub
-        # deliberately doesn't take (_is_recycled_stdio=False).
-        assert "failed to connect" in parsed.get("error", "").lower(), parsed
-        # A failed lazy-spawn must bump the breaker so the next call
+        # Clean, bounded-time error payload -- not a hang, not a write into a
+        # dead pipe. Post-split, ``_acquire_call_server`` reports the dead
+        # transport and asks the run loop to rebuild it.
+        assert "transport is down" in parsed.get("error", "").lower(), parsed
+        assert "reconnect requested" in parsed.get("error", "").lower(), parsed
+        # The reconnect must actually be REQUESTED, not just described: the
+        # stub's ``_reconnect_event.set()`` is what the server run loop awaits.
+        server._reconnect_event.assert_called_once()
+        # A failed probe must bump the breaker so the next call
         # short-circuits instead of re-attempting immediately.
         assert mcp_tool._server_error_counts.get("srv", 0) > mcp_tool._CIRCUIT_BREAKER_THRESHOLD
     finally:
@@ -302,12 +306,14 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     the run loop), the next call must go straight through — proving the wedge
     is escapable, not just deferred.
 
-    Like the sibling test above, this exercises the non-recycled-stdio
-    ``_ensure_server_connected`` lazy-spawn path (the stub forces
-    ``_is_recycled_stdio() == False``): probe 1's spawn attempt fails
-    cleanly, then something external (the real run loop, in production)
-    repopulates ``server.session`` and resets the breaker, and probe 2 must
-    go straight through without attempting another spawn.
+    Like the sibling test above, probe 1 hits the dead-session path in
+    ``_acquire_call_server``: it reports the down transport and signals
+    ``_reconnect_event``. Then something external (the real run loop, in
+    production) repopulates ``server.session`` and resets the breaker, and
+    probe 2 must go straight through. The fork-only inline lazy-spawn
+    (``_ensure_server_connected``, which reported "failed to connect") was
+    removed by the v2026.9.14 split; the escapability invariant this test
+    exists for is unchanged.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -349,9 +355,9 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
 
         handler = _make_tool_handler("srv", "tool1", 10.0)
 
-        # Probe 1: transport down, lazy-spawn attempted and fails cleanly.
+        # Probe 1: transport down -> clean error + reconnect requested.
         parsed = json.loads(handler({}))
-        assert "failed to connect" in parsed.get("error", "").lower(), parsed
+        assert "transport is down" in parsed.get("error", "").lower(), parsed
 
         # Simulate the run loop rebuilding the session + resetting the breaker
         # (what a successful _run_stdio re-init does in production).
