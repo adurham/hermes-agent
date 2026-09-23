@@ -384,6 +384,18 @@ _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
     "refine", "review", "pause", "whoami", "platform", "insights", "login"})
 
+# Fork-only demotions, kept as a separate union so upstream edits to the set above merge cleanly.
+# The fork adds three gateway-available canonicals on top of upstream's registry, which already
+# sat at exactly the 50-slash cap — so without this the clamp silently dropped the three that
+# sort last (``help``, ``restart``, ``usage``), costing Slack users native ``/help``. These three
+# fit the rule above (one-off toggles, not recurring interactive surfaces) and stay fully
+# reachable via ``/hermes <command>`` (``slack_subcommand_map``) and ``!<command>`` (rewritten by
+# the Slack adapter through ``is_gateway_known_command``), neither of which is cap-bound:
+#   effort      — a duplicate surface for ``/reasoning``, which stays natively registered
+#   interleaved — set-once boolean toggle
+#   toolsearch  — set-once boolean toggle
+_SLACK_VIA_HERMES_ONLY |= frozenset({"effort", "interleaved", "toolsearch"})
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Lowercase, strip chars outside ``[a-z0-9_-]`` and edge ``-_``, clamp to 32."""

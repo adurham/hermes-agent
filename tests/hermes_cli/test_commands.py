@@ -5,7 +5,7 @@ from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
-from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
+from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_MAX_SLASH_COMMANDS, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -234,8 +234,14 @@ class TestSlackNativeSlashes:
                 assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
 
     def test_under_slack_command_cap(self):
-        """Slack manifest accepts up to 100 slash commands per app."""
-        assert len(slack_native_slashes()) <= 100
+        """Slack's app manifest accepts at most 50 slash commands per app.
+
+        ``slack_native_slashes`` clamps to ``_SLACK_MAX_SLASH_COMMANDS`` by
+        iteration order, so this is a floor-level guard only; the real
+        curation guard is ``test_telegram_parity`` below, which fails when
+        the clamp starts eating commands users expect natively.
+        """
+        assert len(slack_native_slashes()) <= _SLACK_MAX_SLASH_COMMANDS
 
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
