@@ -587,12 +587,25 @@ def check_web_api_key() -> bool:
 
     See #28651, #31873.
     """
-    # Boolean OR over configured + built-ins — probe order is irrelevant here.
-    # Non-legacy (plugin) names resolve through _is_backend_available -> registry
-    # is_available(), so an explicitly-configured plugin provider is covered by the
-    # first candidate without a separate hand-rolled walk.
-    candidates = [c for c in (_configured_backend(),) if c] + list(_LEGACY_WEB_BACKENDS)
-    if any(_is_backend_available(backend) for backend in candidates):
+    # An EXPLICITLY configured backend answers for itself, and nothing else may answer
+    # for it (#78412). Its availability is returned directly — we do NOT fall through to
+    # the other built-ins, the keyless ring, or the Anthropic-native probe below, because
+    # any of those would paper over a broken explicit configuration and paint a green
+    # check in `hermes doctor` for a backend that cannot actually run.
+    #
+    # Regression guard (v2026.9.14 merge): this stage was flattened into a boolean OR over
+    # ``[configured] + _LEGACY_WEB_BACKENDS``, so `web.backend: parallel` with no
+    # PARALLEL_API_KEY reported available as soon as ANY unrelated built-in was — e.g. a
+    # managed-gateway firecrawl — silently masking the misconfiguration.
+    configured = _configured_backend()
+    if configured and (
+        configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None
+    ):
+        return _is_backend_available(configured)
+    # No explicit config (or a name nothing recognizes): boolean OR over the built-ins —
+    # probe order is irrelevant here. Non-legacy (plugin) names resolve through
+    # _is_backend_available -> registry is_available().
+    if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
     # Plugin path. Discovery must run first: check_fn fires at tool-registration time, before any dispatch.
     try:

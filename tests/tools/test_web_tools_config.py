@@ -716,16 +716,17 @@ class TestCheckWebApiKey:
         assert refresh_calls == []
 
     def test_configured_backend_must_match_available_provider(self):
-        # NOTE (v2026.9.14 merge audit): patch target repointed off the stale
-        # `tools.web_tools._read_nous_access_token` onto the real gateway function. The
-        # AttributeError is gone, but the test now fails on its actual assertion
-        # (check_web_api_key() returns True, not False). This is NOT a mock problem: with
-        # backend="parallel" configured and unavailable, the keyless-ring Keenable plugin
-        # provider still reports ready via `_provider_is_ready` (KEYLESS = True), so the
-        # "configured backend must match an available provider" invariant this test was
-        # written to protect (#78412) no longer holds in the current code. Left failing
-        # deliberately rather than deleted/weakened -- resolving it requires deciding
-        # whether the keyless ring should satisfy an explicitly-configured backend.
+        """#78412: an explicitly configured backend that is not available must
+        report broken — no other backend may answer on its behalf.
+
+        Regression fixed (v2026.9.14 merge): check_web_api_key()'s explicit-config
+        stage had been flattened into a boolean OR over
+        ``[configured] + _LEGACY_WEB_BACKENDS``, so backend="parallel" with no
+        PARALLEL_API_KEY returned True as soon as any unrelated built-in was
+        available — here the managed-gateway firecrawl reached via
+        FIRECRAWL_GATEWAY_URL + a Nous token. The explicit backend now answers for
+        itself and nothing else is consulted.
+        """
         with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
             with patch("tools.managed_tool_gateway.peek_nous_access_token", return_value="nous-token"):
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
