@@ -184,6 +184,11 @@ def test_failed_update_keeps_code_metadata_config_and_environment(installed, mon
     old_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=target, text=True).strip()
     state["sha"] = _version(repo, "2.0.0", broken=failure == "dependencies",
                              minimum=">=999.0.0" if failure == "version" else "")
+    if failure == "version":
+        # A checkout without a vX.Y.Z tag (CI's depth-1 clone) runs an unparseable version,
+        # which the gate deliberately treats as permissive; pin a real one so it can refuse.
+        from hermes_cli import plugins_manifest
+        monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
     if failure == "manifest":
         (repo / "plugin.yaml").write_text("name: [broken", encoding="utf-8")
         state["sha"] = _commit(repo, "invalid manifest")

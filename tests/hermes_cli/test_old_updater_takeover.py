@@ -402,17 +402,36 @@ def test_completed_serve_token_is_acknowledged_without_preparation(tmp_path, enc
 
 
 def test_bootstrap_lock_remains_live_without_application_dependencies(tmp_path):
+    """A dependency-free (-I -S) takeover child still sees another live updater's claim.
+
+    The holder is a separate, unrelated process: a claim naming the caller's own pid is
+    adopted as a fresh attempt, so only a foreign live holder can prove liveness detection.
+    """
     root = Path(__file__).resolve().parents[2]
-    script = (
+    lock = tmp_path / "lock"
+    prelude = (
         "import os, sys\nfrom pathlib import Path\n"
         f"sys.path.insert(0, {str(root)!r})\n"
         "from hermes_cli.update_lock import UpdateLock\n"
-        f"path = Path({str(tmp_path / 'lock')!r})\n"
-        "first = UpdateLock(path=path)\nassert first.acquire()\n"
-        "second = UpdateLock(path=path)\nassert not second.acquire(), 'live lock was stolen'\n"
-        "assert second.holder.pid == os.getpid()\n"
-        "first.release()\n"
+        f"lock = UpdateLock(path=Path({str(lock)!r}))\n"
     )
-    result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script],
-                            capture_output=True, text=True, timeout=30)
+    holder = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-B", "-c",
+         prelude + "assert lock.acquire()\nprint(os.getpid(), flush=True)\n"
+                   "sys.stdin.readline()\nlock.release()\n"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    assert holder.stdout is not None
+    try:
+        holder_pid = int(holder.stdout.readline())
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", "-c",
+             prelude + "assert not lock.acquire(), 'live lock was stolen'\n"
+                       f"assert lock.holder.pid == {holder_pid}, lock.holder\n"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+    finally:
+        holder.communicate("\n", timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert holder.returncode == 0
+    assert not lock.exists()

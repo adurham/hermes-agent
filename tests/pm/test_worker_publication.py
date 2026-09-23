@@ -133,7 +133,13 @@ def test_selection_refuses_config_edits_during_preparation(client, tmp_path, mon
 @pytest.mark.parametrize("invalid", ["name: [", "manifest_version: 999", "requires_hermes: '>=999'", "name: other"])
 def test_worker_rejects_unloadable_staged_plugin_without_app_dependencies(client, tmp_path, monkeypatch, invalid):
     from pm.store import tree_digest
-    _current_environment(tmp_path, monkeypatch, [])
+    repo = _current_environment(tmp_path, monkeypatch, [])
+    # The install stamp is the running version identity; without a release
+    # base (a tagless checkout) the requires_hermes gate is permissive.
+    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    (repo / "install-stamp.json").write_text(json.dumps({
+        "commit": "1" * 40, "updateMechanism": "self", "baseVersion": "1.0.0", "source": "local",
+    }), encoding="utf-8")
     target = tmp_path / "home/plugins/example"
     target.mkdir(parents=True)
     (target / "plugin.yaml").write_text("name: example\n")

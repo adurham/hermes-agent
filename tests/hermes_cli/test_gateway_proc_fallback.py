@@ -13,8 +13,6 @@ import pytest
 
 import hermes_cli.gateway as gateway_mod
 
-pytestmark = pytest.mark.platforms("linux")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,6 +53,7 @@ def _fake_proc_dir(entries: dict):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("linux")
 class TestProcFallback:
     """_scan_gateway_pids reads /proc when available, skips ps.
 
@@ -238,11 +237,11 @@ class TestGetServicePidsAllProfiles:
         ]
         assert launchctl_calls == [["launchctl", "list"]]
 
+    @pytest.mark.platforms("linux")
     def test_all_profiles_preserves_systemd_behavior(self):
         """systemd scope is unaffected by the all_profiles switch — it already
         lists every hermes-gateway* unit unconditionally."""
         with (
-            patch("hermes_cli.gateway.is_macos", return_value=False),
             patch("hermes_cli.gateway.supports_systemd_services", return_value=True),
             patch("subprocess.run") as mock_run,
         ):
