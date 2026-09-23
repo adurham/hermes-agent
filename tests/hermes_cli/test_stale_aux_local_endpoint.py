@@ -23,7 +23,15 @@ def test_local_endpoint_pins_are_excluded_from_stale_aux_report():
 @pytest.mark.parametrize(("url", "local"), [
     ("http://byron.local:11434/v1", True),  # RFC 6762 mDNS, LAN-only
     ("http://[fd00::1]:11434", True),  # IPv6 ULA
+    ("http://[fc00::5]:8080", True),  # IPv6 ULA, low half of fc00::/7
+    ("http://[::1]:11434", True),  # IPv6 loopback
+    ("http://[fe80::1]:11434", True),  # IPv6 link-local
     ("http://[2607:f8b0::1]:11434", False),  # global IPv6 must not ride the "no dots" rule
+    ("http://[2001:4860:4860::8888]:443", False),  # global IPv6 (Google DNS)
+    ("http://[2606:4700:4700::1111]:443", False),  # global IPv6 (Cloudflare DNS)
+    ("http://[::ffff:8.8.8.8]:80", False),  # IPv4-mapped public address
+    ("http://192.168.1.5:11434", True),  # RFC-1918
+    ("http://8.8.8.8:11434", False),  # public IPv4
 ])
 def test_is_local_endpoint_mdns_and_ipv6_scope(url, local):
     assert is_local_endpoint(url) is local
