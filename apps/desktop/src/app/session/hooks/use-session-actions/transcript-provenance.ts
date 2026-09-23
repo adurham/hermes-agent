@@ -79,11 +79,9 @@ export interface TranscriptViewCutoff {
 // row whose content is byte-identical to an arm-time row stays hidden until
 // the hold releases (bounded by the REST window).
 export function transcriptRowContentKey(message: ChatMessage): string {
-  return `${message.role}:${
-    (message.parts ?? [])
-      .map(part => part.type === 'text' ? `${part.type}:${part.text}` : JSON.stringify(part))
-      .join('|')
-  }`
+  return `${message.role}:${(message.parts ?? [])
+    .map(part => (part.type === 'text' ? `${part.type}:${part.text}` : JSON.stringify(part)))
+    .join('|')}`
 }
 
 export function suppressTranscriptForView(
@@ -102,9 +100,7 @@ export function suppressTranscriptForView(
   }
 
   const messages = state.messages.filter(
-    message =>
-      !cutoff.cutoffIds.has(message.id) &&
-      !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)
+    message => !cutoff.cutoffIds.has(message.id) && !(cutoff.cutoffKeys?.has(transcriptRowContentKey(message)) ?? false)
   )
 
   if (messages.length === state.messages.length) {

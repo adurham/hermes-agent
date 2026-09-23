@@ -8,9 +8,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-import hermes_yaml as yaml
-
 from hermes_constants import get_hermes_home
+from utils import load_yaml_file_readonly
 
 
 _DISK_DEGRADED_PERCENT = 90.0
@@ -55,10 +54,7 @@ def _probe_config(home: Path) -> dict[str, Any]:
     if not path.exists():
         return _check("ok", "using defaults")
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
-        if raw is not None and not isinstance(raw, dict):
-            return _check("degraded", "top level is not a mapping")
-        return _check("ok")
+        raw = load_yaml_file_readonly(path)
     except Exception as exc:
         return _check("degraded", f"invalid config ({type(exc).__name__})")
     return _check("ok") if raw is None or isinstance(raw, dict) else _check("degraded", "top level is not a mapping")

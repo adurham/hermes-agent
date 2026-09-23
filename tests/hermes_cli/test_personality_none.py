@@ -7,7 +7,7 @@ persistence flows exclusively through persist_personality().
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-import yaml
+import hermes_yaml as yaml
 
 # ── CLI tests ──────────────────────────────────────────────────────────────
 
@@ -112,7 +112,7 @@ class TestGatewayPersonalityNone:
             "display": {"personality": "helpful"},
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
@@ -136,7 +136,7 @@ class TestGatewayPersonalityNone:
             }
         }
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.safe_dump(config_data))
 
         p1, p2 = self._gateway_env(tmp_path)
         with p1, p2:
