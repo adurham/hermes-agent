@@ -505,11 +505,18 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 # JSON-RPC from tui_gateway but over REST so the Models page can drive it.
 # ---------------------------------------------------------------------------
 
-# Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
-# in hermes_cli/config.py — listed here for deterministic ordering in the UI.
+# Canonical auxiliary task slots — the list the Models page iterates over to render/edit
+# per-task auxiliary routing. Mirrors ``agent.auxiliary_client._BUILTIN_AUX_TASK_KEYS``
+# (and its ``hermes_cli.config._AUX_TASK_FIRST_KEYS`` copy), listed here for deterministic
+# ordering in the UI. Keeping only a subset is a UI-only blind spot: ``hermes config set``
+# routes every task while the dashboard silently cannot show or edit the missing ones.
 _AUX_TASK_SLOTS: Tuple[str, ...] = (
-    "vision", "compression", "skills_hub", "approval", "mcp", "title_generation", "review",
-    "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
+    "vision", "web_extract", "compression", "skills_hub", "approval", "mcp",
+    "title_generation", "tts_audio_tags", "review", "triage_specifier",
+    "kanban_decomposer", "profile_describer", "curator", "monitor", "session_search",
+    "memory_extraction", "delegation_router", "background_review", "consult",
+    "goal_judge", "memory_query_rewrite", "moa_aggregator", "moa_reference",
+    "pet_dialogue",
 )
 
 
@@ -703,6 +710,73 @@ def _normalize_aux_reasoning_effort(value: Optional[str]) -> Optional[str]:
     return "none" if parsed.get("enabled") is False else parsed["effort"]
 
 
+def _aux_provider_first_context(aux: dict, cfg: dict) -> tuple[bool, str]:
+    """``(is_provider_first, active_main_block_key)`` for an ``auxiliary`` map.
+
+    Provider-first configs (fork schema, 2026-06-24) route task assignments through
+    per-provider blocks (``auxiliary.<provider_id>.<task>``) instead of a single top-level
+    pin. The block key is the ACTIVE MAIN provider's, normalized by the same rule the read
+    side (``_aux_select_provider_block``) matches with — exo aliasing, ``custom:`` stripping.
+
+    Both values degrade to ``(False, "")`` / ``("", ...)`` if the resolver is unavailable, so
+    every caller falls back to the legacy task-first write shape rather than failing.
+    """
+    try:
+        from hermes_cli.config import _auxiliary_is_provider_first
+        if not _auxiliary_is_provider_first(aux):
+            return False, ""
+    except Exception:
+        return False, ""
+    try:
+        from agent.auxiliary_client import _AUX_DEFAULTS_KEY, _aux_block_key_for_provider, _read_main_provider
+        block_key = _aux_block_key_for_provider(_read_main_provider(), cfg)
+    except Exception:
+        return True, ""
+    return True, "" if block_key == _AUX_DEFAULTS_KEY else block_key
+
+
+def _aux_block_key_for_selected(provider: str, cfg: dict) -> str:
+    """Block key an explicitly SELECTED provider would read/write under, or ``""`` when the
+    normalizer is unavailable (caller then takes the top-level-pin path)."""
+    try:
+        from agent.auxiliary_client import _aux_block_key_for_provider
+        return _aux_block_key_for_provider(provider, cfg)
+    except Exception:
+        return ""
+
+
+def _reset_aux_provider_first(aux: dict, block_key: str) -> None:
+    """Reset every task on a provider-first config: drop the top-level pin plus the task's
+    entry in the CURRENT MAIN's block ONLY.
+
+    Undoes exactly what an assignment can create. Wiping EVERY provider's block would
+    silently destroy hand-authored overrides for providers the user isn't touching — e.g.
+    resetting Vision while main=ollama-cloud must not delete an ``auxiliary.anthropic.vision``
+    entry deliberately configured for when main is later switched to Anthropic.
+    """
+    for slot in _AUX_TASK_SLOTS:
+        aux.pop(slot, None)  # any top-level (cross-provider) pin
+        block = aux.get(block_key) if block_key else None
+        if isinstance(block, dict):
+            block.pop(slot, None)
+
+
+def _write_aux_provider_first_block(aux: dict, block_key: str, targets: list, model: str) -> None:
+    """Write ``auxiliary.<block_key>.<task> = model`` for each target task.
+
+    The block write governs the task while main matches, so any stale top-level pin is
+    dropped — an explicit pin always outranks block resolution on the read side, and leaving
+    one behind would keep shadowing the value the user just picked.
+    """
+    block = aux.get(block_key)
+    if not isinstance(block, dict):
+        block = {}
+    for slot in targets:
+        block[slot] = model
+        aux.pop(slot, None)
+    aux[block_key] = block
+
+
 def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, base_url: str, api_key: str,
                                reasoning_effort: Optional[str] = _UNSET) -> dict:
     from hermes_cli.config import save_config
@@ -714,9 +788,18 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
         slot_cfg = aux.get(slot)
         return slot_cfg if isinstance(slot_cfg, dict) else {}
 
+    def _saved(payload: dict) -> dict:
+        cfg["auxiliary"] = aux
+        save_config(cfg)
+        return payload
+
     effort = _normalize_aux_reasoning_effort(reasoning_effort) if reasoning_effort is not _UNSET else _UNSET
+    is_provider_first, main_block_key = _aux_provider_first_context(aux, cfg)
 
     if task == "__reset__":
+        if is_provider_first:
+            _reset_aux_provider_first(aux, main_block_key)
+            return _saved({"ok": True, "scope": "auxiliary", "reset": True})
         # Reset every slot to provider="auto", model="", no effort override — keeps other fields intact.
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = _slot(slot)
@@ -726,19 +809,32 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             slot_cfg.pop("base_url", None)
             clear_model_endpoint_credentials(slot_cfg)
             aux[slot] = slot_cfg
-        cfg["auxiliary"] = aux
-        save_config(cfg)
-        return {"ok": True, "scope": "auxiliary", "reset": True}
+        return _saved({"ok": True, "scope": "auxiliary", "reset": True})
 
     if not provider:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
     targets = [task] if task else list(_AUX_TASK_SLOTS)
-    new_provider = provider.strip().lower()
     for slot in targets:
         if slot not in _AUX_TASK_SLOTS:
             raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
-        slot_cfg = _slot(slot)
+    new_provider = provider.strip().lower()
+
+    # Hybrid pin/block write rule on a provider-first config: an assignment onto the ACTIVE
+    # MAIN provider belongs in that provider's block, so it stays scoped to (task, provider)
+    # and naturally re-resolves when main later switches. A cross-provider assignment — or one
+    # carrying an endpoint/effort a bare ``block[task] = model`` string can't express — falls
+    # back to the top-level pin, the only shape that takes effect regardless of active main.
+    # Writing those into a non-main block would be indistinguishable from a no-op save.
+    if (
+        is_provider_first and main_block_key and not base_url and effort is _UNSET
+        and _aux_block_key_for_selected(provider, cfg) == main_block_key
+    ):
+        _write_aux_provider_first_block(aux, main_block_key, targets, model)
+        return _saved({"ok": True, "scope": "auxiliary", "tasks": targets, "provider": provider, "model": model})
+
+    for slot in targets:
+        slot_cfg = {} if is_provider_first else _slot(slot)
         prev_provider = str(slot_cfg.get("provider") or "").strip().lower()
         slot_cfg["provider"] = provider
         slot_cfg["model"] = model
@@ -762,12 +858,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
             slot_cfg["reasoning_effort"] = effort
         aux[slot] = slot_cfg
 
-    cfg["auxiliary"] = aux
-    save_config(cfg)
     result = {"ok": True, "scope": "auxiliary", "tasks": targets, "provider": provider, "model": model}
     if effort is not _UNSET:
         result["reasoning_effort"] = effort
-    return result
+    return _saved(result)
 
 
 def _apply_model_assignment_sync(

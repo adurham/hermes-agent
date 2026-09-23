@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _aux_provider_first_context,
+    _dashboard_code_skew_guard,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
@@ -169,32 +170,91 @@ def get_recommended_default_model(provider: str = ""):
         return {"provider": slug, "model": "", "free_tier": None}
 
 
+def _aux_task_row_provider_first(slot: str, aux_cfg: dict, main_provider: str) -> dict:
+    """One ``/api/model/auxiliary`` row resolved through the SAME flattener the runtime uses
+    at call time (``_get_auxiliary_task_config``), so the Models page shows what the task
+    would ACTUALLY run on rather than whether a top-level key happens to exist.
+
+    ``source`` explains WHY it resolved that way, which on a provider-first config is what
+    lets a client render "this changes when you switch main":
+      * ``pin``   — an explicit top-level ``auxiliary.<task>`` override (wins over everything).
+      * ``block`` — a per-provider-block entry matching the CURRENTLY ACTIVE main provider.
+      * ``auto``  — no override; the task runs on the main model / provider catalog default.
+    """
+    from agent.auxiliary_client import _aux_task_pin_is_explicit, _get_auxiliary_task_config
+
+    resolved = _get_auxiliary_task_config(slot) or {}
+    raw_pin = aux_cfg.get(slot)
+    resolved_provider = str(resolved.get("provider", "") or "").strip()
+    if isinstance(raw_pin, dict) and _aux_task_pin_is_explicit(raw_pin):
+        source = "pin"
+    elif resolved.get("model") or (resolved_provider and resolved_provider.lower() != "auto"):
+        source = "block"
+    else:
+        source = "auto"
+    # The resolver's provider="auto" means "inherit the active main provider" — a model-only
+    # block emits exactly that, so substitute the real id rather than showing the literal
+    # sentinel next to a concrete model.
+    if resolved_provider.lower() in ("", "auto") and main_provider:
+        resolved_provider = main_provider
+    base_url = str(resolved.get("base_url", "") or "")
+    return {
+        "task": slot, "provider": resolved_provider or "auto",
+        "model": str(resolved.get("model", "") or ""), "base_url": base_url,
+        "reasoning_effort": str(resolved.get("reasoning_effort") or "") or None,
+        "local_endpoint": is_local_endpoint(base_url), "source": source,
+    }
+
+
+def _aux_task_row_task_first(slot: str, aux_cfg: dict) -> dict:
+    """One ``/api/model/auxiliary`` row for a legacy task-first config (raw top-level lookup)."""
+    slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+    base_url = str(slot_cfg.get("base_url", "") or "")
+    provider = str(slot_cfg.get("provider", "auto") or "auto")
+    return {
+        "task": slot, "provider": provider, "model": str(slot_cfg.get("model", "") or ""),
+        "base_url": base_url,
+        "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
+        # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
+        "local_endpoint": is_local_endpoint(base_url),
+        "source": "pin" if slot_cfg.get("model") or provider.lower() != "auto" else "auto",
+    }
+
+
 @router.get("/api/model/auxiliary")
 def get_auxiliary_models(profile: Optional[str] = None):
-    """Current auxiliary task assignments: ``{"tasks": [{task, provider, model,
-    base_url}, ...], "main": {provider, model}}``. ``profile`` scopes the read —
-    without it the Models page would show the dashboard profile's pins while
-    /api/model/set wrote the selected profile's."""
+    """Current auxiliary task assignments: ``{"tasks": [{task, provider, model, base_url,
+    source}, ...], "main": {provider, model}}``. ``profile`` scopes the read — without it the
+    Models page would show the dashboard profile's pins while /api/model/set wrote the
+    selected profile's."""
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
-        cfg = _load_config_scoped(profile)
-        aux_cfg = cfg.get("auxiliary", {})
-        if not isinstance(aux_cfg, dict):
-            aux_cfg = {}
+        with _profile_scope(profile):
+            cfg = load_config()
+            aux_cfg = cfg.get("auxiliary", {})
+            if not isinstance(aux_cfg, dict):
+                aux_cfg = {}
 
-        tasks = []
-        for slot in _AUX_TASK_SLOTS:
-            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
-            base_url = str(slot_cfg.get("base_url", "") or "")
-            tasks.append({
-                "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
-                "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
-                # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
-                "local_endpoint": is_local_endpoint(base_url),
-            })
+            is_provider_first, _block_key = _aux_provider_first_context(aux_cfg, cfg)
+            main_provider = ""
+            if is_provider_first:
+                try:
+                    from agent.auxiliary_client import _read_main_provider
+                    main_provider = _read_main_provider() or ""
+                except Exception:
+                    main_provider = ""
 
-        model, provider = _main_model_fields(cfg.get("model", {}))
-        return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
+            tasks = []
+            for slot in _AUX_TASK_SLOTS:
+                if is_provider_first:
+                    try:
+                        tasks.append(_aux_task_row_provider_first(slot, aux_cfg, main_provider))
+                        continue
+                    except Exception:
+                        _log.debug("provider-first aux resolution failed for %s", slot, exc_info=True)
+                tasks.append(_aux_task_row_task_first(slot, aux_cfg))
+
+            model, provider = _main_model_fields(cfg.get("model", {}))
+            return {"tasks": tasks, "main": {"provider": str(provider or ""), "model": str(model or "")}}
 
 
 @router.get("/api/model/moa")
