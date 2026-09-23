@@ -350,7 +350,7 @@ class TestPythonDependenciesSeam:
             mgr.discover_and_load()
         assert mgr._plugins["pipful"].enabled
         assert "definitely-not-a-real-package-64165" in caplog.text
-        assert "pip install" in caplog.text
+        assert "hermes pm repair" in caplog.text
         assert calls == []
 
     def test_satisfied_pip_dep_is_quiet(self, hermes_home, caplog):
