@@ -20,7 +20,7 @@ def _reset_state():
 
 def _no_subprocess(monkeypatch):
     calls = []
-    monkeypatch.setattr(bt.subprocess, "run", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(bt_install.subprocess, "run", lambda *a, **k: calls.append((a, k)))
     return calls
 
 
@@ -53,7 +53,7 @@ class TestInstall:
             captured["cmd"] = cmd
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-        monkeypatch.setattr(bt.subprocess, "run", fake_run)
+        monkeypatch.setattr(bt_install.subprocess, "run", fake_run)
 
         assert bt_install._maybe_autoinstall_chromium() is True
         assert captured["cmd"] == ["/x/agent-browser", "install"]
@@ -70,7 +70,7 @@ class TestInstall:
 
         captured = {}
         monkeypatch.setattr(
-            bt.subprocess, "run",
+            bt_install.subprocess, "run",
             lambda cmd, **kw: captured.update(cmd=cmd) or SimpleNamespace(returncode=0, stdout="", stderr=""),
         )
 
@@ -86,7 +86,7 @@ class TestInstall:
         monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "/x/agent-browser")
         monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
         monkeypatch.setattr(
-            bt.subprocess, "run",
+            bt_install.subprocess, "run",
             lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
         )
         assert bt_install._maybe_autoinstall_chromium() is False
@@ -102,7 +102,7 @@ class TestOneShot:
 
         runs = []
         monkeypatch.setattr(
-            bt.subprocess, "run",
+            bt_install.subprocess, "run",
             lambda *a, **k: runs.append(1) or SimpleNamespace(returncode=0, stdout="", stderr=""),
         )
 
