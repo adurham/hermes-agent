@@ -520,7 +520,7 @@ def edit_draft_release(repository: str, release_id: int, tag: str, commit: str, 
         "--raw-field", f"tag_name={tag}", "--raw-field", f"target_commitish={commit}",
         "--raw-field", "make_latest=true",
         "--field", "prerelease=false", "--field", "draft=true",
-        "--field", f"body={body}",
+        "--raw-field", f"body={body}",
     ])
     release = json.loads(run(["gh", "api", endpoint]))
     if (release.get("id") != release_id or release.get("tag_name") != tag

@@ -512,3 +512,44 @@ def test_edit_draft_release_refuses_a_body_that_still_carries_a_fence(tmp_path, 
 
     with pytest.raises(ValueError):
         stable.edit_draft_release("example/project", 42, "v1.2.3", commit, run=run)
+
+
+def test_edit_draft_release_sends_the_notes_byte_for_byte(tmp_path, monkeypatch):
+    """Notes that open with a mention must not be read as a file by ``gh api``."""
+    from scripts.releases import stable
+    from scripts.releases.draft_warning import draft_body
+
+    commit, _tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3")
+    monkeypatch.chdir(tmp_path / "repo")
+    notes = "@alice fixed the updater\n\n42\ntrue"
+    release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": True, "prerelease": False,
+               "body": draft_body(version="1.2.3", attempt_ref="rc.2-v1.2.3", notes=notes),
+               "published_at": None}
+
+    def gh_value(flag, value):
+        # gh api: -f/--raw-field is a literal string; -F/--field reads @file and
+        # converts true/false/null/integers.
+        if flag == "--raw-field":
+            return value
+        if value.startswith("@"):
+            raise FileNotFoundError(value[1:])
+        return {"true": True, "false": False, "null": None}.get(
+            value, int(value) if value.isdigit() else value)
+
+    def run(argv):
+        if argv[0] == "git":
+            return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+        if argv[:3] == ["gh", "api", "--method"]:
+            pairs = zip(argv[5::2], argv[6::2])
+            for flag, field in pairs:
+                key, _, value = field.partition("=")
+                release[key] = gh_value(flag, value)
+            return "{}"
+        if argv[:2] == ["gh", "api"]:
+            return json.dumps(release)
+        raise AssertionError(argv)
+
+    stable.edit_draft_release("example/project", 42, "v1.2.3", commit, run=run)
+
+    assert release["body"].strip() == notes
+    assert release["tag_name"] == "v1.2.3" and release["draft"] is True
