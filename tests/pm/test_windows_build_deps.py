@@ -139,6 +139,10 @@ $ErrorActionPreference = 'Stop'
 $vs = Join-Path $Root 'VS with spaces'
 $devDir = Join-Path $vs 'Common7\Tools'
 New-Item -ItemType Directory -Force $devDir | Out-Null
+# The MSVC linker pin comes from VsDevCmd's VCToolsInstallDir, never from PATH lookup.
+$msvcBin = Join-Path $vs 'VC\Tools\MSVC\14.44\bin\HostARM64\ARM64'
+New-Item -ItemType Directory -Force $msvcBin | Out-Null
+[IO.File]::WriteAllText((Join-Path $msvcBin 'link.exe'), 'fixture')
 [IO.File]::WriteAllText((Join-Path $devDir 'VsDevCmd.bat'), @"
 @echo off
 set "PATH=%~dp0;%PATH%"
@@ -147,6 +151,7 @@ set "LIB=fixture SDK lib"
 set "VSCMD_ARG_HOST_ARCH=arm64"
 set "VSCMD_ARG_TGT_ARCH=arm64"
 set "VSINSTALLDIR=$vs\"
+set "VCToolsInstallDir=$vs\VC\Tools\MSVC\14.44\"
 "@)
 $rustcPath = Join-Path $Root 'rustc.cmd'
 [IO.File]::WriteAllText($rustcPath, "@echo off`r`necho host: aarch64-pc-windows-msvc`r`n")
@@ -165,9 +170,6 @@ function Get-Command {
     param([string]$Name)
     switch ($Name) {
         'cl.exe' { return [pscustomobject]@{Source = (Join-Path $vs 'cl.exe')} }
-        # The MSVC linker pin (CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER) resolves link.exe;
-        # a path under \MSVC\ is what the helper accepts.
-        'link.exe' { return [pscustomobject]@{Source = (Join-Path $vs 'VC\Tools\MSVC\14.44\bin\HostARM64\ARM64\link.exe')} }
         'rustup.exe' { return [pscustomobject]@{Source = (Join-Path $Root 'rustup.exe')} }
         'rustc.exe' { return [pscustomobject]@{Source = $rustcPath} }
         'vcpkg.exe' { return $null }
