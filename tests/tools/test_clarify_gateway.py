@@ -152,6 +152,26 @@ class TestClarifyPrimitive:
         assert isinstance(timeout, int)
         assert timeout > 0
 
+    def test_notify_register_unregister_clears_pending(self):
+        """unregister_notify cancels any pending clarify so threads unwind."""
+        from tools import clarify_gateway as cm
+
+        cm.register("id9", "sk9", "Q?", ["A"])
+
+        def waiter():
+            return cm.wait_for_response("id9", timeout=10.0)
+
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(waiter)
+            time.sleep(0.05)
+
+            cm.register_notify("sk9", lambda entry: None)
+            cm.unregister_notify("sk9")
+
+            # unregister_notify calls clear_session; thread unwinds
+            result = fut.result(timeout=10.0)
+            assert result == ""
+
 
 class TestGatewayTextIntercept:
     """The gateway's _handle_message intercepts text replies to pending clarifies."""
@@ -214,6 +234,12 @@ class TestCoverageGaps:
 
         assert cm.wait_for_response("nonexistent-id", timeout=0.1) is None
 
+
+    def test_get_notify_returns_none_when_not_registered(self):
+        """get_notify returns None for an unregistered session."""
+        from tools import clarify_gateway as cm
+
+        assert cm.get_notify("unregistered") is None
 
     def test_get_clarify_timeout_exception_returns_default(self, monkeypatch):
         """get_clarify_timeout returns 3600 when load_config raises."""
