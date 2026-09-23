@@ -126,6 +126,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _strip_markdown_syntax,
     _strip_reasoning_tags,
     _terminal_columns,
+    _terminal_reflows,
     _terminal_width_for_streaming,
     _tty_wrap,
     _wrap_panel_text,
@@ -652,8 +653,9 @@ def _suspend_output_history():
 def _replay_output_history(fit=None) -> None:
     """Repaint recent output above the prompt after a full screen clear.
 
-    ``fit=(rows, columns)`` replays only the newest lines whose wrapped height fits
-    ``rows`` — the older ones are still in scrollback (#95375).
+    ``fit=(rows, columns, painted)`` replays only the newest lines whose wrapped height
+    fits ``rows`` (see ``_output_tail_fitting``) — the older ones are still in scrollback
+    (#95375).
     """
     global _OUTPUT_HISTORY_REPLAYING
     if not _OUTPUT_HISTORY_ENABLED or not _OUTPUT_HISTORY:

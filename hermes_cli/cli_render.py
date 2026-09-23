@@ -12,6 +12,7 @@ import re
 import shutil
 import sys
 import textwrap
+import threading
 import time
 from contextlib import contextmanager, suppress
 from hermes_cli.banner import format_banner_version_label
@@ -548,16 +549,32 @@ def _ansi_drop_cells(line: str, cells: int) -> str:
     return "".join(out)
 
 
-def _output_tail_fitting(lines: list[str], max_rows: int, columns: int) -> list[str]:
-    """Newest ``lines`` filling ``max_rows`` rows, each soft-wrapped at the width it was painted
-    at (``columns`` when unknown). The oldest one may only partly fit: its bottom rows are
-    kept, the rows above them are already in scrollback."""
+def _terminal_reflows() -> bool:
+    """Whether the terminal re-wraps the rows it shows when its width changes.
+
+    Most do (tmux, VTE, kitty, iTerm2, Terminal.app, WezTerm, Alacritty, Windows Terminal):
+    a shrink pushes the rows that grew into scrollback. xterm, GNU screen and the Linux
+    console keep every row in place, truncated. Unknown terminals count as reflowing.
+    """
+    env = os.environ
+    if env.get("TMUX"):
+        return True
+    if env.get("STY") or env.get("XTERM_VERSION"):
+        return False
+    return env.get("TERM", "") != "linux"
+
+
+def _output_tail_fitting(lines: list[str], max_rows: int, columns: int, painted: bool = True) -> list[str]:
+    """Newest ``lines`` filling ``max_rows`` rows, soft-wrapped at ``columns`` — or, with
+    ``painted``, at the width each was painted at, as a terminal that does not reflow still
+    shows it. The oldest one may only partly fit: its bottom rows are kept, the rows above
+    them are already in scrollback."""
     from prompt_toolkit.formatted_text import ANSI, fragment_list_width, to_formatted_text
     kept, used = [], 0
     for line in reversed(lines):
         if used >= max_rows:
             break
-        cols = getattr(line, "width", None) or columns
+        cols = (getattr(line, "width", None) if painted else None) or columns
         width = fragment_list_width(to_formatted_text(ANSI(line)))
         height = max(1, -(-width // cols)) if cols > 0 else 1
         if used + height > max_rows:
@@ -578,6 +595,41 @@ def _pt_print_ansi(text: str) -> None:
         # NoConsoleScreenBufferError (Windows) / OSError when stdout is e.g. a worker log file.
         with suppress(Exception):
             print(text)
+
+
+_HELD_PAINTS: list | None = None
+_HELD_PAINTS_LOCK = threading.Lock()
+
+
+def _hold_paints() -> None:
+    """Hold ``_cprint`` paints until ``_release_paints``, while a resize awaits its recovery.
+
+    A paint erases the prompt chrome from prompt_toolkit's cursor, which is stale once the
+    terminal re-wrapped the chrome to its new width: rows of the old chrome would stay in the
+    transcript, where the replay cannot account for them (#95375).
+    """
+    global _HELD_PAINTS
+    with _HELD_PAINTS_LOCK:
+        if _HELD_PAINTS is None:
+            _HELD_PAINTS = []
+
+
+def _release_paints() -> None:
+    """Paint, in order, what ``_hold_paints`` held."""
+    global _HELD_PAINTS
+    with _HELD_PAINTS_LOCK:
+        held, _HELD_PAINTS = _HELD_PAINTS or [], None
+    for paint in held:
+        with suppress(Exception):
+            paint()
+
+
+def _paint_held(paint) -> bool:
+    with _HELD_PAINTS_LOCK:
+        if _HELD_PAINTS is None:
+            return False
+        _HELD_PAINTS.append(paint)
+        return True
 
 
 def _cprint(text: str):
@@ -612,6 +664,7 @@ def _cprint(text: str):
         app = None
 
     if app is None or not getattr(app, "_is_running", False):
+        _release_paints()
         paint_fallback()
         return
 
@@ -630,13 +683,16 @@ def _cprint(text: str):
     except Exception:
         current_loop = None
     if loop is None or (current_loop is loop and loop.is_running()):
-        paint_pt()
+        if not _paint_held(paint_pt):
+            paint_pt()
         return
 
     def _schedule():
         # run_in_terminal() returns an awaitable (pt >= 3.0) that must be scheduled or the
         # output is dropped, or None (mocks / older pt) when it already ran synchronously.
         # Never fall back to a bare print on error: the sync path already printed.
+        if _paint_held(paint_pt):
+            return
         with suppress(Exception):
             import inspect as _inspect
             coro = run_in_terminal(paint_pt)
