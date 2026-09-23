@@ -72,7 +72,7 @@
 # ============================================================================
 
 param(
-    [ValidateSet("stage", "install", "update", "all")]
+    [ValidateSet("stage", "install", "update", "verify-stamp", "all")]
     [string]$Phase = "all",
 
     # How OLD gets installed, named by the same ids the combination
