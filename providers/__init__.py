@@ -269,9 +269,11 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     if stamps != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
-        # Publish the completed layer only after its stamp is current. Auth sync
-        # calls list_providers(), which re-enters this function; syncing from
-        # _scan_home_layer before this assignment recursively rescanned forever.
+        # Publish the completed layer -- stamps AND check time -- before auth
+        # sync: it calls list_providers(), which re-enters this function. An
+        # unpublished stamp rescanned forever; an unpublished check time
+        # re-stats the plugin dirs inside the TTL.
+        layer.stamp_checked_at = now
         if _discovered and not _discovering:
             _sync_auth_registry()
     layer.stamp_checked_at = now
