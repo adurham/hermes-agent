@@ -661,7 +661,18 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
     def test_tool_gateway_returns_true(self):
-        with patch("tools.web_tools._peek_nous_access_token", return_value="nous-token"):
+        # NOTE (v2026.9.14 merge audit): the patch target below was repointed from the
+        # stale `tools.web_tools._peek_nous_access_token` onto the real
+        # `tools.managed_tool_gateway.peek_nous_access_token` (matching the other call
+        # sites in this file). That fixes the AttributeError, but this assertion is now
+        # VACUOUS: check_web_api_key() also returns True with the token mocked to None.
+        # Reason: `_ensure_web_plugins_loaded()` -> get_active_search_provider() resolves
+        # to the keyless-ring Keenable provider (KEYLESS = True), and `_provider_is_ready`
+        # returns True for any keyless-capable provider, short-circuiting before the
+        # gateway/nous-token path is ever consulted. check_web_api_key has no *observable*
+        # dependency on peek_nous_access_token here. Needs a human decision -- see the
+        # NOTE on test_configured_backend_must_match_available_provider below.
+        with patch("tools.managed_tool_gateway.peek_nous_access_token", return_value="nous-token"):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -705,8 +716,18 @@ class TestCheckWebApiKey:
         assert refresh_calls == []
 
     def test_configured_backend_must_match_available_provider(self):
+        # NOTE (v2026.9.14 merge audit): patch target repointed off the stale
+        # `tools.web_tools._read_nous_access_token` onto the real gateway function. The
+        # AttributeError is gone, but the test now fails on its actual assertion
+        # (check_web_api_key() returns True, not False). This is NOT a mock problem: with
+        # backend="parallel" configured and unavailable, the keyless-ring Keenable plugin
+        # provider still reports ready via `_provider_is_ready` (KEYLESS = True), so the
+        # "configured backend must match an available provider" invariant this test was
+        # written to protect (#78412) no longer holds in the current code. Left failing
+        # deliberately rather than deleted/weakened -- resolving it requires deciding
+        # whether the keyless ring should satisfy an explicitly-configured backend.
         with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
-            with patch("tools.web_tools._read_nous_access_token", return_value="nous-token"):
+            with patch("tools.managed_tool_gateway.peek_nous_access_token", return_value="nous-token"):
                 with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is False
