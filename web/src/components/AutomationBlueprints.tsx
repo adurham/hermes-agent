@@ -178,8 +178,10 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
 
   useEffect(() => {
     let cancelled = false;
+    setBlueprints(null);
+    setLoadError(null);
     api
-      .getAutomationBlueprints()
+      .getAutomationBlueprints(profile)
       .then((r) => {
         if (!cancelled) setBlueprints(r.blueprints);
       })
@@ -189,7 +191,7 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [profile]);
 
   if (loadError) {
     return <p className="text-sm text-red-500">Couldn't load blueprints: {loadError}</p>;

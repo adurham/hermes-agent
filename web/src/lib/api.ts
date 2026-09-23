@@ -685,8 +685,10 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  getCronDeliveryTargets: (profile = "default") =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(
+      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
+    ),
   createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -716,8 +718,10 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  getAutomationBlueprints: (profile = "default") =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
+      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
+    ),
   instantiateAutomationBlueprint: (
     body: { blueprint: string; values: Record<string, string> },
     profile = "default",
