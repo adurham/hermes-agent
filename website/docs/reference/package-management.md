@@ -217,13 +217,14 @@ interpreter or redirect an installed desktop app to this checkout.
 
 Use an ordinary terminal outside the packaged Hermes app. Leave any existing
 Python virtual environment first. On Windows, use native PowerShell with Git.
-For ARM64, setup checks Visual Studio C++ tools, Clang, native Rust, and static
-OpenSSL development libraries before PM runs. It reuses existing installations
-and installs missing prerequisites. Missing Visual Studio components require
-an Administrator PowerShell. OpenSSL uses vcpkg's `arm64-windows-static-md`
-triplet. A damaged shared installation produces a repair error, not automatic
-deletion. Compiler and OpenSSL environment variables apply only to the setup
-process when you enter through `activate.ps1`.
+On ARM64, PM prepares Visual Studio C++ tools, Clang, native Rust, and static
+OpenSSL development libraries before every dependency build from a checkout:
+setup, `activate.ps1`, `install.ps1`, `hermes update`, and repair alike. It
+reuses existing installations and installs missing prerequisites. Missing
+Visual Studio components require an Administrator PowerShell. OpenSSL uses
+vcpkg's `arm64-windows-static-md` triplet. A damaged shared installation
+produces a repair error, not automatic deletion. Compiler and OpenSSL
+environment variables apply only to PM's dependency build, never to your shell.
 
 Other platforms still require the native compiler tools and libraries needed
 by dependencies without compatible wheels.

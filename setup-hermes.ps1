@@ -70,14 +70,13 @@ if (Test-Path $uv) {
 }
 
 # ---------------------------------------------------------------------------
-# Tools first, then the compiler environment, then the venv sync.
-# ARM64 source wheels need the native compiler and OpenSSL development
-# libraries, and that setup shells out to git. The git it finds must be the
-# one pm just installed, not a host install whose PATH has two git.exe files
-# (cmd\ and bin\). Activation runs setup in a child, so these build variables
-# do not leak into its caller.
+# PM installs the tools, then the venv. On ARM64 PM prepares the compiler and
+# OpenSSL environment for that sync itself (pm/native_build.py), after its own
+# git is published, so every install path builds the same way.
+# Activation trusts the recorded tool digest. A direct setup re-checks it.
 # ---------------------------------------------------------------------------
-Write-Host 'Installing python + tools via pm...' -ForegroundColor Cyan
+Write-Host 'Installing python + tools + dependencies via pm (hash-verified via uv.lock)...' -ForegroundColor Cyan
+Write-Host '(first run on a fresh checkout can take 1-5 minutes)'
 Push-Location $repo
 try {
     # PM can replace its uv entry only after the bootstrap uv has exited.
@@ -85,29 +84,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'bootstrap Python installation failed' }
     $bootPy = (& $uv python find --managed-python $pyVersion) -join "`n"
     if ($LASTEXITCODE -ne 0 -or -not $bootPy) { throw 'bootstrap Python lookup failed' }
-    # The closure pm install would provision, minus the venv. A bare
-    # `pm install` also syncs the venv, and that sync must not run until the
-    # compiler environment below is on PATH.
-    & $bootPy.Trim() -m pm.cli install --tools-only $(if ($RuntimeOnly) { '--trust-recorded' })
-    if ($LASTEXITCODE -ne 0) { throw 'pm tool install failed - see output above.' }
-} finally {
-    Pop-Location
-}
-Write-Host 'Tools installed' -ForegroundColor Green
-
-if ($arch -eq 'arm64') {
-    . (Join-Path $repo 'scripts\windows-build-deps.ps1')
-    Initialize-HermesArm64BuildTools -StateRoot (Split-Path $store -Parent)
-}
-
-# The venv sync. Tools are already on PATH inside that process (pm install
-# publishes them before syncing); the compiler env set above is inherited.
-# Activation trusts the recorded tool digest. A direct setup re-checks it.
-# ---------------------------------------------------------------------------
-Write-Host 'Installing dependencies via pm (hash-verified via uv.lock)...' -ForegroundColor Cyan
-Write-Host '(first run on a fresh checkout can take 1-5 minutes)'
-Push-Location $repo
-try {
     & $bootPy.Trim() -m pm.cli install $(if ($RuntimeOnly) { '--trust-recorded' })
     if ($LASTEXITCODE -ne 0) { throw 'pm install failed - see output above.' }
 } finally {

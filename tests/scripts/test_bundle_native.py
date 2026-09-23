@@ -552,7 +552,7 @@ def test_staged_cache_ships_full_wheel_set_and_rebuilds_offline(tmp_path):
 def test_native_dispatch_isolates_process_state_on_real_child_failure(tmp_path, monkeypatch):
     # Compiler provisioning has its own native test; this probe must stop
     # at the invalid revision without installing tools on a developer host.
-    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
+    monkeypatch.setattr("pm.native_build.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "user-home"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "user-tools"))
     before = dict(os.environ)
@@ -587,7 +587,7 @@ def test_native_dispatch_child_environment(tmp_path, monkeypatch, cache_source, 
     from pm.packages import uv_cache_dir
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "host")
-    monkeypatch.setattr("scripts.build.windows_deps.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
+    monkeypatch.setattr("pm.native_build.prepare_windows_environment", lambda **kwargs: dict(kwargs["env"]))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "user"))
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     ambient = tmp_path / "ambient"

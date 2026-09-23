@@ -106,7 +106,7 @@ def stage_native(args) -> int:
     cache = Path(getattr(args, "cache", None) or os.environ.get("UV_CACHE_DIR") or uv_cache_dir()).resolve()
     base_env = dict(os.environ)
     if current_target() == "win32-arm64":
-        from scripts.build.windows_deps import prepare_windows_environment
+        from pm.native_build import prepare_windows_environment
 
         base_env = prepare_windows_environment(source=root, state=out.parent / ".build-deps", env=base_env)
     # Rustup resolves its installed toolchain under HOME unless these are explicit.
