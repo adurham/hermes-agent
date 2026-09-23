@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
 """Render the release download tables into <!-- HERMES_BUILDS_TABLE -->, and
 the same rows as standalone pages in the bucket.
 
