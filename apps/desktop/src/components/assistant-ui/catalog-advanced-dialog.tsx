@@ -62,15 +62,24 @@ function installEnv(options: InstallEnvOptions): InstallEnv {
     force: flag(options.force),
     target_profile: options.targetProfile
   }
-  if (options.kind === 'skill') return env
+  if (options.kind === 'skill') {
+    return env
+  }
 
   const pluginEnv: InstallEnv = {
     ...env,
     agent_half: flag(options.agentHalf),
     enable: flag(options.enable)
   }
-  if (options.hasDesktopHalf) pluginEnv.desktop_half = flag(options.desktopHalf)
-  if (options.pin) pluginEnv.ref = options.pin
+
+  if (options.hasDesktopHalf) {
+    pluginEnv.desktop_half = flag(options.desktopHalf)
+  }
+
+  if (options.pin) {
+    pluginEnv.ref = options.pin
+  }
+
   return pluginEnv
 }
 

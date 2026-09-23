@@ -41,10 +41,13 @@ function platformName(platform: string): string {
     case 'darwin':
     case 'macos':
       return 'macOS'
+
     case 'linux':
       return 'Linux'
+
     case 'windows':
       return 'Windows'
+
     default:
       return platform
   }
