@@ -304,6 +304,49 @@ def test_staged_publication_refuses_concurrent_input_edits(client, tmp_path, mon
     assert not (install_state_dir(repo) / "publication.json").exists()
 
 
+def test_staged_publication_preserves_a_concurrent_sibling_install_record(
+    client, tmp_path, monkeypatch, isolated_python,
+):
+    from pm.store import tree_digest
+
+    _current_environment(tmp_path, monkeypatch, [])
+    home = tmp_path / "home"
+    target = home / "plugins/example"
+    target.mkdir(parents=True)
+    (target / "plugin.yaml").write_text("name: example\n")
+    (target / "code.py").write_text("old code")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [example]\n")
+    metadata = target.parent / ".install-metadata.json"
+    metadata.write_text('{"example":{"revision":"old"}}\n')
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "plugin.yaml").write_text("name: example\npython_dependencies: [fixture-dep==1]\n")
+    (staged / "code.py").write_text("new code")
+    concurrent = {"example": {"revision": "old"}, "sibling": {"revision": "sibling-new"}}
+    worker_toolchain(
+        client,
+        monkeypatch,
+        isolated_python,
+        "import json\nfrom pm.packages import Venv\n"
+        "def apply(*args, **kwargs):\n"
+        f"    Path({str(metadata)!r}).write_text(json.dumps({concurrent!r}) + '\\n')\n"
+        "    return {}\n"
+        "Venv.apply = apply\n",
+    )
+
+    client.sync_venv(explicit=True, staged_plugin={
+        "target": str(target), "staged": str(staged), "target_digest": tree_digest(target),
+        "old_metadata": {"example": {"revision": "old"}},
+        "new_metadata": {"example": {"revision": "new"}},
+    })
+
+    assert json.loads(metadata.read_text()) == {
+        "example": {"revision": "new"},
+        "sibling": {"revision": "sibling-new"},
+    }
+    assert (target / "code.py").read_text() == "new code"
+
+
 def test_inactive_portable_publication_does_not_inspect_unrelated_dependency_manifests(client, tmp_path, monkeypatch):
     from pm.store import tree_digest
     _current_environment(tmp_path, monkeypatch, [])
