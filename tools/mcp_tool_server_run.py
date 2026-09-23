@@ -29,10 +29,29 @@ class MCPServerRunMixin:
 
     @staticmethod
     async def _cancel_waiters(*tasks: asyncio.Task) -> None:
+        """Cancel and await a set of lifecycle-wait sub-tasks, leak-safe.
+
+        Shared cleanup for the ``finally`` blocks of
+        :meth:`_wait_for_lifecycle_event`, :meth:`_wait_for_reconnect_or_shutdown`
+        and :meth:`_wait_for_lazy_reconnect` — all three create a
+        ``shutdown_task``/``reconnect_task`` pair with :func:`asyncio.wait` and
+        need to tear down whichever one didn't win the race.
+
+        Critically, ``task.cancel()`` itself must be inside the ``try``, not
+        just the subsequent ``await`` — ``cancel()`` schedules work via
+        ``loop.call_soon()`` internally, which raises
+        ``RuntimeError('Event loop is closed')`` if the owning loop has already
+        been closed. That happens when this runs during interpreter-shutdown
+        garbage collection of a task that was still parked (e.g. in
+        ``_wait_for_reconnect_or_shutdown``'s self-probe) when
+        ``_stop_mcp_loop()`` closed the MCP background loop out from under it —
+        previously this escaped uncaught as an "Exception ignored in: <coroutine
+        ... run>" trace at process exit (#63412).
+        """
         for t in tasks:
             if not t.done():
-                t.cancel()
                 try:
+                    t.cancel()
                     await t
                 except (asyncio.CancelledError, Exception):
                     pass

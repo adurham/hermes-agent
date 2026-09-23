@@ -1894,6 +1894,46 @@ class TestLifecycleWaitFinallySurvivesClosedLoop:
 
         asyncio.run(_test())
 
+    def test_real_task_cancel_on_closed_loop_does_not_escape(self):
+        """Same regression, driven by a REAL asyncio.Task on a REAL closed loop.
+
+        The sibling test above duck-types ``cancel()`` to raise, which is
+        precise but relies on the fake being faithful. This one reproduces the
+        actual #63412 mechanism end to end: park a real Task on a real loop,
+        close the loop out from under it (what ``_stop_mcp_loop()`` does), then
+        run the cleanup helper the way interpreter-shutdown GC would. CPython's
+        ``Task.cancel()`` goes through ``loop.call_soon()``, which raises
+        ``RuntimeError('Event loop is closed')`` on a closed loop -- verified
+        directly: with ``cancel()`` outside the ``try`` this propagates; inside,
+        it is swallowed with the rest of the cleanup.
+        """
+        from tools.mcp_tool_server_run import MCPServerRunMixin
+
+        victim_loop = asyncio.new_event_loop()
+
+        async def _parked():
+            await asyncio.Event().wait()
+
+        parked_task = victim_loop.create_task(_parked())
+        victim_loop.run_until_complete(asyncio.sleep(0))  # let it actually park
+        assert not parked_task.done()
+        victim_loop.close()
+        assert victim_loop.is_closed()
+
+        # Sanity-check the premise: cancelling really does blow up here.
+        probe_loop = asyncio.new_event_loop()
+        probe_task = probe_loop.create_task(_parked())
+        probe_loop.run_until_complete(asyncio.sleep(0))
+        probe_loop.close()
+        with pytest.raises(RuntimeError, match="Event loop is closed"):
+            probe_task.cancel()
+
+        async def _test():
+            # Must not raise, even though cancel() on the orphaned task does.
+            await MCPServerRunMixin._cancel_waiters(parked_task)
+
+        asyncio.run(_test())
+
     def test_normal_cancellation_still_works(self):
         """Sanity check: a task that cancels cleanly is still awaited out."""
         from tools.mcp_tool_server_run import MCPServerRunMixin
