@@ -1253,6 +1253,51 @@ def test_gateway_cli_origin_event_left_unrouted():
 # right now, not how many async-pool slots are occupied.
 
 
+class TestActiveForSession:
+    """active_for_session() is a plugin-compat shim (COMPAT_MANIFEST.md,
+    tools.async_delegation) with no internal callers -- this is its only
+    coverage. It counts LIVE delegations (running/stalling/finalizing) owned
+    by one UI session; completed ones and other sessions must not count.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_records(self):
+        ad._reset_for_tests()
+        yield
+        ad._reset_for_tests()
+
+    def test_active_for_session_counts_every_live_delegation_state(self):
+        with ad._records_lock:
+            ad._records.update(
+                {
+                    "running": {
+                        "status": "running",
+                        "origin_ui_session_id": "desktop-sid",
+                    },
+                    "stalling": {
+                        "status": "stalling",
+                        "origin_ui_session_id": "desktop-sid",
+                    },
+                    "finalizing": {
+                        "status": "finalizing",
+                        "origin_ui_session_id": "desktop-sid",
+                    },
+                    "completed": {
+                        "status": "completed",
+                        "origin_ui_session_id": "desktop-sid",
+                    },
+                    "other-session": {
+                        "status": "running",
+                        "origin_ui_session_id": "other-sid",
+                    },
+                }
+            )
+
+        assert ad.active_for_session("desktop-sid") == 3
+        assert ad.active_for_session("other-sid") == 1
+        assert ad.active_for_session("") == 0
+
+
 class TestActiveTaskCount:
     @pytest.fixture(autouse=True)
     def _clean_records(self):
