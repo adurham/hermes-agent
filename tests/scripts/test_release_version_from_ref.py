@@ -1,12 +1,11 @@
 """A ref names a version, and the next version is derived, never read from the tree.
 
-Derivation reads the release family in order: the published stable head, then
-outstanding ``-rc`` claims, then the seed ``0.21.4`` when both are empty. CalVer
-tags and receipt tags are not inputs — a CalVer tag would win every ``max()``.
+Derivation reads the published stable head, or the seed ``0.21.4`` before one
+exists. Attempt refs number attempts within a version and never move the line.
 """
 import pytest
 
-from scripts.releases.versioning import derive_next_version, version_from_tag
+from scripts.releases.versioning import derive_next_version, next_attempt, version_from_tag
 
 SEED = "0.21.4"
 
@@ -67,9 +66,12 @@ def test_attempt_ref_refuses_what_it_could_not_parse(version, attempt):
         attempt_ref(version, attempt)
 
 
-def test_claim_advances_the_line_but_is_not_a_final_tag():
-    assert version_from_tag("v0.21.5-rc") is None
-    assert derive_next_version(published=None, claims=["v0.21.5-rc"], bump="patch") == "0.21.6"
+def test_next_attempt_counts_cleared_attempts_and_skips_other_shapes():
+    refs = ["rc.1-v0.21.5", "abandoned-rc.1-v0.21.5", "rc.2-v0.21.6",
+            "v0.21.5-rc", "v2026.9.21", "abandoned-rc.4-v0.21.5"]
+    assert next_attempt("0.21.5", refs) == 2
+    assert next_attempt("0.21.6", refs) == 3
+    assert next_attempt("0.21.7", refs) == 1
 
 
 def test_canary_compares_equal_to_its_stable():
@@ -78,22 +80,14 @@ def test_canary_compares_equal_to_its_stable():
     assert compare("0.21.4+canary.20260922T001400Z", "0.21.4") == 0
 
 
-def test_calver_tag_is_never_a_derivation_input():
-    assert derive_next_version(published=None, claims=["v2026.9.21"], bump="patch") == "0.21.5"
+def test_empty_head_seeds_the_line():
+    assert derive_next_version(published=None, bump="patch") == "0.21.5"
+    assert derive_next_version(published=None, bump="minor") == "0.22.0"
+    assert derive_next_version(published=None, bump="major") == "1.0.0"
 
 
-def test_empty_family_seeds_the_line():
-    assert derive_next_version(published=None, claims=[], bump="patch") == "0.21.5"
-    assert derive_next_version(published=None, claims=[], bump="minor") == "0.22.0"
-    assert derive_next_version(published=None, claims=[], bump="major") == "1.0.0"
-
-
-def test_published_head_beats_the_seed():
-    assert derive_next_version(published="0.21.5", claims=[], bump="patch") == "0.21.6"
-
-
-def test_claim_beats_a_lower_published_head():
-    assert derive_next_version(published="0.21.5", claims=["v0.21.7-rc"], bump="patch") == "0.21.8"
+def test_published_head_spends_its_version():
+    assert derive_next_version(published="0.21.5", bump="patch") == "0.21.6"
 
 
 def test_canary_base_comes_from_the_validated_protected_stable_head():

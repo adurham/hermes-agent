@@ -1,8 +1,8 @@
-"""Ref name to version, and the next version from the release family.
+"""Ref name to version, and the next version from the published stable head.
 
-The family is the published stable head, then outstanding ``-rc`` claims, then
-the seed when both are empty. CalVer tags and receipt tags are excluded: a
-CalVer tag is a valid three-component version and would win every ``max()``.
+A version is spent only by publication. Attempt refs (``rc.<N>-vX.Y.Z``) and
+their abandon markers number attempts within one version; they never move the
+line. CalVer tags, canary identities and receipt namespaces are not versions.
 """
 from __future__ import annotations
 
@@ -103,12 +103,6 @@ def marker_ref(version: str, attempt: int) -> str:
     return _MARKER_PREFIX + attempt_ref(version, attempt)
 
 
-def _claim_version(tag: str) -> str | None:
-    if isinstance(tag, str) and tag.endswith("-rc"):
-        return version_from_tag(tag[:-3])
-    return None
-
-
 def _bump(version: str, bump: str) -> str:
     if bump not in BUMPS:
         raise ValueError(f"unknown bump {bump!r}")
@@ -120,13 +114,21 @@ def _bump(version: str, bump: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def derive_next_version(*, published: str | None, claims: list[str], bump: str) -> str:
-    """The next version: max of the family, then the bump.
+def derive_next_version(*, published: str | None, bump: str) -> str:
+    """The next version from the published head, or the seed before one exists.
 
-    ``claims`` may contain anything a tag list contains. Only ``v<semver>-rc``
-    entries count; CalVer labels and receipt tags are ignored, not errors.
+    Attempts do not move the line. A version is spent by publication, so an
+    abandoned attempt leaves its version free for the next cut.
     """
-    family = [published] if published else []
-    family.extend(version for version in (_claim_version(tag) for tag in claims) if version)
-    base = max(family, key=lambda version: [int(part) for part in version.split(".")]) if family else SEED
-    return _bump(base, bump)
+    return _bump(published or SEED, bump)
+
+
+def next_attempt(version: str, refs: list[str]) -> int:
+    """One past the highest attempt ref for ``version``.
+
+    Marker refs do not count and do not free a number: an abandoned attempt
+    keeps its ref, so its number is never cut again.
+    """
+    attempts = [parsed[1] for parsed in map(parse_attempt_ref, refs)
+                if parsed and parsed[0] == version]
+    return max(attempts, default=0) + 1

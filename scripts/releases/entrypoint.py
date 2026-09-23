@@ -1,20 +1,26 @@
-"""The thin release entrypoint: claim a version, cut the draft, dispatch the gate.
+"""The thin release entrypoint: claim an attempt, cut the draft, dispatch the gate.
 
-Nothing here builds. The claim is an annotated ``-rc`` tag pushed as exactly
-that ref, and a dispatch that never starts is an error — the claim stays,
-because a burned version is never retried under the same number.
+Nothing here builds. The claim is an annotated attempt ref ``rc.<N>-vX.Y.Z``
+pushed as exactly that ref. A version is spent only by publication: an attempt
+that fails is abandoned with a marker ref, and the next cut is attempt N+1 of
+the same version. At most one attempt, of any version, is outstanding.
 """
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
-from scripts.releases.versioning import SEED, derive_next_version
+from scripts.releases.versioning import (
+    SEED, attempt_ref, derive_next_version, next_attempt, parse_attempt_ref, parse_marker_ref,
+)
 
 WORKFLOW = "stable-release.yml"
+# A fetch refspec may hold one ``*``; the parsers filter what the globs over-match.
+_ATTEMPT_GLOBS = ("rc.*", "abandoned-rc.*")
 
 
 class ReleaseRefused(RuntimeError):
@@ -26,8 +32,10 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _claims(repo: Path) -> list[str]:
-    listed = _git(repo, "tag", "--list", "v*-rc")
-    return [tag for tag in listed.splitlines() if tag]
+    """Every local attempt ref and abandon marker ref."""
+    listed = _git(repo, "tag", "--list", *_ATTEMPT_GLOBS)
+    return [ref for ref in listed.splitlines()
+            if parse_attempt_ref(ref) or parse_marker_ref(ref)]
 
 
 def _claim_commit(repo: Path, tag: str) -> str:
@@ -38,7 +46,7 @@ def _refresh_claims(repo: Path, remote: str) -> None:
     _git(
         repo, "fetch", remote,
         "+refs/heads/main:refs/remotes/hermes-release/main",
-        "+refs/tags/v*-rc:refs/tags/v*-rc",
+        *(f"+refs/tags/{glob}:refs/tags/{glob}" for glob in _ATTEMPT_GLOBS),
     )
 
 
@@ -65,54 +73,106 @@ def _claim_collision(repo: Path, remote: str, tag: str, error: Exception) -> Rel
     return ReleaseRefused(f"{tag} was claimed by {actor} at {when} for {commit}")
 
 
-def _highest_claim(repo: Path) -> tuple[str, str] | None:
-    """The highest-version outstanding claim, as (version, commit)."""
-    from scripts.releases.versioning import version_from_tag
-
-    best: tuple[list[int], str, str] | None = None
-    for tag in _claims(repo):
-        version = version_from_tag(tag[:-3]) if tag.endswith("-rc") else None
-        if version is None:
+def _outstanding_attempts(repo: Path, remote: str) -> list[tuple[str, int, str]]:
+    """Attempts with no abandon marker whose version has no final tag on ``remote``."""
+    refs = _claims(repo)
+    cleared = {parsed for parsed in map(parse_marker_ref, refs) if parsed}
+    published: dict[str, bool] = {}
+    outstanding = []
+    for ref in refs:
+        parsed = parse_attempt_ref(ref)
+        if parsed is None or parsed in cleared:
             continue
-        key = [int(part) for part in version.split(".")]
-        if best is None or key > best[0]:
-            best = (key, version, _claim_commit(repo, tag))
-    return None if best is None else (best[1], best[2])
+        version, attempt = parsed
+        if version not in published:
+            published[version] = bool(_git(repo, "ls-remote", remote, f"refs/tags/v{version}"))
+        if not published[version]:
+            outstanding.append((version, attempt, ref))
+    return outstanding
 
 
-def _require_ancestry(repo: Path, commit: str) -> None:
-    """A claim's commit must descend from the highest outstanding claim's."""
-    highest = _highest_claim(repo)
-    if highest is None:
+def _outstanding_attempt(repo: Path, remote: str) -> tuple[str, int, str] | None:
+    """The one outstanding attempt as ``(version, attempt, ref)``, or None."""
+    outstanding = _outstanding_attempts(repo, remote)
+    if len(outstanding) > 1:
+        refs = ", ".join(ref for *_rest, ref in outstanding)
+        raise ReleaseRefused(
+            f"more than one outstanding attempt ({refs}) — abandon all but one before releasing")
+    return outstanding[0] if outstanding else None
+
+
+def _attempt_run(execute, repository: str, ref: str, commit: str) -> dict | None:
+    """The workflow run for ``ref`` at ``commit``, or None when none is listed."""
+    raw = execute([
+        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
+        "--branch", ref, "--json", "databaseId,url,headBranch,headSha,status",
+    ])
+    try:
+        rows = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return None
+    return next((row for row in rows if isinstance(row, dict) and row.get("headSha") == commit
+                 and row.get("url") and row.get("databaseId") is not None), None)
+
+
+def _refuse_outstanding(outstanding: tuple[str, int, str], *, repo: Path, remote: str,
+                        repository: str, execute) -> ReleaseRefused:
+    """Print the blocking run and both ways out, then return the refusal to raise."""
+    version, _attempt, ref = outstanding
+    run = _attempt_run(execute, repository, ref, _claim_commit(repo, ref))
+    lines = [f"{ref} is outstanding: it has no abandon marker and v{version} is not published."]
+    lines.append(f"Workflow: {run['url']}" if run else f"No workflow run is listed for {ref}.")
+    lines += ["If the attempt is unfixable, abandon it:",
+              f"    python scripts/release.py abandon --version {version} --remote {remote}"]
+    if run:
+        lines += ["If the attempt is fixable, rerun its failed jobs:",
+                  f"    gh run rerun {run['databaseId']} --failed --repo {repository}"]
+    print("\n".join(lines), file=sys.stderr)
+    return ReleaseRefused(f"{ref} is outstanding — publish or abandon it first")
+
+
+def _require_ancestry(repo: Path, commit: str, published_commit: str | None) -> None:
+    """A new attempt descends from the published stable head; abandoned attempts do not bind it."""
+    if published_commit is None:
         return
-    version, claimed = highest
     ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", claimed, commit], cwd=repo, capture_output=True)
+        ["git", "merge-base", "--is-ancestor", published_commit, commit], cwd=repo, capture_output=True)
     if ancestor.returncode != 0:
         raise ReleaseRefused(
-            f"{version} already claimed at {claimed} — publish or abandon it first")
+            f"{commit} does not descend from the published stable head {published_commit}")
 
 
 def _next_claim_epoch(repo: Path) -> int:
-    epochs = _git(repo, "for-each-ref", "refs/tags/v*-rc", "--format=%(taggerdate:unix)")
-    previous = [int(value) for value in epochs.splitlines() if value.isdigit()]
+    epochs = _git(repo, "for-each-ref", "refs/tags/rc.*", "--format=%(refname:strip=2) %(taggerdate:unix)")
+    previous = [int(stamp) for ref, _, stamp in (line.partition(" ") for line in epochs.splitlines())
+                if parse_attempt_ref(ref) and stamp.isdigit()]
     return max(int(time.time()), max(previous, default=0) + 1)
 
 
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
-            execute, autopublish: bool = False, published: str = SEED) -> dict:
-    """Claim the derived version, cut its draft, and start the gate."""
+            execute, autopublish: bool = False,
+            published: tuple[str, str | None] = (SEED, None)) -> dict:
+    """Claim the next attempt of the derived version, cut its draft, and start the gate.
+
+    ``published`` is the stable channel's ``(version, commit)``; the commit is
+    None before the first publication.
+    """
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
-    _require_ancestry(repo, commit)
-    version = derive_next_version(
-        published=published, claims=_claims(repo), bump=bump,
-    )
-    tag = f"v{version}-rc"
+    outstanding = _outstanding_attempt(repo, remote)
+    if outstanding is not None:
+        raise _refuse_outstanding(outstanding, repo=repo, remote=remote,
+                                  repository=repository, execute=execute)
+    published_version, published_commit = published
+    _require_ancestry(repo, commit, published_commit)
+    version = derive_next_version(published=published_version, bump=bump)
+    attempt = next_attempt(version, _claims(repo))
+    tag = attempt_ref(version, attempt)
     claim_epoch = _next_claim_epoch(repo)
     claim = json.dumps({
         "schema": 1,
         "version": version,
+        "attempt": attempt,
         "commit": commit,
         "autopublish": autopublish,
         "claimEpoch": claim_epoch,
@@ -133,6 +193,10 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     if (remote_ref.get(ref) != _git(repo, "rev-parse", ref)
             or remote_ref.get(f"{ref}^{{}}") != commit):
         raise ReleaseRefused(f"claim {tag} did not persist with exact remote custody")
+    # The pre-check and the push are not one atomic step: a concurrent cut of a
+    # different version passes the same check. Re-read before anything starts.
+    _refresh_claims(repo, remote)
+    _outstanding_attempt(repo, remote)
     url = f"https://github.com/{repository}/releases/tag/{tag}"
     try:
         execute([
@@ -235,7 +299,7 @@ def next_steps(result: dict) -> str:
     """Say what started, what the operator waits for, and the next action."""
     version = result["version"]
     lines = [
-        f"Claimed v{version}. The release workflow started on {result['tag']}.",
+        f"Claimed {result['tag']} for v{version}. The release workflow started on {result['tag']}.",
         f"Workflow: {result['run_url']}" if result.get("run_url") else "Workflow: the run is not listed yet. Open the Actions tab for this claim.",
         "Wait for that workflow to finish. It builds and tests this commit.",
         f"When it is green, the release notes are at {result['final_url']}.",
@@ -266,11 +330,11 @@ def cmd_release(args) -> None:
             raise RuntimeError(completed.stderr.strip() or "release command failed")
         return completed.stdout
 
-    from scripts.releases.versioning import published_stable_version
+    from scripts.releases.versioning import published_stable_identity
     result = release(
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish,
-        published=published_stable_version(repository),
+        published=published_stable_identity(repository),
     )
     print(result["url"])
     print(next_steps(result))
