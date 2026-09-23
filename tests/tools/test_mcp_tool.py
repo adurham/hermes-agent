@@ -544,7 +544,7 @@ class TestSchemaConversion:
         assert schema["required"] == ["command"]
 
     def test_nested_nullable_array_items_are_collapsed(self):
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -574,7 +574,7 @@ class TestSchemaConversion:
         """A Tool object without .inputSchema must not crash registration."""
         import types
 
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp_tool_schema import _convert_mcp_schema
 
         bare_tool = types.SimpleNamespace(name="probe", description="Probe")
         schema = _convert_mcp_schema("srv", bare_tool)
@@ -586,7 +586,7 @@ class TestSchemaConversion:
         """Tool with inputSchema=None produces a valid empty object schema."""
         import types
 
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp_tool_schema import _convert_mcp_schema
 
         # Note: _make_mcp_tool(input_schema=None) falls back to a default —
         # build the namespace directly so .inputSchema really is None.
@@ -596,7 +596,7 @@ class TestSchemaConversion:
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
     def test_tool_name_prefix_format(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp_tool_schema import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="list_dir")
         schema = _convert_mcp_schema("my_server", mcp_tool)
@@ -661,7 +661,8 @@ class TestCheckFunction:
         assert check() is False
 
     def test_connected_returns_true(self):
-        from tools.mcp_tool import _make_check_fn, _servers
+        from tools.mcp_tool_handlers import _make_check_fn
+        from tools.mcp_tool import _servers
 
         server = _make_mock_server("test_server", session=MagicMock())
         _servers["test_server"] = server
@@ -671,29 +672,43 @@ class TestCheckFunction:
         finally:
             _servers.pop("test_server", None)
 
-    def test_session_none_returns_true_for_cache_shell(self):
-        """Cache-registered servers report check=True even with session=None.
+    def test_session_none_returns_true_for_schema_cache_registered_server(self):
+        """Schema-cache-registered servers report check=True even with session=None.
 
         Pre-cache-era the check function returned False whenever a server's
         session was None — meaning the connection had failed or been torn
-        down. The startup cache introduces a third state: ``_servers[name]``
-        holds a placeholder shell whose tools are already registered from
-        disk but whose real session is deferred until first use. The check
-        function MUST return True in that case so the banner /
-        ``check_tool_availability`` keep treating those tools as available;
-        the lazy-spawn path in the tool handlers resolves the session on
-        demand. See ``_ensure_server_connected``.
-        """
-        from tools.mcp_tool import _make_check_fn, _servers
+        down. The startup schema cache introduces a third state: the server's
+        tools are already registered from disk but its real session is
+        deferred until first use. The check function MUST return True in that
+        case so the banner / ``check_tool_availability`` keep treating those
+        tools as available; the lazy-spawn path in the tool handlers resolves
+        the session on demand. See ``_ensure_lazy_server_connected``.
 
+        That invariant is unchanged; only the state that REPRESENTS it moved
+        in the v2026.9.14 split. Pre-merge, ``_register_from_cache`` parked a
+        ``session=None`` placeholder in ``_servers`` flagged
+        ``_is_cache_shell``. Post-merge ``_register_from_cache_sync`` records
+        the server in ``_lazy_server_configs`` instead and registers its tools
+        ``lazy=True``; nothing sets ``_is_cache_shell`` anywhere in production
+        any more, and ``_ensure_lazy_server_connected`` /
+        ``_get_connected_server_for_call`` read ``_lazy_server_configs`` back
+        to drive the deferred spawn. So this drives the same assertion through
+        the mechanism production actually produces today.
+        """
+        from tools.mcp_tool_handlers import _make_check_fn
+        from tools.mcp_tool import _servers, _lazy_server_configs
+        from tools.mcp_tool_scope import _server_key
+
+        key = _server_key("test_server")
         server = _make_mock_server("test_server", session=None)
-        server._is_cache_shell = True  # simulate a disk-cached shell
         _servers["test_server"] = server
+        _lazy_server_configs[key] = {"command": "test"}
         try:
             check = _make_check_fn("test_server")
             assert check() is True
         finally:
             _servers.pop("test_server", None)
+            _lazy_server_configs.pop(key, None)
 
     def test_recycled_stdio_server_remains_available_for_lazy_reconnect(self):
         from tools.mcp_tool_handlers import _make_check_fn
@@ -1407,8 +1422,28 @@ class TestToolsetInjection:
             assert "fs_list_files" in resolve_toolset("fs")
             assert "fs_list_files" in resolve_toolset("mcp-fs")
 
-    def test_server_toolset_skips_builtin_collision(self):
-        """MCP raw aliases never overwrite a built-in toolset name."""
+    def test_server_toolset_merges_into_builtin_collision(self):
+        """MCP raw aliases never DESTROY a built-in toolset; they merge into it.
+
+        CONTRACT CHANGE (v2026.9.14): this test previously asserted the raw
+        alias was *skipped* entirely on a built-in collision
+        (``"terminal_run" not in resolve_toolset("terminal")``). Upstream
+        ``3bc1780f2d`` ("fix(toolsets): merge MCP tools when alias collides
+        with static toolset") deliberately reversed that half: an MCP server
+        named like a built-in toolset used to have its tools silently
+        shadowed — registered into ``mcp-<name>`` but never surfaced when the
+        agent looked up ``<name>``. ``toolsets.get_toolset`` now unions the
+        alias target's tools into the static entry, and upstream ships its own
+        contract test for it
+        (tests/tools/test_toolsets.py::test_static_and_mcp_alias_with_same_name_are_merged,
+        passing on this branch).
+
+        The invariant this test actually guards is UNCHANGED and still
+        asserted below: the built-in toolset is never overwritten — its
+        description and its own tools survive — and the ``mcp-<name>``
+        toolset remains independently addressable. Only the shadow-vs-merge
+        half is rewritten to the new contract; it is not skipped or loosened.
+        """
         from tools.mcp_tool import MCPServerTask
         from tools.registry import ToolRegistry
         from toolsets import resolve_toolset, validate_toolset
@@ -1433,15 +1468,22 @@ class TestToolsetInjection:
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", fresh_servers), \
-             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
-             patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry), \
              patch("toolsets.TOOLSETS", fake_toolsets):
             from tools.mcp_tool import discover_mcp_tools
             discover_mcp_tools()
 
+            # Built-in entry is not overwritten: its description and its own
+            # tool both survive the collision.
             assert fake_toolsets["terminal"]["description"] == "Terminal tools"
-            assert "terminal_run" not in resolve_toolset("terminal")
+            assert "terminal" in resolve_toolset("terminal")
+            # New contract (upstream 3bc1780f2d): the server's tools are merged
+            # in rather than shadowed, so they reach the model under the bare
+            # name too.
+            assert "terminal_run" in resolve_toolset("terminal")
+            # The mcp-<name> toolset stays independently addressable.
             assert validate_toolset("mcp-terminal") is True
             assert "terminal_run" in resolve_toolset("mcp-terminal")
 
@@ -1475,8 +1517,8 @@ class TestToolsetInjection:
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", fresh_servers), \
-             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
-             patch("tools.mcp_tool._connect_server", side_effect=flaky_connect), \
+             patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool_discovery._connect_server", side_effect=flaky_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
@@ -1741,7 +1783,8 @@ class TestConnectServerOrphanReaping:
 
     def test_start_raising_error_reaps_orphaned_task(self):
         """A server that fails to connect must have its task fully stopped."""
-        from tools.mcp_tool import MCPServerTask, _connect_server
+        from tools.mcp_tool_discovery import _connect_server
+        from tools.mcp_tool import MCPServerTask
 
         async def _test():
             server_holder = {}
@@ -1776,7 +1819,8 @@ class TestConnectServerOrphanReaping:
 
     def test_start_cancelled_still_reaps_task(self):
         """The pre-existing CancelledError path (#59349) still cancels cleanly."""
-        from tools.mcp_tool import MCPServerTask, _connect_server
+        from tools.mcp_tool_discovery import _connect_server
+        from tools.mcp_tool import MCPServerTask
 
         async def _test():
             server_holder = {}
@@ -1802,7 +1846,7 @@ class TestConnectServerOrphanReaping:
 
 
 class TestLifecycleWaitFinallySurvivesClosedLoop:
-    """_cancel_lifecycle_wait_tasks must not let cancel() escape uncaught.
+    """``_cancel_waiters`` must not let cancel() escape uncaught.
 
     Direct regression test for #63412: the shared cleanup helper used by
     all three lifecycle-wait ``finally`` blocks (``_wait_for_lifecycle_event``,
@@ -1818,7 +1862,7 @@ class TestLifecycleWaitFinallySurvivesClosedLoop:
     """
 
     def test_cancel_raising_runtime_error_does_not_escape(self):
-        from tools.mcp_tool import _cancel_lifecycle_wait_tasks
+        from tools.mcp_tool_server_run import MCPServerRunMixin
 
         class _FlakyTask:
             """Duck-typed stand-in for asyncio.Task (which is immutable in
@@ -1844,7 +1888,7 @@ class TestLifecycleWaitFinallySurvivesClosedLoop:
         async def _test():
             t1, t2 = _FlakyTask(), _FlakyTask()
             # Should not raise despite cancel() blowing up on both tasks.
-            await _cancel_lifecycle_wait_tasks(t1, t2)
+            await MCPServerRunMixin._cancel_waiters(t1, t2)
             assert t1.cancel_calls == 1
             assert t2.cancel_calls == 1
 
@@ -1852,7 +1896,7 @@ class TestLifecycleWaitFinallySurvivesClosedLoop:
 
     def test_normal_cancellation_still_works(self):
         """Sanity check: a task that cancels cleanly is still awaited out."""
-        from tools.mcp_tool import _cancel_lifecycle_wait_tasks
+        from tools.mcp_tool_server_run import MCPServerRunMixin
 
         async def _test():
             async def _never_finishes():
@@ -1862,7 +1906,7 @@ class TestLifecycleWaitFinallySurvivesClosedLoop:
             await asyncio.sleep(0.01)
             assert not task.done()
 
-            await _cancel_lifecycle_wait_tasks(task)
+            await MCPServerRunMixin._cancel_waiters(task)
 
             assert task.done()
             assert task.cancelled()
@@ -2320,7 +2364,7 @@ class TestUtilitySchemas:
         assert "myserver_get_prompt" in names
 
     def test_hyphens_sanitized_in_utility_names(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp_tool_schema import _build_utility_schemas
 
         schemas = _build_utility_schemas("my-server")
         names = [s["schema"]["name"] for s in schemas]
@@ -2329,7 +2373,7 @@ class TestUtilitySchemas:
         assert "my_server_list_resources" in names
 
     def test_list_resources_schema_no_required_params(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp_tool_schema import _build_utility_schemas
 
         schemas = _build_utility_schemas("srv")
         lr = next(s for s in schemas if s["handler_key"] == "list_resources")
@@ -2474,7 +2518,8 @@ class TestUtilityToolRegistration:
     def test_utility_tools_in_same_toolset(self):
         """Utility tools belong to the same mcp-{server} toolset."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp_tool_discovery import _discover_and_register_server
+        from tools.mcp_tool import _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_session = MagicMock()
@@ -2485,7 +2530,7 @@ class TestUtilityToolRegistration:
             server._tools = []
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry):
             asyncio.run(
                 _discover_and_register_server("myserv", {"command": "test"})
@@ -2511,7 +2556,9 @@ class TestUtilityToolRegistration:
         path handles bringing the session online on demand.
         """
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp_tool_discovery import _discover_and_register_server
+        from tools.mcp_tool import _servers, _lazy_server_configs, MCPServerTask
+        from tools.mcp_tool_scope import _server_key
 
         mock_registry = ToolRegistry()
         mock_session = MagicMock()
@@ -2522,7 +2569,7 @@ class TestUtilityToolRegistration:
             server._tools = []
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry):
             asyncio.run(
                 _discover_and_register_server("chk", {"command": "test"})
@@ -2533,16 +2580,28 @@ class TestUtilityToolRegistration:
         # Server is connected, check_fn should return True
         assert entry.check_fn() is True
 
-        # Drop the session — emulates the cache shell state. check_fn must
-        # still return True so the banner / tool-availability reporting
-        # keeps showing these tools; lazy-spawn handles reconnection on use.
+        # Drop the session and register the server as schema-cache (lazy)
+        # registered — the deferred-session state that `_register_from_cache_sync`
+        # produces. check_fn must still return True so the banner /
+        # tool-availability reporting keeps showing these tools; lazy-spawn
+        # handles connecting on first use. (Pre-v2026.9.14 this same state was
+        # a `session=None` placeholder flagged `_is_cache_shell`; the flag no
+        # longer exists in production — see
+        # TestCheckFunction::test_session_none_returns_true_for_schema_cache_registered_server.)
+        key = _server_key("chk")
         _servers["chk"].session = None
-        _servers["chk"]._is_cache_shell = True  # emulate cache-shell state
-        assert entry.check_fn() is True
+        _lazy_server_configs[key] = {"command": "test"}
+        try:
+            assert entry.check_fn() is True
 
-        # Remove the server entirely — only NOW should check_fn report False.
-        _servers.pop("chk", None)
-        assert entry.check_fn() is False
+            # Remove the server AND its lazy registration — only NOW should
+            # check_fn report False (parked: reconnect budget exhausted).
+            _servers.pop("chk", None)
+            _lazy_server_configs.pop(key, None)
+            assert entry.check_fn() is False
+        finally:
+            _servers.pop("chk", None)
+            _lazy_server_configs.pop(key, None)
 
 
 # ===========================================================================
@@ -3371,7 +3430,9 @@ class TestMCPSelectiveToolLoading:
         assert "ink_resources_only_get_prompt" not in registered
 
     def test_existing_tool_names_reflect_registered_subset(self):
-        from tools.mcp_tool import _existing_tool_names, _servers, _discover_and_register_server
+        from tools.mcp_tool_registration import _existing_tool_names
+        from tools.mcp_tool_discovery import _discover_and_register_server
+        from tools.mcp_tool import _servers
         from tools.registry import ToolRegistry
 
         mock_registry = ToolRegistry()
@@ -3385,7 +3446,7 @@ class TestMCPSelectiveToolLoading:
             return server
 
         async def run():
-            with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+            with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
                  patch.dict("tools.mcp_tool._servers", {}, clear=True), \
                  patch("tools.registry.registry", mock_registry), \
                  patch("toolsets.create_custom_toolset"):
@@ -3404,7 +3465,8 @@ class TestMCPSelectiveToolLoading:
 
     def test_no_toolset_created_when_everything_is_filtered_out(self):
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers
+        from tools.mcp_tool_discovery import _discover_and_register_server
+        from tools.mcp_tool import _servers
 
         mock_registry = ToolRegistry()
         server = self._make_server("ink_none", ["create_service"], session=SimpleNamespace())
@@ -3414,7 +3476,7 @@ class TestMCPSelectiveToolLoading:
             return server
 
         async def run():
-            with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+            with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
                  patch("tools.registry.registry", mock_registry), \
                  patch("toolsets.create_custom_toolset", mock_create):
                 return await _discover_and_register_server(
@@ -3540,7 +3602,8 @@ class TestMCPBuiltinCollisionGuard:
     def test_mcp_tool_registered_when_no_builtin_collision(self):
         """MCP tools register normally when there's no collision."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp_tool_discovery import _discover_and_register_server
+        from tools.mcp_tool import _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [_make_mcp_tool("web_search", "Search the web")]
@@ -3552,7 +3615,7 @@ class TestMCPBuiltinCollisionGuard:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry):
             registered = asyncio.run(
                 _discover_and_register_server("minimax", {"command": "test", "args": []})
@@ -3648,7 +3711,7 @@ class TestSanitizeMcpNameComponent:
 
     def test_slash_in_convert_mcp_schema(self):
         """Server names with slashes produce valid tool names via _convert_mcp_schema."""
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp_tool_schema import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="search")
         schema = _convert_mcp_schema("ai.exa/exa", mcp_tool)
@@ -3659,7 +3722,7 @@ class TestSanitizeMcpNameComponent:
 
     def test_slash_in_build_utility_schemas(self):
         """Server names with slashes produce valid utility tool names."""
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp_tool_schema import _build_utility_schemas
 
         schemas = _build_utility_schemas("ai.exa/exa")
         for s in schemas:
@@ -3872,9 +3935,10 @@ class TestMcpParallelToolCalls:
         differs from upstream.
         """
         from tools.registry import registry
+        from tools.mcp_tool_registration import _register_server_tools
         from tools.mcp_tool import (
             _mcp_tool_server_names, _parallel_safe_servers,
-            _register_server_tools, is_mcp_tool_parallel_safe, _lock,
+            is_mcp_tool_parallel_safe, _lock,
         )
 
         server = _make_mock_server(
