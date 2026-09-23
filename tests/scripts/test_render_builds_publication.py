@@ -118,6 +118,16 @@ def test_incomplete_tag_keeps_channel_and_links_diagnostics(monkeypatch, r2_serv
     assert r2_server.store['releases/canary/index.html'][0] == b'previous good page'
 
 
+def test_attempt_page_warns_and_canary_page_does_not():
+    base = 'https://cdn.example'
+    sentence = ('Attempt builds are not upgrade-safe: every attempt of 1.2.3 has the same '
+                'package version, so an installed attempt is not replaced by the published 1.2.3.')
+    page = rbt.render_page('rc.1-v1.2.3', {}, base)
+    assert sentence in page
+    for tag in ('v1.2.3', 'v1.2.3+canary.20260818T101010Z', 'abandoned-rc.1-v1.2.3'):
+        assert sentence not in rbt.render_page(tag, {}, base)
+
+
 @pytest.mark.parametrize('version,name', [
     ('1.2.3', 'HermesBundled-1.2.3-win-x64.msix'),
     ('1.2.3+canary.20260818T000000Z', 'HermesBundled-1.2.3+canary.20260818T000000Z-win-x64.msix'),

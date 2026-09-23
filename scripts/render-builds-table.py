@@ -53,7 +53,7 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable  # noqa: E402
+from scripts.releases import handoff, r2, semver, stable, versioning  # noqa: E402
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
 END_MARKER = "<!-- /HERMES_BUILDS_TABLE -->"
@@ -409,6 +409,13 @@ def render_page(tag: str, assets_by_app: dict, base_url: str,
         f"<p>Release {_link(tag_url)}<code>{html.escape(tag)}</code></a>. Only objects this release "
         "actually staged in the bucket are listed.</p>",
     ]
+    attempt = versioning.parse_attempt_ref(tag)
+    if attempt is not None:
+        version = attempt[0]
+        body.append("<p><strong>"
+                    + html.escape(f"Attempt builds are not upgrade-safe: every attempt of {version} has the same "
+                                  f"package version, so an installed attempt is not replaced by the published {version}.")
+                    + "</strong></p>")
     if incomplete_jobs:
         body.append("<p><strong>Build incomplete.</strong> Jobs not successful: "
                     + html.escape(", ".join(incomplete_jobs))
