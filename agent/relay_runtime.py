@@ -445,8 +445,8 @@ class RelayRuntime:
         with session.lock:
             if session.closing:
                 return None
-            if isinstance(cwd, str) and cwd.strip():
-                session.cwd = cwd.strip()
+            if cwd is not None:
+                session.cwd = _scope_input(cwd).get("cwd", "")
             if session.handle is None:
                 self._open_session_scope(
                     session, {**(metadata or {}), **runtime_metadata(self.runtime_id)},
@@ -950,12 +950,15 @@ class RelaySessionCoordinator:
                 "parent_session_id": parent_session_id, "model": model, "cwd": session_cwd,
             }
             session = _warn_on_error("conversation initialization", self._open_conversation_session, host, context)
-        effective_turn_cwd = (
-            _scope_input(turn_cwd).get("cwd") or _scope_input(session_cwd).get("cwd") or ""
-        )
-        if not effective_turn_cwd and session is not None:
+        if turn_cwd is not None:
+            effective_turn_cwd = _scope_input(turn_cwd).get("cwd", "")
+        elif session_cwd is not None:
+            effective_turn_cwd = _scope_input(session_cwd).get("cwd", "")
+        elif session is not None:
             with session.lock:
                 effective_turn_cwd = session.cwd
+        else:
+            effective_turn_cwd = ""
         return ConversationLease(
             profile_key=profile_key, session_id=session_id, platform=platform, host=host,
             session=session, parent_session_id=parent_session_id, turn_cwd=effective_turn_cwd,

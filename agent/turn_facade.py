@@ -96,7 +96,10 @@ class TurnFacadeMixin:
             conversation_history = admission.conversation_history
 
             relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
-                self, effective_task_id, session_id, task_context["platform"]
+                self,
+                effective_task_id,
+                task_context["session_id"],
+                task_context["platform"],
             )
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
