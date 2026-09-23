@@ -504,20 +504,11 @@ def retarget_release(repository: str, release_id: int, tag: str, commit: str, *,
 
 
 def complete(env: dict) -> None:
+    """Validate the accepted candidate archive. The final tag moves to publish."""
     tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
     validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
-    release_id = env.get("RELEASE_ID", "")
-    if not str(release_id).isdigit():
-        raise ValueError("Stable release database ID is required")
-    ensure_final_tag(
-        tag, commit, claim,
-        candidate_manifest_sha256=env["CANDIDATE_MANIFEST_SHA256"],
-        docker_manifest_digest=env.get("DOCKER_MANIFEST_DIGEST", ""),
-        release_id=int(release_id),
-    )
-    retarget_release(env["GITHUB_REPOSITORY"], int(release_id), tag, commit, publish=False)
 
 
 def main(argv: list[str] | None = None, env: dict | None = None) -> None:

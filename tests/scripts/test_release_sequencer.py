@@ -110,6 +110,19 @@ def test_failed_run_retries_twice_after_backoff_before_burning():
     assert classify_runs([failed]) == ("burned", None)
 
 
+def test_a_succeeded_run_is_green_only_with_its_draft():
+    from scripts.releases.sequencer import classify_final_release, classify_runs
+
+    succeeded = {"id": 9, "status": "completed", "conclusion": "success", "run_attempt": 1}
+    assert classify_runs([succeeded], has_draft=True) == ("green", None)
+    # The tool is the only thing that deletes drafts; a missing draft after
+    # success is an error, not an inferred abandonment.
+    with pytest.raises(ValueError, match="without a draft"):
+        classify_runs([succeeded], has_draft=False)
+    draft = {"id": 9, "tag_name": "rc.1-v0.21.5", "draft": True, "prerelease": False}
+    assert classify_final_release("v0.21.5", "rc.1-v0.21.5", draft) == ("green", True)
+
+
 def test_a_burned_claim_is_spent_and_skipped():
     from scripts.releases.sequencer import classify_final_release, plan
 

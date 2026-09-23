@@ -274,6 +274,64 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         check_claim(env)
 
 
+def _claim_fixture(tmp_path, *, tag, version):
+    """A real checkout + bare remote carrying one annotated attempt claim."""
+    from scripts.releases.versioning import parse_attempt_ref
+
+    epoch = candidates("v" + version, "0" * 40, "0" * 64)["releaseEpoch"]
+    repo, remote = tmp_path / "repo", tmp_path / "remote.git"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "fixture"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=repo, check=True)
+    (repo / "input").write_text("first", encoding="utf-8")
+    subprocess.run(["git", "add", "input"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "first"], cwd=repo, check=True, capture_output=True)
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True, encoding="utf-8").strip()
+    attempt = parse_attempt_ref(tag)[1]
+    metadata = json.dumps({
+        "schema": 1, "version": version, "attempt": attempt, "commit": commit,
+        "autopublish": False, "claimEpoch": epoch,
+    }, sort_keys=True, separators=(",", ":"))
+    subprocess.run(
+        ["git", "tag", "-a", tag, "-m", metadata], cwd=repo, check=True,
+        env={**os.environ, "GIT_COMMITTER_DATE": f"@{epoch} +0000"},
+    )
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "origin", "main", tag], cwd=repo, check=True, capture_output=True)
+    tag_object = subprocess.check_output(["git", "rev-parse", tag], cwd=repo, text=True, encoding="utf-8").strip()
+    return commit, tag_object
+
+
+def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tmp_path, monkeypatch):
+    from scripts.releases import stable
+
+    commit, tag_object = _claim_fixture(tmp_path, tag="rc.1-v1.2.3", version="1.2.3")
+    candidate = candidates("v1.2.3", commit, "c" * 64)
+    calls = []
+
+    def record(argv):
+        calls.append(argv)
+        if argv[0] == "gh":
+            raise AssertionError("complete must not touch GitHub")
+        return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+
+    monkeypatch.setattr(stable, "output", record)
+    monkeypatch.setattr(stable, "read_candidate", lambda env: candidate)
+    monkeypatch.chdir(tmp_path / "repo")
+    stable.complete({
+        "RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": tag_object,
+        "GITHUB_SHA": commit, "GITHUB_REF": "refs/tags/rc.1-v1.2.3",
+        "RELEASE_TAG": "v1.2.3", "CANDIDATE_MANIFEST_SHA256": "c" * 64,
+        "CLOUDFLARE_R2_PUBLIC_URL": BASE,
+    })
+    remote = subprocess.check_output(
+        ["git", "ls-remote", "origin", "refs/tags/*"], text=True, encoding="utf-8")
+    assert "refs/tags/v1.2.3" not in remote
+    assert not [argv for argv in calls if argv[0] == "gh"]
+
+
 @pytest.mark.parametrize("publish", [False, True])
 def test_retarget_release_preserves_the_database_id_and_explicit_draft_policy(publish):
     commit = "a" * 40

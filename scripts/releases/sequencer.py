@@ -118,8 +118,13 @@ def _utc(value: str) -> datetime:
 
 
 def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
-                  now: datetime | None = None) -> tuple[str, dict | None]:
-    """Keep failed claims live until two failed-job retries are exhausted."""
+                  now: datetime | None = None, has_draft: bool = False) -> tuple[str, dict | None]:
+    """Keep failed claims live until two failed-job retries are exhausted.
+
+    Success with a draft on the attempt ref is green: the final tag moves to
+    publish. A missing draft after success is an error, because the tool is
+    the only thing that deletes drafts; abandonment is the marker ref.
+    """
     if not runs:
         if claimed_at is None:
             raise ValueError("A claim without a workflow needs its immutable claim time")
@@ -135,7 +140,9 @@ def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
     if latest.get("status") != "completed":
         return "running", None
     if latest.get("conclusion") == "success":
-        raise ValueError("Stable workflow succeeded without a final tag")
+        if not has_draft:
+            raise ValueError("Stable workflow succeeded without a draft release")
+        return "green", None
     if attempt >= MAX_ATTEMPTS:
         return "burned", None
     updated_at = latest.get("updated_at")
@@ -280,6 +287,7 @@ def discover(repository: str, run=output) -> list[dict]:
             state, retry = classify_runs(
                 matching_runs,
                 claimed_at=datetime.fromtimestamp(claim_epoch, tz=timezone.utc),
+                has_draft=release is not None,
             )
 
         records.append({

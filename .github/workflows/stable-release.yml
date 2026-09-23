@@ -342,18 +342,14 @@ jobs:
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidates publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-      - name: Create the final tag and retarget the accepted release
+      - name: Validate the accepted candidate archive
         run: python -m scripts.releases.stable complete
         env:
-          RELEASE_NEEDS: ${{ toJSON(needs) }}
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_CLAIM_OBJECT: ${{ needs.admit.outputs.claim-object }}
-          RELEASE_ID: ${{ needs.admit.outputs.release-id }}
           CANDIDATE_MANIFEST_URL: ${{ needs.candidates.outputs.manifest-url }}
           CANDIDATE_MANIFEST_SHA256: ${{ needs.candidates.outputs.manifest-sha256 }}
-          DOCKER_MANIFEST_DIGEST: ${{ needs.publish-docker.outputs.manifest-digest }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
