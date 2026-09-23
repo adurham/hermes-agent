@@ -16,9 +16,10 @@ Usage::
         --commit <sha> --branch <name> --dirty \\
         --base-version 0.19.0 --distance 42 --source nix --distribution nix
 
-    # Docker (identity admitted by the workflow):
+    # Docker (identity admitted by the workflow; with no reachable release the
+    # commit alone is the identity and the runtime reports base "unknown"):
     python scripts/write_install_stamp.py --output install-stamp.json \\
-        --commit <sha> --base-version 0.19.0 --distance 0 \\
+        --commit <sha> [--base-version 0.19.0 --distance 0] \\
         --source ci --distribution docker --update-mechanism external
 """
 
@@ -141,6 +142,8 @@ def build_stamp(
             f"write_install_stamp: invalid --update-mechanism {update_mechanism!r} "
             f"(expected one of {', '.join(UPDATE_MECHANISMS)})"
         )
+    # Only a caller-supplied commit may stand in for a missing release version.
+    commit_admitted = commit is not None
     if channel_request is not None:
         from scripts.bundles.desktop_prepare import git, require_source, validate_channel_request
         channel_request = validate_channel_request(channel_request)
@@ -189,11 +192,14 @@ def build_stamp(
     if dirty is None:
         dirty = _resolve_dirty_from_git()
 
-    if base_version is None:
+    if base_version is None and not commit_admitted:
         raise ValueError(
-            "install stamps require an explicit base version; leave local development trees "
-            "unstamped so runtime identity can come from Git"
+            "install stamps require an explicit base version or commit; leave local development "
+            "trees unstamped so runtime identity can come from Git"
         )
+    if base_version is None and display_version is None:
+        # No reachable release tag: record the commit, the way a tagless checkout reads from Git.
+        display_version = f"git.{commit[:7]}{'.dirty' if dirty else ''}"
 
     # Commit date: explicit > git
     if commit_date is None:

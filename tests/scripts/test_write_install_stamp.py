@@ -80,18 +80,24 @@ def test_invalid_variant_cannot_emit_stamp(tmp_path, variant, tag, error):
     assert not out.exists()
 
 
-def test_packaged_identity_requires_a_direct_version_and_ignores_project_metadata(tmp_path, monkeypatch):
+def test_packaged_identity_never_falls_back_to_project_metadata(tmp_path, monkeypatch):
     from scripts import write_install_stamp
+    from hermes_cli.version_info import _stamp_version_info
 
     (tmp_path / "hermes_cli").mkdir()
     (tmp_path / "hermes_cli" / "_version.py").write_text('__version__ = "9.9.9"\n', encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "8.8.8"\n', encoding="utf-8")
     monkeypatch.setattr(write_install_stamp, "_REPO_ROOT", tmp_path)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
 
-    with pytest.raises(ValueError, match="base version"):
-        write_install_stamp.build_stamp(
-            update_mechanism="external", commit="d" * 40, source="ci",
-        )
+    # No reachable release (a tagless docker build): the admitted commit is the whole identity.
+    write_install_stamp.write_stamp(
+        tmp_path / "install-stamp.json", update_mechanism="external", commit="d" * 40, source="ci", dirty=False,
+    )
+    info = _stamp_version_info()
+    assert info is not None
+    assert (info.base_version, info.derived_version, info.commit) == ("unknown", "git.ddddddd", "d" * 40)
+
     stamp = write_install_stamp.build_stamp(
         update_mechanism="external", commit="d" * 40, source="ci",
         base_version="1.2.3", distance=0,

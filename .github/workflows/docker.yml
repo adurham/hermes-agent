@@ -169,14 +169,17 @@ jobs:
         run: |
           display="$RELEASE_VERSION"
           if [ -z "$display" ]; then
-            display="$(python3 -c 'from pathlib import Path; from scripts.releases.distance import dev_version; print(dev_version(Path.cwd()))')"
+            display="$(python3 -m scripts.releases.distance)"
           fi
-          base="${display%%+*}"
-          development="${display#*+}"
-          if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+          identity=(--commit "$GITHUB_SHA")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
-            --distribution docker --update-mechanism external --source ci \
-            --base-version "$base" --display-version "$display" --distance "$distance"
+            --distribution docker --update-mechanism external --source ci "${identity[@]}"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
@@ -348,13 +351,16 @@ jobs:
 
       - name: Write install stamp
         run: |
-          display="$(python3 -c 'from pathlib import Path; from scripts.releases.distance import dev_version; print(dev_version(Path.cwd()))')"
-          base="${display%%+*}"
-          development="${display#*+}"
-          if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+          display="$(python3 -m scripts.releases.distance)"
+          identity=(--commit "$GITHUB_SHA")
+          if [ -n "$display" ]; then
+            base="${display%%+*}"
+            development="${display#*+}"
+            if [ "$development" = "$display" ]; then distance=0; else distance="${development%%.*}"; fi
+            identity+=(--base-version "$base" --display-version "$display" --distance "$distance")
+          fi
           python3 scripts/write_install_stamp.py --output install-stamp.json \
-            --distribution docker --update-mechanism external --source ci \
-            --base-version "$base" --display-version "$display" --distance "$distance"
+            --distribution docker --update-mechanism external --source ci "${identity[@]}"
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
