@@ -40,6 +40,19 @@ def test_dump_uses_running_install_fallback_only(tmp_path, monkeypatch, sha, tim
     assert dump._get_git_commit_date(tmp_path) == date
 
 
+def test_dump_version_line_uses_derived_runtime_version(tmp_path, monkeypatch):
+    from hermes_cli import dump
+
+    info = VersionInfo(
+        "1.2.3", "1.2.3+4.gabcdef0", 4, "abcdef0" * 5 + "abcde", "main", "git"
+    )
+    monkeypatch.setattr("hermes_cli.version_info.get_version_info", lambda: info)
+    monkeypatch.setattr(dump, "_get_git_commit", lambda _root: "abcdef0")
+    monkeypatch.setattr(dump, "_get_git_commit_date", lambda _root: "")
+
+    assert dump._version_line(tmp_path) == "1.2.3+4.gabcdef0 [abcdef0]"
+
+
 # --------------------------------------------------------------------------
 # Authority: the requested project_root decides, never the running install
 # --------------------------------------------------------------------------

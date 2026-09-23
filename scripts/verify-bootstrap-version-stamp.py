@@ -16,9 +16,8 @@ checkout it describes:
   ``git rev-parse HEAD`` of the install repo (or ``--expect-commit``)
 * ``pinnedBranch`` equals the repo's checked-out branch (or ``--expect-branch``)
 * ``completedAt`` parses as an ISO-8601 UTC timestamp
-* the install carries a shipped version — ``hermes_cli/__init__.py``'s
-  ``__version__``, read through the same authority as
-  scripts/write_install_stamp.py
+* the install carries its source identity stamp — ``install-stamp.json``
+  with a ``baseVersion`` whose ``commit`` matches the installed checkout HEAD
 
 Usage:
 
@@ -128,8 +127,8 @@ def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect
             _fail(errors, f"completedAt {completed!r} does not parse as ISO-8601")
 
     # Cross-check the stamp against the checkout it claims to describe.
+    head = _git(repo, "rev-parse", "HEAD")
     if commit is not None:
-        head = _git(repo, "rev-parse", "HEAD")
         if head is None:
             _fail(errors, f"could not read HEAD of {repo} to compare with pinnedCommit")
         elif head != commit:
@@ -145,23 +144,32 @@ def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect
         elif actual and actual != "HEAD" and actual != branch:
             _fail(errors, f"pinnedBranch {branch!r} != checked-out branch {actual!r}")
 
-    # The install must carry a shipped version at all.
-    version, _ = _read_version(repo)
-    if not version:
-        _fail(errors, f"no __version__ found in {repo}/hermes_cli/__init__.py — the install carries no shipped version")
+    # The install must carry its source identity stamp, and that stamp must
+    # tell the truth about the checkout: baseVersion present, commit == HEAD.
+    base_version, canonical_commit = _read_install_stamp(repo)
+    if not base_version:
+        _fail(errors, f"no baseVersion in {repo}/install-stamp.json — the install carries no source identity stamp")
+    elif canonical_commit and head and canonical_commit != head:
+        _fail(errors, f"canonical stamp commit {canonical_commit[:12]} != installed HEAD {head[:12]}")
 
     return errors
 
 
-def _read_version(repo: Path) -> tuple[str | None, str | None]:
-    """Read __version__ from the INSTALL repo (not this script's checkout)."""
-    init_py = repo / "hermes_cli" / "__init__.py"
+def _read_install_stamp(repo: Path) -> tuple[str | None, str | None]:
+    """Read baseVersion + commit from the INSTALL repo's install-stamp.json."""
+    stamp_path = repo / "install-stamp.json"
     try:
-        text = init_py.read_text(encoding="utf-8-sig")
-    except OSError:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
         return None, None
-    match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', text)
-    return (match.group(1) if match else None, None)
+    if not isinstance(stamp, dict):
+        return None, None
+    base_version = stamp.get("baseVersion")
+    commit = stamp.get("commit")
+    return (
+        base_version if isinstance(base_version, str) and base_version else None,
+        commit if isinstance(commit, str) and commit else None,
+    )
 
 
 def main() -> int:

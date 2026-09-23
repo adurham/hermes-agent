@@ -36,7 +36,7 @@ class _FakeResponse:
 
 def test_x_search_posts_responses_request(monkeypatch):
     from tools.x_search_tool import x_search_tool
-    from hermes_cli import __version__
+    from hermes_cli.version_info import get_version_info
 
     captured = {}
 
@@ -67,7 +67,7 @@ def test_x_search_posts_responses_request(monkeypatch):
 
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
-    assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{__version__}"
+    assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{get_version_info().base_version}"
     assert captured["json"]["model"]
     assert captured["json"]["store"] is False
     assert "reasoning" not in captured["json"]

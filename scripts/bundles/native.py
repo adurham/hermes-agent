@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime as dt
 import os
 import shutil
 import subprocess
@@ -179,18 +178,6 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     if (repo_dir / "pm/lock.json").read_bytes() != paths.lockfile_path().read_bytes():
         raise ValueError("selected revision's PM lock differs from the builder; use a checkout at that revision")
     build_env = os.environ if env is None else env
-    if version := build_env.get("HERMES_PAYLOAD_VERSION"):
-        from scripts.releases.stamping import stamp
-        epoch = build_env.get("HERMES_RELEASE_EPOCH")
-        if epoch:
-            if not epoch.isdigit():
-                raise ValueError("HERMES_RELEASE_EPOCH must be an integer")
-            instant = dt.datetime.fromtimestamp(int(epoch), tz=dt.UTC)
-        else:
-            instant = dt.datetime.now(dt.UTC)
-        release_date = (build_env.get("HERMES_RELEASE_DATE")
-                        or f"{instant.year}.{instant.month}.{instant.day}")
-        stamp(repo_dir, version, release_date)
 
     names = [
         n for n in _bundle_package_names()

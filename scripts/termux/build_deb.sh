@@ -70,24 +70,20 @@ REPO_ABS="$(cd "$REPO" && pwd)"
 PAYLOAD_ABS="$(cd "$PAYLOAD" && pwd)"
 
 # Resolve source identity before writing output or changing payload files.
-# Commit and pre-final stable modes require the checkout HEAD and staged version to agree.
 if [ -n "$COMMIT_MODE" ] || [ -n "$RELEASE_COMMIT" ]; then
     SELECTED_COMMIT="${RELEASE_COMMIT:-$COMMIT_MODE}"
     [[ "$SELECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]] || fail "commit identity requires an exact full 40-character SHA"
     COMMIT="$(git -C "$REPO_ABS" rev-parse HEAD)" || fail "not a git checkout: $REPO_ABS"
     [ "$COMMIT" = "$SELECTED_COMMIT" ] || fail "checkout HEAD $(echo "$COMMIT" | cut -c1-12) is not the requested commit"
-    PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$PAYLOAD_ABS/app/pyproject.toml" "$TAG" <<'PY'
-import sys, tomllib
+    PY_VERSION="$(python3 - "$REPO_ROOT" "$REPO_ABS" "$COMMIT" "$TAG" <<'PY'
+import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from scripts.releases.commit_build import version_at
-version = sys.argv[5][1:] if sys.argv[5] else version_at(Path(sys.argv[2]), sys.argv[3])
-staged = tomllib.loads(Path(sys.argv[4]).read_text(encoding="utf-8"))["project"]["version"]
-if staged != version:
-    raise ValueError("payload version does not match the admitted commit")
+version = sys.argv[4][1:] if sys.argv[4] else version_at(Path(sys.argv[2]), sys.argv[3])
 print(version)
 PY
-    )" || fail "commit version validation failed"
+    )" || fail "commit version admission failed"
     if [ -n "$RELEASE_COMMIT" ]; then
         DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
         export HERMES_PAYLOAD_TAG="$TAG"
@@ -101,6 +97,7 @@ else
     unset HERMES_BUILD_COMMIT
     COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
         || fail "tag $TAG not found in $REPO_ABS"
+    PY_VERSION="${TAG#v}"
 fi
 [ -n "$TUI_PRODUCT" ] || fail "--tui-product is required (run scripts/termux/build.py)"
 TUI_PRODUCT="$(cd "$TUI_PRODUCT" && pwd)"
@@ -205,6 +202,9 @@ HERMES_DESKTOP_VARIANT=runtime \
 python3 "$REPO_ABS/scripts/write_install_stamp.py" \
     --output "$PAYLOAD_ABS/app/install-stamp.json" \
     --commit "$COMMIT" \
+    --base-version "$PY_VERSION" \
+    --display-version "$PY_VERSION" \
+    --distance 0 \
     --distribution apt-termux \
     --update-mechanism external \
     --source bundle \

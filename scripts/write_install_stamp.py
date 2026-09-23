@@ -7,17 +7,19 @@ docker/nix code paths.
 
 Usage::
 
-    # From a repo root with .git available (dev/CI builds):
-    python scripts/write_install_stamp.py --output /path/to/install-stamp.json
+    # From a repo root with .git available (provenance is detected, version is not):
+    python scripts/write_install_stamp.py --output /path/to/install-stamp.json \
+        --base-version 0.19.0 --distance 0 --update-mechanism self
 
     # Override provenance for reproducible/packaged builds:
     python scripts/write_install_stamp.py --output ... \\
         --commit <sha> --branch <name> --dirty \\
         --base-version 0.19.0 --distance 42 --source nix --distribution nix
 
-    # Docker (no .git, commit known from CI):
+    # Docker (identity admitted by the workflow):
     python scripts/write_install_stamp.py --output install-stamp.json \\
-        --source ci --distribution docker
+        --commit <sha> --base-version 0.19.0 --distance 0 \\
+        --source ci --distribution docker --update-mechanism external
 """
 
 from __future__ import annotations
@@ -71,20 +73,6 @@ def _run_git(*args: str, cwd: str | Path = _REPO_ROOT) -> str | None:
     return value if result.returncode == 0 and value else None
 
 
-def _parse_release_metadata() -> tuple[str | None, str | None]:
-    """Read generated release identity and the source release date."""
-    try:
-        init = (_REPO_ROOT / "hermes_cli" / "__init__.py").read_text(encoding="utf-8-sig")
-    except OSError:
-        return None, None
-    try:
-        generated = (_REPO_ROOT / "hermes_cli" / "_version.py").read_text(encoding="utf-8-sig")
-    except OSError:
-        generated = init
-    version = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', generated)
-    date = re.search(r'__release_date__\s*=\s*["\']([^"\']+)["\']', init)
-    return (version.group(1) if version else None, date.group(1) if date else None)
-
 
 def _resolve_commit_from_env() -> str | None:
     """CI builds pass the commit via $GITHUB_SHA."""
@@ -117,27 +105,6 @@ def _resolve_dirty_from_git() -> bool:
     return status is not None and len(status) > 0
 
 
-def _compute_distance(base_version: str | None, release_date: str | None) -> int | None:
-    """Count commits since the release tag, trying SemVer then CalVer fallback."""
-    if not base_version:
-        return None
-
-    # Try SemVer tag first, then legacy CalVer tag.
-    for tag in (f"v{base_version}", f"v{release_date}" if release_date else None):
-        if not tag:
-            continue
-        raw = _run_git("rev-list", "--count", f"{tag}..HEAD")
-        if raw is None:
-            continue
-        try:
-            count = int(raw)
-        except ValueError:
-            continue
-        if count >= 0:
-            return count
-    return None
-
-
 def build_stamp(
     *,
     update_mechanism: str,
@@ -145,6 +112,7 @@ def build_stamp(
     branch: str | None = None,
     dirty: bool | None = None,
     base_version: str | None = None,
+    display_version: str | None = None,
     distance: int | None = None,
     commit_date: int | None = None,
     source: str = "local",
@@ -173,11 +141,6 @@ def build_stamp(
             f"write_install_stamp: invalid --update-mechanism {update_mechanism!r} "
             f"(expected one of {', '.join(UPDATE_MECHANISMS)})"
         )
-    base_version_was_explicit = base_version is not None
-    _base_version, _release_date = _parse_release_metadata()
-    if base_version is None:
-        base_version = _base_version
-
     if channel_request is not None:
         from scripts.bundles.desktop_prepare import git, require_source, validate_channel_request
         channel_request = validate_channel_request(channel_request)
@@ -226,33 +189,23 @@ def build_stamp(
     if dirty is None:
         dirty = _resolve_dirty_from_git()
 
-    dev_display_version = None
-    if (distance is None and not base_version_was_explicit
-            and base_version in {None, "0.0.0"} and commit != FALLBACK_COMMIT):
-        from scripts.releases.distance import dev_version
-
-        try:
-            dev_display_version = dev_version(_REPO_ROOT)
-        except (subprocess.CalledProcessError, ValueError):
-            base_version, distance = "0.0.0", 0
-        else:
-            base_version, separator, development = dev_display_version.partition("+")
-            distance = int(development.split(".", 1)[0]) if separator else 0
-
-    # Distance: explicit > reachable final release > release metadata fallback.
-    if distance is None:
-        distance = _compute_distance(base_version, _release_date)
+    if base_version is None:
+        raise ValueError(
+            "install stamps require an explicit base version; leave local development trees "
+            "unstamped so runtime identity can come from Git"
+        )
 
     # Commit date: explicit > git
     if commit_date is None:
         commit_date = _resolve_commit_date_from_git()
 
     # Display version
-    display_version = dev_display_version or base_version or ""
-    if dev_display_version is None and distance is not None and distance > 0:
-        display_version = f"{display_version}+{distance}"
-    elif dev_display_version is None and dirty and distance is None:
-        display_version = f"{display_version}+?"
+    if display_version is None:
+        display_version = base_version
+        if distance is not None and distance > 0:
+            display_version = f"{display_version}+{distance}"
+        elif dirty and distance is None:
+            display_version = f"{display_version}+?"
 
     # The desktop artifact kind, from the one build-time selector
     # HERMES_DESKTOP_VARIANT. Every stamp carries it:
@@ -332,6 +285,7 @@ def main() -> int:
     parser.add_argument("--branch", default=None, help="Override branch name")
     parser.add_argument("--dirty", action="store_true", default=None, help="Mark as dirty")
     parser.add_argument("--base-version", default=None, help="Override base version")
+    parser.add_argument("--display-version", default=None, help="Exact user-facing version")
     parser.add_argument("--distance", type=int, default=None, help="Override commit distance")
     parser.add_argument("--commit-date", type=int, default=None, help="Override commit timestamp (Unix epoch seconds)")
     parser.add_argument("--source", default="local", help="Stamp source label")
@@ -365,6 +319,7 @@ def main() -> int:
         branch=args.branch,
         dirty=args.dirty,
         base_version=args.base_version,
+        display_version=args.display_version,
         distance=args.distance,
         commit_date=args.commit_date,
         source=args.source,

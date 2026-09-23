@@ -723,8 +723,6 @@ import logging
 import threading
 from datetime import datetime
 
-from hermes_cli import __version__, __release_date__
-
 from hermes_cli.model_setup_flows import (
     _model_flow_openrouter,
     _model_flow_nous,
@@ -943,12 +941,16 @@ def _termux_bundled_skills_fingerprint() -> str:
     git_fp = _read_git_revision_fingerprint(PROJECT_ROOT)
     if git_fp:
         return git_fp
+    from hermes_cli.version_info import get_version_info
+
+    version_info = get_version_info()
+    code_identity = version_info.commit or version_info.derived_version
     skills_dir = PROJECT_ROOT / "skills"
     try:
         stat = skills_dir.stat()
-        return f"skills:{__version__}:{__release_date__}:{stat.st_mtime_ns}:{stat.st_size}"
+        return f"skills:{code_identity}:{stat.st_mtime_ns}:{stat.st_size}"
     except OSError:
-        return f"skills:{__version__}:{__release_date__}:missing"
+        return f"skills:{code_identity}:missing"
 
 
 def _termux_bundled_skills_stamp_path() -> Path:

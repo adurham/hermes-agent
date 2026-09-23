@@ -4194,9 +4194,9 @@ function activeRuntimeState(backend: SourceBackend | null): ActiveRuntimeState {
   return state
 }
 
-/** Read the install stamp the bootstrap wrote into the canonical runtime
- *  root (`ACTIVE_HERMES_ROOT/install-stamp.json`). Returns null when the
- *  runtime wasn't desktop-bootstrapped (or the file is unreadable). */
+/** Read the checkout-owned install stamp in the canonical runtime root
+ *  (`ACTIVE_HERMES_ROOT/install-stamp.json`), written by the Python
+ *  completion tail. Returns null when absent or unreadable. */
 function readCanonicalInstallStamp() {
   try {
     const raw = fs.readFileSync(path.join(ACTIVE_HERMES_ROOT, 'install-stamp.json'), 'utf8')
@@ -4225,35 +4225,11 @@ function writeBootstrapMarker(payload) {
 
   writeFileAtomic(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
 
-  // The canonical runtime this bootstrap created is a desktop-managed install
-  // — write its own install stamp alongside it (the same schema the packagers
-  // produce, so every surface reads provenance the same way). Unlike the
-  // artifact stamp this one records where the install CAME from
-  // (desktop-bootstrap) plus the commit the checkout was pinned to.
-  try {
-    const canonicalStamp = {
-      schemaVersion: 1,
-      commit: payload.pinnedCommit || null,
-      branch: payload.pinnedBranch || null,
-      builtAt: new Date().toISOString(),
-      dirty: false,
-      source: 'desktop-bootstrap',
-      distribution: null,
-      updateMechanism: 'self',
-      baseVersion: null,
-      distance: null,
-      payload: 'bootstrap',
-      tag: null
-    }
-
-    const canonicalStampPath = path.join(ACTIVE_HERMES_ROOT, 'install-stamp.json')
-    writeFileAtomic(canonicalStampPath, JSON.stringify(canonicalStamp, null, 2) + '\n', 'utf8')
-    rememberLog(`[bootstrap] wrote canonical install stamp to ${canonicalStampPath}`)
-  } catch (error) {
-    // The marker is the hard contract; a failed stamp write is log-worthy but
-    // must never fail the bootstrap (the runtime itself is already installed).
-    rememberLog(`[bootstrap] failed to write canonical install stamp: ${error?.message || error}`)
-  }
+  // The checkout's own install stamp is written by the Python completion tail
+  // (hermes_cli/source_completion.py) during the products stage, from the
+  // checkout itself. The desktop never synthesizes it: the checkout is the
+  // authority for its runtime identity, and a desktop-written copy would
+  // clobber the completion tail's richer provenance.
 
   return merged
 }
@@ -17388,9 +17364,9 @@ export function isInstallerCreatedCheckout(root: string | null = ACTIVE_HERMES_R
 
 /** Classify what this build carries (embedded / light / external). The stamp's
  *  `payload` decides the first two; an external build classifies its root via
- *  the canonical-root install stamp (desktop-bootstrapped) or the app stamp's
- *  `source`, so About's Runtime row names git/docker/nix/desktop-bootstrap
- *  instead of a bare "external". */
+ *  the canonical-root checkout stamp plus the bootstrap marker, or the app
+ *  stamp's `source`, so About's Runtime row names
+ *  git/docker/nix/desktop-bootstrap instead of a bare "external". */
 function resolveHermesRuntime() {
   const stamp = INSTALL_STAMP as InstallStamp | null
 
@@ -17405,7 +17381,10 @@ function resolveHermesRuntime() {
   const root = resolveUpdateRoot()
   const canonicalStamp = readCanonicalInstallStamp()
 
-  if (canonicalStamp?.source === 'desktop-bootstrap') {
+  // A desktop first-launch bootstrap is attested by the bootstrap-complete
+  // marker, not by the stamp: the stamp is the checkout's own identity
+  // (source: git, written by the Python completion tail).
+  if (canonicalStamp?.updateMechanism === 'self' && readBootstrapMarker()) {
     return { type: 'desktop-bootstrap', root }
   }
 

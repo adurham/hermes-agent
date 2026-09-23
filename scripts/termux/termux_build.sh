@@ -216,9 +216,6 @@ sys.path.insert(0, sys.argv[1])
 from scripts.bundles.payload import snapshot
 snapshot(Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3]))
 PY
-STAMP_ARGS=(--tree "$WORK/tree" --version "${TAG#v}")
-[ -z "${HERMES_RELEASE_EPOCH:-}" ] || STAMP_ARGS+=(--release-epoch "$HERMES_RELEASE_EPOCH")
-[ -z "$TAG" ] || python3 "$REPO_ABS/scripts/releases/stamping.py" "${STAMP_ARGS[@]}"
 [ -f "$WORK/tree/pyproject.toml" ] || fail "archived tag tree has no pyproject.toml -- bad tag?"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 DIGEST="$(cd "$REPO_ROOT" && python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')"

@@ -8,13 +8,13 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.memory.openviking as openviking_module
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _VikingClient,
 )
 
-_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
+_EXPECTED_USER_AGENT = f"openviking-memory-hermes/{get_version_info().base_version}"
 
 
 def _clear_openviking_tenant_env(monkeypatch):
