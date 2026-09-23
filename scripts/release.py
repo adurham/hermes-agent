@@ -2426,11 +2426,11 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         lines.append("> for Hermes Agent. See below for everything included in this initial release.")
         lines.append("")
 
+    all_authors = set()
+    teknium_aliases = {"@teknium1"}
     if not no_changelog:
         # Group commits by category
         categories = defaultdict(list)
-        all_authors = set()
-        teknium_aliases = {"@teknium1"}
 
         for commit in commits:
             categories[commit["category"]].append(commit)
