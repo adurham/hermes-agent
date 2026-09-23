@@ -336,7 +336,7 @@ def discover(repository: str, run=output) -> list[dict]:
 def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
               read_archive=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
-    from scripts.releases import channel_releases, docker, stable
+    from scripts.releases import channel_releases, docker, stable, store
 
     repository = env["GITHUB_REPOSITORY"]
     # The archive copy is the only authority for the candidate manifest digest;
@@ -389,7 +389,8 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
             # build that pushed the image under the attempt ref.
             docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
             # The Store release joins the pass here (after the feeds and
-            # aliases move), not before.
+            # aliases move), not before. A failure leaves the run red.
+            store.release_from_env(env)
         advance_head = production_advance
 
     for step in steps:

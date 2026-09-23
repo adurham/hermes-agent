@@ -2153,7 +2153,9 @@ jobs:
           files=(verified/Store-*.msixbundle)
           test "${#files[@]}" -eq 1
           test -f "${files[0]}"
-          msstore publish "${files[0]}" -id "$MS_STORE_PRODUCT_ID"
+          # Auto-publish stays off: the submission is committed with
+          # targetPublishMode Manual and is released by the publication pass.
+          python -m scripts.releases.store submit "${files[0]}"
 
   stable-phase-result:
     name: Stable bundle phase completed
