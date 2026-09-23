@@ -301,7 +301,7 @@ export async function runInstalledDesktopSmoke(options: SmokeOptions, launchApp:
     for (const home of new Set([...candidateSmokeHermesHomes(options.home, options['user-data']), ...(predictedHome ? [predictedHome] : [])])) {
       if (predictedHome && home === predictedHome) { requireEmptyHermesHome(home) }
       writeMockProviderConfig(home, mockUrl)
-      writeEnvFile(home)
+      writeEnvFile(home, 'e2e-mock-key', mockUrl)
     }
     app = await launchApp({ ...launch, timeout: 120_000 })
     app.process().stdout?.on('data', (chunk: Buffer): void => { consoleLines.push(redact(chunk.toString())) })

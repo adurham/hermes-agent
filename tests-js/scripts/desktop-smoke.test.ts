@@ -489,7 +489,10 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
         'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) }, refuseLaunch)).rejects.toThrow('launch refused by test')
       for (const candidate of candidateSmokeHermesHomes(home, userData)) {
         expect(yaml.load(fs.readFileSync(path.join(candidate, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'custom' } })
-        expect(fs.readFileSync(path.join(candidate, '.env'), 'utf8')).toMatch(/MOCK_API_KEY=/)
+        const env = fs.readFileSync(path.join(candidate, '.env'), 'utf8')
+        expect(env).toMatch(/MOCK_API_KEY=/)
+        expect(env).toMatch(/OPENAI_API_KEY=/)
+        expect(env).toMatch(/OPENAI_BASE_URL=http:\/\/127\.0\.0\.1:\d+\/v1/)
       }
       // Electron resolves shell folders before 'ready'; the sandboxed AppData/XDG
       // dirs must exist or Windows applyDesktopIdentity crashes at launch.
