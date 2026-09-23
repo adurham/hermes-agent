@@ -349,12 +349,16 @@ def _legacy_post_swap_invocation(argv: list[str]) -> tuple[Path, list[str]] | No
     return Path(argv[marker + 1]), argv[1:marker]
 
 
+# Everything below imports Hermes packages, so the root goes on sys.path first. A venv
+# editable-installed from a pre-PM tree maps only the top-level packages it knew then:
+# without this, ``pm`` is unimportable and the launch silently skips PM adoption.
+harden_import_path(str(_root))
+
 _legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
 if _legacy_post_swap is not None:
     # This continuation exists precisely because the replacement tree may not
     # run under the old release's dependency graph. Take it over before PM
     # activation, launch preparation, or argparse imports any of that graph.
-    harden_import_path(str(_root))
     from hermes_cli.update_handoff import _continue_legacy_post_swap
 
     _handoff_path, _argv_tail = _legacy_post_swap

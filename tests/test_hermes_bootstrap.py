@@ -229,6 +229,42 @@ else:
     assert result.stdout.strip() == "bootstrap-before-app"
 
 
+def test_pre_pm_editable_venv_reaches_pm_through_the_bootstrap(tmp_path):
+    """A venv editable-installed from a pre-PM tree must still start the PM-era tree.
+
+    setuptools' flat-layout editable finder maps only the top-level names it saw at
+    install time (no ``pm``) and never puts the checkout on ``sys.path``. The console
+    script imports ``hermes_cli`` first, then ``hermes_cli.main`` imports the bootstrap;
+    both must load, and the bootstrap must reach ``pm``, or PM adoption never runs.
+    """
+    root = Path(__file__).resolve().parents[1]
+    program = r"""
+import importlib.util, os, sys
+from importlib.abc import MetaPathFinder
+root = sys.argv[1]
+class PrePMEditableFinder(MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name == 'hermes_cli':
+            pkg = os.path.join(root, 'hermes_cli')
+            return importlib.util.spec_from_file_location(
+                name, os.path.join(pkg, '__init__.py'), submodule_search_locations=[pkg])
+        if name == 'hermes_bootstrap':
+            return importlib.util.spec_from_file_location(name, os.path.join(root, 'hermes_bootstrap.py'))
+        return None
+sys.meta_path.append(PrePMEditableFinder())
+sys.argv = ['hermes', 'pm', 'repair']
+import hermes_cli
+import hermes_bootstrap
+assert hermes_bootstrap._pm_repair is True
+print('reached-pm')
+"""
+    result = subprocess.run([sys.executable, "-I", "-S", "-c", program, str(root)],
+                            cwd=tmp_path, env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "reached-pm"
+
+
 class TestHardenImportPath:
     """harden_import_path() must keep a same-named package in the launch
     directory from shadowing Hermes's own top-level modules — covering both
