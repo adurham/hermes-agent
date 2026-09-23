@@ -185,7 +185,7 @@ class TestWriteThroughPreservesSchema:
         with patch("tools.registry.registry", lazy_reg):
             names = _mcp_registration._register_from_cache_sync("probe_srv", {}, entry)
         assert names, "lazy registration produced no tools"
-        schema = lazy_reg.get_schema("mcp__probe_srv__zhida")
+        schema = lazy_reg.get_schema("probe_srv_zhida")
         assert schema is not None, "lazy path did not register the tool"
         assert set(schema["parameters"].get("properties", {})) == {"query", "model"}
         assert schema["parameters"].get("required") == ["query", "model"]

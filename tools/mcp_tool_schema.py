@@ -127,18 +127,36 @@ def sanitize_mcp_name_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 
 
-# ``mcp__<server>__<tool>``: the convention shared by Claude Code, Codex and OpenCode. The
-# double underscore disambiguates the server/tool boundary even when either contains
-# underscores, and matches the Anthropic-OAuth wire form.
-# Native MCP tool-name prefix. It also aligns native registration with the Anthropic-OAuth wire form
-# (``_MCP_TOOL_PREFIX`` in anthropic_adapter.py), removing the single->double rewrite that path previously
-# had to perform. See #33533.
+# ``mcp__<server>__<tool>``: the convention shared by Claude Code, Codex and OpenCode, and the
+# Anthropic-OAuth wire form (``_MCP_TOOL_PREFIX`` in anthropic_adapter.py). See #33533.
+#
+# FORK DIVERGENCE -- this prefix is NOT used for registered/registry tool names. Hermes registers
+# MCP tools as bare ``<server>_<tool>`` (``mcp_registered_tool_name`` below). Two prefixed
+# conventions were tried first and both leaked auto-repair traffic:
+#
+#   1. ``mcp_<server>_<tool>`` (single underscore). Ambiguous boundaries -- the model could not
+#      tell where the prefix ended and stripped the whole ``mcp_`` on every call.
+#   2. ``mcp__<server>__<tool>`` (double underscore, the upstream/Claude Code convention). The
+#      model / OAuth path *still* removed the leading ``mcp`` substring on every call, leaving
+#      names like ``_<server>__<tool>``. Whatever does the stripping -- model bias from Claude
+#      Code training, an Anthropic-side MCP-routing middleware, or both -- keys on a literal
+#      ``mcp`` at the start of a tool name and removes it.
+#
+# The fix that sticks: keep ``mcp`` out of the registered name entirely. ``<server>_<tool>`` is
+# unambiguous (the server name is a known prefix from config), the model has nothing to strip, and
+# the registration-time collision guard (``mcp_tool_registration._resolve_name_collisions``)
+# already protects against MCP names colliding with native tools. Downstream fork code depends on
+# this shape: ``agent/tool_guardrails.py::IDEMPOTENT_TOOL_NAMES`` lists unprefixed
+# ``filesystem_*`` entries, and ``agent/agent_runtime_helpers.py`` repairs inbound prefixed names
+# back onto the bare registry form. The OAuth wire prefix is applied at the boundary by
+# ``anthropic_adapter._normalize_to_mcp_wire`` and reversed on the way back, so the wire contract
+# is unaffected. Pre-merge rationale: ab0d3abd11:tools/mcp_tool.py::_convert_mcp_schema.
 MCP_TOOL_NAME_PREFIX = "mcp__"
 
 
 # OpenAI-compatible providers validate function names against ``^[a-zA-Z0-9_-]{1,64}$`` and 400 the
 # whole request when one generated name is longer. Portable plugin server keys fold the plugin name in
-# several times, so ``mcp__<server>__<tool>`` routinely passes 64 chars there (#81331). Clamp with a
+# several times, so generated names routinely pass 64 chars there (#81331). Clamp with a
 # deterministic hash suffix (same idea as ``schema_sanitizer.sanitize_property_key``); dispatch is
 # unaffected because handlers close over the original unprefixed tool name.
 _MCP_TOOL_NAME_MAX_LENGTH = 64
@@ -146,10 +164,11 @@ _MCP_TOOL_NAME_HASH_LENGTH = 8
 _clamped_names_warned: set[str] = set()
 
 
-def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
-    """Registry/wire name: ``mcp__<sanitizedServer>__<sanitizedTool>``, clamped to 64 chars with a
-    stable hash suffix when the natural name is longer."""
-    full_name = f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server_name)}__{sanitize_mcp_name_component(tool_name)}"
+def _clamp_tool_name(full_name: str) -> str:
+    """Clamp a generated tool name to the 64-char provider limit with a stable hash suffix.
+
+    Convention-agnostic: the same clamp applies to prefixed and bare names. Deterministic, so a
+    clamped name survives every health refresh and re-registration unchanged."""
     if len(full_name) <= _MCP_TOOL_NAME_MAX_LENGTH:
         return full_name
     suffix = "_" + hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
@@ -160,11 +179,29 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
 
 
+def mcp_registered_tool_name(server_name: str, tool_name: str) -> str:
+    """Registry/dispatch name: bare ``<sanitizedServer>_<sanitizedTool>``, clamped to 64 chars.
+
+    The fork's registered-name convention -- deliberately carries no ``mcp`` prefix (see the
+    MCP_TOOL_NAME_PREFIX comment block for why). This is the name the registry, toolsets, the
+    model and every dispatch path see."""
+    return _clamp_tool_name(f"{sanitize_mcp_name_component(server_name)}_{sanitize_mcp_name_component(tool_name)}")
+
+
+def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
+    """Wire/display name: ``mcp__<sanitizedServer>__<sanitizedTool>``, clamped to 64 chars.
+
+    NOT the registered name -- use ``mcp_registered_tool_name`` for anything the registry or the
+    model touches. Retained for the upstream-shaped wire form and user-facing hint strings."""
+    return _clamp_tool_name(
+        f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server_name)}__{sanitize_mcp_name_component(tool_name)}")
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP ``Tool`` (``.input_schema``, or ``.inputSchema`` before mcp 2.0) to a
     ``registry.register(schema=...)`` dict."""
     return {
-        "name": mcp_prefixed_tool_name(server_name, mcp_tool.name),
+        "name": mcp_registered_tool_name(server_name, mcp_tool.name),
         "description": strip_unicode_tags(mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"),
         "parameters": _normalize_mcp_input_schema(mcp_field(mcp_tool, "input_schema", "inputSchema")),
     }
@@ -198,7 +235,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
             parameters["required"] = list(required)
         out.append({
             "schema": {
-                "name": mcp_prefixed_tool_name(server_name, handler_key),
+                "name": mcp_registered_tool_name(server_name, handler_key),
                 "description": description.format(server=server_name),
                 "parameters": parameters},
             "handler_key": handler_key})

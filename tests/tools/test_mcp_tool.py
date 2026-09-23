@@ -614,20 +614,26 @@ class TestSchemaConversion:
         assert "-" not in schema["name"]
 
     def test_long_names_are_clamped_to_64_chars(self):
-        """Portable Agent Plugin names can push mcp__<server>__<tool> past the
+        """Portable Agent Plugin names can push a generated tool name past the
         64-char limit OpenAI-compatible providers enforce on function names
         (issue #81331). The registry name must be clamped with a stable hash
         suffix, distinct long names must not collide, and the same inputs
         must always produce the same shortened name.
+
+        Fork divergence pinned here: the clamped registry name carries NO
+        ``mcp`` prefix (``<server>_<tool>``, see ab0d3abd11 rationale in
+        tools/mcp_tool_schema.py). Upstream clamps ``mcp__<server>__<tool>``.
         """
-        from tools.mcp_tool_schema import _convert_mcp_schema, mcp_prefixed_tool_name
+        from tools.mcp_tool_schema import _convert_mcp_schema, mcp_registered_tool_name
 
         server_name = "agent_plugin_my_server_997167c9__my_server"
         mcp_tool = _make_mcp_tool(name="reply_communication_todo")
         schema = _convert_mcp_schema(server_name, mcp_tool)
 
         assert len(schema["name"]) <= 64
-        assert schema["name"] == mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+        assert schema["name"] == mcp_registered_tool_name(server_name, "reply_communication_todo")
+        # The fork's registered names never start with ``mcp`` — the model/OAuth path strips it.
+        assert not schema["name"].startswith("mcp")
 
         other_tool = _make_mcp_tool(name="reply_communication_task")
         other_schema = _convert_mcp_schema(server_name, other_tool)
@@ -636,7 +642,7 @@ class TestSchemaConversion:
 
         # Deterministic across repeated calls with the same inputs.
         assert (
-            mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+            mcp_registered_tool_name(server_name, "reply_communication_todo")
             == schema["name"]
         )
 
