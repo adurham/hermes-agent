@@ -58,3 +58,18 @@ def test_phase_jobs_judge_only_the_selected_groups():
     assert phase_jobs(every, "publish") == ["validate", "stable-publish", "stable-store"]
     with pytest.raises(ValueError, match="Unknown release phase"):
         phase_jobs(every, "promote")
+
+
+@pytest.mark.parametrize("jobs, expected", [(None, "true"), ("termux", "false"),
+                                            ("darwin-arm64,darwin-x64", "false")])
+def test_admission_emits_all_jobs_only_for_a_full_selection(monkeypatch, capsys, jobs, expected):
+    from scripts.releases import job_groups
+
+    if jobs is None:
+        monkeypatch.delenv("JOBS", raising=False)
+    else:
+        monkeypatch.setenv("JOBS", jobs)
+    job_groups.main()
+    lines = dict(line.split("=", 1) for line in capsys.readouterr().out.splitlines())
+    assert lines["all-jobs"] == expected
+    assert set(lines) == {*job_groups.JOB_GROUPS, "all-jobs"}

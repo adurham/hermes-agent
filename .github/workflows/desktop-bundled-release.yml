@@ -213,6 +213,8 @@ jobs:
       linux-x64: ${{ steps.admission.outputs.linux-x64 }}
       linux-arm64: ${{ steps.admission.outputs.linux-arm64 }}
       termux: ${{ steps.admission.outputs.termux }}
+      # Every group selected: the joins that render or summarize a whole build.
+      all-jobs: ${{ steps.admission.outputs.all-jobs }}
       channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
@@ -2061,7 +2063,8 @@ jobs:
   builds-pending:
     name: Mark the builds table as in progress
     needs: validate
-    if: inputs.build_commit == '' && inputs.upload_release == true && needs.validate.outputs.termux == 'true'
+    # Pairs with builds-table: a pending page nothing finalizes must not be written.
+    if: inputs.build_commit == '' && inputs.upload_release == true && needs.validate.outputs.all-jobs == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -2106,10 +2109,7 @@ jobs:
     if: |
       always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
-      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
-      && needs.validate.outputs.win32-bundle == 'true' && needs.validate.outputs.termux == 'true'
-      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
+      && needs.validate.outputs.all-jobs == 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     steps:
@@ -2167,10 +2167,7 @@ jobs:
     if: |
       always() && inputs.build_commit != '' && inputs.channel == '' && inputs.disposable_channel == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
-      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
-      && needs.validate.outputs.win32-bundle == 'true' && needs.validate.outputs.termux == 'true'
-      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
+      && needs.validate.outputs.all-jobs == 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:

@@ -71,10 +71,11 @@ def phase_jobs(selected: dict[str, bool], phase: str) -> list[str]:
 
 
 def main() -> None:
-    """Emit one `<group>=true|false` line per group for `$GITHUB_OUTPUT`."""
+    """Emit one `<group>=true|false` line per group, and `all-jobs`, for `$GITHUB_OUTPUT`."""
     selected = parse_jobs(os.environ.get("JOBS"))
     for group in JOB_GROUPS:
         print(f"{group}={'true' if selected[group] else 'false'}")
+    print(f"all-jobs={'true' if all(selected.values()) else 'false'}")
 
 
 if __name__ == "__main__":
