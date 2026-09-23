@@ -262,6 +262,32 @@ def test_deactivate_restores_the_prior_shell(tmp_path: Path):
     assert result.stdout.strip() == "restored"
 
 
+@pytest.mark.platforms("windows")
+def test_activate_leaves_the_shell_paths_in_posix_form(tmp_path: Path):
+    """The pm env is read by a native Windows Python, which sees PATH, HOME and
+    the temp variables in Windows form. Exported verbatim, `C:\\a;C:\\b` left
+    bash without a usable PATH, so every command after activation failed."""
+    root = _isolated_checkout(tmp_path)
+    store, _ = _fake_store(tmp_path)
+    script = (
+        'prior_home="$HOME" prior_tmp="$TMP" && '
+        f'source "{_posix(root / "activate")}" && '
+        'command -v basename >/dev/null && '
+        'case "$PATH" in *";"*|*"\\\\"*) exit 3;; esac && '
+        'test "$HOME" = "$prior_home" && test "$TMP" = "$prior_tmp" && '
+        'echo posix'
+    )
+    result = subprocess.run(
+        [_bash(), "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=_posix(tmp_path),
+        env=_bash_env(store),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "posix"
+
+
 def test_activate_fails_cleanly_without_a_store(tmp_path: Path):
     env = _bash_env(tmp_path / "empty-store")
     isolated = _isolated_checkout(tmp_path) / "activate"
