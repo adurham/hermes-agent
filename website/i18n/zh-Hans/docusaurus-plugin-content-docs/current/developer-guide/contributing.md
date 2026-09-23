@@ -68,7 +68,7 @@ PowerShell 开头的点和空格用于 dot-source，不能省略。
 PM 必须能够启动，才能构建独立测试环境：
 
 ```bash
-python -m pm.build_env --source . --out .venv --extra dev --group test
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
 此命令使用提交的锁文件，创建新环境并检查依赖一致性。输出路径必须不存在。

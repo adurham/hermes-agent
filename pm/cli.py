@@ -167,6 +167,10 @@ def cmd_install(args) -> int:
     extras = list(dict.fromkeys(getattr(args, "extra", None) or ()))
     tools_only = bool(getattr(args, "tools_only", False))
     trust_recorded = bool(getattr(args, "trust_recorded", False))
+    test_environment = getattr(args, "test_environment", None)
+    if test_environment is not None and (extras or cross_target or args.names or tools_only):
+        print("✗ --test-environment builds beside the default closure; it does not take names, --extra, --target, or --tools-only")
+        return 1
     if tools_only and (extras or cross_target or args.names):
         print("✗ --tools-only installs the tool closure and then stops; it does not take names, --extra, or --target")
         return 1
@@ -214,10 +218,24 @@ def cmd_install(args) -> int:
         except InstallError as e:
             print(f"✗ {e}")
             failed += 1
+    if test_environment is not None and not failed:
+        from pm import check_project_lock
+        from pm.testenv import ensure_testenv, parse_extras
+
+        # Before the input stamps: they then cover this environment too, so
+        # the shebang/run_tests.sh staleness check rebuilds it when it drifts.
+        try:
+            check_project_lock(repo_root(), explicit=True)
+            ensure_testenv(repo_root(), parse_extras(test_environment))
+            print("✓ test environment")
+        except InstallError as e:
+            print(f"✗ {e}")
+            failed += 1
     if full_closure and not failed:
         from pm.environments import activation_inputs_dir, record_activation_inputs
 
-        record_activation_inputs(activation_inputs_dir(repo_root()), input_mtimes)
+        record_activation_inputs(activation_inputs_dir(repo_root()), input_mtimes, repo_root(),
+                                 test_environment=test_environment is not None)
     return 1 if failed else 0
 
 
@@ -588,6 +606,9 @@ def main(argv=None) -> int:
     p.add_argument("--trust-recorded", action="store_true",
                    help="trust the recorded tool digest instead of re-hashing every entry. "
                         "shell activation only. a deliberate install re-checks the bytes")
+    p.add_argument("--test-environment", nargs="?", const="", default=None, metavar="EXTRAS",
+                   help="also make this checkout's isolated test environment current (activation). "
+                        "EXTRAS is comma-separated; omitted selects [all]")
     p.add_argument(
         "--target",
         help="stage for a cross target (e.g. linux-arm64-bionic on a glibc "

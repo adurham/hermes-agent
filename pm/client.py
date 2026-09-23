@@ -290,6 +290,17 @@ def ensure_environment(
     }))
 
 
+def ensure_project_environment(
+    name: str, project: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
+    root: Path | None = None, explicit: bool = False, timeout: int = 1800,
+) -> Path:
+    """Select an isolated environment of the project's locked dependencies."""
+    return Path(_python_operation("ensure_project_environment", {
+        "name": name, "project": Path(project), "extras": list(extras), "groups": list(groups),
+        "root": root, "explicit": explicit, "timeout": timeout,
+    }))
+
+
 def ensure_python_tool(
     name: str, requirements: Sequence[str], executable: str, *, root: Path | None = None,
     explicit: bool = False, timeout: int = 1800,

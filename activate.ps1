@@ -1,5 +1,7 @@
 # Source this file to sync and apply the PM environment; deactivate restores it.
 # Trusts the recorded tool digest. `hermes pm install` re-checks the bytes.
+# -TestExtras a,b selects runtime extras in the test environment (default: [all]).
+param([string]$TestExtras = '')
 $ErrorActionPreference = 'Stop'
 
 $OutputEncoding = [System.Console]::OutputEncoding = [System.Console]::InputEncoding = [System.Text.Encoding]::UTF8
@@ -14,7 +16,9 @@ foreach ($key in @('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV')) {
 try {
     # Run separately so setup's exit/failure cannot terminate the sourced shell.
     $shell = (Get-Process -Id $PID).Path
-    & $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$repo\setup-hermes.ps1" -RuntimeOnly | Out-Host
+    $testArgs = @()
+    if ($TestExtras) { $testArgs = @('-TestExtras', $TestExtras) }
+    & $shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$repo\setup-hermes.ps1" -RuntimeOnly @testArgs | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'activate: setup failed; shell environment unchanged' }
 } finally {
     foreach ($key in $bootstrapSaved.Keys) {

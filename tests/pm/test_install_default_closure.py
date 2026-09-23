@@ -80,7 +80,7 @@ def test_trust_recorded_skips_the_byte_check_and_still_syncs(install_spy):
 @pytest.mark.parametrize("kwargs, message", [
     ({"names": ["ripgrep"], "extra": [], "target": None, "tools_only": False, "trust_recorded": True},
      "--trust-recorded"),
-    ({"names": None, "extra": ["dev"], "target": None, "tools_only": False, "trust_recorded": True},
+    ({"names": None, "extra": ["anthropic"], "target": None, "tools_only": False, "trust_recorded": True},
      "--trust-recorded"),
     ({"names": None, "extra": [], "target": "linux-x64", "tools_only": False, "trust_recorded": True},
      "--target"),

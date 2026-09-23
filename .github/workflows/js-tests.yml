@@ -26,7 +26,8 @@ jobs:
           # the electron contracts drive real hermes_cli/pm code through
           # HERMES_PYTHON, which needs the application dependencies.
           toolchain: all
-          extras: '["dev"]'
+          extras: '[]'
+          test-environment: 'true'
 
       - name: Install zsh and a virtual display for Electron
         if: runner.os == 'Linux'

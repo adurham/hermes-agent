@@ -67,6 +67,7 @@ def checkout(tmp_path: Path) -> Path:
     (root / "shim").mkdir()
     (root / "state").mkdir()
     shutil.copy2(PROLOGUE, root / "scripts" / PROLOGUE.name)
+    shutil.copy2(REPO_ROOT / "scripts" / "_activation.sh", root / "scripts" / "_activation.sh")
     for name in ACTIVATION_INPUTS:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).touch()
@@ -94,9 +95,10 @@ def checkout(tmp_path: Path) -> Path:
     return root
 
 
-def _record(root: Path) -> None:
+def _record(root: Path, *, test_environment: bool = True) -> None:
     """What a successful ``pm install`` leaves behind."""
-    record_activation_inputs(root / "state" / "inputs", activation_input_mtimes(root))
+    record_activation_inputs(root / "state" / "inputs", activation_input_mtimes(root), root,
+                             test_environment=test_environment)
 
 
 def _run(root: Path, sentinel: str | None = "{root}/state/facts.json") -> str:
@@ -114,6 +116,13 @@ def _run(root: Path, sentinel: str | None = "{root}/state/facts.json") -> str:
     return result.stderr
 
 
+def test_foreign_checkout_with_matching_input_times_reactivates(checkout: Path):
+    _record(checkout)
+    other = checkout.parent / "other"
+    shutil.copytree(checkout, other, copy_function=shutil.copy2)
+    assert "ACTIVATED" in _run(other, str(checkout / "state" / "facts.json"))
+
+
 def test_recorded_inputs_are_left_alone(checkout: Path):
     """A checkout rewrote every input after facts.json was last written, then a
     no-op sync recorded them: the environment is current. Re-syncing on every
@@ -122,6 +131,15 @@ def test_recorded_inputs_are_left_alone(checkout: Path):
         _set_mtime(checkout / name, JUST_AFTER)
     _record(checkout)
     assert "ACTIVATED" not in _run(checkout)
+
+
+def test_runtime_only_install_cannot_mark_test_environment_current(checkout: Path):
+    marker = checkout / "state" / "inputs" / ".test-environment"
+    _record(checkout)
+    assert marker.is_file()
+    _record(checkout, test_environment=False)
+    assert not marker.exists()
+    assert "ACTIVATED" not in _run(checkout)  # The app is current; the test env isn't.
 
 
 @pytest.mark.parametrize("moved_to", [JUST_AFTER, EARLIER], ids=["newer", "older"])
@@ -137,7 +155,5 @@ def test_input_mtime_differing_from_its_stamp_reactivates(checkout: Path, input_
 @pytest.mark.parametrize("sentinel", [None, "{root}/gone", "1", "{root}/state/facts.json"],
                          ids=["cold", "dangling", "legacy-1", "no-stamps"])
 def test_unusable_sentinel_activates(checkout: Path, sentinel: str | None):
-    """Cold, dangling stamp, the bare ``1`` an older activate exported, or an
-    install from before stamps existed — each must activate rather than read
-    as current."""
+    """Cold, dangling, or incomplete activation state must not read as current."""
     assert "ACTIVATED" in _run(checkout, sentinel)

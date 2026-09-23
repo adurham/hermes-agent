@@ -192,7 +192,7 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     fact = runtime_facts_path(root)
     fact.parent.mkdir(parents=True)
-    previous = '{"packages":{"venv":{"stamp":"previous","extras":["all","dev"]}}}'
+    previous = '{"packages":{"venv":{"stamp":"previous","extras":["all","anthropic"]}}}'
     fact.write_text(previous)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     calls = []

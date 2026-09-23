@@ -56,7 +56,7 @@ def activation_input_mtimes(project_root: Path) -> dict[str, int]:
     return {name: (root / name).stat().st_mtime_ns for name in ACTIVATION_INPUTS if (root / name).is_file()}
 
 
-def record_activation_inputs(stamps: Path, mtimes: dict[str, int]) -> None:
+def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root: Path, *, test_environment: bool) -> None:
     """Give each stamp the exact mtime of the input the install was verified against.
 
     Recorded on every successful install, including no-op syncs: a checkout that
@@ -67,6 +67,12 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int]) -> None:
     import shutil
 
     shutil.rmtree(stamps, ignore_errors=True)
+    # The sentinel is inherited by child shells; equal input mtimes in another
+    # checkout must never make their test interpreter appear current here.
+    stamps.mkdir(parents=True, exist_ok=True)
+    (stamps / ".project-root").write_text(str(Path(project_root).resolve()), encoding="utf-8")
+    if test_environment:
+        (stamps / ".test-environment").touch()
     for name, mtime in mtimes.items():
         stamp = stamps / name
         stamp.parent.mkdir(parents=True, exist_ok=True)
@@ -293,6 +299,13 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     # directory also holds activation_inputs_dir, the input-mtime stamps
     # `scripts/_hermes-python` compares against to decide staleness.
     env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
+    # The suite's interpreter (pm.testenv): an isolated side environment, so it
+    # never appears on PYTHONPATH/PATH above. scripts/run_tests.sh reads it.
+    from pm.testenv import testenv_python
+
+    test_python = testenv_python(project_root)
+    if test_python is not None:
+        env["__HERMES_TEST_PYTHON"] = str(test_python)
     return env
 
 

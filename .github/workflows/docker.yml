@@ -238,7 +238,8 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
-          extras: '["dev"]'
+          extras: '[]'
+          test-environment: 'true'
           prune-python-cache: true
 
       - name: Restore the image install stamp for the docker tests

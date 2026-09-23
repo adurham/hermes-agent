@@ -94,7 +94,7 @@ hermes --version
 Usa el Python preparado por PM para crear un entorno nuevo:
 
 ```bash
-python -m pm.build_env --source . --out .venv --extra dev --group test
+python -m pm.build_env --source . --out .venv --group dev --group test
 scripts/run_tests.sh tests/agent/ -v
 ```
 

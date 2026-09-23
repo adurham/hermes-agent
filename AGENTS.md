@@ -367,7 +367,7 @@ with API keys set has caused repeated "works locally, fails in CI" incidents (an
 Prepare a test interpreter with the checkout's bootstrapped Python:
 
 ```bash
-python -m pm.build_env --source . --out .venv --extra dev --group test
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
 This is a fresh build, not an in-place sync. If the disposable output exists,

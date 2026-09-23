@@ -51,7 +51,8 @@ jobs:
           sudo apt-get install -y patchelf
       - uses: ./.github/actions/setup-pm
         with:
-          extras: '["dev"]'
+          extras: '[]'
+          test-environment: 'true'
           cache-python: false
       - name: Run the native linker and wheel contracts
         run: |

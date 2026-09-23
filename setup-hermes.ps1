@@ -10,7 +10,9 @@
 #   3. Point you at `.\activate.ps1` - the venv-style way to put the pm env
 #      (PATH + tool vars) into your current session.
 # ============================================================================
-param([switch]$RuntimeOnly)
+# Setup and activation both prepare the isolated test interpreter; installers
+# invoke pm.cli directly and do not select it. -TestExtras overrides coverage.
+param([switch]$RuntimeOnly, [string]$TestExtras = '')
 $ErrorActionPreference = 'Stop'
 
 Write-Host ''
@@ -84,7 +86,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'bootstrap Python installation failed' }
     $bootPy = (& $uv python find --managed-python $pyVersion) -join "`n"
     if ($LASTEXITCODE -ne 0 -or -not $bootPy) { throw 'bootstrap Python lookup failed' }
-    & $bootPy.Trim() -m pm.cli install $(if ($RuntimeOnly) { '--trust-recorded' })
+    & $bootPy.Trim() -m pm.cli install $(if ($RuntimeOnly) { '--trust-recorded' }) "--test-environment=$TestExtras"
     if ($LASTEXITCODE -ne 0) { throw 'pm install failed - see output above.' }
 } finally {
     Pop-Location

@@ -76,7 +76,7 @@ architecture before building source dependencies.
 Build an independent interpreter for tests and editor tools:
 
 ```bash
-python -m pm.build_env --source . --out .venv --extra dev --group test
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
 PM builds from the committed lock and checks dependency consistency before

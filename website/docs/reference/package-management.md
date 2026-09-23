@@ -404,13 +404,14 @@ Managed tool names and Python extra names are different interfaces:
 
 ```bash
 python -m pm.cli install chromium
-python -c "from pm import sync_venv; sync_venv(['dev'], explicit=True)"
+python -c "from pm import sync_venv; sync_venv(['anthropic'], explicit=True)"
 ```
 
-The first command installs a tool. The second adds the declared `dev` extra
+The first command installs a tool. The second adds a declared runtime extra
 to this installation's existing Python selection. Extras accumulate through PM
-sync. `pm install dev` is not a supported command: `dev` is an extra, not a tool.
-After changing extras, reactivate before starting another Python process.
+sync. The `dev` and `test` dependency groups belong only to the separate test
+environment, not the selected application venv. After changing extras, reactivate
+before starting another Python process.
 
 For a new project dependency, edit `pyproject.toml` and regenerate `uv.lock`:
 
@@ -425,25 +426,27 @@ workspaces, and do not install packages directly into a selected generation.
 
 ### Test and editor environments
 
-PM's `dev` extra does not make a bare store Python suitable for the canonical
-test runner. The runner clears `PYTHONPATH` and needs an interpreter with pytest
-installed in its own environment. Use the contributor guide's
-[independent test environment](../developer-guide/contributing.md#manual-development-and-test-environment)
-with this command from the prepared checkout:
+`source ./activate` (or `. .\activate.ps1` in PowerShell) and both direct
+`setup-hermes` scripts prepare an isolated test interpreter from the locked
+`dev` and `test` dependency groups. `scripts/run_tests.sh` uses that interpreter,
+re-activating if the checkout or its dependency inputs changed. The application
+venv, installers, and bundles select neither group. The developer default
+covers `[all]`; to change test coverage, pass `--test-extras=anthropic` to POSIX
+activation or `-TestExtras anthropic` to PowerShell;
+those arguments select runtime extras *in the test interpreter only*.
+
+In an isolated environment where activation is unavailable (for example, a Nix
+dev shell), a caller can explicitly supply `HERMES_PYTHON` with pytest, or build
+an independent disposable environment:
 
 ```bash
-python -m pm.build_env --source . --out .venv --extra dev --group test
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
 The output must not exist. To regenerate it, stop its processes and intentionally
-remove only that disposable environment first. PM never deletes an existing
-output. Then run `scripts/run_tests.sh` (through Bash on Windows). The `test`
-dependency group includes native launcher tests and does not enter a packaged runtime.
-
-The runner checks repository `.venv`, repository `venv`, and the standard
-source-install venv before using `HERMES_PYTHON` as a fallback. Read its startup
-message to confirm which interpreter it selected. A worktree without a local
-venv can use the independent test interpreter through that variable.
+remove only that disposable environment first. Then run `scripts/run_tests.sh`
+(through Bash on Windows). The test dependency group includes native launcher
+tests and never enters a packaged runtime.
 
 For editor debugging, select that independent interpreter, set the working
 directory to this checkout, and launch `hermes` as the script. Keep its

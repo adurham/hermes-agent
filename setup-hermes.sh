@@ -15,14 +15,17 @@
 
 set -e
 
-# Activation needs only provisioning, not user-facing installation side effects.
+# Setup and activation prepare the isolated test environment. Installers call
+# pm.cli directly and never select it.
 runtime_only=false
-case "${1:-}" in
-    --runtime-only) runtime_only=true ;;
-    '') ;;
-    *) printf 'Unknown setup option: %s\n' "$1" >&2; exit 2 ;;
-esac
-
+test_environment="--test-environment"
+for option in "$@"; do
+    case "$option" in
+        --runtime-only) runtime_only=true ;;
+        --test-environment|--test-environment=*) test_environment="$option" ;;
+        *) printf 'Unknown setup option: %s\n' "$option" >&2; exit 2 ;;
+    esac
+done
 # Colors
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -164,7 +167,11 @@ echo -e "${CYAN}→${NC} (first run on a fresh checkout can take 1-5 minutes)"
 "$uv" python install --no-bin --no-registry "$py_version"
 boot_py="$("$uv" python find --managed-python "$py_version")"
 boot_py="${boot_py%$'\r'}"
-if ! "$boot_py" -m pm.cli install ${runtime_only:+--trust-recorded}; then
+# Activation trusts the recorded tool digest; a direct setup re-checks it
+# (setup-hermes.ps1 draws the same line).
+pm_args=("$test_environment")
+[ "$runtime_only" = true ] && pm_args+=(--trust-recorded)
+if ! "$boot_py" -m pm.cli install "${pm_args[@]}"; then
     echo -e "${RED}✗${NC} pm install failed — see output above."
     exit 1
 fi

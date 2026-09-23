@@ -279,7 +279,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 #
 # `pm.build_env --no-install-project --extra all --extra messaging --extra otlp`
 # installs the deps reachable through the composite `[all]` extra
-# (handpicked set intended for the production image — excludes `[dev]`),
+# (handpicked set intended for the production image; dependency groups are not selected),
 # plus gateway messaging adapters that should work in the published image
 # without a first-boot lazy install.  We do NOT use `--all-extras`:
 # that would pull in `[rl]` (atroposlib + tinker + torch + wandb from
