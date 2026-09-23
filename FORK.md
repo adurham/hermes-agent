@@ -17524,3 +17524,111 @@ instead`, and returned a response with `model == "glm-5.3"`.
 **Merge note:** upstream-relevant (the classifier and the fallback chain are
 upstream code; the OAuth-org-block body is Anthropic-wide, not fork-local),
 so this is a candidate to send upstream — unlike the 2026-09-10 entry above.
+
+---
+
+### Merge-regression sweep, part 2 — 2026-09-23 (three trailing commits that landed after the sweep's own docs commit; documented here retroactively)
+
+The `Merge-regression sweep — 2026-09-23` entry above documents ~30 fixes, but
+its own FORK.md commit (`9933654b33`) was the third-to-last commit of that
+session: three later commits (`f972c7bc5b`, `ec811d2983`, `1832cd2487`) landed
+with no FORK.md entry. They are recorded here so the file's coverage has no
+gap. All three are the same bug class as the sweep — a fork call site or test
+assertion orphaned by the `v2026.9.14` decomposition — and all three were
+verified passing before this entry was written.
+
+**1. `f972c7bc5b` — `tests/hermes_cli/test_fast_command.py::TestAnthropicFastModeAdapter::test_fast_mode_adds_speed_and_beta`
+was silenced by the merge instead of fixed.** The merge added exactly ONE new
+entry to `tests/known_failing.txt`: this test. It failed because it asserted
+the pre-sync wire shape (`extra_body["speed"] == "fast"` plus an `anthropic-beta`
+extra_header) while the sync moved fast mode to a top-level typed `speed`
+kwarg plus a `betas` list entry. The adapter was correct; only the assertion
+was stale. Skipping it was the wrong call — it left the fork with ZERO
+enforcement that fast mode reaches the wire at all, which is the exact
+regression class its two still-live siblings could not catch (both only assert
+the ABSENCE of speed, so the class stays green if fast mode silently stops
+being emitted). Fix: updated the assertion to the current shape and deleted
+the `known_failing.txt` entry. Mutation-checked — removing either
+`kwargs["speed"] = "fast"` or `betas.append(_FAST_MODE_BETA)` from
+`agent/anthropic_adapter.py` makes it fail again.
+
+**2. `ec811d2983` — two stale nous-token patch targets in `tests/tools/test_web_tools_config.py`.**
+The merge moved the nous-access-token reader onto
+`tools.managed_tool_gateway.peek_nous_access_token`; five of seven patch call
+sites in the file were updated and two were missed, still targeting
+`tools.web_tools._peek_nous_access_token` / `_read_nous_access_token`, so both
+tests died with `AttributeError` before reaching their assertions (same bug
+class as `a78a2bfb30`). Repointing them surfaced what the `AttributeError` had
+been masking — and this is the substantive finding: with the mock fixed,
+`test_configured_backend_must_match_available_provider` failed on its REAL
+assertion. Under pytest isolation the keyless ring resolves to a
+`KEYLESS = True` plugin provider (Keenable), and `_provider_is_ready()`
+accepts any keyless-capable provider, so readiness was satisfied even with the
+explicitly-configured backend (parallel) unavailable — i.e. the `#78412`
+invariant had genuinely been broken by the merge, not merely mis-tested. Both
+call sites were left documented with NOTE comments and the second test left
+failing deliberately at that point, on the correct grounds that whether the
+keyless ring should satisfy an explicitly-configured backend is a design
+decision, not a test bug.
+
+**3. `1832cd2487` — the actual fix for that invariant, in `tools/web_tools.py`.**
+`check_web_api_key()`'s explicit-config stage had been flattened by the merge
+into a single boolean OR over `[configured] + _LEGACY_WEB_BACKENDS`, which made
+the configured name just one more candidate in the ring: `web.backend: parallel`
+with no `PARALLEL_API_KEY` reported available as soon as ANY other built-in
+was — in the regression test, a managed-gateway firecrawl reached via
+`FIRECRAWL_GATEWAY_URL` plus a Nous token. Pre-merge the stage returned
+`_is_backend_available(configured)` directly and never fell through. Fix
+restores that early return: an explicit name that is a legacy built-in or a
+registered plugin provider returns its OWN availability and consults nothing
+else; the built-in OR, the keyless-ring readiness walk, and the Anthropic-native
+probe now run only when no backend is explicitly configured. Explicitly NOT a
+keyless-ring or `BaseWebSearchProvider` bug — `parallel`'s keyless capability is
+unchanged from its pre-merge `is_keyless_available()`, and the registry
+resolvers are mocked out in the failing test; the masking backend was firecrawl
+via the legacy candidate list.
+
+**Verification (re-run on the merged tree, this session):**
+`tests/tools/test_web_tools_config.py` + `tests/hermes_cli/test_fast_command.py`
+= **82 passed** (includes the restored `test_fast_mode_adds_speed_and_beta` and
+the now-genuinely-passing `test_configured_backend_must_match_available_provider`),
+and `tests/agent/test_auxiliary_client.py` + `tests/tools/test_consult_tool.py`
++ `tests/tools/test_delegate_fallback_matrix.py` = **271 passed**, on the tree
+that also carries the `origin/main` drift merge below.
+
+**Merge note:** `1832cd2487` is a genuine fork-side regression fix, but the
+underlying invariant (#78412 — an explicitly configured backend must answer for
+itself) is upstream's own; upstream's flattened form is the bug, so the fix is a
+reasonable upstream PR candidate. `f972c7bc5b` / `ec811d2983` are fork-local
+test hygiene.
+
+### origin/main drift absorbed into the sync branch — 2026-09-23
+
+The sync branch was left un-merged into `main` pending the two commits that
+landed on `origin/main` while the sweep session was in flight
+(`b82307f9f8` aux subscription-403 fallback, `14b62ab825` its FORK.md record —
+both already documented in their own entry above). Absorbed with
+`git merge origin/main` on `sync/upstream-2026-09-14`, then fast-forwarded into
+`main`.
+
+Two conflicts, both resolved as union:
+
+* `agent/auxiliary_client.py` — HEAD (post-`v2026.9.14`) had extracted the
+  keyword list out of `_is_payment_error()` into a module-level
+  `_PAYMENT_KEYWORDS` tuple; `origin/main`'s newer commit had added the
+  subscription/entitlement-403 keyword family to the OLD inline form. Took
+  HEAD's tuple form and ported the six new keyword literals
+  (`"not allowed for this organization"`,
+  `"oauth authentication is currently not allowed"`,
+  `"subscription is inactive"`, `"subscription lapsed"`,
+  `"subscription has been paused"`, `"subscription paused"`) into it. Verified
+  as a strict union by extracting both sides programmatically: 28 (HEAD tuple)
+  + 6 (origin/main new) = 34 literals, nothing dropped from either side.
+* `FORK.md` — the standard tail-append union; kept both the sync's
+  post-`v2026.9.14` docs block and `origin/main`'s 2026-09-23 aux-403 entry.
+
+`tests/agent/test_auxiliary_client.py` auto-merged cleanly (the three new
+`TestIsPaymentError` tests). Post-merge: 215 passed in that file (18 in the
+payment class), `py_compile` clean, zero conflict markers, and the mandatory
+ancestry checks pass (`v2026.9.14` is an ancestor of `main`;
+`git tag --points-at $(git merge-base main upstream/main)` = `v2026.9.14`).
