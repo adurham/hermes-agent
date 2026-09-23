@@ -10,9 +10,13 @@ held-for-approval delay.
 
 These tests exercise ``gateway/agent_messaging_bridge.py`` directly against
 the real Transport A registry (``tools.agent_messaging_transport_a``), plus
-AST pins confirming the two gateway/run.py call sites (registration at
-``track_agent()``, unregistration at ``_clear_conversation_scope()``) are
-wired and haven't regressed.
+source pins confirming the two call sites (registration in
+``GatewayRunner._run_agent_track_agent``, unregistration in
+``GatewayRunner._clear_conversation_scope``) are wired and haven't regressed.
+Both call sites were dropped a SECOND time by the v2026.9.14 upstream merge,
+which split ``gateway/run.py`` into ``run_turn.py``/``run_agent_cache.py``
+without carrying them over; the end-to-end lifecycle that would have caught it
+behaviorally now lives in ``test_transport_a_gateway_lifecycle_e2e.py``.
 """
 from __future__ import annotations
 
@@ -280,11 +284,25 @@ def _source_of(func) -> str:
 
 
 def test_track_agent_registers_transport_a_participant():
-    from gateway import run as gateway_run
+    """Pin the registration call site at the FUNCTION that owns it.
 
-    src = inspect.getsource(gateway_run)
+    Originally this asserted against ``inspect.getsource(gateway.run)`` — the
+    whole module's text. That pinned a file LAYOUT, not a behavior, and went
+    stale the moment upstream's v2026.9.14 refactor split ``gateway/run.py``
+    into ``run_turn.py``/``run_agent_cache.py``: the assertion would fail even
+    with the wiring perfectly intact, and conversely could pass on an unrelated
+    mention elsewhere in a 33k-line file. Pinning the resolved method instead
+    follows the code wherever the mixin lives while still catching a silent
+    drop. Real end-to-end behavior is covered by
+    ``test_transport_a_gateway_lifecycle_e2e.py``.
+    """
+    from gateway.run import GatewayRunner
+
+    src = _source_of(GatewayRunner._run_agent_track_agent)
     assert "register_gateway_session_participant" in src
     assert "from gateway.agent_messaging_bridge import" in src
+    # The id must be persisted for the matching teardown to unregister it.
+    assert "transport_a_participant_id" in src
 
 
 def test_clear_conversation_scope_unregisters_transport_a_participant():

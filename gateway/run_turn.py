@@ -3061,6 +3061,25 @@ class GatewayTurnMixin:
             )
             return
         self._session_state(session_key).turn.agent = agent_holder[0]
+        # Make this session addressable in-process (Transport A) so a background=true
+        # subagent's send_to_parent resolves directly instead of falling through to
+        # Transport B's approval gate (which outright REFUSES gateway-origin inbound —
+        # tools/cross_session_transport.py's SessionOrigin.GATEWAY: POLICY_REFUSE).
+        # Additive/idempotent — safe on every turn. See gateway/agent_messaging_bridge.py.
+        try:
+            from gateway.agent_messaging_bridge import register_gateway_session_participant
+
+            _t_a_pid = register_gateway_session_participant(self, session_key, agent_holder[0])
+            if _t_a_pid:
+                # Persist the EXACT id registered under, so the matching
+                # _clear_conversation_scope teardown unregisters THIS id rather than
+                # re-deriving it later from whatever agent object is still reachable
+                # (unsound after a session split, or once TurnState.clear() has nulled
+                # turn.agent — see transport_a_participant_id's docstring in
+                # gateway/session_state.py).
+                self._session_state(session_key).conversation.transport_a_participant_id = _t_a_pid
+        except Exception:
+            logger.debug("Transport A gateway registration failed for %s", session_key, exc_info=True)
         if self._draining:
             self._update_runtime_status("draining")
 
