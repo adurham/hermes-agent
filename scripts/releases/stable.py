@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -15,33 +16,35 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases.draft_warning import strip_draft_warning
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
 SMOKE_JOBS = {
-    "smoke-darwin": "macOS DMG + ZIP (arm64 and x64)",
-    "smoke-win32": "Windows MSIX (arm64 and x64)",
-    "smoke-win32-universal": "Windows MSIXBUNDLE (arm64 and x64)",
+    "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
+    "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
+    "smoke-win32-arm64": "Windows MSIX (arm64)",
+    "smoke-win32-x64": "Windows MSIX (x64)",
 }
 
 
 def admit_claim(tag: str, commit: str, *, on_main) -> dict:
-    """Admit a release from its claim tag. The checkout version is not read.
+    """Admit a release from its attempt ref. The checkout version is not read.
 
-    ``main`` carries ``0.0.0`` on purpose, so the version comes from the
-    ``-rc`` tag and the only question about the commit is whether it is on
-    ``main``.
+    ``main`` carries ``0.0.0`` on purpose, so the version and the attempt come
+    from ``rc.<N>-vX.Y.Z`` and the only question about the commit is whether
+    it is on ``main``.
     """
-    from scripts.releases.versioning import version_from_tag
+    from scripts.releases.versioning import parse_attempt_ref
 
-    if not isinstance(tag, str) or not tag.endswith("-rc"):
+    parsed = parse_attempt_ref(tag)
+    if parsed is None:
         raise ValueError(f"{tag} is not a claim tag")
-    version = version_from_tag(tag[:-3])
-    if version is None:
-        raise ValueError(f"{tag} is not a claim tag")
+    version, attempt = parsed
     if not on_main(commit):
         raise ValueError(f"{commit} is not on main")
-    return {"claim_tag": tag, "tag": f"v{version}", "version": version, "commit": commit}
+    return {"claim_tag": tag, "tag": f"v{version}", "version": version, "attempt": attempt,
+            "commit": commit}
 
 
 def require_stable_identity(tag: str, commit: str) -> None:
@@ -81,17 +84,37 @@ def stable_windows_version(epoch: object) -> str:
     return f"{instant.year}.{hour_of_year}.{second_of_hour}.0"
 
 
-def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
-                        release_epoch: int | None = None) -> dict:
+RECEIPT_TARGETS = {
+    "darwin-arm64": ("macos/arm64",),
+    "darwin-x64": ("macos/x64",),
+    "win32-bundle": ("windows/x64", "windows/arm64"),
+}
+
+# The staged handoffs each receipt is assembled from. The Windows bundle
+# receipt reads the per-arch metadata handoffs plus the universal bundle
+# handoff; fetch() re-verifies every staged byte against its receipt digest,
+# and validate_receipt enforces the signing facts (teamId, publisher).
+RECEIPT_HANDOFFS = {
+    "darwin-arm64": ("darwin-arm64",),
+    "darwin-x64": ("darwin-x64",),
+    "win32-bundle": ("win32-x64", "win32-arm64", "windows-universal"),
+}
+RECEIPT_INCLUDES = ("metadata-*.json", "*.zip", "*.msixbundle")
+
+
+def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
+                    release_epoch: int | None, *, archive: str) -> dict:
+    """The per-row checks shared by the full-manifest and receipt validators."""
     require_stable_identity(tag, commit)
     if manifest.get("schema") != 2 or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
-    successful_smoke_results(manifest.get("smoke_results"))
+    if manifest.get("archive") != archive:
+        raise ValueError("Candidate manifest names a different release archive")
     admitted_epoch = manifest.get("releaseEpoch")
     expected_windows_version = stable_windows_version(admitted_epoch)
     if release_epoch is not None and admitted_epoch != release_epoch:
         raise ValueError("Candidate release epoch differs from the admitted claim")
-    prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{tag}/")
+    prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{archive}/")
     if prefix.scheme != "https" or prefix.username or prefix.password or not prefix.netloc:
         raise ValueError("Public release origin must use HTTPS")
     rows = {}
@@ -121,8 +144,37 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
         elif item.get("version") != f"{tag[1:]}-1":
             raise ValueError("Termux candidate version differs from the admitted release")
         rows[target] = item
+    return rows
+
+
+def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
+                        release_epoch: int | None = None, *, archive: str) -> dict:
+    """`tag` is the plain payload identity; `archive` is the releases/tag/<ref>/
+    prefix every artifact URL must live under. Stable attempts name the attempt
+    ref as their archive; the two are separate fields and never overloaded.
+
+    The smoke requirement lives here and not in the shared row checks:
+    per-arch receipts are staged before the smokes run (decision 11), so a
+    receipt without `smoke_results` is accepted while the final manifest
+    never is.
+    """
+    rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
+    successful_smoke_results(manifest.get("smoke_results"))
     if any(target not in rows for target in DESKTOP_TARGETS):
         raise ValueError("Candidate manifest must cover Windows and macOS on both architectures")
+    return rows
+
+
+def validate_receipt(manifest: dict, receipt: str, tag: str, commit: str, public_base: str,
+                     release_epoch: int | None = None, *, archive: str) -> dict:
+    """One per-arch or bundle receipt: exactly that group's rows and no others."""
+    targets = RECEIPT_TARGETS.get(receipt)
+    if targets is None:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
+    if set(rows) != set(targets):
+        raise ValueError(
+            f"Receipt {receipt} requires exactly {', '.join(targets)} and nothing else")
     return rows
 
 
@@ -135,32 +187,126 @@ def windows_version(value: str) -> tuple[int, ...]:
     return result
 
 
+def _transition_row(target: str, left: dict, right: dict) -> dict:
+    if left["identity"] != right["identity"] or left["commit"] == right["commit"] or left["artifact"]["sha256"] == right["artifact"]["sha256"]:
+        raise ValueError("Update must preserve package identity and change the build")
+    if right["platform"] == "windows":
+        if (left["publisher"], left["applicationId"]) != (right["publisher"], right["applicationId"]):
+            raise ValueError("Update must preserve publisher and applicationId")
+        newer = windows_version(right["version"]) > windows_version(left["version"])
+    else:
+        if left["teamId"] != right["teamId"]:
+            raise ValueError("Update must preserve signing team")
+        newer = tuple(map(int, right["version"].split("."))) > tuple(map(int, left["version"].split(".")))
+    if not newer:
+        raise ValueError("New package version must increase")
+    return {"target": target.replace("/", "-"), "transition": {
+        "schema": 1, "platform": right["platform"], "arch": right["arch"], "old": left, "new": right,
+    }}
+
+
 def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[dict]:
-    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base)
-    new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base)
-    result = []
-    for target in DESKTOP_TARGETS:
-        left, right = old[target], new[target]
-        if left["identity"] != right["identity"] or left["commit"] == right["commit"] or left["artifact"]["sha256"] == right["artifact"]["sha256"]:
-            raise ValueError("Update must preserve package identity and change the build")
-        if right["platform"] == "windows":
-            if (left["publisher"], left["applicationId"]) != (right["publisher"], right["applicationId"]):
-                raise ValueError("Update must preserve publisher and applicationId")
-            newer = windows_version(right["version"]) > windows_version(left["version"])
-        else:
-            if left["teamId"] != right["teamId"]:
-                raise ValueError("Update must preserve signing team")
-            newer = tuple(map(int, right["version"].split("."))) > tuple(map(int, left["version"].split(".")))
-        if not newer:
-            raise ValueError("New package version must increase")
-        result.append({"target": target.replace("/", "-"), "transition": {
-            "schema": 1, "platform": right["platform"], "arch": right["arch"], "old": left, "new": right,
-        }})
-    return result
+    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
+                              archive=previous.get("archive"))
+    new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base,
+                              archive=candidate.get("archive"))
+    return [_transition_row(target, old[target], new[target]) for target in DESKTOP_TARGETS]
+
+
+def plan_receipt_transitions(previous: dict, receipt_manifest: dict, receipt: str,
+                             public_base: str) -> list[dict]:
+    """The same transitions, but only for one receipt's rows."""
+    targets = RECEIPT_TARGETS.get(receipt)
+    if targets is None:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
+                              archive=previous.get("archive"))
+    new = validate_receipt(receipt_manifest, receipt, receipt_manifest.get("tag"),
+                           receipt_manifest.get("commit"), public_base,
+                           archive=receipt_manifest.get("archive"))
+    return [_transition_row(target, old[target], new[target]) for target in targets]
+
+
+def _receipt_manifest(root: Path, receipt: str, tag: str, commit: str, archive: str,
+                      public_base: str, release_epoch: int) -> dict:
+    """Rebuild one group's manifest rows from its staged, digest-verified handoffs."""
+    from scripts.releases.handoff import fetch, receipt_name
+    from scripts.releases.r2 import staging_key_for
+
+    names = RECEIPT_HANDOFFS.get(receipt)
+    if names is None:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    # Re-downloading the staged bytes proves the group's handoff is complete
+    # and matches its receipt before this receipt is published.
+    fetch(tag=archive, commit=commit, names=list(names), root=root,
+          includes=list(RECEIPT_INCLUDES))
+    digests = {}
+    for name in names:
+        for row in json.loads((root / receipt_name(name)).read_text(encoding="utf-8-sig"))["files"]:
+            digests[row["path"]] = row["sha256"]
+    rows = [json.loads(file.read_text(encoding="utf-8-sig"))
+            for file in sorted(root.glob("metadata-*.json"))]
+    universal = None
+    if receipt == "win32-bundle":
+        bundles = [file.name for file in root.glob("*.msixbundle") if not file.name.startswith("Store-")]
+        if len(bundles) != 1:
+            raise ValueError(f"Expected one universal bundle, found {len(bundles)}")
+        universal = bundles[0]
+    packages = []
+    for row in rows:
+        filename = universal if row["platform"] == "windows" else row.get("filename")
+        if not filename or filename not in digests or not (root / filename).is_file():
+            raise ValueError(f"Receipt {receipt} is missing staged bytes for "
+                             f"{row['platform']}/{row['arch']}")
+        packages.append({
+            key: value for key, value in {
+                **row,
+                "artifact": {"url": f"{public_base.rstrip('/')}/{staging_key_for(archive, filename)}",
+                             "sha256": digests[filename]},
+            }.items() if key != "filename"
+        })
+        if row["platform"] != "windows" and not filename.endswith(".zip"):
+            raise ValueError(f"Receipt {receipt} needs a signed app ZIP for {row['platform']}/{row['arch']}")
+    if receipt == "win32-bundle":
+        from scripts.bundles.release_artifacts import validate_windows_bundle
+
+        validate_windows_bundle(root / universal,
+                                [row for row in rows if row["platform"] == "windows"])
+    return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
+            "archive": archive, "packages": packages}
+
+
+def stage_receipt(env: dict, receipt: str) -> None:
+    """Publish one group's signed receipt into its immutable attempt archive.
+
+    The receipt names exactly that group's rows (decision 11): it is staged
+    before the group's smokes run, so it carries no smoke results, while
+    acceptance still blocks publication.
+    """
+    from scripts.releases.r2 import put
+
+    tag, commit, claim = stable_context(env)
+    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        manifest = _receipt_manifest(root, receipt, tag, commit, archive, base, claim["claim_epoch"])
+        validate_receipt(manifest, receipt, tag, commit, base, claim["claim_epoch"], archive=archive)
+        file = root / f"{receipt}-receipt.json"
+        file.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        put(tag=archive, key=file.name, file=str(file), immutable=True)
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+    url = f"{base}/releases/tag/{archive}/{receipt}-receipt.json"
+    print(url)
+    print(digest)
+    emit({"receipt-url": url, "receipt-sha256": digest}, env)
 
 
 def read_manifest(url: str, expected_hash: str | None = None, *, expected_origin: str | None = None,
-                  opener=urllib.request.urlopen) -> dict:
+                  opener=None) -> dict:
+    # Resolved per call: a default bound at import would pin the opener that
+    # existed then and ignore the process's trust setup.
+    opener = opener or urllib.request.urlopen
     location = urlsplit(url)
     origin = urlsplit(expected_origin or url)
 
@@ -185,12 +331,12 @@ def output(argv: list[str]) -> str:
     return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
 
 
-def _claim_metadata(raw: str, *, version: str, commit: str) -> dict:
+def _claim_metadata(raw: str, *, version: str, attempt: int, commit: str) -> dict:
     try:
         metadata = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as error:
         raise ValueError("Stable claim metadata is invalid") from error
-    expected = {"schema": 1, "version": version, "commit": commit}
+    expected = {"schema": 1, "version": version, "attempt": attempt, "commit": commit}
     if (not isinstance(metadata, dict)
             or any(metadata.get(key) != value for key, value in expected.items())
             or not isinstance(metadata.get("autopublish"), bool)
@@ -248,7 +394,8 @@ def check_claim(env: dict, run=output) -> dict:
 
     admitted = admit_claim(claim_tag, commit, on_main=on_main)
     raw_metadata = run(["git", "tag", "-l", claim_tag, "--format=%(contents)"])
-    metadata = _claim_metadata(raw_metadata, version=admitted["version"], commit=commit)
+    metadata = _claim_metadata(raw_metadata, version=admitted["version"],
+                               attempt=admitted["attempt"], commit=commit)
     claim_epoch = tagger_epoch(local_object, run)
     if metadata["claimEpoch"] != claim_epoch:
         raise ValueError("Stable claim epoch differs from its annotated tagger timestamp")
@@ -299,7 +446,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
     run(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
     claim = _claim_metadata(
         run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
-        version=admitted["version"], commit=commit,
+        version=admitted["version"], attempt=admitted["attempt"], commit=commit,
     )
     final = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
     expected = {
@@ -310,6 +457,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         "releaseId": final.get("releaseId"),
         "candidateManifestSha256": final.get("candidateManifestSha256"),
         "dockerManifestDigest": final.get("dockerManifestDigest"),
+        "archive": f"releases/tag/{claim_tag}/",
     }
     if (final != expected
             or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
@@ -344,14 +492,15 @@ def read_candidate(env: dict) -> dict:
     return read_manifest(env["CANDIDATE_MANIFEST_URL"], digest)
 
 
-def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str) -> dict:
+def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str, *,
+                            archive: str) -> dict:
     """The page and package promoter consume the same pinned admission."""
     if not DIGEST.fullmatch(digest or ""):
         raise ValueError("Pinned candidate manifest digest is required")
     require_stable_identity(tag, commit)
-    manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{tag}/release-candidates.json",
+    manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{archive}/release-candidates.json",
                              digest, expected_origin=public_base)
-    validate_candidates(manifest, tag, commit, public_base)
+    validate_candidates(manifest, tag, commit, public_base, archive=archive)
     return manifest
 
 
@@ -390,13 +539,23 @@ def verify(env: dict) -> None:
           "release-epoch": claim["claim_epoch"]}, env)
 
 
-def transitions(env: dict) -> None:
+def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
     from scripts.releases.r2 import put
 
-    tag, commit, claim = stable_context(env)
-    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
-    candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
+    transition = row["transition"]
+    name = f"acceptance-{row['target']}.json"
+    file = Path(env["RUNNER_TEMP"]) / name
+    file.write_text(json.dumps(transition), encoding="utf-8")
+    put(tag=archive, key=name, file=str(file), immutable=True)
+    url = f"{base}/releases/tag/{archive}/{name}"
+    if read_manifest(url) != transition:
+        raise ValueError("Transition manifest read-back mismatch")
+    return {"arch": transition["arch"], "manifest": url, "old": transition["old"]["tag"],
+            "id": row["target"],
+            "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
+
+
+def _published_baseline(env: dict, base: str) -> dict:
     try:
         previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
                                  expected_origin=base)
@@ -407,18 +566,76 @@ def transitions(env: dict) -> None:
     published = json.loads(output(["gh", "release", "view", previous["tag"], "--repo", env["GITHUB_REPOSITORY"], "--json", "tagName,isDraft,isPrerelease"]))
     if published["tagName"] != previous["tag"] or published["isDraft"] or published["isPrerelease"]:
         raise ValueError("Upgrade baseline must be a published stable release")
+    return previous
+
+
+def _receipt_from_env(env: dict, receipt: str, prefix: str, base: str) -> dict:
+    digest = env.get(f"{prefix}_SHA256", "")
+    if not DIGEST.fullmatch(digest):
+        raise ValueError(f"Pinned {receipt} receipt digest is required")
+    return read_manifest(env[f"{prefix}_URL"], digest, expected_origin=base)
+
+
+def transitions(env: dict) -> None:
+    """Plan one install arm from its own receipt.
+
+    Each transitions job reads exactly one group's receipt (decision 11) and
+    emits only that group's rows, so a Mac arch and the Windows bundle start
+    their install arms independently of the other groups.
+    """
+    receipt = env.get("RECEIPT", "")
+    if receipt not in RECEIPT_TARGETS:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    tag, commit, claim = stable_context(env)
+    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
+    previous = _published_baseline(env, base)
+    receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
-    for row in plan_transitions(previous, candidate, base):
-        transition = row["transition"]
-        name = f"acceptance-{row['target']}.json"
-        file = Path(env["RUNNER_TEMP"]) / name
-        file.write_text(json.dumps(transition), encoding="utf-8")
-        put(tag=tag, key=name, file=file, immutable=True)
-        url = f"{base}/releases/tag/{tag}/{name}"
-        if read_manifest(url) != transition:
-            raise ValueError("Transition manifest read-back mismatch")
-        matrices[transition["platform"]]["include"].append({"arch": transition["arch"], "manifest": url, "old": transition["old"]["tag"], "id": row["target"], "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()})
+    for row in plan_receipt_transitions(previous, receipt_manifest, receipt, base):
+        matrices[row["transition"]["platform"]]["include"].append(
+            _stage_transition(env, archive, base, row))
     emit(matrices, env)
+
+
+# The candidate manifest is written after the smokes (decision 23): the smoke
+# results it records are the candidate calls' own workflow results — each
+# call's stable-phase-result only succeeds when its selected groups' smokes
+# did, so a failed smoke leaves no accepted manifest behind.
+CALL_SMOKE_JOBS = {
+    "candidates-darwin-arm64": "smoke-darwin-arm64",
+    "candidates-darwin-x64": "smoke-darwin-x64",
+    "candidates-win32-arm64": "smoke-win32-arm64",
+    "candidates-win32-x64": "smoke-win32-x64",
+}
+CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
+                      "termux", "windows-universal")
+CANDIDATE_INCLUDES = ("metadata-*.json", "*.msixbundle")
+
+
+def candidate_manifest(env: dict) -> None:
+    """Merge the staged handoffs into the accepted candidate manifest."""
+    from scripts.bundles.release_artifacts import assemble
+    from scripts.releases.handoff import fetch
+
+    needs = json.loads(env.get("RELEASE_NEEDS", "{}"))
+    if not isinstance(needs, dict):
+        raise ValueError("Candidate call results must be a needs object")
+    smoke = {job: {"result": (needs.get(call) or {}).get("result")}
+             for call, job in CALL_SMOKE_JOBS.items()}
+    tag, commit, claim = stable_context(env)
+    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        fetch(tag=archive, commit=commit, names=list(CANDIDATE_HANDOFFS), root=root,
+              includes=list(CANDIDATE_INCLUDES))
+        out = root / "release-candidates.json"
+        assemble(root, tag, commit, base, out, smoke_results=smoke,
+                 release_epoch=claim["claim_epoch"], archive=archive)
+        digest = hashlib.sha256(out.read_bytes()).hexdigest()
+    emit({"manifest-url": f"{base}/releases/tag/{archive}/release-candidates.json",
+          "manifest-sha256": digest}, env)
 
 
 def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha256: str,
@@ -437,6 +654,7 @@ def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha25
         "releaseId": release_id,
         "candidateManifestSha256": candidate_manifest_sha256,
         "dockerManifestDigest": docker_manifest_digest,
+        "archive": f"releases/tag/{claim['claim_tag']}/",
     }
 
 
@@ -483,40 +701,87 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
     return tag_object
 
 
-def retarget_release(repository: str, release_id: int, tag: str, commit: str, *, publish: bool,
-                     run=output) -> None:
+def edit_draft_release(repository: str, release_id: int, tag: str, commit: str, *,
+                       run=output) -> None:
+    """Retarget the draft onto the receipt tag and strip the warning blocks.
+
+    Immutable releases take no edits after publication, so every edit happens
+    here while the release is still a draft, and the tag name, draft flag, and
+    body are read back before anything else touches the release. A release that
+    is already public is left alone: nothing can repair it.
+    """
     endpoint = f"repos/{repository}/releases/{release_id}"
     current = json.loads(run(["gh", "api", endpoint]))
-    if (current.get("id") == release_id and current.get("tag_name") == tag
-            and current.get("prerelease") is False and current.get("draft") is False):
+    if current.get("id") != release_id:
+        raise ValueError("Stable draft release id changed")
+    if (current.get("tag_name") == tag and current.get("draft") is False
+            and current.get("prerelease") is False):
         return
+    if current.get("draft") is not True:
+        raise ValueError("Stable release is no longer a draft and cannot be repaired")
+    body = strip_draft_warning(current.get("body") or "")
     run([
         "gh", "api", "--method", "PATCH", endpoint,
         "--raw-field", f"tag_name={tag}", "--raw-field", f"target_commitish={commit}",
-        "--field", "prerelease=false", "--raw-field", "make_latest=true",
-        "--field", f"draft={str(not publish).lower()}",
+        "--raw-field", "make_latest=true",
+        "--field", "prerelease=false", "--field", "draft=true",
+        "--raw-field", f"body={body}",
     ])
     release = json.loads(run(["gh", "api", endpoint]))
     if (release.get("id") != release_id or release.get("tag_name") != tag
-            or release.get("prerelease") is not False or release.get("draft") is not (not publish)):
-        raise ValueError("Stable release retarget did not persist")
+            or release.get("prerelease") is not False or release.get("draft") is not True):
+        raise ValueError("Stable draft retarget did not persist")
+    # A fence that survives the edit — balanced or not — means the body was
+    # changed underneath this call, and the release must not go public.
+    if strip_draft_warning(release.get("body") or "") != body:
+        raise ValueError("Stable draft body edit did not persist")
+
+
+def publish_release_draft(repository: str, release_id: int, tag: str, *, run=output) -> None:
+    """Make the release public as its own final call.
+
+    Under immutable releases this is the last edit the release ever takes, so
+    it runs only after the retarget and the strip have both been read back.
+    """
+    endpoint = f"repos/{repository}/releases/{release_id}"
+    run(["gh", "api", "--method", "PATCH", endpoint, "--field", "draft=false"])
+    release = json.loads(run(["gh", "api", endpoint]))
+    if (release.get("id") != release_id or release.get("tag_name") != tag
+            or release.get("prerelease") is not False or release.get("draft") is not False
+            or not release.get("published_at")):
+        raise ValueError("Stable release publication did not persist")
+
+
+def publish_attempt(record: dict, *, repository: str, run=output, read_archive) -> str:
+    """The one ordered publication pass, steps 1-4, each read back before the next.
+
+    Explicit publish and autopublish converge here. The manifest digest is
+    hashed from the attempt archive (nothing records it earlier), the receipt
+    tag is written, the draft is retargeted and stripped while still a draft,
+    and only then does the final call make it public. Returns the Docker
+    manifest digest the receipt binds, for the alias move that follows.
+    """
+    from scripts.releases import docker
+
+    claim = {"claim_tag": record["claim_tag"], "claim_object": record["claim_object"],
+             "autopublish": record["autopublish"], "claim_epoch": record["claim_epoch"]}
+    manifest = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+    docker_digest = docker.published_digest(record["claim_tag"], run)
+    ensure_final_tag(record["tag"], record["commit"], claim,
+                     candidate_manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+                     docker_manifest_digest=docker_digest,
+                     release_id=record["release_id"], run=run)
+    edit_draft_release(repository, record["release_id"], record["tag"], record["commit"], run=run)
+    publish_release_draft(repository, record["release_id"], record["tag"], run=run)
+    return docker_digest
 
 
 def complete(env: dict) -> None:
+    """Validate the accepted candidate archive. The final tag moves to publish."""
     tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
-    release_id = env.get("RELEASE_ID", "")
-    if not str(release_id).isdigit():
-        raise ValueError("Stable release database ID is required")
-    ensure_final_tag(
-        tag, commit, claim,
-        candidate_manifest_sha256=env["CANDIDATE_MANIFEST_SHA256"],
-        docker_manifest_digest=env.get("DOCKER_MANIFEST_DIGEST", ""),
-        release_id=int(release_id),
-    )
-    retarget_release(env["GITHUB_REPOSITORY"], int(release_id), tag, commit, publish=False)
+    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"], archive=claim["claim_tag"])
 
 
 def main(argv: list[str] | None = None, env: dict | None = None) -> None:
@@ -527,9 +792,15 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
         summary("\n".join(f"- {name}: {needs.get(name, {}).get('result', 'missing')}" for name in argv[1:]), env)
         require_success(needs, argv[1:])
         return
-    commands = {"admit": admit, "verify": verify, "transitions": transitions, "complete": complete}
+    if argv and argv[0] == "stage-receipt":
+        if len(argv) != 3 or argv[1] != "--receipt" or argv[2] not in RECEIPT_TARGETS:
+            raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
+        stage_receipt(env, argv[2])
+        return
+    commands = {"admit": admit, "verify": verify, "transitions": transitions,
+                "candidate-manifest": candidate_manifest, "complete": complete}
     if len(argv) != 1 or argv[0] not in commands:
-        raise ValueError("Expected admit, verify, gate, transitions or complete")
+        raise ValueError("Expected admit, verify, gate, transitions, candidate-manifest, stage-receipt or complete")
     commands[argv[0]](env)
 
 

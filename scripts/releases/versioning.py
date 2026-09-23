@@ -1,8 +1,8 @@
-"""Ref name to version, and the next version from the release family.
+"""Ref name to version, and the next version from the published stable head.
 
-The family is the published stable head, then outstanding ``-rc`` claims, then
-the seed when both are empty. CalVer tags and receipt tags are excluded: a
-CalVer tag is a valid three-component version and would win every ``max()``.
+A version is spent only by publication. Attempt refs (``rc.<N>-vX.Y.Z``) and
+their abandon markers number attempts within one version; they never move the
+line. CalVer tags, canary identities and receipt namespaces are not versions.
 """
 from __future__ import annotations
 
@@ -67,10 +67,40 @@ def version_from_tag(ref: str) -> str | None:
     return ref[1:]
 
 
-def _claim_version(tag: str) -> str | None:
-    if isinstance(tag, str) and tag.endswith("-rc"):
-        return version_from_tag(tag[:-3])
-    return None
+# The ref grammar only anchors; ``version_from_tag`` owns the version shape.
+_ATTEMPT_REF_RE = re.compile(r"rc\.(?P<attempt>[1-9][0-9]*)-(?P<tag>v[^/]+)")
+_MARKER_PREFIX = "abandoned-"
+
+
+def parse_attempt_ref(ref: str) -> tuple[str, int] | None:
+    """``rc.<N>-vX.Y.Z`` to ``(version, N)``, or None for anything else.
+
+    The attempt comes first so the ref can never read as a SemVer prerelease
+    of the version it claims.
+    """
+    match = _ATTEMPT_REF_RE.fullmatch(ref) if isinstance(ref, str) else None
+    if match is None:
+        return None
+    version = version_from_tag(match.group("tag"))
+    return (version, int(match.group("attempt"))) if version else None
+
+
+def parse_marker_ref(ref: str) -> tuple[str, int] | None:
+    """``abandoned-rc.<N>-vX.Y.Z``, the record that clears one attempt."""
+    if not isinstance(ref, str) or not ref.startswith(_MARKER_PREFIX):
+        return None
+    return parse_attempt_ref(ref[len(_MARKER_PREFIX):])
+
+
+def attempt_ref(version: str, attempt: int) -> str:
+    ref = f"rc.{attempt}-v{version}"
+    if parse_attempt_ref(ref) != (version, attempt):
+        raise ValueError(f"invalid attempt ref: {version!r} attempt {attempt!r}")
+    return ref
+
+
+def marker_ref(version: str, attempt: int) -> str:
+    return _MARKER_PREFIX + attempt_ref(version, attempt)
 
 
 def _bump(version: str, bump: str) -> str:
@@ -84,13 +114,45 @@ def _bump(version: str, bump: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def derive_next_version(*, published: str | None, claims: list[str], bump: str) -> str:
-    """The next version: max of the family, then the bump.
+def derive_next_version(*, published: str | None, bump: str) -> str:
+    """The next version from the published head, or the seed before one exists.
 
-    ``claims`` may contain anything a tag list contains. Only ``v<semver>-rc``
-    entries count; CalVer labels and receipt tags are ignored, not errors.
+    Attempts do not move the line. A version is spent by publication, so an
+    abandoned attempt leaves its version free for the next cut.
     """
-    family = [published] if published else []
-    family.extend(version for version in (_claim_version(tag) for tag in claims) if version)
-    base = max(family, key=lambda version: [int(part) for part in version.split(".")]) if family else SEED
-    return _bump(base, bump)
+    return _bump(published or SEED, bump)
+
+
+def next_attempt(version: str, refs: list[str]) -> int:
+    """One past the highest attempt ref for ``version``.
+
+    Marker refs do not count and do not free a number: an abandoned attempt
+    keeps its ref, so its number is never cut again.
+    """
+    attempts = [parsed[1] for parsed in map(parse_attempt_ref, refs)
+                if parsed and parsed[0] == version]
+    return max(attempts, default=0) + 1
+
+
+def outstanding_attempts(refs: list[str], is_published) -> list[tuple[str, int, str]]:
+    """The one definition of an outstanding attempt.
+
+    An attempt ref is outstanding when its abandon marker ref does not exist
+    and its version has no final tag. ``is_published(version)`` answers whether
+    the final tag ``v{version}`` exists, so callers keep their own remote
+    lookup. Both the release entrypoint and the sequencer refuse more than one
+    of these, across all versions.
+    """
+    cleared = {parsed for parsed in map(parse_marker_ref, refs) if parsed}
+    published: dict[str, bool] = {}
+    outstanding: list[tuple[str, int, str]] = []
+    for ref in refs:
+        parsed = parse_attempt_ref(ref)
+        if parsed is None or parsed in cleared:
+            continue
+        version, attempt = parsed
+        if version not in published:
+            published[version] = bool(is_published(version))
+        if not published[version]:
+            outstanding.append((version, attempt, ref))
+    return outstanding

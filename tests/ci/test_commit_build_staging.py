@@ -80,7 +80,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         artifact = tmp_path / 'apps/desktop/release/HermesBundled-0.33.0-win-x64.msix'
         artifact.parent.mkdir(parents=True)
         artifact.write_bytes(b'inert downloadable fixture')
-        staged = shell_step(tmp_path, r2_server, 'build-win32-commit', 'Stage Windows packages to R2', env)
+        staged = shell_step(tmp_path, r2_server, 'build-win32-x64-commit', 'Stage Windows packages to R2', env)
         assert staged.returncode == 0, staged.stdout + staged.stderr
     result = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                         'Render the full expected-binary matrix', env)
@@ -108,8 +108,8 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         elif line.startswith('| Linux'):
             assert 'Disabled' in line and '](' not in line
     assert all(key.startswith(f'releases/commit/{sha}/') for key in r2_server.store)
-    for name in ('build-win32', 'build-darwin'):
-        # The commit/release split collapsed into one leg per platform; the
+    for name in ('build-win32-x64', 'build-win32-arm64', 'build-darwin-arm64', 'build-darwin-x64'):
+        # The commit/release split collapsed into one leg per arch; the
         # result job's env still encodes exactly-which-trust-branch-succeeded.
         result_job = jobs[name]
         assert f"needs.{name}-commit.result" in result_job['env']['SELECTED_BUILD_SUCCEEDED']
@@ -130,14 +130,14 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     release = tmp_path / 'apps/desktop/release'
     release.mkdir(parents=True)
     producers = [
-        ('build-win32-commit', 'Stage Windows packages to R2', 'win32-x64', [
+        ('build-win32-x64-commit', 'Stage Windows packages to R2', 'win32-x64', [
             'HermesBundled-0.33.0-win-x64.msix']),
-        ('build-win32-commit', 'Stage Windows packages to R2', 'win32-arm64', [
+        ('build-win32-arm64-commit', 'Stage Windows packages to R2', 'win32-arm64', [
             'HermesBundled-0.33.0-win-arm64.msix']),
-        ('build-darwin-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-arm64', [
+        ('build-darwin-arm64-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-arm64', [
             'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
             'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
-        ('build-darwin-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-x64', [
+        ('build-darwin-x64-commit', 'Stage macOS packages and feed inputs to R2', 'darwin-x64', [
             'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
             'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
         ('assemble-win32-bundle', 'Stage universal bundles to R2', 'windows-universal', [
@@ -175,9 +175,12 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
 
     summary = tmp_path / 'summary.md'
     summary_env = {**env, 'GITHUB_STEP_SUMMARY': str(summary), 'RELEASE_NEEDS': json.dumps({
-        'validate': {'result': 'success'}, 'build-win32': {'result': 'success'},
-        'build-darwin': {'result': 'success'}, 'assemble-win32-bundle': {'result': 'success'},
-        'termux-deb': {'result': 'success'}, 'build-linux': {'result': 'success'},
+        'validate': {'result': 'success'}, 'build-win32-x64': {'result': 'success'},
+        'build-win32-arm64': {'result': 'success'}, 'build-darwin-arm64': {'result': 'success'},
+        'build-darwin-x64': {'result': 'success'},
+        'assemble-win32-bundle': {'result': 'success'},
+        'termux-deb': {'result': 'success'}, 'build-linux-x64': {'result': 'success'},
+        'build-linux-arm64': {'result': 'success'},
     })}
     result = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                         'Render the full expected-binary matrix', summary_env)
@@ -214,8 +217,8 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-x64.json')
     summary.unlink()
     summary_env['RELEASE_NEEDS'] = json.dumps({'validate': {'result': 'success'},
-                                             'build-darwin': {'result': 'failure'}})
+                                             'build-darwin-x64': {'result': 'failure'}})
     incomplete = shell_step(tmp_path, r2_server, 'commit-builds-summary',
                             'Render the full expected-binary matrix', summary_env)
     assert incomplete.returncode == 0, incomplete.stdout + incomplete.stderr
-    assert 'failed: build-darwin' in summary.read_text(encoding='utf-8-sig')
+    assert 'failed: build-darwin-x64' in summary.read_text(encoding='utf-8-sig')

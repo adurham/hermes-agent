@@ -51,8 +51,10 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     gh.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(driver))} "$@"\n')
     gh.chmod(0o755)
     needs = {name: {"result": "success"} for name in job["needs"]}
-    needs["build-win32"]["result"] = "failure"
-    needs["build-darwin"]["result"] = "failure"
+    needs["build-win32-x64"]["result"] = "failure"
+    needs["build-win32-arm64"]["result"] = "failure"
+    needs["build-darwin-arm64"]["result"] = "failure"
+    needs["build-darwin-x64"]["result"] = "failure"
     needs["termux-deb"]["result"] = "failure"
     needs["publish-win32-updater"]["result"] = "skipped"
     result = shell_step(tmp_path, r2_server, "builds-table", "Render", {
@@ -69,7 +71,7 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
     release_url = r2.public_url_for("https://github.com/o/r/releases/tag", tag)
     assert f'href="{release_url}"' in page
     assert "Build incomplete" in page
-    assert "build-win32 (failure)" in page and "publish-win32-updater (skipped)" in page
+    assert "build-win32-x64 (failure)" in page and "publish-win32-updater (skipped)" in page
     assert "No downloadable artifacts" in page
     for name, info in needs.items():
         if info["result"] != "success":

@@ -59,7 +59,7 @@ def test_archive_gate_uses_bootstrap_python_and_trusted_exact_revision():
     assert validate["environment"] == "release-signing"
     checkout = validate["steps"][0]
     assert "actions/checkout" in checkout["uses"]
-    for name in ("build-win32", "build-darwin", "termux-deb"):
+    for name in ("build-win32-x64", "build-darwin-arm64", "termux-deb"):
         assert "archive-inputs" not in release[name].get("needs", [])
 
     action = YAML(typ="base").load((ROOT / ".github/actions/setup-pm/action.yml").read_text(encoding="utf-8"))

@@ -16,9 +16,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases.versioning import (
+    marker_ref, outstanding_attempts, parse_attempt_ref, parse_marker_ref,
+    version_from_tag,
+)
 
-CLAIM_TAG_RE = re.compile(r"^(v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-rc$")
 SHA256 = re.compile(r"[a-f0-9]{64}")
 DOCKER_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 MAX_ATTEMPTS = 3
@@ -118,8 +120,13 @@ def _utc(value: str) -> datetime:
 
 
 def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
-                  now: datetime | None = None) -> tuple[str, dict | None]:
-    """Keep failed claims live until two failed-job retries are exhausted."""
+                  now: datetime | None = None, has_draft: bool = False) -> tuple[str, dict | None]:
+    """Keep failed claims live until two failed-job retries are exhausted.
+
+    Success with a draft on the attempt ref is green: the final tag moves to
+    publish. A missing draft after success is an error, because the tool is
+    the only thing that deletes drafts; abandonment is the marker ref.
+    """
     if not runs:
         if claimed_at is None:
             raise ValueError("A claim without a workflow needs its immutable claim time")
@@ -135,7 +142,9 @@ def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
     if latest.get("status") != "completed":
         return "running", None
     if latest.get("conclusion") == "success":
-        raise ValueError("Stable workflow succeeded without a final tag")
+        if not has_draft:
+            raise ValueError("Stable workflow succeeded without a draft release")
+        return "green", None
     if attempt >= MAX_ATTEMPTS:
         return "burned", None
     updated_at = latest.get("updated_at")
@@ -183,12 +192,21 @@ def classify_final_release(tag: str, claim_tag: str, release: dict | None) -> tu
 
 
 def _remote_tags(run=output) -> dict[str, dict[str, str]]:
+    """Every remote receipt tag, attempt ref, and abandon marker ref.
+
+    Three listings, because a fetch or ls-remote glob is filtered here by the
+    ref parsers, not widened.
+    """
     refs: dict[str, dict[str, str]] = {}
-    for line in run(["git", "ls-remote", "--tags", "origin", "refs/tags/v*"]).splitlines():
+    for line in run([
+        "git", "ls-remote", "--tags", "origin",
+        "refs/tags/v*", "refs/tags/rc.*", "refs/tags/abandoned-rc.*",
+    ]).splitlines():
         sha, ref = line.split()
         peeled = ref.endswith("^{}")
         tag = ref.removeprefix("refs/tags/").removesuffix("^{}")
-        if STABLE_TAG_RE.fullmatch(tag) or CLAIM_TAG_RE.fullmatch(tag):
+        if (version_from_tag(tag) or parse_attempt_ref(tag)
+                or parse_marker_ref(tag)):
             refs.setdefault(tag, {})["commit" if peeled else "object"] = sha
     return refs
 
@@ -210,25 +228,33 @@ def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
     from scripts.releases.stable import tagger_epoch
 
-    run(["git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*"])
+    run([
+        "git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*",
+        "+refs/tags/rc.*:refs/tags/rc.*",
+        "+refs/tags/abandoned-rc.*:refs/tags/abandoned-rc.*",
+    ])
     refs = _remote_tags(run)
+    outstanding = outstanding_attempts(list(refs), lambda v: f"v{v}" in refs)
+    if len(outstanding) > 1:
+        named = ", ".join(ref for *_rest, ref in outstanding)
+        raise ValueError(f"more than one outstanding attempt ({named})")
     releases = _release_rows(repository, run)
     workflow_runs = _workflow_runs(repository, run)
     records = []
 
     for claim_tag, claim_ref in refs.items():
-        match = CLAIM_TAG_RE.fullmatch(claim_tag)
-        if match is None:
+        parsed = parse_attempt_ref(claim_tag)
+        if parsed is None:
             continue
+        version, attempt = parsed
         if set(claim_ref) != {"object", "commit"}:
             raise ValueError(f"{claim_tag} must be an annotated remote tag")
-        tag = match.group(1)
-        version = tag[1:]
+        tag = f"v{version}"
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         claim_epoch = claim.get("claimEpoch")
         expected_claim = {
-            "schema": 1, "version": version, "commit": commit,
+            "schema": 1, "version": version, "attempt": attempt, "commit": commit,
             "autopublish": claim["autopublish"], "claimEpoch": claim_epoch,
         }
         if (claim != expected_claim or not isinstance(claim["autopublish"], bool)
@@ -260,6 +286,7 @@ def discover(repository: str, run=output) -> list[dict]:
                 "releaseId": final.get("releaseId"),
                 "candidateManifestSha256": final.get("candidateManifestSha256"),
                 "dockerManifestDigest": final.get("dockerManifestDigest"),
+                "archive": f"releases/tag/{claim_tag}/",
             }
             if (final != expected_final
                     or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
@@ -270,6 +297,9 @@ def discover(repository: str, run=output) -> list[dict]:
                 state, needs_retarget = "burned", False
             else:
                 state, needs_retarget = classify_final_release(tag, claim_tag, release)
+        elif marker_ref(version, attempt) in refs:
+            # The attempt was abandoned and its version has no final tag.
+            state, retry = "burned", None
         else:
             if release is not None and (release.get("tag_name") != claim_tag
                                         or release.get("draft") is not True
@@ -280,14 +310,17 @@ def discover(repository: str, run=output) -> list[dict]:
             state, retry = classify_runs(
                 matching_runs,
                 claimed_at=datetime.fromtimestamp(claim_epoch, tz=timezone.utc),
+                has_draft=release is not None,
             )
 
         records.append({
             "version": version,
+            "attempt": attempt,
             "state": state,
             "autopublish": claim["autopublish"],
             "claim_tag": claim_tag,
             "claim_object": claim_ref["object"],
+            "claim_epoch": claim_epoch,
             "tag": tag,
             "commit": commit,
             "release_id": release.get("id") if release else None,
@@ -300,11 +333,15 @@ def discover(repository: str, run=output) -> list[dict]:
     return sorted(records, key=lambda record: _key(record["version"]))
 
 
-def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> list[dict]:
+def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
+              read_archive=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
-    from scripts.releases import channel_releases, docker, stable
+    from scripts.releases import channel_releases, docker, stable, store
 
     repository = env["GITHUB_REPOSITORY"]
+    # The archive copy is the only authority for the candidate manifest digest;
+    # nothing records it before the publication pass hashes it.
+    read_archive = read_archive or channel_releases.read_archive_bytes
     records = discover(repository, run)
     retries = retry_due(records)
     if retries:
@@ -327,8 +364,13 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
         return [{"retry": retry["version"], "attempt": retry["attempt"]} for retry in retries]
     for record in records:
         if record["needs_retarget"]:
-            stable.retarget_release(repository, record["release_id"], record["tag"],
-                                    record["commit"], publish=False, run=run)
+            # Recovery for a publish that died after the receipt tag: the tag
+            # exists and the release is still a draft, so the retarget and the
+            # publication rerun. A public release can never be repaired.
+            stable.edit_draft_release(repository, record["release_id"], record["tag"],
+                                      record["commit"], run=run)
+            stable.publish_release_draft(repository, record["release_id"], record["tag"],
+                                         run=run)
     if any(record["needs_retarget"] for record in records):
         records = discover(repository, run)
 
@@ -340,16 +382,23 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
 
     if advance_head is None:
         def production_advance(record: dict) -> None:
-            docker.promote_stable(record["tag"], record["docker_manifest_digest"])
             with tempfile.TemporaryDirectory() as directory:
                 channel_releases.advance_stable(env, record, Path(directory))
+            # The stable/latest aliases move onto the attempt's image here, in
+            # the publication pass with the feed pointer, never in the green
+            # build that pushed the image under the attempt ref.
+            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
+            # The Store check joins the pass here (after the feeds and aliases
+            # move). It never releases the held submission: the API cannot,
+            # so it prints the Publish now step. A failed submission is red.
+            store.check_from_env(env)
         advance_head = production_advance
 
     for step in steps:
         if "flip" in step:
             record = by_version[step["flip"]]
-            stable.retarget_release(repository, record["release_id"], record["tag"],
-                                    record["commit"], publish=True, run=run)
+            record["docker_manifest_digest"] = stable.publish_attempt(
+                record, repository=repository, run=run, read_archive=read_archive)
         else:
             advance_head(by_version[step["advance"]])
 

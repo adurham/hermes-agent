@@ -186,6 +186,7 @@ def _claim_message(clone: Path) -> str:
     return json.dumps({
         "schema": 1,
         "version": "0.1.2",
+        "attempt": 1,
         "commit": _git("rev-parse", "HEAD", cwd=clone),
         "autopublish": False,
         "claimEpoch": 1_790_000_000,
@@ -196,10 +197,10 @@ def test_claim_on_origin_main_is_admitted_and_exports_the_full_sha(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _origin, clone = _seed_repo(tmp_path)
     monkeypatch.setenv("GIT_COMMITTER_DATE", "@1790000000 +0000")
-    _git("tag", "-a", "v0.1.2-rc", "-m", _claim_message(clone), cwd=clone)
-    _git("push", "origin", "refs/tags/v0.1.2-rc", cwd=clone)
+    _git("tag", "-a", "rc.1-v0.1.2", "-m", _claim_message(clone), cwd=clone)
+    _git("push", "origin", "refs/tags/rc.1-v0.1.2", cwd=clone)
 
-    proc = _run_admission(clone, "v0.1.2", "v0.1.2-rc")
+    proc = _run_admission(clone, "v0.1.2", "rc.1-v0.1.2")
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
     gh_output = (clone / "github_output.txt").read_text(encoding="utf-8")
@@ -213,10 +214,10 @@ def test_claim_not_on_origin_main_is_refused(tmp_path: Path):
     (clone / "rogue.txt").write_text("unreviewed\n", encoding="utf-8")
     _git("add", "-A", cwd=clone)
     _git("commit", "-m", "rogue", cwd=clone)
-    _git("tag", "-a", "v0.1.2-rc", "-m", _claim_message(clone), cwd=clone)
-    _git("push", "origin", "refs/tags/v0.1.2-rc", cwd=clone)
+    _git("tag", "-a", "rc.1-v0.1.2", "-m", _claim_message(clone), cwd=clone)
+    _git("push", "origin", "refs/tags/rc.1-v0.1.2", cwd=clone)
 
-    proc = _run_admission(clone, "v0.1.2", "v0.1.2-rc")
+    proc = _run_admission(clone, "v0.1.2", "rc.1-v0.1.2")
     assert proc.returncode != 0, "a tag off origin/main must not be admitted"
     assert "is not on main" in proc.stdout + proc.stderr
     # And nothing was exported for the signing jobs to consume.
@@ -243,8 +244,8 @@ def test_downloadable_windows_builds_refuse_to_ship_unsigned(tmp_path: Path):
     """The Windows signer only warns without AZURE_SIGN_*; every lane whose
     artifacts are downloadable must therefore fail before building, under
     the same gate the macOS leg uses for its signing credentials."""
-    step = _require_step("build-win32-release", "Require Azure signing")
-    assert step["if"] == _require_step("build-darwin-release", "Require signing credentials")["if"]
+    step = _require_step("build-win32-x64-release", "Require Azure signing")
+    assert step["if"] == _require_step("build-darwin-arm64-release", "Require signing credentials")["if"]
     assert "build-commit" not in step["if"] and "release-phase == 'candidate'" in step["if"]
     names = list(step["env"])
     assert {"AZURE_SIGN_ENDPOINT", "AZURE_SIGN_ACCOUNT", "AZURE_SIGN_PROFILE", "AZURE_CLIENT_ID"} <= set(names)

@@ -16,9 +16,11 @@ import pytest
 from tests.ci.test_commit_build_staging import ROOT, shell_step
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
 from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from scripts.releases.job_groups import JOB_GROUPS
 
 SHA = 'a' * 40
 TAG = 'v0.28.0+canary.20260818T101010Z'
+ALL_JOBS = ','.join(JOB_GROUPS)
 
 
 def smoke_workflow():
@@ -56,17 +58,27 @@ def gate(expression, inputs, needs, *, cancelled=False, job_if=True):
 
 
 def admitted(jobs):
-    return {name: {'result': 'success', 'outputs': {'sha': SHA}} for name in jobs}
+    return {name: {'result': 'success',
+                   'outputs': {'sha': SHA, **{group: 'true' for group in JOB_GROUPS}}}
+            for name in jobs}
+
+
+def selected_needs(jobs, name, selected):
+    """Admitted needs whose validate outputs select only `selected` groups."""
+    needs = admitted(jobs[name]['needs'])
+    needs['validate']['outputs'] = {group: ('true' if group in selected else 'false')
+                                    for group in JOB_GROUPS}
+    return needs
 
 
 def test_native_consumers_and_publication_fail_closed_across_trust_skips(tmp_path):
     jobs = _workflow()['jobs']
-    base_inputs = {'build_commit': '', 'upload_release': True, 'release-phase': '', 'termux_only': False, 'tag': TAG}
-    consumers = ['smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'assemble-win32-bundle',
-                 'publish-win32-updater', 'publish-darwin-updater', 'candidate-manifest']
+    base_inputs = {'build_commit': '', 'upload_release': True, 'release-phase': '', 'jobs': ALL_JOBS, 'tag': TAG}
+    consumers = ['smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64',
+                 'assemble-win32-bundle', 'publish-win32-updater', 'publish-darwin-updater']
     for name in consumers:
         job = jobs[name]
-        inputs = {**base_inputs, 'release-phase': 'candidate' if name == 'candidate-manifest' else ''}
+        inputs = {**base_inputs, 'release-phase': ''}
         needs = admitted(job['needs'])
         # A skipped execution exists in the ancestry of every native result.
         needs['build-win32-commit'] = {'result': 'skipped'}
@@ -80,45 +92,55 @@ def test_native_consumers_and_publication_fail_closed_across_trust_skips(tmp_pat
         needs['validate']['outputs'] = {}
         assert not gate(job['if'], inputs, needs), name
 
-    scope_jobs = consumers[:4]
+    scope_jobs = consumers[:5]
     for name in scope_jobs:
         needs = admitted(jobs[name]['needs'])
-        for phase, commit, upload, termux, allowed in [
-            ('', SHA, False, False, True), ('candidate', '', False, False, True),
-            ('', '', True, False, True), ('', '', False, False, False),
-            ('publish', '', False, False, False), ('promote', '', False, False, False),
-            ('', SHA, False, True, False),
+        for phase, commit, upload, allowed in [
+            ('', SHA, False, True), ('candidate', '', False, True),
+            ('', '', True, True), ('', '', False, False),
+            ('publish', '', False, False), ('promote', '', False, False),
         ]:
             inputs = {**base_inputs, 'release-phase': phase, 'build_commit': commit,
-                      'upload_release': upload, 'termux_only': termux}
+                      'upload_release': upload}
             assert gate(jobs[name]['if'], inputs, needs) is allowed, (name, inputs)
+    # A group the caller did not select stays skipped; its consumers refuse.
+    for name in ('smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64',
+                 'assemble-win32-bundle'):
+        assert not gate(jobs[name]['if'], base_inputs,
+                        selected_needs(jobs, name, {'termux'})), name
     for name in ('publish-win32-updater', 'publish-darwin-updater'):
         for key, value in [('build_commit', SHA), ('upload_release', False),
-                           ('termux_only', True), ('release-phase', 'candidate'), ('release-phase', 'promote')]:
+                           ('release-phase', 'candidate'), ('release-phase', 'promote')]:
             assert not gate(jobs[name]['if'], {**base_inputs, key: value}, admitted(jobs[name]['needs']))
+        groups = ['darwin-arm64', 'darwin-x64'] if name == 'publish-darwin-updater' \
+            else ['win32-arm64', 'win32-x64', 'win32-bundle']
+        for group in groups:
+            assert not gate(jobs[name]['if'], base_inputs,
+                            selected_needs(jobs, name, {group})), (name, group)
 
     for platform in ('win32', 'darwin'):
-        job = jobs[f'build-{platform}']
-        outcomes = ('success', 'failure', 'skipped', 'cancelled')
-        for commit, release, commit_result in itertools.product(
-                ('', SHA), outcomes, outcomes):
-            needs = admitted(job['needs'])
-            needs[f'build-{platform}-release'] = {'result': release}
-            needs[f'build-{platform}-commit'] = {'result': commit_result}
-            selected = gate(job['env']['SELECTED_BUILD_SUCCEEDED'], {'build_commit': commit}, needs, job_if=False)
-            expected = (commit == '' and release == 'success' and commit_result == 'skipped') or (
-                commit != '' and commit_result == 'success' and release == 'skipped')
-            assert selected is expected
-            result = subprocess.run([_BASH, '-e', '-c', job['steps'][0]['run']], cwd=tmp_path,
-                                    env=_child_env(SELECTED_BUILD_SUCCEEDED=str(selected).lower()),
-                                    capture_output=True, text=True, timeout=5)
-            assert (result.returncode == 0) is expected
+        for arch in ('x64', 'arm64'):
+            job = jobs[f'build-{platform}-{arch}']
+            outcomes = ('success', 'failure', 'skipped', 'cancelled')
+            for commit, release, commit_result in itertools.product(
+                    ('', SHA), outcomes, outcomes):
+                needs = admitted(job['needs'])
+                needs[f'build-{platform}-{arch}-release'] = {'result': release}
+                needs[f'build-{platform}-{arch}-commit'] = {'result': commit_result}
+                selected = gate(job['env']['SELECTED_BUILD_SUCCEEDED'], {'build_commit': commit}, needs, job_if=False)
+                expected = (commit == '' and release == 'success' and commit_result == 'skipped') or (
+                    commit != '' and commit_result == 'success' and release == 'skipped')
+                assert selected is expected
+                result = subprocess.run([_BASH, '-e', '-c', job['steps'][0]['run']], cwd=tmp_path,
+                                        env=_child_env(SELECTED_BUILD_SUCCEEDED=str(selected).lower()),
+                                        capture_output=True, text=True, timeout=5)
+                assert (result.returncode == 0) is expected
 
 
 def test_signature_cache_saves_only_in_the_writable_build():
     jobs = _workflow()['jobs']
     for branch, commit in [('release', ''), ('commit', SHA)]:
-        job = jobs[f'build-win32-{branch}']
+        job = jobs[f'build-win32-x64-{branch}']
         steps = job['steps']
         cache_steps = [step for step in steps
                        if 'payload-signatures' in step.get('with', {}).get('path', '')]
@@ -145,15 +167,14 @@ def test_smoke_matrix_native_routes_and_driver_only_dependencies():
     workflow = smoke_workflow()
     jobs = _workflow()['jobs']
     executions = []
-    for name in ('smoke-darwin', 'smoke-win32', 'smoke-win32-universal'):
+    for name in ('smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64'):
         caller = jobs[name]
-        assert caller['strategy']['fail-fast'] is False
         assert caller['permissions'] == {'contents': 'read'} and 'secrets' not in caller
-        matrix = caller['strategy']['matrix']
-        for arch, fmt in itertools.product(matrix['arch'], matrix.get('format', [caller['with']['format']])):
-            executions.append((caller['with']['platform'], arch, fmt))
+        formats = caller.get('strategy', {}).get('matrix', {}).get('format', [caller['with']['format']])
+        for fmt in formats:
+            executions.append((caller['with']['platform'], caller['with']['arch'], fmt))
     assert set(executions) == {(platform, arch, fmt) for arch in ('arm64', 'x64')
-                               for platform, formats in [('darwin', ('dmg', 'zip')), ('win32', ('msix', 'msixbundle'))]
+                               for platform, formats in [('darwin', ('dmg', 'zip')), ('win32', ('msix',))]
                                for fmt in formats}
     for name, job in workflow['jobs'].items():
         # validate is the admission job (rejects unsupported targets before any
@@ -236,7 +257,7 @@ def test_public_smoke_fetches_the_receipt_bound_native_format(tmp_path, r2_serve
     (release / filename).write_bytes(payload)
     (release / ('Store-' + filename)).write_bytes(b'not eligible')
     universal = fmt == 'msixbundle'
-    job = 'assemble-win32-bundle' if universal else f'build-{platform}-commit'
+    job = 'assemble-win32-bundle' if universal else f'build-{platform}-{arch}-commit'
     stage = 'Stage universal bundles to R2' if universal else (
         'Stage Windows packages to R2' if platform == 'win32' else 'Stage macOS packages and feed inputs to R2')
     if platform == 'darwin':
@@ -289,25 +310,48 @@ def test_download_faults_never_export_an_accepted_artifact(tmp_path, r2_server, 
 
 def test_stable_phase_and_canary_gates_require_smoke_but_preserve_other_phases(tmp_path, r2_server):
     jobs = _workflow()['jobs']
-    required = {
-        'candidate': ['validate', 'build-win32', 'build-darwin', 'assemble-win32-bundle',
-                      'smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'termux-deb', 'candidate-manifest'],
-        'publish': ['validate', 'stable-publish', 'stable-store'],
+    group_jobs = {
+        'darwin-arm64': ['build-darwin-arm64', 'smoke-darwin-arm64'],
+        'darwin-x64': ['build-darwin-x64', 'smoke-darwin-x64'],
+        'win32-arm64': ['build-win32-arm64', 'smoke-win32-arm64'],
+        'win32-x64': ['build-win32-x64', 'smoke-win32-x64'],
+        'win32-bundle': ['assemble-win32-bundle'],
+        'termux': ['termux-deb'],
     }
-    for phase, selected in required.items():
-        needs = {name: {'result': 'success' if name in selected else 'skipped'}
-                 for name in jobs['stable-phase-result']['needs']}
-        for failed in [None, *selected]:
-            changed = copy.deepcopy(needs)
-            if failed:
-                changed[failed]['result'] = 'cancelled'
-            result = shell_step(tmp_path, r2_server, 'stable-phase-result', 'Require every phase job', {
-                'RELEASE_NEEDS': json.dumps(changed), 'RELEASE_PHASE': phase})
-            assert (result.returncode == 0) is (failed is None), (phase, failed, result.stderr)
+
+    def run_phase(phase, selected, failed=None):
+        needs = {name: {'result': 'success'} for name in jobs['stable-phase-result']['needs']}
+        needs['validate']['outputs'] = {group: ('true' if group in selected else 'false')
+                                        for group in group_jobs}
+        for group, members in group_jobs.items():
+            if group not in selected:
+                for member in members:
+                    needs[member]['result'] = 'skipped'
+        if failed:
+            needs[failed]['result'] = 'cancelled'
+        return shell_step(tmp_path, r2_server, 'stable-phase-result', 'Require every phase job',
+                          {'RELEASE_NEEDS': json.dumps(needs), 'RELEASE_PHASE': phase})
+
+    every = set(group_jobs)
+    assert run_phase('candidate', every).returncode == 0
+    assert run_phase('publish', every).returncode == 0
+    assert run_phase('publish', every - {'termux'}).returncode == 0
+    for group in group_jobs:
+        # A group that was not selected is not a failure of the phase.
+        assert run_phase('candidate', every - {group}).returncode == 0, group
+    for failed in ('smoke-darwin-arm64', 'build-win32-x64', 'termux-deb'):
+        assert run_phase('candidate', every, failed=failed).returncode != 0, failed
+    assert run_phase('candidate', every, failed='stable-publish').returncode == 0
+    # A partial selection still judges the groups it selected.
+    assert run_phase('candidate', {'darwin-arm64'}).returncode == 0
+    assert run_phase('candidate', {'darwin-arm64'}, failed='smoke-darwin-arm64').returncode != 0
+    assert run_phase('publish', set(), failed='stable-store').returncode != 0
+
     inputs = {'build_commit': '', 'upload_release': True, 'tag': TAG}
     needs = admitted(jobs['publish-canary']['needs'])
     assert gate(jobs['publish-canary']['if'], inputs, needs)
-    for name in ('smoke-darwin', 'smoke-win32', 'smoke-win32-universal'):
+    for name in ('smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64',
+                 'build-linux-x64', 'build-linux-arm64'):
         for state in ('failure', 'skipped', 'cancelled'):
             faulty = copy.deepcopy(needs)
             faulty[name]['result'] = state

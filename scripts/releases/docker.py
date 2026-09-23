@@ -13,6 +13,7 @@ MANIFEST_SCHEMA = 1
 SHA256 = re.compile(r"[a-f0-9]{64}")
 GIT_SHA = re.compile(r"[a-f0-9]{40}")
 from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases.versioning import parse_attempt_ref
 ARCHES = ("amd64", "arm64")
 IMAGE = "nousresearch/hermes-agent"
 
@@ -21,7 +22,9 @@ class DockerReleaseError(ValueError):
 
 
 def require_stable_tag(tag: str) -> str:
-    if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag or ""):
+    # The versioned image is tagged by the attempt ref; stable/latest move only
+    # at publish. The old v-suffix shape is dead.
+    if not isinstance(tag, str) or not (STABLE_TAG_RE.fullmatch(tag) or parse_attempt_ref(tag)):
         raise DockerReleaseError(f"Not a stable release tag: {tag!r}")
     return tag
 
@@ -128,6 +131,20 @@ def promote_stable(tag: str, digest: str, *, run=output, sleep=time.sleep) -> No
                 sleep(20)
         else:
             raise DockerReleaseError(f"Docker {alias} alias read-back mismatch")
+
+
+def published_digest(tag: str, run=output) -> str:
+    """The manifest-list digest of the attempt's published image, read at publish.
+
+    The image was pushed under the attempt ref when its own tests passed; the
+    receipt tag binds this digest, and the stable/latest aliases move onto it
+    in the publication pass.
+    """
+    require_stable_tag(tag)
+    digest = _inspect(f"{IMAGE}:{tag}", run)
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise DockerReleaseError("Published image manifest digest is invalid")
+    return digest
 
 
 def main(argv: list[str] | None = None) -> int:

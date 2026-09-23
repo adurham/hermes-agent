@@ -121,7 +121,7 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
     expected = ['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
                 '--ref', 'main', '--repo', 'fixture-owner/fixture-repo',
                 '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
-                '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']
+                '-f', 'termux_upgrade_from_tag=']
     result, calls = invoke('--build-commit', tip, '--publish')
     assert result.returncode == 0, result.stderr
     dispatches = [call for call in calls if call[1:3] == ['workflow', 'run']]
@@ -136,7 +136,7 @@ def test_commit_build_dispatch_is_repository_independent(fixture_repo):
     assert dispatches == [['gh', 'workflow', 'run', 'desktop-bundled-release.yml',
                            '--ref', 'main', '--repo', 'NousResearch/hermes-agent',
                            '-f', f'build_commit={tip}', '-f', 'tag=', '-f', 'upload_release=false',
-                           '-f', 'termux_only=false', '-f', 'termux_upgrade_from_tag=']]
+                           '-f', 'termux_upgrade_from_tag=']]
 
 
 # (Fork-conditional removal) The disposable routing test retired with it: a

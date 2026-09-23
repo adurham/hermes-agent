@@ -53,6 +53,18 @@ def test_cli_manifest_and_verify(tmp_path):
         assert result.returncode == 1 and '::error::' in result.stderr
 
 
+def test_manifest_admits_the_attempt_ref_image_tag():
+    from scripts.releases.docker import DockerReleaseError, build_manifest, parse_manifest
+
+    manifest = build_manifest("rc.1-v1.2.3", "a" * 40, {"amd64": "b" * 64, "arm64": "c" * 64})
+    assert parse_manifest(json.dumps(manifest).encode())["tag"] == "rc.1-v1.2.3"
+    # The old suffix shape is dead; a recut reuses no image tag.
+    with pytest.raises(DockerReleaseError):
+        build_manifest("v1.2.3-rc", "a" * 40, {"amd64": "b" * 64, "arm64": "c" * 64})
+    with pytest.raises(DockerReleaseError):
+        parse_manifest(json.dumps(dict(manifest, tag="not-a-tag")).encode())
+
+
 def test_promotion_reuses_the_receipt_digest_without_rebuilding():
     from scripts.releases.docker import DockerReleaseError, promote_stable
 

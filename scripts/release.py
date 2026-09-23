@@ -2743,7 +2743,7 @@ def main():
     publish_cmd.add_argument("--version", required=True)
     publish_cmd.add_argument("--remote", type=str)
     abandon_cmd = subcommands.add_parser(
-        "abandon", help="Delete a stable draft while retaining its spent claim")
+        "abandon", help="Clear the outstanding attempt, keeping its attempt ref and writing an abandon marker")
     abandon_cmd.add_argument("--version", required=True)
     abandon_cmd.add_argument("--remote", type=str)
     from scripts.releases.channel_build import add_arguments, validate_arguments, cmd_channel
