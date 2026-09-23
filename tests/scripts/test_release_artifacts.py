@@ -239,6 +239,39 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     assert all(value == r2_server.store[key] for key, value in before.items() if not key.startswith('releases/tag/'))
 
 
+def test_promote_writes_the_stable_mac_feed_from_the_attempt_archive(tmp_path, monkeypatch, r2_server, https_origin, staged_candidate):
+    import urllib.request
+
+    manifest, _, base = staged_candidate
+    # urlopen caches one global opener; use the fixture's per-test context so
+    # this test is order-independent against the per-test self-signed CA.
+    monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
+    artifacts.promote(manifest, tmp_path / 'promote', base)
+    feed = hermes_yaml.safe_load(r2_server.store['releases/darwin/stable/stable-mac.yml'][0].decode())
+    # The feed version is the plain package version, never the attempt ref.
+    assert feed['version'] == '1.2.3'
+    assert feed['version'] != manifest['archive']
+    urls = [entry['url'] for entry in feed['files']]
+    assert urls and all(url.startswith(f"/releases/tag/{manifest['archive']}/") for url in urls)
+    assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-arm64.zip" in urls
+    assert f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-mac-x64.zip" in urls
+
+
+def test_promote_refuses_when_one_macos_arch_is_missing(tmp_path, monkeypatch, r2_server, https_origin, staged_candidate):
+    import urllib.request
+
+    manifest, _, base = staged_candidate
+    monkeypatch.setattr(urllib.request, 'urlopen', https_origin.opener)
+    broken = copy.deepcopy(manifest)
+    broken['files'] = [f for f in broken['files'] if f['path'] != 'x64-stable-mac.yml']
+    r2_server.requests.clear()
+    with pytest.raises(ValueError, match='one ARM64 and one x64 macOS feed'):
+        artifacts.promote(broken, tmp_path / 'broken-arch', base)
+    # The refusal happens before any channel pointer moves.
+    assert not [path for method, path, _ in r2_server.requests
+                if method == 'PUT' and '/releases/win32/stable/' in path]
+
+
 @pytest.fixture
 def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
     """Run real workflow shell/CLIs; replace only service endpoints and tool setup."""
