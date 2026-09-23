@@ -1,4 +1,4 @@
-﻿# Hermes Agent bootstrap: git checkout + venv + hermes command on PATH.
+# Hermes Agent bootstrap: git checkout + venv + hermes command on PATH.
 # Heavy dependencies (tool binaries, browsers, node) are pm's job after
 # this: `hermes pm install`. Stage protocol kept for Hermes-Setup:
 #   -Manifest             print the stage list as JSON
@@ -291,23 +291,31 @@ function Initialize-ResolvedPaths {
     # in place rather than replaced, so a caller's choice is never
     # overwritten by a default. The script's own $PSBoundParameters was
     # captured at script scope ($script:BoundParams) because a function body
-    # sees its own binding, not the script's. The re-derived paths land at
-    # script scope so every stage below sees them.
-    if ($script:BoundParams.ContainsKey('HermesHome')) {
-        $script:HermesHome = ConvertTo-LongPath $script:HermesHome
+    # sees its own binding, not the script's.
+    $resolvedHome = if ($script:BoundParams.ContainsKey('HermesHome')) {
+        ConvertTo-LongPath $HermesHome
     } else {
-        $script:HermesHome = ConvertTo-LongPath $(
+        ConvertTo-LongPath $(
             if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
         )
     }
-    if ($script:BoundParams.ContainsKey('InstallDir')) {
-        $script:InstallDir = ConvertTo-LongPath $script:InstallDir
+    $resolvedDir = if ($script:BoundParams.ContainsKey('InstallDir')) {
+        ConvertTo-LongPath $InstallDir
     } else {
-        $script:InstallDir = Join-Path $script:HermesHome 'hermes-agent'
+        Join-Path $resolvedHome 'hermes-agent'
     }
-    $env:HERMES_HOME = $script:HermesHome
+    # The param() variables live in the CALLER's scope, which is the script
+    # scope only under -File. Under the documented
+    # `& ([scriptblock]::Create((irm ...)))` install they live in the
+    # scriptblock's scope and `$script:` names the caller's session instead,
+    # so `$script:HermesHome` read '' and every stage's bare $HermesHome kept
+    # the un-normalized value. Scope 1 is where param() bound in every mode
+    # (-File, scriptblock, dot-source).
+    Set-Variable -Scope 1 -Name HermesHome -Value $resolvedHome
+    Set-Variable -Scope 1 -Name InstallDir -Value $resolvedDir
+    $env:HERMES_HOME = $resolvedHome
     if ($script:NormalizedProfilePaths) {
-        Write-PathDiag "resolved install paths: HermesHome=$script:HermesHome InstallDir=$script:InstallDir"
+        Write-PathDiag "resolved install paths: HermesHome=$resolvedHome InstallDir=$resolvedDir"
     }
 
     # Captured here, where the values are final. The report goes to STDOUT as
@@ -320,8 +328,8 @@ function Initialize-ResolvedPaths {
         normalized        = $script:NormalizedPathRewrites
         resolver          = $script:LastResolver
         temp              = $env:TEMP
-        hermes_home       = $script:HermesHome
-        install_dir       = $script:InstallDir
+        hermes_home       = $resolvedHome
+        install_dir       = $resolvedDir
     }
 }
 
