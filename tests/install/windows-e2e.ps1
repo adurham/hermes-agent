@@ -492,6 +492,16 @@ function Invoke-HermesUpdate {
     Assert-True ($updateExit -eq 0) "hermes update exited $updateExit (expected 0)"
 }
 
+function Invoke-ManualCardUpdate([string]$ReceiptPath, [string]$TargetSha) {
+    Assert-True (Test-Path -LiteralPath $ReceiptPath) "manual update card produced a receipt"
+    $manual = Get-Content -LiteralPath $ReceiptPath -Raw | ConvertFrom-Json
+    Assert-True ($manual.command -match '^hermes update(?:\s|$)') "manual update card instructed hermes update"
+    Invoke-HermesUpdate
+    Assert-True ((Get-InstalledHead) -eq $TargetSha) "manual update landed on target commit"
+    Test-HermesRuns "post-manual-update"
+    Assert-True ($null -ne (Get-DesktopExe)) "Hermes.exe still present after manual update"
+}
+
 function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     # The hermes-desktop launch surface: `hermes desktop` runs its whole
     # real pipeline; the driver intercepts the product's final spawn
@@ -540,6 +550,11 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
         $ErrorActionPreference = $prevEap
     }
     Confirm-OldChat $chatOut
+    $manualReceipt = Join-Path $chatOut 'manual-update.json'
+    if ($driveExit -eq 42) {
+        Invoke-ManualCardUpdate $manualReceipt $TargetSha
+        return
+    }
     Assert-True ($driveExit -eq 0) "app driven via captured hermes desktop spec; update completed"
 }
 
@@ -854,6 +869,12 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
             $ErrorActionPreference = $prevEap
         }
         Confirm-OldChat $proof
+        $manualReceipt = Join-Path $proof 'manual-update.json'
+        if ($driveExit -eq 42) {
+            Invoke-ManualCardUpdate $manualReceipt $TargetSha
+            Invoke-DesktopCheckpoint 'new' $TargetSha 'open-app-update-manual'
+            return
+        }
         Assert-True ($driveExit -eq 0) "GUI driver clicked Update now and the app quit for hand-off"
 
         # The detached updater (spawned by the app, NOT by us) now runs

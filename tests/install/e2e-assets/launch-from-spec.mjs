@@ -30,7 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
-import { pickAppWindow, openAbout, waitForUpdate } from './update-ui.cjs';
+import { pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } from './update-ui.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
 import { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } from './smoke-env.mjs';
@@ -220,6 +220,18 @@ async function main() {
   await updateNow.click();
   phase('update-poll');
   log('clicked Update now; polling for result file');
+
+  const manualCommand = await readManualUpdateCommand(window);
+  if (manualCommand) {
+    fs.mkdirSync(values['chat-out'], { recursive: true });
+    fs.writeFileSync(
+      path.join(values['chat-out'], 'manual-update.json'),
+      `${JSON.stringify({ command: manualCommand, oldSha: values['old-sha'] }, null, 2)}\n`,
+    );
+    log(`OLD requires the manual update path: ${manualCommand}`);
+    await app.close();
+    process.exit(42);
+  }
 
   // The app may relaunch/exit during the update; completion signals are
   // product state, not Playwright events.

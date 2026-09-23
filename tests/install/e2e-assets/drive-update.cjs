@@ -21,7 +21,7 @@ const fs = require('node:fs')
 const { _electron } = require('@playwright/test')
 const { prepareWindowForInput } = require('./window-input.cjs')
 const { observeProcessClose } = require('./process-close.cjs')
-const { pickAppWindow, openAbout, waitForUpdate } = require('./update-ui.cjs')
+const { pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } = require('./update-ui.cjs')
 
 const exePath = process.argv[2]
 const proofDir = process.argv[3]
@@ -123,6 +123,18 @@ async function main() {
   await new Promise(resolve => setTimeout(resolve, 1200))
   await shot(page, '05-updating-overlay')
 
+  const manualCommand = await readManualUpdateCommand(page)
+  if (manualCommand) {
+    fs.writeFileSync(
+      path.join(proofDir, 'manual-update.json'),
+      `${JSON.stringify({ command: manualCommand, oldSha }, null, 2)}\n`,
+    )
+    log(`OLD requires the manual update path: ${manualCommand}`)
+    await app.close()
+    await waitForProcessClose()
+    return 42
+  }
+
   // ── Wait for the hand-off to take over ────────────────────────────────
   // Clicking Update now spawns the detached updater (desktop-update.ps1 or
   // the staged binary), which claims HERMES_HOME/.hermes-update-in-progress
@@ -182,7 +194,7 @@ async function main() {
 }
 
 main()
-  .then(() => process.exit(0))
+  .then(code => process.exit(code || 0))
   .catch(err => {
     console.error(`[drive-update] FAILED: ${err.message}`)
     process.exit(1)
