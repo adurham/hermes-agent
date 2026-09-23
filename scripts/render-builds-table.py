@@ -595,6 +595,8 @@ def main() -> int:
     parser.add_argument("--channel-build")
     parser.add_argument("--channel-request-sha256")
     parser.add_argument("--tag", required=False, help="Release tag to render the release-body table for")
+    parser.add_argument("--archive", default=None,
+                        help="Attempt ref of the release archive when --tag is the plain payload tag")
     parser.add_argument("--candidate-manifest-sha256", default=None,
                         help="Stable promotion: render smoke admission from this pinned candidate, not RELEASE_NEEDS")
     parser.add_argument("--candidate-commit", default=None,
@@ -632,6 +634,9 @@ def main() -> int:
 
     if args.summary_commit and (args.tag or args.pending_run_url):
         parser.error("--summary-commit cannot be combined with release-body arguments")
+    # The archive ref (attempt ref for stable attempts) keys every object the
+    # page lists and writes; the payload tag names the GitHub release body.
+    archive = args.archive or args.tag
 
     if args.channel_build:
         from hermes_cli.release_channels import ChannelReader
@@ -652,7 +657,7 @@ def main() -> int:
                 or not args.tag or not args.r2_base_url or args.summary_commit or args.pending_run_url):
             parser.error("Candidate rendering requires tag, base URL, manifest SHA256 and commit; no summary or pending mode")
         candidate = stable.read_admitted_candidate(args.tag, args.candidate_commit, args.r2_base_url,
-                                                   args.candidate_manifest_sha256)
+                                                   args.candidate_manifest_sha256, archive=archive)
         smoke_results = candidate["smoke_results"]
 
     if args.summary_commit:
@@ -700,9 +705,9 @@ def main() -> int:
         if not args.r2_base_url:
             print("::error::--r2-base-url (or CLOUDFLARE_R2_PUBLIC_URL) is required to render the tables")
             return 1
-        names = r2_object_names(args.tag)
+        names = r2_object_names(archive)
         if candidate is not None:
-            admitted = {r2.staging_key_for(args.tag, item["path"]) for item in candidate["files"]}
+            admitted = {r2.staging_key_for(archive, item["path"]) for item in candidate["files"]}
             names = [name for name in names if name in admitted]
         assets = parse_assets(names)
         incomplete = [] if candidate is not None else incomplete_release_jobs(os.environ.get("RELEASE_NEEDS"))
@@ -710,8 +715,8 @@ def main() -> int:
         # A failed run still owns its tag page, never the channel pointer
         # consumed by source updates. Missing artifacts never become downloads.
         if not args.dry_run:
-            write_page(r2.staging_key_for(args.tag, "index.html"),
-                       render_page(args.tag, assets, args.r2_base_url, incomplete, args.run_url,
+            write_page(r2.staging_key_for(archive, "index.html"),
+                       render_page(archive, assets, args.r2_base_url, incomplete, args.run_url,
                                    repo=args.repo, smoke_results=smoke_results), args.r2_base_url)
 
     # Keep the per-tag diagnostic page even when GitHub cannot supply a draft.

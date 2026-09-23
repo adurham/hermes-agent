@@ -535,12 +535,14 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
     from scripts.releases import channel_releases
     from hermes_cli.release_channels import ChannelError, canonical_json
     tag, commit = "v2.0.0", "c" * 40
+    attempt = "rc.1-v2.0.0"
     with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url)
         # Exercise HTTPS authority validation through the loopback transport.
         pub.public_base = "https://releases.example"
         release_epoch = 1_787_965_323
         candidate = {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
+                     "archive": attempt,
                      "smoke_results": {job: {"result": "success"} for job in channel_releases.stable.SMOKE_JOBS},
                      "packages": []}
         for platform in ("macos", "windows"):
@@ -549,15 +551,15 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
                     "version": "2.0.0" if platform == "macos" else "2026.5761.123.0", "identity": "fixture.identity",
                     **({"executableVersion": "2026.5761.123.0"} if platform == "windows" else {}),
                     "teamId": "ABCDEFGHIJ", "publisher": "CN=Fixture", "applicationId": "Fixture",
-                    "artifact": {"url": f"{pub.public_base}/releases/tag/{tag}/fixture-{arch}." + ("zip" if platform == "macos" else "msixbundle"), "sha256": "d" * 64}})
+                    "artifact": {"url": f"{pub.public_base}/releases/tag/{attempt}/fixture-{arch}." + ("zip" if platform == "macos" else "msixbundle"), "sha256": "d" * 64}})
         raw = canonical_json(candidate)
-        key = f"releases/tag/{tag}/release-candidates.json"
+        key = f"releases/tag/{attempt}/release-candidates.json"
         objects[key] = raw
         candidate_env = {"CANDIDATE_MANIFEST_SHA256": hashlib.sha256(raw).hexdigest(), "CANDIDATE_MANIFEST_URL": pub.public_base + "/" + key}
-        assert channel_releases.accepted_stable(pub, candidate_env, tag, commit, release_epoch) == candidate
+        assert channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch) == candidate
         faults["stale_public"] = b"{}"
         with pytest.raises(ChannelError):
-            channel_releases.accepted_stable(pub, candidate_env, tag, commit, release_epoch)
+            channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch)
 
 
 def test_request_inputs_are_rejected_before_allocating():

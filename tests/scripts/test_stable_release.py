@@ -19,12 +19,15 @@ BASE = "https://releases.example"
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def candidates(tag, commit, digest):
+def candidates(tag, commit, digest, archive=None):
+    """A desktop candidate manifest. `archive` is the R2 prefix ref the
+    manifest itself names; the payload `tag` stays plain vX.Y.Z."""
     packages = []
     second = 100 + int(tag.rsplit('.', 1)[1])
     release_epoch = int((datetime(2026, 8, 29, 1, 0, tzinfo=timezone.utc)
                          + timedelta(seconds=second)).timestamp())
     native_version = f"2026.5761.{second}.0"
+    ref = archive or tag
     for platform in ("windows", "macos"):
         for arch in ("x64", "arm64"):
             packages.append({
@@ -34,9 +37,10 @@ def candidates(tag, commit, digest):
                 **({"executableVersion": native_version} if platform == "windows" else {}),
                 **({"publisher": "CN=Test", "applicationId": "App"} if platform == "windows" else {"teamId": "ABCDEFGHIJ"}),
                 "artifact": {"sha256": digest,
-                             "url": f"{BASE}/releases/tag/{tag}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
+                             "url": f"{BASE}/releases/tag/{ref}/{arch}" + (".msixbundle" if platform == "windows" else ".zip")},
             })
     return {"schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
+            "archive": ref,
             "packages": packages,
             "smoke_results": {name: {"result": "success"} for name in (
                 "smoke-darwin", "smoke-win32", "smoke-win32-universal")}}
@@ -70,14 +74,35 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     assert "publication=cancelled" in result.stderr
 
 
+def test_validate_candidates_keys_the_archive_by_the_attempt_ref():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    assert validate_candidates(manifest, manifest["tag"], commit, BASE, archive="rc.2-v1.2.4")
+    # The archive ref is the URL prefix; the payload tag stays the identity.
+    assert manifest["packages"][0]["artifact"]["url"].startswith(f"{BASE}/releases/tag/rc.2-v1.2.4/")
+    with pytest.raises(ValueError, match="archive"):
+        validate_candidates(manifest, manifest["tag"], commit, BASE, archive="rc.1-v1.2.4")
+    misnamed = copy.deepcopy(manifest)
+    misnamed["archive"] = "rc.1-v1.2.4"
+    with pytest.raises(ValueError, match="archive"):
+        validate_candidates(misnamed, manifest["tag"], commit, BASE, archive="rc.2-v1.2.4")
+    missing = copy.deepcopy(manifest)
+    del missing["archive"]
+    with pytest.raises(ValueError, match="archive"):
+        validate_candidates(missing, manifest["tag"], commit, BASE, archive="rc.2-v1.2.4")
+    # A canary-shaped archive ref (the payload tag itself) still validates.
+    assert validate_candidates(candidates("v1.2.4", commit, "2" * 64),
+                               "v1.2.4", commit, BASE, archive="v1.2.4")
+
+
 def test_transitions_bind_all_arches_identity_version_and_archive():
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
     old["schema"] = 1
     del old["smoke_results"]
     with pytest.raises(ValueError, match="does not match release identity"):
-        validate_candidates(old, old["tag"], old["commit"], BASE)
+        validate_candidates(old, old["tag"], old["commit"], BASE, archive=old["archive"])
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
-    new = candidates("v1.2.4", "b" * 40, "2" * 64)
+    new = candidates("v1.2.4", "b" * 40, "2" * 64, archive="rc.1-v1.2.4")
     require_stable_identity(new["tag"], new["commit"])
     for tag in ("v1.2.4+canary.20260907T143420Z", "v1.2.4-rc", "rc.1-v1.2.4"):
         with pytest.raises(ValueError):
@@ -85,12 +110,14 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
     transitions = plan_transitions(old, new, BASE)
     assert {row["target"] for row in transitions} == {"windows-x64", "windows-arm64", "macos-x64", "macos-arm64"}
     assert all(row["transition"]["new"]["commit"] == new["commit"] for row in transitions)
+    assert all(row["transition"]["new"]["artifact"]["url"].startswith(f"{BASE}/releases/tag/{new['archive']}/")
+               for row in transitions)
     missing = copy.deepcopy(new)
     missing["packages"].pop()
     with pytest.raises(ValueError, match="both architectures"):
         plan_transitions(old, missing, BASE)
     with pytest.raises(ValueError, match="identity"):
-        validate_candidates(new, new["tag"], old["commit"], BASE)
+        validate_candidates(new, new["tag"], old["commit"], BASE, archive=new["archive"])
     for key, value in [("commit", old["commit"]), ("identity", "different"), ("publisher", "CN=Other"), ("version", "9.9.9.0")]:
         changed = copy.deepcopy(new)
         changed["packages"][0][key] = value
@@ -308,7 +335,7 @@ def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tm
     from scripts.releases import stable
 
     commit, tag_object = _claim_fixture(tmp_path, tag="rc.1-v1.2.3", version="1.2.3")
-    candidate = candidates("v1.2.3", commit, "c" * 64)
+    candidate = candidates("v1.2.3", commit, "c" * 64, archive="rc.1-v1.2.3")
     calls = []
 
     def record(argv):

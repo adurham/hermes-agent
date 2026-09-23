@@ -190,7 +190,8 @@ def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: st
     if env.get("CANDIDATE_MANIFEST_URL") != publisher.public_base + "/" + key:
         raise ChannelError("Accepted candidate URL differs from release archive")
     candidate = decode_json(publisher.reader.read_bytes(key, digest))
-    stable.validate_candidates(candidate, payload_tag, commit, publisher.public_base, release_epoch)
+    stable.validate_candidates(candidate, payload_tag, commit, publisher.public_base, release_epoch,
+                               archive=tag)
     return candidate
 
 
@@ -263,7 +264,10 @@ def verify_bootstrap(request: dict, manifest: dict, base: str, repository: str) 
         if not archive.startswith("releases/tag/") or not archive.endswith("/"):
             raise ChannelError("Bootstrap archive key is invalid")
         candidate = decode_json(reader.read_bytes(archive + "release-candidates.json"))
-        stable.validate_candidates(candidate, candidate["tag"], request["commit"], base)
+        # The manifest names its own archive ref; the URL prefix it was read
+        # from must be the one it claims.
+        stable.validate_candidates(candidate, candidate["tag"], request["commit"], base,
+                                   archive=archive[len("releases/tag/"):-1])
         if decode_json(reader.read_bytes("releases/stable/release-candidates.json")) != candidate:
             raise ChannelError("Bootstrap must use the current accepted stable transaction")
         match_accepted_packages(manifest, candidate)
@@ -335,9 +339,11 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         if policy == "stable-release" else None
     accepted = accepted_stable(publisher, env, tag, commit, release_epoch) \
         if release_epoch is not None else None
-    handoff.fetch(payload_tag, commit, list(NATIVE_LEGS), root,
+    # Native handoffs were staged under the attempt ref for stable attempts
+    # (identical for canary, where tag == payload_tag).
+    handoff.fetch(tag, commit, list(NATIVE_LEGS), root,
                   ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
-    native = read_native_receipts(root, payload_tag, commit)
+    native = read_native_receipts(root, tag, commit)
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
     if policy == "canary-release":
         expected_windows = canary_windows_version(tag)

@@ -197,6 +197,9 @@ jobs:
       receiver-candidate: ${{ steps.admission.outputs.receiver-candidate }}
       public-root: ${{ steps.admission.outputs.public-root }}
       public-base: ${{ steps.admission.outputs.public-base }}
+      # The archive ref: the attempt ref for stable phases, the payload tag
+      # for canary and commit builds. Every releases/tag/<ref>/ write reads it.
+      archive-tag: ${{ steps.admission.outputs.archive-tag }}
       channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
@@ -277,6 +280,7 @@ jobs:
             echo '::error::disposable_run requires a pinned channel build'; exit 1
           fi
           printf 'public-root=%s\npublic-base=%s\n' "$CLOUDFLARE_R2_PUBLIC_URL" "$CLOUDFLARE_R2_PUBLIC_URL" >> "$GITHUB_OUTPUT"
+          printf 'archive-tag=%s\n' "${RELEASE_CLAIM_TAG:-$RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           if [ -n "${CHANNEL_BUILD:-}" ]; then
             if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ -z "$DEFAULT_BRANCH" ] || [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ] || [ "$GITHUB_WORKFLOW_REF" != "$GITHUB_REPOSITORY/.github/workflows/desktop-bundled-release.yml@refs/heads/$DEFAULT_BRANCH" ]; then
               echo '::error::channel builds require the default-branch dispatch workflow'; exit 1
@@ -391,6 +395,8 @@ jobs:
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+      # Archive ref for handoff stage/fetch: attempt ref for stable phases.
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
@@ -660,7 +666,7 @@ jobs:
               --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           else
-            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
@@ -737,6 +743,8 @@ jobs:
       HERMES_DESKTOP_VARIANT: bundled
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
       RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
+      # Archive ref for handoff stage/fetch: attempt ref for stable phases.
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
@@ -994,7 +1002,7 @@ jobs:
               --name "$TARGET" --root apps/desktop/release \
               --include '*.dmg' --include '*.zip' --include '*.blockmap'
           else
-            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
@@ -1069,6 +1077,8 @@ jobs:
       format: ${{ matrix.format }}
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
+      # The archive ref the handoff was staged under (attempt ref for stable).
+      archive-tag: ${{ needs.validate.outputs.archive-tag }}
       commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -1098,6 +1108,8 @@ jobs:
       format: msix
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
+      # The archive ref the handoff was staged under (attempt ref for stable).
+      archive-tag: ${{ needs.validate.outputs.archive-tag }}
       commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -1127,6 +1139,8 @@ jobs:
       format: msixbundle
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
+      # The archive ref the handoff was staged under (attempt ref for stable).
+      archive-tag: ${{ needs.validate.outputs.archive-tag }}
       commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
       channel-build: ${{ needs.validate.outputs.channel-build }}
       channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
@@ -1152,6 +1166,8 @@ jobs:
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      # Archive ref for the universal-bundle handoff: attempt ref for stable.
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
@@ -1240,7 +1256,7 @@ jobs:
               --commit "$RELEASE_COMMIT" \
               --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
           else
-            python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff fetch --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
           fi
 
@@ -1302,7 +1318,7 @@ jobs:
               --commit "$RELEASE_COMMIT" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           else
-            python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           fi
 
@@ -1507,6 +1523,8 @@ jobs:
     timeout-minutes: 90
     env:
       HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      # Archive ref for the termux handoff: attempt ref for stable phases.
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       HERMES_RELEASE_EPOCH: ${{ needs.validate.outputs.release-epoch }}
@@ -1825,7 +1843,7 @@ jobs:
               --out termux-build/metadata-termux-aarch64.json
             args+=(--include 'metadata-*.json')
           fi
-          python -m scripts.releases.handoff stage --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+          python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
             --name termux --root termux-build "${args[@]}"
           if [ "$RELEASE_PHASE" = candidate ]; then exit 0; fi
           # --key-is-full is MANDATORY on every feed-dir upload: without it
@@ -2046,6 +2064,7 @@ jobs:
       manifest-sha256: ${{ steps.manifest.outputs.manifest-sha256 }}
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       HERMES_RELEASE_EPOCH: ${{ needs.validate.outputs.release-epoch }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -2063,14 +2082,15 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          python -m scripts.releases.handoff fetch --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" \
+          python -m scripts.releases.handoff fetch --tag "${HERMES_ARCHIVE_TAG:-$RELEASE_TAG}" --commit "$RELEASE_COMMIT" \
             --name win32-x64 --name win32-arm64 --name darwin-x64 --name darwin-arm64 \
             --name termux --name windows-universal --root candidates \
             --include 'metadata-*.json' --include '*.msixbundle'
       - id: manifest
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python -m scripts.bundles.release_artifacts assemble --root candidates --out release-candidates.json
+        run: python -m scripts.bundles.release_artifacts assemble --root candidates --out release-candidates.json \
+          --archive "${HERMES_ARCHIVE_TAG:?stable candidate assembly needs HERMES_ARCHIVE_TAG}"
 
   stable-publish:
     name: Verify published candidate files
@@ -2081,6 +2101,7 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -2105,6 +2126,7 @@ jobs:
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}

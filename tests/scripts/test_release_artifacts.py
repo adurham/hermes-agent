@@ -69,6 +69,7 @@ def staged_candidate(tmp_path, r2_server, https_origin):
     from scripts.releases import handoff
 
     tag, commit, base = 'v1.2.3', 'a' * 40, https_origin.base
+    attempt = 'rc.2-v1.2.3'
     https_origin.store = r2_server.store
     legs, mac_bytes = _inputs('1.2.3')
     built = tmp_path / 'built'
@@ -108,24 +109,27 @@ def staged_candidate(tmp_path, r2_server, https_origin):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(f'index transport fixture: {name}'.encode())
                 includes.append('apt/**/*')
-            handoff.stage(tag, commit, handoff_name, built, includes)
+            handoff.stage(attempt, commit, handoff_name, built, includes)
     bundle = built / 'Product-win.msixbundle'
     with zipfile.ZipFile(bundle, 'w') as archive:
         archive.writestr('AppxMetadata/AppxBundleManifest.xml', f'<Bundle><Identity Name="Product" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/><Packages><Package Type="application" Architecture="arm64"/><Package Type="application" Architecture="x64"/></Packages></Bundle>')
     (built / 'Store-Product-win.msixbundle').write_bytes(b'Store bundle transport fixture')
-    handoff.stage(tag, commit, 'windows-universal', built, ['*.msixbundle'])
+    handoff.stage(attempt, commit, 'windows-universal', built, ['*.msixbundle'])
     fetched = tmp_path / 'fetched'
     names = ['win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64', 'termux', 'windows-universal']
-    handoff.fetch(tag, commit, names, fetched, ['metadata-*.json', '*.msixbundle'])
+    handoff.fetch(attempt, commit, names, fetched, ['metadata-*.json', '*.msixbundle'])
     r2_server.requests.clear()
     manifest = assemble(fetched, tag, commit, base, tmp_path / 'release-candidates.json',
-                        smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH)
+                        smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=attempt)
+    assert manifest['archive'] == attempt and manifest['tag'] == tag
     assert {row['platform'] + '/' + row['arch'] for row in manifest['packages']} == {
         'windows/x64', 'windows/arm64', 'macos/x64', 'macos/arm64', 'termux/aarch64'}
     assert all(not file['path'].startswith(('handoff-', 'metadata-')) for file in manifest['files'])
+    assert all(file['url'].startswith(f'{base}/releases/tag/{attempt}/') for file in manifest['files'])
     puts = [path for method, path, _ in r2_server.requests if method == 'PUT']
-    assert puts == [f'/hermes-releases/releases/tag/{tag}/release-candidates.json']
-    assert all(key.startswith(f'releases/tag/{tag}/') for key in r2_server.store)
+    assert puts == [f'/hermes-releases/releases/tag/{attempt}/release-candidates.json']
+    assert all(key.startswith(f'releases/tag/{attempt}/') for key in r2_server.store)
+    assert not any(key.startswith(f'releases/tag/{tag}/') for key in r2_server.store)
     return manifest, fetched, base
 
 
@@ -146,7 +150,7 @@ def test_bootstrap_reuses_published_candidate_and_rejects_substitution(staged_ca
     published = {'draft': False, 'prerelease': False, 'published_at': 'fixture-published'}
     monkeypatch.setattr(channel_releases.stable, 'output', lambda args: candidate['commit']
                         if '/commits/' in args[2] else json.dumps(published))
-    r2_server.store['releases/stable/release-candidates.json'] = r2_server.store[f"releases/tag/{candidate['tag']}/release-candidates.json"]
+    r2_server.store['releases/stable/release-candidates.json'] = r2_server.store[f"releases/tag/{candidate['archive']}/release-candidates.json"]
     assert channel_releases.verify_bootstrap(request, manifest, base, 'fixture/repo')
     substituted = copy.deepcopy(manifest)
     substituted['packages'][0]['artifact']['sha256'] = 'f' * 64
@@ -167,19 +171,19 @@ def test_assemble_rejects_missing_and_changed_receipts(tmp_path, staged_candidat
     receipt.unlink()
     with pytest.raises(ValueError, match='handoff'):
         assemble(fetched, tag, commit, base, tmp_path / 'missing.json',
-                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH)
+                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'])
     receipt.write_bytes(original)
     (fetched / 'metadata-windows-x64.json').write_text('{}', encoding='utf-8')
     with pytest.raises(ValueError, match='digest'):
         assemble(fetched, tag, commit, base, tmp_path / 'changed.json',
-                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH)
+                 smoke_results=SMOKE_RESULTS, release_epoch=RELEASE_EPOCH, archive=manifest['archive'])
 
 
 def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_server, staged_candidate):
     manifest, _, base = staged_candidate
     tag, commit = manifest['tag'], manifest['commit']
-    raw = r2_server.store[f'releases/tag/{tag}/release-candidates.json'][0]
-    args = ['--tag', tag, '--commit', commit, '--public-base', base]
+    raw = r2_server.store[f"releases/tag/{manifest['archive']}/release-candidates.json"][0]
+    args = ['--tag', tag, '--archive', manifest['archive'], '--commit', commit, '--public-base', base]
     monkeypatch.setenv('CANDIDATE_MANIFEST_SHA256', hashlib.sha256(raw).hexdigest())
     artifacts.main(['materialize', *args, '--root', str(tmp_path / 'store'), '--store-only'])
     assert [p.name for p in (tmp_path / 'store').iterdir()] == ['Store-Product-win.msixbundle']
@@ -208,7 +212,7 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
         'releases/darwin/stable/stable-mac.yml', 'releases/win32/stable/stable.appinstaller',
         'releases/termux/stable/dists/hermes-stable/Release', 'releases/termux/stable/dists/hermes-stable/InRelease')]
     for item in manifest['files']:
-        assert (tmp_path / 'promote' / item['path']).read_bytes() == r2_server.store[f'releases/tag/{tag}/{item["path"]}'][0]
+        assert (tmp_path / 'promote' / item['path']).read_bytes() == r2_server.store[f"releases/tag/{manifest['archive']}/{item['path']}"][0]
     descriptor = ET.fromstring(r2_server.store['releases/win32/stable/stable.appinstaller'][0])
     assert descriptor.attrib == {
         'Uri': base + '/releases/win32/stable/stable.appinstaller',
@@ -216,7 +220,7 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     }
     assert descriptor.find('{*}MainBundle').attrib == {
         'Name': 'Product', 'Publisher': 'CN=Test', 'Version': WINDOWS_VERSION,
-        'Uri': base + '/releases/tag/v1.2.3/Product-win.msixbundle'}
+        'Uri': base + f"/releases/tag/{manifest['archive']}/Product-win.msixbundle"}
     pointer = 'releases/win32/stable/stable.appinstaller'
     original = r2_server.store[pointer]
     r2_server.corrupt_put = pointer
@@ -227,7 +231,7 @@ def test_candidate_publication_and_store_selection(tmp_path, monkeypatch, r2_ser
     r2_server.corrupt_put = None
     r2_server.store[pointer] = original
     before = dict(r2_server.store)
-    r2_server.store[f'releases/tag/{tag}/Product-win.msixbundle'] = (b'corrupt', '"e"')
+    r2_server.store[f"releases/tag/{manifest['archive']}/Product-win.msixbundle"] = (b'corrupt', '"e"')
     r2_server.requests.clear()
     with pytest.raises(ValueError, match='digest mismatch'):
         artifacts.promote(manifest, tmp_path / 'broken', base)
@@ -290,11 +294,14 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
 
     def run(job_name, step, needs, *, pinned=digest, ambient_needs=None):
         expressions = {
-            '${{ inputs.tag }}': manifest['tag'], '${{ inputs.manifest-sha256 }}': pinned,
+            '${{ inputs.tag }}': manifest['tag'], '${{ inputs.claim-tag }}': manifest['archive'],
+            '${{ inputs.manifest-sha256 }}': pinned,
             '${{ needs.validate.outputs.sha }}': manifest['commit'], '${{ github.token }}': 'inert',
             '${{ needs.validate.outputs.release-epoch }}': str(manifest['releaseEpoch']),
             '${{ needs.admit.outputs.tag }}': manifest['tag'],
+            '${{ needs.admit.outputs.claim-tag }}': manifest['archive'],
             '${{ needs.admit.outputs.commit }}': manifest['commit'],
+            '${{ needs.validate.outputs.archive-tag }}': manifest['archive'],
             '${{ needs.candidates.outputs.manifest-sha256 }}': pinned,
             '${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}': base, '${{ toJSON(needs) }}': json.dumps(needs),
         }
@@ -324,11 +331,11 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
     needs = {name: {'result': 'success'} for name in jobs['candidate-manifest']['needs']}
     result = run('candidate-manifest', candidate, needs)
     assert result.returncode == 0, result.stdout + result.stderr
-    stored = json.loads(r2_server.store[f"releases/tag/{manifest['tag']}/release-candidates.json"][0])
+    stored = json.loads(r2_server.store[f"releases/tag/{manifest['archive']}/release-candidates.json"][0])
     assert stored['smoke_results'] == SMOKE_RESULTS
     assert f'manifest-sha256={artifacts.sha256_file(tmp_path / "release-candidates.json")}' in (tmp_path / 'outputs').read_text(encoding='utf-8-sig')
     # An unrelated orphan object must not acquire the candidate's Passed label.
-    orphan = f"releases/tag/{manifest['tag']}/HermesBundled-1.2.3-linux-x64.AppImage"
+    orphan = f"releases/tag/{manifest['archive']}/HermesBundled-1.2.3-linux-x64.AppImage"
     r2_server.store[orphan] = (b'orphan transport fixture', '"e"')
     for step in jobs['controller-promote']['steps']:
         if 'run' in step:
@@ -341,7 +348,7 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
         assert output.count('Passed') == len(SMOKE_RESULTS)
         assert 'Not run' not in output and 'Build incomplete' not in output
         assert orphan not in output
-        assert base + f"/releases/tag/{manifest['tag']}/HermesBundled-1.2.3-win-x64.msix" in output
+        assert base + f"/releases/tag/{manifest['archive']}/HermesBundled-1.2.3-win-x64.msix" in output
     with https_origin.opener(base + '/releases/stable/index.html', timeout=5) as response:
         assert response.read().decode() == page
 
@@ -363,7 +370,7 @@ def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server,
             result = run('candidate-manifest', candidate, failed)
             assert result.returncode != 0 and name in result.stderr, result.stdout + result.stderr
             assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
-    key = f"releases/tag/{manifest['tag']}/release-candidates.json"
+    key = f"releases/tag/{manifest['archive']}/release-candidates.json"
     raw = r2_server.store[key][0]
     for fault, message in [('legacy', 'Candidate manifest'), ('missing', 'Candidate smoke results'),
                            ('failed', 'smoke-win32=failure'), ('identity', 'release identity'),

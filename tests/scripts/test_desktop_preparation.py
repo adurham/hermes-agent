@@ -51,7 +51,8 @@ def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tm
 
     assert request.commit == commit
     assert request.version == "1.2.4"
-    assert request.archive_tag == "rc.1-v1.2.4"
+    # The payload identity stays plain; the attempt ref lives only in the claim env.
+    assert request.tag == "v1.2.4"
     assert request.release_epoch == 1787965323
     env = identity_environment(request, "bundled", {"HERMES_RELEASE_EPOCH": "1"})
     assert env["HERMES_RELEASE_EPOCH"] == "1787965323"

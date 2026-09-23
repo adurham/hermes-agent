@@ -82,16 +82,21 @@ def stable_windows_version(epoch: object) -> str:
 
 
 def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
-                        release_epoch: int | None = None) -> dict:
+                        release_epoch: int | None = None, *, archive: str) -> dict:
+    """`tag` is the plain payload identity; `archive` is the releases/tag/<ref>/
+    prefix every artifact URL must live under. Stable attempts name the attempt
+    ref as their archive; the two are separate fields and never overloaded."""
     require_stable_identity(tag, commit)
     if manifest.get("schema") != 2 or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
+    if manifest.get("archive") != archive:
+        raise ValueError("Candidate manifest names a different release archive")
     successful_smoke_results(manifest.get("smoke_results"))
     admitted_epoch = manifest.get("releaseEpoch")
     expected_windows_version = stable_windows_version(admitted_epoch)
     if release_epoch is not None and admitted_epoch != release_epoch:
         raise ValueError("Candidate release epoch differs from the admitted claim")
-    prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{tag}/")
+    prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{archive}/")
     if prefix.scheme != "https" or prefix.username or prefix.password or not prefix.netloc:
         raise ValueError("Public release origin must use HTTPS")
     rows = {}
@@ -136,8 +141,10 @@ def windows_version(value: str) -> tuple[int, ...]:
 
 
 def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[dict]:
-    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base)
-    new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base)
+    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
+                              archive=previous.get("archive"))
+    new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base,
+                              archive=candidate.get("archive"))
     result = []
     for target in DESKTOP_TARGETS:
         left, right = old[target], new[target]
@@ -345,14 +352,15 @@ def read_candidate(env: dict) -> dict:
     return read_manifest(env["CANDIDATE_MANIFEST_URL"], digest)
 
 
-def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str) -> dict:
+def read_admitted_candidate(tag: str, commit: str, public_base: str, digest: str, *,
+                            archive: str) -> dict:
     """The page and package promoter consume the same pinned admission."""
     if not DIGEST.fullmatch(digest or ""):
         raise ValueError("Pinned candidate manifest digest is required")
     require_stable_identity(tag, commit)
-    manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{tag}/release-candidates.json",
+    manifest = read_manifest(f"{public_base.rstrip('/')}/releases/tag/{archive}/release-candidates.json",
                              digest, expected_origin=public_base)
-    validate_candidates(manifest, tag, commit, public_base)
+    validate_candidates(manifest, tag, commit, public_base, archive=archive)
     return manifest
 
 
@@ -396,8 +404,9 @@ def transitions(env: dict) -> None:
 
     tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
     candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
+    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"], archive=archive)
     try:
         previous = read_manifest(env.get("BASELINE_MANIFEST_URL") or f"{base}/releases/stable/release-candidates.json",
                                  expected_origin=base)
@@ -414,8 +423,8 @@ def transitions(env: dict) -> None:
         name = f"acceptance-{row['target']}.json"
         file = Path(env["RUNNER_TEMP"]) / name
         file.write_text(json.dumps(transition), encoding="utf-8")
-        put(tag=tag, key=name, file=file, immutable=True)
-        url = f"{base}/releases/tag/{tag}/{name}"
+        put(tag=archive, key=name, file=file, immutable=True)
+        url = f"{base}/releases/tag/{archive}/{name}"
         if read_manifest(url) != transition:
             raise ValueError("Transition manifest read-back mismatch")
         matrices[transition["platform"]]["include"].append({"arch": transition["arch"], "manifest": url, "old": transition["old"]["tag"], "id": row["target"], "manifest_sha256": hashlib.sha256(file.read_bytes()).hexdigest()})
@@ -508,7 +517,7 @@ def complete(env: dict) -> None:
     tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     candidate = read_candidate(env)
-    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"])
+    validate_candidates(candidate, tag, commit, base, claim["claim_epoch"], archive=claim["claim_tag"])
 
 
 def main(argv: list[str] | None = None, env: dict | None = None) -> None:
