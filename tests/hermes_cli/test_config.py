@@ -682,6 +682,93 @@ class TestUnsetConfigValuePreservesExtraContent:
             assert "fallback_model:" in after  # the real (uncommented) config survives
 
 
+class TestSetConfigValuePreservesExtraContent:
+    """Regression (v2026.9.14 merge, data-loss class): the merge refactored
+    set_config_value() and unset_config_value() into the shared
+    _write_user_config() helper and dropped the ``extra_content=`` argument
+    that the pre-merge unset_config_value() passed. atomic_yaml_write() is a
+    whole-document yaml.dump, so every ``hermes config set`` silently deleted
+    the trailing commented-out reference sections (Security / Fallback Model)
+    from the user's config.yaml -- a write path that had NO coverage at all
+    before this class (only unset was guarded, by
+    TestUnsetConfigValuePreservesExtraContent above)."""
+
+    def test_set_preserves_security_comment_block(self, tmp_path):
+        from hermes_cli.config import set_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+
+            config_path = tmp_path / "config.yaml"
+            assert "Security" in config_path.read_text(encoding="utf-8")
+
+            # An unrelated key: the comment blocks have nothing to do with it.
+            set_config_value("agent.max_turns", "50")
+
+            assert "Security" in config_path.read_text(encoding="utf-8")
+
+    def test_set_preserves_fallback_model_comment_block(self, tmp_path):
+        from hermes_cli.config import set_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+
+            config_path = tmp_path / "config.yaml"
+            assert "Fallback Model" in config_path.read_text(encoding="utf-8")
+
+            set_config_value("agent.max_turns", "50")
+
+            assert "Fallback Model" in config_path.read_text(encoding="utf-8")
+
+    def test_set_still_writes_the_target_key(self, tmp_path):
+        """The fix must not regress the actual set behavior."""
+        from hermes_cli.config import set_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+
+            set_config_value("agent.max_turns", "50")
+
+            assert load_config()["agent"]["max_turns"] == 50
+
+    def test_repeated_sets_do_not_accumulate_comment_blocks(self, tmp_path):
+        """The blocks are regenerated from the data, not read back off disk, so
+        writing repeatedly must not append a second copy each time."""
+        from hermes_cli.config import set_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(load_config())
+            config_path = tmp_path / "config.yaml"
+
+            set_config_value("agent.max_turns", "50")
+            once = config_path.read_text(encoding="utf-8")
+            set_config_value("agent.max_turns", "51")
+            twice = config_path.read_text(encoding="utf-8")
+
+            assert once.count("── Security ──") == 1
+            assert twice.count("── Security ──") == 1
+            assert twice.count("── Fallback Model ──") == 1
+
+    def test_set_omits_fallback_comment_once_fallback_model_is_configured(self, tmp_path):
+        """Mirrors the unset sibling: the shared helper must not resurrect the
+        commented example over a real, valid fallback_model."""
+        from hermes_cli.config import set_config_value
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["fallback_model"] = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+            save_config(config)
+
+            config_path = tmp_path / "config.yaml"
+            assert "# fallback_model:" not in config_path.read_text(encoding="utf-8")
+
+            set_config_value("agent.max_turns", "50")
+
+            after = config_path.read_text(encoding="utf-8")
+            assert "# fallback_model:" not in after
+            assert "fallback_model:" in after  # the real (uncommented) config survives
+
+
 class TestSanitizeEnvLines:
     """Tests for semantics-preserving .env line normalization."""
 
