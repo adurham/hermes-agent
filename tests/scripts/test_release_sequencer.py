@@ -411,7 +411,7 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
         assert release["tag_name"] == f"v{version}" and release["draft"] is False
 
 
-def test_the_store_release_joins_the_pass_after_the_aliases_move(monkeypatch):
+def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     from scripts.releases import channel_releases, docker, sequencer, store
 
     manifest_digest = hashlib.sha256(b"m").hexdigest()
@@ -428,7 +428,7 @@ def test_the_store_release_joins_the_pass_after_the_aliases_move(monkeypatch):
         lambda claim_tag, digest: events.append(("aliases", claim_tag)))
     seen_env = []
     monkeypatch.setattr(
-        store, "release_from_env",
+        store, "check_from_env",
         lambda env: seen_env.append(env) or events.append(("store",)))
 
     steps = sequencer.reconcile(

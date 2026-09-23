@@ -99,109 +99,138 @@ def test_submit_keeps_the_submission_in_draft_until_the_mode_is_set():
 
 
 class _Api:
-    """Stands in for the Partner Center submission REST API."""
+    """Stands in for the Partner Center submission REST API (read-only use)."""
 
-    def __init__(self, status, in_flight=True, fail_update=False):
+    def __init__(self, status, pending="1152921504621243540"):
         self.requests = []
         self.status = status
-        self.in_flight = in_flight
-        self.fail_update = fail_update
-        self.updated = None
-        self.committed = False
+        self.pending = pending
 
     def __call__(self, request):
         self.requests.append(request)
         url, method = request["url"], request["method"]
         if url.endswith("/token"):
             return {"status": 200, "body": {"access_token": "tok"}}
-        if url.endswith("/submissions") and method == "POST":
-            if self.in_flight:
-                return {
-                    "status": 409,
-                    "body": {"code": "InvalidOperation", "message":
-                             "The app already has an in-progress submission: "
-                             "1152921504621243540"},
-                }
-            return {"status": 201, "body": {"id": "probe", "status": "PendingCommit"}}
-        if url.endswith("/status") and method == "GET":
+        if method != "GET":
+            raise AssertionError(f"the check must never write: {method} {url}")
+        if request.get("headers", {}).get("Authorization") != "Bearer tok":
+            return {"status": 401, "body": {"code": "Unauthorized"}}
+        if url.endswith("/applications/9NTEST"):
+            app = {"id": "9NTEST"}
+            if self.pending:
+                app["pendingApplicationSubmission"] = {"id": self.pending}
+            return {"status": 200, "body": app}
+        if url.endswith(f"/submissions/{self.pending}/status"):
             return {"status": 200, "body": {"status": self.status}}
-        if "/submissions/" in url and method == "GET":
-            return {"status": 200, "body": {
-                "id": "1152921504621243540", "targetPublishMode": "Manual",
-                "friendlyName": "Submission 2"}}
-        if "/submissions/" in url and method == "DELETE":
-            return {"status": 204, "body": ""}
-        if "/submissions/" in url and method == "PUT":
-            if self.fail_update:
-                return {"status": 500, "body": {"code": "ServiceError"}}
-            self.updated = request["body"]
-            return {"status": 200, "body": {"id": "1152921504621243540"}}
-        if url.endswith("/commit") and method == "POST":
-            self.committed = True
-            return {"status": 200, "body": {"status": "CommitStarted"}}
         raise AssertionError(request)
 
 
-def _release(status, **kwargs):
-    from scripts.releases.store import release
+def _check(status, **kwargs):
+    from scripts.releases.store import check
 
     api = _Api(status, **kwargs)
-    result = release(product_id="9NTEST", tenant_id="T", client_id="C",
-                     client_secret="S", run=api)
+    result = check(product_id="9NTEST", tenant_id="T", client_id="C",
+                   client_secret="S", run=api)
     return api, result
 
 
-def test_release_publishes_a_certified_submission():
-    api, result = _release("Release")
-    assert result == "released"
-    assert api.updated["targetPublishMode"] == "Immediate"
-    assert api.committed is True
+def test_a_certified_held_submission_asks_for_publish_now(capsys):
+    _api, result = _check("Release")
+    assert result == "needs-publish-now"
+    out = capsys.readouterr().out
+    assert out.startswith("::warning title=Microsoft Store::") and "Publish now" in out
 
 
-def test_release_turns_auto_publish_on_when_not_certified():
-    api, result = _release("Certification")
-    assert result == "auto-publish"
-    assert api.updated["targetPublishMode"] == "Immediate"
-    assert api.committed is True
+@pytest.mark.parametrize("status", ["CommitStarted", "PreProcessing", "Certification"])
+def test_a_submission_in_certification_says_what_comes_next(status, capsys):
+    _api, result = _check(status)
+    assert result == "in-certification"
+    out = capsys.readouterr().out
+    assert "Publish now" in out and status in out
 
 
-def test_release_is_a_noop_when_the_submission_already_goes_live():
-    api, result = _release("PendingPublication")
+@pytest.mark.parametrize("status", ["PendingPublication", "Publishing", "Published"])
+def test_a_live_submission_is_a_noop(status, capsys):
+    _api, result = _check(status)
     assert result == "already-live"
-    assert api.updated is None and api.committed is False
+    assert capsys.readouterr().out == ""
 
 
-def test_release_without_an_in_flight_submission_deletes_its_probe_draft():
-    api, result = _release("Certification", in_flight=False)
-    assert result == "no-submission"
-    deleted = [r for r in api.requests
-               if r["method"] == "DELETE" and "/submissions/" in r["url"]]
-    assert len(deleted) == 1
-    assert api.committed is False
-
-
-def test_a_failed_store_call_leaves_the_run_red():
+@pytest.mark.parametrize("status", ["CertificationFailed", "CommitFailed", "PublishFailed",
+                                    "Canceled"])
+def test_a_failed_submission_leaves_the_run_red_and_says_to_resubmit(status):
     from scripts.releases.store import StoreError
 
-    with pytest.raises(StoreError):
-        _release("Certification", fail_update=True)
-def test_release_from_env_skips_when_the_store_is_not_configured(capsys):
-    from scripts.releases.store import release_from_env
-
-    assert release_from_env({}) == "not-configured"
+    with pytest.raises(StoreError, match="resubmit from a green run"):
+        _check(status)
 
 
-def test_release_from_env_passes_the_configured_credentials():
-    from scripts.releases.store import release_from_env
+def test_an_unknown_submission_status_leaves_the_run_red():
+    from scripts.releases.store import StoreError
 
-    api = _Api("Release")
+    with pytest.raises(StoreError, match="unexpected status"):
+        _check("SomethingNew")
+
+
+def test_no_pending_submission_is_reported_not_invented(capsys):
+    _api, result = _check("Release", pending=None)
+    assert result == "no-submission"
+    assert "::warning" in capsys.readouterr().out
+
+
+def test_the_check_never_writes_to_the_store():
+    # _Api raises on any non-GET after the token; every state must pass.
+    for status in ("Release", "Certification", "Published"):
+        api, _ = _check(status)
+        assert all(r["method"] == "GET" for r in api.requests[1:])
+
+
+def test_http_run_sends_the_request_headers(monkeypatch):
+    import urllib.request
+
+    from scripts.releases.store import _http_run
+
+    sent = {}
+
+    class _Response:
+        status = 200
+
+        def read(self):
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request):
+        sent.update({key.lower(): value for key, value in request.header_items()})
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    _http_run({"method": "GET", "url": "https://example.test/x",
+               "headers": {"Authorization": "Bearer tok"}})
+    assert sent["authorization"] == "Bearer tok"
+
+
+def test_check_from_env_skips_when_the_store_is_not_configured():
+    from scripts.releases.store import check_from_env
+
+    assert check_from_env({}) == "not-configured"
+
+
+def test_check_from_env_passes_the_configured_credentials():
+    from scripts.releases.store import check_from_env
+
+    api = _Api("Published")
     env = {
         "MS_STORE_PRODUCT_ID": "9NTEST",
         "MS_STORE_TENANT_ID": "TENANT",
         "MS_STORE_CLIENT_ID": "CLIENT",
         "MS_STORE_CLIENT_SECRET": "SECRET",
     }
-    assert release_from_env(env, run=api) == "released"
+    assert check_from_env(env, run=api) == "already-live"
     token = next(r for r in api.requests if r["url"].endswith("/token"))
     assert token["form"]["client_id"] == "CLIENT"
     assert token["form"]["client_secret"] == "SECRET"

@@ -388,9 +388,10 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
             # the publication pass with the feed pointer, never in the green
             # build that pushed the image under the attempt ref.
             docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
-            # The Store release joins the pass here (after the feeds and
-            # aliases move), not before. A failure leaves the run red.
-            store.release_from_env(env)
+            # The Store check joins the pass here (after the feeds and aliases
+            # move). It never releases the held submission: the API cannot,
+            # so it prints the Publish now step. A failed submission is red.
+            store.check_from_env(env)
         advance_head = production_advance
 
     for step in steps:

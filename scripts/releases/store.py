@@ -1,9 +1,10 @@
 """Store submission control for the release pipeline.
 
 The green run submits the verified ``.msixbundle`` with auto-publish off
-(``targetPublishMode: "Manual"``); the publication pass releases it (or turns
-auto-publish on while it is still in certification). Both entry points act on
-the submission's current state, so both are safe to rerun.
+(``targetPublishMode: "Manual"``). The submission API has no call that
+releases a held submission, so publication never edits it: the publication
+pass only checks its state and tells a person to click Publish now in Partner
+Center once it is certified. Both entry points are safe to rerun.
 
 Green run — ``python -m scripts.releases.store submit <package>`` (Windows
 runner, ``msstore`` CLI configured beforehand by
@@ -25,25 +26,18 @@ runner, ``msstore`` CLI configured beforehand by
    the complete submission JSON, so it sets packages and publish mode at once.
 6. ``msstore submission publish <productId>`` — commits; certification starts.
 
-Publication pass — ``scripts.releases.store.release(...)`` (Ubuntu runner,
-Partner Center submission REST API, stdlib ``urllib`` only):
+Publication pass — ``scripts.releases.store.check(...)`` (Ubuntu runner,
+Partner Center submission REST API, stdlib ``urllib`` only, read-only):
 
 1. ``POST https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`` with
    ``grant_type=client_credentials`` and scope
    ``https://manage.devcenter.microsoft.com/.default`` (the same MS_STORE_*
    credentials the CLI uses).
-2. ``POST https://manage.devcenter.microsoft.com/v1.0/my/applications/{id}/submissions``
-   to find the in-flight submission: ``201`` means none existed (the fresh
-   probe draft is deleted immediately with ``DELETE .../submissions/{id}``,
-   nothing else is touched); ``409`` means one exists and its id is in the
-   error body.
-3. ``GET .../submissions/{id}/status``. Terminal or already-live states
-   (``PendingPublication, Publishing, Published``) are a no-op ("already-live").
-4. Otherwise the held submission is released by rewriting it with
-   ``targetPublishMode: "Immediate"`` (``PUT .../submissions/{id}``) and
-   committing it (``POST .../submissions/{id}/commit``). A certified
-   submission (status ``Release``) goes live now ("released"); one still in
-   certification goes live when certification passes ("auto-publish").
+2. ``GET https://manage.devcenter.microsoft.com/v1.0/my/applications/{id}`` —
+   ``pendingApplicationSubmission.id`` names the held submission.
+3. ``GET .../submissions/{id}/status``. ``Release`` (certified, held by
+   Manual) and the certification states print a Publish now instruction as
+   a GitHub warning; the live states are a no-op; a failed state raises.
 
 Sources for the commands and fields above:
 - msstore CLI commands and options (``submission status/get/update/delete
@@ -57,18 +51,13 @@ Sources for the commands and fields above:
   (``PendingCommit, CommitStarted, PreProcessing, Certification,
   CertificationFailed, Release, PendingPublication, Publishing, Published, ...``):
   https://learn.microsoft.com/en-us/windows/uwp/monetize/manage-app-submissions
-- REST methods (create/update/commit/delete/status):
-  https://learn.microsoft.com/en-us/windows/uwp/monetize/manage-app-submissions#methods-for-managing-app-submissions
-  (individual pages: create-an-app-submission, update-an-app-submission,
-  commit-an-app-submission, delete-an-app-submission,
-  get-status-for-an-app-submission)
+- REST methods (get an app, get submission status):
+  https://learn.microsoft.com/en-us/windows/uwp/monetize/get-an-app
+  https://learn.microsoft.com/en-us/windows/uwp/monetize/get-status-for-an-app-submission
+  The documented methods are get, create, update, commit, delete and status;
+  none releases a held submission, and update refuses a committed one (409).
 - Azure AD client-credentials token:
   https://learn.microsoft.com/en-us/windows/uwp/monetize/create-and-manage-submissions-using-windows-store-services#obtain-an-azure-ad-access-token
-
-Unverified on paper but guarded in code: whether the API accepts a ``PUT``
-update on a submission that is committed and held (certified, waiting for
-release). If it refuses, the release step fails and the publication run stays
-red; rerunning after a fix from Partner Center is safe.
 """
 from __future__ import annotations
 
@@ -135,7 +124,7 @@ def _http_run(request: dict) -> dict:
     """Default injected runner: one HTTP request, stdlib only."""
     url = request["url"]
     data = None
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **request.get("headers", {})}
     body = request.get("body")
     if body is not None:
         data = json.dumps(body).encode()
@@ -171,71 +160,65 @@ def _token(tenant_id: str, client_id: str, client_secret: str, run) -> str:
     return response["body"]["access_token"]
 
 
-def _in_progress_id(conflict_body) -> str:
-    """The 409 body names the in-progress submission; pull its id out."""
-    text = json.dumps(conflict_body) if not isinstance(conflict_body, str) \
-        else conflict_body
-    digits = "".join(character if character.isdigit() or character == " "
-                     else " " for character in text).split()
-    long_ids = [token for token in digits if len(token) >= 10]
-    if not long_ids:
-        raise StoreError(f"cannot find the in-flight submission id in {text!r}")
-    return long_ids[0]
+# Statuses of a committed submission that has not been decided yet.
+_IN_CERTIFICATION = {"CommitStarted", "PreProcessing", "Certification"}
+_FAILED = {"CommitFailed", "PreProcessingFailed", "CertificationFailed", "PublishFailed",
+           "Canceled"}
 
 
-def release(*, product_id: str, tenant_id: str, client_id: str,
-            client_secret: str, run=_http_run) -> str:
-    """Release the held submission, or let it go live when certified."""
+def check(*, product_id: str, tenant_id: str, client_id: str, client_secret: str,
+          run=_http_run) -> str:
+    """Report the held submission's state and what a person must do next.
+
+    The submission API has no call that releases a held (Manual) submission,
+    so the publication pass never edits or commits it: a certified submission
+    is put live by "Publish now" in Partner Center. A failed submission leaves
+    the run red.
+    """
     token = _token(tenant_id, client_id, client_secret, run)
 
-    def call(method: str, path: str, body: dict | None = None) -> dict:
-        request = {"method": method, "url": API_ROOT + path}
-        if body is not None:
-            request["body"] = body
-        request["headers"] = {"Authorization": f"Bearer {token}"}
-        return run(request)
+    def get(path: str) -> dict:
+        response = run({"method": "GET", "url": API_ROOT + path,
+                        "headers": {"Authorization": f"Bearer {token}"}})
+        if response["status"] != 200:
+            raise StoreError(f"GET {path} failed: {response['status']}")
+        return response["body"]
 
-    submissions_path = f"/applications/{product_id}/submissions"
-    probe = call("POST", submissions_path)
-    if probe["status"] == 201:
-        # Nothing was in flight; do not leave the probe draft behind.
-        probe_id = probe["body"].get("id")
-        if probe_id:
-            call("DELETE", f"{submissions_path}/{probe_id}")
+    app = get(f"/applications/{product_id}")
+    pending = (app.get("pendingApplicationSubmission") or {}).get("id")
+    if not pending:
+        _notice(f"No Store submission is pending for {product_id}. The green run submits "
+                "one; check its stable-store job.")
         return "no-submission"
-    if probe["status"] != 409:
-        raise StoreError(f"unexpected submission probe reply: {probe['status']}")
-    submission_id = _in_progress_id(probe["body"])
-
-    status = call("GET", f"{submissions_path}/{submission_id}/status")
-    if status["status"] != 200:
-        raise StoreError(f"submission status failed: {status['status']}")
-    state = status["body"]["status"]
+    state = get(f"/applications/{product_id}/submissions/{pending}/status").get("status")
+    if state in _FAILED:
+        raise StoreError(f"Store submission {pending} is {state}; resubmit from a green run")
     if state in _ALREADY_LIVE:
         return "already-live"
-
-    submission = call("GET", f"{submissions_path}/{submission_id}")
-    if submission["status"] != 200:
-        raise StoreError(f"submission read failed: {submission['status']}")
-    held = submission["body"]
-    held["targetPublishMode"] = "Immediate"
-    updated = call("PUT", f"{submissions_path}/{submission_id}", held)
-    if updated["status"] != 200:
-        raise StoreError(f"submission update failed: {updated['status']}")
-    committed = call("POST", f"{submissions_path}/{submission_id}/commit")
-    if committed["status"] != 200:
-        raise StoreError(f"submission commit failed: {committed['status']}")
-    return "released" if state == _CERTIFIED_HELD else "auto-publish"
+    if state == _CERTIFIED_HELD:
+        _notice(f"Store submission {pending} passed certification and is held. "
+                "Open it in Partner Center and click Publish now.")
+        return "needs-publish-now"
+    if state in _IN_CERTIFICATION:
+        _notice(f"Store submission {pending} is still in certification ({state}). When it "
+                "passes, open it in Partner Center and click Publish now.")
+        return "in-certification"
+    raise StoreError(f"Store submission {pending} has an unexpected status: {state!r}")
 
 
-def release_from_env(env: dict, run=_http_run) -> str:
-    """Release the Store submission when the environment configures it."""
+def _notice(text: str) -> None:
+    # A GitHub annotation, so the manual step shows on the run's summary page.
+    print(f"::warning title=Microsoft Store::{text}")
+
+
+def check_from_env(env: dict, run=_http_run) -> str:
+    """Check the Store submission when the environment configures it."""
     product_id = env.get("MS_STORE_PRODUCT_ID")
     if not product_id:
-        print("Store release skipped: MS_STORE_PRODUCT_ID is not configured.",
+        print("Store check skipped: MS_STORE_PRODUCT_ID is not configured.",
               file=sys.stderr)
         return "not-configured"
-    return release(
+    return check(
         product_id=product_id,
         tenant_id=env["MS_STORE_TENANT_ID"],
         client_id=env["MS_STORE_CLIENT_ID"],
@@ -251,11 +234,11 @@ def main(argv: list[str]) -> int:
         result = submit(package, product_id=product_id)
         print(json.dumps(result, sort_keys=True))
         return 0
-    if argv[:1] == ["release"]:
-        print(json.dumps({"result": release_from_env(dict(os.environ))},
+    if argv[:1] == ["check"]:
+        print(json.dumps({"result": check_from_env(dict(os.environ))},
                          sort_keys=True))
         return 0
-    print("usage: python -m scripts.releases.store submit <package> | release",
+    print("usage: python -m scripts.releases.store submit <package> | check",
           file=sys.stderr)
     return 2
 
