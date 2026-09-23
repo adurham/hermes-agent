@@ -163,7 +163,10 @@ def _isolated_checkout(tmp_path: Path) -> Path:
         shutil.copy2(REPO_ROOT / relative, root / relative)
     # Environment-only tests do not exercise provisioning; the runtime tests
     # replace these stubs with a publisher that records and applies each sync.
-    (root / "setup-hermes.sh").write_text('test "$#" = 1 && test "$1" = --runtime-only\n', encoding="utf-8")
+    (root / "setup-hermes.sh").write_text(
+        'test "$#" = 2 && test "$1" = --runtime-only && case "$2" in --test-environment*) ;; *) exit 2 ;; esac\n',
+        encoding="utf-8",
+    )
     (root / "setup-hermes.ps1").write_text(
         "param([switch]$RuntimeOnly)\nif (-not $RuntimeOnly) { exit 2 }\n", encoding="utf-8",
     )
