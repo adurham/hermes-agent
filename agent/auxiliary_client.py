@@ -3220,6 +3220,18 @@ _PAYMENT_KEYWORDS = (
     "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
     "requires a subscription", "upgrade for access", "upgrade for higher limits",
     "reached your session usage limit", "quota exceeded", "quota_exceeded",
+    # Subscription/entitlement 403s: the account or org cannot use this provider
+    # at all until the subscription is restored — semantically identical to
+    # credit exhaustion (the provider cannot serve the request), so the
+    # configured aux fallback chain must engage instead of the call dying on a
+    # bare 403. Anthropic's OAuth-org block is the case seen live when a Claude
+    # Max subscription lapses/pauses; the main chat path already classifies the
+    # same body as an entitlement failure in agent_runtime_helpers
+    # (_is_entitlement_failure), and this keeps the aux path consistent with it.
+    "not allowed for this organization",
+    "oauth authentication is currently not allowed",
+    "subscription is inactive", "subscription lapsed",
+    "subscription has been paused", "subscription paused",
     "too many tokens per day", "daily limit", "tokens per day", "daily quota", "resource exhausted",
     "resource_exhausted", "resource-exhausted", "resourceexhausted",
     "weekly usage limit", "weekly limit",
