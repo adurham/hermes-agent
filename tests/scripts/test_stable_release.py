@@ -46,7 +46,7 @@ def candidates(tag, commit, digest, archive=None):
             "archive": ref,
             "packages": packages,
             "smoke_results": {name: {"result": "success"} for name in (
-                "smoke-darwin", "smoke-win32", "smoke-win32-universal")}}
+                "smoke-darwin-arm64", "smoke-darwin-x64", "smoke-win32-arm64", "smoke-win32-x64")}}
 
 
 def test_gate_requires_every_success_including_real_cli(tmp_path):
@@ -147,6 +147,31 @@ def test_a_win32_bundle_receipt_with_one_arch_is_refused():
     with pytest.raises(ValueError, match="eceipt"):
         validate_receipt(one, "win32-bundle", manifest["tag"], commit, BASE,
                          manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+
+
+def test_a_receipt_is_accepted_without_smoke_results():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    for receipt, targets in RECEIPTS:
+        rows = _receipt_rows(manifest, targets)
+        # Receipts are staged before the smokes run; they carry no smoke results.
+        del rows["smoke_results"]
+        assert validate_receipt(rows, receipt, manifest["tag"], commit, BASE,
+                                manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+
+
+def test_the_final_manifest_still_requires_every_smoke_result():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    del manifest["smoke_results"]
+    with pytest.raises(ValueError, match="smoke"):
+        validate_candidates(manifest, manifest["tag"], commit, BASE,
+                            manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+    failed = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    failed["smoke_results"]["smoke-win32-x64"] = {"result": "failure"}
+    with pytest.raises(ValueError, match="smoke-win32-x64=failure"):
+        validate_candidates(failed, failed["tag"], commit, BASE,
+                            failed["releaseEpoch"], archive="rc.2-v1.2.4")
 
 
 def test_an_unknown_receipt_is_refused():

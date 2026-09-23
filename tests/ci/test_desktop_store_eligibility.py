@@ -54,7 +54,7 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     jobs = _workflow()['jobs']
     scripts = {
         kind: next(step['run'] for step in jobs[job]['steps'] if step.get('name') == 'Build and package')
-        for kind, job in [('release', 'build-win32-release'), ('commit', 'build-win32-commit')]
+        for kind, job in [('release', 'build-win32-x64-release'), ('commit', 'build-win32-x64-commit')]
     }
     cases = [
         ('v0.28.0', '', True, 'release'),

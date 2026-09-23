@@ -20,9 +20,10 @@ SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
 SMOKE_JOBS = {
-    "smoke-darwin": "macOS DMG + ZIP (arm64 and x64)",
-    "smoke-win32": "Windows MSIX (arm64 and x64)",
-    "smoke-win32-universal": "Windows MSIXBUNDLE (arm64 and x64)",
+    "smoke-darwin-arm64": "macOS DMG + ZIP (arm64)",
+    "smoke-darwin-x64": "macOS DMG + ZIP (x64)",
+    "smoke-win32-arm64": "Windows MSIX (arm64)",
+    "smoke-win32-x64": "Windows MSIX (x64)",
 }
 
 
@@ -97,7 +98,6 @@ def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
         raise ValueError("Candidate manifest does not match release identity")
     if manifest.get("archive") != archive:
         raise ValueError("Candidate manifest names a different release archive")
-    successful_smoke_results(manifest.get("smoke_results"))
     admitted_epoch = manifest.get("releaseEpoch")
     expected_windows_version = stable_windows_version(admitted_epoch)
     if release_epoch is not None and admitted_epoch != release_epoch:
@@ -139,8 +139,15 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
                         release_epoch: int | None = None, *, archive: str) -> dict:
     """`tag` is the plain payload identity; `archive` is the releases/tag/<ref>/
     prefix every artifact URL must live under. Stable attempts name the attempt
-    ref as their archive; the two are separate fields and never overloaded."""
+    ref as their archive; the two are separate fields and never overloaded.
+
+    The smoke requirement lives here and not in the shared row checks:
+    per-arch receipts are staged before the smokes run (decision 11), so a
+    receipt without `smoke_results` is accepted while the final manifest
+    never is.
+    """
     rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
+    successful_smoke_results(manifest.get("smoke_results"))
     if any(target not in rows for target in DESKTOP_TARGETS):
         raise ValueError("Candidate manifest must cover Windows and macOS on both architectures")
     return rows

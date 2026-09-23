@@ -16,7 +16,7 @@ name: Desktop Bundled Release
 #   build-linux                              → DISABLED for now (dummy skips)
 #   assemble-win32-bundle                   → native universal bundles
 #     (needs build-win32): all downloadable builds stage without touching feeds.
-#   smoke-darwin / smoke-win32 / smoke-win32-universal → native install + chat
+#   smoke-darwin / smoke-win32 (per arch) → native install + chat
 #   publish-win32-updater                   → tested canary bytes + feed
 #     (needs BOTH Windows smoke matrices); stable promotion is sequenced by
 #     the stable publication controller after GitHub publication.
@@ -93,6 +93,10 @@ on:
       manifest-sha256:
         default: ''
         type: string
+      jobs:
+        description: 'Comma-separated job groups. Default: every group.'
+        type: string
+        default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
     outputs:
       manifest-url:
         value: ${{ jobs.candidate-manifest.outputs.manifest-url }}
@@ -134,11 +138,11 @@ on:
         required: false
         type: string
         default: '{}'
-      termux_only:
-        description: 'Build and publish only the Termux package'
+      jobs:
+        description: 'Comma-separated job groups. Default: every group.'
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
       termux_upgrade_from_tag:
         description: 'Published release tag whose R2 Termux package must upgrade to this build'
         required: false
@@ -159,7 +163,7 @@ permissions:
 concurrency:
   # One dispatch: a disposable run's identity is its channel name, so a
   # re-dispatch of the same channel serializes instead of racing the namespace.
-  group: desktop-bundled-release-${{ inputs.channel || inputs.disposable_channel || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}
+  group: desktop-bundled-release-${{ inputs.channel || inputs.disposable_channel || inputs.tag || inputs.build_commit || 'canary' }}-${{ inputs.release-phase || 'canary' }}-${{ inputs.jobs }}
   cancel-in-progress: false
 
 env:
@@ -200,6 +204,15 @@ jobs:
       # The archive ref: the attempt ref for stable phases, the payload tag
       # for canary and commit builds. Every releases/tag/<ref>/ write reads it.
       archive-tag: ${{ steps.admission.outputs.archive-tag }}
+      # One admission-parsed switch per job group; every job gates on its own.
+      darwin-arm64: ${{ steps.admission.outputs.darwin-arm64 }}
+      darwin-x64: ${{ steps.admission.outputs.darwin-x64 }}
+      win32-arm64: ${{ steps.admission.outputs.win32-arm64 }}
+      win32-x64: ${{ steps.admission.outputs.win32-x64 }}
+      win32-bundle: ${{ steps.admission.outputs.win32-bundle }}
+      linux-x64: ${{ steps.admission.outputs.linux-x64 }}
+      linux-arm64: ${{ steps.admission.outputs.linux-arm64 }}
+      termux: ${{ steps.admission.outputs.termux }}
       channel-build: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_build) || '' }}
       channel-request-sha256: ${{ ((inputs.disposable_channel != '' || inputs.channel != '') && steps.allocate.outputs.channel_request_sha256) || '' }}
       disposable-run: ${{ (inputs.disposable_channel != '' && github.run_id) || inputs.disposable_run || '' }}
@@ -244,7 +257,7 @@ jobs:
           BUILD_COMMIT: ${{ inputs.build_commit }}
           TAG: ${{ inputs.tag }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
-          TERMUX_ONLY: ${{ inputs.termux_only }}
+          JOBS: ${{ inputs.jobs }}
           TERMUX_UPGRADE_FROM_TAG: ${{ inputs.termux_upgrade_from_tag }}
           UPLOAD_RELEASE: ${{ inputs.upload_release }}
           BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
@@ -268,7 +281,7 @@ jobs:
           CHANNEL_BUILD: ${{ steps.allocate.outputs.channel_build || '' }}
           CHANNEL_REQUEST_SHA256: ${{ steps.allocate.outputs.channel_request_sha256 || '' }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-          TERMUX_ONLY: ${{ inputs.termux_only }}
+          JOBS: ${{ inputs.jobs }}
           BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -279,6 +292,8 @@ jobs:
           if [ -n "${R2_DISPOSABLE_RUN:-}" ] && [ -z "${CHANNEL_BUILD:-}" ]; then
             echo '::error::disposable_run requires a pinned channel build'; exit 1
           fi
+          # The one parser for the `jobs` input; every job gates on these outputs.
+          python -m scripts.releases.job_groups >> "$GITHUB_OUTPUT"
           printf 'public-root=%s\npublic-base=%s\n' "$CLOUDFLARE_R2_PUBLIC_URL" "$CLOUDFLARE_R2_PUBLIC_URL" >> "$GITHUB_OUTPUT"
           printf 'archive-tag=%s\n' "${RELEASE_CLAIM_TAG:-$RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           if [ -n "${CHANNEL_BUILD:-}" ]; then
@@ -374,9 +389,12 @@ jobs:
   #
   # Cache permissions are literal job-token scopes, not checkout/save-step policy.
   # Share execution via anchors, and keep the original IDs as downstream gates.
-  build-win32-release:
-    name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel == ''
+  build-win32-x64-release:
+    name: bundled win32-x64
+    if: >-
+      needs.validate.outputs.win32-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -388,8 +406,6 @@ jobs:
         target:
           - label: win32-x64
             runner: windows-2025
-          - label: win32-arm64
-            runner: windows-11-arm
     env: &win32-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
@@ -670,11 +686,32 @@ jobs:
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
-  build-win32-commit:
-    name: bundled ${{ matrix.target.label }} (commit)
+  build-win32-arm64-release:
+    name: bundled win32-arm64
+    if: >-
+      needs.validate.outputs.win32-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    cache-mode: write
+    timeout-minutes: 900
+    strategy: &win32-strategy-arm64
+      fail-fast: false
+      matrix:
+        target:
+          - label: win32-arm64
+            runner: windows-11-arm
+    env: *win32-env
+    steps: *win32-steps
+
+  build-win32-x64-commit:
+    name: bundled win32-x64 (commit)
     if: >-
       !cancelled() && needs.validate.result == 'success'
-      && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.outputs.win32-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.build_commit != '' || inputs.channel != '')
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
@@ -685,23 +722,40 @@ jobs:
     env: *win32-env
     steps: *win32-steps
 
-  build-win32:
-    name: bundled win32 result
+  build-win32-arm64-commit:
+    name: bundled win32-arm64 (commit)
+    if: >-
+      !cancelled() && needs.validate.result == 'success'
+      && needs.validate.outputs.win32-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.build_commit != '' || inputs.channel != '')
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    cache-mode: read
+    timeout-minutes: 900
+    strategy: *win32-strategy-arm64
+    env: *win32-env
+    steps: *win32-steps
+
+  build-win32-x64:
+    name: bundled win32-x64 result
     # always() crosses the deliberately skipped trust branch; failed admission
     # still skips this result, just as it skipped the original native builder.
     if: >-
-      always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      always() && needs.validate.outputs.win32-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
     # The trust-branch legs are read through needs.*.result below, so they must
     # stay in the list — the result job gates on their outcomes, not its own.
-    needs: [validate, build-win32-release, build-win32-commit]
+    needs: [validate, build-win32-x64-release, build-win32-x64-commit]
     runs-on: ubuntu-24.04
     permissions: {}
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-win32-release.result == 'success' && needs.build-win32-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-win32-commit.result == 'success' && needs.build-win32-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-win32-x64-release.result == 'success' && needs.build-win32-x64-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-win32-x64-commit.result == 'success' && needs.build-win32-x64-release.result == 'skipped') }}
     steps: &native-build-result-steps
       - name: Require exactly the selected native build to succeed
         shell: bash
@@ -710,6 +764,26 @@ jobs:
             echo "::error::selected native build did not succeed, or the other trust branch was not skipped"
             exit 1
           fi
+
+  build-win32-arm64:
+    name: bundled win32-arm64 result
+    # always() crosses the deliberately skipped trust branch; failed admission
+    # still skips this result, just as it skipped the original native builder.
+    if: >-
+      always() && needs.validate.outputs.win32-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.result == 'success'
+    # The trust-branch legs are read through needs.*.result below, so they must
+    # stay in the list — the result job gates on their outcomes, not its own.
+    needs: [validate, build-win32-arm64-release, build-win32-arm64-commit]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 5
+    env:
+      SELECTED_BUILD_SUCCEEDED: >-
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-win32-arm64-release.result == 'success' && needs.build-win32-arm64-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-win32-arm64-commit.result == 'success' && needs.build-win32-arm64-release.result == 'skipped') }}
+    steps: *native-build-result-steps
 
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
   # Native per-arch darwin builds via scripts/bundles/desktop.py (the
@@ -722,9 +796,12 @@ jobs:
   # merge-multiple download) and publish-darwin-updater merges them into
   # releases/darwin/<channel>/<channel>-mac.yml — artifacts first, feed
   # pointer last, whole channel green before anything publishes.
-  build-darwin-release:
-    name: bundled ${{ matrix.target.label }}
-    if: inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate') && inputs.build_commit == '' && inputs.channel == ''
+  build-darwin-arm64-release:
+    name: bundled darwin-arm64
+    if: >-
+      needs.validate.outputs.darwin-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
     environment: release-signing
@@ -736,8 +813,6 @@ jobs:
         target:
           - label: darwin-arm64
             runner: macos-15
-          - label: darwin-x64
-            runner: macos-15-intel
     env: &darwin-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
@@ -1006,11 +1081,32 @@ jobs:
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
-  build-darwin-commit:
-    name: bundled ${{ matrix.target.label }} (commit)
+  build-darwin-x64-release:
+    name: bundled darwin-x64
+    if: >-
+      needs.validate.outputs.darwin-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && inputs.build_commit == '' && inputs.channel == ''
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    cache-mode: write
+    timeout-minutes: 360
+    strategy: &darwin-strategy-x64
+      fail-fast: false
+      matrix:
+        target:
+          - label: darwin-x64
+            runner: macos-15-intel
+    env: *darwin-env
+    steps: *darwin-steps
+
+  build-darwin-arm64-commit:
+    name: bundled darwin-arm64 (commit)
     if: >-
       !cancelled() && needs.validate.result == 'success'
-      && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.outputs.darwin-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.build_commit != '' || inputs.channel != '')
     needs: [validate]
     runs-on: ${{ matrix.target.runner }}
@@ -1021,46 +1117,91 @@ jobs:
     env: *darwin-env
     steps: *darwin-steps
 
-  build-darwin:
-    name: bundled darwin result
+  build-darwin-x64-commit:
+    name: bundled darwin-x64 (commit)
+    if: >-
+      !cancelled() && needs.validate.result == 'success'
+      && needs.validate.outputs.darwin-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.build_commit != '' || inputs.channel != '')
+    needs: [validate]
+    runs-on: ${{ matrix.target.runner }}
+    environment: release-signing
+    cache-mode: read
+    timeout-minutes: 360
+    strategy: *darwin-strategy-x64
+    env: *darwin-env
+    steps: *darwin-steps
+
+  build-darwin-arm64:
+    name: bundled darwin-arm64 result
     # always() crosses the deliberately skipped trust branch; failed admission
     # still skips this result, just as it skipped the original native builder.
     if: >-
-      always() && inputs.termux_only != true && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      always() && needs.validate.outputs.darwin-arm64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-    needs: [validate, build-darwin-release, build-darwin-commit]
+    # The trust-branch legs are read through needs.*.result below, so they must
+    # stay in the list — the result job gates on their outcomes, not its own.
+    needs: [validate, build-darwin-arm64-release, build-darwin-arm64-commit]
     runs-on: ubuntu-24.04
     permissions: {}
     timeout-minutes: 5
     env:
       SELECTED_BUILD_SUCCEEDED: >-
-        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-darwin-release.result == 'success' && needs.build-darwin-commit.result == 'skipped')
-          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-commit.result == 'success' && needs.build-darwin-release.result == 'skipped') }}
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-darwin-arm64-release.result == 'success' && needs.build-darwin-arm64-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-arm64-commit.result == 'success' && needs.build-darwin-arm64-release.result == 'skipped') }}
+    steps: *native-build-result-steps
+
+  build-darwin-x64:
+    name: bundled darwin-x64 result
+    # always() crosses the deliberately skipped trust branch; failed admission
+    # still skips this result, just as it skipped the original native builder.
+    if: >-
+      always() && needs.validate.outputs.darwin-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && needs.validate.result == 'success'
+    # The trust-branch legs are read through needs.*.result below, so they must
+    # stay in the list — the result job gates on their outcomes, not its own.
+    needs: [validate, build-darwin-x64-release, build-darwin-x64-commit]
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 5
+    env:
+      SELECTED_BUILD_SUCCEEDED: >-
+        ${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-darwin-x64-release.result == 'success' && needs.build-darwin-x64-commit.result == 'skipped')
+          || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-darwin-x64-commit.result == 'success' && needs.build-darwin-x64-release.result == 'skipped') }}
     steps: *native-build-result-steps
 
   # ── Linux builders (DISABLED for now) ─────────────────────────────────────
-  build-linux:
-    name: bundled linux (disabled for now)
+  build-linux-x64:
+    name: bundled linux-x64 (disabled for now)
+    if: needs.validate.outputs.linux-x64 == 'true'
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - { label: linux-x64 } # runner: ubuntu-24.04
-          - { label: linux-arm64 } # runner: ubuntu-24.04-arm
     steps:
       - name: Disabled
         shell: bash
         run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
 
-  smoke-darwin:
-    name: Smoke macOS ${{ matrix.arch }} ${{ matrix.format }}
-    needs: [validate, build-darwin]
+  build-linux-arm64:
+    name: bundled linux-arm64 (disabled for now)
+    if: needs.validate.outputs.linux-arm64 == 'true'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Disabled
+        shell: bash
+        run: echo "::notice::linux bundled builds are disabled for now — re-enable in desktop-bundled-release.yml"
+
+  smoke-darwin-arm64:
+    name: Smoke macOS arm64 dmg/zip
+    needs: [validate, build-darwin-arm64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.build-darwin.result == 'success' && inputs.termux_only != true
+      && needs.build-darwin-arm64.result == 'success' && needs.validate.outputs.darwin-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
@@ -1068,12 +1209,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64, x64]
         format: [dmg, zip]
     uses: ./.github/workflows/desktop-bundle-smoke.yml
     with:
       platform: darwin
-      arch: ${{ matrix.arch }}
+      arch: arm64
       format: ${{ matrix.format }}
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
@@ -1087,12 +1227,12 @@ jobs:
       public-root: ${{ needs.validate.outputs.public-root }}
       disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
-  smoke-win32:
-    name: Smoke Windows ${{ matrix.arch }} MSIX
-    needs: [validate, build-win32]
+  smoke-darwin-x64:
+    name: Smoke macOS x64 dmg/zip
+    needs: [validate, build-darwin-x64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.build-win32.result == 'success' && inputs.termux_only != true
+      && needs.build-darwin-x64.result == 'success' && needs.validate.outputs.darwin-x64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
@@ -1100,11 +1240,38 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, arm64]
+        format: [dmg, zip]
+    uses: ./.github/workflows/desktop-bundle-smoke.yml
+    with:
+      platform: darwin
+      arch: x64
+      format: ${{ matrix.format }}
+      sha: ${{ needs.validate.outputs.sha }}
+      tag: ${{ inputs.tag }}
+      # The archive ref the handoff was staged under (attempt ref for stable).
+      archive-tag: ${{ needs.validate.outputs.archive-tag }}
+      commit-build: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' }}
+      channel-build: ${{ needs.validate.outputs.channel-build }}
+      channel-request-sha256: ${{ needs.validate.outputs.channel-request-sha256 }}
+      controller-sha: ${{ github.sha }}
+      public-base: ${{ needs.validate.outputs.public-base }}
+      public-root: ${{ needs.validate.outputs.public-root }}
+      disposable-run: ${{ needs.validate.outputs.disposable-run }}
+
+  smoke-win32-x64:
+    name: Smoke Windows x64 MSIX
+    needs: [validate, build-win32-x64]
+    if: >-
+      !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.build-win32-x64.result == 'success' && needs.validate.outputs.win32-x64 == 'true'
+      && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
+      && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+    permissions:
+      contents: read
     uses: ./.github/workflows/desktop-bundle-smoke.yml
     with:
       platform: win32
-      arch: ${{ matrix.arch }}
+      arch: x64
       format: msix
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
@@ -1118,25 +1285,21 @@ jobs:
       public-root: ${{ needs.validate.outputs.public-root }}
       disposable-run: ${{ needs.validate.outputs.disposable-run }}
 
-  smoke-win32-universal:
-    name: Smoke Windows ${{ matrix.arch }} MSIXBUNDLE
-    needs: [validate, assemble-win32-bundle]
+  smoke-win32-arm64:
+    name: Smoke Windows arm64 MSIX
+    needs: [validate, build-win32-arm64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.assemble-win32-bundle.result == 'success' && inputs.termux_only != true
+      && needs.build-win32-arm64.result == 'success' && needs.validate.outputs.win32-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
     uses: ./.github/workflows/desktop-bundle-smoke.yml
     with:
       platform: win32
-      arch: ${{ matrix.arch }}
-      format: msixbundle
+      arch: arm64
+      format: msix
       sha: ${{ needs.validate.outputs.sha }}
       tag: ${{ inputs.tag }}
       # The archive ref the handoff was staged under (attempt ref for stable).
@@ -1152,10 +1315,12 @@ jobs:
   # Assembly never writes a feed, including for canaries.
   assemble-win32-bundle:
     name: Assemble and stage the Windows universal bundle
-    needs: [validate, build-win32]
+    needs: [validate, build-win32-x64, build-win32-arm64]
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.build-win32.result == 'success' && inputs.termux_only != true
+      && needs.validate.outputs.win32-x64 == 'true' && needs.validate.outputs.win32-arm64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true'
+      && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
     runs-on: windows-2025
@@ -1325,12 +1490,18 @@ jobs:
   publish-channel:
     name: Publish the complete native-smoked channel build
     needs:
-      [validate, build-darwin, build-win32, assemble-win32-bundle, smoke-darwin, smoke-win32, smoke-win32-universal]
+      [validate, build-darwin-arm64, build-darwin-x64, build-win32-arm64, build-win32-x64,
+       assemble-win32-bundle, smoke-darwin-arm64, smoke-darwin-x64, smoke-win32-arm64, smoke-win32-x64]
     if: >-
       !cancelled() && needs.validate.outputs.channel-build != '' && needs.validate.result == 'success'
-      && needs.build-darwin.result == 'success' && needs.build-win32.result == 'success'
-      && needs.assemble-win32-bundle.result == 'success' && needs.smoke-darwin.result == 'success'
-      && needs.smoke-win32.result == 'success' && needs.smoke-win32-universal.result == 'success'
+      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true'
+      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
+      && needs.build-win32-arm64.result == 'success' && needs.build-win32-x64.result == 'success'
+      && needs.assemble-win32-bundle.result == 'success'
+      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
+      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
     runs-on: ubuntu-24.04
     environment: release-signing
     cache-mode: read
@@ -1371,13 +1542,15 @@ jobs:
 
   publish-win32-updater:
     name: Publish the tested Windows canary bundle
-    needs: [validate, assemble-win32-bundle, smoke-win32, smoke-win32-universal]
+    needs: [validate, assemble-win32-bundle, smoke-win32-arm64, smoke-win32-x64]
     if: >-
       !cancelled() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true
-      && inputs.release-phase == '' && inputs.termux_only != true
+      && inputs.release-phase == ''
+      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true'
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.assemble-win32-bundle.result == 'success'
-      && needs.smoke-win32.result == 'success' && needs.smoke-win32-universal.result == 'success'
+      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
     runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 15
@@ -1450,12 +1623,14 @@ jobs:
   # publish in parallel by design (distinct feed files).
   publish-darwin-updater:
     name: Publish the macOS updater feed
-    needs: [validate, build-darwin, smoke-darwin]
+    needs: [validate, build-darwin-arm64, build-darwin-x64, smoke-darwin-arm64, smoke-darwin-x64]
     if: >-
       !cancelled() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true
-      && inputs.release-phase == '' && inputs.termux_only != true
+      && inputs.release-phase == ''
+      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.build-darwin.result == 'success' && needs.smoke-darwin.result == 'success'
+      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
+      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
     runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 15
@@ -1517,7 +1692,7 @@ jobs:
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
     needs: [validate]
-    if: inputs.channel == '' && inputs.disposable_channel == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
+    if: inputs.channel == '' && inputs.disposable_channel == '' && needs.validate.outputs.termux == 'true' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: ubuntu-24.04-arm
     environment: release-signing
     timeout-minutes: 90
@@ -1886,7 +2061,7 @@ jobs:
   builds-pending:
     name: Mark the builds table as in progress
     needs: validate
-    if: inputs.build_commit == '' && inputs.upload_release == true && inputs.termux_only != true
+    if: inputs.build_commit == '' && inputs.upload_release == true && needs.validate.outputs.termux == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -1911,13 +2086,17 @@ jobs:
     needs:
       [
         validate,
-        build-win32,
-        build-darwin,
-        build-linux,
+        build-win32-x64,
+        build-win32-arm64,
+        build-darwin-arm64,
+        build-darwin-x64,
+        build-linux-x64,
+        build-linux-arm64,
         assemble-win32-bundle,
-        smoke-darwin,
-        smoke-win32,
-        smoke-win32-universal,
+        smoke-darwin-arm64,
+        smoke-darwin-x64,
+        smoke-win32-arm64,
+        smoke-win32-x64,
         publish-win32-updater,
         publish-darwin-updater,
         termux-deb
@@ -1927,6 +2106,10 @@ jobs:
     if: |
       always() && inputs.build_commit == '' && inputs.channel == '' && inputs.upload_release == true && inputs.release-phase == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true' && needs.validate.outputs.termux == 'true'
+      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     steps:
@@ -1968,18 +2151,26 @@ jobs:
     needs:
       [
         validate,
-        build-win32,
-        build-darwin,
-        build-linux,
+        build-win32-x64,
+        build-win32-arm64,
+        build-darwin-arm64,
+        build-darwin-x64,
+        build-linux-x64,
+        build-linux-arm64,
         assemble-win32-bundle,
-        smoke-darwin,
-        smoke-win32,
-        smoke-win32-universal,
+        smoke-darwin-arm64,
+        smoke-darwin-x64,
+        smoke-win32-arm64,
+        smoke-win32-x64,
         termux-deb
       ]
     if: |
       always() && inputs.build_commit != '' && inputs.channel == '' && inputs.disposable_channel == ''
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
+      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true' && needs.validate.outputs.termux == 'true'
+      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     permissions:
@@ -2041,21 +2232,28 @@ jobs:
     needs:
       [
         validate,
-        build-win32,
-        build-darwin,
+        build-win32-x64,
+        build-win32-arm64,
+        build-darwin-arm64,
+        build-darwin-x64,
         assemble-win32-bundle,
-        smoke-darwin,
-        smoke-win32,
-        smoke-win32-universal,
+        smoke-darwin-arm64,
+        smoke-darwin-x64,
+        smoke-win32-arm64,
+        smoke-win32-x64,
         termux-deb
       ]
     if: >-
       !cancelled() && inputs.release-phase == 'candidate'
       && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.build-win32.result == 'success' && needs.build-darwin.result == 'success'
+      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true' && needs.validate.outputs.termux == 'true'
+      && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
+      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
       && needs.assemble-win32-bundle.result == 'success' && needs.termux-deb.result == 'success'
-      && needs.smoke-darwin.result == 'success' && needs.smoke-win32.result == 'success'
-      && needs.smoke-win32-universal.result == 'success'
+      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
+      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
     runs-on: ubuntu-latest-32-core
     environment: release-signing
     timeout-minutes: 90
@@ -2163,12 +2361,15 @@ jobs:
     needs:
       [
         validate,
-        build-win32,
-        build-darwin,
+        build-darwin-arm64,
+        build-darwin-x64,
+        build-win32-arm64,
+        build-win32-x64,
         assemble-win32-bundle,
-        smoke-darwin,
-        smoke-win32,
-        smoke-win32-universal,
+        smoke-darwin-arm64,
+        smoke-darwin-x64,
+        smoke-win32-arm64,
+        smoke-win32-x64,
         termux-deb,
         candidate-manifest,
         stable-publish,
@@ -2186,12 +2387,12 @@ jobs:
         run: |
           python - <<'PY'
           import json, os
+          from scripts.releases.job_groups import JOB_GROUPS, phase_jobs
           from scripts.releases.stable import require_success
-          phases = {
-              'candidate': ['validate', 'build-win32', 'build-darwin', 'assemble-win32-bundle', 'smoke-darwin', 'smoke-win32', 'smoke-win32-universal', 'termux-deb', 'candidate-manifest'],
-              'publish': ['validate', 'stable-publish', 'stable-store'],
-          }
-          require_success(json.loads(os.environ['RELEASE_NEEDS']), phases[os.environ['RELEASE_PHASE']])
+          needs = json.loads(os.environ['RELEASE_NEEDS'])
+          outputs = needs['validate'].get('outputs', {})
+          selected = {group: outputs.get(group) == 'true' for group in JOB_GROUPS}
+          require_success(needs, phase_jobs(selected, os.environ['RELEASE_PHASE']))
           PY
 
   publish-canary:
@@ -2199,14 +2400,18 @@ jobs:
     needs:
       [
         validate,
-        build-win32,
-        build-darwin,
-        build-linux,
+        build-win32-x64,
+        build-win32-arm64,
+        build-darwin-arm64,
+        build-darwin-x64,
+        build-linux-x64,
+        build-linux-arm64,
         builds-table,
         assemble-win32-bundle,
-        smoke-darwin,
-        smoke-win32,
-        smoke-win32-universal,
+        smoke-darwin-arm64,
+        smoke-darwin-x64,
+        smoke-win32-arm64,
+        smoke-win32-x64,
         publish-win32-updater,
         publish-darwin-updater
       ]
@@ -2215,14 +2420,17 @@ jobs:
       && inputs.build_commit == '' && inputs.channel == ''
       && inputs.upload_release == true
       && contains(inputs.tag, '+canary.')
-      && needs.build-win32.result == 'success'
-      && needs.build-darwin.result == 'success'
-      && needs.build-linux.result == 'success'
+      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
+      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
+      && needs.validate.outputs.win32-bundle == 'true'
+      && needs.validate.outputs.linux-x64 == 'true' && needs.validate.outputs.linux-arm64 == 'true'
+      && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
+      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
+      && needs.build-linux-x64.result == 'success' && needs.build-linux-arm64.result == 'success'
       && needs.builds-table.result == 'success'
       && needs.assemble-win32-bundle.result == 'success'
-      && needs.smoke-darwin.result == 'success'
-      && needs.smoke-win32.result == 'success'
-      && needs.smoke-win32-universal.result == 'success'
+      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
+      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
       && needs.publish-win32-updater.result == 'success'
       && needs.publish-darwin-updater.result == 'success'
     runs-on: ubuntu-24.04

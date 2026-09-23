@@ -19,8 +19,12 @@ from scripts.releases.channels import ChannelPublisher, R2ChannelStore
 from scripts.releases.versioning import parse_attempt_ref
 
 NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
-CANARY_NEEDS = ("validate", "build-win32", "build-darwin", "build-linux", "builds-table", "assemble-win32-bundle",
-                "smoke-darwin", "smoke-win32", "smoke-win32-universal", "publish-win32-updater", "publish-darwin-updater")
+CANARY_NEEDS = ("validate", "build-win32-x64", "build-win32-arm64",
+                "build-darwin-arm64", "build-darwin-x64",
+                "build-linux-x64", "build-linux-arm64", "builds-table",
+                "assemble-win32-bundle", "smoke-darwin-arm64", "smoke-darwin-x64",
+                "smoke-win32-arm64", "smoke-win32-x64",
+                "publish-win32-updater", "publish-darwin-updater")
 
 
 def select_channel(publisher: ChannelPublisher, policy: str) -> str:

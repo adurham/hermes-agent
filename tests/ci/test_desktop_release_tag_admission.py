@@ -244,8 +244,8 @@ def test_downloadable_windows_builds_refuse_to_ship_unsigned(tmp_path: Path):
     """The Windows signer only warns without AZURE_SIGN_*; every lane whose
     artifacts are downloadable must therefore fail before building, under
     the same gate the macOS leg uses for its signing credentials."""
-    step = _require_step("build-win32-release", "Require Azure signing")
-    assert step["if"] == _require_step("build-darwin-release", "Require signing credentials")["if"]
+    step = _require_step("build-win32-x64-release", "Require Azure signing")
+    assert step["if"] == _require_step("build-darwin-arm64-release", "Require signing credentials")["if"]
     assert "build-commit" not in step["if"] and "release-phase == 'candidate'" in step["if"]
     names = list(step["env"])
     assert {"AZURE_SIGN_ENDPOINT", "AZURE_SIGN_ACCOUNT", "AZURE_SIGN_PROFILE", "AZURE_CLIENT_ID"} <= set(names)

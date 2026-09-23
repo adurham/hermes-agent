@@ -22,7 +22,7 @@ from scripts.bundles import release_artifacts as artifacts
 
 ROOT = Path(__file__).resolve().parents[2]
 SMOKE_RESULTS = {name: {'result': 'success'} for name in (
-    'smoke-darwin', 'smoke-win32', 'smoke-win32-universal')}
+    'smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64')}
 RELEASE_EPOCH = 1_787_965_323
 WINDOWS_VERSION = '2026.5761.123.0'
 
@@ -373,7 +373,7 @@ def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server,
     key = f"releases/tag/{manifest['archive']}/release-candidates.json"
     raw = r2_server.store[key][0]
     for fault, message in [('legacy', 'Candidate manifest'), ('missing', 'Candidate smoke results'),
-                           ('failed', 'smoke-win32=failure'), ('identity', 'release identity'),
+                           ('failed', 'smoke-win32-x64=failure'), ('identity', 'release identity'),
                            ('tampered', 'digest mismatch')]:
         invalid = copy.deepcopy(manifest)
         if fault == 'legacy':
@@ -382,7 +382,7 @@ def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server,
         elif fault == 'missing':
             invalid.pop('smoke_results', None)
         elif fault == 'failed':
-            invalid['smoke_results'] = {**SMOKE_RESULTS, 'smoke-win32': {'result': 'failure'}}
+            invalid['smoke_results'] = {**SMOKE_RESULTS, 'smoke-win32-x64': {'result': 'failure'}}
         else:
             invalid['commit'] = 'b' * 40
         data = json.dumps(invalid).encode()

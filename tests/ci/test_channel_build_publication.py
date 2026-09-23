@@ -214,7 +214,7 @@ def test_real_workflow_admission_and_public_smoke_fetch(tmp_path, r2_server, sta
     result = run_shell(tmp_path, r2_server, script, env, cwd=clone)
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"sha={request['commit']}" in (tmp_path / "outputs").read_text(encoding="utf-8")
-    for overrides in ({"GITHUB_REF": "refs/heads/feature"}, {"TAG": "v0.1.2"}, {"TERMUX_ONLY": "true"},
+    for overrides in ({"GITHUB_REF": "refs/heads/feature"}, {"TAG": "v0.1.2"}, {"JOBS": "termux"},
                       {"CHANNEL_REQUEST_SHA256": "f" * 64}):
         failed = run_shell(tmp_path, r2_server, script, {**env, **overrides}, cwd=clone)
         assert failed.returncode != 0
@@ -495,7 +495,8 @@ def test_tag_and_commit_staging_never_runs_for_a_pinned_channel_build():
     """
     workflow = _workflow()
     seen = set()
-    for job in ("build-win32-commit", "build-darwin-commit"):
+    for job in ("build-win32-x64-commit", "build-win32-arm64-commit",
+                "build-darwin-arm64-commit", "build-darwin-x64-commit"):
         for step in workflow["jobs"][job]["steps"]:
             run = step.get("run", "") if isinstance(step, dict) else ""
             if "scripts.releases.handoff stage" not in run:
