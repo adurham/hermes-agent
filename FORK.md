@@ -9522,12 +9522,12 @@ will never touch them.
 | `agent/hot_tier_audit.py` | Hot-tier audit — heuristic stale-path detection + opt-in LLM keep/demote/stale/dead classification. On a real curator pass, reads `MEMORY.md`/`USER.md`; heuristic-only mode (default) flags/demotes entries whose extracted filesystem paths no longer exist on disk. `curator.consolidate: true` upgrades to an LLM classification pass (reuses the skill curator's aux-model binding) whose `demote` verdicts move to warm tier and `stale`/`dead` verdicts hard-delete only when `curator.prune_builtins` is also on; an LLM failure or a sanity-cap trip aborts with zero mutation rather than falling back to the heuristic. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
 || `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
 || `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. |
-|| `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. |
-|| `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. |
+|| `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. **REMOVED 2026-09-23** (deliberate product decision, commit `658d2248f3` — account-ban risk + already non-functional; see "Fork-only retirements — 2026-09-23" below). Do NOT re-carry on the next sync. |
+|| `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. **REMOVED 2026-09-23** (same decision/commit as `gemini_cloudcode_adapter.py` above). Do NOT re-carry on the next sync. |
 || `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
 || `hermes_cli/delegation_stats.py` | Fork-only delegation statistics display (`/delegation` stats readout). |
 || `hermes_cli/keyboard_protocol.py` | Fork keyboard protocol for CLI interaction patterns. **RETIRED 2026-08-26** (see the de-fork audit at the top of this file, commit `1a37f832e9`): upstream's `hermes_cli/pt_input_extras.py` installer family supersedes the mapping table (fork added 0 sequences upstream didn't already cover), and the fork's unconditional `enable()` push was defeating upstream's allowlist-gated `_enable_extended_enter_keys()` Ghostty exception (`1a8fea3ce2`, #87630). |
-|| `hermes_cli/memory_confirm.py` | Memory confirmation dialogs (warm-tier memory verify-before-save). |
+|| `hermes_cli/memory_confirm.py` | Memory confirmation dialogs (warm-tier memory verify-before-save). **CONSOLIDATED 2026-09-23** (owner-approved, commit `23f7b34f26`): 689 → 199 lines, now a staging adapter onto upstream's `tools/write_approval.py` pending store + `/memory pending|approve|reject`; the fork-only conflict-verdict display, side-by-side `/memory show` and re-classifying `/memory edit` are preserved as enrichments of that shared mechanism. See "Fork-only retirements — 2026-09-23" below. |
 || `hermes_cli/personas.py` | Fork-only persona management (`/persona` slash command). |
 || `hermes_cli/ruflo_agents.py` | Fork-only ruflo agent type catalog. |
 || `hermes_cli/submit.py` | **RETIRED 2026-09-22** (owner-approved consolidation, commits `071c694df7` + the follow-up). Superseded by upstream's `hermes peer run` (`hermes_cli/subcommands/peer.py`), which had converged on the same `POST /v1/runs` mechanism and was already strictly better on one axis (it sends an `Idempotency-Key` submit.py never had, and probes `/v1/capabilities` to warn when a peer can't durably replay a run). The three capabilities submit.py uniquely had were ported onto `peer.py` first, as fork-only enhancements that leave every upstream path untouched: (1) SSE `--tail` streaming, now `peer run --tail` plus a new `peer tail <target> <run_id>` action, rebased on peer.py's `run_id` model and routed through the same `open_credentialed_url` redirect policy as every other peer request (submit.py used raw httpx with no such protection — a security gain, not just a port); (2) the permissive credential chain, WIDENED onto upstream's registry rather than replacing it — `--url`/`--api-key` for an ad-hoc gateway, and the reserved target name `default` resolving `HERMES_GATEWAY_URL` → `~/.hermes/.env` → the built-in default; an *unregistered* name still hard-fails, so a typo can never silently route a prompt to the wrong machine, and a *registered* peer never falls back to the gateway-wide key (that would weaken the registry's per-peer guarantee); (3) session-less operation as `run --no-session`, an opt-out — upstream's forced canonical "Bot Chat" stays the DEFAULT because that transcript is the point of the bot-to-bot DM feature (cross-turn continuity + a human-inspectable record on the remote machine). Also carried over: `-f/--file`, `--instructions`, `-q`. `hermes submit` itself remains for ONE release as a deprecation shim (`hermes_cli/main.py::cmd_submit`) that prints the translated `hermes peer run` command and exits 2; delete the shim, its parser, `_BUILTIN_SUBCOMMANDS["submit"]` and `tests/hermes_cli/test_submit_shim.py` together. Equivalent: `hermes submit "x"` → `hermes peer run default "x" --no-session`. |
@@ -9535,7 +9535,7 @@ will never touch them.
 || `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. |
 || `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. |
 || `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). |
-|| `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress (kept — see 2026-08-18 de-fork audit; the display widget is unaffected by the now-retired `swarm_tool.py`/`swarm_run` tool, see `toolsets.py`'s table row below). |
+|| `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. **RETIRED 2026-09-23** (owner-approved, commit `37d7fb4782`): superseded by upstream's `hermes_cli/cli_subagent_monitor.py` dock, which also offers steer/stop/transcript-tail; every signal the board uniquely rendered was ported onto the registry the dock already reads first. See "Fork-only retirements — 2026-09-23" below. |
 || `tools/hermes_load_tools.py` | Fork tool loading bridge — loads fork-only tools into agent runtime. |
 || `tools/memory_warm.py` | Warm-tier memory tool — search/recall/pin/unpin warm facts. |
 || `tools/memory_extraction/` | Memory extraction system (extractor, buffer, conflict, prompts). |
@@ -9565,7 +9565,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/auxiliary_client.py` | +580 / -34 | Exo-scoped aux delegation, Anthropic aux 401/400 fixes, provider-matched aux model (sonnet-5), per-task fallback_model, provider-first aux config schema, 1M-beta baked-client fix, single-provider auto failover. |
 | `tools/memory_tool.py` | +563 / -38 | Warm-tier memory (recall/pin/unpin), auto-feedback, session pin, skill-recall reminders. |
 | `hermes_cli/config.py` | +513 / -14 | Config keys for fork features: `delegation.by_provider`, `web.by_provider`, `agent.reasoning_effort_by_model`, `auxiliary.<provider>` schema, `tools.tool_search.defer_*`, v31 migration, `get_missing_config_fields` guard. |
-| `tools/swarm_board.py` | +467 / -1 | Live SwarmBoard display for multi-agent task progress. |
+| `tools/swarm_board.py` | +467 / -1 | Live SwarmBoard display for multi-agent task progress. **RETIRED 2026-09-23** (`37d7fb4782`) — see the hard-fork table row above. |
 | `tools/memory_extraction/extractor.py` | +448 / -1 | Memory extraction with provider-first aux schema detection, per-task override support. |
 | `agent/cc_aliases.py` | +306 / -1 | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility. |
 | `hermes_state.py` | +257 / -7 | `FORK_SCHEMA_SQL` (`api_calls` table), `FORK_TABLE_COLUMNS` (`anthropic_content_blocks`), `SCHEMA_VERSION` 18. |
@@ -16668,3 +16668,799 @@ escalate-only semantics) is fully intact but has ZERO callers anywhere in
 dedicated subagent in parallel with this write-up; tracked as a follow-up
 commit on this same branch, not blocking the merge commit itself (the
 mandated-scope verification bar above is independently clean).
+### De-fork audit — 2026-09-23 (post-v2026.9.14: 8-slice sweep of the whole divergence surface; 6 retirements, everything else re-confirmed still-needed)
+
+Follow-up to the `v2026.9.14` sync entry above, and the companion to the
+regression sweep below. Same question this file asks after every large sync —
+*which fork-only things has upstream now caught up on, and which are still
+carrying their weight* — but against by far the biggest delta the fork has ever
+absorbed (7136 upstream commits), so the audit was run as **8 parallel slices**
+rather than the 4 used at `v2026.8.18`:
+
+1. `agent/fork/*` modules, 2. the delegation / persona stack
+(`tools/delegate_tool*.py`, `tools/delegation_router.py`, `personas/`),
+3. the memory stack (warm tier, extraction, hot-tier audit, auto-feedback),
+4. messaging / cross-session (Transport A/B, `send_to_parent`, gateway
+participants), 5. the web plugins (`plugins/web/*`, search/extract registry),
+6. the desktop frontend (`apps/desktop` fork-only TS/TSX), 7. the core
+soft-fork files (`cli.py`, `run_agent.py`, `hermes_state*.py`, `gateway/*`),
+and 8. scripts / tooling / CI (`scripts/`, `.github/workflows`, local
+packages).
+
+**Outcome: six retirements or consolidations, everything else confirmed still
+fork-only and still wanted.** The retirements each get their own note below.
+The much larger result — most of the inventory re-verified as having no
+upstream equivalent — is the same shape as the 2026-08-18 and 2026-09-01
+audits and is not re-listed here; what changed is recorded in the per-file
+inventory tables above.
+
+A distinct, *unwanted* finding fell out of the same sweep and is written up
+separately below: the audit kept turning up fork mechanisms that were fully
+intact but had **zero callers**, because upstream's decomposition of
+`conversation_loop.py`, `tools/delegate_tool.py`, `tools/mcp_tool.py`,
+`gateway/run.py` and friends re-homed the surrounding code without carrying the
+fork's call sites with it. That pattern (machinery survives, entry point
+doesn't) accounts for most of the ~30 regressions in the sweep entry.
+
+**Small cleanups landed alongside the audit** (each its own commit, all
+zero-behavior-change): retired the inert `local-packages` npm shims
+(`67daa0f6ea` — `package-lock.json` has no `local-packages` references, so
+`npm ci` never routed through them; identical 854-package tree before and
+after); deleted the permanently-skipped `ci-review` job from `lint.yml`
+(`1574a4d362` — gated on an input `lint.yml`'s own `workflow_call` block never
+declares, so it could never run; the live gate is `ci.yaml` calling
+`review-labels.yml`); synced `acp_registry/agent.json` to `pyproject.toml`'s
+version (`3724b56ed1`, 0.20.0 → 0.21.3); dropped a stale duplicate block of
+five tool-dispatch constants from `run_agent.py` (`8e1018ea45` — zero readers
+and already silently drifted from the canonical copies in
+`agent/tool_dispatch_helpers.py`, missing `image_generate`,
+`connectors__execute` and `search_files`, i.e. a stale shadow of the real
+policy); retired the obsolete `usage_history` tracking mechanism
+(`3b1f432da2` — upstream `7a5fc1b2a9` deleted `_save_session_log`, its only
+consumer, so nothing had read the list since; `scripts/hermes_usage_tracker.py`
+aggregated exactly that dead data and is superseded by `hermes insights` +
+`agent/account_usage.py`); and deleted two dead desktop modules superseded by
+upstream equivalents that production already reads —
+`lone-header.ts` (`cbd6b98533`, superseded by upstream's `strip-visibility.ts`;
+its test was the desktop UI suite's single failing test) and the dead half of
+`session-row-state.ts` (`63dfaf18f0`, superseded by upstream's
+`store/session-dot-state.ts`, which is byte-identical and strictly richer —
+`splitDragHandleProps` was deliberately KEPT, it backs real fork-only
+drag-to-reorder behavior with no upstream equivalent).
+
+### Fork-only retirements — 2026-09-23 (six fork features retired or consolidated onto upstream, all owner-approved)
+
+Each of these removes fork surface on purpose. **None is a merge regression**
+— the next sync should NOT carry any of them forward again.
+
+**1. Google Code Assist OAuth providers — REMOVED outright** (`658d2248f3`;
+`agent/google_oauth.py` 1086 lines, `agent/gemini_cloudcode_adapter.py` 947
+lines). A product decision on two independent grounds. *Ban risk:* Google
+actively bans accounts for third-party tools piggybacking on Gemini CLI /
+Antigravity / Code Assist OAuth, enforced at a backend layer, so the ban can
+extend to the entire Google account and a second violation is permanent.
+Upstream added this feature (`3524ccfcc4`) and then deleted it for exactly that
+reason (`7130d60861`, #50492); **the fork had reverted upstream's deletion —
+that revert is now undone.** *Already non-functional:* the adapter imports
+`agent.google_code_assist`, a 451-line module upstream deleted in the same
+commit and the fork never restored, so `import agent.gemini_cloudcode_adapter`
+raised `ModuleNotFoundError` on HEAD; the fork's two tests for it passed only
+because they read the source as text instead of importing it.
+`google-antigravity` was removed alongside it deliberately — same feature
+family, removed by the same upstream commit for the same reason, and in this
+fork it was surface-only (a selectable provider that resolved to no client at
+all: all of the ban surface, none of the function). **Kept on purpose** and
+verified present in post-removal upstream: the API-key `gemini` provider and
+`agent/gemini_native_adapter.py`; the `antigravity-cli` optional skill (drives
+the external `agy` binary through the terminal tool, routes no Hermes
+inference through the banned OAuth path); and the `auth/google_oauth.json`
+entries in `agent/file_safety.py` / `gateway/platforms/base.py` /
+`hermes_cli/web_routers/files.py`, which are defensive
+never-read-this-credential-file denylists, not feature wiring — a user may
+still have a stale credential file on disk, so deleting them would strictly
+reduce safety. Supersedes the inventory rows at the former FORK.md:9525-9526
+and the last sync's keep-both decision; `.sync/g07-rehoming-flags.md` item 5(a)
+(two dropped `CANONICAL_PROVIDERS` rows flagged as pending re-application) is
+**moot and must not be re-applied**.
+
+**2. Warm-tier memory — MIGRATED onto upstream's holographic provider**
+(`d89b2be444`, `82d2ba984b`, `9d248b3d5b`). The warm tier already *stored*
+through `plugins/memory/holographic/store.py`; it now *retrieves* through it
+too, so the holographic provider is the single backend of record instead of a
+bespoke ranker sitting on the same rows. `WarmStore.recall` → `FactRetriever
+.search` (raw FTS5 `rank, trust` ordering → weighted Jaccard + HRR vector
+cosine + trust with optional temporal decay); `recall_related` →
+`FactRetriever.related`, retiring a body the fork itself described as a
+Phase-1 placeholder awaiting the HRR similarity upstream has since shipped;
+`search_facts` deleted from the shared plugin tree, with its one
+upstream-lacking behavior (bumping `retrieval_count`) re-expressed as an
+explicit `MemoryStore.bump_retrieval_counts` the warm tier calls on rows it
+actually hands back — so retrieval accounting stays tied to a deliberate
+recall (which `memory_extraction/conflict.py` reads to break duplicate ties)
+rather than inflating on every always-on prefetch ranking pass. No data
+migration: the DB, schema and rows were already the plugin's own, verified by
+writing a fact through the fork's extraction committer and reading it back
+through `HolographicMemoryProvider.fact_store(action="search")` with the same
+fact_id and trust score. A **mutual-exclusion guard** was added in the same
+pass (`82d2ba984b`): post-migration both front doors sit on the same rows of
+the same `memory_store.db`, so when `memory.provider: holographic` is set the
+warm tier withdraws its three model-facing surfaces (the `memory(tier="warm")`
+tool, its system-prompt status block, and the recall nudge) rather than
+offering the model two names for one memory; internal fork plumbing
+(hot-tier-audit demote sink, LLM extraction, session-pin fetch, auto-feedback
+trust writes) deliberately bypasses the gate via `get_warm_store()` — that is
+one process's own plumbing over shared rows, not a rival surface. The recall
+nudge is **retained** for the no-provider default, where `MemoryManager` is
+never constructed, `prefetch_all` never runs, and the nudge is the warm tier's
+only push signal rather than a duplicate of one.
+
+**3. `hermes_cli/submit.py` — RETIRED onto upstream's `hermes peer run`**
+(`071c694df7` + `fef4569958`). Full rationale and the shim-removal checklist
+live in the inventory row for that file above; in brief: both had converged on
+`POST /v1/runs`, and upstream's was already better on one axis (it sends an
+`Idempotency-Key` and probes `/v1/capabilities`). The three capabilities only
+`submit.py` had were **ported forward first**, as fork-only enhancements that
+leave every upstream path untouched — SSE `--tail` streaming (now `peer run
+--tail` plus a new `peer tail <target> <run_id>`, rebased on peer.py's
+`run_id` model and routed through the same `open_credentialed_url` redirect
+policy as every other peer request, which `submit.py`'s raw httpx never had —
+a security gain, not just a port); the permissive credential chain, *widened*
+onto upstream's registry rather than replacing it (an unregistered name still
+hard-fails, so a typo can never silently route a prompt to the wrong machine);
+and session-less operation as `run --no-session`, an opt-out — upstream's
+forced canonical "Bot Chat" stays the default because that durable transcript
+is the point of the bot-to-bot DM feature. `hermes submit` survives for one
+release as a deprecation shim that prints the translated command and exits 2
+(loudly, rather than silently proxying and quietly changing which session a
+run lands in). Every case in the deleted `test_submit.py` was mapped onto a
+`test_peer_cmd.py` equivalent — the mapping is recorded in `fef4569958`'s
+message; none was dropped.
+
+**4. `tools/swarm_board.py` — RETIRED onto upstream's subagent dock**
+(`37d7fb4782`). The fork carried two overlapping live subagent displays: the
+1178-line bordered board, and upstream's `hermes_cli/cli_subagent_monitor.py`
+dock, which additionally offers steer / stop / transcript-tail the board never
+had. **The premise shifted once measured, which is worth recording:** the
+audit's framing was "two live widgets competing for the same real estate," and
+that held for the *wiring* but not for the *data* — the merge had also dropped
+the board's PRODUCER (pre-merge `tools/delegate_tool.py` entered
+`SwarmBoard.maybe_start(...)` around each dispatch), so nothing constructed a
+`SwarmBoard` anywhere outside tests and the widget restored in `253ebdc1eb`
+was painting an empty box. Only the dock was ever showing anything. That
+reframed the work from "teach the dock to read board rows" to "move the
+board's signals onto the registry the dock already reads":
+`mirror_subagent_activity()` now writes status / tool_count / last_tool /
+last_note onto the live record (previously `status` was frozen at `"running"`
+for a child's whole life and `last_note` was never recorded at all);
+`_list_payload()` emits depth and the activity fields; `subagent_dock_active()`
+replaces `swarm_board.any_board_active` as the heartbeat-suppression gate,
+keeping the `isinstance(list)` guard its predecessor documented as
+load-bearing (a bare `MagicMock()` parent auto-creates every attribute, and a
+duck-typed check would suppress the scrollback heartbeats a headless run
+depends on — caught live, the first draft regressed exactly that). The board's
+renderers were ported onto the dock and are used by BOTH `dock_text` and the
+full-screen roster so the two surfaces read identically: the status glyphs
+(including the distinct one for `waiting_on_children`), `MmSSs` elapsed
+rollover past 60s, the compact `⚠ primary→effective` failover label,
+parent→child ordering by EFFECTIVE depth (so an orphan renders as a root
+rather than indented under nothing), and the `└─` elbow. `row_activity()` is
+width-budgeted — on a narrow terminal it sheds the tool tally, then the model,
+then the status, so the last tool survives; without that the added fields
+pushed `read_file` off a 32-column dock and broke upstream's own
+narrow-terminal test. The board's per-row model re-sync is gone **by
+construction, not dropped**: a board row was a separate copy that went stale on
+failover and needed an explicit push on every write, whereas the registry
+re-resolves identity off the live child agent on every read. Four board test
+files were retired with distinct assertions migrated, not deleted.
+
+**5. `agent/fork/anthropic_messages.py` — RETIRED onto upstream's converter**
+(`e5963a24fd`). The 790-line vendored `convert_messages_to_anthropic` (the
+T2.2 hard-fork boundary) is deleted; upstream's
+`agent/anthropic_message_convert.py` is now the one true implementation. The
+full write-up is the "Converter consolidation" entry at the top of this file
+(dated to the sync it belongs to) — recorded here too because it is one of
+this session's six retirements. Headline: upstream independently reimplemented
+everything the fork converter had, carrying the fork's own rationale comments
+verbatim, and the vendored copy had silently fallen behind in three places;
+the seven genuinely fork-only Anthropic **server-tool** passes were re-applied
+on top via three named seams as `agent/fork/anthropic_server_tool_passes.py`,
+and adopting upstream's logic fixed three regressions for free.
+
+**6. `hermes_cli/memory_confirm.py` — CONSOLIDATED onto upstream's
+write-approval mechanism** (`23f7b34f26`). The fork carried TWO parallel
+human-review systems for memory writes with the same goal — no unattended
+memory writes — differing only in object and timing: upstream's
+`tools/write_approval.py` + `/memory pending|approve|reject` gated the agent's
+own hot-tier tool calls asynchronously, while the fork's 689-line
+`memory_confirm.py` reviewed LLM-extracted warm proposals synchronously in a
+bespoke blocking UI at session exit. The fork's proposals now flow through
+upstream's store: `memory_confirm.py` drops to 199 lines as a staging adapter
+that still classifies each proposal (`conflict.classify`, unchanged) but
+stages via `wa.stage_write` and prints a **non-blocking** notice — session exit
+no longer waits on a human, which is the point of moving review off that path.
+A new `apply_memory_pending` action replays warm proposals through
+`conflict.apply_verdict(auto_commit=True)` so DUPLICATE / REFINEMENT /
+CONTRADICTION still dedupe, merge and supersede instead of blindly appending.
+The verdict is carried across the new process boundary and **rehydrated, never
+recomputed at approve time** — the user approved the verdict they were SHOWN,
+and a second LLM roll can flip DUPLICATE → NEW. Fork-only capabilities
+preserved as enrichments of the shared mechanism rather than as a second
+review system: the **conflict-verdict display** (`/memory pending` prefixes
+each proposal with `[! CONFLICT]`/`[~ REFINE]`/`[= DUPE]`/`[+ NEW]` plus
+`warm:<category>`/`hot:<target>`, so risky and prompt-budget-costing entries
+are visible without reading each summary to the end); **side-by-side existing
+text** via a new `/memory show <id>`; and **edit-in-place** via `/memory edit
+<id> <text>`, which re-classifies, because the stored verdict described the OLD
+text and approving edited content under a stale REFINEMENT would merge it into
+a fact it may no longer refine. Dropped deliberately: the 3-second auto-accept
+countdown (in an async pending store there is no moment to time out *into*, and
+auto-accepting on a timer is exactly what an approval queue exists to prevent —
+the fast path is `/memory approve all`), and `_review_cleanup`, which was
+already dead code after the 2026-09-07 decision to auto-apply cleanup.
+
+### Merge-regression sweep — 2026-09-23 (~30 fork call sites silently orphaned by the v2026.9.14 decomposition)
+
+**The bug class.** `v2026.9.14` split several god-files into sibling modules —
+`agent/conversation_loop.py` → `agent/turn_*.py`, `tools/delegate_tool.py` →
+`tools/delegate_tool_*.py`, `tools/mcp_tool.py` → ~17 `tools/mcp_tool_*.py`,
+`gateway/run.py` (33,676 → 5,556 lines) → `run_turn.py`/`run_agent_cache.py`/
+`run_notifications.py`, `cli.py` → `hermes_cli/cli_*_mixin.py`,
+`web_server.py` → `web_server_config.py` + `web_routers/`. Wherever the
+extracted file landed **byte-identical to upstream's version**, the fork's
+additive line inside it did not move — it was lost. The fork's own helper
+almost always survived intact in its original module with zero callers, which
+is precisely why nothing looked broken and why the mandated-scope test run at
+merge time was clean: most of these have coverage that binds the helper
+directly off the class rather than driving the real call site.
+
+That coverage shape is the recurring lesson. Where a fix below notes "the
+pre-existing test kept passing," it is because the test exercised the helper in
+isolation while nothing called it. New tests in this sweep drive the **real
+entry point**, and were mutation-checked against the unfixed tree per this
+file's anti-tautology rule — the per-commit messages record how many of each
+new suite correctly fail pre-fix (and which deliberately don't, being
+unchanged-behavior pins).
+
+**Delegation stack** (`b1f7216063`, `d04673bc67`, `f0ea9f5f7d`) — the largest
+cluster, three commits:
+* **Per-role credential resolution, gone entirely.** A task's `agent_type` no
+  longer resolved through `delegation.model_by_role` to its own
+  model/provider/fallback bundle; every task in a batch silently inherited the
+  batch-level default regardless of role. Restored with
+  `_resolve_role_credentials`/`_load_role_maps`/`_resolve_task_routes`/
+  `_guard_task_models`, plus `max_output_tokens` on the runtime bundle (role
+  pins need their own ceiling), `roster_warnings` surfaced on both sync and
+  background payloads, and over-cap batches queuing again instead of
+  hard-erroring.
+* **`tools/delegation_router.py` orphaned.** The complete, well-documented
+  637-line auto-route classifier with escalate-only semantics survived the
+  merge fully intact with **zero callers** anywhere in
+  `tools/delegate_tool*.py`. Rewired.
+* **Live model identity.** `_build_child_progress_callback` lost its
+  `agent_ref` shared-slot parameter and the whole weakref live-identity
+  mechanism, so every relayed progress event reported the dispatch-time model
+  snapshot forever — a child that silently failed over was misattributed for
+  its entire run. Ported into the refactored relay class shape, plus
+  registry-side `_live_model_fields()` wired into `list_active_subagents()`
+  (which strips the `agent` key, so resolution must happen there — consumers
+  downstream cannot do it).
+* **Swarm-board re-sync, `agent_visibility` toolset gating, spawn-time owner
+  registration.** The relay had no board integration at all; children got
+  neither the background-gated `cross_session` grant nor the unconditional
+  read-only `agent_visibility` grant (so a synchronous subagent had zero
+  visibility — the exact gap the 2026-08-11 fix closed); and `_register_child`
+  stopped registering the owning conversation as a messaging participant with
+  `cli=parent._cli_ref`, so a first-ever registration left `cli=None` and a
+  subagent's `send_to_parent` could not use the idle `_pending_input` delivery
+  branch.
+* **Heartbeat emit + nested-deadline abandonment.** `_Heartbeat.tick()` kept
+  stale-detection but lost the user-visible emit block entirely (long
+  delegations looked frozen). Separately `_DelegationAbandoned`,
+  `_owner_abandoned` and `_teardown_abandoned_children` were dropped wholesale:
+  the batch join polled only `parent._interrupt_requested` and ignored the
+  THREAD-LOCAL interrupt bit — precisely the signal the tool executor sets
+  before `shutdown(wait=False)`, i.e. **the 2026-08-23 orphaning incident**
+  (an orchestrator's grandchildren left running ~7h). Both signals restored
+  plus deterministic child teardown.
+* **RUFLO persona injection.** The merge moved `_build_child_system_prompt`
+  into `tools/delegate_tool_progress.py` under UPSTREAM's signature, which has
+  neither `agent_type` nor `cwd_collision_warning`, and the call site stopped
+  passing them. Net effect, invisible from outside: `agent_type=` still pinned
+  the child's model, still stamped `child._delegate_agent_type` and still
+  logged at spawn — but the child's system prompt was the plain generic one.
+  **Every persona under `personas/delegation/*.md` was dead weight and
+  documented role behavior was unenforced prose**; `grep -rn 'RUFLO PERSONA'`
+  returned 0 hits at HEAD vs 1 pre-merge. Restored, along with the
+  `cwd_collision_warning` producer block (whose consumer had been dropped,
+  leaving `find_cwd_collisions` with zero callers) placed ahead of the
+  completion boilerplate — the child has to see a stomp warning before it
+  edits, not buried past instructions it skims — and
+  `hermes_cli/setup_quick.py`'s unconditional `sync_personas(quiet=True)` seed,
+  which upstream's extraction of the blank-slate flow had left with no caller
+  on any setup path.
+
+**Turn loop** (`12efc1d1b5`, `168f9c70f0`, `ced5b08902`):
+* **Claude-Code alias arg translation in tool validation.** The repair loop
+  moved to `agent/turn_tool_validation.py` but dropped
+  `_translate_cc_args_after_repair`, the second half of the CC canonical alias
+  fast-path. On the OAuth/CC path the wire request advertises CC tool names so
+  the plan-budget billing classifier accepts it, so the model emits the CC ARG
+  shape too (`{"file_path": ...}`); `cc_aliases.adapt_tool_use` only fires
+  while the CC name is still present, and the repair had already renamed
+  `Read` → `read_file` before dispatch. Without the call, every OAuth-path
+  Read/Bash/Edit/Write/Grep hard-failed. The same hunk restored the
+  `_last_repair_silent` gate + `_vprint` routing: the merge replaced the gated
+  print with a bare `print()`, so the flag had zero consumers — every OAuth-path
+  CC call printed a spurious "Auto-repaired tool name" line that scrolled past
+  the live board instead of being captured into the child's row.
+* **Rate-limit observability, 3 dropped call sites.**
+  `agent/fork/rate_limit_tracker.py` and its state seeding both survived; none
+  of the three calls that drove it did, so 80% hot-zone transitions and the
+  streaming heartbeat's rate-limit signal were permanently silent. Restored in
+  `turn_recovery.py::_is_genuine_nous_rate_limit` (refresh from the ERROR
+  headers *before* classifying the 429 — the same `ratelimit-*` headers arrive
+  on a 429 as on a 200, so that is the moment state most accurately reflects
+  "right now"), `turn_recovery.py::compute_error_backoff` (catches non-Nous
+  429s, gated on `is_rate_limited` so unrelated 5xx retries stay quiet), and
+  the streaming monitor's `_heartbeat` (so a 60s+ stall says whether it is
+  plausibly throttle-related or upstream-only). Deliberately uses the fork's
+  header-MAPPING capture rather than upstream's response-OBJECT one — upstream's
+  caches state but emits nothing, which is why `/usage` was not fully dark and
+  only the EVENTS were.
+* **Refusal ladder's middle rung.** The fork's refusal recovery is a three-rung
+  ladder (fallback provider → scrub content-filter trigger patterns out of
+  HISTORICAL context and retry → give up with the `/compact` hint). The merge
+  carried rungs 1 and 3 into `agent/turn_truncation.py` and dropped rung 2;
+  `tools/content_filter_scrub.py` and the fork helper both survived with zero
+  callers. Live impact: one real `pg_dump`-via-lockbox or S3-presign command
+  earlier in a session poisons every later turn carrying it in context, and
+  with no scrub rung that turn now dies instead of transparently paraphrasing
+  and retrying. `messages` is mutated IN PLACE because the caller holds the
+  same list object — the pre-merge code could rebind a loop local, a phase
+  helper cannot. **`is_anthropic_refusal` was RETIRED in the same commit**, not
+  restored: upstream's `_STOP_REASON_MAP` now maps `"refusal"` →
+  `finish_reason="content_filter"`, which routes into the same handler the
+  predicate fed. Genuinely superseded. The SCRUB is a different thing and
+  stays — it is the rung, not the entry test.
+
+**State / telemetry** (`94cbcbe03a`, `e051d53715`, `21c5547faa`, `95767f3108`,
+`f053cc8962`, `14c80e2d43`):
+* **`api_calls` per-call telemetry writer.** `FORK_SCHEMA_SQL` creates the
+  table and FK-heals it on every store open, but the merge left it with **zero
+  writers** — upstream moved per-response usage handling into
+  `agent/turn_usage.py` and the fork's `record_api_call` call site went with
+  it. Nothing looked broken, which is why it survived: session-level cumulative
+  counters still landed. But cumulative totals cannot answer "was THIS turn a
+  cold prefill, a queue stall, or something client-side?" — only the per-call
+  cache_read vs cache_write split, latency and request id can, and that is the
+  entire reason the table exists. Restored in the fork-owned sibling so
+  upstream's file stays untouched, deriving `started_at` as
+  `ended_at - api_duration` rather than widening upstream's signature. The
+  request-id extraction had to be rewritten, not restored: the fork's old
+  `_hermes_request_id`/`_hermes_routing_headers` stash has zero occurrences
+  repo-wide after upstream rewrote the streaming path, so it now reads the
+  identifiers upstream's own API-call log line uses.
+* **Cross-tier memory demote.** `memory(action="demote")` re-read the hot tier
+  via a method `v2026.9.14` removed when it extracted `MemoryStore`, so every
+  demote raised `AttributeError` before reaching the warm-tier write. Re-reads
+  from disk the way `_mutate` does — same file lock, same raw snapshot — and
+  refuses the demote when the file exists but can't be read, rather than
+  silently matching against a stale in-memory list.
+* **Session-recovery column mapping — a data-integrity risk, not a crash.**
+  Upstream added `reachable_physical_layouts()` so `hermes sessions recover`
+  maps salvaged cells to column NAMES from `SCHEMA_HISTORY` instead of guessing
+  positionally. The fork's own columns are deliberately kept OUT of
+  `SCHEMA_SQL` (so upstream table edits never collide on merge) and ALTER-added
+  on every open — so a real fork store's physical layout is not produced by the
+  pure-upstream replay, while its WIDTH matches many upstream layouts. Recovery
+  therefore **did not reject a fork store as unrecognized; it confidently
+  mapped it to the WRONG column names.** Measured on a real fork store
+  (27-col messages, 59-col sessions): the true layout was in NO candidate, yet
+  77 wrong candidates existed at width 27 and 22,232 at width 59, and a torn
+  (mostly-NULL, i.e. the realistic salvage shape) record mapped six columns
+  wrong with no error and no unrecognized-layout count to flag it. Fixed by
+  declaring `FORK_COLUMN_ARRIVALS` — each fork column plus the upstream event
+  index at which a real store can first carry it — so the prefix-chain walk
+  reaches both the "created pure-upstream, later opened by the fork" and
+  "created by the fork" chains; 6 wrong columns → 0. Independently confirmed by
+  upstream's *own* test, which builds a real fork store and asserts every row
+  was recognized: failing on HEAD before, passing after.
+  **Follow-up (`f053cc8962`):** the same predicate decided "is this cell a
+  session id?" with `SESSION_ID_PATTERN` alone, which only covers ids minted by
+  `new_session_id` — cron, `/bg` and gateway room sessions DERIVE theirs.
+  Measured against a copy of a real 3,373-session store, 379 ids (11.2%) failed
+  the pattern, with two distinct consequences: recovery silently **discarded
+  every cron/bg/room session** (2994/3373 rows kept before, 3370 after), and,
+  worse, it **poisoned layout inference** — a cron job's child session has an
+  ordinary id and so becomes layout evidence while carrying the unrecognised
+  cron id in `parent_session_id`, and one bad sampled value vetoes a candidate,
+  so a single such row collapsed inference for the whole sessions table to `{}`
+  (i.e. straight back to the positional guessing the first fix exists to
+  prevent). Fixed with `SESSION_ID_RECOGNIZERS`/`is_known_session_id()`, the
+  recognition side of the minting contract, each pattern anchored on exactly
+  what its minting site fixes — these are layout sentinels, so a loose pattern
+  would buy recall at the cost of wrong-column mappings. The safety property
+  was re-verified rather than weakened (5/5 rotated layouts still vetoed, 29/29
+  near-miss and arbitrary-text values still rejected, end-to-end wrong-column
+  mappings still 0).
+* **Silent DB-reconciliation error-swallowing.** `SessionDB._reconcile_columns`'
+  fork pass logged EVERY `sqlite3.OperationalError` at DEBUG, conflating three
+  outcomes upstream's own pass deliberately separates (duplicate column →
+  continue; locked/busy → **re-raise**; anything else → warn). Swallowing lock
+  contention is the damaging case: a busy ALTER left the store half-reconciled
+  with no signal, so the lock-patience wrapper never learned init had failed
+  and every later read of that column raised "no such column" for the life of
+  the store. Proven against a genuine sqlite lock (a WAL store with its write
+  lock held by a second connection in `BEGIN IMMEDIATE`), not a mock.
+* **Lineage cost roll-up.** `get_lineage_cost_usd` survived; BOTH callers did
+  not, leaving it at 0 call sites repo-wide. Any conversation that had compacted
+  at least once under-reported its spend everywhere it was shown, because a
+  compaction moves the conversation onto a NEW session row. Restored at the
+  exit summary and the session-list lineage projection. The exit-summary sum
+  deliberately adds three partials — the lineage walk follows compaction edges
+  ONLY and not delegate edges, so subagent spend is disjoint from it and must
+  be added rather than assumed included.
+
+**MCP** (`9477c3ed90`, `653320a215`, `55c2b710d0`, `b9699fe19b`, plus test
+repointing in `76248427d3`/`ec533bafd9`/`4afd360c8b`):
+* **The `mcp__` naming item turned out to be the OPPOSITE of the initial
+  diagnosis — worth recording as a lesson.** The flag read as "the fork is
+  emitting `mcp__`-prefixed names it shouldn't." The actual regression is that
+  the fork's *deliberate UNPREFIXED* convention (`<server>_<tool>`) was lost
+  when the split kept upstream's `tools/mcp_tool_schema.py` wholesale.
+  FORK.md's own merge notes record "~20 tests updated for upstream's
+  `mcp__server__tool` → fork `server_tool` naming," so the TEST half of the
+  divergence was re-applied during conflict resolution and only the PRODUCTION
+  half never was — leaving the tree internally contradictory (production
+  emitting `mcp__filesystem__read_file` while the fork's own tests and
+  downstream fork code expected `filesystem_read_file`). The fork drops the
+  prefix because two prefixed conventions were tried first and both leaked
+  auto-repair traffic: whatever strips it — model bias from Claude Code
+  training, an Anthropic-side MCP-routing middleware, or both — keys on a
+  literal `mcp` at the *start* of a tool name, so keeping "mcp" out of the
+  registered name entirely is the fix that sticks (the wire prefix is applied
+  and reversed at the adapter boundary, so the wire contract is unaffected).
+  Three live fork mechanisms were silently broken by the prefixed names:
+  `IDEMPOTENT_TOOL_NAMES` matched nothing for any MCP filesystem tool;
+  `agent_runtime_helpers.py`'s inbound-name repair had no target shape left;
+  and `is_mcp_tool_parallel_safe()` early-returned False unless the name
+  started with `mcp__`, so NO tool could ever be parallel-safe once names were
+  bare. Upstream's 64-char provider clamp was **kept** and factored into a
+  convention-agnostic helper. Its clamp test now also asserts the name never
+  starts with "mcp", so the next sync fails loudly instead of silently.
+* **Sticky `tool_search` latch lost in the MCP refresh rebuild.**
+  `assemble_tool_defs` recomputes the activate/deactivate decision from the
+  live global registry on every call, so the fork carries a per-conversation
+  one-way latch: once a conversation has shown the bridge tools they stay
+  shown. Anthropic rejects any previous-turn `tool_use` block naming a tool
+  that has vanished from the wire `tools` array, and the fork then rewrites
+  those into inert text breadcrumbs — corrupting tool-call history
+  mid-conversation. The extraction of the live-agent refresh path landed
+  byte-identical to upstream, so `sticky_active` defaulted to False. That is
+  the worst possible place to lose it: an MCP server (re)connecting is exactly
+  what most callers of that path are reacting to, and exactly what shifts the
+  deferrable-token total across the threshold. Latch restored, set BEFORE the
+  snapshot publish so a concurrent caller reading right after publish sees it.
+* **#63412 cancel-inside-try guard, verbatim reintroduction of a fixed bug.**
+  The split renamed the helper and dropped its docstring — and with it the one
+  structural detail that docstring existed to protect: `t.cancel()` came back
+  OUT of the `try`. `Task.cancel()` schedules via `loop.call_soon()`, so it
+  raises `RuntimeError('Event loop is closed')` when the owning loop is already
+  closed, which is exactly the situation this helper runs in during
+  interpreter-shutdown GC. Confirmed against CPython directly before fixing.
+  Docstring restored along with the guard, since its absence is what let the
+  regression through.
+* **Empty cached manifest treated as a cache HIT.** The fork's
+  `_load_cached_spec` treated an empty cached tool list as a miss so live
+  discovery would run;
+  upstream's `mcp_schema_cache` has no such guard and the merge took its side.
+  An empty manifest dropped the server from eager discovery AND never added it
+  to the lazy registry — no tools, no live session, nothing left to trigger a
+  connect, for the life of the process, and the stale empty entry made every
+  later startup do the same.
+
+**Gateway** (`9e28864e45`, `57b68d0f86`, `c8600f65f9`, `4d95e6dc1c`):
+* **Transport A participant registration.** Upstream's split of `gateway/run.py`
+  carried both anchor functions WITHOUT their fork-local registration blocks.
+  The two helpers and the `transport_a_participant_id` field all survived, but
+  with zero production call sites the whole mechanism was dead code. Effect: a
+  gateway session's `background=true` subagent calling `send_to_parent` could
+  not resolve its parent in-process and fell through to Transport B, whose
+  inbound policy for `SessionOrigin.GATEWAY` is `POLICY_REFUSE` — an outright
+  rejection, not a held-for-approval delay. Registration is placed AFTER the
+  run-generation staleness check exactly as pre-merge (a superseded run must
+  not claim the slot), and unregistration captures the participant id BEFORE
+  `state.conversation.clear()` zeroes it.
+* **A genuine test-suite DEADLOCK in completion delivery — root-caused with
+  live thread dumps, not guesswork.** `tests/gateway/test_completion_delivery.py`
+  did not merely fail, it HUNG: no further test started, pytest never exited,
+  only an outer timeout ended it. Present at HEAD *and* at the raw merge commit,
+  and `9e28864e45` had to exclude the file from its A/B run as
+  "separately-known-hanging." Diagnosis: the hung process was state R at ~76%
+  CPU — a hot spin, not a lock deadlock. `py-spy` needs root on macOS
+  (unavailable), so the all-thread stack dump came from
+  `faulthandler.register(SIGUSR1)` in a pytest wrapper (pytest's own
+  faulthandler plugin cancels `dump_traceback_later` timers but does not
+  unregister signal handlers). The dump put the wedge in a *different* test
+  from the one that visibly failed first, and that test hangs ALONE — so this
+  was never cross-test pollution. Instrumenting the real call chain printed the
+  identical verdict forever: preflight proceeds → injection refused →
+  `delivered=False` → `continue` → repeat. Three real defects underneath:
+  (a) **the fork's subagent liveness gate was lost in the merge** — it holds a
+  subagent-owned completion while its owning subagent is still live, so a
+  child's background-process completion cannot bubble into the top-level chat
+  mid-task; it is fork-local (absent from upstream entirely), which is exactly
+  why an upstream file reorganization dropped it silently, and its own
+  docstring plus FORK.md state the contract needs THREE agreeing consumers
+  while only two were left. FORK.md records this same gate being broken by a
+  PRIOR merge — a known-fragile seam. (b) **The gate could not have resolved
+  anyway:** the merge's new event builder emits neither `task_id` nor
+  `owner_task_id`, both of which the liveness check reads — re-adding the call
+  alone would have been a silent no-op. (c) **The retry was unbounded**: the
+  retry itself is correct (a refused injection must not suppress a terminal
+  result) but an adapter that refuses permanently pinned the watcher forever,
+  and with the poll interval stubbed it degenerated into the observed hot spin.
+  Now bounded in ATTEMPTS rather than wall-clock, so the bound holds regardless
+  of `check_interval` (a time-based bound is unreachable when sleep is stubbed).
+  A manual end-to-end gateway smoke test was required here rather than "tests
+  pass" — real runner, real adapter, real OS process, real registry, only the
+  model boundary faked: owner live → held, 0 turns, 0 sends; owner exits →
+  exactly one internal turn with the attribution line. Against pre-fix product
+  code the same script fails with "LEAK: child completion reached the agent
+  while owner live" — a real production leak.
+* **A scoped-secret read reverted to an insecure bare env-var read.** The merge
+  reverted `APIServerAdapter.__init__`'s key read from the profile-scoped
+  reader back to `os.getenv("API_SERVER_KEY", "")`. Collateral damage, not
+  intent: pristine upstream `v2026.9.14` carries the SCOPED form at this exact
+  line, the module already imports the helper, and the sibling read four lines
+  down kept using it — only this one line regressed. Impact is a
+  **cross-profile credential borrow**: under `gateway.multiplex_profiles` one
+  process constructs an adapter per served profile inside that profile's secret
+  scope while `os.environ` holds the DEFAULT profile's credentials, so a bare
+  `os.getenv` hands a secondary profile's adapter the default profile's key.
+  New coverage builds two distinct profile scopes and proves a worker adapter
+  REJECTS the default profile's token with a 401.
+* **A dangling `AttributeError` in `gateway/config.py`.** `GatewayConfig
+  .to_dict()` serialized two fields that no longer exist on the dataclass, so
+  EVERY `to_dict()` call raised. One field was removed upstream as a pure
+  removal (the fork's own migration already carries the deletion; only the
+  `to_dict` write site survived, reading an attribute the same merge had
+  deleted). The other, `run_without_messaging_platforms`, was removed as
+  **genuinely dead rather than as collateral**: a bare-name grep across the
+  whole repo found it only inside `gateway/config.py` itself — field, write,
+  read and YAML bridge, a closed loop with zero external readers — because its
+  only consumer was a startup branch upstream deleted when extracting that
+  phase. The knob is obsolete rather than lost: its purpose was to stop a
+  revoked credential from crash-looping the gateway under launchd, and
+  upstream's replacement now does exactly that UNCONDITIONALLY. **The fork's
+  intent is now upstream's default.**
+
+**Dashboard / CLI / platform** (`bb2c6a5ae0`, `9aafb3fe0c`, `253ebdc1eb`,
+`aad19cdadf`, `662a477ac2`, `400420da13`):
+* **Provider-first auxiliary block writes.** The merge carried
+  `POST /api/model/set`'s auxiliary scope and `GET /api/model/auxiliary` across
+  the `web_server` decomposition but left behind every provider-first branch —
+  i.e. exactly the state the fork's 2026-07-21 work replaced. Three behaviors
+  lost: assigning a task to the active main provider wrote a permanent GLOBAL
+  top-level pin on every "Change" click, silently shadowing a perfectly good
+  block entry forever; "Reset all to main" stamped inert `{provider: auto,
+  model: ""}` over every top-level key and never touched the blocks, so the
+  user's actual assignment survived the reset while pollution was written on
+  top; and the read side did a raw top-level dict lookup, so a genuine block
+  override reported `provider="auto", model=""` — **the Models page was lying
+  about what the task would actually run on.** The read path now resolves
+  through the SAME flattener the runtime uses at call time. Also restored
+  `_AUX_TASK_SLOTS` to all 24 canonical task keys (the merge shipped an 11-key
+  subset, so 13 tasks could be neither shown nor edited and "Reset all" skipped
+  them). The decomposition itself is preserved rather than reverted — the
+  branches land as named helpers, not re-inlined.
+* **Main-slot `base_url` preservation/clearing.** Upstream consolidated every
+  model-switch surface onto one writer; the dashboard's main slot was repointed
+  at it but the fork's `base_url` lifecycle was not ported onto the new shape,
+  and the shared writer's rule is the opposite one. Two user-facing regressions:
+  a same-provider re-pick from the Desktop model picker **400s on a working
+  config** (passing the provider as `explicit_provider` makes it a SWITCH,
+  which re-resolves from scratch and discards the configured endpoint — on a
+  self-hosted gateway whose key lives only on that endpoint, the resolve
+  raises); and a provider switch persisted the new provider's *registry-default*
+  URL as though the user had chosen that host. Both fixed against the new
+  architecture rather than by reverting to the pre-merge writer, and the
+  narrow re-pick detour discards any result that lands on a different provider
+  and re-runs the explicit call, so validation is never weakened.
+* **Swarm board widget** (`253ebdc1eb`) — restored, then superseded hours later
+  by the dock consolidation above. Recorded because the restoration is what
+  *measured* the board's producer as also-dropped, which is what turned the
+  keep-or-cut question into a decision.
+* **Safe interrupt-part combining.** An interrupt whose message carried an
+  attached image crashed the re-queue path and silently dropped the entire
+  prompt — a regression of the bug originally fixed 2026-06-02. The merge
+  carried the CALLER into the new mixin but not the helper it called, reverting
+  to the bare `"\n".join(all_parts)` the helper was written to replace; the
+  image submit path pushes a `(text, [Path, ...])` tuple onto the queue, so the
+  join raises `TypeError` — swallowed by the surrounding handler, so the agent
+  stopped but `_pending_input` stayed empty and text AND image were lost. The
+  helper was moved into the mixin next to its sole caller so the two cannot
+  drift apart again. Its 8 pre-existing tests all exercised the helper in
+  isolation and stayed green throughout the regression — the canonical example
+  of this sweep's coverage-shape lesson.
+* **Slack native `/help`, `/restart`, `/usage` pushed off the 50-command cap.**
+  `slack_native_slashes()` clamps to Slack's 50-command maximum by iteration
+  order with no priority ranking. Upstream's registry sat at exactly 50, so it
+  just fit; the fork's three extra canonicals pushed it to 53 and silently
+  dropped whichever three sorted last. Fixed by demoting the fork's additions
+  to `/hermes <command>` reachability per the rule the file already documents
+  (demote one-off toggles, never a recurring interactive surface). The cap
+  constant is deliberately NOT raised: Slack's manifest maximum is 50 and
+  manifest validation is atomic, so an over-cap manifest would be rejected
+  wholesale and register *nothing* — strictly worse than partial registration.
+  Also corrected this fork's own test docstring, which claimed a 100-command cap
+  and asserted against a hardcoded 100 — the stale assumption that let the
+  overflow go unnoticed.
+* **`config.yaml` comment-block preservation destroyed by `config set`/`unset`.**
+  Data-loss class: every `hermes config set` and `unset` silently deleted the
+  trailing commented-out reference sections from the user's config.yaml,
+  regardless of which key was written. `atomic_yaml_write()` is a
+  whole-document dump, so the only way a writer keeps those blocks is by
+  passing them back through `extra_content=`; the merge refactored both writers
+  into a new shared helper and dropped the argument on the way, leaving the
+  block-builder with exactly one caller. **This is the SECOND time this
+  contract has been lost** (the first was filed upstream as PR #82245), which
+  is why the fix lands in the shared writer and the docstring now names the
+  invariant explicitly rather than relying on tests to catch it next merge.
+  *Premise correction recorded honestly:* the regression hits `unset` only —
+  the `set` path never passed `extra_content`, verified by reading the entire
+  pre-merge `set_config_value()` body. Fixing `set` too is a deliberate
+  zero-extra-diff scope extension justified by the shared-writer contract, not
+  a restoration. Separately, arbitrary hand-written user comments are not
+  preserved by this or any other writer, before or after the merge — that is
+  the existing whole-document design, not a regression. Three sibling writers
+  were audited and deliberately NOT changed (they provably never passed
+  `extra_content` pre-merge either, or did not exist).
+
+**Security-adjacent** (`d3fc81d6f9`, `6142842dc9`):
+* **`is_local_endpoint()` misclassified public IPv6 as local.** The merge left a
+  duplicated leftover block: the surviving upstream check correctly guards the
+  unqualified-hostname rule with `":" not in host` so IPv6 literals fall through
+  to scope classification, but the merge re-appended the older *pre-guard* copy
+  below it, whose `if host and "." not in host: return True` matches every IPv6
+  literal. `is_local_endpoint()` gates the keyless-endpoint / placeholder-API-key
+  path, so a config pointing at a real remote IPv6 endpoint was treated as
+  trusted-local and could skip credential requirements it should have been held
+  to; public IPv6 was also exempted from stale-aux-pin reporting and given
+  localhost timeout auto-bumps. The fork's own
+  `test_stale_aux_local_endpoint.py` already asserted the global-IPv6 case and
+  was red.
+* **`HERMES_HOME` left at 0755 when reached through a symlink.**
+  `initialize_home()` skipped `_secure_dir()` whenever ANY parent up to `/` was
+  a symlink, leaving `~/.hermes` and its `cron`/`sessions`/`logs`/`memories`
+  subdirectories at the mkdir default `0o755` instead of `0o700`. macOS makes
+  that the normal case (`/var`, `/tmp` and `/etc` are all symlinks). **Fixed by
+  cherry-picking upstream's own already-authored fix** (`56d2438a45`), which
+  landed just after this fork's merge-base — only links at or below the home
+  boundary are operator-owned, and the existing behavior for a link *inside*
+  the home is unchanged and still pinned by its test.
+
+**Platform-specific** (`cedef47006`):
+* **macOS `killpg()` EPERM-vs-ESRCH broke search-tool process cleanup.**
+  `search_files` on macOS returned `{"error": "[Errno 1] Operation not
+  permitted"}` instead of its matches. `_run_rg_native` drains rg on a thread
+  and, once the fetch limit is reached, tears the child down through
+  `_kill_process_group_posix` — the `| head` early stop expressed natively. On
+  a small tree rg has usually already exited and `proc.poll()` has not reaped
+  it, so the group's only member is an unreaped zombie — and **macOS answers
+  `killpg()` on a zombie-only group with EPERM where Linux answers ESRCH**, so
+  no `ProcessLookupError` handler can catch it and the `PermissionError`
+  escaped teardown and replaced matches the caller had already drained.
+  Verified directly on Darwin 27.0.0 outside pytest entirely. The conftest
+  live-system guard was explicitly ruled out as the cause — it classified the
+  PGID as in-subtree and forwarded the real syscall. **Fixed by cherry-picking
+  2 upstream commits** (`d4b772cbda` #116855, `e234408607` #107029) that both
+  land AFTER this sync's merge-base, so the merge could not have carried them
+  and no fork-side fix was discarded; the second is a real fix in its own right
+  here (a child that skipped `setsid` shares our PGID, and killpg would signal
+  the gateway itself). Taken verbatim rather than reinvented, so both helpers
+  are now byte-identical to upstream and the next sync merges the hunk cleanly.
+
+**Test-only repointing done alongside** (no production change):
+`ad50f7d8de` (11 browser tests off re-exports upstream dropped in `de60f789a7`,
+production verified unaffected), `76248427d3` + `ec533bafd9` + `4afd360c8b`
+(MCP tests onto the symbols the split moved; the third turned out NOT to be a
+repoint — those symbols exist nowhere in the tree, they were fork-only code the
+merge resolved in favour of upstream's `mcp_schema_cache.py`, so the suite was
+retired onto its successors with a class-by-class mapping and the two contracts
+lacking a successor checked rather than assumed — one of which was the real
+empty-manifest bug above), and `a78a2bfb30` (the Apple-Silicon CPU-pin patch
+onto `tools.transcription_local`; the fork's fix is still needed, pristine
+upstream fails the same test the other way on this host).
+
+### Verification methodology — 2026-09-23 (3-way test-failure comparison with failure-SIGNATURE matching)
+
+Recorded because this file has a track record of documenting HOW something was
+verified, and because the bar rose mid-session: per-commit A/B against a
+pristine worktree (the standing practice, used on every fix above) is enough to
+prove *this change broke nothing*, but it cannot tell you whether a failure you
+are looking at is **a regression this session introduced, a regression the raw
+merge introduced, or a failure that predates the fork's involvement entirely**.
+With ~50 commits in flight that distinction stopped being academic.
+
+**The 3-way comparison.** Three trees, all live worktrees off the same repo
+(`git worktree list` still shows them): pristine upstream `v2026.9.14`
+(`345cd2b057`), the pristine pre-merge fork (`ab0d3abd11`), and HEAD. The raw
+merge commit (`f6edb27b86`) is the fourth reference point for "did the merge
+itself do this."
+
+**Failure-SIGNATURE matching, not pass/fail.** The key refinement: two runs
+both showing `test_foo` FAILED does not make it the same failure. Comparison is
+on the failure's signature — exception type, the assertion that fired, the
+frame it fired in — so a superficially-similar-but-different bug cannot hide
+behind a matching nodeid. On that basis, **67 of 68 candidate "new
+regressions" were confirmed pre-existing since the raw merge commit**, i.e.
+introduced by the merge itself and not by any fix in this session; the 68th was
+a working-tree artifact rather than a code issue.
+
+**The vanished-test audit.** A second, independent question: the merge changed
+which tests exist at all, so a test that simply *stopped existing* would
+silently vanish from every pass/fail comparison above. Every test present on
+either pristine side but absent at HEAD was enumerated — **788 across the
+compared surface** — and each was classified as legitimately removed by
+upstream, deliberately retired by this session, or **silently dropped by the
+merge**, which is the only category that would be a defect. The residue after
+mechanical classification (47 candidates across 19 files) was not taken on
+trust: each was extracted from whichever pristine tree still had it, re-planted
+into the current tree as a standalone probe module, and actually run, so the
+verdict rests on execution rather than on grep. **Result: 0 silently dropped.**
+
+Both artifacts are throwaway (`/private/tmp`), not committed — what is worth
+keeping is the method, which the next sync should re-run rather than re-derive.
+
+### Considered and deliberately NOT changed — 2026-09-23
+
+Recording the non-changes, per this file's standing habit, so the next session
+does not re-litigate them from scratch.
+
+* **`agent/tool_guardrails.py`'s `hard_stop_enabled: False → True` divergence —
+  a FALSE ALARM, not a bug.** It surfaced as a fork-vs-upstream test
+  disagreement (upstream's `test_default_config_is_soft_warning_only_with_hard_
+  stop_disabled` is on the vanished-test list for exactly this reason) and read
+  like a regression. It is not: the 2026-07-07 entry in this very file records
+  the flip as a **deliberate product decision** with its rationale and its
+  documented opt-out (`tool_loop_guardrails.hard_stop_enabled: false`), and
+  that decision was re-confirmed as still valid. **This is the single clearest
+  argument for keeping this file rigorous** — the only reason tonight resolved
+  the flag correctly in minutes instead of "fixing" a deliberate divergence
+  back to upstream's default is that someone wrote the earlier decision down.
+  Which is, in turn, why the rest of tonight's work is documented at this level
+  of detail.
+* **`delegate_task` background progress-fn delegation-id contract.** One of the
+  two residual failures left after the delegation cluster
+  (`test_delegate_task_background_passes_progress_fn_to_async_registry`). The
+  progress_fn mechanism itself verifiably works — a probe confirmed every
+  progress_fn assertion passes; only its delegation-id expectation conflicts
+  with upstream's deliberate `live_deleg_id` semantics. That makes it a genuine
+  fork-vs-upstream contract question, not a merge drop, so it was **left for a
+  human decision rather than guessed at**. Its sibling
+  (`test_delegate_task_background_batch_runs_as_one_unit`) also fails on the
+  pre-merge oracle — pre-existing, likewise untouched.
+* **Session-recovery layout tolerance threshold.** While fixing the derived-id
+  recognition bug it was tempting to relax `accept()`'s all-or-nothing veto
+  (one bad sampled value kills a candidate layout). Measured first: the real
+  pipeline only feeds CLASSIFIED rows into layout evidence, so torn junk never
+  gets a vote, and on real data inference resolves 51/59 columns with 0 wrong
+  both before and after. Relaxing the veto would trade away the exact safety
+  property the feature exists for, for no measured benefit. **Left as-is
+  deliberately.**
+* **Sibling config writers** (`hermes_cli/auth.py` ×2,
+  `credential_lifecycle.py`, `profile_channels.py`). All whole-document-write
+  `config.yaml` and so are in the same *shape* as the comment-preservation bug,
+  but the first three provably never passed `extra_content` pre-merge either
+  and the fourth did not exist pre-merge — pre-existing behavior, a distinct
+  issue, not part of this merge regression. Not widened into.
+* **Multi-principal bearer auth in `gateway/platforms/api_server.py`**
+  (`_load_principals_map`/`_stamp_principal`/`_write_audit`). Touched the same
+  file as the scoped-secret fix and was explicitly examined: a genuine fork
+  KEEP with no upstream equivalent, constant-time compare, fail-closed. Left
+  untouched.
+* **`tools_signature()`** survived the `usage_history` retirement. Its only
+  in-tree caller was the removed `record_usage_history`, but it stays exported
+  via the `_mixin` forwarder; noted as a follow-up rather than widened into
+  that commit's scope.
