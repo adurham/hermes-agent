@@ -198,7 +198,6 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     # different version passes the same check. Re-read before anything starts.
     _refresh_claims(repo, remote)
     _outstanding_attempt(repo, remote)
-    url = f"https://github.com/{repository}/releases/tag/{tag}"
     try:
         notes = json.loads(execute([
             "gh", "api", f"repos/{repository}/releases/generate-notes",
@@ -213,11 +212,14 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         finally:
             file.close()
         try:
-            execute([
+            # gh prints the new release's page. A draft is not reachable
+            # through releases/tag/<tag> (GitHub serves it at an untagged-*
+            # URL), so this printed page is the only link to it.
+            url = (execute([
                 "gh", "release", "create", tag, "--repo", repository,
                 "--verify-tag", "--draft", "--notes-file", file.name,
                 "--title", f"Hermes Agent v{version}",
-            ])
+            ]) or "").strip()
         finally:
             os.unlink(file.name)
         execute([
@@ -351,15 +353,17 @@ def next_steps(result: dict) -> str:
     lines = [
         f"Claimed {result['tag']} for v{version}. The release workflow started on {result['tag']}.",
         f"Workflow: {result['run_url']}" if result.get("run_url") else "Workflow: the run is not listed yet. Open the Actions tab for this claim.",
+        f"Draft release: {result['url']}",
+        "The draft exists now. Edit its notes while the workflow runs; the edits carry through to publication.",
         "Wait for that workflow to finish. It builds and tests this commit.",
-        f"When it is green, the release notes are at {result['final_url']}.",
     ]
     if result["autopublish"]:
         lines.append("Autopublish is on. A green workflow publishes the release. You do not run publish.")
     else:
-        lines.append("Autopublish is off. The release stays a draft.")
-        lines.append("Edit the notes at that page, then publish the release to push this build live:")
+        lines.append("Autopublish is off. The release stays a draft after the workflow is green.")
+        lines.append("When it is green, publish the release to push this build live:")
         lines.append(f"    python scripts/release.py publish --version {version} --remote origin")
+    lines.append(f"After publication the release is at {result['final_url']}.")
     return "\n".join(lines)
 
 
@@ -386,7 +390,6 @@ def cmd_release(args) -> None:
         execute=execute, autopublish=args.autopublish,
         published=published_stable_identity(repository),
     )
-    print(result["url"])
     print(next_steps(result))
 
 

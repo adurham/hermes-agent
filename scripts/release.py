@@ -2526,9 +2526,11 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         raise ValueError("Canary receipt differs from its exact remote tag object")
 
     view = subprocess.run(
-        ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease"],
+        ["gh", "release", "view", tag, "--repo", repository, "--json", "tagName,isDraft,isPrerelease,url"],
         cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
     )
+    # A draft is served at an untagged-* URL, never releases/tag/<tag>; gh's
+    # answer is the only working link to it.
     if view.returncode != 0:
         create = [
             "gh", "release", "create", tag, "--repo", repository,
@@ -2541,11 +2543,13 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
         )
         if created.returncode != 0:
             raise ValueError(created.stderr.strip() or "Canary draft could not be recovered")
+        draft_url = created.stdout.strip()
     else:
         release = json.loads(view.stdout)
         if (release.get("tagName") != tag or not isinstance(release.get("isDraft"), bool)
                 or release.get("isPrerelease") is not True):
             raise ValueError("Canary release state differs from its receipt")
+        draft_url = release.get("url") or ""
 
     from scripts.releases.versioning import published_channel_identity
     published = published_channel_identity(repository, "canary")
@@ -2557,7 +2561,7 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
     print(f"Resumed canary publication for {tag}.")
     print(f"Workflow: https://github.com/{repository}/actions/workflows/desktop-bundled-release.yml")
     print("Wait for that workflow to finish. It builds this canary and publishes the draft when the build is green.")
-    print(f"The draft is at https://github.com/{repository}/releases/tag/{tag}.")
+    print(f"The draft is at {draft_url}.")
 
 
 def cmd_canary(args) -> None:

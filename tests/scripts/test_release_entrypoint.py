@@ -85,6 +85,8 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         if command[:3] == ["gh", "run", "list"]:
             return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
                                 "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+        if command[:3] == ["gh", "release", "create"]:
+            return "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd\n"
         return ""
 
     result = _release(source, commit, execute=execute, autopublish=True)
@@ -92,7 +94,8 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert result["version"] == "0.21.5"
     assert result["tag"] == "rc.1-v0.21.5"
     assert result["commit"] == commit
-    assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/rc.1-v0.21.5"
+    # A draft lives at the page gh reports, never at releases/tag/<claim>.
+    assert result["url"] == "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd"
     assert result["final_url"] == "https://github.com/example/hermes-agent/releases/tag/v0.21.5"
     assert git(source, "rev-parse", "rc.1-v0.21.5^{commit}") == commit
     claim = json.loads(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
@@ -132,11 +135,13 @@ def test_release_output_names_the_wait_and_the_publish_step():
 
     result = {"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
               "run_url": "https://github.com/example/hermes-agent/actions/runs/7",
+              "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd",
               "final_url": "https://github.com/example/hermes-agent/releases/tag/v0.21.5"}
     text = next_steps(result)
     assert "Workflow: " + result["run_url"] in text
     assert "The release workflow started on rc.1-v0.21.5." in text
-    assert "Wait for that workflow to finish." in text
+    # The draft is reachable before the workflow is green, not only after it.
+    assert text.index(result["url"]) < text.index("Wait for that workflow to finish.")
     assert result["final_url"] in text
     assert "python scripts/release.py publish --version 0.21.5 --remote origin" in text
 
