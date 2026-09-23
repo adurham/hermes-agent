@@ -702,6 +702,7 @@ _PLUGIN_COMPAT_LAZY = {
     'is_mcp_tool_parallel_safe': ('tools.mcp_tool_discovery', 'is_mcp_tool_parallel_safe'),
     'matches_name_filter': ('tools.mcp_tool_schema', 'matches_name_filter'),
     'mcp_prefixed_tool_name': ('tools.mcp_tool_schema', 'mcp_prefixed_tool_name'),
+    'mcp_registered_tool_name': ('tools.mcp_tool_schema', 'mcp_registered_tool_name'),
     'persist_agent_tool_names': ('tools.mcp_tool_agent', 'persist_agent_tool_names'),
     'probe_mcp_server_tools': ('tools.mcp_tool_discovery', 'probe_mcp_server_tools'),
     'reconnect_mcp_server': ('tools.mcp_tool_loop', 'reconnect_mcp_server'),

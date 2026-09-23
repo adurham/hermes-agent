@@ -74,7 +74,7 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     srv_a = _server("x", cfg_a)
     disc._adopt_server("x", srv_a)
     srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
-    assert toolsets.resolve_toolset("mcp-x") == ["mcp__x__t"]
+    assert toolsets.resolve_toolset("mcp-x") == ["x_t"]
     for _ in range(core._CIRCUIT_BREAKER_THRESHOLD):
         core._bump_server_error("x")
     disc._note_connect_failure("y", RuntimeError("boom"))
@@ -103,7 +103,7 @@ def test_oauth_server_is_not_adopted_across_profiles(two_profiles):
     disc._adopt_server("x", srv_a)
     srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg)
     assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == 0
-    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["x_t"]
 
     scope_b = two_profiles("b")
     assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == 0
@@ -164,7 +164,7 @@ def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profi
 
     two_profiles("b")
     assert reg.register_connected_into_current_scope({"x": cfg}) == 1
-    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["x_t"]
 
     # Owner A: scoped shutdown (no MCP loop here, so emulate the task teardown), then rediscovery.
     two_profiles("a")
@@ -191,7 +191,7 @@ def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profi
 
     # B never reloaded, yet has its tools back on the owner's new identical connection.
     two_profiles("b")
-    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["x_t"]
     assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
 
 
@@ -237,7 +237,7 @@ def test_parallel_safe_opt_in_is_per_profile(two_profiles):
 
     two_profiles("b")
     disc._select_new_servers({"x": cfg_b})
-    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is True
+    assert disc.is_mcp_tool_parallel_safe("x_t") is True
 
     two_profiles("a")
-    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is False
+    assert disc.is_mcp_tool_parallel_safe("x_t") is False

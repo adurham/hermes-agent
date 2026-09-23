@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
-from tools.mcp_tool_schema import mcp_prefixed_tool_name
+from tools.mcp_tool_schema import mcp_registered_tool_name
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_registration as _registration
 
@@ -140,7 +140,7 @@ class MCPServerHealthMixin:
                 new_mcp_tools = await _core._paginate_full_list(self.session.list_tools, "tools", self.name)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
-            self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})
+            self._deregister_owned(old_tool_names - {mcp_registered_tool_name(self.name, tool.name) for tool in new_mcp_tools})
             # Re-register; a raw name can become ambiguous after normalization without changing
             # its normalized name, so also drop old entries the final registration no longer owns.
             self._tools = new_mcp_tools

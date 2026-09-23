@@ -15,7 +15,6 @@ from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_loop as _loop
 from tools import mcp_tool_registration as _registration
-from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
 from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -524,9 +523,14 @@ def _forget_lazy_server(key) -> None:
 
 
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
-    """True when the tool's server opted into ``supports_parallel_tool_calls`` (provenance
-    captured at registration, never the ambiguous ``mcp__{server}__{tool}`` shape)."""
-    if not tool_name.startswith(MCP_TOOL_NAME_PREFIX):
+    """True when the tool's server opted into ``supports_parallel_tool_calls``.
+
+    Keyed on the server provenance captured at registration (``_mcp_tool_server_names``), never on
+    the tool name's shape: the fork registers MCP tools as bare ``<server>_<tool>`` with no ``mcp``
+    prefix (see ``mcp_tool_schema.mcp_registered_tool_name``), and ``<server>_<tool>`` cannot be
+    parsed back apart because either component may contain underscores. A name only has a
+    provenance entry if it was registered as an MCP tool, which also filters out native tools."""
+    if not tool_name:
         return False
     with _core._lock:
         server_name = _core._mcp_tool_server_names.get(tool_name)

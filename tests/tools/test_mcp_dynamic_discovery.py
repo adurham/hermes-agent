@@ -43,6 +43,10 @@ class TestRegisterServerTools:
         with the static `homeassistant` toolset) had its tools silently
         dropped because get_toolset() returned the static definition without
         consulting the alias registered by _register_server_tools().
+
+        Fork naming: registered names are bare ``<server>_<tool>`` with no
+        ``mcp`` prefix (tools/mcp_tool_schema.py::mcp_registered_tool_name).
+        The shadowing invariant under test is independent of the name shape.
         """
         from toolsets import TOOLSETS, get_toolset, resolve_toolset
 
@@ -55,14 +59,14 @@ class TestRegisterServerTools:
 
         with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("homeassistant", server, {})
-            assert "mcp__homeassistant__get_entities" in registered
+            assert "homeassistant_get_entities" in registered
 
             ts = get_toolset("homeassistant")
             # Static built-ins are still present...
             assert static_tools <= set(ts["tools"])
             # ...and the MCP server's tools are no longer shadowed.
-            assert "mcp__homeassistant__get_entities" in ts["tools"]
-            assert "mcp__homeassistant__get_entities" in resolve_toolset("homeassistant")
+            assert "homeassistant_get_entities" in ts["tools"]
+            assert "homeassistant_get_entities" in resolve_toolset("homeassistant")
 
 
 class TestRefreshTools:
