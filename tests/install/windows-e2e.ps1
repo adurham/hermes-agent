@@ -1296,7 +1296,9 @@ function Invoke-PhaseUpdate {
     # helper used to own this step.
     # The mock provider is journey setup, not an upgrade mutation. Configure it
     # before preservation snapshots so its stable endpoint is part of baseline state.
-    if ($Route -in @('open-app-update', 'hermes-desktop-app-update')) { Start-JourneyChat }
+    if ($Route -in @('open-app-update', 'hermes-desktop-app-update', 'desktop-installer@latest')) {
+        Start-JourneyChat
+    }
     # Snapshot every plugin tree BEFORE the upgrade moves anything.
     Invoke-PreserveSnapshot
     # ... and the user's own durable state, produced by the install phase
