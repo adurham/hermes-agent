@@ -51,7 +51,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
     assert summary["platform"] == sys.platform
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 

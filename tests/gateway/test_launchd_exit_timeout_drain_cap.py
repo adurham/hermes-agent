@@ -40,7 +40,7 @@ def _read_budget(label):
     return read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 @pytest.mark.parametrize(
     "label, expected",
     [
@@ -53,7 +53,7 @@ def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(label, expected):
     assert resolve_launchd_capped_drain(180.0, _read_budget(label)) == expected
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launchd_label_leaked_onto_linux_is_ignored():
     assert _read_budget("ai.hermes.gateway") is None
 

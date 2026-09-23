@@ -198,7 +198,7 @@ class TestConfirmDestructiveSlash:
         assert outcome["result"] == expected
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 class TestNativeWindowsNoRawInputDeadlock:
     """Anti-regression guard exercising the REAL ``_prompt_text_input``.
 

@@ -51,7 +51,7 @@ def _init_git_repo(repo: Path) -> None:
 
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
     """Windows must use a real (non-blocking) process lock, not a no-op open.
 

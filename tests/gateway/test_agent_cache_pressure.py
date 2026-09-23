@@ -95,7 +95,7 @@ class TestMemoryBudgetResolution:
 
         assert resolve_memory_high_mb("auto") is None
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 class TestPressureSignalScope:
     """The budget is the unit's cgroup limit, so the signal must be the unit's anon charge:
     an execute_code kernel in the same cgroup counts even while the gateway itself is small (#110549)."""

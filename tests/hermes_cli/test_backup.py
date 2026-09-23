@@ -304,7 +304,7 @@ class TestIterBackupFiles:
         assert "models" in skipped
         assert "hermes-agent" in skipped
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_skips_unix_sockets(self, tmp_path, monkeypatch):
         from hermes_cli.backup import _iter_backup_files
 
@@ -1033,7 +1033,7 @@ class TestImportAtomicWrites:
         assert target.read_text() == "model: restored\n"
         assert (target.stat().st_mode & 0o777) == 0o644
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership")
+    @pytest.mark.platforms("posix")
     def test_restore_preserves_existing_file_owner(self, tmp_path, monkeypatch):
         """A root-run import must not re-own the user's files to root.
 
@@ -1054,7 +1054,7 @@ class TestImportAtomicWrites:
 
         chown_calls: list[tuple[Path, int, int]] = []
         monkeypatch.setattr(
-            "hermes_cli.backup._preserve_file_owner",
+            "hermes_cli.backup_restore._preserve_file_owner",
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
@@ -1070,28 +1070,21 @@ class TestImportAtomicWrites:
         # state.db is newly created, so there is no prior owner to restore.
         assert chown_calls == [(target, 123, 456)]
 
-    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="needs fchmod present to remove it")
-    def test_mode_is_applied_before_the_replace_without_fchmod(self, tmp_path, monkeypatch):
-        """Covers the Windows branch: no ``fchmod``, so ``chmod`` the temp path.
-
-        Applying the mode only *after* ``atomic_replace`` leaves the published
-        file at mkstemp's 0600 until that chmod lands (and permanently if the
-        process dies in between), and ``atomic_replace``'s EXDEV/EBUSY
-        ``shutil.copystat`` fallback would copy 0600 onto the target. Mirrors
-        the transit-window fix ``atomic_yaml_write`` already carries.
-        """
+    def test_mode_is_applied_before_the_replace(self, tmp_path, monkeypatch):
+        """Publish the correct native permission bits with no permissive window."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         target = hermes_home / "config.yaml"
         target.write_text("model: original\n")
         os.chmod(target, 0o644)
+        expected_mode = target.stat().st_mode & 0o777
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {"config.yaml": "model: restored\n", "state.db": ""})
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1101,17 +1094,15 @@ class TestImportAtomicWrites:
                 staged_modes.append(os.stat(tmp).st_mode & 0o777)
             return real_replace(tmp, dst)
 
-        monkeypatch.delattr(os, "fchmod")
         monkeypatch.setattr(backup_mod, "atomic_replace", spying_replace)
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        # Without the pre-replace chmod this reads 0o600 (mkstemp's mode).
-        assert staged_modes == [0o644]
-        assert (target.stat().st_mode & 0o777) == 0o644
+        assert staged_modes == [expected_mode]
+        assert (target.stat().st_mode & 0o777) == expected_mode
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX setuid/setgid bits")
+    @pytest.mark.platforms("posix")
     def test_restore_does_not_carry_setuid_onto_archive_content(
         self, tmp_path, monkeypatch
     ):
@@ -1146,7 +1137,7 @@ class TestImportAtomicWrites:
             {"helper.sh": "#!/bin/sh\necho attacker\n", "state.db": ""},
         )
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -2327,12 +2318,18 @@ class TestImportLiveSessionDatabase:
     ):
         """A refused live-safe restore is a warning, not a counted success."""
         import hermes_cli.backup as backup_mod
+        # _import_db_member (the run_import .db publish path) lives in
+        # hermes_cli.backup_restore and resolves _safe_restore_db there.
+        import hermes_cli.backup_restore as backup_restore_mod
 
         home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
-        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        monkeypatch.setattr(backup_restore_mod, "_safe_restore_db", lambda src, dst: False)
 
         backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
 
+        out = capsys.readouterr().out
+        assert "files skipped" in out
+        assert "state.db" in out
         # The pre-import database is still the one on disk.
         assert _count_rows(live_db) == (3, 12)
 
