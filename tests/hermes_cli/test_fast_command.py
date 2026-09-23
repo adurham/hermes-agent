@@ -301,10 +301,11 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
             reasoning_config=None,
             fast_mode=True,
         )
-        assert kwargs.get("extra_body", {}).get("speed") == "fast"
-        assert "speed" not in kwargs
-        assert "extra_headers" in kwargs
-        assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
+        # Wire shape changed in the v2026.9.14 sync: fast mode is now a
+        # top-level ``speed`` kwarg plus a ``betas`` list entry (beta client),
+        # not extra_body["speed"] + an anthropic-beta extra_header.
+        assert kwargs.get("speed") == "fast"
+        assert _FAST_MODE_BETA in (kwargs.get("betas") or [])
 
     def test_fast_mode_off_no_speed(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
