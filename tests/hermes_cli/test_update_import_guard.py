@@ -223,13 +223,15 @@ def test_untracked_enumeration_failure_is_visible(monkeypatch, tmp_path, capsys)
     assert update_cmd._git_untracked_paths(["git"], tmp_path) is None
 
 @pytest.mark.platforms("posix")
-def test_import_guard_is_non_fatal_when_probe_cannot_run(tmp_path):
-    """A venv interpreter that exists but cannot be executed must not read as a hung probe:
+def test_import_guard_is_non_fatal_when_probe_cannot_run(monkeypatch, tmp_path):
+    """A selected interpreter that exists but cannot be executed must not read as a hung probe:
     spawn failure stays advisory through the real ``subprocess.run`` path."""
-    venv_python = tmp_path / "venv" / "bin" / "python"
-    venv_python.parent.mkdir(parents=True)
-    venv_python.write_text("#!/bin/sh\nexit 0\n")
-    venv_python.chmod(0o644)  # present, not executable -> Popen raises PermissionError
+    selected_python = tmp_path / "pm" / "bin" / "python"
+    selected_python.parent.mkdir(parents=True)
+    selected_python.write_text("#!/bin/sh\nexit 0\n")
+    selected_python.chmod(0o644)  # present, not executable -> Popen raises PermissionError
+    monkeypatch.setattr(update_cmd_validation, "runtime_command",
+                        lambda root, *, code: [str(selected_python), "-I", "-c", code])
     assert update_cmd._validate_critical_modules_import(tmp_path) == (True, None, None)
 
 # ---------------------------------------------------------------------------
