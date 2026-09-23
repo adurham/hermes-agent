@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.releases.versioning import parse_attempt_ref
+
 
 def git(source: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=source, text=True, encoding="utf-8").rstrip("\r\n")
@@ -97,6 +99,7 @@ class BuildRequest:
     bundle_env: dict[str, str | None]
     channel_request: dict | None = None
     release_epoch: int | None = None
+    archive_tag: str | None = None
 
     @classmethod
     def create(cls, source: Path, *, tag: str | None, commit: str | None, variant: str,
@@ -144,6 +147,7 @@ class BuildRequest:
             commit = require_commit(release_commit) if release_commit else \
                 git(source, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         release_epoch = None
+        archive_tag = None
         if tag:
             canary = re.fullmatch(r"v\d+\.\d+\.\d+\+canary\.(20\d{6}T\d{6}Z)", tag)
             if canary:
@@ -151,8 +155,12 @@ class BuildRequest:
                                     .replace(tzinfo=timezone.utc).timestamp())
             else:
                 claim_tag = os.environ.get("RELEASE_CLAIM_TAG", "")
-                if claim_tag != tag + "-rc":
+                # The archive is keyed by the attempt ref; the payload version
+                # stays plain. Both come from the claim, never from the checkout.
+                parsed = parse_attempt_ref(claim_tag)
+                if parsed is None or parsed[0] != version:
                     raise ValueError("stable preparation requires its exact claim tag")
+                archive_tag = claim_tag
                 claim_object = os.environ.get("RELEASE_CLAIM_OBJECT", "")
                 if not re.fullmatch(r"[a-f0-9]{40}", claim_object) or \
                         git(source, "rev-parse", f"refs/tags/{claim_tag}") != claim_object:
@@ -168,7 +176,7 @@ class BuildRequest:
                 raise ValueError("channel sourceVersion differs from checkout project version")
             version = channel_request["version"]
         return cls(source, work, cache, commit, tag, version, variant, current_target(), bundle_env,
-                   channel_request, release_epoch)
+                   channel_request, release_epoch, archive_tag)
 
     def data(self) -> dict:
         return {**asdict(self), "source": str(self.source), "work": str(self.work), "cache": str(self.cache)}

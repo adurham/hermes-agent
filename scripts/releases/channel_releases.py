@@ -16,6 +16,7 @@ from hermes_cli.release_channels import (
 from scripts.bundles.channel_artifacts import assemble
 from scripts.releases import handoff, r2, stable
 from scripts.releases.channels import ChannelPublisher, R2ChannelStore
+from scripts.releases.versioning import parse_attempt_ref
 
 NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
 CANARY_NEEDS = ("validate", "build-win32", "build-darwin", "build-linux", "builds-table", "assemble-win32-bundle",
@@ -112,10 +113,15 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
 
     repository = validate_repository(env.get("GITHUB_REPOSITORY"))
     tag = env.get("RELEASE_TAG", "")
-    if not tag.startswith("v") or not is_release_version(tag[1:]):
-        raise ChannelError("Invalid protected release tag")
-    if (policy == "canary-release") != is_canary_tag(tag):
-        raise ChannelError("Protected release policy/tag mismatch")
+    if policy == "stable-release":
+        # Stable runs on its attempt ref; the final vX.Y.Z tag is a publish receipt.
+        if parse_attempt_ref(tag) is None:
+            raise ChannelError("Invalid protected release tag")
+    else:
+        if not tag.startswith("v") or not is_release_version(tag[1:]):
+            raise ChannelError("Invalid protected release tag")
+        if (policy == "canary-release") != is_canary_tag(tag):
+            raise ChannelError("Protected release policy/tag mismatch")
     if env.get("GITHUB_ACTIONS") != "true":
         raise ChannelError("Protected heads require the accepted release workflow")
     default = ""
@@ -130,10 +136,13 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
                 or env.get("GITHUB_WORKFLOW_REF") not in expected):
             raise ChannelError("Protected publication requires its stable release controller")
         try:
-            verified_tag, verified_commit, _claim = stable.final_context(env, run=run)
+            # final_context binds the final vX.Y.Z receipt to the claim; the
+            # release tag env carries the attempt ref, so patch the payload tag.
+            _verified_tag, verified_commit, _claim = stable.final_context(
+                {**env, "RELEASE_TAG": f"v{parse_attempt_ref(tag)[0]}"}, run=run)
         except (ValueError, subprocess.CalledProcessError) as error:
             raise ChannelError(str(error)) from error
-        return verified_tag, verified_commit
+        return tag, verified_commit
     elif policy == "canary-release":
         if env.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
             raise ChannelError("Protected heads require the accepted release workflow")
@@ -171,14 +180,17 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
 
 def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: str,
                     release_epoch: int) -> dict:
+    """Read the accepted candidate from the attempt-scoped release archive."""
     from hermes_cli.release_channels import decode_json, require_sha256
 
+    parsed = parse_attempt_ref(tag)
+    payload_tag = f"v{parsed[0]}" if parsed else tag
     digest = require_sha256(env.get("CANDIDATE_MANIFEST_SHA256"))
     key = f"releases/tag/{tag}/release-candidates.json"
     if env.get("CANDIDATE_MANIFEST_URL") != publisher.public_base + "/" + key:
         raise ChannelError("Accepted candidate URL differs from release archive")
     candidate = decode_json(publisher.reader.read_bytes(key, digest))
-    stable.validate_candidates(candidate, tag, commit, publisher.public_base, release_epoch)
+    stable.validate_candidates(candidate, payload_tag, commit, publisher.public_base, release_epoch)
     return candidate
 
 
@@ -202,7 +214,7 @@ def advance_stable(env: dict, release: dict, root: Path) -> dict:
     creds, base, bucket = r2.credentials()
     store = R2ChannelStore(creds, base, bucket)
     public_base = r2.public_base_url()
-    key = f"releases/tag/{release['tag']}/release-candidates.json"
+    key = f"releases/tag/{release['claim_tag']}/release-candidates.json"
     found = store.get(key)
     if found is None:
         raise ChannelError("Stable candidate manifest is unavailable")
@@ -211,7 +223,7 @@ def advance_stable(env: dict, release: dict, root: Path) -> dict:
         raise ChannelError("Stable candidate manifest differs from the final release receipt")
     scoped_env = {
         **env,
-        "RELEASE_TAG": release["tag"],
+        "RELEASE_TAG": release["claim_tag"],
         "RELEASE_COMMIT": release["commit"],
         "RELEASE_CLAIM_TAG": release["claim_tag"],
         "RELEASE_CLAIM_OBJECT": release["claim_object"],
@@ -236,19 +248,31 @@ def verify_bootstrap(request: dict, manifest: dict, base: str, repository: str) 
     from hermes_cli.update_channel import is_canary_tag
     canary = is_canary_tag(tag)
     reader = ChannelReader(base, repository)
+    payload_tag = tag
     if canary:
         verify_canary_outputs(request, manifest, reader)
     else:
-        candidate = decode_json(reader.read_bytes(f"releases/tag/{tag}/release-candidates.json"))
-        stable.validate_candidates(candidate, tag, request["commit"], base)
+        # The archive prefix is the attempt path the manifest itself names; a
+        # releaseTag that is already the attempt ref must agree with it.
+        keys = [package["artifact"]["key"] for package in manifest["packages"]]
+        archive = os.path.commonprefix(keys)
+        parsed = parse_attempt_ref(tag)
+        payload_tag = f"v{parsed[0]}" if parsed else tag
+        if parsed is not None and archive != f"releases/tag/{tag}/":
+            raise ChannelError("Bootstrap archive differs from its attempt ref")
+        if not archive.startswith("releases/tag/") or not archive.endswith("/"):
+            raise ChannelError("Bootstrap archive key is invalid")
+        candidate = decode_json(reader.read_bytes(archive + "release-candidates.json"))
+        stable.validate_candidates(candidate, candidate["tag"], request["commit"], base)
         if decode_json(reader.read_bytes("releases/stable/release-candidates.json")) != candidate:
             raise ChannelError("Bootstrap must use the current accepted stable transaction")
         match_accepted_packages(manifest, candidate)
-    identity = product_identity(tag)
+    identity = product_identity(payload_tag)
     if any(request["identity"][key] != value for key, value in identity.items() if key != "token"):
         raise ChannelError("Bootstrap must retain official native identity")
-    release = json.loads(stable.output(["gh", "api", f"repos/{repository}/releases/tags/{tag}"]))
-    commit = stable.output(["gh", "api", f"repos/{repository}/commits/{tag}", "--jq", ".sha"])
+    # The GitHub release is resolved by its final payload tag, never the draft.
+    release = json.loads(stable.output(["gh", "api", f"repos/{repository}/releases/tags/{payload_tag}"]))
+    commit = stable.output(["gh", "api", f"repos/{repository}/commits/{payload_tag}", "--jq", ".sha"])
     if (release.get("draft") is not False or release.get("prerelease") is not canary
             or not release.get("published_at") or commit != request["commit"]):
         raise ChannelError("Bootstrap requires the published release")
@@ -290,25 +314,30 @@ def verify_canary_outputs(request: dict, manifest: dict, reader) -> None:
 
 def publish_release(policy: str, env: dict, root: Path) -> dict:
     tag, commit = admit_transaction(policy, env)
+    # Stable's tag is the attempt ref: native receipts, product identity and the
+    # channel record bind the plain payload tag, while the archive is attempt-scoped.
+    parsed = parse_attempt_ref(tag)
+    payload_tag = f"v{parsed[0]}" if parsed else tag
     if env.get("R2_DISPOSABLE_RUN"):
         raise ChannelError("Disposable receiver builds cannot enter production release publication")
     publisher = ChannelPublisher(R2ChannelStore(*r2.credentials()), env["GITHUB_REPOSITORY"],
                                  r2.public_base_url(), authorize=lambda action, record:
                                  admit_transaction(policy, env, require_published=True))
     name = select_channel(publisher, policy)
-    identity = product_identity(tag)
+    identity = product_identity(payload_tag)
     current = publisher._read(name)
     if current:
         # Explicit bootstrap may have reserved another opaque token for the same app.
         identity["token"] = current[0]["identity"]["token"]
         if identity != current[0]["identity"]:
             raise ChannelError("Protected R2 identity differs from the existing product")
-    release_epoch = stable.final_context(env)[2]["claim_epoch"] if policy == "stable-release" else None
+    release_epoch = stable.final_context({**env, "RELEASE_TAG": payload_tag})[2]["claim_epoch"] \
+        if policy == "stable-release" else None
     accepted = accepted_stable(publisher, env, tag, commit, release_epoch) \
         if release_epoch is not None else None
-    handoff.fetch(tag, commit, list(NATIVE_LEGS), root,
+    handoff.fetch(payload_tag, commit, list(NATIVE_LEGS), root,
                   ["metadata-*.json", "*.zip", "*.dmg", "*.blockmap", "*.msixbundle"], public_base=publisher.public_base)
-    native = read_native_receipts(root, tag, commit)
+    native = read_native_receipts(root, payload_tag, commit)
     windows = next(row for row in native["packages"] if row["platform"] == "windows")
     if policy == "canary-release":
         expected_windows = canary_windows_version(tag)
@@ -329,9 +358,9 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
             return accepted_stable(publisher, env, tag, commit, release_epoch) == accepted
         return True
 
-    source_version = tag[1:].split("+", 1)[0]
-    request = publisher.allocate_protected(name, commit, source_version, release_tag=tag,
-                                           version=tag[1:], windows_version=windows["version"],
+    source_version = payload_tag[1:].split("+", 1)[0]
+    request = publisher.allocate_protected(name, commit, source_version, release_tag=payload_tag,
+                                           version=payload_tag[1:], windows_version=windows["version"],
                                            identity=identity, policy=policy, release_gate=release_gate)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/")
     if accepted is not None:

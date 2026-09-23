@@ -77,12 +77,18 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
     assert jobs["publish-docker"]["with"]["release-epoch"] == \
         "${{ needs.admit.outputs.release-epoch }}"
     complete = jobs["complete"]["steps"]
-    final = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Create the final tag"))
-    assert complete[final]["env"]["DOCKER_MANIFEST_DIGEST"] == \
-        "${{ needs.publish-docker.outputs.manifest-digest }}"
+    # A6: the green workflow validates the accepted candidate archive; the
+    # final tag and the retarget move to the publication pass.
+    validation = next(i for i, step in enumerate(complete)
+                      if step.get("name", "").startswith("Validate the accepted candidate archive"))
+    assert "DOCKER_MANIFEST_DIGEST" not in complete[validation]["env"]
+    assert "RELEASE_ID" not in complete[validation]["env"]
+    assert complete[validation]["env"]["CANDIDATE_MANIFEST_SHA256"] == \
+        "${{ needs.candidates.outputs.manifest-sha256 }}"
     render = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Render the admitted"))
     reconcile = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Reconcile ordered"))
-    assert final < render < reconcile
+    assert validation < render < reconcile
+    assert not any("Create the final tag" in step.get("name", "") for step in complete)
 
 
 def test_docker_dev_stamp_checkout_has_release_history():

@@ -546,10 +546,14 @@ def r2_object_names_under(prefix: str) -> list[str]:
 def r2_object_names(tag: str) -> list[str]:
     """Object keys in the R2 staging dir for `tag`, under releases/tag/<tag>/.
 
-    A tag prefix and exact version match exclude neighboring releases.
+    A tag prefix and exact version match exclude neighboring releases. An
+    attempt ref filters by its plain version, which is what file names carry.
     """
+    from scripts.releases.versioning import parse_attempt_ref
+
     keys = r2_object_names_under(f"releases/tag/{tag}/")
-    return filter_names_for_version(keys, tag.lstrip("v"))
+    parsed = parse_attempt_ref(tag)
+    return filter_names_for_version(keys, parsed[0] if parsed else tag.lstrip("v"))
 
 
 def splice(body: str, block: str) -> str:

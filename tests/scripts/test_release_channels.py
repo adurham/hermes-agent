@@ -468,12 +468,12 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
 def test_protected_transaction_refuses_custom_workflow_and_unpublished_release(monkeypatch):
     from scripts.releases import channel_releases
     from hermes_cli.release_channels import ChannelError
-    tag, commit = "v2.0.0", "a" * 40
+    attempt, tag, commit = "rc.1-v2.0.0", "v2.0.0", "a" * 40
     env = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
-           "GITHUB_REPOSITORY": "example/hermes-agent", "RELEASE_TAG": tag,
-           "RELEASE_COMMIT": commit, "RELEASE_CLAIM_TAG": tag + "-rc",
+           "GITHUB_REPOSITORY": "example/hermes-agent", "RELEASE_TAG": attempt,
+           "RELEASE_COMMIT": commit, "RELEASE_CLAIM_TAG": attempt,
            "RELEASE_CLAIM_OBJECT": "b" * 40,
-           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/" + tag + "-rc"}
+           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/" + attempt}
     published = [True]
 
     def final_context(_env, run):
@@ -488,14 +488,53 @@ def test_protected_transaction_refuses_custom_workflow_and_unpublished_release(m
             return "main"
         return ""
 
-    assert channel_releases.admit_transaction("stable-release", env, run=run) == (tag, commit)
+    assert channel_releases.admit_transaction("stable-release", env, run=run) == (attempt, commit)
     published[0] = False
     with pytest.raises(ChannelError, match="published"):
         channel_releases.admit_transaction("stable-release", env, run=run)
     published[0] = True
     with pytest.raises(ChannelError, match="controller"):
         channel_releases.admit_transaction("stable-release", dict(env, GITHUB_WORKFLOW_REF="custom.yml"), run=run)
-    from hermes_cli.release_channels import canonical_json
+    with pytest.raises(ChannelError, match="protected release tag"):
+        channel_releases.admit_transaction(
+            "stable-release", dict(env, RELEASE_TAG=tag + "-rc"), run=run)
+
+
+def test_stable_admission_requires_an_attempt_ref_release_tag(monkeypatch):
+    from scripts.releases import channel_releases
+    from hermes_cli.release_channels import ChannelError
+    attempt, commit = "rc.2-v1.2.3", "c" * 40
+    env = {"GITHUB_ACTIONS": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+           "GITHUB_REPOSITORY": "example/hermes-agent", "RELEASE_TAG": attempt,
+           "RELEASE_COMMIT": commit, "RELEASE_CLAIM_TAG": attempt,
+           "RELEASE_CLAIM_OBJECT": "b" * 40,
+           "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/" + attempt}
+    monkeypatch.setattr(channel_releases.stable, "final_context",
+                        lambda _env, run: ("v1.2.3", commit, {}))
+
+    def run(command):
+        if command[-1] == ".default_branch":
+            return "main"
+        return ""
+
+    assert channel_releases.admit_transaction("stable-release", env, run=run) == (attempt, commit)
+    # The v-tag the final receipt binds is derived from the attempt ref, so the
+    # candidate manifest custody is checked against the claim's own version.
+    seen = {}
+    def final_context_checked(patched_env, run):
+        seen["RELEASE_TAG"] = patched_env["RELEASE_TAG"]
+        return "v1.2.3", commit, {}
+    monkeypatch.setattr(channel_releases.stable, "final_context", final_context_checked)
+    channel_releases.admit_transaction("stable-release", env, run=run)
+    assert seen["RELEASE_TAG"] == "v1.2.3"
+    with pytest.raises(ChannelError, match="protected release tag"):
+        channel_releases.admit_transaction("stable-release", dict(env, RELEASE_TAG="v1.2.3"), run=run)
+
+
+def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
+    from scripts.releases import channel_releases
+    from hermes_cli.release_channels import ChannelError, canonical_json
+    tag, commit = "v2.0.0", "c" * 40
     with object_server() as (url, objects, headers, requests, faults):
         pub = publisher(url)
         # Exercise HTTPS authority validation through the loopback transport.

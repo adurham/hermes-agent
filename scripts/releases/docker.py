@@ -13,6 +13,7 @@ MANIFEST_SCHEMA = 1
 SHA256 = re.compile(r"[a-f0-9]{64}")
 GIT_SHA = re.compile(r"[a-f0-9]{40}")
 from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases.versioning import parse_attempt_ref
 ARCHES = ("amd64", "arm64")
 IMAGE = "nousresearch/hermes-agent"
 
@@ -21,7 +22,9 @@ class DockerReleaseError(ValueError):
 
 
 def require_stable_tag(tag: str) -> str:
-    if not isinstance(tag, str) or not STABLE_TAG_RE.fullmatch(tag or ""):
+    # The versioned image is tagged by the attempt ref; stable/latest move only
+    # at publish. The old v-suffix shape is dead.
+    if not isinstance(tag, str) or not (STABLE_TAG_RE.fullmatch(tag) or parse_attempt_ref(tag)):
         raise DockerReleaseError(f"Not a stable release tag: {tag!r}")
     return tag
 

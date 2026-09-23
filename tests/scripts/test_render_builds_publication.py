@@ -128,6 +128,15 @@ def test_exact_version_and_flat_name_boundaries(version, name):
     assert rbt.parse_assets([name])['HermesBundled'][('win', 'x64')] == (name, 'msix')
 
 
+def test_attempt_archive_objects_are_listed_by_their_plain_version(monkeypatch):
+    keys = ['releases/tag/rc.2-v1.2.3/HermesBundled-1.2.3-win-x64.msix',
+            'releases/tag/rc.2-v1.2.3/HermesBundled-1.2.3-win-x64.msix.blockmap',
+            'releases/tag/rc.2-v1.2.3/latest.yml',
+            'releases/tag/rc.2-v1.2.3/HermesBundled-1.2.4-win-x64.msix']
+    monkeypatch.setattr(rbt, 'r2_object_names_under', lambda prefix: keys)
+    assert rbt.r2_object_names('rc.2-v1.2.3') == [keys[0]]
+
+
 @pytest.mark.parametrize('current,tag,allowed', [
     (None, 'v1.2.3', True), ('garbage', 'v1.2.3', True),
     ('v1.2.3', 'v1.2.3+canary.20260818T101010Z', False),
