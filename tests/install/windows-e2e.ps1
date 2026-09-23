@@ -556,6 +556,20 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
         return
     }
     Assert-True ($driveExit -eq 0) "app driven via captured hermes desktop spec; update completed"
+
+    # The production updater relaunches Hermes. Close that verified window
+    # normally so the test-owned checkpoint starts and owns its own backend.
+    $desktopExe = Get-DesktopExe
+    $deadline = (Get-Date).AddMinutes(5)
+    $windows = @()
+    while ((Get-Date) -lt $deadline) {
+        $windows = @(Get-VerifiedDesktopWindows $desktopExe)
+        if ($windows.Count -eq 1) { break }
+        Start-Sleep -Seconds 2
+    }
+    Assert-True ($windows.Count -eq 1) "updated desktop relaunched exactly one verified window"
+    $script:ChatFailure = $true
+    Close-VerifiedDesktop $desktopExe $windows[0].Id
 }
 
 function Save-DesktopScreenshot([string]$OutFile) {
