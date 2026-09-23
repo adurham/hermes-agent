@@ -8,6 +8,7 @@ import { host } from '@hermes/plugin-sdk'
 import { botSelectionKey } from './data'
 import { botsText } from './i18n'
 import { displayName } from './labels'
+import { noteScreenTabClosed, noteScreenTabOpened } from './screen-autoraise'
 import { BotScreenPane } from './screen-pane'
 import { ID } from './shared'
 import type { BotMeta, RosterRow } from './types'
@@ -39,8 +40,10 @@ export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
     render: () => <BotScreenPane bot={bot} />,
     onClose: () => {
       openTabs.delete(key)
+      noteScreenTabClosed(bot)
     }
   })
 
   openTabs.set(key, close)
+  noteScreenTabOpened(bot)
 }

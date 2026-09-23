@@ -111,7 +111,13 @@ Every bot's computer is one click away in three places of Hermes Desktop:
   desktop (refreshed every few seconds while the pane is visible) with who holds
   control; click the picture to expand into live access. While the screen is off
   or not installed the same box says so and offers Start / Install.
-- **Bots → right-click a bot → Open Screen**.
+- **Bots → right-click a bot → Open Screen**. The same menu has **Open Screen
+  when the bot uses it**: with it checked, the Screen tab comes forward on the
+  bot's first `computer_use` or browser call of a run, so you watch it work
+  instead of finding out afterwards. Off by default, per bot. It raises the
+  tab without taking your keyboard focus, never fires for replayed history,
+  at most once every 30 seconds, and if you close the tab mid-run it stays
+  closed until the bot's next run.
 - **Sessions sidebar**, grouped by gateway / profile: the same **Screen** box
   sits under each profile's header, so a profile's machine is reachable from
   its conversations too.

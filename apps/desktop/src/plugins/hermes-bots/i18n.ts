@@ -290,6 +290,9 @@ type BotsMessages = {
     portalUnsupported: string
     portalUnavailable: string
     unavailableTitle: string
+    autoOpenMenu: string
+    autoOpenOnToast: (name: string) => string
+    autoOpenOffToast: (name: string) => string
     stoppedTitle: string
     stoppedBody: string
     start: string
@@ -590,6 +593,9 @@ const en: BotsMessages = {
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
     unavailableTitle: 'Screen needs a newer Hermes',
+    autoOpenMenu: 'Open Screen when the bot uses it',
+    autoOpenOnToast: name => `${name}’s Screen opens when it starts using its desktop`,
+    autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
     start: 'Start screen',
@@ -885,6 +891,9 @@ const ja: BotsMessages = {
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
+    autoOpenMenu: 'ボットが画面を使い始めたら Screen を開く',
+    autoOpenOnToast: name => `${name} がデスクトップを使い始めると Screen が開きます`,
+    autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
     start: '画面を起動',
@@ -1175,6 +1184,9 @@ const zh: BotsMessages = {
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
     unavailableTitle: '屏幕需要更新版的 Hermes',
+    autoOpenMenu: '机器人使用屏幕时自动打开',
+    autoOpenOnToast: name => `${name} 开始使用桌面时会自动打开屏幕`,
+    autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
     start: '启动屏幕',
@@ -1465,6 +1477,9 @@ const zhHant: BotsMessages = {
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
     unavailableTitle: '螢幕需要較新版的 Hermes',
+    autoOpenMenu: '機器人使用螢幕時自動開啟',
+    autoOpenOnToast: name => `${name} 開始使用桌面時會自動開啟螢幕`,
+    autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
     start: '啟動螢幕',
