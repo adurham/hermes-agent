@@ -177,9 +177,9 @@ function Get-ShadowStorageMax {
   # Exact bytes (UInt64::MaxValue = UNBOUNDED) of the diff-area cap for snapshots
   # of $Volume, or $null when the volume has no shadow-storage association yet.
   param([string]$Volume)
-  $vol = Get-WmiObject Win32_Volume | Where-Object { $_.Name -eq $Volume }
+  $vol = Get-CimInstance Win32_Volume | Where-Object { $_.Name -eq $Volume }
   if (-not $vol) { return $null }
-  $st = Get-WmiObject Win32_ShadowStorage | Where-Object { ($_.Volume -replace '\\\\', '\') -like "*$($vol.DeviceID)*" } | Select-Object -First 1
+  $st = Get-CimInstance Win32_ShadowStorage | Where-Object { $_.Volume.DeviceID -eq $vol.DeviceID } | Select-Object -First 1
   if (-not $st) { return $null }
   return [UInt64]$st.MaxSpace
 }
@@ -213,11 +213,14 @@ function Restore-ShadowStorage {
   }
 }
 
+# CIM, never Get-WmiObject: pwsh has no WMI v1 cmdlets and proxies them through a
+# Windows PowerShell compat session, whose objects come back deserialized with
+# their methods (Create, Delete) stripped.
 function New-Shadow {
   param([string]$Volume)
-  $r = (Get-WmiObject -List Win32_ShadowCopy).Create($Volume, 'ClientAccessible')
+  $r = Invoke-CimMethod -ClassName Win32_ShadowCopy -MethodName Create -Arguments @{ Volume = $Volume; Context = 'ClientAccessible' }
   if ($r.ReturnValue -ne 0) { Fail "could not snapshot $Volume (Win32_ShadowCopy.Create returned $($r.ReturnValue))" }
-  $sc = Get-WmiObject Win32_ShadowCopy | Where-Object { $_.ID -eq $r.ShadowID }
+  $sc = Get-CimInstance Win32_ShadowCopy | Where-Object { $_.ID -eq $r.ShadowID }
   return [pscustomobject]@{ Volume = $Volume; Id = $sc.ID; Device = $sc.DeviceObject }
 }
 
@@ -230,12 +233,12 @@ function Read-Shadows {
 
 function Test-ShadowAlive {
   param($Shadow)
-  return [bool](Get-WmiObject Win32_ShadowCopy | Where-Object { $_.ID -eq $Shadow.Id })
+  return [bool](Get-CimInstance Win32_ShadowCopy | Where-Object { $_.ID -eq $Shadow.Id })
 }
 
 function Remove-Shadow {
   param($Shadow)
-  Get-WmiObject Win32_ShadowCopy | Where-Object { $_.ID -eq $Shadow.Id } | ForEach-Object { $_.Delete() }
+  Get-CimInstance Win32_ShadowCopy | Where-Object { $_.ID -eq $Shadow.Id } | Remove-CimInstance
 }
 
 function Get-MountPath {

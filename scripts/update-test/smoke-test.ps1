@@ -16,9 +16,9 @@ if (-not $Checkout) {
 }
 if (-not (Test-Path -LiteralPath $Script)) { throw "missing $Script" }
 
-$PSExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
-if (-not $PSExe) { $PSExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source }
-if (-not $PSExe) { throw 'no powershell host found' }
+# The kit runs under whichever host runs this smoke: `pwsh -File` tests pwsh,
+# `powershell -File` tests Windows PowerShell.
+$PSExe = (Get-Process -Id $PID).Path
 Write-Host "host: $PSExe"
 
 $errors = $null
@@ -217,8 +217,8 @@ echo hermes
 }
 
 function Get-ShadowCapC {
-  $vol = Get-WmiObject Win32_Volume | Where-Object { $_.Name -eq 'C:\' }
-  $st = Get-WmiObject Win32_ShadowStorage | Where-Object { ($_.Volume -replace '\\\\', '\') -like "*$($vol.DeviceID)*" } | Select-Object -First 1
+  $vol = Get-CimInstance Win32_Volume | Where-Object { $_.Name -eq 'C:\' }
+  $st = Get-CimInstance Win32_ShadowStorage | Where-Object { $_.Volume.DeviceID -eq $vol.DeviceID } | Select-Object -First 1
   if ($st) { return [UInt64]$st.MaxSpace } else { return $null }
 }
 
@@ -242,7 +242,7 @@ try {
   }
   $ShadowIds = @(Get-Content -LiteralPath (Join-Path $Snap 'shadows.txt') | Where-Object { $_.Trim() } | ForEach-Object { ($_ -split "`t")[1] })
   Check 'one snapshot recorded' ($ShadowIds.Count -eq 1)
-  Check 'the recorded snapshot exists' ([bool](Get-WmiObject Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
+  Check 'the recorded snapshot exists' ([bool](Get-CimInstance Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
   Check 'shadow storage cap on C: is at least 128 GB while the snapshot lives' ((Get-ShadowCapC) -ge [UInt64]128GB)
 
   Write-Host "`n--- pre points the install at the rehearsal copy ---"
@@ -295,7 +295,7 @@ try {
   Check 'upstream-prompt marker removed' (-not (Test-Path -LiteralPath (Join-Path $H '.skip_upstream_prompt')))
   Check 'origin resolves officially again' (((& git -C $Install remote get-url origin | Out-String).Trim()) -match 'NousResearch')
   Check 'bin shim restored' (Test-Path -LiteralPath (Join-Path $H 'bin\hermes.cmd'))
-  Check 'post deleted the snapshot' (-not (Get-WmiObject Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
+  Check 'post deleted the snapshot' (-not (Get-CimInstance Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
   Check 'post removed its mount link' (-not (Test-Path -LiteralPath (Join-Path $Snap 'vss-C')))
   Check 'post put the shadow storage cap back exactly' ((Get-ShadowCapC) -eq $CapBefore)
   Write-Host "`n--- the acceptance criterion: every file identical before/after ---"
