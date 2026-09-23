@@ -39,8 +39,12 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert "ci" in ancestors(jobs, "docker")
     required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged", "macos-packaged", "termux-checks", "windows-live", "candidates", "bootstrap-version"}
     assert required <= ancestors(jobs, "acceptance")
-    for name in ("publish-docker", "publish-bundles"):
-        assert required <= ancestors(jobs, name)
+    # B5: publish-docker starts when the docker tests pass; it does not wait
+    # for the acceptance join. publish-bundles still does.
+    assert jobs["publish-docker"]["needs"] == ["admit", "docker"]
+    assert {"admit", "docker"} <= ancestors(jobs, "publish-docker")
+    assert "acceptance" not in ancestors(jobs, "publish-docker")
+    assert required <= ancestors(jobs, "publish-bundles")
     assert {"publish-docker", "publish-bundles", "publication"} <= ancestors(jobs, "complete")
     assert "promote-docker" not in jobs and "promote-bundles" not in jobs
     for name in ("acceptance", "publication", "complete"):

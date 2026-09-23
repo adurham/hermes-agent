@@ -277,7 +277,9 @@ jobs:
 
   publish-docker:
     name: Publish tested Docker image
-    needs: [admit, acceptance]
+    # B5: this job pushes only the immutable attempt-ref image tags; the
+    # stable/latest aliases move in the ordered publication pass.
+    needs: [admit, docker]
     uses: ./.github/workflows/docker.yml
     with:
       release-phase: publish
