@@ -56,7 +56,11 @@ def selects_all(raw: str | None) -> bool:
 
 
 def phase_jobs(selected: dict[str, bool], phase: str) -> list[str]:
-    """Jobs the stable phase result judges: an unselected group never fails it."""
+    """Jobs the stable phase result judges: an unselected group never fails it.
+
+    B4 moved candidate-manifest into stable-release.yml, so the desktop
+    workflow no longer owns it and the phase result never names it.
+    """
     required = ["validate"]
     if phase == "publish":
         return required + ["stable-publish", "stable-store"]
@@ -65,8 +69,6 @@ def phase_jobs(selected: dict[str, bool], phase: str) -> list[str]:
     for group, jobs in GROUP_JOBS.items():
         if selected.get(group):
             required.extend(jobs)
-    if all(selected.get(group) for group in GROUP_JOBS):
-        required.append("candidate-manifest")
     return required
 
 

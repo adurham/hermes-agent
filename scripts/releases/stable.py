@@ -303,7 +303,10 @@ def stage_receipt(env: dict, receipt: str) -> None:
 
 
 def read_manifest(url: str, expected_hash: str | None = None, *, expected_origin: str | None = None,
-                  opener=urllib.request.urlopen) -> dict:
+                  opener=None) -> dict:
+    # Resolved per call: a default bound at import would pin the opener that
+    # existed then and ignore the process's trust setup.
+    opener = opener or urllib.request.urlopen
     location = urlsplit(url)
     origin = urlsplit(expected_origin or url)
 
@@ -536,13 +539,6 @@ def verify(env: dict) -> None:
           "release-epoch": claim["claim_epoch"]}, env)
 
 
-RECEIPT_SOURCES = {
-    "darwin-arm64": "RECEIPT_DARWIN_ARM64",
-    "darwin-x64": "RECEIPT_DARWIN_X64",
-    "win32-bundle": "RECEIPT_WIN32_BUNDLE",
-}
-
-
 def _stage_transition(env: dict, archive: str, base: str, row: dict) -> dict:
     from scripts.releases.r2 import put
 
@@ -581,17 +577,65 @@ def _receipt_from_env(env: dict, receipt: str, prefix: str, base: str) -> dict:
 
 
 def transitions(env: dict) -> None:
+    """Plan one install arm from its own receipt.
+
+    Each transitions job reads exactly one group's receipt (decision 11) and
+    emits only that group's rows, so a Mac arch and the Windows bundle start
+    their install arms independently of the other groups.
+    """
+    receipt = env.get("RECEIPT", "")
+    if receipt not in RECEIPT_TARGETS:
+        raise ValueError(f"Unknown receipt: {receipt}")
     tag, commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     previous = _published_baseline(env, base)
+    receipt_manifest = _receipt_from_env(env, receipt, "RECEIPT", base)
     matrices = {"windows": {"include": []}, "macos": {"include": []}}
-    for receipt, prefix in RECEIPT_SOURCES.items():
-        receipt_manifest = _receipt_from_env(env, receipt, prefix, base)
-        for row in plan_receipt_transitions(previous, receipt_manifest, receipt, base):
-            matrices[row["transition"]["platform"]]["include"].append(
-                _stage_transition(env, archive, base, row))
+    for row in plan_receipt_transitions(previous, receipt_manifest, receipt, base):
+        matrices[row["transition"]["platform"]]["include"].append(
+            _stage_transition(env, archive, base, row))
     emit(matrices, env)
+
+
+# The candidate manifest is written after the smokes (decision 23): the smoke
+# results it records are the candidate calls' own workflow results — each
+# call's stable-phase-result only succeeds when its selected groups' smokes
+# did, so a failed smoke leaves no accepted manifest behind.
+CALL_SMOKE_JOBS = {
+    "candidates-darwin-arm64": "smoke-darwin-arm64",
+    "candidates-darwin-x64": "smoke-darwin-x64",
+    "candidates-win32-arm64": "smoke-win32-arm64",
+    "candidates-win32-x64": "smoke-win32-x64",
+}
+CANDIDATE_HANDOFFS = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64",
+                      "termux", "windows-universal")
+CANDIDATE_INCLUDES = ("metadata-*.json", "*.msixbundle")
+
+
+def candidate_manifest(env: dict) -> None:
+    """Merge the staged handoffs into the accepted candidate manifest."""
+    from scripts.bundles.release_artifacts import assemble
+    from scripts.releases.handoff import fetch
+
+    needs = json.loads(env.get("RELEASE_NEEDS", "{}"))
+    if not isinstance(needs, dict):
+        raise ValueError("Candidate call results must be a needs object")
+    smoke = {job: {"result": (needs.get(call) or {}).get("result")}
+             for call, job in CALL_SMOKE_JOBS.items()}
+    tag, commit, claim = stable_context(env)
+    base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
+    archive = claim["claim_tag"]
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        fetch(tag=archive, commit=commit, names=list(CANDIDATE_HANDOFFS), root=root,
+              includes=list(CANDIDATE_INCLUDES))
+        out = root / "release-candidates.json"
+        assemble(root, tag, commit, base, out, smoke_results=smoke,
+                 release_epoch=claim["claim_epoch"], archive=archive)
+        digest = hashlib.sha256(out.read_bytes()).hexdigest()
+    emit({"manifest-url": f"{base}/releases/tag/{archive}/release-candidates.json",
+          "manifest-sha256": digest}, env)
 
 
 def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha256: str,
@@ -753,9 +797,10 @@ def main(argv: list[str] | None = None, env: dict | None = None) -> None:
             raise ValueError("Expected stage-receipt --receipt darwin-arm64|darwin-x64|win32-bundle")
         stage_receipt(env, argv[2])
         return
-    commands = {"admit": admit, "verify": verify, "transitions": transitions, "complete": complete}
+    commands = {"admit": admit, "verify": verify, "transitions": transitions,
+                "candidate-manifest": candidate_manifest, "complete": complete}
     if len(argv) != 1 or argv[0] not in commands:
-        raise ValueError("Expected admit, verify, gate, transitions, stage-receipt or complete")
+        raise ValueError("Expected admit, verify, gate, transitions, candidate-manifest, stage-receipt or complete")
     commands[argv[0]](env)
 
 

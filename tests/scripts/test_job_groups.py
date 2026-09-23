@@ -49,10 +49,12 @@ def test_phase_jobs_judge_only_the_selected_groups():
                          "build-darwin-x64", "smoke-darwin-x64",
                          "build-win32-arm64", "smoke-win32-arm64",
                          "build-win32-x64", "smoke-win32-x64",
-                         "assemble-win32-bundle", "termux-deb", "candidate-manifest"]
+                         "assemble-win32-bundle", "termux-deb"]
     termux_only = {**{group: False for group in JOB_GROUPS}, "termux": True}
     assert phase_jobs(termux_only, "candidate") == ["validate", "termux-deb"]
-    # candidate-manifest stays required only when every group it needs ran.
+    # B4 moved candidate-manifest into stable-release.yml; the desktop phase
+    # result judges only the group jobs themselves.
+    assert "candidate-manifest" not in candidate
     partial = {**{group: False for group in JOB_GROUPS}, "darwin-arm64": True}
     assert phase_jobs(partial, "candidate") == ["validate", "build-darwin-arm64", "smoke-darwin-arm64"]
     assert phase_jobs(every, "publish") == ["validate", "stable-publish", "stable-store"]

@@ -75,11 +75,10 @@ def test_native_consumers_and_publication_fail_closed_across_trust_skips(tmp_pat
     jobs = _workflow()['jobs']
     base_inputs = {'build_commit': '', 'upload_release': True, 'release-phase': '', 'jobs': ALL_JOBS, 'tag': TAG}
     consumers = ['smoke-darwin-arm64', 'smoke-darwin-x64', 'smoke-win32-arm64', 'smoke-win32-x64',
-                 'assemble-win32-bundle', 'publish-win32-updater', 'publish-darwin-updater',
-                 'candidate-manifest']
+                 'assemble-win32-bundle', 'publish-win32-updater', 'publish-darwin-updater']
     for name in consumers:
         job = jobs[name]
-        inputs = {**base_inputs, 'release-phase': 'candidate' if name == 'candidate-manifest' else ''}
+        inputs = {**base_inputs, 'release-phase': ''}
         needs = admitted(job['needs'])
         # A skipped execution exists in the ancestry of every native result.
         needs['build-win32-commit'] = {'result': 'skipped'}
@@ -332,7 +331,7 @@ def test_stable_phase_and_canary_gates_require_smoke_but_preserve_other_phases(t
     for group in group_jobs:
         # A group that was not selected is not a failure of the phase.
         assert run_phase('candidate', every - {group}).returncode == 0, group
-    for failed in ('smoke-darwin-arm64', 'build-win32-x64', 'candidate-manifest'):
+    for failed in ('smoke-darwin-arm64', 'build-win32-x64', 'termux-deb'):
         assert run_phase('candidate', every, failed=failed).returncode != 0, failed
     assert run_phase('candidate', every, failed='stable-publish').returncode == 0
     # A partial selection still judges the groups it selected.

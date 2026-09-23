@@ -39,8 +39,10 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert "ci" in ancestors(jobs, "docker")
     candidate_calls = ["candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                        "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"]
-    required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged", "macos-packaged",
-                "termux-checks", "windows-live", "transitions", "bootstrap-version", *candidate_calls}
+    required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged",
+                "macos-packaged-arm64", "macos-packaged-x64", "termux-checks", "windows-live",
+                "candidate-manifest", "transitions-darwin-arm64", "transitions-darwin-x64",
+                "transitions-win32", "bootstrap-version", *candidate_calls}
     assert required <= ancestors(jobs, "acceptance")
     # B3: stable calls one build group at a time; the bundle group waits for
     # both Windows arches, and the Linux groups are not called at all.
@@ -54,6 +56,20 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
         assert {"tag", "claim-tag", "claim-object"} <= set(call["with"])
     assert {"candidates-win32-arm64", "candidates-win32-x64"} <= set(jobs["candidates-win32-bundle"]["needs"])
     assert not any("linux" in name for name in jobs)
+    # B4: each install arm starts from its own receipt, and the manifest is
+    # written after every candidate call (so after every smoke).
+    for name in ("transitions", "macos-packaged"):
+        assert name not in jobs
+    assert set(jobs["candidate-manifest"]["needs"]) == \
+        {"admit", *candidate_calls}
+    for receipt, call, packaged, matrix in (
+            ("transitions-darwin-arm64", "candidates-darwin-arm64", "macos-packaged-arm64", "macos"),
+            ("transitions-darwin-x64", "candidates-darwin-x64", "macos-packaged-x64", "macos"),
+            ("transitions-win32", "candidates-win32-bundle", "windows-packaged", "windows")):
+        assert jobs[receipt]["needs"] == ["admit", call]
+        assert jobs[packaged]["needs"] == receipt
+        assert jobs[packaged]["strategy"]["matrix"] == \
+            "${{ fromJSON(needs." + receipt + ".outputs." + matrix + ") }}"
     # B5: publish-docker starts when the docker tests pass; it does not wait
     # for the acceptance join. publish-bundles still does.
     assert jobs["publish-docker"]["needs"] == ["admit", "docker"]
@@ -106,14 +122,17 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
             assert desktop["on"]["workflow_call"]["outputs"][f"{group}-receipt-{suffix}"]["value"] == expected
     for name in ("smoke-darwin-arm64", "smoke-darwin-x64"):
         assert f"stage-receipt-{name.removeprefix('smoke-')}" in desktop["jobs"][name]["needs"]
-    for call, key, output in (("candidates-darwin-arm64", "RECEIPT_DARWIN_ARM64_URL", "darwin-arm64-receipt-url"),
-                              ("candidates-darwin-arm64", "RECEIPT_DARWIN_ARM64_SHA256", "darwin-arm64-receipt-sha256"),
-                              ("candidates-darwin-x64", "RECEIPT_DARWIN_X64_URL", "darwin-x64-receipt-url"),
-                              ("candidates-darwin-x64", "RECEIPT_DARWIN_X64_SHA256", "darwin-x64-receipt-sha256"),
-                              ("candidates-win32-bundle", "RECEIPT_WIN32_BUNDLE_URL", "win32-bundle-receipt-url"),
-                              ("candidates-win32-bundle", "RECEIPT_WIN32_BUNDLE_SHA256", "win32-bundle-receipt-sha256")):
+    for call, key, output in (("candidates-darwin-arm64", "RECEIPT_URL", "darwin-arm64-receipt-url"),
+                              ("candidates-darwin-arm64", "RECEIPT_SHA256", "darwin-arm64-receipt-sha256"),
+                              ("candidates-darwin-x64", "RECEIPT_URL", "darwin-x64-receipt-url"),
+                              ("candidates-darwin-x64", "RECEIPT_SHA256", "darwin-x64-receipt-sha256"),
+                              ("candidates-win32-bundle", "RECEIPT_URL", "win32-bundle-receipt-url"),
+                              ("candidates-win32-bundle", "RECEIPT_SHA256", "win32-bundle-receipt-sha256")):
+        receipt_job = {"candidates-darwin-arm64": "transitions-darwin-arm64",
+                       "candidates-darwin-x64": "transitions-darwin-x64",
+                       "candidates-win32-bundle": "transitions-win32"}[call]
         expected = "${{ needs." + call + ".outputs." + output + " }}"
-        assert jobs["transitions"]["steps"][-1]["env"][key] == expected
+        assert jobs[receipt_job]["steps"][-1]["env"][key] == expected
     for name in ("docker", "nix", "pm-bundle"):
         assert jobs[name]["with"]["version"] == "${{ needs.admit.outputs.version }}"
     for name in ("docker", "nix", "pm-bundle"):
@@ -127,8 +146,12 @@ def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase()
                       if step.get("name", "").startswith("Validate the accepted candidate archive"))
     assert "DOCKER_MANIFEST_DIGEST" not in complete[validation]["env"]
     assert "RELEASE_ID" not in complete[validation]["env"]
-    # B4 wires the candidate-manifest outputs back into these env entries.
-    assert "CANDIDATE_MANIFEST_SHA256" not in complete[validation]["env"]
+    # B4: complete and the render read the manifest that stable-release.yml's
+    # candidate-manifest job wrote.
+    assert complete[validation]["env"]["CANDIDATE_MANIFEST_SHA256"] == \
+        "${{ needs.candidate-manifest.outputs.manifest-sha256 }}"
+    assert jobs["publish-bundles"]["with"]["manifest-sha256"] == \
+        "${{ needs.candidate-manifest.outputs.manifest-sha256 }}"
     render = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Render the admitted"))
     reconcile = next(i for i, step in enumerate(complete) if step.get("name", "").startswith("Reconcile ordered"))
     assert validation < render < reconcile

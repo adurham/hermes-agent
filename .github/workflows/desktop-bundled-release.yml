@@ -2323,69 +2323,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python -m scripts.releases.commit_build receipt
 
-  candidate-manifest:
-    name: Stage verified stable candidate artifacts
-    needs:
-      [
-        validate,
-        build-win32-x64,
-        build-win32-arm64,
-        build-darwin-arm64,
-        build-darwin-x64,
-        assemble-win32-bundle,
-        smoke-darwin-arm64,
-        smoke-darwin-x64,
-        smoke-win32-arm64,
-        smoke-win32-x64,
-        termux-deb
-      ]
-    if: >-
-      !cancelled() && inputs.release-phase == 'candidate'
-      && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
-      && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
-      && needs.validate.outputs.win32-arm64 == 'true' && needs.validate.outputs.win32-x64 == 'true'
-      && needs.validate.outputs.win32-bundle == 'true' && needs.validate.outputs.termux == 'true'
-      && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
-      && needs.build-darwin-arm64.result == 'success' && needs.build-darwin-x64.result == 'success'
-      && needs.assemble-win32-bundle.result == 'success' && needs.termux-deb.result == 'success'
-      && needs.smoke-darwin-arm64.result == 'success' && needs.smoke-darwin-x64.result == 'success'
-      && needs.smoke-win32-arm64.result == 'success' && needs.smoke-win32-x64.result == 'success'
-    runs-on: ubuntu-latest-32-core
-    environment: release-signing
-    timeout-minutes: 90
-    outputs:
-      manifest-url: ${{ steps.manifest.outputs.manifest-url }}
-      manifest-sha256: ${{ steps.manifest.outputs.manifest-sha256 }}
-    env:
-      RELEASE_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      HERMES_RELEASE_EPOCH: ${{ needs.validate.outputs.release-epoch }}
-      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ needs.validate.outputs.sha }}
-      - uses: ./.github/actions/setup-pm
-        with:
-          cache-python: false
-      - name: Retrieve candidate receipts and native metadata from R2
-        env:
-          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-        run: |
-          python -m scripts.releases.handoff fetch --tag "${HERMES_ARCHIVE_TAG:-$RELEASE_TAG}" --commit "$RELEASE_COMMIT" \
-            --name win32-x64 --name win32-arm64 --name darwin-x64 --name darwin-arm64 \
-            --name termux --name windows-universal --root candidates \
-            --include 'metadata-*.json' --include '*.msixbundle'
-      - id: manifest
-        env:
-          RELEASE_NEEDS: ${{ toJSON(needs) }}
-        run: python -m scripts.bundles.release_artifacts assemble --root candidates --out release-candidates.json \
-          --archive "${HERMES_ARCHIVE_TAG:?stable candidate assembly needs HERMES_ARCHIVE_TAG}"
-
   stable-publish:
     name: Verify published candidate files
     needs: validate
@@ -2467,7 +2404,6 @@ jobs:
         smoke-win32-arm64,
         smoke-win32-x64,
         termux-deb,
-        candidate-manifest,
         stable-publish,
         stable-store
       ]
