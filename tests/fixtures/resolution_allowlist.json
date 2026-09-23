@@ -440,6 +440,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "pm/native_build.py",
+    "symbol": "prepare_windows_environment",
+    "kind": "bare_which"
+  },
+  {
     "path": "pm/shell.py",
     "symbol": "bash",
     "kind": "bare_which"

@@ -118,7 +118,8 @@ def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     _commit(install, "theirs")
     _git(install, "checkout", "-q", "main")
     _commit(install, "ours")
-    subprocess.run(["git", "-C", str(install), "merge", "conflict"], capture_output=True)
+    subprocess.run(["git", "-C", str(install), "-c", "user.email=t@t", "-c", "user.name=t", "merge", "conflict"],
+                   capture_output=True)
     assert _git(install, "ls-files", "--unmerged")
     _commit(origin, "two")
     result = _stage(tmp_path, origin)
