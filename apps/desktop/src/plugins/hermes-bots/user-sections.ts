@@ -45,6 +45,14 @@ export interface BotSection {
 /** `[{ id, name }]`, in display order. */
 export const $botSections = atom<BotSection[]>([])
 
+/** Sections deleted on this desktop this session. A delete clears its members
+ *  one profile write at a time, and a slow write (a remote gateway, a pooled
+ *  backend still starting) leaves the rest carrying the id AND the name for
+ *  seconds — long enough for adoptBotSectionsFromMeta to rebuild the section
+ *  the user just deleted, under whatever name a not-yet-cleared member still
+ *  carries. Undo takes the id back out. */
+const deletedSectionIds = new Set<string>()
+
 /** Roster key of the bot in flight during a drag. Session-only, and cleared
  *  on dragend even when the drop lands outside any target — a stuck
  *  "dragging" state outlives the gesture and reads as a broken pane. */
@@ -162,7 +170,11 @@ export function adoptBotSectionsFromMeta(roster: RosterRow[], metaByName: Record
   const local = $botSections.get()
   const known = new Set(local.map(s => s.id))
   const renamed = local.map(s => ({ ...s, name: agreed(s.id) ?? s.name }))
-  const adopted = [...names.keys()].filter(id => !known.has(id)).map(id => ({ id, name: [...names.get(id)!][0]! }))
+
+  const adopted = [...names.keys()]
+    .filter(id => !known.has(id) && !deletedSectionIds.has(id))
+    .map(id => ({ id, name: [...names.get(id)!][0]! }))
+
   const next = [...renamed, ...adopted]
 
   if (next.some((s, i) => s.id !== local[i]?.id || s.name !== local[i]?.name)) {
@@ -212,6 +224,7 @@ export function deleteBotSection(id: string, roster: RosterRow[] = []): { member
   const section = list[index]
   const members = (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id)
 
+  deletedSectionIds.add(id)
   persistBotSections(list.filter(s => s.id !== id))
   void moveBotsToSection(members, null)
 
@@ -222,6 +235,7 @@ export function deleteBotSection(id: string, roster: RosterRow[] = []): { member
         return
       }
 
+      deletedSectionIds.delete(id)
       const current = $botSections.get().filter(s => s.id !== id)
 
       current.splice(Math.min(index, current.length), 0, section)
@@ -261,6 +275,13 @@ export async function moveBotsToSection(bots: RosterRow[], sectionId: null | str
   for (const bot of bots || []) {
     if (!bot) {
       continue
+    }
+
+    // Deleted while this loop was still walking its members (a rename's
+    // re-stamp stuck behind a slow write): filing the rest would put them back
+    // into a section that no longer exists.
+    if (sectionId && !$botSections.get().some(s => s.id === sectionId)) {
+      return
     }
 
     const current = botRosterMeta(bot, $botMeta.get())
