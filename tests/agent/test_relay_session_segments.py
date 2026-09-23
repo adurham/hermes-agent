@@ -297,21 +297,9 @@ class TestCwdProjection:
         assert fake.scope.pushes[-1]["input"] == {"cwd": "/workspace/next-task"}
         coordinator.end_turn(turn, outcome="success")
 
-    def test_explicit_unknown_cwd_clears_prior_scope_input(self, coordinator):
-        fake = _FakeRelay()
-        runtime = _make_runtime(fake)
-        lease = _acquire(
-            coordinator, runtime,
-            session_cwd="/workspace/session", turn_cwd="/workspace/task",
-        )
-        coordinator.end_turn(
-            coordinator.begin_turn(lease, turn_id="t1", task_id="task1"),
-            outcome="success",
-        )
-
         lease = _acquire(coordinator, runtime, session_cwd="", turn_cwd="")
         runtime.rotate_session_scope(lease.session, reason="compaction")
-        turn = coordinator.begin_turn(lease, turn_id="t2", task_id="task2")
+        turn = coordinator.begin_turn(lease, turn_id="t3", task_id="task3")
 
         assert _session_pushes(fake)[-1]["input"] == {}
         assert fake.scope.pushes[-1]["input"] == {}
