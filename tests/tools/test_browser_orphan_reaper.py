@@ -249,7 +249,6 @@ class TestOwnerPidCrossProcess:
         self, fake_tmpdir, monkeypatch
     ):
         """_run_browser_command wires _write_owner_pid after mkdir."""
-        import tools.browser_tool as bt
 
         session_name = "h_wiringtest1"
 
@@ -258,7 +257,7 @@ class TestOwnerPidCrossProcess:
             def __init__(self, *a, **kw):
                 raise RuntimeError("short-circuit after owner_pid")
 
-        monkeypatch.setattr(bt.subprocess, "Popen", _FakePopen)
+        monkeypatch.setattr(bt_session.subprocess, "Popen", _FakePopen)
         monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "/bin/true")
         monkeypatch.setattr(
             "tools.browser_tool_install._requires_real_termux_browser_install", lambda *a: False
