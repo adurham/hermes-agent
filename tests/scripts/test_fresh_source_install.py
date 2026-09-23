@@ -62,7 +62,7 @@ def test_current_installer_publishes_real_dependencies_and_warm_path(tmp_path, s
         return result
 
     # Make the bootstrap layout complete using real uv, including its aliases.
-    run([uv, "python", "install", "--no-bin", minor])
+    run([uv, "python", "install", "--no-bin", "--no-registry", minor])
     source = tmp_path / "fixture source"
     source.mkdir()
     for name in ("pm", "hermes_cli", "hermes_platform"):

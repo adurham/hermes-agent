@@ -161,7 +161,7 @@ fi
 echo -e "${CYAN}→${NC} Installing python + tools + dependencies via pm (hash-verified via uv.lock)..."
 echo -e "${CYAN}→${NC} (first run on a fresh checkout can take 1-5 minutes)"
 # PM can replace its uv entry only after the bootstrap uv has exited.
-"$uv" python install --no-bin "$py_version"
+"$uv" python install --no-bin --no-registry "$py_version"
 boot_py="$("$uv" python find --managed-python "$py_version")"
 boot_py="${boot_py%$'\r'}"
 if ! "$boot_py" -m pm.cli install ${runtime_only:+--trust-recorded}; then

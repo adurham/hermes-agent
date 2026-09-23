@@ -449,7 +449,7 @@ bootstrap_python() {
     # This interpreter only boots PM; PM still owns the exact runtime pin.
     if ! boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py" 2>/dev/null)" \
         && ! boot_py="$("$UV_CMD" python find --system --no-project "$_py" 2>/dev/null)"; then
-        "$UV_CMD" python install --no-bin "$_py" || fail "bootstrap Python installation failed"
+        "$UV_CMD" python install --no-bin --no-registry "$_py" || fail "bootstrap Python installation failed"
         boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
     fi
     boot_py="${boot_py%$'\r'}"

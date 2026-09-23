@@ -80,7 +80,7 @@ Write-Host '(first run on a fresh checkout can take 1-5 minutes)'
 Push-Location $repo
 try {
     # PM can replace its uv entry only after the bootstrap uv has exited.
-    & $uv python install --no-bin $pyVersion
+    & $uv python install --no-bin --no-registry $pyVersion
     if ($LASTEXITCODE -ne 0) { throw 'bootstrap Python installation failed' }
     $bootPy = (& $uv python find --managed-python $pyVersion) -join "`n"
     if ($LASTEXITCODE -ne 0 -or -not $bootPy) { throw 'bootstrap Python lookup failed' }

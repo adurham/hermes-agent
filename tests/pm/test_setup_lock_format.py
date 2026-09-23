@@ -53,7 +53,7 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
         f"printf '%s\\n' \"$*\" >> {shlex.quote(str(calls))}\n"
         'case "$*" in\n'
         f'  --version) printf \'%s\\n\' "uv {uv_version}" ;;\n'
-        f'  "python install --no-bin {py_version}") ;;\n'
+        f'  "python install --no-bin --no-registry {py_version}") ;;\n'
         f'  "python find --managed-python {py_version}") printf \'%s\\n\' {shlex.quote(interpreter)} ;;\n'
         '  *) exit 91 ;;\nesac\n'
     )
@@ -91,7 +91,7 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
     assert (runtime / f"uv-{uv_version}-{target}" / "uv").read_text() == uv_script
     assert json.loads(receipt.read_text()) == ["install", "--trust-recorded"]
     assert calls.read_text().splitlines() == [
-        "--version", f"python install --no-bin {py_version}",
+        "--version", f"python install --no-bin --no-registry {py_version}",
         f"python find --managed-python {py_version}",
     ]
     assert not (home / ".local").exists()
