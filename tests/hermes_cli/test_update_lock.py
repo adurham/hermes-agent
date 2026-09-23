@@ -257,6 +257,7 @@ class TestAncestryHandoff:
         lock.release()
         assert marker.exists(), "the parent still needs its marker after our stage ends"
 
+    @pytest.mark.platforms("any")
     def test_grandchild_adopts_orchestrator_marker_without_psutil(self, marker, tmp_path):
         """Regression: the desktop hand-off's grandchild refused its own orchestrator.
 
@@ -267,8 +268,10 @@ class TestAncestryHandoff:
         (-S skips site-packages). The psutil-only ancestry walk returned False for
         the two-hops-up shim, and the takeover child refused with exit 2 —
         "Another Hermes update is already running (PID <the shim itself>)" —
-        observed live on a macOS rehearsal install. The stdlib fallback walk is
-        what must adopt here.
+        observed live on a macOS rehearsal install, then again on Windows, where
+        the stdlib walk had no /proc and no ps. Marked for every lane: the Windows
+        lane only imports files carrying a platforms marker, which is how the
+        Windows half went unseen. The stdlib fallback walk is what must adopt here.
         """
         import subprocess
         import sys
@@ -310,6 +313,7 @@ class TestAncestryHandoff:
         assert "ADOPTED" in result.stdout
         assert marker.exists(), "the orchestrator still needs its marker after the leaf ends"
 
+    @pytest.mark.platforms("any")
     def test_unrelated_live_holder_is_still_refused_under_stdlib_walk(self, marker, tmp_path):
         """The stdlib fallback must not widen the lock: a foreign pid stays foreign.
 
