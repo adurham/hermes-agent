@@ -150,6 +150,38 @@ def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, 
     assert info.source == "git"
 
 
+def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_path, monkeypatch):
+    """Releases tagged only vYYYY.M.D resolve to their pyproject version, not "unknown"."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "pyproject.toml").write_text('[project]\nname = "hermes-agent"\nversion = "0.21.4"\n', encoding="utf-8")
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.21")
+    (repo / "pyproject.toml").write_text('[project]\nname = "hermes-agent"\nversion = "0.0.0"\n', encoding="utf-8")
+    git("commit", "-qam", "next")
+
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.4"
+    assert info.distance == 1
+    assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
+
+
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):
     """Sealed installs (the Nix wrapper) point HERMES_INSTALL_ROOT at the stamp dir."""
     stamp = {"commit": "e" * 40, "source": "nix", "distribution": "nix", "updateMechanism": "external"}

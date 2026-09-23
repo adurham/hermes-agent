@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
@@ -80,6 +81,29 @@ def _parse_nonnegative(value: str | None) -> int | None:
     except ValueError:
         return None
     return parsed if parsed >= 0 else None
+
+
+def _calver_release_version(repo_dir: Path) -> tuple[str, int] | None:
+    """The version the nearest CalVer release shipped, and the commits since it.
+
+    Releases before semver tags existed are tagged ``vYYYY.M.D`` only; the
+    version users actually run is in that tag's pyproject. Without this, a
+    checkout past such a release would compare as "unknown" against plugins'
+    ``requires_hermes``.
+    """
+    described = _run_git(repo_dir, "describe", "--tags", "--long", "--match", "v2[0-9][0-9][0-9].*", "HEAD")
+    if not described:
+        return None
+    tag, count, _ = described.rsplit("-", 2)
+    distance = _parse_nonnegative(count)
+    try:
+        project = tomllib.loads(_run_git(repo_dir, "show", f"{tag}:pyproject.toml") or "").get("project", {})
+    except tomllib.TOMLDecodeError:
+        return None
+    version = project.get("version")
+    if distance is None or not isinstance(version, str) or not STABLE_TAG_RE.fullmatch(f"v{version}"):
+        return None
+    return version, distance
 
 
 # --- Install stamp reader ---------------------------------------------------
@@ -212,6 +236,8 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
     distance = _parse_nonnegative(
         _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
     ) if releases else None
+    if not releases:
+        base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
     short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
     if base_version == "unknown" and short_commit:
         display_version = f"git.{short_commit}{'.dirty' if dirty else ''}"
