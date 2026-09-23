@@ -40,6 +40,7 @@ def _fake_app(*, rows, columns, chrome, painted=None):
                 screen.data_buffer[y][x] = Char("─")
         screen.height = len(painted)
     app.renderer._last_screen = screen
+    app.renderer._style_string_has_style = None
     app.renderer._min_available_height = 0
     app.layout.container.preferred_height.return_value.preferred = chrome
     return app
@@ -67,6 +68,9 @@ class TestForceFullRedraw:
         height), each of its rows re-wrapped to the new width (#95375).
         """
         app = _fake_app(rows=30, columns=90, chrome=5, painted=[0, 200, 50, 200, 30, 200, 89])
+        from prompt_toolkit.layout.screen import Char
+        for x in range(200):  # blanks without a colour are never written: one row, not three
+            app.renderer._last_screen.data_buffer[0][x] = Char(" ")
         events = []
         fits = []
         app.renderer.output.erase_end_of_line.side_effect = lambda: events.append("erase")

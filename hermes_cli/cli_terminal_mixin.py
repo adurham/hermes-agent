@@ -246,11 +246,21 @@ class CLITerminalMixin:
         if screen is None:
             drawn = app.layout.container.preferred_height(size.columns, size.rows).preferred
         elif reflowed and size.columns > 0:
+            # prompt_toolkit writes a row up to its last cell that shows something (trailing
+            # blanks without a colour are left to erase-to-end-of-line): that is its width.
+            has_style = renderer._style_string_has_style
+
+            def shows(ch):
+                if ch.char != " ":
+                    return True
+                try:
+                    return bool(has_style[ch.style]) if has_style is not None else bool(ch.style)
+                except Exception:
+                    return bool(ch.style)
             drawn = 0
             for y in range(screen.height):
-                # Trailing default-style blanks are not written (erase-to-end-of-line instead).
-                cells = [x for x, ch in screen.data_buffer[y].items() if ch.char != " " or ch.style]
-                drawn += max(1, -(-(max(cells) + 1) // size.columns)) if cells else 1
+                last = max((x for x, ch in screen.data_buffer[y].items() if shows(ch)), default=0)
+                drawn += -(-(last + 1) // size.columns)
         else:
             drawn = screen.height
         rows = max(0, size.rows - max(renderer._min_available_height, drawn))
