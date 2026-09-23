@@ -16,9 +16,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases.versioning import (
+    marker_ref, outstanding_attempts, parse_attempt_ref, parse_marker_ref,
+    version_from_tag,
+)
 
-CLAIM_TAG_RE = re.compile(r"^(v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))-rc$")
 SHA256 = re.compile(r"[a-f0-9]{64}")
 DOCKER_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 MAX_ATTEMPTS = 3
@@ -190,12 +192,21 @@ def classify_final_release(tag: str, claim_tag: str, release: dict | None) -> tu
 
 
 def _remote_tags(run=output) -> dict[str, dict[str, str]]:
+    """Every remote receipt tag, attempt ref, and abandon marker ref.
+
+    Three listings, because a fetch or ls-remote glob is filtered here by the
+    ref parsers, not widened.
+    """
     refs: dict[str, dict[str, str]] = {}
-    for line in run(["git", "ls-remote", "--tags", "origin", "refs/tags/v*"]).splitlines():
+    for line in run([
+        "git", "ls-remote", "--tags", "origin",
+        "refs/tags/v*", "refs/tags/rc.*", "refs/tags/abandoned-rc.*",
+    ]).splitlines():
         sha, ref = line.split()
         peeled = ref.endswith("^{}")
         tag = ref.removeprefix("refs/tags/").removesuffix("^{}")
-        if STABLE_TAG_RE.fullmatch(tag) or CLAIM_TAG_RE.fullmatch(tag):
+        if (version_from_tag(tag) or parse_attempt_ref(tag)
+                or parse_marker_ref(tag)):
             refs.setdefault(tag, {})["commit" if peeled else "object"] = sha
     return refs
 
@@ -217,25 +228,33 @@ def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
     from scripts.releases.stable import tagger_epoch
 
-    run(["git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*"])
+    run([
+        "git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*",
+        "+refs/tags/rc.*:refs/tags/rc.*",
+        "+refs/tags/abandoned-rc.*:refs/tags/abandoned-rc.*",
+    ])
     refs = _remote_tags(run)
+    outstanding = outstanding_attempts(list(refs), lambda v: f"v{v}" in refs)
+    if len(outstanding) > 1:
+        named = ", ".join(ref for *_rest, ref in outstanding)
+        raise ValueError(f"more than one outstanding attempt ({named})")
     releases = _release_rows(repository, run)
     workflow_runs = _workflow_runs(repository, run)
     records = []
 
     for claim_tag, claim_ref in refs.items():
-        match = CLAIM_TAG_RE.fullmatch(claim_tag)
-        if match is None:
+        parsed = parse_attempt_ref(claim_tag)
+        if parsed is None:
             continue
+        version, attempt = parsed
         if set(claim_ref) != {"object", "commit"}:
             raise ValueError(f"{claim_tag} must be an annotated remote tag")
-        tag = match.group(1)
-        version = tag[1:]
+        tag = f"v{version}"
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         claim_epoch = claim.get("claimEpoch")
         expected_claim = {
-            "schema": 1, "version": version, "commit": commit,
+            "schema": 1, "version": version, "attempt": attempt, "commit": commit,
             "autopublish": claim["autopublish"], "claimEpoch": claim_epoch,
         }
         if (claim != expected_claim or not isinstance(claim["autopublish"], bool)
@@ -260,7 +279,7 @@ def discover(repository: str, run=output) -> list[dict]:
                 raise ValueError(f"{tag} points at a different commit than {claim_tag}")
             final = _tag_message(tag, final_ref["object"], run)
             expected_final = {
-                "schema": 1, "version": version, "commit": commit,
+                "schema": 1, "version": version, "attempt": attempt, "commit": commit,
                 "claimTag": claim_tag, "claimTagObject": claim_ref["object"],
                 "autopublish": claim["autopublish"],
                 "claimEpoch": claim_epoch,
@@ -277,6 +296,9 @@ def discover(repository: str, run=output) -> list[dict]:
                 state, needs_retarget = "burned", False
             else:
                 state, needs_retarget = classify_final_release(tag, claim_tag, release)
+        elif marker_ref(version, attempt) in refs:
+            # The attempt was abandoned and its version has no final tag.
+            state, retry = "burned", None
         else:
             if release is not None and (release.get("tag_name") != claim_tag
                                         or release.get("draft") is not True
@@ -292,6 +314,7 @@ def discover(repository: str, run=output) -> list[dict]:
 
         records.append({
             "version": version,
+            "attempt": attempt,
             "state": state,
             "autopublish": claim["autopublish"],
             "claim_tag": claim_tag,

@@ -183,6 +183,98 @@ def test_an_unpublished_claim_below_the_head_is_refused():
         plan(_claims(("0.21.4", "green", True)), head="0.21.5")
 
 
+def _claim_message(version, attempt, commit, *, autopublish=False,
+                   epoch=1_790_000_000):
+    return {"schema": 1, "version": version, "attempt": attempt, "commit": commit,
+            "autopublish": autopublish, "claimEpoch": epoch}
+
+
+def _final_message(version, attempt, commit, *, release_id, epoch=1_790_000_000):
+    claim_tag = f"rc.{attempt}-v{version}"
+    return {
+        "schema": 1, "version": version, "attempt": attempt, "commit": commit,
+        "autopublish": False, "claimEpoch": epoch, "claimTag": claim_tag,
+        "claimTagObject": "1" * 40, "releaseId": release_id,
+        "candidateManifestSha256": "a" * 64, "dockerManifestDigest": "sha256:" + "b" * 64,
+    }
+
+
+def _discover_run(tags, releases=(), workflow_runs=()):
+    def run(argv):
+        if argv[:2] == ["git", "fetch"]:
+            return ""
+        if argv[:3] == ["git", "ls-remote", "--tags"]:
+            return "\n".join(
+                f"{sha}\trefs/tags/{tag}\n{commit}\trefs/tags/{tag}^{{}}"
+                for tag, (sha, commit, _message) in tags.items()
+            )
+        if argv[:2] == ["git", "rev-parse"]:
+            return tags[argv[-1].removeprefix("refs/tags/")][0]
+        if argv[:3] == ["git", "cat-file", "-t"]:
+            return "tag"
+        if argv[:3] == ["git", "cat-file", "-p"]:
+            message = next(m for s, _c, m in tags.values() if s == argv[3])
+            return f"tagger Fixture <fixture@example.test> {message['claimEpoch']} +0000\n"
+        if argv[:3] == ["git", "tag", "-l"]:
+            return json.dumps(tags[argv[3]][2])
+        if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
+            if "/releases?" in argv[-1]:
+                return json.dumps([list(releases)])
+            return json.dumps([{"workflow_runs": list(workflow_runs)}])
+        raise AssertionError(argv)
+
+    return run
+
+
+def test_discover_reads_an_attempt_ref_and_keeps_the_version():
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    tags = {
+        "rc.2-v0.21.5": ("1" * 40, commit, _claim_message("0.21.5", 2, commit)),
+        "v0.21.5": ("2" * 40, commit,
+                    _final_message("0.21.5", 2, commit, release_id=7)),
+    }
+    releases = [{
+        "id": 7, "tag_name": "v0.21.5", "draft": False, "prerelease": False,
+        "published_at": "2026-09-22T01:00:00Z",
+    }]
+    records = discover("example/project", _discover_run(tags, releases=releases))
+    assert records[0]["version"] == "0.21.5"
+    assert records[0]["claim_tag"] == "rc.2-v0.21.5"
+    assert records[0]["state"] == "published"
+
+
+def test_a_marker_ref_clears_the_attempt():
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    tags = {
+        "rc.1-v0.21.5": ("1" * 40, commit, _claim_message("0.21.5", 1, commit)),
+        "abandoned-rc.1-v0.21.5": ("2" * 40, commit, {}),
+    }
+    failed = {
+        "id": 42, "status": "completed", "conclusion": "failure",
+        "run_attempt": 1, "updated_at": "2026-09-22T01:14:59Z",
+        "head_branch": "rc.1-v0.21.5", "head_sha": commit,
+    }
+    records = discover("example/project",
+                       _discover_run(tags, workflow_runs=[failed]))
+    assert records[0]["state"] == "burned"
+
+
+def test_two_outstanding_attempts_are_refused_across_versions():
+    from scripts.releases.sequencer import discover
+
+    commit = "a" * 40
+    tags = {
+        "rc.1-v0.21.5": ("1" * 40, commit, _claim_message("0.21.5", 1, commit)),
+        "rc.1-v0.22.0": ("2" * 40, commit, _claim_message("0.22.0", 1, commit)),
+    }
+    with pytest.raises(ValueError, match="more than one outstanding attempt"):
+        discover("example/project", _discover_run(tags))
+
+
 def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
     from scripts.releases.sequencer import reconcile
 
@@ -190,10 +282,10 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
     tags = {}
     releases = []
     for index, version in enumerate(("0.21.5", "0.21.6"), start=1):
-        claim_tag, tag = f"v{version}-rc", f"v{version}"
+        claim_tag, tag = f"rc.1-v{version}", f"v{version}"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
         claim = {
-            "schema": 1, "version": version, "commit": commit,
+            "schema": 1, "version": version, "attempt": 1, "commit": commit,
             "autopublish": False, "claimEpoch": 1_790_000_000 + index,
         }
         final = {

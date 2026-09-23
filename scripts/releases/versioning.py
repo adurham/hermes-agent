@@ -132,3 +132,27 @@ def next_attempt(version: str, refs: list[str]) -> int:
     attempts = [parsed[1] for parsed in map(parse_attempt_ref, refs)
                 if parsed and parsed[0] == version]
     return max(attempts, default=0) + 1
+
+
+def outstanding_attempts(refs: list[str], is_published) -> list[tuple[str, int, str]]:
+    """The one definition of an outstanding attempt.
+
+    An attempt ref is outstanding when its abandon marker ref does not exist
+    and its version has no final tag. ``is_published(version)`` answers whether
+    the final tag ``v{version}`` exists, so callers keep their own remote
+    lookup. Both the release entrypoint and the sequencer refuse more than one
+    of these, across all versions.
+    """
+    cleared = {parsed for parsed in map(parse_marker_ref, refs) if parsed}
+    published: dict[str, bool] = {}
+    outstanding: list[tuple[str, int, str]] = []
+    for ref in refs:
+        parsed = parse_attempt_ref(ref)
+        if parsed is None or parsed in cleared:
+            continue
+        version, attempt = parsed
+        if version not in published:
+            published[version] = bool(is_published(version))
+        if not published[version]:
+            outstanding.append((version, attempt, ref))
+    return outstanding

@@ -108,3 +108,16 @@ def test_canary_base_comes_from_the_validated_protected_stable_head():
     assert published_stable_version(
         "example/hermes-agent", base_url="https://assets.example", reader_type=Reader,
     ) == "0.21.7"
+
+
+def test_outstanding_attempts_is_the_one_shared_predicate():
+    from scripts.releases.versioning import outstanding_attempts
+
+    refs = ["rc.1-v0.21.5", "abandoned-rc.1-v0.21.5", "rc.2-v0.21.5",
+            "rc.1-v0.21.6", "v0.21.5", "rc.1-v0.21.7"]
+    published = {"0.21.6", "0.21.7"}
+
+    def is_published(version):
+        return version in published
+
+    assert outstanding_attempts(refs, is_published) == [("0.21.5", 2, "rc.2-v0.21.5")]

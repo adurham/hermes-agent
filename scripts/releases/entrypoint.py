@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 
 from scripts.releases.versioning import (
-    SEED, attempt_ref, derive_next_version, marker_ref, next_attempt, parse_attempt_ref,
-    parse_marker_ref,
+    SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
+    outstanding_attempts, parse_attempt_ref, parse_marker_ref,
 )
 
 WORKFLOW = "stable-release.yml"
@@ -75,21 +75,19 @@ def _claim_collision(repo: Path, remote: str, tag: str, error: Exception) -> Rel
 
 
 def _outstanding_attempts(repo: Path, remote: str) -> list[tuple[str, int, str]]:
-    """Attempts with no abandon marker whose version has no final tag on ``remote``."""
-    refs = _claims(repo)
-    cleared = {parsed for parsed in map(parse_marker_ref, refs) if parsed}
+    """Attempts with no abandon marker whose version has no final tag on ``remote``.
+
+    The predicate is the shared one in ``versioning``; this wrapper only owns
+    the remote lookup of the final tags.
+    """
     published: dict[str, bool] = {}
-    outstanding = []
-    for ref in refs:
-        parsed = parse_attempt_ref(ref)
-        if parsed is None or parsed in cleared:
-            continue
-        version, attempt = parsed
+
+    def is_published(version: str) -> bool:
         if version not in published:
             published[version] = bool(_git(repo, "ls-remote", remote, f"refs/tags/v{version}"))
-        if not published[version]:
-            outstanding.append((version, attempt, ref))
-    return outstanding
+        return published[version]
+
+    return outstanding_attempts(_claims(repo), is_published)
 
 
 def _outstanding_attempt(repo: Path, remote: str) -> tuple[str, int, str] | None:
