@@ -107,15 +107,13 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "schema": 1,
         "version": "0.21.5",
     }
-    assert calls[0] == ["gh", "api", "repos/example/hermes-agent/releases/generate-notes",
-                        "-f", "tag_name=rc.1-v0.21.5"]
-    create = calls[1]
+    create = calls[0]
     assert create[:4] == ["gh", "release", "create", "rc.1-v0.21.5"]
     assert "--verify-tag" in create and "--draft" in create
     assert "--generate-notes" not in create
     assert "--notes-file" in create
     assert create[-2:] == ["--title", "Hermes Agent v0.21.5"]
-    assert calls[2:] == [
+    assert calls[1:] == [
         ["gh", "workflow", "run", "stable-release.yml", "--ref", "rc.1-v0.21.5",
          "--repo", "example/hermes-agent", "--raw-field", "tag=rc.1-v0.21.5"],
         ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow", "stable-release.yml",
@@ -274,15 +272,18 @@ def test_draft_body_is_fenced_at_top_and_bottom():
     assert "rc.2-v0.21.5" in body
 
 
-def test_release_fetches_generated_notes_and_creates_the_fenced_draft(source):
+@pytest.mark.parametrize("published_by", ["identity", "seed_tag"])
+def test_release_draft_lists_the_commits_since_the_stable_base(source, published_by):
     from scripts.releases.draft_warning import WARNING_CLOSE, WARNING_OPEN
 
-    commit = git(source, "rev-parse", "HEAD")
+    shipped = _advance(source, "fix: shipped in the published release")
+    git(source, "tag", "-a", "v0.21.4", shipped, "-m", "published")
+    commit = _advance(source, "feat: new in this release (#123)")
+    published = ("0.21.4", shipped) if published_by == "identity" else ("0.21.4", None)
     seen = {}
 
     def execute(command):
-        if command[1:3] == ["api", "repos/example/hermes-agent/releases/generate-notes"]:
-            return json.dumps({"body": "## What's changed\n- x", "name": "release"})
+        assert command[:3] != ["gh", "api", "repos/example/hermes-agent/releases/generate-notes"]
         if command[:3] == ["gh", "release", "create"]:
             notes_path = command[command.index("--notes-file") + 1]
             with open(notes_path, encoding="utf-8") as file:
@@ -292,14 +293,19 @@ def test_release_fetches_generated_notes_and_creates_the_fenced_draft(source):
                                 "headBranch": "rc.1-v0.21.5", "status": "queued"}])
         return ""
 
-    result = _release(source, commit, execute=execute)
+    result = _release(source, commit, execute=execute, published=published)
 
     assert result["tag"] == "rc.1-v0.21.5"
-    # The notes are fetched from GitHub and the draft is created from a file,
-    # because --generate-notes cannot place a warning below the notes.
     body = seen["body"]
     assert body.startswith(WARNING_OPEN) and body.rstrip().endswith(WARNING_CLOSE)
-    assert "## What's changed\n- x" in body
+    # The notes are this repository's commits from the stable base to the cut
+    # commit, not GitHub's merged-PR list, which a fork leaves empty.
+    assert "New in this release" in body
+    assert "https://github.com/example/hermes-agent/pull/123" in body
+    assert "hipped in the published release" not in body
+    assert "compare/v0.21.4...rc.1-v0.21.5" in body
+    # The stable workflow renders the download tables into this marker.
+    assert "<!-- HERMES_BUILDS_TABLE -->" in body
     assert "python scripts/release.py publish --version 0.21.5" in body
     assert "python scripts/release.py abandon --version 0.21.5" in body
 

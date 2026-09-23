@@ -2337,12 +2337,12 @@ def parse_coauthors(body: str) -> list:
     return results
 
 
-def get_commits(since_tag=None):
-    """Get commits since a tag (or all commits if None)."""
+def get_commits(since_tag=None, until="HEAD", cwd=None):
+    """Get commits in ``since_tag..until`` (or all of ``until`` if since_tag is None)."""
     if since_tag:
-        range_spec = f"{since_tag}..HEAD"
+        range_spec = f"{since_tag}..{until}"
     else:
-        range_spec = "HEAD"
+        range_spec = until
 
     # Format: hash<US>author_name<US>author_email<US>subject\0body
     # Using %x1f (unit separator) to avoid conflict with | in author names
@@ -2350,6 +2350,7 @@ def get_commits(since_tag=None):
         "log", range_spec,
         "--format=%H%x1f%an%x1f%ae%x1f%s%x00%b%x00",
         "--no-merges",
+        cwd=cwd,
     )
 
     if not log:

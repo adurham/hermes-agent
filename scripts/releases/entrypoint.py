@@ -150,6 +150,29 @@ def _next_claim_epoch(repo: Path) -> int:
     return max(int(time.time()), max(previous, default=0) + 1)
 
 
+def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: str,
+               published: tuple[str, str | None]) -> str:
+    """The commit changelog from the stable base to the cut commit.
+
+    GitHub's generate-notes lists merged pull requests since the last published
+    release, so it is empty on a repository that merges none (a fork).
+    """
+    from scripts import release as release_script
+
+    published_version, base = published
+    receipt = f"v{published_version}"
+    if base is None and subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{receipt}^{{commit}}"],
+            cwd=repo, capture_output=True).returncode == 0:
+        # Before the first publication the seed version's tag is the base.
+        base = receipt
+    commits = release_script.get_commits(since_tag=base, until=commit, cwd=repo)
+    return release_script.generate_changelog(
+        commits, tag, version, repo_url=f"https://github.com/{repository}",
+        prev_tag=receipt if base else None,
+    )
+
+
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False,
             published: tuple[str, str | None] = (SEED, None)) -> dict:
@@ -199,12 +222,10 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     _refresh_claims(repo, remote)
     _outstanding_attempt(repo, remote)
     try:
-        notes = json.loads(execute([
-            "gh", "api", f"repos/{repository}/releases/generate-notes",
-            "-f", f"tag_name={tag}",
-        ]) or "{}").get("body") or ""
-        # --generate-notes cannot place a warning below the notes, so the body
-        # is built here and handed over as a file.
+        notes = _changelog(repo, repository, commit=commit, tag=tag, version=version,
+                           published=published)
+        # The body carries a warning at both ends, so it is built here and
+        # handed over as a file.
         file = tempfile.NamedTemporaryFile(
             "w", suffix=".md", delete=False, encoding="utf-8", newline="\n")
         try:
