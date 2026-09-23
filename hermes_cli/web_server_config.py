@@ -445,25 +445,64 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     return prov_in, model_in
 
 
+def _same_provider_repick(cfg: dict, provider: str, base_url: str) -> bool:
+    """True when this assignment merely re-picks a model under the provider ALREADY configured,
+    while a custom ``model.base_url`` is in play and the caller submitted no replacement.
+
+    Only that narrow case needs the endpoint-preserving route below; everything else keeps the
+    deterministic ``explicit_provider`` path.
+    """
+    if base_url.strip():
+        return False
+    model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    if not str(model_cfg.get("base_url") or "").strip():
+        return False
+    from hermes_cli.models import normalize_provider
+    configured = str(model_cfg.get("provider") or "").strip()
+    return bool(configured) and normalize_provider(configured) == normalize_provider(provider.strip())
+
+
 def _validated_main_model_selection(
     cfg: dict, provider: str, model: str, base_url: str = "", api_key: str = ""
 ) -> "ModelSwitchResult":
     """Route a dashboard main-slot pick through ``switch_model`` (catalog/alias/credential
     validation) seeded with the configured route, exactly like a ``/model <model> --provider
     <provider> --global``. A bare ``custom`` target carries the submitted endpoint as the current
-    one, which is how ``switch_model`` binds a custom base_url/key. Rejections become 400s."""
+    one, which is how ``switch_model`` binds a custom base_url/key. Rejections become 400s.
+
+    Re-picking a model under the provider already configured with a custom ``model.base_url``
+    (a Xiaomi MiMo Token Plan host, a self-hosted gateway, …) is NOT a switch, so it runs
+    without ``explicit_provider``: ``switch_model`` then takes its ``_creds_for_current_provider``
+    branch and keeps the configured endpoint, instead of re-resolving the provider from scratch
+    and rejecting the pick outright when the endpoint's key lives only on that endpoint (the
+    Desktop picker sends provider+model with no base_url, so that rejection was a hard 400 on a
+    working config). That route can hop providers on its own (alias fallback / model detection),
+    so a result landing on any other provider is discarded for the explicit — deterministic —
+    one.
+    """
     from hermes_cli.config import get_compatible_custom_providers
     from hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     is_bare_custom = provider.strip().lower() in {"custom", "local"}
-    result = switch_model(
-        raw_input=model, explicit_provider=provider, is_global=True,
-        current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
-        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
-        current_api_key=api_key if is_bare_custom else "",
-        user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-        custom_providers=get_compatible_custom_providers(cfg))
+    def _switch(explicit: str) -> "ModelSwitchResult":
+        return switch_model(
+            raw_input=model, explicit_provider=explicit, is_global=True,
+            current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
+            current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
+            current_api_key=api_key if is_bare_custom else "",
+            user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
+            custom_providers=get_compatible_custom_providers(cfg))
+
+    result = None
+    if _same_provider_repick(cfg, provider, base_url):
+        from hermes_cli.models import normalize_provider
+        candidate = _switch("")
+        if candidate.success and normalize_provider(str(candidate.target_provider or "")) == normalize_provider(
+                provider.strip()):
+            result = candidate
+    if result is None:
+        result = _switch(provider)
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
     return result
@@ -659,6 +698,38 @@ def _cron_model_impact(cfg: dict, provider: str, model: str) -> Any:
         return build_cron_model_impact(config=cfg, jobs={})
 
 
+def _reconcile_assignment_base_url(model_cfg: dict, prev: dict, provider: str, base_url: str) -> None:
+    """Restore the dashboard's base_url lifecycle on top of the canonical writer.
+
+    ``model_selection_config_updates`` always syncs ``base_url`` to whatever the switch resolved,
+    so a plain provider switch persists the NEW provider's registry-default host as if the user
+    had chosen it. The Models page's contract is narrower, and is what the runtime resolver
+    expects (it only honours ``model.base_url`` when it is a genuine override):
+
+      * an explicitly submitted ``base_url`` always wins (custom/local endpoints, and any
+        provider whose key is bound to a non-default host);
+      * otherwise a provider CHANGE clears it — that URL belonged to the old provider;
+      * otherwise (same provider, nothing submitted) the configured one is preserved, so
+        re-picking a model under the same provider cannot silently reset a Token Plan / gateway
+        host back to the registry default and break keys bound to it.
+
+    Custom/local targets are exempt: there the endpoint IS the route identity, never a default.
+    """
+    if base_url.strip():
+        return
+    target = str(provider or "").strip().lower()
+    if target.startswith("custom") or target == "local":
+        return
+    from hermes_cli.models import normalize_provider
+    prev_provider = str(prev.get("provider") or "").strip()
+    prev_base_url = str(prev.get("base_url") or "").strip()
+    same_provider = bool(prev_provider) and normalize_provider(prev_provider) == normalize_provider(target)
+    if same_provider and prev_base_url:
+        model_cfg["base_url"] = prev_base_url
+    elif not same_provider:
+        model_cfg.pop("base_url", None)
+
+
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str) -> dict:
     from hermes_cli.config import save_config
     if not provider or not model:
@@ -668,9 +739,11 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
     if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
         base_url = str(provider_entry.get("base_url") or "").strip()
+    prev_model_cfg = dict(cfg.get("model")) if isinstance(cfg.get("model"), dict) else {}
     result = _validated_main_model_selection(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
     model_cfg = _apply_main_model_assignment(cfg.get("model", {}), result, api_key)
+    _reconcile_assignment_base_url(model_cfg, prev_model_cfg, provider, base_url)
     _resolve_assignment_credentials(model_cfg, provider, provider_entry)
     cfg["model"] = model_cfg
 
