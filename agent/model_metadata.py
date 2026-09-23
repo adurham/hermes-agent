@@ -659,19 +659,9 @@ def is_local_endpoint(base_url: str) -> bool:
     # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
     # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
     # they are excluded here and classified by scope below (a global address is not local).
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
+    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(_MDNS_LOCAL_SUFFIXES) or (host and "." not in host and ":" not in host):
         return True
-    # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
-    if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
-        return True
-    # mDNS / Bonjour hostnames (e.g. mac-studio.local) — always LAN-scoped
-    if any(host.endswith(suffix) for suffix in _MDNS_LOCAL_SUFFIXES):
-        return True
-    # Unqualified hostnames (no dots) are local by definition — Docker
-    # Compose service names, /etc/hosts entries, or mDNS names.
-    if host and "." not in host:
-        return True
-    # RFC-1918 private ranges, link-local, and Tailscale CGNAT
+    # RFC-1918 private ranges, loopback, link-local (incl. IPv6 ::1 / fe80::/10 / fc00::/7) and Tailscale CGNAT
     try:
         addr = ipaddress.ip_address(host)
         if addr.is_private or addr.is_loopback or addr.is_link_local or (isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT):
