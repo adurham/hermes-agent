@@ -86,6 +86,8 @@ def _install_repo(tmp_path: Path) -> Path:
     ({"canonicalCommit": "c" * 40}, [], "canonical"),
     # A checkout with no reachable release tag honestly stamps a null base.
     ({"canonicalBase": None}, [], None),
+    # The protocol lane never runs the products stage that writes the stamp.
+    ({"missing": "version"}, ["--no-source-stamp"], None),
 ])
 def test_verifier_cli(tmp_path, changes, expect, error):
     repo = _install_repo(tmp_path)
@@ -102,7 +104,7 @@ def test_verifier_cli(tmp_path, changes, expect, error):
         canonical["baseVersion"] = changes.get("canonicalBase", canonical["baseVersion"])
         (repo / "install-stamp.json").write_text(json.dumps(canonical), encoding="utf-8")
     if not error:
-        expect = ["--expect-commit", stamp["pinnedCommit"], "--expect-branch", "main"]
+        expect = ["--expect-commit", stamp["pinnedCommit"], "--expect-branch", "main", *expect]
     env = dict(os.environ)
     if os.name == "nt":
         env.setdefault("SystemRoot", r"C:\Windows")

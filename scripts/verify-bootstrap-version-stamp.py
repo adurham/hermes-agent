@@ -88,7 +88,8 @@ def _git(repo: Path, *args: str) -> str | None:
     return value if result.returncode == 0 and value else None
 
 
-def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect_branch: str | None) -> list[str]:
+def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect_branch: str | None,
+                 *, source_stamp: bool = True) -> list[str]:
     errors: list[str] = []
 
     try:
@@ -145,17 +146,18 @@ def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect
         elif actual and actual != "HEAD" and actual != branch:
             _fail(errors, f"pinnedBranch {branch!r} != checked-out branch {actual!r}")
 
-    # The install must carry its source identity stamp, and that stamp must
-    # tell the truth about the checkout: commit == HEAD. baseVersion is null
-    # when no release tag is reachable (a PR checkout), exactly as the runtime
-    # reports it.
-    present, canonical_commit = _read_install_stamp(repo)
-    if not present:
-        _fail(errors, f"no {repo}/install-stamp.json — the install carries no source identity stamp")
-    elif not canonical_commit:
-        _fail(errors, f"{repo}/install-stamp.json names no commit")
-    elif head and canonical_commit != head:
-        _fail(errors, f"canonical stamp commit {canonical_commit[:12]} != installed HEAD {head[:12]}")
+    # A working install carries its source identity stamp (written by the
+    # products stage), and it must tell the truth about the checkout:
+    # commit == HEAD. baseVersion is null when no release tag is reachable
+    # (a PR checkout), exactly as the runtime reports it.
+    if source_stamp:
+        present, canonical_commit = _read_install_stamp(repo)
+        if not present:
+            _fail(errors, f"no {repo}/install-stamp.json — the install carries no source identity stamp")
+        elif not canonical_commit:
+            _fail(errors, f"{repo}/install-stamp.json names no commit")
+        elif head and canonical_commit != head:
+            _fail(errors, f"canonical stamp commit {canonical_commit[:12]} != installed HEAD {head[:12]}")
 
     return errors
 
@@ -179,10 +181,13 @@ def main() -> int:
     parser.add_argument("--repo", required=True, help="The install checkout the stamp describes")
     parser.add_argument("--expect-commit", default=None, help="Fail unless pinnedCommit equals this sha")
     parser.add_argument("--expect-branch", default=None, help="Fail unless pinnedBranch equals this branch")
+    parser.add_argument("--no-source-stamp", action="store_true",
+                        help="The run skipped the products stage, which writes install-stamp.json")
     args = parser.parse_args()
 
     errors = verify_stamp(
-        Path(args.stamp), Path(args.repo), args.expect_commit, args.expect_branch
+        Path(args.stamp), Path(args.repo), args.expect_commit, args.expect_branch,
+        source_stamp=not args.no_source_stamp,
     )
     if errors:
         for e in errors:

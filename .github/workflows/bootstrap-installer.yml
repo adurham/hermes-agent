@@ -99,7 +99,8 @@ jobs:
             --stamp "$HERMES_INSTALL_DIR/.hermes-bootstrap-complete" \
             --repo "$HERMES_INSTALL_DIR" \
             --expect-commit "${{ steps.source.outputs.sha }}" \
-            --expect-branch ci-under-test
+            --expect-branch ci-under-test \
+            --no-source-stamp  # the protocol check above skips the products stage
 
       - name: The pinned commit is on the branch the installer cloned
         shell: bash
