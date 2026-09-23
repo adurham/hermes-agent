@@ -28,17 +28,16 @@ export function sourceRuntimeSettleCommand(root, env, platform = process.platfor
   void env;
   // PM's fallback command launcher embeds the Python bootstrap in a base64
   // `-c` argument. Running that .cmd through cmd.exe constrains the already
-  // long command to 8191 characters; a source update's clean-interpreter
-  // relaunch then exceeds CreateProcess' limit as well. Use the launcher's
-  // selected Python to run the source bootstrap by file instead. This drives
-  // the same lazy source-update completion without nesting either command.
+  // long command to 8191 characters. Drive the bootstrap's prepare_launch seam
+  // directly: it owns lazy dependency/product completion, while continuing
+  // through a redundant CLI command can inherit update children and never exit.
   const commandFile = fs.readFileSync(launcher, 'utf8');
   const generated = commandFile.match(/^\s*@?"([^"\r\n]+)"\s+-I(?:\s|$)/m);
   if (!generated) throw new Error(`Unrecognized source command launcher: ${launcher}`);
   const command = generated[1];
-  const bootstrap = path.join(root, 'hermes_bootstrap.py');
+  const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py');
   if (!fs.existsSync(command)) throw new Error(`Source launcher Python does not exist: ${command}`);
-  if (!fs.existsSync(bootstrap)) throw new Error(`Source bootstrap does not exist: ${bootstrap}`);
-  const code = `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); sys.argv = [${JSON.stringify(bootstrap)}, 'status']; runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`;
+  if (!fs.existsSync(prepareLaunch)) throw new Error(`Source update preparation does not exist: ${prepareLaunch}`);
+  const code = `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from hermes_cli.venv_sync import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`;
   return { launcher, command, args: ['-I', '-B', '-c', code], windowsVerbatimArguments: false };
 }
