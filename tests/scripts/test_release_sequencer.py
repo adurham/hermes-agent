@@ -4,6 +4,7 @@ A green draft publishes when it opted into autopublish, or when a later green
 release needs it resolved. A running older claim blocks only the versions above
 it; already-resolvable older green claims still make progress.
 """
+import hashlib
 import json
 
 import pytest
@@ -192,10 +193,11 @@ def _claim_message(version, attempt, commit, *, autopublish=False,
 def _final_message(version, attempt, commit, *, release_id, epoch=1_790_000_000):
     claim_tag = f"rc.{attempt}-v{version}"
     return {
-        "schema": 1, "version": version, "attempt": attempt, "commit": commit,
+        "schema": 1, "version": version, "commit": commit,
         "autopublish": False, "claimEpoch": epoch, "claimTag": claim_tag,
         "claimTagObject": "1" * 40, "releaseId": release_id,
         "candidateManifestSha256": "a" * 64, "dockerManifestDigest": "sha256:" + "b" * 64,
+        "archive": f"releases/tag/{claim_tag}/",
     }
 
 
@@ -243,6 +245,7 @@ def test_discover_reads_an_attempt_ref_and_keeps_the_version():
     assert records[0]["version"] == "0.21.5"
     assert records[0]["claim_tag"] == "rc.2-v0.21.5"
     assert records[0]["state"] == "published"
+    assert records[0]["claim_epoch"] == 1_790_000_000
 
 
 def test_a_marker_ref_clears_the_attempt():
@@ -275,13 +278,13 @@ def test_two_outstanding_attempts_are_refused_across_versions():
         discover("example/project", _discover_run(tags))
 
 
-def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
-    from scripts.releases.sequencer import reconcile
-
+def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b" * 64,
+                       drafts_on_claim_tag=False):
+    """Two green claims with their final tags; releases start as drafts."""
     commit = "a" * 40
     tags = {}
     releases = []
-    for index, version in enumerate(("0.21.5", "0.21.6"), start=1):
+    for index, version in enumerate(versions, start=1):
         claim_tag, tag = f"rc.1-v{version}", f"v{version}"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
         claim = {
@@ -289,19 +292,21 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
             "autopublish": False, "claimEpoch": 1_790_000_000 + index,
         }
         final = {
-            **claim, "claimTag": claim_tag, "claimTagObject": claim_object,
+            "schema": 1, "version": version, "commit": commit,
+            "autopublish": False, "claimEpoch": claim["claimEpoch"],
+            "claimTag": claim_tag, "claimTagObject": claim_object,
             "releaseId": index,
-            "candidateManifestSha256": "a" * 64,
-            "dockerManifestDigest": "sha256:" + "b" * 64,
+            "candidateManifestSha256": manifest_digest,
+            "dockerManifestDigest": docker_digest,
+            "archive": f"releases/tag/{claim_tag}/",
         }
         tags[claim_tag] = (claim_object, commit, claim)
         tags[tag] = (final_object, commit, final)
         releases.append({
-            "id": index, "tag_name": tag, "draft": True, "prerelease": False,
-            "published_at": None,
+            "id": index, "tag_name": claim_tag if drafts_on_claim_tag else tag,
+            "draft": True, "prerelease": False, "published_at": None,
+            "body": "notes",
         })
-
-    events = []
 
     def run(argv):
         if argv[:2] == ["git", "fetch"]:
@@ -311,6 +316,17 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
                 f"{sha}\trefs/tags/{tag}\n{target}\trefs/tags/{tag}^{{}}"
                 for tag, (sha, target, _message) in tags.items()
             )
+        if argv[:2] == ["git", "ls-remote"]:
+            lines = []
+            for ref in argv[2:]:
+                name = ref.removeprefix("refs/tags/").removesuffix("^{}")
+                entry = tags.get(name)
+                sha, target = (entry[0], entry[1]) if entry else ("", "")
+                if sha:
+                    lines.append(f"{sha}\t{ref if ref.endswith('^{}') else ref}")
+                    if ref.endswith("^{}"):
+                        lines[-1] = f"{target}\t{ref}"
+            return "\n".join(lines)
         if argv[:2] == ["git", "rev-parse"]:
             return tags[argv[-1].removeprefix("refs/tags/")][0]
         if argv[:3] == ["git", "cat-file", "-t"]:
@@ -321,30 +337,53 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
             return f"tagger Fixture <fixture@example.test> {epoch} +0000\n"
         if argv[:3] == ["git", "tag", "-l"]:
             return json.dumps(tags[argv[3]][2])
+        if "tag" in argv and "-a" in argv:
+            tag = argv[argv.index("-a") + 1]
+            tags[tag] = (str(len(tags)) * 40, tags[claim_tag][1], tags[tag][2])
+            return ""
+        if argv[:2] == ["git", "push"]:
+            return ""
+        if argv[:3] == ["docker", "buildx", "imagetools"]:
+            return json.dumps(docker_digest)
         if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
             if "/releases?" in argv[-1]:
                 return json.dumps([releases])
             return json.dumps([{"workflow_runs": []}])
         if argv[:3] == ["gh", "api", "--method"]:
-            release_id = int(argv[4].rsplit("/", 1)[1])
-            release = next(row for row in releases if row["id"] == release_id)
-            release.update(tag_name=f"v0.21.{4 + release_id}", draft=False,
-                           prerelease=False, published_at="2026-09-22T01:00:00Z")
-            events.append(("flip", release["tag_name"]))
+            release = next(row for row in releases if row["id"] == int(argv[4].rsplit("/", 1)[1]))
+            for _flag, value in zip(argv[5::2], argv[6::2]):
+                name, _, raw = value.partition("=")
+                if name == "tag_name":
+                    release["tag_name"] = raw
+                elif name == "draft":
+                    release["draft"] = raw == "true"
+                    if not release["draft"]:
+                        release["published_at"] = "2026-09-22T01:00:00Z"
+                elif name == "body":
+                    release["body"] = raw
+                elif name == "prerelease":
+                    release["prerelease"] = raw == "true"
             return "{}"
         if argv[:2] == ["gh", "api"] and "/releases/" in argv[2]:
-            release_id = int(argv[2].rsplit("/", 1)[1])
-            return json.dumps(next(row for row in releases if row["id"] == release_id))
+            release = next(row for row in releases if row["id"] == int(argv[2].rsplit("/", 1)[1]))
+            return json.dumps(release)
         raise AssertionError(argv)
 
+    return tags, releases, run
+
+
+def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
+    from scripts.releases.sequencer import reconcile
+
+    manifest_digest = hashlib.sha256(b"m").hexdigest()
+    _tags, releases, run = _sequencer_fixture("0.21.5", "0.21.6", manifest_digest=manifest_digest)
+    events = []
+    archive_keys = []
     head = ["0.21.4"]
 
-    releases[0]["id"] = 99
-    assert reconcile(
-        {"GITHUB_REPOSITORY": "example/project"},
-        run=run, read_head=lambda: head[0], advance_head=lambda _record: None,
-    ) == []
-    releases[0]["id"] = 1
+    def read_archive(key):
+        archive_keys.append(key)
+        return b"m"
 
     def advance(record):
         events.append(("advance", record["tag"]))
@@ -353,6 +392,7 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
     steps = reconcile(
         {"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.6"},
         run=run, read_head=lambda: head[0], advance_head=advance,
+        read_archive=read_archive,
     )
 
     assert steps == [
@@ -360,6 +400,38 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
         {"flip": "0.21.6"}, {"advance": "0.21.6"},
     ]
     assert events == [
-        ("flip", "v0.21.5"), ("advance", "v0.21.5"),
-        ("flip", "v0.21.6"), ("advance", "v0.21.6"),
+        ("advance", "v0.21.5"), ("advance", "v0.21.6"),
     ]
+    # Each pass hashes the manifest from its own attempt archive path.
+    assert archive_keys == [
+        "releases/tag/rc.1-v0.21.5/release-candidates.json",
+        "releases/tag/rc.1-v0.21.6/release-candidates.json",
+    ]
+    for release, version in zip(releases, ("0.21.5", "0.21.6")):
+        assert release["tag_name"] == f"v{version}" and release["draft"] is False
+
+
+def test_a_publish_that_died_before_the_retarget_is_repaired():
+    from scripts.releases.sequencer import reconcile
+
+    manifest_digest = hashlib.sha256(b"m").hexdigest()
+    _tags, releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=manifest_digest, drafts_on_claim_tag=True)
+    events = []
+    head = ["0.21.4"]
+
+    def advance(record):
+        events.append(("advance", record["tag"]))
+        head[0] = record["version"]
+
+    steps = reconcile(
+        {"GITHUB_REPOSITORY": "example/project"},
+        run=run, read_head=lambda: head[0], advance_head=advance,
+        read_archive=lambda _key: b"m",
+    )
+
+    # The final tag existed and the draft was still on the attempt ref: the
+    # retarget and the publication rerun, then the head advances.
+    assert steps == [{"advance": "0.21.5"}]
+    assert events == [("advance", "v0.21.5")]
+    assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False

@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from hermes_cli.update_channel import STABLE_TAG_RE
+from scripts.releases.draft_warning import strip_draft_warning
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 DESKTOP_TARGETS = ("windows/x64", "windows/arm64", "macos/x64", "macos/arm64")
@@ -318,6 +319,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
         "releaseId": final.get("releaseId"),
         "candidateManifestSha256": final.get("candidateManifestSha256"),
         "dockerManifestDigest": final.get("dockerManifestDigest"),
+        "archive": f"releases/tag/{claim_tag}/",
     }
     if (final != expected
             or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
@@ -447,6 +449,7 @@ def _final_metadata(tag: str, commit: str, claim: dict, candidate_manifest_sha25
         "releaseId": release_id,
         "candidateManifestSha256": candidate_manifest_sha256,
         "dockerManifestDigest": docker_manifest_digest,
+        "archive": f"releases/tag/{claim['claim_tag']}/",
     }
 
 
@@ -493,23 +496,79 @@ def ensure_final_tag(tag: str, commit: str, claim: dict, *, candidate_manifest_s
     return tag_object
 
 
-def retarget_release(repository: str, release_id: int, tag: str, commit: str, *, publish: bool,
-                     run=output) -> None:
+def edit_draft_release(repository: str, release_id: int, tag: str, commit: str, *,
+                       run=output) -> None:
+    """Retarget the draft onto the receipt tag and strip the warning blocks.
+
+    Immutable releases take no edits after publication, so every edit happens
+    here while the release is still a draft, and the tag name, draft flag, and
+    body are read back before anything else touches the release. A release that
+    is already public is left alone: nothing can repair it.
+    """
     endpoint = f"repos/{repository}/releases/{release_id}"
     current = json.loads(run(["gh", "api", endpoint]))
-    if (current.get("id") == release_id and current.get("tag_name") == tag
-            and current.get("prerelease") is False and current.get("draft") is False):
+    if current.get("id") != release_id:
+        raise ValueError("Stable draft release id changed")
+    if (current.get("tag_name") == tag and current.get("draft") is False
+            and current.get("prerelease") is False):
         return
+    if current.get("draft") is not True:
+        raise ValueError("Stable release is no longer a draft and cannot be repaired")
+    body = strip_draft_warning(current.get("body") or "")
     run([
         "gh", "api", "--method", "PATCH", endpoint,
         "--raw-field", f"tag_name={tag}", "--raw-field", f"target_commitish={commit}",
-        "--field", "prerelease=false", "--raw-field", "make_latest=true",
-        "--field", f"draft={str(not publish).lower()}",
+        "--raw-field", "make_latest=true",
+        "--field", "prerelease=false", "--field", "draft=true",
+        "--field", f"body={body}",
     ])
     release = json.loads(run(["gh", "api", endpoint]))
     if (release.get("id") != release_id or release.get("tag_name") != tag
-            or release.get("prerelease") is not False or release.get("draft") is not (not publish)):
-        raise ValueError("Stable release retarget did not persist")
+            or release.get("prerelease") is not False or release.get("draft") is not True):
+        raise ValueError("Stable draft retarget did not persist")
+    # A fence that survives the edit — balanced or not — means the body was
+    # changed underneath this call, and the release must not go public.
+    if strip_draft_warning(release.get("body") or "") != body:
+        raise ValueError("Stable draft body edit did not persist")
+
+
+def publish_release_draft(repository: str, release_id: int, tag: str, *, run=output) -> None:
+    """Make the release public as its own final call.
+
+    Under immutable releases this is the last edit the release ever takes, so
+    it runs only after the retarget and the strip have both been read back.
+    """
+    endpoint = f"repos/{repository}/releases/{release_id}"
+    run(["gh", "api", "--method", "PATCH", endpoint, "--field", "draft=false"])
+    release = json.loads(run(["gh", "api", endpoint]))
+    if (release.get("id") != release_id or release.get("tag_name") != tag
+            or release.get("prerelease") is not False or release.get("draft") is not False
+            or not release.get("published_at")):
+        raise ValueError("Stable release publication did not persist")
+
+
+def publish_attempt(record: dict, *, repository: str, run=output, read_archive) -> str:
+    """The one ordered publication pass, steps 1-4, each read back before the next.
+
+    Explicit publish and autopublish converge here. The manifest digest is
+    hashed from the attempt archive (nothing records it earlier), the receipt
+    tag is written, the draft is retargeted and stripped while still a draft,
+    and only then does the final call make it public. Returns the Docker
+    manifest digest the receipt binds, for the alias move that follows.
+    """
+    from scripts.releases import docker
+
+    claim = {"claim_tag": record["claim_tag"], "claim_object": record["claim_object"],
+             "autopublish": record["autopublish"], "claim_epoch": record["claim_epoch"]}
+    manifest = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+    docker_digest = docker.published_digest(record["claim_tag"], run)
+    ensure_final_tag(record["tag"], record["commit"], claim,
+                     candidate_manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+                     docker_manifest_digest=docker_digest,
+                     release_id=record["release_id"], run=run)
+    edit_draft_release(repository, record["release_id"], record["tag"], record["commit"], run=run)
+    publish_release_draft(repository, record["release_id"], record["tag"], run=run)
+    return docker_digest
 
 
 def complete(env: dict) -> None:

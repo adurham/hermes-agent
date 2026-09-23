@@ -210,16 +210,22 @@ def stable_head_version(env: dict) -> str | None:
     return manifest["request"]["version"]
 
 
+def read_archive_bytes(key: str) -> bytes:
+    """Read one immutable object from the release archive."""
+    store = R2ChannelStore(*r2.credentials())
+    found = store.get(key)
+    if found is None:
+        raise ChannelError(f"Release archive object is unavailable: {key}")
+    return found[0]
+
+
 def advance_stable(env: dict, release: dict, root: Path) -> dict:
     """Advance one published release from its immutable tag-scoped receipts."""
     creds, base, bucket = r2.credentials()
     store = R2ChannelStore(creds, base, bucket)
     public_base = r2.public_base_url()
     key = f"releases/tag/{release['claim_tag']}/release-candidates.json"
-    found = store.get(key)
-    if found is None:
-        raise ChannelError("Stable candidate manifest is unavailable")
-    digest = hashlib.sha256(found[0]).hexdigest()
+    digest = hashlib.sha256(read_archive_bytes(key)).hexdigest()
     if digest != release.get("candidate_manifest_sha256"):
         raise ChannelError("Stable candidate manifest differs from the final release receipt")
     scoped_env = {

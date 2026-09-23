@@ -279,13 +279,14 @@ def discover(repository: str, run=output) -> list[dict]:
                 raise ValueError(f"{tag} points at a different commit than {claim_tag}")
             final = _tag_message(tag, final_ref["object"], run)
             expected_final = {
-                "schema": 1, "version": version, "attempt": attempt, "commit": commit,
+                "schema": 1, "version": version, "commit": commit,
                 "claimTag": claim_tag, "claimTagObject": claim_ref["object"],
                 "autopublish": claim["autopublish"],
                 "claimEpoch": claim_epoch,
                 "releaseId": final.get("releaseId"),
                 "candidateManifestSha256": final.get("candidateManifestSha256"),
                 "dockerManifestDigest": final.get("dockerManifestDigest"),
+                "archive": f"releases/tag/{claim_tag}/",
             }
             if (final != expected_final
                     or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
@@ -319,6 +320,7 @@ def discover(repository: str, run=output) -> list[dict]:
             "autopublish": claim["autopublish"],
             "claim_tag": claim_tag,
             "claim_object": claim_ref["object"],
+            "claim_epoch": claim_epoch,
             "tag": tag,
             "commit": commit,
             "release_id": release.get("id") if release else None,
@@ -331,11 +333,15 @@ def discover(repository: str, run=output) -> list[dict]:
     return sorted(records, key=lambda record: _key(record["version"]))
 
 
-def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> list[dict]:
+def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
+              read_archive=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
     from scripts.releases import channel_releases, docker, stable
 
     repository = env["GITHUB_REPOSITORY"]
+    # The archive copy is the only authority for the candidate manifest digest;
+    # nothing records it before the publication pass hashes it.
+    read_archive = read_archive or channel_releases.read_archive_bytes
     records = discover(repository, run)
     retries = retry_due(records)
     if retries:
@@ -358,8 +364,13 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
         return [{"retry": retry["version"], "attempt": retry["attempt"]} for retry in retries]
     for record in records:
         if record["needs_retarget"]:
-            stable.retarget_release(repository, record["release_id"], record["tag"],
-                                    record["commit"], publish=False, run=run)
+            # Recovery for a publish that died after the receipt tag: the tag
+            # exists and the release is still a draft, so the retarget and the
+            # publication rerun. A public release can never be repaired.
+            stable.edit_draft_release(repository, record["release_id"], record["tag"],
+                                      record["commit"], run=run)
+            stable.publish_release_draft(repository, record["release_id"], record["tag"],
+                                         run=run)
     if any(record["needs_retarget"] for record in records):
         records = discover(repository, run)
 
@@ -371,16 +382,21 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None) -> li
 
     if advance_head is None:
         def production_advance(record: dict) -> None:
-            docker.promote_stable(record["tag"], record["docker_manifest_digest"])
             with tempfile.TemporaryDirectory() as directory:
                 channel_releases.advance_stable(env, record, Path(directory))
+            # The stable/latest aliases move onto the attempt's image here, in
+            # the publication pass with the feed pointer, never in the green
+            # build that pushed the image under the attempt ref.
+            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
+            # The Store release joins the pass here (after the feeds and
+            # aliases move), not before.
         advance_head = production_advance
 
     for step in steps:
         if "flip" in step:
             record = by_version[step["flip"]]
-            stable.retarget_release(repository, record["release_id"], record["tag"],
-                                    record["commit"], publish=True, run=run)
+            record["docker_manifest_digest"] = stable.publish_attempt(
+                record, repository=repository, run=run, read_archive=read_archive)
         else:
             advance_head(by_version[step["advance"]])
 

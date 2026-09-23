@@ -285,10 +285,10 @@ def test_publish_dispatches_the_sequencer():
     assert published["requested"] == "v0.21.5"
     assert published["version"] == "0.21.5"
     assert published["repository"] == "example/hermes-agent"
-    assert calls == [[
-        "gh", "workflow", "run", "stable-release-publication.yml",
-        "--repo", "example/hermes-agent", "--raw-field", "version=0.21.5",
-    ]]
+    assert calls == [
+        ["gh", "workflow", "run", "stable-release-publication.yml",
+         "--repo", "example/hermes-agent", "--raw-field", "version=0.21.5"],
+    ]
 
     with pytest.raises(ReleaseRefused, match="burned or superseded by 0\\.21\\.6"):
         publish(
@@ -297,6 +297,37 @@ def test_publish_dispatches_the_sequencer():
             inspect=lambda _command: pytest.fail("superseded publish must not inspect drafts"),
             head_version=lambda: "0.21.6",
         )
+
+
+def test_publish_preflight_finds_the_draft_on_the_outstanding_attempt(source):
+    from scripts.releases.entrypoint import ReleaseRefused, publish
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    calls = []
+
+    def inspect(command):
+        tag = command[3]
+        if tag != "rc.1-v0.21.5":
+            raise ReleaseRefused("release not found")
+        return json.dumps({"tagName": tag, "isDraft": True, "isPrerelease": False})
+
+    publish("0.21.5", repository="example/hermes-agent", dispatch=calls.append,
+            inspect=inspect, head_version=lambda: None,
+            repo=source, remote="origin")
+    assert calls[-1][-1] == "version=0.21.5"
+
+    # A draft left on the old v{version}-rc shape is not the publish draft.
+    def old_shape(command):
+        tag = command[3]
+        if tag != "v0.21.5-rc":
+            raise ReleaseRefused("release not found")
+        return json.dumps({"tagName": tag, "isDraft": True, "isPrerelease": False})
+
+    with pytest.raises(ReleaseRefused, match="burned or has no release draft"):
+        publish("0.21.5", repository="example/hermes-agent",
+                dispatch=lambda _command: pytest.fail("must not dispatch"),
+                inspect=old_shape, head_version=lambda: None,
+                repo=source, remote="origin")
 
 
 def _abandon(repo, version, *, draft=None, calls=None):

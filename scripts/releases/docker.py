@@ -133,6 +133,20 @@ def promote_stable(tag: str, digest: str, *, run=output, sleep=time.sleep) -> No
             raise DockerReleaseError(f"Docker {alias} alias read-back mismatch")
 
 
+def published_digest(tag: str, run=output) -> str:
+    """The manifest-list digest of the attempt's published image, read at publish.
+
+    The image was pushed under the attempt ref when its own tests passed; the
+    receipt tag binds this digest, and the stable/latest aliases move onto it
+    in the publication pass.
+    """
+    require_stable_tag(tag)
+    digest = _inspect(f"{IMAGE}:{tag}", run)
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise DockerReleaseError("Published image manifest digest is invalid")
+    return digest
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)

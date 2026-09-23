@@ -10,9 +10,12 @@ from pathlib import Path
 
 import pytest
 
+from scripts.releases.draft_warning import (
+    WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
+)
 from scripts.releases.stable import (
     check_claim, ensure_final_tag, plan_transitions, read_manifest, require_stable_identity,
-    require_success, retarget_release, validate_candidates,
+    require_success, validate_candidates,
 )
 
 BASE = "https://releases.example"
@@ -359,27 +362,153 @@ def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tm
     assert not [argv for argv in calls if argv[0] == "gh"]
 
 
-@pytest.mark.parametrize("publish", [False, True])
-def test_retarget_release_preserves_the_database_id_and_explicit_draft_policy(publish):
-    commit = "a" * 40
-    calls = []
-    patched = False
+def _fenced_body(notes="## What's changed\n- x"):
+    """A draft body the way the entrypoint builds it: warning block, notes, warning block."""
+    block = WARNING_OPEN + "\nDO NOT PUBLISH THIS BY HAND\n" + WARNING_CLOSE
+    return block + "\n" + notes + "\n" + block
 
-    def gh(argv):
-        nonlocal patched
-        calls.append(argv)
-        if argv[1:3] == ["api", "--method"]:
-            patched = True
+
+def test_strip_removes_both_blocks_and_keeps_the_notes():
+    assert strip_draft_warning(_fenced_body()).strip() == "## What's changed\n- x"
+    # A body without fences passes through untouched.
+    assert strip_draft_warning("just notes") == "just notes"
+
+
+@pytest.mark.parametrize("body", [
+    WARNING_OPEN + "\nunbalanced",
+    "text\n" + WARNING_CLOSE,
+    WARNING_OPEN + "\n" + WARNING_OPEN + "\n" + WARNING_CLOSE,
+    WARNING_OPEN + "text",
+])
+def test_strip_refuses_an_unbalanced_fence(body):
+    with pytest.raises(ValueError, match="unbalanced"):
+        strip_draft_warning(body)
+
+
+def _publish_record(commit, tag_object, *, epoch, release_id=42):
+    return {"claim_tag": "rc.2-v1.2.3", "claim_object": tag_object, "tag": "v1.2.3",
+            "commit": commit, "version": "1.2.3", "attempt": 2, "release_id": release_id,
+            "autopublish": False, "claim_epoch": epoch}
+
+
+def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_path, monkeypatch):
+    from scripts.releases import stable
+
+    commit, tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3")
+    monkeypatch.chdir(tmp_path / "repo")
+    epoch = json.loads(subprocess.check_output(
+        ["git", "tag", "-l", "rc.2-v1.2.3", "--format=%(contents)"],
+        text=True, encoding="utf-8"))["claimEpoch"]
+    manifest_bytes = b'{"schema":2}\n'
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    docker_digest = "sha256:" + "d" * 64
+    release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": True, "prerelease": False,
+               "body": _fenced_body(), "published_at": None}
+    patches = []
+    requested_keys = []
+
+    def run(argv):
+        if argv[0] == "git":
+            return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+        if argv[:3] == ["docker", "buildx", "imagetools"]:
+            assert argv[4].endswith("nousresearch/hermes-agent:rc.2-v1.2.3")
+            return json.dumps(docker_digest)
+        if argv[:3] == ["gh", "api", "--method"]:
+            fields = {}
+            for _flag, value in zip(argv[5::2], argv[6::2]):
+                name, _, raw = value.partition("=")
+                fields[name] = raw
+            patches.append((fields.get("tag_name"), fields.get("draft")))
+            release.update({key: (raw == "true") if key in {"draft", "prerelease"} else raw
+                            for key, raw in fields.items()
+                            if key in {"tag_name", "draft", "prerelease", "body"}})
+            if release["draft"] is False:
+                release["published_at"] = "2026-09-22T00:00:00Z"
             return "{}"
-        if argv[1:3] == ["api", "repos/example/project/releases/42"]:
-            return json.dumps({
-                "id": 42, "tag_name": "v1.2.3" if patched else "v1.2.3-rc",
-                "target_commitish": commit, "prerelease": False,
-                "draft": not publish if patched else True,
-            })
-        return "{}"
+        if argv[:2] == ["gh", "api"]:
+            assert argv[2].endswith("/releases/42")
+            return json.dumps(release)
+        raise AssertionError(argv)
 
-    retarget_release("example/project", 42, "v1.2.3", commit, publish=publish, run=gh)
+    def read_archive(key):
+        requested_keys.append(key)
+        return manifest_bytes
 
-    assert ["--field", f"draft={str(not publish).lower()}"] == calls[1][-2:]
-    assert calls[2] == ["gh", "api", "repos/example/project/releases/42"]
+    digest = stable.publish_attempt(
+        _publish_record(commit, tag_object, epoch=epoch),
+        repository="example/project", run=run, read_archive=read_archive,
+    )
+
+    assert digest == docker_digest
+    receipt = json.loads(subprocess.check_output(
+        ["git", "tag", "-l", "v1.2.3", "--format=%(contents)"],
+        text=True, encoding="utf-8"))
+    assert receipt["claimTag"] == "rc.2-v1.2.3"
+    assert receipt["archive"] == "releases/tag/rc.2-v1.2.3/"
+    assert receipt["candidateManifestSha256"] == manifest_digest
+    assert receipt["dockerManifestDigest"] == docker_digest
+    assert receipt["releaseId"] == 42
+    remote = subprocess.check_output(
+        ["git", "ls-remote", "origin", "refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"],
+        text=True, encoding="utf-8")
+    assert commit in remote
+    # The digest is hashed from the attempt archive, and no v-tag path is read.
+    assert requested_keys == ["releases/tag/rc.2-v1.2.3/release-candidates.json"]
+    # The retarget and the strip happen while the release is still a draft;
+    # draft=false is its own final call, after both read back.
+    assert [draft for _tag, draft in patches] == ["true", "false"]
+    assert [tag for tag, _draft in patches] == ["v1.2.3", None]
+    assert release["tag_name"] == "v1.2.3" and release["draft"] is False
+    assert release["body"] == "## What's changed\n- x"
+
+
+def test_publish_attempt_refuses_a_release_that_is_no_longer_a_draft(tmp_path, monkeypatch):
+    from scripts.releases import stable
+
+    commit, tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3")
+    monkeypatch.chdir(tmp_path / "repo")
+    epoch = json.loads(subprocess.check_output(
+        ["git", "tag", "-l", "rc.2-v1.2.3", "--format=%(contents)"],
+        text=True, encoding="utf-8"))["claimEpoch"]
+    release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": False, "prerelease": False,
+               "body": "notes", "published_at": "2026-09-22T00:00:00Z"}
+
+    def run(argv):
+        if argv[0] == "git":
+            return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+        if argv[:3] == ["docker", "buildx", "imagetools"]:
+            return json.dumps("sha256:" + "d" * 64)
+        if argv[:2] == ["gh", "api"]:
+            return json.dumps(release)
+        raise AssertionError(argv)
+
+    with pytest.raises(ValueError, match="no longer a draft"):
+        stable.publish_attempt(
+            _publish_record(commit, tag_object, epoch=epoch),
+            repository="example/project", run=run, read_archive=lambda _key: b"m",
+        )
+    # The custody receipt still exists: a public release cannot be repaired,
+    # but the tag must not be skipped either.
+    assert "refs/tags/v1.2.3" in subprocess.check_output(
+        ["git", "ls-remote", "origin", "refs/tags/v1.2.3"], text=True, encoding="utf-8")
+
+
+def test_edit_draft_release_refuses_a_body_that_still_carries_a_fence(tmp_path, monkeypatch):
+    from scripts.releases import stable
+
+    commit, _tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3")
+    monkeypatch.chdir(tmp_path / "repo")
+    release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": True, "prerelease": False,
+               "body": _fenced_body(), "published_at": None}
+    # The PATCH is dropped on the floor: the read-back still shows the fence.
+    def run(argv):
+        if argv[0] == "git":
+            return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+        if argv[:3] == ["gh", "api", "--method"]:
+            return "{}"
+        if argv[:2] == ["gh", "api"]:
+            return json.dumps(release)
+        raise AssertionError(argv)
+
+    with pytest.raises(ValueError):
+        stable.edit_draft_release("example/project", 42, "v1.2.3", commit, run=run)

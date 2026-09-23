@@ -254,18 +254,34 @@ def _release_view(tag: str, repository: str, inspect) -> dict | None:
         raise
 
 
-def _preflight_publish(version: str, repository: str, inspect, head_version) -> None:
+def _outstanding_ref(repo: Path, version: str) -> str:
+    """The attempt ref whose draft the publication pass must find."""
+    attempt = next_attempt(version, _claims(repo)) - 1
+    if attempt < 1:
+        raise ReleaseRefused(f"stable {version} has no claimed attempt to publish")
+    return attempt_ref(version, attempt)
+
+
+def _preflight_publish(version: str, repository: str, inspect, head_version,
+                       repo: Path | None, remote: str | None) -> None:
     requested = tuple(map(int, version.split(".")))
     head = head_version()
     if head and tuple(map(int, head.split("."))) >= requested:
         raise ReleaseRefused(f"stable {version} is burned or superseded by {head}")
-    rows = [row for tag in (f"v{version}", f"v{version}-rc")
+    if repo is None or remote is None:
+        raise ValueError("preflight needs the release repository to find the attempt ref")
+    # The draft lives on the attempt ref, never on the final tag and never on
+    # the old v{version}-rc shape.
+    _refresh_claims(repo, remote)
+    attempt_ref = _outstanding_ref(repo, version)
+    rows = [(tag, row) for tag in (f"v{version}", attempt_ref)
             if (row := _release_view(tag, repository, inspect)) is not None]
-    if len(rows) != 1:
+    if len(rows) != 1 or rows[0][0] != attempt_ref or rows[0][1].get("isDraft") is not True:
         raise ReleaseRefused(f"stable {version} is burned or has no release draft")
 
 
-def publish(version: str, *, repository: str, dispatch, inspect=None, head_version=None) -> dict:
+def publish(version: str, *, repository: str, dispatch, inspect=None, head_version=None,
+            repo: Path | None = None, remote: str | None = None) -> dict:
     """Request ordered publication through the one production sequencer."""
     tag = f"v{version}"
     from hermes_cli.update_channel import STABLE_TAG_RE
@@ -273,7 +289,7 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     if not STABLE_TAG_RE.fullmatch(tag):
         raise ReleaseRefused(f"{version} is not a stable version")
     if inspect is not None and head_version is not None:
-        _preflight_publish(version, repository, inspect, head_version)
+        _preflight_publish(version, repository, inspect, head_version, repo, remote)
     dispatch([
         "gh", "workflow", "run", "stable-release-publication.yml",
         "--repo", repository, "--raw-field", f"version={version}",
@@ -403,12 +419,13 @@ def abandon_steps(result: dict) -> str:
 
 
 def cmd_publish(args) -> None:
-    repo, _remote, repository = _command_repository(args)
+    repo, remote, repository = _command_repository(args)
     from scripts.releases.versioning import published_stable_version
     result = publish(args.version, repository=repository,
                      dispatch=lambda command: _execute(repo, command),
                      inspect=lambda command: _inspect(repo, command),
-                     head_version=lambda: published_stable_version(repository))
+                     head_version=lambda: published_stable_version(repository),
+                     repo=repo, remote=remote)
     listed = _inspect(repo, [
         "gh", "run", "list", "--repo", repository, "--workflow", "stable-release-publication.yml",
         "--json", "databaseId,url,headBranch,status", "--limit", "1",
