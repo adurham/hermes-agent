@@ -82,11 +82,16 @@ def stable_windows_version(epoch: object) -> str:
     return f"{instant.year}.{hour_of_year}.{second_of_hour}.0"
 
 
-def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
-                        release_epoch: int | None = None, *, archive: str) -> dict:
-    """`tag` is the plain payload identity; `archive` is the releases/tag/<ref>/
-    prefix every artifact URL must live under. Stable attempts name the attempt
-    ref as their archive; the two are separate fields and never overloaded."""
+RECEIPT_TARGETS = {
+    "darwin-arm64": ("macos/arm64",),
+    "darwin-x64": ("macos/x64",),
+    "win32-bundle": ("windows/x64", "windows/arm64"),
+}
+
+
+def _validated_rows(manifest: dict, tag: str, commit: str, public_base: str,
+                    release_epoch: int | None, *, archive: str) -> dict:
+    """The per-row checks shared by the full-manifest and receipt validators."""
     require_stable_identity(tag, commit)
     if manifest.get("schema") != 2 or manifest.get("tag") != tag or manifest.get("commit") != commit or not isinstance(manifest.get("packages"), list):
         raise ValueError("Candidate manifest does not match release identity")
@@ -127,8 +132,30 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
         elif item.get("version") != f"{tag[1:]}-1":
             raise ValueError("Termux candidate version differs from the admitted release")
         rows[target] = item
+    return rows
+
+
+def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
+                        release_epoch: int | None = None, *, archive: str) -> dict:
+    """`tag` is the plain payload identity; `archive` is the releases/tag/<ref>/
+    prefix every artifact URL must live under. Stable attempts name the attempt
+    ref as their archive; the two are separate fields and never overloaded."""
+    rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
     if any(target not in rows for target in DESKTOP_TARGETS):
         raise ValueError("Candidate manifest must cover Windows and macOS on both architectures")
+    return rows
+
+
+def validate_receipt(manifest: dict, receipt: str, tag: str, commit: str, public_base: str,
+                     release_epoch: int | None = None, *, archive: str) -> dict:
+    """One per-arch or bundle receipt: exactly that group's rows and no others."""
+    targets = RECEIPT_TARGETS.get(receipt)
+    if targets is None:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
+    if set(rows) != set(targets):
+        raise ValueError(
+            f"Receipt {receipt} requires exactly {', '.join(targets)} and nothing else")
     return rows
 
 
@@ -141,30 +168,44 @@ def windows_version(value: str) -> tuple[int, ...]:
     return result
 
 
+def _transition_row(target: str, left: dict, right: dict) -> dict:
+    if left["identity"] != right["identity"] or left["commit"] == right["commit"] or left["artifact"]["sha256"] == right["artifact"]["sha256"]:
+        raise ValueError("Update must preserve package identity and change the build")
+    if right["platform"] == "windows":
+        if (left["publisher"], left["applicationId"]) != (right["publisher"], right["applicationId"]):
+            raise ValueError("Update must preserve publisher and applicationId")
+        newer = windows_version(right["version"]) > windows_version(left["version"])
+    else:
+        if left["teamId"] != right["teamId"]:
+            raise ValueError("Update must preserve signing team")
+        newer = tuple(map(int, right["version"].split("."))) > tuple(map(int, left["version"].split(".")))
+    if not newer:
+        raise ValueError("New package version must increase")
+    return {"target": target.replace("/", "-"), "transition": {
+        "schema": 1, "platform": right["platform"], "arch": right["arch"], "old": left, "new": right,
+    }}
+
+
 def plan_transitions(previous: dict, candidate: dict, public_base: str) -> list[dict]:
     old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
                               archive=previous.get("archive"))
     new = validate_candidates(candidate, candidate.get("tag"), candidate.get("commit"), public_base,
                               archive=candidate.get("archive"))
-    result = []
-    for target in DESKTOP_TARGETS:
-        left, right = old[target], new[target]
-        if left["identity"] != right["identity"] or left["commit"] == right["commit"] or left["artifact"]["sha256"] == right["artifact"]["sha256"]:
-            raise ValueError("Update must preserve package identity and change the build")
-        if right["platform"] == "windows":
-            if (left["publisher"], left["applicationId"]) != (right["publisher"], right["applicationId"]):
-                raise ValueError("Update must preserve publisher and applicationId")
-            newer = windows_version(right["version"]) > windows_version(left["version"])
-        else:
-            if left["teamId"] != right["teamId"]:
-                raise ValueError("Update must preserve signing team")
-            newer = tuple(map(int, right["version"].split("."))) > tuple(map(int, left["version"].split(".")))
-        if not newer:
-            raise ValueError("New package version must increase")
-        result.append({"target": target.replace("/", "-"), "transition": {
-            "schema": 1, "platform": right["platform"], "arch": right["arch"], "old": left, "new": right,
-        }})
-    return result
+    return [_transition_row(target, old[target], new[target]) for target in DESKTOP_TARGETS]
+
+
+def plan_receipt_transitions(previous: dict, receipt_manifest: dict, receipt: str,
+                             public_base: str) -> list[dict]:
+    """The same transitions, but only for one receipt's rows."""
+    targets = RECEIPT_TARGETS.get(receipt)
+    if targets is None:
+        raise ValueError(f"Unknown receipt: {receipt}")
+    old = validate_candidates(previous, previous.get("tag"), previous.get("commit"), public_base,
+                              archive=previous.get("archive"))
+    new = validate_receipt(receipt_manifest, receipt, receipt_manifest.get("tag"),
+                           receipt_manifest.get("commit"), public_base,
+                           archive=receipt_manifest.get("archive"))
+    return [_transition_row(target, old[target], new[target]) for target in targets]
 
 
 def read_manifest(url: str, expected_hash: str | None = None, *, expected_origin: str | None = None,

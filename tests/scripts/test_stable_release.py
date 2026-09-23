@@ -14,8 +14,8 @@ from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
 from scripts.releases.stable import (
-    check_claim, ensure_final_tag, plan_transitions, read_manifest, require_stable_identity,
-    require_success, validate_candidates,
+    check_claim, ensure_final_tag, plan_receipt_transitions, plan_transitions, read_manifest,
+    require_stable_identity, require_success, validate_candidates, validate_receipt,
 )
 
 BASE = "https://releases.example"
@@ -96,6 +96,83 @@ def test_validate_candidates_keys_the_archive_by_the_attempt_ref():
     # A canary-shaped archive ref (the payload tag itself) still validates.
     assert validate_candidates(candidates("v1.2.4", commit, "2" * 64),
                                "v1.2.4", commit, BASE, archive="v1.2.4")
+
+
+RECEIPTS = (
+    ("darwin-arm64", ("macos/arm64",)),
+    ("darwin-x64", ("macos/x64",)),
+    ("win32-bundle", ("windows/x64", "windows/arm64")),
+)
+
+
+def _receipt_rows(manifest, targets):
+    out = copy.deepcopy(manifest)
+    out["packages"] = [row for row in manifest["packages"]
+                       if f"{row['platform']}/{row['arch']}" in targets]
+    return out
+
+
+def test_each_receipt_accepts_its_own_rows():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    for receipt, targets in RECEIPTS:
+        rows = validate_receipt(_receipt_rows(manifest, targets), receipt,
+                                manifest["tag"], commit, BASE, manifest["releaseEpoch"],
+                                archive="rc.2-v1.2.4")
+        assert set(rows) == set(targets)
+
+
+def test_a_mac_receipt_with_both_arches_or_a_termux_row_is_refused():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    both = _receipt_rows(manifest, {"macos/arm64", "macos/x64"})
+    with pytest.raises(ValueError, match="eceipt"):
+        validate_receipt(both, "darwin-arm64", manifest["tag"], commit, BASE,
+                         manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+    termux = _receipt_rows(manifest, {"macos/arm64"})
+    termux["packages"].append({"platform": "termux", "arch": "aarch64", "tag": manifest["tag"],
+                               "commit": commit, "identity": "test.application",
+                               "version": "1.2.4-1",
+                               "artifact": {"sha256": "2" * 64,
+                                            "url": f"{BASE}/releases/tag/rc.2-v1.2.4/hermes.deb"}})
+    with pytest.raises(ValueError, match="eceipt"):
+            validate_receipt(termux, "darwin-arm64", manifest["tag"], commit, BASE,
+                             manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+
+
+def test_a_win32_bundle_receipt_with_one_arch_is_refused():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    one = _receipt_rows(manifest, {"windows/x64"})
+    with pytest.raises(ValueError, match="eceipt"):
+        validate_receipt(one, "win32-bundle", manifest["tag"], commit, BASE,
+                         manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+
+
+def test_an_unknown_receipt_is_refused():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    with pytest.raises(ValueError, match="Unknown receipt"):
+        validate_receipt(manifest, "darwin", manifest["tag"], commit, BASE,
+                         manifest["releaseEpoch"], archive="rc.2-v1.2.4")
+
+
+def test_validate_candidates_still_refuses_a_missing_target():
+    commit = "b" * 40
+    manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
+    with pytest.raises(ValueError, match="both architectures"):
+        validate_candidates(_receipt_rows(manifest, {"macos/arm64", "windows/arm64"}),
+                            manifest["tag"], commit, BASE, manifest["releaseEpoch"],
+                            archive="rc.2-v1.2.4")
+
+
+def test_plan_receipt_transitions_yields_only_the_receipts_rows():
+    old = candidates("v1.2.3", "a" * 40, "1" * 64)
+    new = candidates("v1.2.4", "b" * 40, "2" * 64, archive="rc.2-v1.2.4")
+    for receipt, targets in RECEIPTS:
+        rows = plan_receipt_transitions(old, _receipt_rows(new, targets), receipt, BASE)
+        assert {row["target"] for row in rows} == {target.replace("/", "-") for target in targets}
+        assert all(row["transition"]["new"]["commit"] == new["commit"] for row in rows)
 
 
 def test_transitions_bind_all_arches_identity_version_and_archive():
