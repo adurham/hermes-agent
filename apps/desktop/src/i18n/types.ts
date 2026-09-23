@@ -1446,6 +1446,9 @@ export interface Translations {
       moaSetDefault: string
       moaNewPresetPlaceholder: string
       moaAddPreset: string
+      customModel: string
+      customModelPlaceholder: string
+      chooseFromList: string
       moaDefault: string
       moaReferenceToggle: (enabled: boolean, index: number) => string
       moaReferenceTitle: (index: number) => string
@@ -3658,6 +3661,9 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    customModel: string
+    addCustomModelAction: string
+    customModelPlaceholder: string
   }
 
   modelVisibility: {
@@ -3665,6 +3671,8 @@ export interface Translations {
     search: string
     noAuthenticatedProviders: string
     addProvider: string
+    addCustomModel: string
+    removeCustomModel: string
   }
 
   shell: {
