@@ -467,6 +467,9 @@ function Get-PinnedGit {
         if ($inner.Count -eq 1 -and $inner[0].PSIsContainer) { $src = $inner[0].FullName }
         if (-not (Test-Path (Join-Path $src "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
         if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
+        # Prerequisites run first, so on a fresh host the store root does not
+        # exist yet; Move-Item never creates the destination's parent.
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
         Move-Item $src $entry
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
