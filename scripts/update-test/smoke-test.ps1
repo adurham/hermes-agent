@@ -87,8 +87,11 @@ $env:PATH = (Split-Path -Parent $RealPython) + ';' + $env:PATH
 Write-Host "python: $RealPython"
 $RealGit = Find-RealGit
 if ($RealGit) { $env:PATH = (Split-Path -Parent $RealGit) + ';' + $env:PATH; Write-Host "git: $RealGit" }
-# tar lives in System32; put it ahead of any WindowsApps payload on PATH.
-if ($env:SystemRoot) { $env:PATH = (Join-Path $env:SystemRoot 'System32') + ';' + $env:PATH }
+
+$id = [Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  throw 'run this smoke test elevated: pre/post take a Volume Shadow Copy snapshot'
+}
 
 $Root = Join-Path $env:LOCALAPPDATA ("Temp\rehearsal-ps-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
@@ -196,7 +199,15 @@ con.close()
   Set-Content -LiteralPath (Join-Path $Install '.hermes\bin\hermes.cmd') -Value "@echo off`r`necho hermes 0.0.0"
   Set-Content -LiteralPath (Join-Path $Install '.hermes-runtime\python\interpreter.bin') -Value 'big'
   New-Item -ItemType Directory -Force -Path (Join-Path $H 'bin') | Out-Null
-  Set-Content -LiteralPath (Join-Path $H 'bin\hermes.cmd') -Value "@echo off`r`necho hermes"
+  # A fake launcher that understands `backup -o <zip>`: pre calls it for the data backup.
+  @'
+@echo off
+if /i "%~1"=="backup" if /i "%~2"=="-o" (
+  > "%~3" echo fake-zip
+  exit /b 0
+)
+echo hermes
+'@ | Set-Content -LiteralPath (Join-Path $H 'bin\hermes.cmd') -Encoding ASCII
 
   New-Item -ItemType Directory -Force -Path (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Local Storage\leveldb'), (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Cache') | Out-Null
   Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Preferences') -Value '{"window":{}}'
@@ -218,15 +229,12 @@ try {
   $r = Invoke-Rehearsal -Arguments @('pre', '-Source', $Install, '-Ref', 'main', '-BackupRoot', $Backups)
   Check 'pre exits 0' ($r.Code -eq 0)
   $Snap = (Get-ChildItem -LiteralPath $Backups -Directory | Sort-Object Name)[-1].FullName
-  foreach ($f in @('hermes-home.tar', 'electron-userdata.tar', 'manifest.json', 'hermes-home.txt', 'target-sha')) {
+  foreach ($f in @('hermes-backup.zip', 'shadows.txt', 'manifest.json', 'hermes-home.txt', 'target-sha')) {
     Check "backup artifact $f" (Test-Path -LiteralPath (Join-Path $Snap $f))
   }
-  $tarList = (& tar.exe -tf (Join-Path $Snap 'hermes-home.tar') | Out-String)
-  Check 'whole home: checkout .git in the tar' ($tarList -match '(?m)^\./hermes-agent/\.git/config\s*$')
-  Check 'whole home: PM store in the tar' ($tarList -match '(?m)^\./hermes-agent/\.hermes-runtime/python/interpreter\.bin\s*$')
-  Check 'whole home: config.yaml in the tar' ($tarList -match '(?m)^\./config\.yaml\s*$')
-  $udList = (& tar.exe -tf (Join-Path $Snap 'electron-userdata.tar') | Out-String)
-  Check 'whole userData: nothing filtered out of the tar' ($udList -match '(?m)^\./Cache/data\.bin\s*$')
+  $ShadowIds = @(Get-Content -LiteralPath (Join-Path $Snap 'shadows.txt') | Where-Object { $_.Trim() } | ForEach-Object { ($_ -split "`t")[1] })
+  Check 'one snapshot recorded' ($ShadowIds.Count -eq 1)
+  Check 'the recorded snapshot exists' ([bool](Get-WmiObject Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
 
   Write-Host "`n--- pre points the install at the rehearsal copy ---"
   $served = (& git -C (Join-Path $Snap 'serve.git') rev-parse refs/heads/main | Out-String).Trim()
@@ -247,6 +255,17 @@ try {
   Write-Host "`n--- status (read-only) ---"
   $r = Invoke-Rehearsal -Arguments @('status', '-BackupRoot', $Backups)
   Check 'status reports what it prepared' ($r.Out -match [regex]::Escape($HeadSha))
+  Check 'status reports the snapshot present' ($r.Out -match 'snapshot\s+\S+ present')
+
+  Write-Host "`n--- simulate an update: modify, add and delete in both trees ---"
+  Set-Content -LiteralPath (Join-Path $H 'config.yaml') -Value 'timezone: changed-by-update'
+  Remove-Item -LiteralPath (Join-Path $H 'memories\note.md')
+  Set-Content -LiteralPath (Join-Path $Install 'added_by_update.py') -Value 'print(2)'
+  New-Item -ItemType Directory -Force -Path (Join-Path $H 'photon\sidecar\node_modules\newdep') | Out-Null
+  Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\newdep\index.js') -Value 'x'
+  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Preferences') -Value '{"window":{"changed":true}}'
+  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'new-after-update.json') -Value '{}'
+  Check 'the simulated update changed HERMES_HOME' ((Get-TreeListing $H) -ne $homeBefore)
 
   Write-Host "`n--- post ---"
   $r = Invoke-Rehearsal -Arguments @('post', '-BackupRoot', $Backups, '-Yes')
@@ -267,6 +286,8 @@ try {
   Check 'upstream-prompt marker removed' (-not (Test-Path -LiteralPath (Join-Path $H '.skip_upstream_prompt')))
   Check 'origin resolves officially again' (((& git -C $Install remote get-url origin | Out-String).Trim()) -match 'NousResearch')
   Check 'bin shim restored' (Test-Path -LiteralPath (Join-Path $H 'bin\hermes.cmd'))
+  Check 'post deleted the snapshot' (-not (Get-WmiObject Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
+  Check 'post removed its mount link' (-not (Test-Path -LiteralPath (Join-Path $Snap 'vss-C')))
   Write-Host "`n--- the acceptance criterion: every file identical before/after ---"
   $homeAfter = Get-TreeListing $H
   Check 'HERMES_HOME identical to before pre' ($homeAfter -eq $homeBefore)

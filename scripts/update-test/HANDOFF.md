@@ -10,7 +10,7 @@ instructions:
    macos/linux:
    `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- pre`
 
-   windows:
+   windows (open PowerShell with **Run as Administrator** — the backup takes a disk snapshot, which needs admin):
    `& ([scriptblock]::Create((irm "ps1_url1" -Headers @{"Cache-Control"="no-cache"}))) pre`
 
    this backs up your entire hermes home and any desktop app settings. _from this point on, nothing you do in hermes will be preserved, until you restore your backup at the end._
@@ -28,7 +28,7 @@ instructions:
    macos/linux:
    `curl -fsSL "sh_url?t=$(date +%s)" | bash -s -- post --yes`
 
-   windows:
+   windows (again as **Administrator**):
    `& ([scriptblock]::Create((irm "ps1_url1" -Headers @{"Cache-Control"="no-cache"}))) post -Yes`
 
    this puts hermes back to exactly how it was beforehand.
