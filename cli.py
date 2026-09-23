@@ -110,6 +110,8 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _maybe_remap_for_light_mode,
     _output_history_recording,
     _output_tail_fitting,
+    _painted_columns,
+    _PaintedLine,
     _panel_box_width,
     _post_stream_transform_output,
     _prepend_note_to_message,
@@ -668,12 +670,16 @@ def _replay_output_history(fit=None) -> None:
                     continue
                 if isinstance(lines, str):
                     lines = lines.splitlines()
-            rendered_lines.extend(str(line) for line in lines)
+            rendered_lines.extend(line if isinstance(line, str) else str(line) for line in lines)
         if fit is not None:
             rendered_lines = _output_tail_fitting(rendered_lines, *fit)
         if rendered_lines:
             # One payload: per-line pt prints each force a sync redraw (a waterfall of old output).
             _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            width = _painted_columns()
+            for line in rendered_lines:  # repainted: they wrap at today's width from now on
+                if isinstance(line, _PaintedLine):
+                    line.width = width
     except Exception:
         pass
     finally:

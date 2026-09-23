@@ -491,21 +491,79 @@ def _record_output_history_entry(entry) -> None:
         _cli()._OUTPUT_HISTORY.append(entry)
 
 
-def _record_output_history(text: str) -> None:
+class _PaintedLine(str):
+    """A recorded output line tagged with the terminal ``width`` it was painted at: a terminal
+    that does not reflow keeps the rows it wrapped into then, whatever the width is now."""
+    width = None
+
+
+def _painted_columns():
+    """The width the terminal soft-wraps a print at right now, or ``None``."""
+    try:
+        from prompt_toolkit.application import get_app_or_none
+        app = get_app_or_none()
+        if app is not None:
+            return app.output.get_size().columns
+    except Exception:
+        pass
+    try:
+        return os.get_terminal_size(sys.__stdout__.fileno()).columns
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _record_output_history(text: str, *, force: bool = False) -> None:
+    """Record ``text`` as painted now. ``force`` skips the recording check when the caller
+    made it at print-request time (the print itself was deferred to the app loop)."""
     from cli import _output_history_recording
-    if _output_history_recording():
-        _cli()._OUTPUT_HISTORY.extend(str(text).replace("\r", "").rstrip("\n").splitlines())
+    if force or _output_history_recording():
+        width = _painted_columns()
+        lines = []
+        # One entry per printed line: ``_pt_print`` ends every text with a newline, so "" and a
+        # trailing "\n" are blank rows on screen and must count in the replay's row budget.
+        for line in str(text).replace("\r", "").split("\n"):
+            line = _PaintedLine(line)
+            line.width = width
+            lines.append(line)
+        _cli()._OUTPUT_HISTORY.extend(lines)
+
+
+_ANSI_SEQUENCE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
+def _ansi_drop_cells(line: str, cells: int) -> str:
+    """``line`` without its first ``cells`` visible cells; escape sequences are kept for their styling."""
+    from prompt_toolkit.utils import get_cwidth
+    out, pos = [], 0
+    for match in [*_ANSI_SEQUENCE_RE.finditer(line), None]:
+        end = match.start() if match else len(line)
+        for ch in line[pos:end]:
+            if cells > 0:
+                cells -= get_cwidth(ch)
+            else:
+                out.append(ch)
+        if match:
+            out.append(match.group())
+            pos = match.end()
+    return "".join(out)
 
 
 def _output_tail_fitting(lines: list[str], max_rows: int, columns: int) -> list[str]:
-    """Newest ``lines`` whose soft-wrapped height at ``columns`` fits in ``max_rows``."""
+    """Newest ``lines`` filling ``max_rows`` rows, each soft-wrapped at the width it was painted
+    at (``columns`` when unknown). The oldest one may only partly fit: its bottom rows are
+    kept, the rows above them are already in scrollback."""
     from prompt_toolkit.formatted_text import ANSI, fragment_list_width, to_formatted_text
     kept, used = [], 0
     for line in reversed(lines):
-        width = fragment_list_width(to_formatted_text(ANSI(line)))
-        used += max(1, -(-width // columns)) if columns > 0 else 1
-        if used > max_rows:
+        if used >= max_rows:
             break
+        cols = getattr(line, "width", None) or columns
+        width = fragment_list_width(to_formatted_text(ANSI(line)))
+        height = max(1, -(-width // cols)) if cols > 0 else 1
+        if used + height > max_rows:
+            kept.append(_ansi_drop_cells(line, (height - (max_rows - used)) * cols))
+            break
+        used += height
         kept.append(line)
     kept.reverse()
     return kept
@@ -528,13 +586,24 @@ def _cprint(text: str):
     From a background thread while an Application runs, a direct print races the input
     redraw and gets buried, so those go through ``run_in_terminal`` via ``call_soon_threadsafe``.
     """
-    from cli import _PT_ANSI, _pt_print, _pt_print_ansi, _record_output_history
-    _record_output_history(text)
+    from cli import _PT_ANSI, _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
+    recording = _output_history_recording()
+
+    def _painted(paint):
+        # Recorded when painted, not when requested: a redraw replaying the history must
+        # neither print rows still queued for the loop nor size them at a stale width.
+        def _paint():
+            if recording:
+                _record_output_history(text, force=True)
+            paint()
+        return _paint
+    paint_pt = _painted(lambda: _pt_print(_PT_ANSI(text)))
+    paint_fallback = _painted(lambda: _pt_print_ansi(text))
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        paint_pt()
         return
 
     try:
@@ -543,7 +612,7 @@ def _cprint(text: str):
         app = None
 
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print_ansi(text)
+        paint_fallback()
         return
 
     import asyncio as _asyncio
@@ -561,7 +630,7 @@ def _cprint(text: str):
     except Exception:
         current_loop = None
     if loop is None or (current_loop is loop and loop.is_running()):
-        _pt_print(_PT_ANSI(text))
+        paint_pt()
         return
 
     def _schedule():
@@ -570,14 +639,14 @@ def _cprint(text: str):
         # Never fall back to a bare print on error: the sync path already printed.
         with suppress(Exception):
             import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            coro = run_in_terminal(paint_pt)
             if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
                 _asyncio.ensure_future(coro)
 
     try:
         loop.call_soon_threadsafe(_schedule)
     except Exception:
-        _pt_print_ansi(text)
+        paint_fallback()
 
 
 def _prepend_note_to_message(message, note: str):

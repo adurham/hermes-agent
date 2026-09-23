@@ -24,12 +24,17 @@ def bare_cli():
     return cli
 
 
-def _fake_app(*, rows, columns, chrome):
-    """MagicMock app whose output reports a real size and whose layout is ``chrome`` rows tall."""
+def _fake_app(*, rows, columns, chrome, painted=None):
+    """MagicMock app whose output reports a real size and whose layout is ``chrome`` rows tall;
+    ``painted`` is the height of the renderer's last paint (``None``: nothing painted yet)."""
+    from types import SimpleNamespace
+
     from prompt_toolkit.data_structures import Size
 
     app = MagicMock()
     app.renderer.output.get_size.return_value = Size(rows=rows, columns=columns)
+    app.renderer._last_screen = None if painted is None else SimpleNamespace(height=painted)
+    app.renderer._min_available_height = 0
     app.layout.container.preferred_height.return_value.preferred = chrome
     return app
 
@@ -44,16 +49,20 @@ class TestForceFullRedraw:
 
 
     def test_resize_recovery_clears_viewport_on_width_change(self, bare_cli, monkeypatch):
-        """A WIDTH change must wipe the visible viewport and replay.
+        """A column shrink must wipe the visible viewport and replay what it held.
 
         On column shrink the terminal reflows the old full-width chrome into
         extra rows that prompt_toolkit's stale-cursor erase cannot reach,
         leaving a duplicated status bar (#19280/#5474 class). We route through
         the same recovery as Ctrl+L: erase the viewport + replay transcript.
-        It must be banner-safe — CSI 3J (write_raw) must NOT fire.
+        It must be banner-safe — CSI 3J (write_raw) must NOT fire. The replay
+        refills exactly the rows the transcript had on screen: the terminal
+        height minus the chrome as last painted (here taller than its preferred
+        height), at the width those rows were painted at (#95375).
         """
-        app = _fake_app(rows=30, columns=90, chrome=5)
+        app = _fake_app(rows=30, columns=90, chrome=5, painted=7)
         events = []
+        fits = []
         app.renderer.output.erase_end_of_line.side_effect = lambda: events.append("erase")
         app.renderer.output.write_raw.side_effect = lambda *_: events.append("scrollback_wipe")
         original_on_resize = lambda: events.append("original_resize")
@@ -62,7 +71,8 @@ class TestForceFullRedraw:
         bare_cli._last_resize_width = 200
         monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 90)
         monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
-        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda *_: events.append("replay"))
+        monkeypatch.setattr(
+            cli_mod, "_replay_output_history", lambda fit=None: (events.append("replay"), fits.append(fit)))
         monkeypatch.setattr(
             cli_mod,
             "CLI_CONFIG",
@@ -75,6 +85,7 @@ class TestForceFullRedraw:
         assert "erase" in events
         assert "replay" in events
         assert events.index("erase") < events.index("original_resize")
+        assert fits == [(30 - 7, 200)]
         # Banner-safe: scrollback (CSI 3J) must never be wiped on a resize.
         assert "scrollback_wipe" not in events
         # New width recorded for the next comparison.
@@ -143,6 +154,26 @@ class TestForceFullRedraw:
 
         assert events[:3] == ["erase", "scrollback_wipe", "replay"]
         assert events.index("scrollback_wipe") < events.index("original_resize")
+
+    def test_widen_leaves_the_transcript_in_place(self, bare_cli, monkeypatch):
+        """#95375: a widen wraps nothing into extra rows, so prompt_toolkit's own erase still
+        covers the chrome. A replay would print again rows the terminal still shows."""
+        app = _fake_app(rows=24, columns=132, chrome=5, painted=5)
+        events = []
+        app.renderer.output.erase_end_of_line.side_effect = lambda: events.append("erase")
+        app.renderer.output.erase_screen.side_effect = lambda: events.append("erase")
+        original_on_resize = lambda: events.append("original_resize")
+
+        bare_cli._last_resize_width = 116
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 132)
+        monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda *_: events.append("replay"))
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", {"display": {"cli_rebuild_scrollback_on_redraw": False}})
+
+        bare_cli._recover_after_resize(app, original_on_resize)
+
+        assert events == ["original_resize"]
+        assert bare_cli._last_resize_width == 132
 
     def test_same_width_sigwinch_is_left_untouched(self, bare_cli, monkeypatch):
         """Same-width SIGWINCH (tmux attach, benign focus/tab signals) must not
@@ -428,6 +459,20 @@ class TestReplayFitsViewport:
 
         assert printed[0].split("\n") == [f"history line {i}" for i in range(192, 200)] + ["x" * 150]
         assert len(cli_mod._OUTPUT_HISTORY) == 200  # the buffer itself is untouched
+
+    def test_tail_counts_rows_at_the_painted_width_and_keeps_a_tall_lines_bottom(self):
+        """A line keeps the rows it wrapped into when painted (a terminal that does not reflow
+        never re-wraps it), and a line taller than the room keeps its bottom rows instead of
+        vanishing: the rows above them are what already scrolled into scrollback."""
+        tall = "".join(chr(ord("a") + i) * 10 for i in range(6))  # 60 cells = 6 rows at 10 cols
+        assert cli_mod._output_tail_fitting(["older", tall], 2, 10) == ["eeeeeeeeeeffffffffff"]
+        styled = f"\x1b[1m{tall}\x1b[0m"
+        assert cli_mod._output_tail_fitting([styled], 2, 10) == ["\x1b[1meeeeeeeeeeffffffffff\x1b[0m"]
+
+        from hermes_cli.cli_render import _PaintedLine
+        narrow = _PaintedLine("n" * 150)
+        narrow.width = 50  # painted before the terminal widened to 100: 3 rows, not 2
+        assert cli_mod._output_tail_fitting(["older", narrow, "last"], 4, 100) == [narrow, "last"]
 
 
 class TestFocusRegainRedraw:

@@ -186,15 +186,16 @@ class CLITerminalMixin:
             pass
         self._force_full_redraw()
 
-    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False):
+    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False, painted_width=None):
         """Clear the terminal and reset prompt_toolkit renderer state.
 
-        Returns ``(rows, columns)`` of transcript room above the prompt chrome for the
-        replay that follows, or ``None`` when the whole history should be replayed
-        (scrollback wiped by CSI 3J, or the clear failed). Without 3J the older transcript
-        stays in scrollback, so the replay may only refill the viewport (#95375); the
-        viewport is erased row by row because CSI 2J makes scroll-on-clear terminals
-        (tmux, VTE) copy the whole screen into scrollback first, stacking a duplicate.
+        Returns ``(rows, columns)`` for the replay that follows: the viewport rows above the
+        prompt chrome and ``painted_width``, the width the transcript on screen was painted
+        at (default: the current one). ``None`` means replay the whole history (scrollback
+        wiped by CSI 3J, or the clear failed). Without 3J the older transcript stays in
+        scrollback, so the replay may only repaint what the viewport held (#95375); the
+        viewport is erased row by row because CSI 2J makes scroll-on-clear terminals (tmux,
+        VTE) copy the whole screen into scrollback first, stacking a duplicate.
         """
         if getattr(self, "_terminal_io_broken", False):
             return None
@@ -210,12 +211,10 @@ class CLITerminalMixin:
                 except Exception:
                     pass
             else:
-                size = out.get_size()
-                for row in range(size.rows):
+                fit = self._transcript_room(app, painted_width)
+                for row in range(out.get_size().rows):
                     out.cursor_goto(row, 0)
                     out.erase_end_of_line()
-                chrome = app.layout.container.preferred_height(size.columns, size.rows).preferred
-                fit = (max(0, size.rows - chrome), size.columns)
             out.cursor_goto(0, 0)
             out.flush()
             # Drop cached screen + cursor state so the next _redraw() starts from a
@@ -229,6 +228,21 @@ class CLITerminalMixin:
             pass
         return None
 
+    @staticmethod
+    def _transcript_room(app, columns=None):
+        """``(rows, columns)``: viewport rows above the prompt chrome, measured at ``columns``
+        (default: the current width).
+
+        The chrome height is the renderer's last paint: prompt_toolkit may draw the app
+        taller than its preferred height (it fills the rows below the cursor it measured).
+        """
+        renderer = app.renderer
+        size = renderer.output.get_size()
+        screen = renderer._last_screen
+        drawn = (screen.height if screen is not None
+                 else app.layout.container.preferred_height(size.columns, size.rows).preferred)
+        return max(0, size.rows - max(renderer._min_available_height, drawn)), columns or size.columns
+
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
 
@@ -239,8 +253,13 @@ class CLITerminalMixin:
         already-painted rows into scrollback first, so a fresh bar looks duplicated
         (#19280, #22976). Suppression cannot erase the already-reflowed OLD bar
         (``renderer.erase()`` uses ``_cursor_pos.y`` cached at the OLD width), so on an
-        OBSERVED width change we wipe the viewport (banner-safe; 3J only via
-        ``display.cli_rebuild_scrollback_on_redraw``) and replay the transcript first.
+        OBSERVED column shrink we wipe the viewport (banner-safe) and replay what it held
+        first. A widen re-wraps nothing into extra rows, so the stale-cursor erase still
+        covers the chrome and the transcript is left as the terminal shows it: a replay there
+        duplicates rows on terminals that keep them in place (xterm) and cannot be sized
+        right for both those and reflowing ones (#95375). With
+        ``display.cli_rebuild_scrollback_on_redraw`` (3J + whole-history replay) every width
+        change rebuilds.
         Same-width SIGWINCH (tmux attach, GNOME tab bar, focus) and the first signal
         without a seeded baseline are left alone — 2J+replay against preserved scrollback
         duplicates ``_OUTPUT_HISTORY`` (#65293). tmux-attach's stale previous_screen is
@@ -252,23 +271,23 @@ class CLITerminalMixin:
         if getattr(getattr(self, '_subagent_monitor', None), 'opening', False):
             return
         from cli import _replay_output_history
+        self._status_bar_suppressed_after_resize = True
         try:
             new_width = self._get_tui_terminal_width()
         except Exception:
             new_width = None
         prev_width = getattr(self, "_last_resize_width", None)
         width_changed = new_width is not None and prev_width is not None and new_width != prev_width
-        if width_changed:
-            # Budget the replay against the full chrome: the bar/rules hidden while the
-            # reflow settles come back and would push the top replayed rows into scrollback.
-            self._status_bar_suppressed_after_resize = False
+        rebuild = self._redraw_rebuilds_scrollback()
+        if width_changed and (rebuild or new_width < prev_width):
             try:
+                # Rows are counted at the width they were painted at (a terminal that does
+                # not reflow still shows them, truncated); the OLD width sizes the rest.
                 fit = self._clear_prompt_toolkit_screen(
-                    app, rebuild_scrollback=self._redraw_rebuilds_scrollback())
+                    app, rebuild_scrollback=rebuild, painted_width=prev_width)
                 _replay_output_history(fit)
             except Exception:
                 pass
-        self._status_bar_suppressed_after_resize = True
         if new_width is not None:
             self._last_resize_width = new_width
         if width_changed:

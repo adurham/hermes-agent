@@ -93,7 +93,7 @@ class CLIChatTurnMixin:
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        print(flush=True)
+        _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
