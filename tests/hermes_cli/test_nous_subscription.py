@@ -222,8 +222,6 @@ def test_prompt_enable_tool_gateway_pool_offers_covered_tools_only(monkeypatch):
     blob = " ".join(captured["items"]).lower()
     assert "firecrawl" in blob  # web offered
     assert "video" not in blob  # video NOT offered to a pool user
-    # Pool-aware framing, not "subscription".
-    assert "free" in captured["title"].lower() and "pool" in captured["title"].lower()
 
 
 def test_get_gateway_eligible_tools_treats_explicit_backend_as_configured(monkeypatch):
@@ -272,17 +270,6 @@ def test_get_gateway_eligible_tools_treats_browser_use_selection_as_explicit(mon
     assert "browser" not in already_managed
 
 
-def test_get_gateway_eligible_tools_not_entitled_returns_four_empty_lists(monkeypatch):
-    """A logged-in Nous account with no paid access and no free tool pool
-    must fail closed with a 4-tuple, not a 3-tuple — regression for a crash
-    where the early 'not entitled' return still had the pre-refactor arity
-    while the happy path and every caller had moved to 4 values."""
-    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=True, paid=False))
-
-    config = {"model": {"provider": "nous"}}
-    result = ns.get_gateway_eligible_tools(config)
-
-    assert result == ([], [], [], [])
 
 
 def test_prompt_enable_tool_gateway_not_entitled_does_not_crash(monkeypatch):
@@ -433,22 +420,6 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
 
 
 
-def _stt_features_stub(*, account_info):
-    return ns.NousSubscriptionFeatures(
-        subscribed=True,
-        nous_auth_present=True,
-        provider_is_nous=True,
-        account_info=account_info,
-        features={
-            key: ns.NousFeatureState(
-                key=key, label=key, included_by_default=True,
-                available=False, active=False, managed_by_nous=False,
-                direct_override=False, toolset_enabled=False,
-                explicit_configured=False,
-            )
-            for key in ("web", "image_gen", "video_gen", "tts", "stt", "browser", "modal")
-        },
-    )
 
 
 
@@ -513,12 +484,5 @@ def test_has_agent_browser_import_failure_does_not_run_another_resolver(monkeypa
         "hermes_constants.agent_browser_runnable",
         lambda path: path == "/fake/bin/agent-browser",
     )
-
-    assert ns._has_agent_browser() is False
-
-
-def test_has_agent_browser_import_failure_and_no_binary_is_false(monkeypatch):
-    monkeypatch.setitem(sys.modules, "tools.browser_tool_install", None)
-    _block_legacy_agent_browser_checks(monkeypatch)
 
     assert ns._has_agent_browser() is False

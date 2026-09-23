@@ -13,10 +13,6 @@ from tools import hook_output_spill as hos
 
 class GetSpillConfigTests(unittest.TestCase):
     def test_defaults_when_no_config(self):
-        with patch.object(hos, "load_config", create=True, return_value={}):
-            # load_config is resolved at call time via local import;
-            # patch the module's source instead.
-            pass
         with patch("hermes_cli.config.load_config", return_value={}):
             cfg = hos.get_spill_config()
         self.assertTrue(cfg["enabled"])

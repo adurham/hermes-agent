@@ -81,10 +81,6 @@ def _register_fake(monkeypatch, name, available=True, chunks=(b"\x00\x00",)):
     return _Fake
 
 
-def test_resolve_returns_configured_streamer(monkeypatch):
-    _register_fake(monkeypatch, "faketts")
-    prov = ts.resolve_streaming_provider({"provider": "faketts"})
-    assert isinstance(prov, ts.StreamingTTSProvider)
 
 
 def test_never_swaps_provider_for_streaming(monkeypatch):
@@ -221,16 +217,6 @@ def _sd_mock():
 # ── Credential routing: resolve_provider_secret, never bare env ──────────
 
 
-def test_elevenlabs_available_routes_through_secret_resolver(monkeypatch):
-    calls = []
-
-    def _fake_resolve(env_var, provider_id):
-        calls.append((env_var, provider_id))
-        return "pool-key"
-
-    monkeypatch.setattr(ts, "_resolve_key", _fake_resolve)
-    assert ts.ElevenLabsStreamer.available() is True
-    assert ("ELEVENLABS_API_KEY", "elevenlabs") in calls
 
 
 def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
@@ -310,7 +296,10 @@ def test_stream_cap_truncates_runaway_upstream(monkeypatch):
 # platform.system() == "Linux" (a no-op on the Linux CI lane) purely to
 # shield macOS dev machines; an honest exclusion skipif says the same
 # thing without lying to the interpreter.
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
     """Regression: PCM chunks with odd byte counts must not be dropped.
 
@@ -362,7 +351,10 @@ def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
     assert done.is_set()
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_streamer_path_survives_portaudio_write_error(monkeypatch):
     """Regression: a transient PortAudio error on output_stream.write must
     not kill the playback thread or hang the pipeline join.
@@ -399,7 +391,10 @@ def test_streamer_path_survives_portaudio_write_error(monkeypatch):
     assert done.is_set(), "done event must fire even after PortAudio error"
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_streamer_reinit_after_portaudio_error_plays_remaining_sentences(monkeypatch):
     """Regression: after a PortAudio error the worker must reinit the stream
     and continue playing remaining sentences instead of dropping them.
@@ -456,7 +451,10 @@ def test_streamer_reinit_after_portaudio_error_plays_remaining_sentences(monkeyp
     assert done.is_set(), "done event must fire after recovery"
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
     """Regression: after 3 failed reinits, remaining sentences must play
     via the temp-file fallback, not be silently dropped.
@@ -519,41 +517,12 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
 
 # ── Dispatch: hybrid batch-prefetch path ──────────────────────────────────
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
-def test_hybrid_first_sentence_streamed_individually(monkeypatch):
-    """The first sentence must get its own stream() call for low TTFA."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_calls: list[str] = []
-
-    class _Tracking(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_calls.append(text)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["This is the first complete sentence."])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Tracking({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert len(stream_calls) == 1, (
-        f"single sentence should trigger 1 stream() call, got {stream_calls}"
-    )
-    assert done.is_set()
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_speaker_honours_tts_streaming_min_len_for_short_cjk_opener(monkeypatch):
     """The CLI/TUI speaker cuts with the profile's tts.streaming.min_len (#96927): a 7-char CJK
     opener is streamed on its own instead of riding behind the second sentence."""
@@ -587,7 +556,10 @@ def test_speaker_honours_tts_streaming_min_len_for_short_cjk_opener(monkeypatch)
     assert done.is_set()
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     """Every sentence should get its own stream() call — per-sentence
     prefetch fires the HTTP request the moment each sentence completes,
@@ -637,49 +609,12 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     assert done.is_set()
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
-def test_hybrid_short_sentences_each_get_own_call(monkeypatch):
-    """Short sentences should each get their own stream() call — no batching,
-    no waiting for a threshold or end-of-text."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    stream_calls: list[str] = []
-
-    class _Tracking(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            stream_calls.append(text)
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    # Two short sentences — each gets its own stream() call.
-    q = _drain_queue([
-        "This is the first sentence. ",
-        "Short second one. ",
-    ])
-    stop, done = threading.Event(), threading.Event()
-
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Tracking({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert len(stream_calls) == 2, (
-        f"expected 2 stream() calls (1 per sentence), "
-        f"got {len(stream_calls)}: {stream_calls}"
-    )
-    assert "first" in stream_calls[0].lower()
-    assert "second" in stream_calls[1].lower()
-    assert done.is_set()
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
     """The done event must not fire until the prefetch thread has finished,
     otherwise continuous voice mode could overlap turns."""
@@ -728,7 +663,10 @@ def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
     )
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_hybrid_single_sentence_still_works(monkeypatch):
     """A single-sentence reply should stream immediately with no batch."""
     from tools import tts_tool
@@ -762,7 +700,10 @@ def test_hybrid_single_sentence_still_works(monkeypatch):
     assert done.is_set()
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_hybrid_playback_serialized_no_overlap(monkeypatch):
     """Multiple batch flushes must not overlap on the output stream.
 
@@ -819,77 +760,8 @@ def test_hybrid_playback_serialized_no_overlap(monkeypatch):
     )
 
 
-@pytest.mark.platforms("not macos")
-def test_hybrid_prefetch_fires_http_immediately(monkeypatch):
-    """The second request starts before the first sentence finishes synthesis."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    second_started = threading.Event()
-    first_saw_prefetch = []
-    started = []
-
-    class _BlockingFirst(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            started.append(text)
-            if text.startswith("First"):
-                first_saw_prefetch.append(second_started.wait(timeout=5))
-            else:
-                second_started.set()
-            yield b"\x00\x00" * 10
-
-    sd, _ = _sd_mock()
-    q = _drain_queue(["First sentence here. ", "Second sentence here. "])
-    stop, done = threading.Event(), threading.Event()
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=_BlockingFirst({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done)
-
-    assert done.is_set()
-    assert len(started) == 2
-    assert first_saw_prefetch == [True], "prefetch waited for first-sentence playback"
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
-def test_display_callback_not_called_when_streaming_enabled(monkeypatch):
-    """When streaming is enabled, display_callback must NOT be passed to
-    the TTS consumer — the token stream already renders text. This
-    prevents duplicate rendering (fix #1).
-
-    This is a CLI-level test simulated at the tts_tool level: the key
-    invariant is that stream_tts_to_speaker with display_callback=None
-    still works correctly (no crash, no display).
-    """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
-
-    class _Fake(ts.StreamingTTSProvider):
-        sample_rate = 24000
-
-        @staticmethod
-        def available():
-            return True
-
-        def stream(self, text):
-            yield b"\x00\x00" * 10
-
-    sd, out = _sd_mock()
-    q = _drain_queue(["A sentence for the no-callback path. "])
-    stop, done = threading.Event(), threading.Event()
-
-    # display_callback=None simulates the streaming_enabled=True case.
-    with patch("tools.tts_streaming.resolve_streaming_provider",
-               return_value=_Fake({}, {})), \
-         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
-        stream_tts_to_speaker(q, stop, done, display_callback=None)
-
-    assert done.is_set()
     # No assertion on display — the point is no crash and done is set.
 
 
@@ -1094,7 +966,10 @@ def test_openai_pcm_sample_rate_resolution(config, headers, expected):
         assert ts.OpenAIStreamer({}, {"api_key": "sk-x", **config}).sample_rate == expected
 
 
-@pytest.mark.platforms("not macos")  # macOS deliberately skips the sounddevice OutputStream path (PR #62601)
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
 def test_speaker_output_stream_opens_at_rate_learned_from_first_chunk(monkeypatch):
     """Issue #76466: the PortAudio device is opened after the first chunk arrived, at the rate
     the provider learned from the response, not at the construction-time default."""

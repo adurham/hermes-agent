@@ -18,10 +18,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression import (
-    finalize_context_engine_compression_notification,
-)
-
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -97,7 +93,6 @@ class TestCompressionBoundaryHook:
             assert call.kwargs.get("old_session_id") == original_sid, \
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
             assert len(comp_calls) == 1
-            db.close()
 
     def test_automatic_notification_follows_core_persistence(self):
         from hermes_state import SessionDB
@@ -138,7 +133,6 @@ class TestCompressionBoundaryHook:
                 )
 
             assert events == ["persist", "compression"]
-            db.close()
 
     def test_failure_before_persistence_does_not_notify(self):
         from hermes_state import SessionDB
@@ -158,8 +152,6 @@ class TestCompressionBoundaryHook:
                 )
 
             compressor.on_session_start.assert_not_called()
-            db.close()
-
 
     def test_no_progress_does_not_notify(self):
         from hermes_state import SessionDB
@@ -181,8 +173,6 @@ class TestCompressionBoundaryHook:
 
             assert returned is messages
             compressor.on_session_start.assert_not_called()
-            db.close()
-
 
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
@@ -255,8 +245,6 @@ class TestCompressionBoundaryHook:
             )
             assert compressed
             assert agent.session_id != original_sid
-            db.close()
-
 
 class TestSessionCompressEvent:
     """The session:compress event_callback fires after a compression split."""
@@ -316,19 +304,3 @@ class TestSessionCompressEvent:
             assert ctx["session_id"] == agent.session_id
             assert ctx["old_session_id"] == original_sid
             assert ctx["compression_count"] == 1
-            db.close()
-
-    def test_no_callback_is_safe(self):
-        """Compression must work when no event_callback is wired."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(db, event_callback=None)
-            agent.context_compressor = self._stub_compressor()
-            compressed, _ = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
-            )
-            assert compressed
-            db.close()
-

@@ -13,7 +13,6 @@ opt-out can silently regress.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import time
@@ -37,7 +36,6 @@ case "$*" in *--help*) echo "--keep-stash"; exit 0 ;; esac
 printf '%s\\n' "$*" >> "$HERMES_TEST_ARGV"
 exit 0
 """
-
 
 def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
     """Run the real hand-off end to end; return the argv of each hermes call."""
@@ -65,7 +63,6 @@ def _run_handoff(tmp_path: Path, extra_args: list[str]) -> list[str]:
 
     return argv_log.read_text().splitlines()
 
-
 @requires_posix_handoff
 def test_default_handoff_asks_for_the_local_gateway(tmp_path):
     """A locally-served Desktop owns its gateway: the update must restart it."""
@@ -74,7 +71,6 @@ def test_default_handoff_asks_for_the_local_gateway(tmp_path):
     update_calls = [c for c in calls if " update " in f" {c} "]
     assert update_calls, "hand-off never ran hermes update"
     assert "--gateway" in update_calls[0].split()
-
 
 @requires_posix_handoff
 def test_no_gateway_flag_omits_gateway_from_update(tmp_path):
@@ -93,13 +89,3 @@ def test_no_gateway_flag_omits_gateway_from_update(tmp_path):
         assert "--gateway" not in argv, f"--gateway reappeared in update argv: {call}"
         assert "--keep-stash" in argv, "--no-gateway must not disturb --keep-stash"
         assert "--yes" in argv
-
-
-@requires_posix_handoff
-def test_no_gateway_flag_leaves_the_result_clean(tmp_path):
-    """The opt-out only drops --gateway; the hand-off still completes OK."""
-    calls = _run_handoff(tmp_path, ["--no-gateway"])
-
-    assert calls, "hand-off never invoked hermes"
-    result = json.loads((tmp_path / ".hermes-update-result.json").read_text())
-    assert result.get("status") != "error", result

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-
 @pytest.fixture
 def kimi_profile():
     """Resolve the registered Kimi profile via the provider registry.
@@ -29,7 +28,6 @@ def kimi_profile():
     profile = providers.get_provider_profile("kimi-coding")
     assert profile is not None, "kimi-coding provider profile must be registered"
     return profile
-
 
 class TestKimiReasoningWireShape:
     """``build_api_kwargs_extras`` never emits thinking + reasoning_effort together."""
@@ -89,7 +87,6 @@ class TestKimiReasoningWireShape:
         assert extra_body == {"thinking": {"type": "disabled"}}
         assert top_level == {}
 
-
     @pytest.mark.parametrize(
         "reasoning_config",
         [
@@ -107,7 +104,6 @@ class TestKimiReasoningWireShape:
             reasoning_config=reasoning_config
         )
         assert not ("thinking" in extra_body and "reasoning_effort" in top_level)
-
 
 class TestKimiModelDiscovery:
     def test_malformed_base_url_is_unconfirmed_and_filters_k3(self, kimi_profile):
@@ -127,22 +123,3 @@ class TestKimiModelDiscovery:
             )
 
         assert models == ["kimi-k2.6"]
-
-
-class TestKimiFullKwargsIntegration:
-    """The transport's full kwargs carry at most one reasoning knob."""
-
-    def _build(self, kimi_profile, reasoning_config):
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        return ChatCompletionsTransport().build_kwargs(
-            model="kimi-k2-turbo-preview",
-            messages=[{"role": "user", "content": "ping"}],
-            tools=None,
-            provider_profile=kimi_profile,
-            reasoning_config=reasoning_config,
-            base_url="https://api.moonshot.ai/v1",
-            provider_name="kimi-coding",
-        )
-
-

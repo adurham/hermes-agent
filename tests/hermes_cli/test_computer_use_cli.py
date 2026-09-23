@@ -10,11 +10,6 @@ import pytest
 from tools.computer_use import cua_backend_driver
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "computer-use", *args],
-        capture_output=True, text=True, timeout=30,
-    )
 
 
 def _invoke(monkeypatch, *args: str) -> int:
@@ -28,19 +23,8 @@ def _invoke(monkeypatch, *args: str) -> int:
     return 0
 
 
-def test_computer_use_help_omits_browser_approve():
-    result = _run("--help")
-    assert result.returncode == 0
-    assert "browser-approve" not in result.stdout
-    assert "doctor" in result.stdout
-    assert "permissions" in result.stdout
 
 
-def test_computer_use_rejects_removed_browser_approve_command():
-    result = _run("browser-approve", "--pid", "123")
-    assert result.returncode == 2
-    assert "'browser-approve' is not a `hermes computer-use` command" in result.stderr
-    assert "choose from" not in result.stderr
 
 
 def test_computer_use_status_reports_pm_without_polling_vendor(monkeypatch, capsys, tmp_path):

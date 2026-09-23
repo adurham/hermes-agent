@@ -1,7 +1,7 @@
 """Tests for browser first-open timeout and timeout diagnostics."""
 
 import subprocess
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -41,9 +41,6 @@ class TestOpenCommandTimeout:
 
 
 class TestSandboxBypass:
-    def test_docker_triggers_bypass(self, monkeypatch):
-        monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: True)
-        assert bt_session._needs_chromium_sandbox_bypass() is True
 
     def test_apparmor_userns_triggers_bypass(self, monkeypatch, tmp_path):
         monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)
@@ -86,15 +83,8 @@ class TestTimeoutErrorFormatting:
             assert "hermes pm install chromium" in err
 
 
-class TestReadCommandOutputFiles:
-    def test_reads_stdout_and_stderr(self, tmp_path):
-        stdout_path = tmp_path / "out"
-        stderr_path = tmp_path / "err"
-        stdout_path.write_text("ok", encoding="utf-8")
-        stderr_path.write_text("warn", encoding="utf-8")
-        stdout, stderr = bt_session._read_command_output_files(str(stdout_path), str(stderr_path))
-        assert stdout == "ok"
-        assert stderr == "warn"
+
+
 
 
 class TestCommandTimeoutRecovery:

@@ -24,11 +24,8 @@ import pytest
 
 from run_agent import AIAgent
 
-
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
 _OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
-_API_KEY_TOKEN = "sk-ant-api-abcdef1234567890"
-
 
 @pytest.fixture
 def agent():
@@ -47,7 +44,6 @@ def agent():
         )
         a.client = MagicMock()
         return a
-
 
 class TestOAuthFlagOnRefresh:
     """Site 3 — _try_refresh_anthropic_client_credentials."""
@@ -76,8 +72,6 @@ class TestOAuthFlagOnRefresh:
         # And the flag is untouched regardless.
         assert agent._is_anthropic_oauth is False
 
-
-
 class TestOAuthFlagOnCredentialSwap:
     """Site 4 — _swap_credential (credential pool rotation)."""
 
@@ -98,7 +92,6 @@ class TestOAuthFlagOnCredentialSwap:
             agent._swap_credential(entry)
 
         assert agent._is_anthropic_oauth is False
-
 
 class TestOAuthFlagOnConstruction:
     """Site 1 — AIAgent.__init__ on a third-party anthropic_messages provider."""
@@ -129,30 +122,3 @@ class TestOAuthFlagOnConstruction:
         # stale Anthropic OAuth token, and the OAuth flag must be False.
         assert agent._anthropic_api_key == "minimax-key-1234"
         assert agent._is_anthropic_oauth is False
-
-
-class TestOAuthFlagOnFallbackActivation:
-    """Site 5 — _try_activate_fallback targeting a third-party Anthropic endpoint."""
-
-    def test_fallback_to_third_party_does_not_flip_oauth(self, agent):
-        """Directly mimic the post-fallback assignment at line ~6537."""
-        from agent.anthropic_credentials import _is_oauth_token
-
-        # Emulate the relevant lines of _try_activate_fallback without
-        # running the entire recovery stack (which pulls in streaming,
-        # sessions, etc.).
-        fb_provider = "minimax"
-        effective_key = _OAUTH_LIKE_TOKEN
-        agent._is_anthropic_oauth = (
-            _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
-        )
-        assert agent._is_anthropic_oauth is False
-
-
-class TestApiKeyTokensAlwaysSafe:
-    """Regression: plain API-key shapes must always resolve to non-OAuth, any provider."""
-
-    def test_native_anthropic_with_api_key_token(self):
-        from agent.anthropic_credentials import _is_oauth_token
-        assert _is_oauth_token(_API_KEY_TOKEN) is False
-

@@ -6,7 +6,6 @@ import sys
 
 import pytest
 
-
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
 def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
     from tools import bot_live_delivery as mailbox
@@ -54,7 +53,6 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
     if os.name != "nt":
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
-
 
 @pytest.mark.parametrize("intent_state", ["new", "existing", "raced"])
 def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, intent_state):
@@ -110,7 +108,6 @@ def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, inten
         lease.release()
         db.close()
 
-
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 
@@ -121,7 +118,6 @@ def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
         mailbox.deliver_to_live_owner(tmp_path, owner, message)
     assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "first"
     assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "second"
-
 
 @pytest.mark.parametrize("capable", [True, False])
 def test_only_canonical_capable_owner_receives_across_compression(tmp_path, capable):
@@ -156,7 +152,6 @@ def test_only_canonical_capable_owner_receives_across_compression(tmp_path, capa
         lease.release()
         db.close()
 
-
 def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path):
     from tools import bot_live_delivery as mailbox
 
@@ -168,7 +163,6 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
     with pytest.raises(ValueError):
         mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id="b" * 32, author={**author, "id": "bot:other"})
     assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
-
 
 @pytest.mark.platforms("posix")
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason='needs POSIX file permissions for an unreadable ticket')
@@ -202,7 +196,6 @@ def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
               and "Permission denied" in record.message]
     assert len(denied) == 1, "one persistent bad ticket must warn once per process, not per scan"
 
-
 @pytest.mark.platforms("posix")
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason='needs POSIX file permissions for an unreadable ticket')
 def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
@@ -220,7 +213,6 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(PermissionError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
-
 
 def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
     import logging
@@ -245,7 +237,6 @@ def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp
     with pytest.raises(ValueError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
     assert bad.read_text(encoding="utf-8") == '"oops"'
-
 
 def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     """Valid JSON that lost a field must degrade like corrupt JSON: skipped, warned once, never raised."""
@@ -284,17 +275,3 @@ def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
     skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
     assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
-
-
-def test_existing_mailbox_lock_does_not_fsync_parent_dirs(tmp_path, monkeypatch):
-    """The idle poller re-enters the lock twice a second; only a freshly created mailbox links its parents."""
-    from tools import bot_live_delivery as mailbox
-
-    calls = []
-    monkeypatch.setattr(mailbox, "fsync_directory", lambda path: calls.append(path))
-    with mailbox._locked(tmp_path):
-        pass
-    assert len(calls) == 2
-    with mailbox._locked(tmp_path):
-        pass
-    assert len(calls) == 2

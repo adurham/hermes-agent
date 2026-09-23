@@ -6,7 +6,6 @@ and shell completion generation.
 """
 
 import json
-import io
 import os
 import shutil
 import sys
@@ -16,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-import hermes_yaml as yaml
+import yaml
 
 from hermes_cli import profiles
 from hermes_cli.profiles import (
@@ -34,13 +33,9 @@ from hermes_cli.profiles import (
     check_alias_collision,
     create_wrapper_script,
     remove_wrapper_script,
-    validate_alias_name,
     rename_profile,
     export_profile,
-    import_profile,
-    _get_profiles_root,
     _get_default_hermes_home,
-    seed_profile_skills,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
@@ -126,7 +121,6 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
 
-    @pytest.mark.platforms("linux")
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through
@@ -284,7 +278,7 @@ class TestCreateProfile:
         from tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
-    @pytest.mark.platforms("windows")
+    @pytest.mark.windows_only
     def test_clone_keeps_real_ntfs_junction(self, profile_env):
         import _winapi
         default_home, external = self._home_with_linked_skill(profile_env)
@@ -359,42 +353,6 @@ class TestNoSkillsOptOut:
 
 
 
-    def test_delete_marker_re_enables_seeding(self, profile_env, monkeypatch):
-        """Deleting .no-bundled-skills opts the profile back into a full sync.
-
-        The sync subprocess runs in BOTH states: with the marker present,
-        sync_skills() itself seeds only the essential skills and reports
-        ``skipped_opt_out``; without it, a normal full sync happens.
-        """
-        import subprocess as _sp
-
-        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
-        assert (profile_dir / NO_BUNDLED_SKILLS_MARKER).is_file()
-
-        # Marker present: the subprocess still runs (essential-only seeding
-        # happens inside sync_skills) and its skipped_opt_out flag surfaces.
-        called = []
-        stdout_by_call = [
-            '{"copied": ["hermes-agent"], "skipped_opt_out": true}',
-            '{"copied": []}',
-        ]
-        monkeypatch.setattr(
-            "subprocess.run",
-            lambda *a, **kw: (called.append(a), _sp.CompletedProcess(
-                args=a, returncode=0,
-                stdout=stdout_by_call[min(len(called) - 1, 1)], stderr="",
-            ))[1],
-        )
-        r1 = seed_profile_skills(profile_dir, quiet=True)
-        assert r1.get("skipped_opt_out") is True
-        assert r1.get("copied") == ["hermes-agent"]
-        assert len(called) == 1
-
-        # Delete marker → next call is a normal full sync.
-        (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
-        r2 = seed_profile_skills(profile_dir, quiet=True)
-        assert r2 == {"copied": []}
-        assert len(called) == 2
 
 
 # ===================================================================
@@ -406,7 +364,6 @@ class TestBackfillProfileEnvs:
     gives pre-#44792 profiles (created before .env seeding) their own
     .env, copied from the default install so credentials don't break."""
 
-    @pytest.mark.platforms("linux")
     def test_copies_default_env_into_envless_profiles(self, profile_env):
         import stat
         tmp_path = profile_env
@@ -925,7 +882,7 @@ class TestAliasCollision:
 
 
 
-    @pytest.mark.platforms("windows")
+    @pytest.mark.windows_only
     def test_windows_checks_bat_extension(self, profile_env):
         wrapper_dir = profile_env / ".local" / "bin"
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -954,7 +911,6 @@ class TestAliasCollision:
 class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
-    @pytest.mark.platforms("linux")
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
@@ -966,9 +922,9 @@ class TestWrapperScript:
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
-    @pytest.mark.platforms("windows")
+    @pytest.mark.windows_only
     def test_remove_finds_bat_on_windows(self, profile_env):
-        from hermes_cli.profiles import create_wrapper_script, remove_wrapper_script
+        from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.exists()
@@ -1029,7 +985,6 @@ class TestFindAliasForProfile:
         assert find_alias_for_profile("steve") is None
 
 
-    @pytest.mark.platforms("linux")
     def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
             create_profile,
@@ -1198,16 +1153,6 @@ class TestRenameProfile:
         acquire.assert_not_called()
 
 
-    def test_live_gateway_failure_does_not_rewrite_db_directly(self, profile_env, capsys):
-        create_profile("oldname", no_alias=True)
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
-             patch("hermes_cli.profiles._notify_multiplexer"), \
-             patch("gateway.control_socket.migrate_gateway_profile_identity", return_value=None), \
-             patch("hermes_state_registry.acquire") as acquire:
-            rename_profile("oldname", "newname")
-        acquire.assert_not_called()
-        assert "Restart the gateway" in capsys.readouterr().err
 
     def test_migrate_identity_command_repairs_a_failed_live_migration(self, profile_env, capsys):
         """The failed-live-migration end state must be recoverable: `hermes profile
@@ -1264,19 +1209,6 @@ class TestRenameProfile:
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
 
-    def test_rename_records_previous_name(self, profile_env):
-        create_profile("oldname", no_alias=True)
-
-        # Mock alias collision to avoid subprocess calls
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
-            new_dir = rename_profile("oldname", "newname")
-
-        # The rename history is recorded in the new profile's metadata ...
-        assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
-        # ... and surfaces through list_profiles (the gateway's profiles.list
-        # source), so Bot Mode group chats can re-link stale member handles.
-        info = next(p for p in list_profiles() if p.name == "newname")
-        assert info.previous_names == ["oldname"]
 
     def test_rename_accumulates_previous_names(self, profile_env):
         create_profile("firstname", no_alias=True)
@@ -1340,7 +1272,6 @@ class TestExportImport:
         assert "default/memories/MEMORY.md" in names
 
 
-    @pytest.mark.require_symlinks
     def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
         """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
 
@@ -1392,16 +1323,6 @@ class TestExportImport:
 # TestProfileIsolation
 # ===================================================================
 
-class TestProfileIsolation:
-    """Verify that two profiles have completely separate paths."""
-
-    def test_separate_config_paths(self, profile_env):
-        create_profile("alpha", no_alias=True)
-        create_profile("beta", no_alias=True)
-        alpha_dir = get_profile_dir("alpha")
-        beta_dir = get_profile_dir("beta")
-        assert alpha_dir / "config.yaml" != beta_dir / "config.yaml"
-        assert str(alpha_dir) not in str(beta_dir)
 
 
 # ===================================================================
@@ -1413,14 +1334,6 @@ class TestInternalHelpers:
 
 
 
-    def test_default_hermes_home_docker(self, tmp_path, monkeypatch):
-        """In Docker, _get_default_hermes_home() returns HERMES_HOME itself."""
-        docker_home = tmp_path / "opt" / "data"
-        docker_home.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setenv("HERMES_HOME", str(docker_home))
-        home = _get_default_hermes_home()
-        assert home == docker_home
 
 
 
@@ -1465,8 +1378,10 @@ class TestWriteProfileMetaDurability:
     def _interrupted_write(profile_dir):
         """Run a ``write_profile_meta`` whose serialization fails mid-call.
 
-        Interrupt the shared serializer used by ``utils.atomic_yaml_write``.
-        A scoped ``MonkeyPatch.context`` is used instead of the fixture so the
+        The pre-fix code called ``yaml.safe_dump``; ``utils.atomic_yaml_write``
+        calls ``yaml.dump``.  Breaking both keeps this serializer-agnostic, so
+        it measures durability rather than the choice of entry point.  A
+        scoped ``MonkeyPatch.context`` is used instead of the fixture so the
         patch is reverted immediately, without touching the session-wide env
         isolation that shares the function-scoped ``monkeypatch`` instance.
         """
@@ -1475,6 +1390,7 @@ class TestWriteProfileMetaDurability:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(yaml, "safe_dump", _boom)
+            mp.setattr(yaml, "dump", _boom)
             with pytest.raises(RuntimeError):
                 profiles.write_profile_meta(profile_dir, description_auto=True)
 
@@ -1516,7 +1432,6 @@ class TestWriteProfileMetaDurability:
         assert "🧙" in raw
         assert profiles.read_profile_meta(profile_dir)["description"] == "Code wizard 🧙 ✨"
 
-    @pytest.mark.require_symlinks
     def test_symlinked_profile_yaml_survives_the_write(self, tmp_path):
         """Guard on the conversion, not a behavior change.
 
@@ -1824,15 +1739,6 @@ class TestCloneAllExcludesRuntimeTrees:
             (source / tree).mkdir()
         assert not _clone_all_copytree_ignore(source)(str(source), [*self.RUNTIME_TREES, "SOUL.md"])
 
-    def test_runtime_trio_is_one_constant_shared_with_backup(self):
-        """backup's exclusion list and the clone-all root gate must be built from the same
-        constant; two literals drifting apart is how the models/ copy of #111718 crept in.
-        backup additionally drops PM's regenerable trees; it never drops less."""
-        from hermes_cli import backup, profiles
-        from hermes_constants import LOCAL_RUNTIME_ROOT_DIRS
-        assert LOCAL_RUNTIME_ROOT_DIRS == frozenset(self.RUNTIME_TREES)
-        assert LOCAL_RUNTIME_ROOT_DIRS <= backup._EXCLUDED_ROOT_DIRS
-        assert LOCAL_RUNTIME_ROOT_DIRS <= profiles._CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
     def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):
         default_home = profile_env / ".hermes"

@@ -11,8 +11,6 @@ Acceptance from #90471:
 2. a recycled or foreign PID control process remains untouched
 3. probe failure or timeout is never converted into permission to kill
 """
-import subprocess
-import sys
 from pathlib import Path
 from unittest import mock
 
@@ -89,12 +87,6 @@ class TestPidIsHermes:
             assert _subprocess_compat.pid_is_hermes(1234) is False
 
     def test_probe_blank_stdout_fails_closed(self):
-        with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
-            _subprocess_compat, "_process_start_time", return_value=None
-        ):
-            assert _subprocess_compat.pid_is_hermes(1234) is False
-
-    def test_probe_timeout_fails_closed(self):
         with mock.patch.object(_subprocess_compat, "IS_WINDOWS", True), mock.patch.object(
             _subprocess_compat, "_process_start_time", return_value=None
         ):

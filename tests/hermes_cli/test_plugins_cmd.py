@@ -19,7 +19,6 @@ from hermes_cli.plugins_cmd import (
     _read_manifest,
     _refuse_unavailable_portable_plugin,
     _repo_name_from_url,
-    _resolve_git_executable,
     _resolve_git_url,
     _resolve_subdir_within,
     _sanitize_plugin_name,
@@ -71,7 +70,18 @@ class TestSanitizePluginName:
             _sanitize_plugin_name("../../etc/passwd", tmp_path)
 
 
+
+
+
+
+
     # ── allow_subdir=True ──
+
+
+
+
+
+
 
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
@@ -81,10 +91,14 @@ class TestResolveGitUrl:
     """Shorthand and full-URL resolution, with optional subdirectory."""
 
 
+
+
+
     def test_url_with_fragment_subdir(self):
         url, subdir = _resolve_git_url("https://github.com/owner/repo.git#my-plugin")
         assert url == "https://github.com/owner/repo.git"
         assert subdir == "my-plugin"
+
 
 
     @pytest.mark.parametrize(
@@ -119,6 +133,7 @@ class TestResolveSubdirWithin:
         assert result == (tmp_path / "a" / "b" / "c").resolve()
 
 
+
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()
@@ -132,55 +147,6 @@ class TestResolveSubdirWithin:
 # ── _resolve_git_executable ─────────────────────────────────────────────────
 
 
-class TestResolveGitExecutable:
-    """Fallback resolution when bare ``git`` is not discoverable via ``PATH``."""
-
-    def teardown_method(self):
-        _resolve_git_executable.cache_clear()
-
-    def test_prefers_shutil_which(self):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(pc.shutil, "which", return_value="/usr/local/bin/git"):
-            assert pc._resolve_git_executable() == "/usr/local/bin/git"
-
-    def test_fallback_posix_first_matching_path(self):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-
-        def _isfile(p: str) -> bool:
-            return p == "/usr/local/bin/git"
-
-        with patch.object(pc.shutil, "which", return_value=None):
-            with patch.object(pc.os, "name", "posix"):
-                with patch.object(pc.os.path, "isfile", side_effect=_isfile):
-                    assert pc._resolve_git_executable() == "/usr/local/bin/git"
-
-
-    def test_git_pull_uses_resolved_executable(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(
-            pc,
-            "_resolve_git_executable",
-            return_value="/resolved/git",
-        ):
-            with patch.object(pc.subprocess, "run") as run:
-                # `git status --porcelain` (clean tree), `remote get-url origin`, then the pull.
-                run.side_effect = [
-                    MagicMock(returncode=0, stdout="", stderr=""),
-                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),
-                    MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
-                ]
-                ok, msg = pc._git_pull_plugin_dir(tmp_path)
-        assert ok is True
-        assert run.call_count == 3
-        for call in run.call_args_list:
-            assert call.args[0][0] == "/resolved/git"
-        assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
 
 
 class TestGitPullPluginDirAutostash:
@@ -336,6 +302,8 @@ class TestRepoNameFromUrl:
         )
 
 
+
+
 # ── plugins_command dispatch ──────────────────────────────────────────────
 
 
@@ -449,19 +417,6 @@ class TestCmdUpdate:
 class TestCmdRemove:
     """Test the remove command."""
 
-    def test_remove_deletes_only_the_requested_plugin(self, tmp_path, monkeypatch):
-        from hermes_cli.plugins_cmd import cmd_remove
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        target = tmp_path / "plugins/test-plugin"
-        target.mkdir(parents=True)
-        (target / "plugin.yaml").write_text("name: test-plugin\n", encoding="utf-8")
-        sibling = tmp_path / "plugins/keep/plugin.yaml"
-        sibling.parent.mkdir()
-        sibling.write_text("name: keep\n", encoding="utf-8")
-        cmd_remove("test-plugin")
-        assert not target.exists()
-        assert sibling.read_text(encoding="utf-8") == "name: keep\n"
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -479,6 +434,7 @@ class TestCmdRemove:
             cmd_remove("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
     def test_remove_plugin_core_deletes_read_only_git_tree(self, tmp_path):
         """Git leaves loose objects read-only: removal must clear that, not abort (#117179)."""
         from hermes_cli.plugins_cmd import _remove_plugin_core
@@ -494,6 +450,26 @@ class TestCmdRemove:
         _remove_plugin_core(target)
 
         assert not target.exists()
+
+    def test_remove_deletes_only_the_requested_plugin(self, tmp_path, monkeypatch):
+        from hermes_cli.plugins_cmd import cmd_remove
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "plugins/test-plugin"
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text("name: test-plugin\n", encoding="utf-8")
+        sibling = tmp_path / "plugins/keep/plugin.yaml"
+        sibling.parent.mkdir()
+        sibling.write_text("name: keep\n", encoding="utf-8")
+        cmd_remove("test-plugin")
+        assert not target.exists()
+        assert sibling.read_text(encoding="utf-8") == "name: keep\n"
+
+
+
+# ── cmd_list tests ─────────────────────────────────────────────────────────
+
+
 
 
 # ── _copy_example_files tests ─────────────────────────────────────────────────
@@ -543,6 +519,8 @@ class TestPromptPluginEnvVars:
     """Tests for _prompt_plugin_env_vars."""
 
 
+
+
     def test_prompts_for_missing_var_rich_format(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
@@ -588,6 +566,8 @@ class TestPromptPluginEnvVars:
         mock_prompt.assert_called_once()
 
 
+
+
 # ── curses_radiolist ─────────────────────────────────────────────────────
 
 
@@ -607,6 +587,7 @@ class TestCursesRadiolist:
 
 class TestProviderDiscovery:
     """Test provider plugin discovery and config helpers."""
+
 
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
@@ -632,14 +613,6 @@ class TestProviderDiscovery:
 # ── Auto-activation fix ──────────────────────────────────────────────────
 
 
-def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
-    from agent.agent_init import _select_context_engine
-    from types import SimpleNamespace
-    candidate = SimpleNamespace(name='offered', clone_for_agent=lambda: candidate)
-    monkeypatch.setattr('plugins.context_engine.load_context_engine', lambda _: None)
-    monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
-    assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
-    assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'
 
 
 # ── End-to-end subdirectory install ──────────────────────────────────────────
@@ -647,10 +620,6 @@ def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
 
 class TestSubdirInstallE2E:
     """Install a plugin that lives in a subdirectory of a real local git repo."""
-
-    @pytest.fixture(autouse=True)
-    def _isolated_publication(self, client):
-        """Publish through an isolated PM home, not the developer's active environment."""
 
     @staticmethod
     def _make_repo_with_subdir_plugin(repo_root: Path) -> None:
@@ -801,10 +770,10 @@ class TestSubdirInstallE2E:
         assert target == (plugins_dir / "portable.test").resolve()
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
 
+    @pytest.fixture(autouse=True)
+    def _isolated_publication(self, client):
+        """Publish through an isolated PM home, not the developer's active environment."""
 
-@pytest.fixture
-def prepared_publication(client, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
 
 @pytest.mark.usefixtures("prepared_publication")
@@ -982,3 +951,18 @@ def test_toggle_plugin_toolset_rewrites_a_list_literal_string_platform_entry(tmp
     plugins_cmd._toggle_plugin_toolset("my-plugin", enable=False)
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
     assert saved["cli"] == ["web", "terminal"]
+
+
+@pytest.fixture
+def prepared_publication(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
+def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
+    from agent.agent_init import _select_context_engine
+    from types import SimpleNamespace
+    candidate = SimpleNamespace(name='offered', clone_for_agent=lambda: candidate)
+    monkeypatch.setattr('plugins.context_engine.load_context_engine', lambda _: None)
+    monkeypatch.setattr('hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
+    assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
+    assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'

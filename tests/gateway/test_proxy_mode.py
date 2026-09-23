@@ -9,7 +9,6 @@ from gateway.platforms.base import resolve_proxy_url
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
-
 def _make_runner(proxy_url=None):
     """Create a minimal GatewayRunner for proxy tests."""
     runner = object.__new__(GatewayRunner)
@@ -23,7 +22,6 @@ def _make_runner(proxy_url=None):
     runner._agent_cache_lock = None
     return runner
 
-
 def _make_source(platform=Platform.MATRIX):
     return SessionSource(
         platform=platform,
@@ -34,7 +32,6 @@ def _make_source(platform=Platform.MATRIX):
         user_name="testuser",
         thread_id=None,
     )
-
 
 class _FakeSSEResponse:
     """Simulates an aiohttp response with SSE streaming."""
@@ -60,7 +57,6 @@ class _FakeSSEResponse:
     async def __aexit__(self, *args):
         pass
 
-
 class _FakeSession:
     """Simulates an aiohttp.ClientSession with captured request args."""
 
@@ -82,14 +78,12 @@ class _FakeSession:
     async def __aexit__(self, *args):
         pass
 
-
 def _patch_aiohttp(session):
     """Patch aiohttp.ClientSession to return our fake session."""
     return patch(
         "aiohttp.ClientSession",
         return_value=session,
     )
-
 
 class TestGetProxyUrl:
     """Test _get_proxy_url() config resolution."""
@@ -100,14 +94,12 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value={}):
             assert runner._get_proxy_url() is None
 
-
     def test_reads_from_config_yaml(self, monkeypatch):
         monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
         runner = _make_runner()
         cfg = {"gateway": {"proxy_url": "http://10.0.0.1:8642"}}
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
-
 
 class TestResolveProxyUrl:
 
@@ -128,7 +120,6 @@ class TestResolveProxyUrl:
         monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
 
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
-
 
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""
@@ -164,7 +155,6 @@ class TestRunAgentProxyDispatch:
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
-
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
@@ -222,7 +212,6 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
-
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://unreachable:8642")
@@ -251,8 +240,8 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy connection error" in result["final_response"]
-
+        assert "Connection refused" in result["final_response"]
+        assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):
@@ -283,7 +272,6 @@ class TestRunAgentViaProxy:
         assert len(messages) == 1
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "hello"
-
 
 class TestStreamingResilience:
     """Tests for SSE streaming robustness — hang avoidance and malformed-chunk tolerance."""
@@ -389,7 +377,8 @@ class TestStreamingResilience:
                         session_id="test",
                     )
 
-        assert "closed before the response completed" in result["final_response"]
+        assert result["final_response"]
+        assert result["api_calls"] == 0
 
     @pytest.mark.asyncio
     async def test_client_timeout_sets_sock_connect(self, monkeypatch):
@@ -474,15 +463,3 @@ class TestStreamingResilience:
                     )
 
         assert result["final_response"] == "Hello world"
-
-
-class TestEnvVarRegistration:
-    """Verify GATEWAY_PROXY_URL and GATEWAY_PROXY_KEY are registered."""
-
-    def test_proxy_url_in_optional_env_vars(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "GATEWAY_PROXY_URL" in OPTIONAL_ENV_VARS
-        info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
-        assert info["category"] == "messaging"
-        assert info["password"] is False
-

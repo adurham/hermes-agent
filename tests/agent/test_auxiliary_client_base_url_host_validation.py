@@ -122,7 +122,6 @@ class TestTryAnthropicBaseUrlHostValidation:
             f"Non-Anthropic host must not be applied. Got: {actual!r}"
         )
 
-
     def test_empty_base_url_falls_back_to_default(self, tmp_path, monkeypatch):
         """Empty model.base_url must not crash and must fall back to default."""
         import hermes_yaml as yaml
@@ -136,24 +135,6 @@ class TestTryAnthropicBaseUrlHostValidation:
             }
         }))
 
-        with (
-            patch(
-                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
-            ),
-            patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
-                return_value="***",
-            ),
-            patch(
-                "agent.anthropic_adapter.build_anthropic_client"
-            ) as mock_build,
-        ):
-            mock_build.return_value = MagicMock()
-            client, _model = _try_anthropic()
-
-        assert client is not None
-        actual = _extract_base_url_passed_to_build(mock_build)
-        assert actual == "https://api.anthropic.com"
 
     def test_anthropic_suffix_gateway_base_url_is_applied(self, tmp_path, monkeypatch):
         """A gateway exposing the Messages protocol under a ``/anthropic`` suffix

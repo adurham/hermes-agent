@@ -164,7 +164,6 @@ def _test_page_url() -> str:
 
 def _fire_on_page(cdp_url: str, expression: str) -> None:
     """Navigate the first page target to a data URL and fire `expression`."""
-    import asyncio
     import websockets as _ws_mod
 
     async def run():

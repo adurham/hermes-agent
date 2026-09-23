@@ -9,17 +9,30 @@ a ``server._sessions`` entry whose agent runs on the turn worker.
 
 from __future__ import annotations
 
-import contextlib
-import sys
+import io
+import json
 import threading
 import time
 import types
 
 import pytest
 
-from tests.tui_gateway._compute_host_frames import FrameSink, start_test_work
 from tui_gateway import server
 from tui_gateway.compute_host import ComputeHost
+
+
+def _frames(out: io.StringIO) -> list[dict]:
+    return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+
+
+def _wait(out: io.StringIO, predicate, timeout: float = 30.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for frame in _frames(out):
+            if predicate(frame):
+                return frame
+        time.sleep(0.01)
+    raise AssertionError(f"timed out; saw={_frames(out)}")
 
 
 @pytest.fixture()
@@ -28,27 +41,12 @@ def turn_env(monkeypatch, tmp_path):
     prompt.submit tests) so the frame protocol is what's under test. Threads stay REAL:
     ``_run_real_turn`` joins ``session["_run_thread"]`` itself before emitting ``turn.end``."""
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
-    monkeypatch.setattr(server, "_apply_pending_model_switch", lambda *a, **k: None)
     monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
-    monkeypatch.setattr(server, "_sync_agent_compression_with_config", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_sync_agent_fallback_with_config", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_sync_bot_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_adopt_out_of_band_turns", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
     monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
     monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
-    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: True)
-    monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
-    monkeypatch.setattr(server, "_routing_provenance_db", lambda session: contextlib.nullcontext(None))
-    monkeypatch.setattr(server, "_reopen_routed_session_row", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_record_turn_marker", lambda *a, **k: "marker")
-    monkeypatch.setattr(server, "_retire_turn_marker", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_start_session_work", start_test_work)
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
-    monkeypatch.setattr(server, "_start_turn_voice", lambda: (None, False))
-    monkeypatch.setattr(server, "_start_usage_ticker", lambda *a, **k: (threading.Event(), start_test_work(lambda: None, name="usage")))
-    monkeypatch.setitem(sys.modules, "hermes_undo", types.SimpleNamespace(on_user_message_appended=lambda key: None))
 
 
 def _agent(deltas: list[str], *, delay_s: float = 0.0, interrupt: threading.Event | None = None):
@@ -82,18 +80,18 @@ def _session(agent) -> dict:
 
 
 def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env):
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "s1"
     server._sessions[sid] = _session(_agent(["a ", "b ", "c "]))
     try:
         host.handle_frame({"type": "turn.start", "sid": sid, "request_id": "turn", "prompt": "hello"})
-        end = out.wait_for(lambda f: f["type"] == "turn.end")
+        end = _wait(out, lambda f: f["type"] == "turn.end")
     finally:
         server._sessions.pop(sid, None)
         host.close()
 
-    frames = out.frames()
+    frames = _frames(out)
     kinds = [f["type"] for f in frames]
     assert kinds[0] == "turn.started"
     assert kinds[-1] == "turn.end"
@@ -119,18 +117,18 @@ def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env)
 
 
 def test_turn_start_without_sid_is_a_turn_error(turn_env):
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     try:
         host.handle_frame({"type": "turn.start", "request_id": "nosid", "prompt": "x"})
-        err = out.wait_for(lambda f: f["type"] == "turn.error")
+        err = _wait(out, lambda f: f["type"] == "turn.error")
     finally:
         host.close()
     assert err["request_id"] == "nosid" and err["message"] == "sid required"
 
 
 def test_second_turn_start_while_running_is_session_busy(turn_env):
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "s1"
     session = _session(_agent(["x"]))
@@ -138,7 +136,7 @@ def test_second_turn_start_while_running_is_session_busy(turn_env):
     server._sessions[sid] = session
     try:
         host.handle_frame({"type": "turn.start", "sid": sid, "request_id": "t2", "prompt": "hi"})
-        err = out.wait_for(lambda f: f["type"] == "turn.error")
+        err = _wait(out, lambda f: f["type"] == "turn.error")
     finally:
         server._sessions.pop(sid, None)
         host.close()
@@ -147,7 +145,7 @@ def test_second_turn_start_while_running_is_session_busy(turn_env):
 
 def test_stale_queued_prompt_generation_ends_turn_as_interrupted(turn_env):
     """A queued prompt whose generation was bumped by an interrupt must not run."""
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "s1"
     session = _session(_agent(["x"]))
@@ -156,27 +154,27 @@ def test_stale_queued_prompt_generation_ends_turn_as_interrupted(turn_env):
     try:
         host.handle_frame({"type": "turn.start", "sid": sid, "request_id": "q", "prompt": "hi",
                            "queued_prompt_generation": 2})
-        end = out.wait_for(lambda f: f["type"] == "turn.end")
+        end = _wait(out, lambda f: f["type"] == "turn.end")
     finally:
         server._sessions.pop(sid, None)
         host.close()
     assert end["interrupted"] is True and end["request_id"] == "q"
-    assert not any(f["type"] == "turn.started" for f in out.frames())
+    assert not any(f["type"] == "turn.started" for f in _frames(out))
 
 
 def test_interrupt_frame_acks_and_marks_turn_interrupted(turn_env):
     """The turn runs on the host worker while ``interrupt`` arrives on the control path."""
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "s1"
     stop = threading.Event()
     server._sessions[sid] = _session(_agent([f"{i:03d} " for i in range(200)], delay_s=0.01, interrupt=stop))
     try:
         host.handle_frame({"type": "turn.start", "sid": sid, "request_id": "turn", "prompt": "go"})
-        out.wait_for(lambda f: f["type"] == "rpc" and f["message"]["params"]["type"] == "message.delta")
+        _wait(out, lambda f: f["type"] == "rpc" and f["message"]["params"]["type"] == "message.delta")
         host.handle_frame({"type": "interrupt", "sid": sid, "request_id": "stop"})
-        ack = out.wait_for(lambda f: f["type"] == "interrupt.ack")
-        end = out.wait_for(lambda f: f["type"] == "turn.end")
+        ack = _wait(out, lambda f: f["type"] == "interrupt.ack")
+        end = _wait(out, lambda f: f["type"] == "turn.end")
     finally:
         stop.set()
         server._sessions.pop(sid, None)
@@ -184,19 +182,19 @@ def test_interrupt_frame_acks_and_marks_turn_interrupted(turn_env):
 
     assert ack["applied"] is True and ack["request_id"] == "stop" and "applied_ns" in ack
     assert end["interrupted"] is True
-    deltas = sum(1 for f in out.frames() if f["type"] == "rpc" and f["message"]["params"]["type"] == "message.delta")
+    deltas = sum(1 for f in _frames(out) if f["type"] == "rpc" and f["message"]["params"]["type"] == "message.delta")
     assert 0 < deltas < 200
 
 
 def test_unknown_frame_type_is_an_error():
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     try:
         host.handle_frame({"type": "bogus", "request_id": "b"})
     finally:
         host.close()
-    assert out.frames() == [{"type": "error", "request_id": "b", "message": "unknown frame type: bogus",
-                             "host_ns": out.frames()[0]["host_ns"]}]
+    assert _frames(out) == [{"type": "error", "request_id": "b", "message": "unknown frame type: bogus",
+                             "host_ns": _frames(out)[0]["host_ns"]}]
 
 
 @pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
@@ -226,7 +224,7 @@ def test_compute_host_interrupt_uses_explicit_stop_compatibility(monkeypatch, ki
     agent = {"legacy": _Legacy(), "hard-only": _HardOnly(), "dynamic-getattr": _Dynamic()}[kind]
     # The child never routes back to a supervisor (HERMES_COMPUTE_HOST_CHILD=1 in production).
     monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "1")
-    out = FrameSink()
+    out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     sid = "s1"
     session = _session(agent)
@@ -239,7 +237,7 @@ def test_compute_host_interrupt_uses_explicit_stop_compatibility(monkeypatch, ki
         host.close()
 
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
-    ack = out.frames()[-1]
+    ack = _frames(out)[-1]
     assert ack["type"] == "interrupt.ack" and ack["applied"] is True
     assert session["_turn_cancel_requested"] is True
 
@@ -247,7 +245,7 @@ def test_compute_host_interrupt_uses_explicit_stop_compatibility(monkeypatch, ki
 def test_host_builds_the_session_agent_with_the_frame_login(monkeypatch):
     """The host process has no record for a first turn, and its pipe names no login, so the agent is built
     from the login the frame carries and the new record keeps it for later rebuilds."""
-    host = ComputeHost(stdout=FrameSink(), heartbeat_secs=0)
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
     captured = {}
 
     def fake_make_agent(sid, key, **kwargs):

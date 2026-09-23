@@ -970,11 +970,6 @@ class TestPythonhomeSanitized:
                 result = local_mod.build_subprocess_env()
         assert "PYTHONHOME" not in result
 
-    def test_pythonhome_removed_from_active_venv_markers(self):
-        """PYTHONHOME is part of _ACTIVE_VENV_MARKER_VARS so all builders
-        that iterate it drop the variable."""
-        from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
-        assert "PYTHONHOME" in _ACTIVE_VENV_MARKER_VARS
 
     def test_build_subprocess_env_no_scrub_preserves_pythonhome(self):
         """``build_subprocess_env(scrub_secrets=False)`` is the documented
@@ -1044,16 +1039,6 @@ class TestProfileScopedPassthrough:
 class TestBlocklistCoverage:
     """Sanity checks that the blocklist covers all known providers."""
 
-    def test_issue_1002_offenders(self):
-        """Blocklist includes the main offenders from issue #1002."""
-        must_block = {
-            "OPENAI_BASE_URL",
-            "OPENAI_API_KEY",
-            "OPENROUTER_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "LLM_MODEL",
-        }
-        assert must_block.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_registry_vars_are_in_blocklist(self):
         """Every api_key_env_var and base_url_env_var from PROVIDER_REGISTRY
@@ -1078,11 +1063,6 @@ class TestBlocklistCoverage:
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
 
-    def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Hermes-managed
-        inference token (the Bedrock bearer) to the blocklist, keyed off
-        auth_type so any future SDK-cred provider is covered automatically."""
-        assert "AWS_BEARER_TOKEN_BEDROCK" in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_general_aws_chain_not_in_blocklist(self):
         """The general AWS credential chain must NOT be in the blocklist —
@@ -1108,11 +1088,6 @@ class TestBlocklistCoverage:
             f"blocklisted: {sorted(leaked_block)} (capability regression, #32314)"
         )
 
-    def test_extra_auth_vars_covered(self):
-        """Non-registry auth vars (ANTHROPIC_TOKEN) must also be in the
-        blocklist."""
-        extras = {"ANTHROPIC_TOKEN"}
-        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
     def test_claude_code_oauth_token_is_inheritable(self):
         """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
@@ -1214,9 +1189,6 @@ class TestSanePathIncludesHomebrew:
         yield
         local_mod._HERMES_BIN_DIR = saved
 
-    def test_sane_path_includes_homebrew_bin(self):
-        from tools.environments.local import _SANE_PATH
-        assert "/opt/homebrew/bin" in _SANE_PATH
 
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):

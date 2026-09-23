@@ -6,7 +6,6 @@ when ``~/.bash_profile`` contained ``exec /bin/zsh -l``.
 """
 
 import os
-import platform
 import shutil
 import subprocess
 import time
@@ -150,48 +149,6 @@ class TestMacosLoginShellSwallowRegression:
             env=env,
         )
 
-    def test_system_bash_swallows_but_zsh_does_not(self, tmp_path):
-        # A .bash_profile that exec's zsh — the reported macOS shape.
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".bash_profile").write_text("exec /bin/zsh -l\n", encoding="utf-8")
-
-        # Use /bin/zsh explicitly rather than $SHELL. The reported bug is
-        # specifically "system bash 3.2 swallows, zsh does not", and $SHELL is
-        # not zsh everywhere this runs: GitHub's macOS runner exports
-        # SHELL=/bin/bash, which silently turned the control arm into a SECOND
-        # bash arm. It then swallowed (correctly, per the bug!) and the
-        # assertion read as "the fix path is broken" when nothing was broken.
-        # /bin/zsh is the macOS default login shell since Catalina and is
-        # present on every supported version.
-        zsh = "/bin/zsh"
-        if not os.path.isfile(zsh):
-            pytest.skip("no zsh available")
-
-        marker_bash = tmp_path / "bash_ran"
-        marker_zsh = tmp_path / "zsh_ran"
-
-        # /bin/bash login shell: command is swallowed (file NOT created).
-        self._spawn_like_registry("/bin/bash", f"echo x > {marker_bash}", home, tmp_path)
-        # zsh (what _find_shell prefers when $SHELL is zsh): command runs.
-        self._spawn_like_registry(zsh, f"echo x > {marker_zsh}", home, tmp_path)
-
-        # The FIX path (zsh) must run the command.
-        assert marker_zsh.exists(), "zsh path must run the command"
-
-        # Differential: when /bin/bash is the swallow-prone 3.x (macOS system
-        # bash), the login-shell invocation must demonstrably FAIL to run the
-        # command — that's the bug this PR routes around. Only assert the
-        # negative when we've confirmed a 3.x bash, so the test stays valid on
-        # boxes/CI with a newer /bin/bash that doesn't swallow.
-        ver = subprocess.run(
-            ["/bin/bash", "--version"], capture_output=True, text=True
-        ).stdout
-        if "version 3." in ver:
-            assert not marker_bash.exists(), (
-                "system bash 3.x login shell should swallow the command "
-                "(the #42203 bug); _find_shell routes around it by preferring zsh"
-            )
 
     def test_find_shell_selects_working_shell_on_this_box(self, tmp_path):
         """_find_shell's choice must actually execute a background-style

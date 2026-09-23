@@ -89,6 +89,7 @@ class TestFindBinary:
         assert lp.find_lightpanda_binary() is None
 
 
+
 class TestLaunch:
     def _launch(self, monkeypatch, *, proc=None, ready=True, stderr=b"", **kw):
         calls = {}

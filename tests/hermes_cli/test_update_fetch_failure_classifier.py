@@ -87,6 +87,23 @@ class TestPrintFetchFailure:
         assert out == ["✗ Failed to fetch updates from origin."]
 
 
+def test_update_network_git_calls_never_prompt_for_credentials():
+    """Every `git fetch`/`pull`/`push` in the updater runs with prompts disabled.
+
+    Live incident (Sep 2026): a GitHub-side 401 made `hermes update` sit on
+    ``Username for 'https://github.com':`` instead of failing with a diagnosis.
+    """
+    import os
+    import subprocess
+
+    kw = update_cmd._no_prompt_git_kwargs()
+    assert kw["stdin"] is subprocess.DEVNULL
+    assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    # Only the prompt is disabled — credential helpers / askpass stay
+    # configured so a private-fork origin still authenticates.
+    assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")
+
+
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
     """Exercise origin fetch and fork fetch/pull/push, not their source spelling."""
     import subprocess

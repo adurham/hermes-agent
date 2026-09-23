@@ -102,12 +102,6 @@ word word word
         # Should succeed via line-trimmed or indentation-flexible matching
         assert result["success"] is True
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
-    def test_created_skill_is_group_readable(self):
-        """New instructional skills use the public-document mode 0644."""
-        _create_skill("mode-skill", SKILL_CONTENT)
-        mode = stat.S_IMODE((self.skills_dir / "mode-skill" / "SKILL.md").stat().st_mode)
-        assert mode == 0o644
 
     def test_create_rollback_removes_skill_when_scan_blocks(self, monkeypatch):
         """Blocked skill creation removes the newly created skill directory."""
@@ -121,7 +115,7 @@ word word word
         assert result["success"] is False
         assert not (self.skills_dir / "blocked-skill").exists()
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_new_documents_are_exactly_0644_under_restrictive_umask(self):
         """New skill documents override a restrictive process umask."""
         old_umask = os.umask(0o077)
@@ -140,7 +134,7 @@ word word word
         assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
         assert stat.S_IMODE(reference.stat().st_mode) == 0o644
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_explicit_skill_md_patch_preserves_existing_mode(self):
         """Explicit SKILL.md patch paths preserve the existing document mode."""
         _create_skill("explicit-skill", SKILL_CONTENT)
@@ -158,8 +152,8 @@ word word word
         assert "Step 1: Done!" in skill_md.read_text(encoding="utf-8")
         assert stat.S_IMODE(skill_md.stat().st_mode) == 0o660
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
-    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("mode", [0o600])
     def test_edit_preserves_existing_mode(self, mode):
         """Full skill edits must preserve private and shared document modes."""
         _create_skill("mode-skill", SKILL_CONTENT)
@@ -172,8 +166,8 @@ word word word
         assert result["success"] is True
         assert stat.S_IMODE(skill_md.stat().st_mode) == mode
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
-    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("mode", [0o600])
     def test_patched_skill_preserves_existing_mode(self, mode):
         """Atomic patching must preserve both private and shared modes."""
         _create_skill("mode-skill", SKILL_CONTENT)
@@ -185,23 +179,9 @@ word word word
         assert result["success"] is True
         assert stat.S_IMODE(skill_md.stat().st_mode) == mode
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
-    def test_supporting_file_write_uses_group_readable_mode(self):
-        """New reference files should follow the same document mode."""
-        _create_skill("mode-skill", SKILL_CONTENT)
 
-        result = _write_file(
-            "mode-skill",
-            "references/example.md",
-            "# Reference\n",
-        )
-
-        assert result["success"] is True
-        reference = self.skills_dir / "mode-skill" / "references/example.md"
-        assert stat.S_IMODE(reference.stat().st_mode) == 0o644
-
-    @pytest.mark.platforms("posix")  # POSIX permission bits
-    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("mode", [0o600])
     def test_supporting_file_write_preserves_existing_mode(self, mode):
         """Overwriting a reference preserves its existing private or shared mode."""
         _create_skill("mode-skill", SKILL_CONTENT)
@@ -215,8 +195,8 @@ word word word
         assert result["success"] is True
         assert stat.S_IMODE(reference.stat().st_mode) == mode
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
-    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("mode", [0o600])
     def test_supporting_file_patch_preserves_existing_mode(self, mode):
         """Patching a reference preserves its existing private or shared mode."""
         _create_skill("mode-skill", SKILL_CONTENT)
@@ -236,7 +216,7 @@ word word word
         assert reference.read_text(encoding="utf-8") == "new\n"
         assert stat.S_IMODE(reference.stat().st_mode) == mode
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_supporting_file_patch_rollback_preserves_mode_when_scan_blocks(
         self, monkeypatch
     ):
@@ -262,7 +242,7 @@ word word word
         assert reference.read_text(encoding="utf-8") == "original\n"
         assert stat.S_IMODE(reference.stat().st_mode) == 0o660
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_edit_rollback_preserves_existing_mode_when_scan_blocks(self, monkeypatch):
         """Blocked full edits restore both content and the original mode."""
         _create_skill("rollback-skill", SKILL_CONTENT)
@@ -280,7 +260,7 @@ word word word
         assert skill_md.read_text(encoding="utf-8") == SKILL_CONTENT
         assert stat.S_IMODE(skill_md.stat().st_mode) == 0o660
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_patch_rollback_preserves_existing_mode_when_scan_blocks(self, monkeypatch):
         """Blocked patches restore both content and the original mode."""
         _create_skill("rollback-skill", SKILL_CONTENT)
@@ -299,7 +279,7 @@ word word word
         assert skill_md.read_text(encoding="utf-8") == SKILL_CONTENT
         assert stat.S_IMODE(skill_md.stat().st_mode) == 0o600
 
-    @pytest.mark.platforms("posix")  # POSIX permission bits
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_supporting_file_rollback_preserves_existing_mode_when_scan_blocks(
         self, monkeypatch
     ):

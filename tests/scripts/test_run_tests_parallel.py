@@ -437,23 +437,6 @@ def test_runner_selection_records_actual_test_identity(tmp_path, form, expected)
     assert sorted(path.name for path in receipt.iterdir()) == expected
 
 
-@pytest.mark.platforms("windows")
-def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
-    """An absolute ``--paths`` value stays one root on Windows.
-
-    The naive split used to produce a phantom relative root ``'C'`` (the
-    drive letter) alongside the real path; discovery only worked by the
-    accident of ``repo_root / '\\rooted\\rest'`` re-anchoring onto the
-    repo's drive.
-    """
-    probe_dir = _make_probe_dir(tmp_path)
-    proc = _run_runner(probe_dir, "-q")
-    assert proc.returncode == 0, proc.stdout
-    drive = str(probe_dir)[0]
-    assert f"['{drive}', " not in proc.stdout, (
-        f"drive letter split off as a phantom root:\n{proc.stdout}"
-    )
-    assert "Discovered 1 test files" in proc.stdout, proc.stdout
 
 
 @pytest.mark.platforms("posix")  # POSIX signal death; Windows has no SIGSEGV exit

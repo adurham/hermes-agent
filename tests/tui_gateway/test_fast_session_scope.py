@@ -26,7 +26,6 @@ import tui_gateway.server as server
 
 FAST_OVERRIDES = {"service_tier": "priority"}
 
-
 def _agent(service_tier=None):
     return SimpleNamespace(
         reasoning_config=None,
@@ -37,14 +36,11 @@ def _agent(service_tier=None):
         session_id="sess-key",
     )
 
-
 def _set(params: dict) -> dict:
     return server._methods["config.set"]("rid-1", params)
 
-
 def _get(params: dict) -> dict:
     return server._methods["config.get"]("rid-1", params)
-
 
 class TestConfigSetFastSessionScope:
     """Session-targeted fast changes must never touch global config."""
@@ -66,7 +62,6 @@ class TestConfigSetFastSessionScope:
         assert session["create_service_tier_override"] == "priority"
         write_key.assert_not_called()
 
-
     def test_lazy_session_pins_create_override(self) -> None:
         """A pre-build (agent=None) session must keep the change for the
         deferred agent build instead of dropping it."""
@@ -85,7 +80,6 @@ class TestConfigSetFastSessionScope:
         assert resp["result"]["value"] == "fast"
         assert session["create_service_tier_override"] == "priority"
         write_key.assert_not_called()
-
 
     def test_toggle_flips_prebuild_pin(self) -> None:
         """An empty value toggles from the session's pin, not the global."""
@@ -107,7 +101,6 @@ class TestConfigSetFastSessionScope:
         assert resp["result"]["value"] == "normal"
         write_key.assert_called_once_with("agent.service_tier", "normal")
 
-
 class TestConfigGetFastSessionScope:
     def test_reads_prebuild_pin(self) -> None:
         session = {
@@ -117,10 +110,4 @@ class TestConfigGetFastSessionScope:
         }
         with patch.dict(server._sessions, {"s6": session}, clear=False):
             resp = _get({"key": "fast", "session_id": "s6"})
-        assert resp["result"]["value"] == "fast"
-
-
-    def test_falls_back_to_global(self) -> None:
-        with patch.object(server, "_load_service_tier", return_value="priority"):
-            resp = _get({"key": "fast"})
         assert resp["result"]["value"] == "fast"

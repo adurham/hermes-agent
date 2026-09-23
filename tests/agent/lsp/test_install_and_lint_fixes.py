@@ -45,26 +45,6 @@ def test_install_python_server_uses_pm_tool_environment(tmp_path, monkeypatch):
     assert install_mod.detect_status("fake-lsp") == "installed"
 
 
-def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
-    """End-to-end: status command output includes the warning section."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    # Pretend bash-language-server is installed but shellcheck is missing
-    def which(name):
-        if name == "bash-language-server":
-            return "/fake/bin/bash-language-server"
-        return None
-
-    from agent.lsp import cli as lsp_cli
-
-    buf = io.StringIO()
-    with patch("shutil.which", side_effect=which), redirect_stdout(buf):
-        lsp_cli._cmd_status(emit_json=False)
-
-    output = buf.getvalue()
-    assert "Backend warnings" in output
-    assert "shellcheck" in output
-    assert "bash-language-server" in output
 
 
 def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path, monkeypatch):

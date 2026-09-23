@@ -1,9 +1,16 @@
-"""Retired dependency handoff stays inert; queued artifact recovery stays live."""
+"""Pending-rename filter for the Windows console-shim update self-lock (#88838, #89599, #86093).
+
+``_filter_pending_shim_renames`` is a pure function over registry
+``PendingFileRenameOperations`` entries, so it runs on any host.
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
 
+from hermes_cli import main_install_repair
+from hermes_cli import main as cli_main
 import pytest
-
-from hermes_cli import main as cli_main, main_install_repair
 
 
 def test_pending_rename_filter_drops_only_our_shim_pairs():
@@ -27,6 +34,11 @@ def test_pending_rename_filter_keeps_a_shim_pair_with_a_foreign_target():
 def test_pending_rename_filter_preserves_a_trailing_delete_entry():
     entries = [r"\??\C:\other\thing.dll", "", r"\??\C:\other\orphan.dll"]
     assert main_install_repair._filter_pending_shim_renames(entries, []) == (entries, 0)
+
+
+# ---------------------------------------------------------------------------
+# venv layout
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.platforms("windows")

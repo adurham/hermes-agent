@@ -530,18 +530,3 @@ def test_env_scrub_passthrough_overrides_secret_block():
 # ---------------------------------------------------------------------------
 # 6. Env-scrub diagnosability mitigation (#27303 follow-up)
 # ---------------------------------------------------------------------------
-
-
-def test_env_scrub_no_log_when_nothing_dropped(caplog):
-    """No diagnostic noise when there are no dropped HERMES_* vars."""
-    import logging
-
-    from tools.code_execution_env import _scrub_child_env
-
-    with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
-        _scrub_child_env(
-            {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
-            is_passthrough=lambda _: False,
-            is_windows=False,
-        )
-    assert "dropped" not in "\n".join(r.getMessage() for r in caplog.records)

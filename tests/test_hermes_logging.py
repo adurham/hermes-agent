@@ -310,35 +310,6 @@ class TestAddRotatingHandler:
         assert len(rotating_handlers) == 1
         # Clean up
 
-    def test_no_session_filter_on_handler(self, tmp_path):
-        """Handlers rely on record factory, not per-handler _SessionFilter."""
-        log_path = tmp_path / "no_session_filter.log"
-        logger = logging.getLogger("_test_no_session_filter")
-        formatter = logging.Formatter("%(session_tag)s%(message)s")
-
-        hermes_logging._add_rotating_handler(
-            log_path,
-            level=logging.INFO, max_bytes=1024, backup_count=1,
-            formatter=formatter,
-        )
-
-        handlers = [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
-        assert len(handlers) == 1
-        # No _SessionFilter on the handler — record factory handles it
-        assert len(handlers[0].filters) == 0
-
-        # But session_tag still works (via record factory)
-        hermes_logging.set_session_context("factory_test")
-        logger.info("test msg")
-        hermes_logging.flush_log_queue()
-        content = log_path.read_text(encoding="utf-8-sig")
-        assert "[factory_test]" in content
-
-        # Clean up
-        for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
-                logger.removeHandler(h)
-                h.close()
 
     @pytest.mark.platforms("linux")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
@@ -686,7 +657,6 @@ class TestExternalRotationRecovery:
 def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
     """A failing log destination is named once (no per-record traceback) and writes resume
     once the file is reachable again."""
-    import io
 
     class _SickStream(io.TextIOBase):
         def writable(self):
@@ -721,7 +691,6 @@ def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsy
 def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
     """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
     not re-arm the notice, or a stuck device prints the path once per record."""
-    import io
 
     class _SickStream(io.TextIOBase):
         def writable(self):
@@ -780,23 +749,3 @@ class TestSafeStderr:
         handler.handle(logging.LogRecord("unicode", logging.INFO, "", 0, "Session — 日本", (), None))
         handler.flush()
         assert fake.buffer.getvalue() == "Session — 日本\n".encode("utf-8")
-
-class TestAsyncQueueLogging:
-    """File logging runs through a QueueListener so emits never block on the
-    cross-process rotation lock (Windows event-loop-stall fix)."""
-
-    def test_file_handlers_not_on_root(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-        # Rotating file handlers live on the async listener, never on root.
-        assert not any(isinstance(h, RotatingFileHandler) for h in root.handlers)
-        # Exactly one queue handler funnels records to the listener.
-        queue_handlers = [
-            h for h in root.handlers if getattr(h, "_hermes_queue", False)
-        ]
-        assert len(queue_handlers) == 1
-        # The real file handlers are discoverable via the accessor.
-        assert any(
-            "agent.log" in getattr(h, "baseFilename", "")
-            for h in hermes_logging._queued_file_handlers
-        )

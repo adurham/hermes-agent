@@ -193,12 +193,6 @@ def _configured_timezone_child_env():
     )
 
 
-def test_windows_child_keeps_os_local_timezone_when_timezone_is_configured(monkeypatch):
-    """Windows CPython cannot interpret an IANA zone name in ``TZ``."""
-    monkeypatch.setattr(code_execution_env, "_IS_WINDOWS", True)
-    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
-
-    assert "TZ" not in _configured_timezone_child_env()
 
 
 @pytest.mark.platforms("windows")

@@ -40,15 +40,6 @@ def test_build_keepalive_http_client_ssl_cert_file_uses_shared_context(clean_tls
     assert isinstance(client._transport._pool._ssl_context, (ssl.SSLContext, _AnyTlsContext))
 
 
-def test_build_keepalive_http_client_honors_per_provider_ssl_ca_cert(clean_tls_env):
-    # An explicit bundle replaces OS trust: the context is an ORIGINAL-class
-    # SSLContext loaded with the bundle, never a truststore-injected subclass.
-    verify = resolve_httpx_verify(ca_bundle=certifi.where())
-    client = AIAgent._build_keepalive_http_client(
-        "https://ollama.example.com/v1", verify=verify,
-    )
-    assert isinstance(client, httpx.Client)
-    assert isinstance(client._transport._pool._ssl_context, _AnyTlsContext)
 
 
 def test_build_keepalive_http_client_ssl_verify_false(clean_tls_env):

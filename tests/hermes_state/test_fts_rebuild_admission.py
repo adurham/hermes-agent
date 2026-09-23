@@ -30,7 +30,9 @@ import hermes_state_common
 from hermes_state import SessionDB
 from hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
 
-pytestmark = pytest.mark.platforms("posix")  # POSIX flock child-process harness
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX flock child-process harness"
+)
 
 
 _HOLD_LOCK_SCRIPT = """
@@ -305,7 +307,6 @@ class TestOrphanedHolderStalenessBreak:
     ):
         """A record naming a live pid must defer even after timeout."""
         import json
-        import os
 
         lock = _lock_file(db.db_path)
         with _rebuild_lock_held_by_other_process(db.db_path) as proc:
@@ -524,19 +525,19 @@ class TestDeferredFtsRetryInProcess:
         d.close()
         self._mark_stale(db_path)
 
-        with _rebuild_lock_held_by_other_process(db_path) as holder:
+        with _rebuild_lock_held_by_other_process(db_path):
             gw = SessionDB(db_path=db_path)  # long-lived "gateway" open
             try:
                 assert gw._fts_stale is True
-                # Live holder: the retry uses timeout=0 rather than waiting out
-                # the configured admission budget. Prove that contract from the
-                # holder's liveness; a wall-clock bound also measures macOS's
-                # load-dependent process open-file scan.
+                # Live holder: the retry must return quickly (timeout=0),
+                # not wait out any admission budget.
                 monkeypatch.setattr(
                     hermes_state_common, "_FTS_REBUILD_LOCK_TIMEOUT_SECONDS", 30.0
                 )
+                t0 = time.monotonic()
                 assert gw.retry_deferred_fts_recovery() is False
-                assert holder.poll() is None
+                # Budget is 30s; a generous bound still proves it did not wait it out.
+                assert time.monotonic() - t0 < 15.0
                 assert gw._fts_stale is True
                 # Rate limit engaged: an immediate second call is a no-op.
                 assert gw.retry_deferred_fts_recovery() is False

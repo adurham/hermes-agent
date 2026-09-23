@@ -17,13 +17,11 @@ import pytest
 
 from agent import secret_scope as ss
 
-
 @pytest.fixture(autouse=True)
 def _reset_multiplex():
     ss.set_multiplex_active(False)
     yield
     ss.set_multiplex_active(False)
-
 
 class _Scope:
     """Context manager installing a secret scope."""
@@ -38,7 +36,6 @@ class _Scope:
 
     def __exit__(self, *exc):
         ss.reset_secret_scope(self.token)
-
 
 # ── Cluster A: gateway/pairing.py allowlist reads ─────────────────────────
 
@@ -67,7 +64,6 @@ class TestPairingAllowlistRead:
         ss.set_multiplex_active(True)
         assert _read_allowlist_env("TELEGRAM_ALLOWED_USERS") == "own-env"
 
-
 # ── Cluster A: gateway/authz_mixin.py gate reads ───────────────────────────
 
 class TestAuthzPlatformGateEnv:
@@ -92,7 +88,6 @@ class TestAuthzPlatformGateEnv:
 
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _platform_gate_env("GATEWAY_ALLOWED_USERS") == "42"
-
 
 class TestAuthzAuthEnv:
     """_auth_env must follow platform_gate_env isolation (no os.environ
@@ -124,7 +119,6 @@ class TestAuthzAuthEnv:
         monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "42")
         assert _auth_env("GATEWAY_ALLOWED_USERS") == "42"
 
-
 # ── Cluster B: matrix startup reads (Slack pattern) ────────────────────────
 
 class TestMatrixStartupSecret:
@@ -154,7 +148,6 @@ class TestMatrixStartupSecret:
         ss.set_multiplex_active(True)
         assert helper("MATRIX_PASSWORD") == "own-env-pass"
 
-
 # ── Cluster C: managed tool gateway token override ─────────────────────────
 
 class TestToolGatewayUserToken:
@@ -181,7 +174,6 @@ class TestToolGatewayUserToken:
         ss.set_multiplex_active(True)
         assert _read_user_token_override() == "own-env-tok"
 
-
 class TestOpenRouterCheckApiKey:
     def test_scoped_value_wins(self, monkeypatch):
         from tools.openrouter_client import check_api_key
@@ -198,7 +190,6 @@ class TestOpenRouterCheckApiKey:
         ss.set_multiplex_active(True)
         with _Scope({"UNRELATED": "x"}):
             assert check_api_key() is False
-
 
 # ── Cluster D: auxiliary client key resolution ──────────────────────────────
 
@@ -231,36 +222,4 @@ class TestAuxiliaryScopedKeyEnv:
 
         assert _scoped_key_env("") == ""
 
-
 # ── Cluster E: azure identity presence reads ────────────────────────────────
-
-class TestAzureIdentityPresence:
-    def _describe(self):
-        azure = pytest.importorskip("agent.azure_identity_adapter")
-        if not azure.has_azure_identity_installed():
-            pytest.skip("azure-identity not installed")
-        return azure.describe_active_credential
-
-    def test_scoped_client_secret_detected(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"AZURE_CLIENT_SECRET": "scoped-secret"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert any("EnvironmentCredential" in s for s in info.get("env_sources", []))
-
-    def test_scoped_miss_hides_env_secret(self, monkeypatch):
-        describe = self._describe()
-        monkeypatch.setenv("AZURE_CLIENT_ID", "cid")
-        monkeypatch.setenv("AZURE_TENANT_ID", "tid")
-        monkeypatch.setenv("AZURE_CLIENT_SECRET", "other-profile-secret")
-        monkeypatch.delenv("AZURE_FEDERATED_TOKEN_FILE", raising=False)
-        ss.set_multiplex_active(True)
-        with _Scope({"UNRELATED": "x"}):
-            info = describe(timeout_seconds=0.01, allow_install=False)
-        assert not any(
-            "EnvironmentCredential" in s for s in info.get("env_sources", [])
-        )

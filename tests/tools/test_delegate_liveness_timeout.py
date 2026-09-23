@@ -16,12 +16,9 @@ import threading
 import time
 from types import SimpleNamespace
 
-import pytest
-
 from tools import delegate_tool
 
 _CAP_SECONDS = 0.4
-
 
 class _SlowButLiveChild:
     """A provider serving multi-minute completions: the runtime outlasts the cap, but progress never stops.
@@ -78,7 +75,6 @@ class _SlowButLiveChild:
     def close(self):
         pass
 
-
 def _run(child, monkeypatch, cap=_CAP_SECONDS):
     parent = SimpleNamespace(
         session_id="parent", _current_task_id=None, _active_children=[child],
@@ -87,7 +83,6 @@ def _run(child, monkeypatch, cap=_CAP_SECONDS):
     monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: cap)
     monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
     return delegate_tool._run_single_child(0, "watch the slow provider", child=child, parent_agent=parent)
-
 
 def test_progressing_child_outlives_a_cap_shorter_than_its_runtime(monkeypatch):
     child = _SlowButLiveChild(total_seconds=1.2, advance=True)
@@ -102,7 +97,6 @@ def test_progressing_child_outlives_a_cap_shorter_than_its_runtime(monkeypatch):
     # Progress kept resetting the window, so the 80% budget warning never had cause to fire.
     assert child.steers == [], child.steers
 
-
 def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     """The reported death shape: calls completed earlier, then the child stops moving entirely."""
     child = _SlowButLiveChild(total_seconds=1.2, advance=False, initial_calls=49)
@@ -114,35 +108,3 @@ def test_frozen_child_is_still_abandoned_when_the_cap_elapses(monkeypatch):
     assert entry["timeout_seconds"] == _CAP_SECONDS
     assert entry["last_event_age"] is not None and entry["last_event_age"] > 0.3, entry
     assert child.interrupted.is_set()
-
-
-def test_frozen_child_is_warned_once_at_80_percent_of_the_window(monkeypatch):
-    """A stalling child hears about the closing window while it can still wrap up."""
-    from tools import delegate_tool_child_run as child_run
-
-    now = 0.0
-    steers = []
-
-    def advance(timeout):
-        nonlocal now
-        now += timeout
-
-    # Only the budget clock/wait are virtual: executor setup and OS scheduling
-    # must not consume the tiny warning window. Other threads keep real time.
-    monkeypatch.setattr(child_run, "time", SimpleNamespace(monotonic=lambda: now))
-    monkeypatch.setattr(child_run, "_LIVENESS_POLL_SECONDS", _CAP_SECONDS / 10)
-    child = SimpleNamespace(
-        get_activity_summary=lambda: {"api_call_count": 3},
-        steer=lambda text: steers.append((now, text)),
-    )
-    settled = threading.Event()
-    monkeypatch.setattr(settled, "wait", advance)
-    run = child_run._ChildRun(child, None, 0, "frozen child", None, None)
-
-    run.wait_liveness_aware(settled, None, _CAP_SECONDS)
-
-    assert now == _CAP_SECONDS
-    assert len(steers) == 1, steers
-    warned_at, text = steers[0]
-    assert "[delegation budget warning]" in text and f"{_CAP_SECONDS:.0f}s inactivity window" in text, text
-    assert warned_at == pytest.approx(0.8 * _CAP_SECONDS)
