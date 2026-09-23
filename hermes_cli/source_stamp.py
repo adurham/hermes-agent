@@ -12,12 +12,20 @@ import tempfile
 from hermes_cli.version_info import _git_version_info, _reset_version_info_cache
 
 
-def write_source_stamp(root: Path) -> dict:
-    """Replace ``install-stamp.json`` with identity read from ``root`` itself."""
+def write_source_stamp(root: Path) -> dict | None:
+    """Replace ``install-stamp.json`` with identity read from ``root`` itself.
+
+    A root git cannot identify -- the ZIP update fallback runs precisely because
+    git is unusable -- publishes no identity: the old stamp is removed rather
+    than left naming the commit that was just replaced. Returns None then.
+    """
     root = Path(root).resolve()
     info = _git_version_info(root, include_untracked=True)
     if info.commit is None:
-        raise RuntimeError(f"cannot identify source checkout at {root}")
+        with suppress(FileNotFoundError):
+            (root / "install-stamp.json").unlink()
+        _reset_version_info_cache()
+        return None
     stamp = {
         "schemaVersion": 2,
         "commit": info.commit,
