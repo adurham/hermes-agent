@@ -349,9 +349,31 @@ class GatewayAgentCacheMixin:
         from gateway.run import _CONVERSATION_SCOPED_STATE
         if not session_key:
             return
+        # Capture the Transport A participant_id BEFORE clearing — conversation.clear()
+        # zeroes transport_a_participant_id along with everything else, so it must be
+        # read first or the unregister below always sees "".
         state = self._peek_session_state(session_key)
+        _t_a_pid = state.conversation.transport_a_participant_id if state is not None else ""
         if state is not None:
             state.conversation.clear()
+        # Drop this session's Transport A (in-process agent-messaging) registration.
+        # Unlike the CLI's deliberately-permanent registration (short-lived process), a
+        # gateway process is long-running and serves many sessions over its lifetime —
+        # leaving stale entries in tools.agent_messaging_transport_a's registry (plus the
+        # AIAgent references they hold) would leak unboundedly. This funnel is the single
+        # place every TRUE conversation boundary routes through, so it fires at exactly
+        # session expiry/reset/resume and nowhere else (idle agent-cache eviction alone is
+        # NOT a boundary and must not unregister — see gateway/agent_messaging_bridge.py).
+        # Unregister by the id CAPTURED AT REGISTRATION TIME, not re-derived from whatever
+        # agent object happens to still be reachable here (TurnState.clear() already nulls
+        # turn.agent at the end of every turn, and a session split can leave a reachable
+        # agent's session_id different from the id actually registered).
+        try:
+            from gateway.agent_messaging_bridge import unregister_gateway_session_participant
+
+            unregister_gateway_session_participant(_t_a_pid)
+        except Exception:
+            logger.debug("Transport A gateway unregistration failed for %s", session_key, exc_info=True)
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
         # views (not dict), so the isinstance(dict) guard skips them — already handled above.
