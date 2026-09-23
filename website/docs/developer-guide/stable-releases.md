@@ -79,7 +79,7 @@ the shape.
 The draft body carries a fenced warning block at the top and at the bottom: do
 not publish the release from the GitHub UI. Publishing it by hand skips the
 `vX.Y.Z` receipt tag, the update feeds, the Docker aliases, and the Store
-release. Published releases are immutable, so a hand-published release cannot
+check. Published releases are immutable, so a hand-published release cannot
 be fixed afterwards, and it blocks the pipeline: the attempt then has neither a
 marker ref nor a final tag, so `release` refuses it as outstanding and
 `abandon` refuses it because it is published. The publication pass strips both
@@ -170,9 +170,11 @@ at `releases/tag/<attempt ref>/index.html` is not an update feed, and an
 attempt installed from it is not upgrade-safe: every attempt of a version has
 the same package version, so the published build never replaces it. The Docker
 image is pushed early under the attempt ref; the `stable` and `latest` aliases
-move with the feed in the publication pass. The Store submission is held until
-publish: the green run submits with auto-publish off, and the publication pass
-releases a certified submission or turns auto-publish on. Stable channel
+move with the feed in the publication pass. The Store submission is held: the
+green run submits with auto-publish off. The submission API cannot release a
+held submission, so the publication pass only checks it and prints a GitHub
+warning; once certification passes, click Publish now for that submission in
+Partner Center. A failed submission leaves the publication run red. Stable channel
 records carry an optional `archiveRef` naming the attempt ref; `releaseTag`
 stays `vX.Y.Z` and the protected prefix falls back to it when `archiveRef` is
 absent.

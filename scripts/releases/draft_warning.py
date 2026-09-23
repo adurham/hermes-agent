@@ -13,7 +13,7 @@ WARNING_CLOSE = "<!-- /hermes-release:draft-warning -->"
 
 _WARNING = """> [!CAUTION]
 > ## **DO NOT PUBLISH THIS RELEASE FROM GITHUB.**
-> **This is attempt `{attempt_ref}`. Publishing it here skips the `v{version}` receipt tag, the update feeds, the Docker aliases, and the Store release. Releases are immutable, so a release published here cannot be fixed.**
+> **This is attempt `{attempt_ref}`. Publishing it here skips the `v{version}` receipt tag, the update feeds, the Docker aliases, and the Store check. Releases are immutable, so a release published here cannot be fixed.**
 >
 > **Run this instead:**
 > ```
