@@ -24,22 +24,30 @@ if [ ! -f "$_here/activate" ]; then
     exit 1
 fi
 
-# __HERMES_ACTIVATED holds the installed-state file the environment was built
-# against, so `-nt` against the inputs that decide the dependency set answers
-# "is the inherited environment stale". `[ -nt ]` is a bash builtin — no
-# process spawn — and pm rewrites that file on every real sync while no-oping
-# otherwise, so one re-activation settles this back to current rather than
-# re-syncing on every run. A path that no longer exists (or a legacy literal
-# "1") fails `-e` and activates.
+# pm records, beside the installed-state file named by __HERMES_ACTIVATED, one
+# stamp per dependency input carrying the exact mtime that input had when the
+# install was last verified against it (pm.environments.record_activation_inputs).
+# Any input whose mtime DIFFERS from its stamp — newer or older, since a branch
+# switch can move it either way — means the inherited environment may not match
+# its inputs. `-nt`/`-ot` are bash builtins, so this costs no process spawn, and
+# every successful activation re-records, so one re-activation settles it. No
+# stamps (an install from before stamps existed), a missing input, a dangling
+# sentinel or a legacy literal "1" all activate.
 _needs_activation=1
 if [ -n "${__HERMES_ACTIVATED:-}" ] && [ -e "${__HERMES_ACTIVATED}" ]; then
+    _stamps="${__HERMES_ACTIVATED%/*}/inputs"
     _needs_activation=0
-    for _input in uv.lock pyproject.toml pm/lock.json; do
-        if [ "$_here/$_input" -nt "$__HERMES_ACTIVATED" ]; then
+    _stamped=0
+    for _stamp in "$_stamps"/* "$_stamps"/*/*; do
+        [ -f "$_stamp" ] || continue
+        _stamped=1
+        _input="$_here/${_stamp#"$_stamps"/}"
+        if [ ! -e "$_input" ] || [ "$_input" -nt "$_stamp" ] || [ "$_input" -ot "$_stamp" ]; then
             _needs_activation=1
             break
         fi
     done
+    [ "$_stamped" = 1 ] || _needs_activation=1
 fi
 
 if [ "$_needs_activation" = 1 ]; then

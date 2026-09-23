@@ -177,6 +177,12 @@ def cmd_install(args) -> int:
         print("✗ --extra syncs this install's venv and cannot combine with --target")
         return 1
     names = args.names if args.names or extras else source_install_packages(_lockfile().names())
+    # Only the whole default closure verifies everything an activated shell
+    # composes from, so only it advances the prologue's input stamps.
+    full_closure = not (args.names or tools_only or cross_target)
+    from pm.environments import activation_input_mtimes
+
+    input_mtimes = activation_input_mtimes(repo_root()) if full_closure else {}
     # Tools before the venv. A bare `pm install` used to install tools and
     # sync the venv in one breath, so a native build (Windows ARM64 source
     # wheels) resolved compilers and git from the host PATH. Publish every
@@ -208,6 +214,10 @@ def cmd_install(args) -> int:
         except InstallError as e:
             print(f"✗ {e}")
             failed += 1
+    if full_closure and not failed:
+        from pm.environments import activation_inputs_dir, record_activation_inputs
+
+        record_activation_inputs(activation_inputs_dir(repo_root()), input_mtimes)
     return 1 if failed else 0
 
 
