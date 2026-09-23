@@ -182,7 +182,7 @@ clone_entry() {
   case "$CLONE_MODE" in
     clonefile)        clonefile_entry "$1" "$2" || {
                         warn "fast clone of $(basename "$1") failed; cloning it file by file"
-                        rm -rf "$2/$(basename "$1")"; cp -cpR "$1" "$2/"; } ;;
+                        rm -rf "${2:?}/$(basename "$1")"; cp -cpR "$1" "$2/"; } ;;
     reflink|copy-gnu) cp -a --reflink=auto "$1" "$2/" ;;
     *)                cp -pR "$1" "$2/" ;;
   esac
