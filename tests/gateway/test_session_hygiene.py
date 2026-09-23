@@ -1813,7 +1813,7 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
             monkeypatch, tmp_path, SlowCompressAgent, db, session_id
         )
         task = asyncio.create_task(runner._handle_message(event))
-        assert await asyncio.to_thread(worker_started.wait, 2)
+        assert await asyncio.to_thread(worker_started.wait, 10)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

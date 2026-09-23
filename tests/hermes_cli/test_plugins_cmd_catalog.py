@@ -15,6 +15,7 @@ import pytest
 from hermes_cli import plugin_catalog as pc_cat
 from hermes_cli import plugins_cmd as pc
 from hermes_cli import plugins_cmd_catalog as cat
+from tests.pm._fixtures import client, isolated_python  # noqa: F401
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
 
@@ -29,7 +30,7 @@ def _commit(repo: Path, msg: str) -> str:
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(client, tmp_path, monkeypatch):
     """A file:// plugin repo with two commits, a catalog pinned to the FIRST, an isolated plugins dir."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -47,6 +48,25 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
     monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: False)
     monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda *a, **k: None})())
+
+    def publish_without_environment(
+        *_args, staged_plugin=None, selection=None, **_kwargs
+    ):
+        from hermes_cli.runtime_state import finish_publication
+        from pm import paths
+        from pm.publication import PluginSelection, StagedPlugin
+
+        assert (staged_plugin is None) != (selection is None)
+        if staged_plugin is not None:
+            change = StagedPlugin(staged_plugin)
+        else:
+            assert selection is not None
+            change = PluginSelection(selection)
+        change.publish(paths.repo_root())
+        finish_publication(paths.repo_root())
+
+    # Catalog behavior is independent of dependency-environment construction.
+    monkeypatch.setattr("pm.client.sync_venv", publish_without_environment)
 
     # Catalog: one entry pinned to sha1, mutable via state["pin"]; kill list via state["removed"]. The
     # real loader is https-only, so the fixture entry is built directly (file:// repo).

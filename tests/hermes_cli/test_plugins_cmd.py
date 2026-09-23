@@ -648,6 +648,10 @@ def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
 class TestSubdirInstallE2E:
     """Install a plugin that lives in a subdirectory of a real local git repo."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_publication(self, client):
+        """Publish through an isolated PM home, not the developer's active environment."""
+
     @staticmethod
     def _make_repo_with_subdir_plugin(repo_root: Path) -> None:
         """Create a git repo where the plugin lives in ``./my-plugin/`` and the

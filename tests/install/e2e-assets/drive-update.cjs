@@ -61,19 +61,21 @@ killer.unref()
 
 async function main() {
   const { runUpdateWindowChat } = await import('./update-window-chat.mjs')
-  const { updateWindowEnvironment } = await import('./smoke-env.mjs')
+  const { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } = await import('./smoke-env.mjs')
   const origin = nativeHandoff ? 'bundled' : 'source'
   const root = nativeHandoff ? path.join(path.dirname(exePath), 'resources', 'agent-payload') : path.join(process.env.HERMES_HOME, 'hermes-agent')
+  const launchEnv = isolateUpdateWindowEnvironment(updateWindowEnvironment(process.env, root, origin))
+  const userData = launchEnv.HERMES_DESKTOP_USER_DATA_DIR
   log(`launching ${exePath}`)
 
   const app = await _electron.launch({
     executablePath: exePath,
-    args: ['--disable-gpu', '--no-sandbox', '--force-renderer-accessibility'],
+    args: isolatedElectronArgs(['--disable-gpu', '--no-sandbox', '--force-renderer-accessibility'], userData),
     cwd: path.dirname(exePath),
     // Inherit the driver's env: HERMES_HOME (isolated install) and
     // GIT_CONFIG_GLOBAL (URL redirect to the staged serve repo) MUST reach
     // the main process so its update check fetches from the staged repo.
-    env: updateWindowEnvironment(process.env, root, origin),
+    env: launchEnv,
     timeout: 120_000
   })
   const child = app.process()
@@ -91,7 +93,7 @@ async function main() {
   await runUpdateWindowChat(app, page, {
     mockUrl: process.env.HERMES_E2E_MOCK_URL, outDir: proofDir,
     expectCommit: oldSha,
-    origin, root, executable: exePath,
+    origin, root, executable: exePath, userData,
   })
   await shot(page, '01-app-booted')
 
