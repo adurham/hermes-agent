@@ -373,7 +373,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     source_version = payload_tag[1:].split("+", 1)[0]
     request = publisher.allocate_protected(name, commit, source_version, release_tag=payload_tag,
                                            version=payload_tag[1:], windows_version=windows["version"],
-                                           identity=identity, policy=policy, release_gate=release_gate)
+                                           identity=identity, policy=policy, release_gate=release_gate,
+                                           archive_ref=tag if parsed else None)
     manifest, feeds = assemble(request, native, root, artifact_prefix=f"releases/tag/{tag}/")
     if accepted is not None:
         match_accepted_packages(manifest, accepted)

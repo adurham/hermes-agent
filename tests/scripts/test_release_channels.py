@@ -580,3 +580,27 @@ def test_canary_native_version_is_derived_from_the_current_tag():
     from scripts.releases.channel_releases import canary_windows_version
 
     assert canary_windows_version("v0.27.1+canary.20260829T010203Z") == "26.829.1.203"
+
+
+def test_stable_requests_name_the_attempt_archive_only_when_given():
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases.channels import preview_identity
+    with object_server() as (url, objects, headers, requests, faults):
+        pub = publisher(url)
+        identity = preview_identity("archived", "3" * 16)
+        gate = lambda request: True
+
+        def allocate(commit, version, archive_ref):
+            return pub.allocate_protected(
+                "archived", commit, version, release_tag="v" + version, version=version,
+                windows_version=version + ".0", identity=identity, policy="stable-release",
+                release_gate=gate, archive_ref=archive_ref)
+
+        request = allocate("a" * 40, "2.0.0", "rc.2-v2.0.0")
+        assert request["archiveRef"] == "rc.2-v2.0.0"
+        assert pub.request(request["buildId"]) == request
+        bare = allocate("b" * 40, "2.1.0", None)
+        assert "archiveRef" not in bare
+        assert pub.request(bare["buildId"]) == bare
+        with pytest.raises(ChannelError, match="(?i)archive ref"):
+            allocate("c" * 40, "2.2.0", "rc.2-v2.9.9")
