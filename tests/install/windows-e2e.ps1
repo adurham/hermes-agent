@@ -62,7 +62,7 @@
 #
 # USAGE (local Windows box or CI):
 #   powershell -File tests\install\windows-e2e.ps1 -Phase all
-#   ... -Phase stage / install / update
+#   ... -Phase stage / install / update / verify-stamp
 #   Phases share state via <workroot>\shas.json, so CI can run them as
 #   separate steps for readable logs. -InstallMethod and -Route are
 #   orthogonal axes: the install phase dispatches on -InstallMethod, the
@@ -1393,6 +1393,22 @@ function Invoke-CheckedPhaseUpdate {
     }
 }
 
+function Invoke-PhaseVerifyStamp {
+    # Runs AFTER everything (install, update, the new runtime's launch and its
+    # smoke checks): the bootstrap-complete receipt and the checkout's source
+    # stamp must both tell the truth about the final HEAD. A separate phase —
+    # not an install-phase check — because the bootstrap marker can complete
+    # on a LATER run than the install itself.
+    $state = Read-State
+    $head = Get-InstalledHead
+    Assert-True ($head -match '^[0-9a-f]{40}$') "installed HEAD readable: '$head'"
+    Write-Host "  install HEAD: $($head.Substring(0, 12))"
+    & python -B (Join-Path $RepoRoot 'scripts\verify-bootstrap-version-stamp.py') `
+        --stamp (Join-Path $InstallDir '.hermes-bootstrap-complete') `
+        --repo $InstallDir --expect-commit $state.current
+    if ($LASTEXITCODE -ne 0) { throw "stamp verification failed (exit $LASTEXITCODE)" }
+}
+
 # ----------------------------------------------------------------------------
 # Dispatch
 # ----------------------------------------------------------------------------
@@ -1412,10 +1428,12 @@ switch ($Phase) {
     "stage"   { Invoke-PhaseStage }
     "install" { Invoke-SourceBuild { Invoke-PhaseInstall } }
     "update"  { Invoke-SourceBuild { Invoke-CheckedPhaseUpdate } }
+    "verify-stamp" { Invoke-PhaseVerifyStamp }
     "all" {
         Invoke-PhaseStage
         Invoke-SourceBuild { Invoke-PhaseInstall }
         Invoke-SourceBuild { Invoke-CheckedPhaseUpdate }
+        Invoke-PhaseVerifyStamp
     }
 }
 
