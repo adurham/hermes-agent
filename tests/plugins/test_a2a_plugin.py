@@ -512,6 +512,42 @@ class TestV1Parts:
         params = {"message": protocol.text_message(protocol.ROLE_USER, "do X")}
         assert protocol.extract_text(params) == "do X"
 
+    def test_data_part_builder(self):
+        """data_part() builds a v1.0 data Part."""
+        dp = protocol.data_part({"key": "value"})
+        assert dp["data"] == {"key": "value"}
+        assert dp["mediaType"] == "application/json"
+        assert "kind" not in dp
+
+    def test_file_part_builder(self):
+        """file_part() builds a v1.0 file Part with URL or raw."""
+        fp = protocol.file_part(url="https://x/f.pdf", filename="f.pdf",
+                                media_type="application/pdf")
+        assert fp["url"] == "https://x/f.pdf"
+        assert fp["filename"] == "f.pdf"
+        assert fp["mediaType"] == "application/pdf"
+        assert "kind" not in fp
+
+        # Raw variant
+        rp = protocol.file_part(raw="aGVsbG8=", filename="hello.txt",
+                                media_type="text/plain")
+        assert rp["raw"] == "aGVsbG8="
+        assert rp["filename"] == "hello.txt"
+        assert "url" not in rp
+
+    def test_message_with_parts(self):
+        """message_with_parts() builds a Message with mixed Part types."""
+        msg = protocol.message_with_parts(
+            protocol.ROLE_USER,
+            [protocol.text_part("hello"), protocol.data_part({"x": 1})],
+            context_id="ctx-1",
+        )
+        assert msg["role"] == "ROLE_USER"
+        assert len(msg["parts"]) == 2
+        assert msg["parts"][0]["text"] == "hello"
+        assert msg["parts"][1]["data"] == {"x": 1}
+        assert msg["contextId"] == "ctx-1"
+
     def test_extract_text_tolerates_v03_parts(self):
         msg = {"role": "user", "parts": [{"kind": "text", "text": "legacy 0.3"}]}
         assert protocol.extract_text(msg) == "legacy 0.3"
