@@ -31,7 +31,6 @@ tests/agent/test_context_references.py::test_folder_listing_falls_back_when_rg_i
 tests/agent/test_context_references.py::test_soft_budget_warns_and_hard_budget_refuses
 tests/agent/test_context_references.py::test_sync_url_expansion_uses_async_fetcher
 tests/agent/test_curator.py::test_curator_slot_is_canonical_aux_task
-tests/hermes_cli/test_fast_command.py::TestAnthropicFastModeAdapter::test_fast_mode_adds_speed_and_beta
 tests/e2e/test_platform_commands.py::TestSessionLifecycle::test_new_is_idempotent[discord]
 tests/e2e/test_platform_commands.py::TestSessionLifecycle::test_new_is_idempotent[slack]
 tests/e2e/test_platform_commands.py::TestSessionLifecycle::test_new_is_idempotent[telegram]
