@@ -1005,7 +1005,7 @@ def test_gateway_holds_live_subagent_completion(monkeypatch, isolated_registry, 
         pass
     monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     asyncio.run(runner._run_process_watcher(_gateway_watcher(session.id)))
 
@@ -1031,7 +1031,7 @@ def test_gateway_delivers_once_owner_gone(monkeypatch, isolated_registry, _gatew
         pass
     monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
 
     # _refresh_detached_session thread: session is exited so it returns
@@ -1060,7 +1060,7 @@ def test_gateway_delivers_non_sa_completion_immediately(monkeypatch, isolated_re
         pass
     monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
 
-    adapter = SimpleNamespace(handle_message=AsyncMock())
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
     runner = _runner(adapter)
     asyncio.run(runner._run_process_watcher(_gateway_watcher(session.id)))
 
@@ -1162,3 +1162,59 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()
+
+
+def test_refused_agent_notify_delivery_stops_retrying_and_never_wedges(
+    monkeypatch, isolated_registry, _gateway_isolate_active_subagents,
+):
+    """An adapter that NEVER issues the admission receipt must not pin the watcher.
+
+    The retry on a refused injection is deliberate (a refused delivery must not suppress a
+    terminal result), but it used to be unbounded: with a permanently-refusing adapter the
+    watcher looped forever, and because the poll interval collapses to a no-op sleep in
+    tests, it span hot and wedged the entire pytest process. The loop now gives up after
+    ``_MAX_CONSECUTIVE_COMPLETION_DELIVERY_FAILURES`` consecutive refusals and returns.
+    """
+    from gateway.run_notifications import _MAX_CONSECUTIVE_COMPLETION_DELIVERY_FAILURES as _CAP
+
+    session = ProcessSession(
+        id="proc_gw_refused", command="echo hi", task_id="t1",
+        started_at=1.0, exited=True, exit_code=0, output_buffer="done\n",
+        notify_on_complete=True,
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _ScriptedWatcherRegistry(session))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    # A bare AsyncMock never sets ``_gateway_accepted``, so admit_internal_event raises
+    # WakeNotAccepted on EVERY attempt -- the exact permanent-refusal shape.
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    asyncio.run(runner._run_process_watcher(_gateway_watcher(session.id)))
+
+    # Terminated on its own rather than looping forever, having spent exactly the budget.
+    assert adapter.handle_message.await_count == _CAP
+
+
+def test_gateway_watcher_completion_event_carries_owner_identity(isolated_registry):
+    """The liveness gate resolves ``owner_task_id or task_id`` against the live subagent
+    registry, so the gateway watcher's synthetic event MUST carry the raw spawning id.
+    Without it the gate silently degrades to a no-op and child completions leak."""
+    session = ProcessSession(
+        id="proc_gw_ident", command="echo hi", task_id="default",
+        started_at=1.0, exited=True, exit_code=0, output_buffer="done\n",
+        notify_on_complete=True,
+    )
+    session.owner_task_id = "sa-0-ident"
+    runner = _runner(SimpleNamespace(handle_message=AdmittingHandler()))
+
+    evt = runner._build_process_completion_event(_gateway_watcher(session.id), session, session.id)
+
+    # task_id stays the collapsed container key; owner_task_id preserves the real "sa-" id.
+    assert evt["task_id"] == "default"
+    assert evt["owner_task_id"] == "sa-0-ident"
+    from tools.process_registry import event_owner_still_running
+    assert event_owner_still_running(dict(evt, type="completion")) is False  # not registered

@@ -31,6 +31,15 @@ _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 _WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+# Ceiling on CONSECUTIVE refused agent-notify deliveries before a watcher stops retrying.
+# The retry itself is deliberate (a refused injection must not suppress the result), but it
+# was unbounded: an adapter that refuses permanently pinned the watcher task forever, and
+# under a no-op ``asyncio.sleep`` it degenerates into a hot spin. Expressed in ATTEMPTS, not
+# wall-clock, so the bound holds no matter what ``check_interval`` is (a time-based bound is
+# unreachable when sleep is stubbed). 360 attempts at the production 5s interval is the same
+# ~30-minute give-up window as ``_EVENT_MAX_HOLD_SECONDS``.
+_MAX_CONSECUTIVE_COMPLETION_DELIVERY_FAILURES = 360
+
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
     "drop": ("drop_completion_delivery", "Could not drop durable completion claim"),
@@ -1698,6 +1707,17 @@ class GatewayNotificationsMixin:
             "completion_reason": getattr(session, "completion_reason", "exited"),
             "termination_source": getattr(session, "termination_source", ""),
             "output": _redact_gateway_user_facing_secrets(_out),
+            # The child's REAL subagent identity, required by the liveness gate below:
+            # ``event_owner_still_running`` resolves ``owner_task_id or task_id`` against the
+            # live subagent registry and needs an "sa-" prefixed id. ``session.task_id`` is the
+            # CONTAINER-SHARING key (collapses to "default" for every subagent on the local
+            # backend, per terminal_tool._resolve_container_task_id), so the raw pre-collapse
+            # ``owner_task_id`` is the one that actually starts with "sa-". Same shape as
+            # ProcessRegistry._watch_event_base, so all completion consumers gate on one key.
+            "task_id": getattr(session, "task_id", "") or "",
+            "owner_task_id": (
+                getattr(session, "owner_task_id", "") or getattr(session, "task_id", "") or ""
+            ),
             # Spawning session-db id: lets pre-flight drop this completion if the user /new'd first.
             "parent_session_id": (
                 watcher.get("parent_session_id") or getattr(session, "parent_session_id", "") or ""
@@ -1747,6 +1767,11 @@ class GatewayNotificationsMixin:
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify
         last_output_len = 0
+        # Persists the first-held monotonic timestamp across poll iterations: completion_evt is
+        # rebuilt every loop, so should_hold_completion_event's own stamp would be discarded on
+        # `continue` and the max-hold bound would never accumulate.
+        held_at = None
+        consecutive_delivery_failures = 0
         while True:
             await asyncio.sleep(interval)
             session = process_registry.get(session_id)
@@ -1765,14 +1790,37 @@ class GatewayNotificationsMixin:
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
                 if agent_notify and not process_registry.is_completion_consumed(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
+                    # Liveness gate (the third consumer alongside drain_notifications and the raw
+                    # TUI poller — should_hold_completion_event's contract is that all three agree):
+                    # a subagent-owned completion whose owner is STILL running must not bubble into
+                    # the top-level chat mid-task. Hold by `continue`, never drop — the next poll
+                    # delivers it once the owner exits. Bounded by _EVENT_MAX_HOLD_SECONDS so a
+                    # wedged-but-alive child cannot pin the notification forever.
+                    from tools.process_registry import _EVENT_HELD_AT_KEY, should_hold_completion_event
+                    if held_at is not None:
+                        completion_evt[_EVENT_HELD_AT_KEY] = held_at
+                    if should_hold_completion_event(completion_evt):
+                        if held_at is None:
+                            held_at = completion_evt.get(_EVENT_HELD_AT_KEY)
+                        continue
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
                     if delivered is False:
                         # The process remains terminal; retry after failed adapter injection instead
-                        # of suppressing the result.
-                        continue
+                        # of suppressing the result. Bounded: an adapter that refuses admission
+                        # permanently would otherwise pin this watcher forever (and spin hot when
+                        # the poll interval is ~0), wedging the task that owns the completion.
+                        consecutive_delivery_failures += 1
+                        if consecutive_delivery_failures < _MAX_CONSECUTIVE_COMPLETION_DELIVERY_FAILURES:
+                            continue
+                        logger.error(
+                            "Giving up on agent-notify completion for %s after %d consecutive "
+                            "refused deliveries; the result remains available via the process tool.",
+                            session_id, consecutive_delivery_failures,
+                        )
+                        break
                     break
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).
