@@ -17,7 +17,8 @@ checkout it describes:
 * ``pinnedBranch`` equals the repo's checked-out branch (or ``--expect-branch``)
 * ``completedAt`` parses as an ISO-8601 UTC timestamp
 * the install carries its source identity stamp — ``install-stamp.json``
-  with a ``baseVersion`` whose ``commit`` matches the installed checkout HEAD
+  whose ``commit`` matches the installed checkout HEAD (``baseVersion`` is
+  null when no release tag is reachable)
 
 Usage:
 
@@ -145,31 +146,31 @@ def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect
             _fail(errors, f"pinnedBranch {branch!r} != checked-out branch {actual!r}")
 
     # The install must carry its source identity stamp, and that stamp must
-    # tell the truth about the checkout: baseVersion present, commit == HEAD.
-    base_version, canonical_commit = _read_install_stamp(repo)
-    if not base_version:
-        _fail(errors, f"no baseVersion in {repo}/install-stamp.json — the install carries no source identity stamp")
-    elif canonical_commit and head and canonical_commit != head:
+    # tell the truth about the checkout: commit == HEAD. baseVersion is null
+    # when no release tag is reachable (a PR checkout), exactly as the runtime
+    # reports it.
+    present, canonical_commit = _read_install_stamp(repo)
+    if not present:
+        _fail(errors, f"no {repo}/install-stamp.json — the install carries no source identity stamp")
+    elif not canonical_commit:
+        _fail(errors, f"{repo}/install-stamp.json names no commit")
+    elif head and canonical_commit != head:
         _fail(errors, f"canonical stamp commit {canonical_commit[:12]} != installed HEAD {head[:12]}")
 
     return errors
 
 
-def _read_install_stamp(repo: Path) -> tuple[str | None, str | None]:
-    """Read baseVersion + commit from the INSTALL repo's install-stamp.json."""
+def _read_install_stamp(repo: Path) -> tuple[bool, str | None]:
+    """Read whether the INSTALL repo's install-stamp.json exists, and its commit."""
     stamp_path = repo / "install-stamp.json"
     try:
         stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return None, None
+        return False, None
     if not isinstance(stamp, dict):
-        return None, None
-    base_version = stamp.get("baseVersion")
+        return False, None
     commit = stamp.get("commit")
-    return (
-        base_version if isinstance(base_version, str) and base_version else None,
-        commit if isinstance(commit, str) and commit else None,
-    )
+    return True, commit if isinstance(commit, str) and commit else None
 
 
 def main() -> int:

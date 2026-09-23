@@ -82,8 +82,10 @@ def _install_repo(tmp_path: Path) -> Path:
     ({"completedAt": "not-a-time"}, [], "ISO-8601"),
     ({"completedAt": "2026-08-30T12:00:00+01:00"}, [], "not UTC"),
     ({"missing": "stamp"}, [], "cannot read stamp"),
-    ({"missing": "version"}, [], "no baseVersion"),
+    ({"missing": "version"}, [], "no source identity stamp"),
     ({"canonicalCommit": "c" * 40}, [], "canonical"),
+    # A checkout with no reachable release tag honestly stamps a null base.
+    ({"canonicalBase": None}, [], None),
 ])
 def test_verifier_cli(tmp_path, changes, expect, error):
     repo = _install_repo(tmp_path)
@@ -94,9 +96,10 @@ def test_verifier_cli(tmp_path, changes, expect, error):
         path.write_text(json.dumps(stamp), encoding="utf-8")
     if changes.get("missing") == "version":
         (repo / "install-stamp.json").unlink()
-    if "canonicalCommit" in changes:
+    if "canonicalCommit" in changes or "canonicalBase" in changes:
         canonical = json.loads((repo / "install-stamp.json").read_text(encoding="utf-8"))
-        canonical["commit"] = changes["canonicalCommit"]
+        canonical["commit"] = changes.get("canonicalCommit", canonical["commit"])
+        canonical["baseVersion"] = changes.get("canonicalBase", canonical["baseVersion"])
         (repo / "install-stamp.json").write_text(json.dumps(canonical), encoding="utf-8")
     if not error:
         expect = ["--expect-commit", stamp["pinnedCommit"], "--expect-branch", "main"]
