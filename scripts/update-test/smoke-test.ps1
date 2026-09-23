@@ -216,10 +216,18 @@ echo hermes
   Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Cache\data.bin') -Value 'junk'
 }
 
+function Get-ShadowCapC {
+  $vol = Get-WmiObject Win32_Volume | Where-Object { $_.Name -eq 'C:\' }
+  $st = Get-WmiObject Win32_ShadowStorage | Where-Object { ($_.Volume -replace '\\\\', '\') -like "*$($vol.DeviceID)*" } | Select-Object -First 1
+  if ($st) { return [UInt64]$st.MaxSpace } else { return $null }
+}
+
 try {
   New-Fixture
   $HeadSha = (& git -C $Install rev-parse HEAD | Out-String).Trim()
   Write-Host "checkout HEAD: $HeadSha"
+  $CapBefore = Get-ShadowCapC
+  Write-Host "shadow storage cap on C: before pre: $CapBefore"
 
   Write-Host "`n--- pre (source = the fixture repo, so no network) ---"
   $statusBefore = (& git -C $Install status --porcelain | Out-String)
@@ -235,6 +243,7 @@ try {
   $ShadowIds = @(Get-Content -LiteralPath (Join-Path $Snap 'shadows.txt') | Where-Object { $_.Trim() } | ForEach-Object { ($_ -split "`t")[1] })
   Check 'one snapshot recorded' ($ShadowIds.Count -eq 1)
   Check 'the recorded snapshot exists' ([bool](Get-WmiObject Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
+  Check 'shadow storage cap on C: is at least 128 GB while the snapshot lives' ((Get-ShadowCapC) -ge [UInt64]128GB)
 
   Write-Host "`n--- pre points the install at the rehearsal copy ---"
   $served = (& git -C (Join-Path $Snap 'serve.git') rev-parse refs/heads/main | Out-String).Trim()
@@ -288,6 +297,7 @@ try {
   Check 'bin shim restored' (Test-Path -LiteralPath (Join-Path $H 'bin\hermes.cmd'))
   Check 'post deleted the snapshot' (-not (Get-WmiObject Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
   Check 'post removed its mount link' (-not (Test-Path -LiteralPath (Join-Path $Snap 'vss-C')))
+  Check 'post put the shadow storage cap back exactly' ((Get-ShadowCapC) -eq $CapBefore)
   Write-Host "`n--- the acceptance criterion: every file identical before/after ---"
   $homeAfter = Get-TreeListing $H
   Check 'HERMES_HOME identical to before pre' ($homeAfter -eq $homeBefore)

@@ -20,7 +20,9 @@
 
   If Windows drops the snapshot (it can when the disk's shadow storage fills),
   your files are untouched but post cannot roll back; the `hermes backup` zip
-  still holds your config, keys, sessions, memories and skills.
+  still holds your config, keys, sessions, memories and skills. To make that
+  unlikely, pre raises the shadow-storage cap to 128 GB (a ceiling, not a
+  reservation) and post puts the original cap back.
 
   pre and post need an elevated (Run as Administrator) PowerShell.
 
@@ -64,6 +66,8 @@ Set-StrictMode -Version 2.0
 
 $OfficialHttps = 'https://github.com/NousResearch/hermes-agent.git'
 $OfficialSsh = 'git@github.com:NousResearch/hermes-agent.git'
+# Diff-area cap pre sets while the snapshot is alive (post restores the original).
+$ShadowStorageMax = [UInt64]128GB
 
 $script:Snap = ''
 
@@ -170,13 +174,43 @@ function Get-VolumeRoot {
 }
 
 function Get-ShadowStorageMax {
+  # Exact bytes (UInt64::MaxValue = UNBOUNDED) of the diff-area cap for snapshots
+  # of $Volume, or $null when the volume has no shadow-storage association yet.
   param([string]$Volume)
+  $vol = Get-WmiObject Win32_Volume | Where-Object { $_.Name -eq $Volume }
+  if (-not $vol) { return $null }
+  $st = Get-WmiObject Win32_ShadowStorage | Where-Object { ($_.Volume -replace '\\\\', '\') -like "*$($vol.DeviceID)*" } | Select-Object -First 1
+  if (-not $st) { return $null }
+  return [UInt64]$st.MaxSpace
+}
+
+function Set-ShadowStorageMax {
+  param([string]$Volume, [UInt64]$Bytes)
+  $size = if ($Bytes -eq [UInt64]::MaxValue) { 'UNBOUNDED' } else { "$Bytes" }
+  $d = $Volume.TrimEnd('\')
   $prev = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
-  try { $out = & vssadmin list shadowstorage "/for=$($Volume.TrimEnd('\'))" 2>$null | Out-String }
+  try { $out = & vssadmin resize shadowstorage "/for=$d" "/on=$d" "/maxsize=$size" 2>&1; $code = $LASTEXITCODE }
   finally { $ErrorActionPreference = $prev }
-  if ($out -match 'Maximum Shadow Copy Storage space:\s*(.+)') { return $Matches[1].Trim() }
-  return $null
+  if ($code -ne 0) { $out | Where-Object { "$_".Trim() } | ForEach-Object { Write-Host "    $_" } }
+  return ($code -eq 0)
+}
+
+function Format-Bytes {
+  param([UInt64]$Bytes)
+  if ($Bytes -eq [UInt64]::MaxValue) { return 'unbounded' }
+  return '{0:N1} GB' -f ($Bytes / 1GB)
+}
+
+# post: put every diff-area cap pre raised back to what it was.
+function Restore-ShadowStorage {
+  $file = Join-Path $script:Snap 'shadowstorage.txt'
+  if (-not (Test-Path -LiteralPath $file)) { return }
+  foreach ($line in @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() })) {
+    $f = $line -split "`t"
+    if (Set-ShadowStorageMax $f[0] ([UInt64]$f[1])) { Ok "snapshot room on $($f[0]) back to $(Format-Bytes ([UInt64]$f[1]))" }
+    else { Warn "could not put the snapshot room on $($f[0]) back to $(Format-Bytes ([UInt64]$f[1])); run: vssadmin resize shadowstorage /for=$($f[0].TrimEnd('\')) /on=$($f[0].TrimEnd('\')) /maxsize=$($f[1])" }
+  }
 }
 
 function New-Shadow {
@@ -286,13 +320,6 @@ function Invoke-Pre {
   $n = @(Invoke-GitCmd @('config', '--global', '--get-regexp', '^url\.')).Count
   if ($n -eq 0) { Ok 'global git config has no URL rewrites' }
   else { Warn "$n existing url.* insteadOf entr(y/ies) in your git config; we add more and remove only ours" }
-  foreach ($v in $volumes) {
-    $max = Get-ShadowStorageMax $v
-    # The snapshot keeps the OLD copy of every block rewritten anywhere on the
-    # disk; once that exceeds this limit Windows deletes the snapshot.
-    if ($max) { Say "snapshot room on $v  $max (writing more than this to the disk before post drops the snapshot)" }
-    else { Say "snapshot room on $v  not configured yet (Windows sizes it on first use)" }
-  }
 
   $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
   $script:Snap = Join-Path $BackupRoot $stamp
@@ -354,6 +381,23 @@ function Invoke-Pre {
     Ok "snapshot of $v in $([math]::Round(((Get-Date) - $t0).TotalSeconds, 1))s ($($s.Id))"
   }
   Set-Content -LiteralPath (Join-Path $script:Snap 'shadows.txt') -Encoding utf8 -Value $shadowLines
+
+  # The snapshot keeps the OLD copy of every block rewritten anywhere on the
+  # disk; past the cap Windows deletes the snapshot. The cap is a ceiling, not
+  # a reservation. Raised AFTER the snapshot: on client Windows the storage
+  # association may only exist once a shadow does.
+  $storageLines = @()
+  foreach ($v in $volumes) {
+    $orig = Get-ShadowStorageMax $v
+    if ($null -eq $orig) { Warn "could not read the snapshot room on $v; leaving it as it is"; continue }
+    if ($orig -ge $ShadowStorageMax) { Ok "snapshot room on $v is $(Format-Bytes $orig)"; continue }
+    if (Set-ShadowStorageMax $v $ShadowStorageMax) {
+      $storageLines += "$v`t$orig"
+      Ok "snapshot room on $v raised from $(Format-Bytes $orig) to $(Format-Bytes $ShadowStorageMax) (post puts it back)"
+    }
+    else { Warn "could not raise the snapshot room on $v; it stays $(Format-Bytes $orig) -- writing more than that to the disk before post drops the snapshot" }
+  }
+  Set-Content -LiteralPath (Join-Path $script:Snap 'shadowstorage.txt') -Encoding utf8 -Value $storageLines
 
   # Plain text, not JSON: post compares this string byte-for-byte to decide
   # whether the backup belongs to the home it is about to restore.
@@ -487,6 +531,7 @@ function Invoke-Post {
     Say 'or, if hermes itself no longer starts, extract the zip over your home:'
     Say "  tar -xf `"$zip`" -C `"$($P.Home)`""
     Say 'then reinstall Hermes to get the program back.'
+    Restore-ShadowStorage
     Fail 'the disk snapshot is gone'
   }
 
@@ -533,6 +578,7 @@ function Invoke-Post {
 
   Step 'removing the disk snapshot'
   foreach ($s in $shadows) { Remove-Shadow $s; Ok "deleted the snapshot of $($s.Volume)" }
+  Restore-ShadowStorage
 
   Remove-StaleGlobalRedirect
 
