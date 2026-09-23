@@ -57,7 +57,6 @@ mode = "overwrite"
     )
 
     relay_runtime._reset_for_tests()
-    relay.plugin.clear()
     record_session_cwd(task_id, str(turn_cwd))
     agent = None
     try:

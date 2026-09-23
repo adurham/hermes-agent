@@ -54,6 +54,11 @@ def scoped_session_cwd() -> str:
     return "" if value is _UNSET else str(value).strip()
 
 
+def reset_session_cwd(token: Token) -> None:
+    """Restore the logical cwd that was active before the matching ``set_session_cwd``."""
+    _SESSION_CWD.reset(token)
+
+
 def scope_terminal_cwd() -> str:
     """Scope-aware TERMINAL_CWD value (may be empty) — every cwd consumer reads through this.
 

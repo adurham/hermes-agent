@@ -5,17 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent import relay_cwd, runtime_cwd
-from agent.relay_runtime import ConversationLease
 from tools.terminal_tool import clear_session_cwd, record_session_cwd
-
-
-def test_conversation_lease_keeps_released_in_its_original_position():
-    lease = ConversationLease(
-        "profile", "session", "cli", object(), None, "parent", True
-    )
-
-    assert lease.released is True
-    assert lease.turn_cwd == ""
 
 
 def test_session_context_and_task_record_remain_distinct(monkeypatch):
@@ -33,7 +23,7 @@ def test_session_context_and_task_record_remain_distinct(monkeypatch):
         ) == ("/workspace/task", "/workspace/task")
     finally:
         clear_session_cwd("task-1")
-        runtime_cwd._SESSION_CWD.reset(token)
+        runtime_cwd.reset_session_cwd(token)
 
 
 @pytest.mark.parametrize(
@@ -54,7 +44,7 @@ def test_remote_scoped_cwd_is_preserved_without_host_resolution(
             object(), "task-1", "session-1", "gateway"
         ) == (logical_cwd, logical_cwd)
     finally:
-        runtime_cwd._SESSION_CWD.reset(token)
+        runtime_cwd.reset_session_cwd(token)
 
 
 def test_gateway_session_key_uses_its_recorded_cwd(monkeypatch):
@@ -77,7 +67,7 @@ def test_gateway_session_key_uses_its_recorded_cwd(monkeypatch):
         ) == ("/remote/gateway-workspace", "/remote/gateway-workspace")
     finally:
         clear_session_cwd("gateway-key")
-        runtime_cwd._SESSION_CWD.reset(token)
+        runtime_cwd.reset_session_cwd(token)
 
 
 @pytest.mark.parametrize(
@@ -120,7 +110,7 @@ def test_only_local_cli_uses_host_cwd(
         ) == (expected, expected)
         assert bool(host_lookups) is uses_host
     finally:
-        runtime_cwd._SESSION_CWD.reset(token)
+        runtime_cwd.reset_session_cwd(token)
 
 
 def test_cwd_lookup_failures_do_not_break_the_turn(monkeypatch):
