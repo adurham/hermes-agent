@@ -381,7 +381,7 @@ test('Windows source settle bypasses the current cmd launcher beside a stale his
     expect(invocation).toEqual({
       launcher: current,
       command: python,
-      args: ['-I', '-B', '-c', `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`],
+      args: ['-I', '-B', '-c', `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); sys.argv = [${JSON.stringify(bootstrap)}, 'status']; runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`],
       windowsVerbatimArguments: false,
     })
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
@@ -398,7 +398,7 @@ test('Windows source settle bypasses the generated cmd command line', (): void =
     expect(pythonProbe.status, pythonProbe.stderr || String(pythonProbe.error)).toBe(0)
     const python = pythonProbe.stdout.trim()
     fs.writeFileSync(path.join(bin, 'hermes.cmd'), `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
-    fs.writeFileSync(path.join(root, 'hermes_bootstrap.py'), `from pathlib import Path\nPath(${JSON.stringify(witness)}).write_text('direct-bootstrap\\n')\n`)
+    fs.writeFileSync(path.join(root, 'hermes_bootstrap.py'), `import sys\nfrom pathlib import Path\nPath(${JSON.stringify(witness)}).write_text('\\n'.join(sys.argv))\n`)
     fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
     const invocation = sourceRuntimeSettleCommand(root, process.env, 'win32')
     const result = spawnSync(invocation.command, invocation.args, {
@@ -406,7 +406,10 @@ test('Windows source settle bypasses the generated cmd command line', (): void =
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     })
     expect(result.status, result.stderr || String(result.error)).toBe(0)
-    expect(fs.readFileSync(witness, 'utf8').trim()).toBe('direct-bootstrap')
+    expect(fs.readFileSync(witness, 'utf8').split(/\r?\n/)).toEqual([
+      path.join(root, 'hermes_bootstrap.py'),
+      'status',
+    ])
   } finally { fs.rmSync(workspace, { recursive: true, force: true }) }
 })
 

@@ -39,6 +39,6 @@ export function sourceRuntimeSettleCommand(root, env, platform = process.platfor
   const bootstrap = path.join(root, 'hermes_bootstrap.py');
   if (!fs.existsSync(command)) throw new Error(`Source launcher Python does not exist: ${command}`);
   if (!fs.existsSync(bootstrap)) throw new Error(`Source bootstrap does not exist: ${bootstrap}`);
-  const code = `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`;
+  const code = `import runpy, sys; sys.path.insert(0, ${JSON.stringify(root)}); sys.argv = [${JSON.stringify(bootstrap)}, 'status']; runpy.run_path(${JSON.stringify(bootstrap)}, run_name='__main__')`;
   return { launcher, command, args: ['-I', '-B', '-c', code], windowsVerbatimArguments: false };
 }
