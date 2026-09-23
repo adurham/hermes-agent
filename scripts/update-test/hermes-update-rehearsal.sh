@@ -180,10 +180,31 @@ detect_clone_mode() {
 
 clone_entry() {
   case "$CLONE_MODE" in
-    clonefile)        cp -cpR "$1" "$2/" ;;
+    clonefile)        clonefile_entry "$1" "$2" || {
+                        warn "fast clone of $(basename "$1") failed; cloning it file by file"
+                        rm -rf "$2/$(basename "$1")"; cp -cpR "$1" "$2/"; } ;;
     reflink|copy-gnu) cp -a --reflink=auto "$1" "$2/" ;;
     *)                cp -pR "$1" "$2/" ;;
   esac
+}
+
+# APFS can clone a whole directory tree in ONE clonefileat(2) call -- ~9x faster
+# than cp -c, which clones file by file (2.3s vs 19.3s for 130k entries). No
+# compiler on a stock Mac, but /usr/bin/perl can make the raw syscall. The
+# kernel stamps cloned DIRECTORIES with the current time, so a second pass puts
+# every directory's atime/mtime back; file times come through the clone as-is.
+clonefile_entry() {
+  /usr/bin/perl -MFile::Find -e '
+    my ($src, $dst) = @ARGV;
+    # SYS_clonefileat = 462 (xnu syscalls.master), AT_FDCWD = -2,
+    # CLONE_NOFOLLOW = 1: a top-level symlink is cloned as a link.
+    syscall(462, -2, $src, -2, $dst, 1) == 0 or exit 1;
+    find({ no_chdir => 1, wanted => sub {
+      lstat($_); return unless -d _;
+      my @st = lstat(_);
+      utime($st[8], $st[9], $dst . substr($File::Find::name, length $src)) or exit 1;
+    } }, $src);
+  ' "$1" "$2/$(basename "$1")" 2>/dev/null
 }
 
 # Clone every top-level entry of $1 into $2, except one named $3 (may be empty).

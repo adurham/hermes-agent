@@ -38,6 +38,8 @@ printf '{"lockfileVersion":3}\n'     > "$H/photon/sidecar/package-lock.json"
 printf '{"lockfileVersion":3}\n'     > "$H/photon/sidecar/node_modules/.package-lock.json"
 mkdir -p "$H/cache/scratch"
 printf 'throwaway\n'                 > "$H/cache/scratch/keep.txt"
+# Old directory times, so a clone that stamps directories with "now" is caught.
+touch -t 202001010000 "$H/memories" "$H/skills/foo" "$H/skills"
 
 python - "$H/state.db" <<'PY'
 import sqlite3, sys
@@ -105,6 +107,10 @@ done
 [ -f "$SNAP/userdata/Cache/data.bin" ]; check $? "whole userData: nothing filtered out of the clone"
 grep -q 'clone_mode' "$SNAP/manifest.json"; check $? "manifest records the clone mode"
 echo "    clone mode: $(sed -n 's/.*"clone_mode": "\(.*\)",/\1/p' "$SNAP/manifest.json")"
+same_mtime() { ! [ "$1" -nt "$2" ] && ! [ "$2" -nt "$1" ]; }
+same_mtime "$SNAP/home/memories" "$H/memories" && same_mtime "$SNAP/home/skills/foo" "$H/skills/foo"
+check $? "clone keeps directory mtimes"
+! grep -q 'fast clone .* failed' "$ROOT/pre.log"; check $? "no clone fell back to the slow path"
 
 echo
 echo "--- pre points the install at the rehearsal copy ---"
