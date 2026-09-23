@@ -211,11 +211,30 @@ function mergeStoredAssistantErrors(
 
 const normalizedMessageText = (message: ChatMessage): string => chatMessageText(message).replace(/\s+/g, ' ').trim()
 
+// Renderer ids are positional, so a hydrated page can carry a local row under
+// a new id; its durable rowId still names the same row (#119326).
+function hydratedIdResolver(mergedNextMessages: ChatMessage[]): (message: ChatMessage) => string | undefined {
+  const existingIds: Set<string> = new Set(mergedNextMessages.map(message => message.id))
+
+  const hydratedIdByRowId: Map<number, string> = new Map(
+    mergedNextMessages.flatMap(message => (message.rowId === undefined ? [] : [[message.rowId, message.id] as const]))
+  )
+
+  return (message: ChatMessage): string | undefined =>
+    existingIds.has(message.id)
+      ? message.id
+      : message.rowId === undefined
+        ? undefined
+        : hydratedIdByRowId.get(message.rowId)
+}
+
 function localAssistantErrorIdsToPreserve(
   mergedNextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
 ): Set<string> {
   const existingIds = new Set(mergedNextMessages.map(message => message.id))
+  const hydratedIdFor: (message: ChatMessage) => string | undefined = hydratedIdResolver(mergedNextMessages)
+
   const preserveIds = new Set<string>()
   const tailUserInNext = [...mergedNextMessages].reverse().find(message => message.role === 'user' && !message.hidden)
   const tailUserText = tailUserInNext ? normalizedMessageText(tailUserInNext) : ''
@@ -233,7 +252,12 @@ function localAssistantErrorIdsToPreserve(
       continue
     }
 
-    const hydratedAssistantIndex = tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+    const hydratedId = hydratedIdFor(message)
+
+    const hydratedAssistantIndex =
+      hydratedId === undefined
+        ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
+        : mergedNextMessages.findIndex(candidate => candidate.id === hydratedId && candidate.role === 'assistant')
 
     if (hydratedAssistantIndex !== -1) {
       mergedNextMessages[hydratedAssistantIndex] = {
@@ -255,7 +279,7 @@ function localAssistantErrorIdsToPreserve(
         continue
       }
 
-      if (candidate.role === 'user' && !existingIds.has(candidate.id) && !matchesTailUserInNext(candidate)) {
+      if (candidate.role === 'user' && hydratedIdFor(candidate) === undefined && !matchesTailUserInNext(candidate)) {
         preserveIds.add(candidate.id)
       }
 
@@ -271,11 +295,11 @@ function insertPreservedErrorRuns(
   currentMessages: ChatMessage[],
   preserveIds: Set<string>
 ): ChatMessage[] {
-  const existingIds = new Set(mergedNextMessages.map(message => message.id))
-
   if (preserveIds.size === 0) {
     return mergedNextMessages
   }
+
+  const hydratedIdFor: (message: ChatMessage) => string | undefined = hydratedIdResolver(mergedNextMessages)
 
   // Put each run of kept rows back after the refreshed row that preceded it
   // locally instead of below newer turns. When the refresh already fills that
@@ -287,13 +311,14 @@ function insertPreservedErrorRuns(
 
   for (const message of currentMessages) {
     const open = runs.at(-1)?.after === anchor ? runs.at(-1) : undefined
+    const hydratedId = preserveIds.has(message.id) ? undefined : hydratedIdFor(message)
 
-    if (existingIds.has(message.id)) {
+    if (hydratedId !== undefined) {
       if (open) {
-        open.before = message.id
+        open.before = hydratedId
       }
 
-      anchor = message.id
+      anchor = hydratedId
     } else if (preserveIds.has(message.id)) {
       const kept = { ...message, pending: false }
 

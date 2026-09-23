@@ -32,14 +32,20 @@ def _quiet(fn, default=None):
 
 
 def source_git_env() -> dict[str, str]:
-    """Keep read-only Git probes in their explicit cwd, not an inherited worktree."""
-    from hermes_cli._subprocess_compat import noninteractive_git_env
+    """Keep read-only Git probes in their explicit cwd, not an inherited worktree.
+
+    No probe may lazy-fetch from a partial clone's promisor remote: asking about
+    an upstream tip the clone never fetched would download its history, and the
+    probe timeout kills only git itself, orphaning the fetch (see NO_LAZY_FETCH_ENV).
+    """
+    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
 
     env = noninteractive_git_env()
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE", "GIT_NAMESPACE"):
         env.pop(key, None)
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env.update(NO_LAZY_FETCH_ENV)
     return env
 
 

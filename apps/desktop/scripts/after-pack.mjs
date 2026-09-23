@@ -13,6 +13,7 @@
 
 import path from 'node:path'
 import fs from 'node:fs'
+import { mkdir, readdir } from 'node:fs/promises'
 import { runPython } from '../../../scripts/build/python.mjs'
 
 import { batchSignAppTree } from './batch-sign-binaries.mjs'
@@ -20,6 +21,30 @@ import { rehashPayloadDigests } from './payload-digests.mjs'
 import { resolveSigningIdentity, signNestedChromium } from './sign-nested-chromium.mjs'
 import { signWheelZipMembers } from './sign-wheel-zips.mjs'
 import { sanitizeTree } from './sanitize-pe-signatures.mjs'
+
+/**
+ * Restore the empty app-level localizations dropped during Electron extraction.
+ * Runs after language filtering and before signing; the markers come from the
+ * packaged framework, not the host's Electron (which may be another version).
+ * Non-blocking: a failed restore leaves a usable package and says so.
+ */
+export async function restoreMacLocaleMarkers({ appOutDir, packager }) {
+  try {
+    const resources = packager.getResourcesDir(appOutDir)
+    const framework = packager.getMacOsElectronFrameworkResourcesDir(appOutDir)
+    const entries = await readdir(framework, { withFileTypes: true })
+    // Chromium also ships grammatical-gender packs; these are not macOS locales.
+    const locales = entries.filter(
+      entry =>
+        entry.isDirectory() && entry.name.endsWith('.lproj') && !/_(FEMININE|MASCULINE|NEUTER)\.lproj$/.test(entry.name)
+    )
+    await Promise.all(locales.map(entry => mkdir(path.join(resources, entry.name), { recursive: true })))
+  } catch (error) {
+    console.warn(
+      `[after-pack] macOS locale markers were not restored: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+}
 
 export default async function afterPack(context) {
   const platform = context.electronPlatformName
@@ -32,6 +57,7 @@ export default async function afterPack(context) {
       path.resolve(import.meta.dirname, '../../../scripts/bundles/payload.py'), 'relocate', payload], { stdio: 'inherit' })
   }
   if (platform === 'darwin') {
+    await restoreMacLocaleMarkers(context)
     if (fs.existsSync(payload)) {
       const entitlements = path.join(import.meta.dirname, '..', 'electron', 'entitlements.mac.inherit.plist')
       const { identity, keychain } = await resolveSigningIdentity(context.packager)
