@@ -1,0 +1,14 @@
+name: jev-skill-router
+repo: https://github.com/ydmw74/jev-skill-router
+sha: 5a83ac27a87ab9863514817b96b4850fe12de006
+description: "Agent Plugins v1 package: one skill plus one stdio MCP server (skill_select) started with uv run from the checkout. Needs uv on PATH. Suggests at most one skill per request via the TypeSafe (Jev) cookbook pattern; roster is read live from the profile skills dir."
+maintainer: ydmw74
+tier: community
+category: tools
+docs_url: https://github.com/ydmw74/jev-skill-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [JEV_TYPESAFE_API_KEY]
