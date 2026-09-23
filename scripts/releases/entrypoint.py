@@ -15,7 +15,8 @@ import time
 from pathlib import Path
 
 from scripts.releases.versioning import (
-    SEED, attempt_ref, derive_next_version, next_attempt, parse_attempt_ref, parse_marker_ref,
+    SEED, attempt_ref, derive_next_version, marker_ref, next_attempt, parse_attempt_ref,
+    parse_marker_ref,
 )
 
 WORKFLOW = "stable-release.yml"
@@ -282,17 +283,34 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     return {"requested": tag, "version": version, "repository": repository}
 
 
-def abandon(version: str, *, repo: Path, repository: str, delete, inspect=None) -> dict:
-    """Delete the draft. The claim tag stays, so the version is spent."""
-    tag = f"v{version}-rc"
+def abandon(version: str, *, repo: Path, remote: str, repository: str, delete, inspect=None) -> dict:
+    """Clear the outstanding attempt of ``version``. The attempt ref stays; the marker is the record.
+
+    The draft goes first: a cleared attempt with a live draft could still be
+    published by hand, while a draftless outstanding attempt is just abandoned
+    again. This reads every outstanding attempt, not the one-attempt view, so
+    it still clears one when a concurrent cut left two.
+    """
+    _refresh_claims(repo, remote)
+    matching = [found for found in _outstanding_attempts(repo, remote) if found[0] == version]
+    if len(matching) != 1:
+        raise ReleaseRefused(f"stable {version} has no outstanding attempt to abandon")
+    _version, attempt, tag = matching[0]
     if inspect is not None:
-        rows = [row for candidate in (f"v{version}", tag)
-                if (row := _release_view(candidate, repository, inspect)) is not None]
-        if len(rows) != 1 or rows[0].get("isDraft") is not True:
-            raise ReleaseRefused(f"stable {version} has no single release draft to abandon")
-        tag = rows[0]["tagName"]
-    delete(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
-    return {"burned": version, "tag": tag, "repository": repository}
+        draft = _release_view(tag, repository, inspect)
+        if draft is not None:
+            if draft.get("isDraft") is not True:
+                raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
+            delete(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
+    marker = marker_ref(version, attempt)
+    message = json.dumps({"schema": 1, "version": version, "attempt": attempt, "attemptRef": tag},
+                         sort_keys=True, separators=(",", ":"))
+    _git(repo, "tag", "-a", marker, f"{tag}^{{commit}}", "-m", message)
+    try:
+        _git(repo, "push", remote, f"refs/tags/{marker}")
+    except subprocess.CalledProcessError as error:
+        raise _claim_collision(repo, remote, marker, error) from error
+    return {"version": version, "tag": tag, "marker": marker, "repository": repository}
 
 
 def next_steps(result: dict) -> str:
@@ -340,7 +358,7 @@ def cmd_release(args) -> None:
     print(next_steps(result))
 
 
-def _command_repository(args) -> tuple[Path, str]:
+def _command_repository(args) -> tuple[Path, str, str]:
     from scripts import release as release_script
 
     repo = release_script.REPO_ROOT
@@ -348,7 +366,7 @@ def _command_repository(args) -> tuple[Path, str]:
     repository = release_script.remote_github_repo(remote)
     if not repository:
         raise SystemExit(f"release: remote {remote!r} does not point at a GitHub repository")
-    return repo, repository
+    return repo, remote, repository
 
 
 def _execute(repo: Path, command: list[str]) -> None:
@@ -377,17 +395,17 @@ def publish_steps(result: dict) -> str:
 
 
 def abandon_steps(result: dict) -> str:
-    """Say that the draft is gone and the version cannot be reused."""
-    version = result["burned"]
+    """Say which attempt is cleared and which attempt the next cut takes."""
+    version, tag = result["version"], result["tag"]
+    _version, attempt = parse_attempt_ref(tag)
     return "\n".join([
-        f"Deleted the draft for v{version}.",
-        f"The claim tag {result['tag']} stays, so v{version} is spent.",
-        "The next release takes the next version. This one cannot be reused.",
+        f"Cleared {tag}. The marker {result['marker']} records it.",
+        f"v{version} is not spent. The next cut is rc.{attempt + 1}-v{version}.",
     ])
 
 
 def cmd_publish(args) -> None:
-    repo, repository = _command_repository(args)
+    repo, _remote, repository = _command_repository(args)
     from scripts.releases.versioning import published_stable_version
     result = publish(args.version, repository=repository,
                      dispatch=lambda command: _execute(repo, command),
@@ -401,8 +419,8 @@ def cmd_publish(args) -> None:
 
 
 def cmd_abandon(args) -> None:
-    repo, repository = _command_repository(args)
-    result = abandon(args.version, repo=repo, repository=repository,
+    repo, remote, repository = _command_repository(args)
+    result = abandon(args.version, repo=repo, remote=remote, repository=repository,
                      delete=lambda command: _execute(repo, command),
                      inspect=lambda command: _inspect(repo, command))
     print(abandon_steps(result))

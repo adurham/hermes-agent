@@ -269,17 +269,17 @@ def test_publish_and_abandon_output_name_the_result():
     assert "Workflow: https://github.com/example/hermes-agent/actions/runs/9" in published
     assert "moves the stable channel" in published
 
-    abandoned = abandon_steps({"burned": "0.21.5", "tag": "v0.21.5-rc"})
-    assert "Deleted the draft for v0.21.5." in abandoned
-    assert "v0.21.5-rc" in abandoned
-    assert "cannot be reused" in abandoned
+    abandoned = abandon_steps({"version": "0.21.5", "tag": "rc.1-v0.21.5",
+                               "marker": "abandoned-rc.1-v0.21.5"})
+    assert "Cleared rc.1-v0.21.5." in abandoned
+    assert "abandoned-rc.1-v0.21.5" in abandoned
+    assert "The next cut is rc.2-v0.21.5." in abandoned
+    assert "cannot be reused" not in abandoned
 
 
-def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
-    from scripts.releases.entrypoint import ReleaseRefused, abandon, publish
+def test_publish_dispatches_the_sequencer():
+    from scripts.releases.entrypoint import ReleaseRefused, publish
 
-    commit = git(source, "rev-parse", "HEAD")
-    _claim(source, "0.21.5", commit)
     calls = []
     published = publish("0.21.5", repository="example/hermes-agent", dispatch=calls.append)
     assert published["requested"] == "v0.21.5"
@@ -290,18 +290,6 @@ def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
         "--repo", "example/hermes-agent", "--raw-field", "version=0.21.5",
     ]]
 
-    def inspect(command):
-        if "v0.21.5" in command:
-            return json.dumps({"tagName": "v0.21.5", "isDraft": True, "isPrerelease": False})
-        raise ReleaseRefused("not found")
-
-    abandoned = abandon("0.21.5", repo=source, repository="example/hermes-agent",
-                        delete=calls.append, inspect=inspect)
-    assert abandoned["burned"] == "0.21.5"
-    assert abandoned["tag"] == "v0.21.5"
-    assert calls[-1] == ["gh", "release", "delete", "v0.21.5", "--repo", "example/hermes-agent", "--yes"]
-    assert "rc.1-v0.21.5" in git(source, "tag", "--list")
-
     with pytest.raises(ReleaseRefused, match="burned or superseded by 0\\.21\\.6"):
         publish(
             "0.21.5", repository="example/hermes-agent",
@@ -309,6 +297,80 @@ def test_publish_dispatches_the_sequencer_and_abandon_keeps_the_claim(source):
             inspect=lambda _command: pytest.fail("superseded publish must not inspect drafts"),
             head_version=lambda: "0.21.6",
         )
+
+
+def _abandon(repo, version, *, draft=None, calls=None):
+    from scripts.releases.entrypoint import ReleaseRefused, abandon
+
+    def inspect(command):
+        if draft is None or command[3] != draft["tagName"]:
+            raise ReleaseRefused("release not found")
+        return json.dumps(draft)
+
+    return abandon(version, repo=repo, remote="origin", repository="example/hermes-agent",
+                   delete=(calls if calls is not None else []).append, inspect=inspect)
+
+
+def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(source):
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    calls = []
+
+    result = _abandon(source, "0.21.5", calls=calls,
+                      draft={"tagName": "rc.1-v0.21.5", "isDraft": True, "isPrerelease": False})
+
+    assert result == {"version": "0.21.5", "tag": "rc.1-v0.21.5",
+                      "marker": "abandoned-rc.1-v0.21.5", "repository": "example/hermes-agent"}
+    assert calls == [["gh", "release", "delete", "rc.1-v0.21.5", "--repo", "example/hermes-agent", "--yes"]]
+    remote = git(source, "ls-remote", "origin", "refs/tags/*")
+    assert "refs/tags/abandoned-rc.1-v0.21.5" in remote
+    assert "refs/tags/rc.1-v0.21.5" in remote
+    marker = json.loads(git(source, "tag", "-l", "abandoned-rc.1-v0.21.5", "--format=%(contents)"))
+    assert marker == {"attempt": 1, "attemptRef": "rc.1-v0.21.5", "schema": 1, "version": "0.21.5"}
+    assert git(source, "rev-parse", "abandoned-rc.1-v0.21.5^{commit}") == git(
+        source, "rev-parse", "rc.1-v0.21.5^{commit}")
+    assert _release(source, _advance(source, "fix"))["tag"] == "rc.2-v0.21.5"
+
+
+def test_abandon_of_a_draftless_burned_attempt_writes_the_marker(source):
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    calls = []
+
+    assert _abandon(source, "0.21.5", calls=calls)["marker"] == "abandoned-rc.1-v0.21.5"
+    assert calls == []
+
+
+@pytest.mark.parametrize("version", ["0.21.5", "0.22.0"])
+def test_abandon_refuses_without_an_outstanding_attempt_of_that_version(source, version):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    if version == "0.21.5":
+        _mark(source, "0.21.5")
+
+    with pytest.raises(ReleaseRefused, match="no outstanding attempt to abandon"):
+        _abandon(source, version)
+
+
+def test_abandon_refuses_a_release_that_was_published(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
+    with pytest.raises(ReleaseRefused, match="published and cannot be abandoned"):
+        _abandon(source, "0.21.5",
+                 draft={"tagName": "rc.1-v0.21.5", "isDraft": False, "isPrerelease": False})
+    assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_abandon_clears_one_of_two_attempts_a_concurrent_cut_left(source):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+    _claim(source, "0.22.0", commit)
+
+    assert _abandon(source, "0.22.0")["marker"] == "abandoned-rc.1-v0.22.0"
+    with pytest.raises(ReleaseRefused, match="rc.1-v0.21.5 is outstanding"):
+        _release(source, _advance(source, "later"), execute=_must_not_execute)
 
 
 def _clones(source, tmp_path):
