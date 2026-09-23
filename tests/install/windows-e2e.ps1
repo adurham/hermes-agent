@@ -1278,6 +1278,9 @@ function Invoke-PhaseUpdate {
     # remote's main moves forward. The GUI route re-advances harmlessly
     # (same sha); script routes need it here because only the GUI arm's
     # helper used to own this step.
+    # The mock provider is journey setup, not an upgrade mutation. Configure it
+    # before preservation snapshots so its stable endpoint is part of baseline state.
+    if ($Route -in @('open-app-update', 'hermes-desktop-app-update')) { Start-JourneyChat }
     # Snapshot every plugin tree BEFORE the upgrade moves anything.
     Invoke-PreserveSnapshot
     # ... and the user's own durable state, produced by the install phase
@@ -1286,7 +1289,6 @@ function Invoke-PhaseUpdate {
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $state.current) | Out-Null
     Write-Host "  serve.git main advanced to $($state.current)"
 
-    if ($Route -in @('open-app-update', 'hermes-desktop-app-update')) { Start-JourneyChat }
     switch ($Route) {
         "open-app-update" {
             # Meaningful only where an OS entry point exists - install.ps1
