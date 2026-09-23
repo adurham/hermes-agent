@@ -5,9 +5,22 @@ import sys
 
 __release_date__ = "2026.9.21"
 
-# Runtime version identity no longer lives here: resolve it through
-# hermes_cli.version_info.get_version_info() (install stamp → live git →
-# unknown). The checkout itself carries no version constant.
+
+def _stamped_version() -> str:
+    """Old-updater compat: shipped updaters import ``__version__`` after the checkout swap.
+
+    tests/compat/old_updater_surface.json freezes that import. In-tree code resolves
+    identity through hermes_cli.version_info.get_version_info(); this reads only the
+    install stamp -- never git, since it runs on every import -- and keeps the
+    pre-stamp placeholder when a checkout has no stamp.
+    """
+    from hermes_cli.steward import read_install_stamp
+    from pm.paths import repo_root
+
+    return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
+
+
+__version__ = _stamped_version()
 
 
 def _ensure_utf8():

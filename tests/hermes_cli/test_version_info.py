@@ -176,3 +176,36 @@ def test_resolve_stamp_file_falls_back_to_code_root_when_env_unset(tmp_path, mon
     monkeypatch.setattr("pm.paths.repo_root", lambda: tmp_path)
 
     assert _resolve_stamp_file() == tmp_path / "install-stamp.json"
+
+
+def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path):
+    """``hermes_cli.__version__`` exists only for shipped updaters that import it after the
+    checkout swap (tests/compat/old_updater_surface.json). It must report the stamp's base
+    version exactly as get_version_info() does, and the pre-stamp placeholder without one.
+    A fresh interpreter, since the stub is evaluated when the package is imported."""
+    import os
+    import sys
+
+    repo = Path(__file__).resolve().parents[2]
+    probe = (
+        f"import sys; sys.path.insert(0, {str(repo)!r}); import hermes_cli; "
+        "from hermes_cli.version_info import get_version_info; "
+        "print(hermes_cli.__version__, get_version_info().base_version)"
+    )
+
+    def read(install_root: Path) -> list[str]:
+        env = {**os.environ, "HERMES_INSTALL_ROOT": str(install_root)}
+        return subprocess.run(
+            [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True
+        ).stdout.split()
+
+    stamped = tmp_path / "stamped"
+    stamped.mkdir()
+    stamp = {"commit": "c" * 40, "baseVersion": "9.8.7", "source": "ci", "updateMechanism": "external"}
+    (stamped / "install-stamp.json").write_text(json.dumps(stamp))
+    compat, identity = read(stamped)
+    assert compat == identity == stamp["baseVersion"]
+
+    unstamped = tmp_path / "unstamped"
+    unstamped.mkdir()
+    assert read(unstamped)[0] == "0.0.0"
