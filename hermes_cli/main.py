@@ -14,8 +14,9 @@ Usage:
 # here would block ``hermes update``.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass
+except ModuleNotFoundError as exc:
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
 # imports — it shells out ``cmd /c ver`` and flashes a console when this

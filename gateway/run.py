@@ -6,8 +6,9 @@ Run via ``python -m gateway.run`` or ``python cli.py --gateway``."""
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass  # a partial ``hermes update`` can leave the bootstrap unregistered; only Windows UTF-8 stdio suffers
+except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the bootstrap unregistered
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import asyncio
 import concurrent.futures

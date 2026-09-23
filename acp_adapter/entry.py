@@ -12,10 +12,10 @@ Usage::
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not):
-    # UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+except ModuleNotFoundError as exc:
+    # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not).
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 else:
     # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch cwd from shadowing Hermes modules.
     hermes_bootstrap.harden_import_path()

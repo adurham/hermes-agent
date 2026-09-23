@@ -9,8 +9,9 @@
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
+except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import json
 import logging
