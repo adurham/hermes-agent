@@ -2,8 +2,8 @@ name: Bootstrap installer
 
 # Exercises the bootstrap-installer path on PRs that can affect it: the
 # POSIX shell installer (scripts/install.sh), its generated pin fragments,
-# and the version stamp the `complete` stage ships. The PowerShell installer
-# keeps its own Windows-only lane (installer-tests.yml); this lane runs the
+# and the version stamp the `complete` stage ships. The PowerShell installer's
+# native tests run in the tests-os Windows lanes; this lane runs the
 # protocol/stamp cross-checks plus a whole current installer against a tiny
 # application graph. The latter runs real PM/uv and generated launchers, not
 # every production extra. Tool download/hash tests remain separate.
