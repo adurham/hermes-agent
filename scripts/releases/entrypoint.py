@@ -11,9 +11,11 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
+from scripts.releases.draft_warning import draft_body
 from scripts.releases.versioning import (
     SEED, attempt_ref, derive_next_version, marker_ref, next_attempt,
     outstanding_attempts, parse_attempt_ref, parse_marker_ref,
@@ -198,10 +200,26 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     _outstanding_attempt(repo, remote)
     url = f"https://github.com/{repository}/releases/tag/{tag}"
     try:
-        execute([
-            "gh", "release", "create", tag, "--repo", repository,
-            "--verify-tag", "--draft", "--generate-notes", "--title", f"Hermes Agent v{version}",
-        ])
+        notes = json.loads(execute([
+            "gh", "api", f"repos/{repository}/releases/generate-notes",
+            "-f", f"tag_name={tag}",
+        ]) or "{}").get("body") or ""
+        # --generate-notes cannot place a warning below the notes, so the body
+        # is built here and handed over as a file.
+        file = tempfile.NamedTemporaryFile(
+            "w", suffix=".md", delete=False, encoding="utf-8", newline="\n")
+        try:
+            file.write(draft_body(version=version, attempt_ref=tag, notes=notes))
+        finally:
+            file.close()
+        try:
+            execute([
+                "gh", "release", "create", tag, "--repo", repository,
+                "--verify-tag", "--draft", "--notes-file", file.name,
+                "--title", f"Hermes Agent v{version}",
+            ])
+        finally:
+            os.unlink(file.name)
         execute([
             "gh", "workflow", "run", WORKFLOW, "--ref", tag, "--repo", repository,
             "--raw-field", f"tag={tag}",

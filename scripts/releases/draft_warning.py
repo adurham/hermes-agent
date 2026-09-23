@@ -23,8 +23,9 @@ _WARNING = """> [!CAUTION]
 
 
 def draft_body(*, version: str, attempt_ref: str, notes: str) -> str:
-    """The draft body: warning block, generated notes, warning block."""
-    block = _WARNING.format(version=version, attempt_ref=attempt_ref)
+    """The draft body: fenced warning block, generated notes, fenced warning block."""
+    block = "\n".join([WARNING_OPEN, _WARNING.format(version=version, attempt_ref=attempt_ref),
+                       WARNING_CLOSE])
     return "\n".join([block, notes, block])
 
 

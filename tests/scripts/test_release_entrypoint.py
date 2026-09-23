@@ -104,9 +104,15 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
         "schema": 1,
         "version": "0.21.5",
     }
-    assert calls == [
-        ["gh", "release", "create", "rc.1-v0.21.5", "--repo", "example/hermes-agent",
-         "--verify-tag", "--draft", "--generate-notes", "--title", "Hermes Agent v0.21.5"],
+    assert calls[0] == ["gh", "api", "repos/example/hermes-agent/releases/generate-notes",
+                        "-f", "tag_name=rc.1-v0.21.5"]
+    create = calls[1]
+    assert create[:4] == ["gh", "release", "create", "rc.1-v0.21.5"]
+    assert "--verify-tag" in create and "--draft" in create
+    assert "--generate-notes" not in create
+    assert "--notes-file" in create
+    assert create[-2:] == ["--title", "Hermes Agent v0.21.5"]
+    assert calls[2:] == [
         ["gh", "workflow", "run", "stable-release.yml", "--ref", "rc.1-v0.21.5",
          "--repo", "example/hermes-agent", "--raw-field", "tag=rc.1-v0.21.5"],
         ["gh", "run", "list", "--repo", "example/hermes-agent", "--workflow", "stable-release.yml",
@@ -245,6 +251,52 @@ def test_successive_attempts_reserve_increasing_native_epochs(source):
     second_epoch = int(git(source, "for-each-ref", "refs/tags/rc.2-v0.21.5",
                            "--format=%(taggerdate:unix)"))
     assert second_epoch > first_epoch
+
+
+def test_draft_body_is_fenced_at_top_and_bottom():
+    from scripts.releases.draft_warning import (
+        WARNING_CLOSE, WARNING_OPEN, draft_body,
+    )
+
+    body = draft_body(version="0.21.5", attempt_ref="rc.2-v0.21.5",
+                      notes="## What's changed\n- x")
+    assert body.startswith(WARNING_OPEN) and body.rstrip().endswith(WARNING_CLOSE)
+    assert body.count(WARNING_OPEN) == 2 and body.count(WARNING_CLOSE) == 2
+    assert "python scripts/release.py publish --version 0.21.5" in body
+    assert "python scripts/release.py abandon --version 0.21.5" in body
+    assert "## What's changed\n- x" in body
+    # The warning names the attempt and the version it would burn.
+    assert "rc.2-v0.21.5" in body
+
+
+def test_release_fetches_generated_notes_and_creates_the_fenced_draft(source):
+    from scripts.releases.draft_warning import WARNING_CLOSE, WARNING_OPEN
+
+    commit = git(source, "rev-parse", "HEAD")
+    seen = {}
+
+    def execute(command):
+        if command[1:3] == ["api", "repos/example/hermes-agent/releases/generate-notes"]:
+            return json.dumps({"body": "## What's changed\n- x", "name": "release"})
+        if command[:3] == ["gh", "release", "create"]:
+            notes_path = command[command.index("--notes-file") + 1]
+            with open(notes_path, encoding="utf-8") as file:
+                seen["body"] = file.read()
+        if command[:3] == ["gh", "run", "list"]:
+            return json.dumps([{"databaseId": 7, "url": "https://github.com/example/hermes-agent/actions/runs/7",
+                                "headBranch": "rc.1-v0.21.5", "status": "queued"}])
+        return ""
+
+    result = _release(source, commit, execute=execute)
+
+    assert result["tag"] == "rc.1-v0.21.5"
+    # The notes are fetched from GitHub and the draft is created from a file,
+    # because --generate-notes cannot place a warning below the notes.
+    body = seen["body"]
+    assert body.startswith(WARNING_OPEN) and body.rstrip().endswith(WARNING_CLOSE)
+    assert "## What's changed\n- x" in body
+    assert "python scripts/release.py publish --version 0.21.5" in body
+    assert "python scripts/release.py abandon --version 0.21.5" in body
 
 
 def test_a_dispatch_that_never_starts_is_an_error(source):
