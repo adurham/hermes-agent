@@ -27,6 +27,46 @@ def test_non_final_refs_are_not_versions(ref):
     assert version_from_tag(ref) is None
 
 
+def test_attempt_ref_carries_version_and_attempt():
+    from scripts.releases.versioning import parse_attempt_ref
+
+    assert parse_attempt_ref("rc.1-v0.21.5") == ("0.21.5", 1)
+    assert parse_attempt_ref("rc.12-v1.0.0") == ("1.0.0", 12)
+
+
+def test_marker_ref_names_the_attempt_it_clears():
+    from scripts.releases.versioning import parse_marker_ref
+
+    assert parse_marker_ref("abandoned-rc.1-v0.21.5") == ("0.21.5", 1)
+    assert parse_marker_ref("rc.1-v0.21.5") is None
+
+
+@pytest.mark.parametrize("ref", [
+    "v0.21.5-rc", "v0.21.5-rc.1", "rc.01-v0.21.5", "rc.0-v0.21.5",
+    "rc.1-v2026.9.21", "v0.21.5", "abandoned-rc.1-v0.21.5",
+    "rc.1-v0.21.5+canary.20260922T001400Z", "rc.1-v0.21", "rc.-v0.21.5",
+])
+def test_attempt_ref_rejects_other_shapes(ref):
+    from scripts.releases.versioning import parse_attempt_ref
+
+    assert parse_attempt_ref(ref) is None
+
+
+def test_attempt_and_marker_refs_round_trip():
+    from scripts.releases.versioning import attempt_ref, marker_ref, parse_attempt_ref, parse_marker_ref
+
+    assert parse_attempt_ref(attempt_ref("0.21.5", 3)) == ("0.21.5", 3)
+    assert parse_marker_ref(marker_ref("0.21.5", 3)) == ("0.21.5", 3)
+
+
+@pytest.mark.parametrize("version, attempt", [("2026.9.21", 1), ("0.21.5", 0), ("0.21", 1)])
+def test_attempt_ref_refuses_what_it_could_not_parse(version, attempt):
+    from scripts.releases.versioning import attempt_ref
+
+    with pytest.raises(ValueError):
+        attempt_ref(version, attempt)
+
+
 def test_claim_advances_the_line_but_is_not_a_final_tag():
     assert version_from_tag("v0.21.5-rc") is None
     assert derive_next_version(published=None, claims=["v0.21.5-rc"], bump="patch") == "0.21.6"

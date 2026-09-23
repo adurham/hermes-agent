@@ -67,6 +67,42 @@ def version_from_tag(ref: str) -> str | None:
     return ref[1:]
 
 
+# The ref grammar only anchors; ``version_from_tag`` owns the version shape.
+_ATTEMPT_REF_RE = re.compile(r"rc\.(?P<attempt>[1-9][0-9]*)-(?P<tag>v[^/]+)")
+_MARKER_PREFIX = "abandoned-"
+
+
+def parse_attempt_ref(ref: str) -> tuple[str, int] | None:
+    """``rc.<N>-vX.Y.Z`` to ``(version, N)``, or None for anything else.
+
+    The attempt comes first so the ref can never read as a SemVer prerelease
+    of the version it claims.
+    """
+    match = _ATTEMPT_REF_RE.fullmatch(ref) if isinstance(ref, str) else None
+    if match is None:
+        return None
+    version = version_from_tag(match.group("tag"))
+    return (version, int(match.group("attempt"))) if version else None
+
+
+def parse_marker_ref(ref: str) -> tuple[str, int] | None:
+    """``abandoned-rc.<N>-vX.Y.Z``, the record that clears one attempt."""
+    if not isinstance(ref, str) or not ref.startswith(_MARKER_PREFIX):
+        return None
+    return parse_attempt_ref(ref[len(_MARKER_PREFIX):])
+
+
+def attempt_ref(version: str, attempt: int) -> str:
+    ref = f"rc.{attempt}-v{version}"
+    if parse_attempt_ref(ref) != (version, attempt):
+        raise ValueError(f"invalid attempt ref: {version!r} attempt {attempt!r}")
+    return ref
+
+
+def marker_ref(version: str, attempt: int) -> str:
+    return _MARKER_PREFIX + attempt_ref(version, attempt)
+
+
 def _claim_version(tag: str) -> str | None:
     if isinstance(tag, str) and tag.endswith("-rc"):
         return version_from_tag(tag[:-3])
