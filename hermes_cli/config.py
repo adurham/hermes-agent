@@ -3887,9 +3887,22 @@ def _exit_invalid(msg: str) -> None:
 
 
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
-    """Write only the user's raw config back (never the merged defaults)."""
+    """Write only the user's raw config back (never the merged defaults).
+
+    Passes ``extra_content`` so this shared writer cannot drift out of sync with
+    ``save_config()``: ``atomic_yaml_write`` is a whole-document ``yaml.dump``, so a writer
+    that omits it silently deletes the trailing commented-out reference sections
+    (Security / Fallback Model) that ``save_config()`` appends on every save. The
+    pre-v2026.9.14 ``unset_config_value()`` passed it directly; the merge refactored both
+    ``set``/``unset`` into this helper and dropped the argument, so every
+    ``hermes config set``/``unset`` deleted those blocks again — the same regression
+    FORK.md already records once (upstream PR #82245). Every writer of the user config
+    goes through here on purpose; do not re-add a direct ``atomic_yaml_write`` call site.
+    """
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_yaml_write(
+        config_path, user_config, sort_keys=False,
+        extra_content=_commented_sections_for_save(user_config))
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
