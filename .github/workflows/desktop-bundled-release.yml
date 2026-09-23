@@ -1780,6 +1780,7 @@ jobs:
           CHANNEL: ${{ steps.channel.outputs.channel }}
           PREVIOUS_TAG: ${{ inputs.termux_upgrade_from_tag }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
+          RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
           # Passphrase-protected signing keys only; unset for bare keys.
           TERMUX_APT_GPG_PASSPHRASE: ${{ secrets.TERMUX_APT_GPG_PASSPHRASE }}
@@ -1787,10 +1788,14 @@ jobs:
           # stage_apt_repo.py builds dists/<suite>/ + pool/ under --out and
           # signs Release/InRelease with the key file. Exit 3 (unsigned
           # Release) must fail the run.
-          python3 scripts/termux/stage_apt_repo.py \
-            --pool termux-build/deb \
-            --out termux-build/apt \
-            --suite "hermes-$CHANNEL" \
+          # The candidate phase keys the pool by the attempt ref: the pool
+          # upload is immutable with a one-year cache header, so a recut of
+          # the same version must never reuse a pool key.
+          stage_args=(--pool termux-build/deb --out termux-build/apt --suite "hermes-$CHANNEL")
+          if [ "$RELEASE_PHASE" = candidate ]; then
+            stage_args+=(--pool-subdir "$RELEASE_CLAIM_TAG")
+          fi
+          python3 scripts/termux/stage_apt_repo.py "${stage_args[@]}" \
             --gpg-key-file "$RUNNER_TEMP/termux-apt-gpg.asc"
 
           debs=(termux-build/deb/*.deb)
