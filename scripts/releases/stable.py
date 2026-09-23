@@ -26,22 +26,22 @@ SMOKE_JOBS = {
 
 
 def admit_claim(tag: str, commit: str, *, on_main) -> dict:
-    """Admit a release from its claim tag. The checkout version is not read.
+    """Admit a release from its attempt ref. The checkout version is not read.
 
-    ``main`` carries ``0.0.0`` on purpose, so the version comes from the
-    ``-rc`` tag and the only question about the commit is whether it is on
-    ``main``.
+    ``main`` carries ``0.0.0`` on purpose, so the version and the attempt come
+    from ``rc.<N>-vX.Y.Z`` and the only question about the commit is whether
+    it is on ``main``.
     """
-    from scripts.releases.versioning import version_from_tag
+    from scripts.releases.versioning import parse_attempt_ref
 
-    if not isinstance(tag, str) or not tag.endswith("-rc"):
+    parsed = parse_attempt_ref(tag)
+    if parsed is None:
         raise ValueError(f"{tag} is not a claim tag")
-    version = version_from_tag(tag[:-3])
-    if version is None:
-        raise ValueError(f"{tag} is not a claim tag")
+    version, attempt = parsed
     if not on_main(commit):
         raise ValueError(f"{commit} is not on main")
-    return {"claim_tag": tag, "tag": f"v{version}", "version": version, "commit": commit}
+    return {"claim_tag": tag, "tag": f"v{version}", "version": version, "attempt": attempt,
+            "commit": commit}
 
 
 def require_stable_identity(tag: str, commit: str) -> None:
@@ -185,12 +185,12 @@ def output(argv: list[str]) -> str:
     return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
 
 
-def _claim_metadata(raw: str, *, version: str, commit: str) -> dict:
+def _claim_metadata(raw: str, *, version: str, attempt: int, commit: str) -> dict:
     try:
         metadata = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as error:
         raise ValueError("Stable claim metadata is invalid") from error
-    expected = {"schema": 1, "version": version, "commit": commit}
+    expected = {"schema": 1, "version": version, "attempt": attempt, "commit": commit}
     if (not isinstance(metadata, dict)
             or any(metadata.get(key) != value for key, value in expected.items())
             or not isinstance(metadata.get("autopublish"), bool)
@@ -248,7 +248,8 @@ def check_claim(env: dict, run=output) -> dict:
 
     admitted = admit_claim(claim_tag, commit, on_main=on_main)
     raw_metadata = run(["git", "tag", "-l", claim_tag, "--format=%(contents)"])
-    metadata = _claim_metadata(raw_metadata, version=admitted["version"], commit=commit)
+    metadata = _claim_metadata(raw_metadata, version=admitted["version"],
+                               attempt=admitted["attempt"], commit=commit)
     claim_epoch = tagger_epoch(local_object, run)
     if metadata["claimEpoch"] != claim_epoch:
         raise ValueError("Stable claim epoch differs from its annotated tagger timestamp")
@@ -299,7 +300,7 @@ def final_context(env: dict, run=output) -> tuple[str, str, dict]:
     run(["git", "merge-base", "--is-ancestor", commit, "origin/main"])
     claim = _claim_metadata(
         run(["git", "tag", "-l", claim_tag, "--format=%(contents)"]),
-        version=admitted["version"], commit=commit,
+        version=admitted["version"], attempt=admitted["attempt"], commit=commit,
     )
     final = json.loads(run(["git", "tag", "-l", tag, "--format=%(contents)"]))
     expected = {

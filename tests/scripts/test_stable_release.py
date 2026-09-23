@@ -79,7 +79,7 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
     old = candidates("v1.2.3", "a" * 40, "1" * 64)
     new = candidates("v1.2.4", "b" * 40, "2" * 64)
     require_stable_identity(new["tag"], new["commit"])
-    for tag in ("v1.2.4+canary.20260907T143420Z", "v1.2.4-rc"):
+    for tag in ("v1.2.4+canary.20260907T143420Z", "v1.2.4-rc", "rc.1-v1.2.4"):
         with pytest.raises(ValueError):
             require_stable_identity(tag, new["commit"])
     transitions = plan_transitions(old, new, BASE)
@@ -197,9 +197,11 @@ def test_manifest_origin_checks_with_real_https(https_origin):
 def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkeypatch):
     commit = "a" * 40
     claim_object = "b" * 40
-    ref = "refs/tags/v1.2.3-rc"
-    env = {"RELEASE_CLAIM_TAG": "v1.2.3-rc", "RELEASE_CLAIM_OBJECT": claim_object,
+    ref = "refs/tags/rc.1-v1.2.3"
+    env = {"RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object,
            "GITHUB_SHA": commit, "GITHUB_REF": ref}
+    message = {"schema": 1, "version": "1.2.3", "attempt": 1, "commit": commit,
+               "autopublish": False, "claimEpoch": 1_790_000_000}
 
     def git(argv):
         if argv[1] == "ls-remote":
@@ -211,17 +213,18 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         if argv[1] == "rev-parse":
             return claim_object if argv[-1] == ref else commit
         if argv[1] == "tag":
-            return json.dumps({
-                "schema": 1, "version": "1.2.3", "commit": commit,
-                "autopublish": False, "claimEpoch": 1_790_000_000,
-            })
+            return json.dumps(message)
         return ""
 
     assert check_claim(env, git) == {
-        "claim_tag": "v1.2.3-rc", "claim_object": claim_object,
-        "tag": "v1.2.3", "version": "1.2.3", "commit": commit,
+        "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
+        "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
         "autopublish": False, "claim_epoch": 1_790_000_000,
     }
+    # The metadata binds the attempt its ref names.
+    for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
+        with pytest.raises(ValueError, match="metadata is invalid"):
+            check_claim(env, lambda argv, wrong=wrong: json.dumps(wrong) if argv[1] == "tag" else git(argv))
     with pytest.raises(ValueError, match="moved"):
         check_claim(env, lambda argv: f"{'c' * 40}\t{ref}\n{commit}\t{ref}^{{}}"
                     if argv[1] == "ls-remote" else git(argv))
@@ -242,14 +245,14 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, encoding="utf-8").strip()
     subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
     metadata = json.dumps({
-        "schema": 1, "version": "1.2.3", "commit": actual,
+        "schema": 1, "version": "1.2.3", "attempt": 1, "commit": actual,
         "autopublish": False, "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
-        ["git", "tag", "-a", "v1.2.3-rc", "-m", metadata], check=True,
+        ["git", "tag", "-a", "rc.1-v1.2.3", "-m", metadata], check=True,
         env={**os.environ, "GIT_COMMITTER_DATE": "@1790000000 +0000"},
     )
-    subprocess.run(["git", "push", "origin", "main", "v1.2.3-rc"], check=True, capture_output=True)
+    subprocess.run(["git", "push", "origin", "main", "rc.1-v1.2.3"], check=True, capture_output=True)
     env.update({"GITHUB_SHA": actual, "RELEASE_CLAIM_OBJECT": subprocess.check_output(
         ["git", "rev-parse", ref], text=True, encoding="utf-8").strip()})
     claim = check_claim(env)
