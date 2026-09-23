@@ -83,3 +83,35 @@ def adopt(previous: Path, selected: Path, running: Path) -> bool:
     os.environ["PATH"] = _replace(os.environ.get("PATH", ""), venv_bin_dir(previous), venv_bin_dir(selected))
     importlib.invalidate_caches()
     return True
+
+
+def _running_and_selected(project_root: Path) -> tuple[Path, Path] | None:
+    running = running_environment(project_root)
+    if running is None:
+        return None
+    try:
+        return running, selected_venv(project_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def restart_needed(project_root: Path) -> str | None:
+    """Why this process must restart to load the selected generation, or None when it runs it.
+
+    Also None when the process does not run from one of this install's generations (a developer
+    venv, Nix): it never loads a PM selection, so a restart would not change what it imports.
+    The reason names the selected generation, so it changes with every new publication.
+    """
+    pair = _running_and_selected(project_root)
+    if pair is None or pair[0].resolve() == pair[1].resolve():
+        return None
+    running, selected = pair
+    return (f"dependency generation {selected.parent.name} was published after this process "
+            f"loaded {running.parent.name}")
+
+
+def adopt_selected(project_root: Path) -> bool:
+    """Move this process onto the selected generation. True when it already runs it, adopted it,
+    or runs from no generation of this install at all (there is nothing to adopt)."""
+    pair = _running_and_selected(project_root)
+    return pair is None or adopt(pair[0], pair[1], pair[0])
