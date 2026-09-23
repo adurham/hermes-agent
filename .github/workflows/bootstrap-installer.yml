@@ -33,10 +33,10 @@ jobs:
           # checkout can't (git: "shallow update not allowed").
           fetch-depth: 0
 
-      - name: Stage manifest is well-formed protocol v1
+      - name: Stage manifest is well-formed protocol v1 (piped, as `curl | bash` runs it)
         shell: bash
         run: |
-          bash scripts/install.sh --manifest | python3 -c '
+          cat scripts/install.sh | bash -s -- --manifest | python3 -c '
           import json, sys
           m = json.load(sys.stdin)
           assert m["protocol_version"] == 1, m
