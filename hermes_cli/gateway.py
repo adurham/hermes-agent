@@ -3297,6 +3297,20 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
+def _retire_hermes_replace_dropin(system: bool = False) -> bool:
+    """Remove only the legacy ``--replace`` drop-in written by Hermes."""
+    unit_path = get_systemd_unit_path(system=system)
+    dropin = unit_path.parent / f"{unit_path.name}.d" / "20-replace.conf"
+    try:
+        text = dropin.read_text(encoding="utf-8-sig")
+    except OSError:
+        return False
+    if not all(token in text for token in ("Added to end the gateway respawn storm", "--replace", "ExecStart=")):
+        return False
+    dropin.unlink()
+    return True
+
+
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
@@ -3304,7 +3318,13 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
-    if systemd_unit_is_current(system=system):
+    current = systemd_unit_is_current(system=system)
+    if _retire_hermes_replace_dropin(system=system):
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+        print(f"↻ Removed the stale Hermes --replace drop-in from the gateway {_service_scope_label(system)} service")
+        if current:
+            return True
+    elif current:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None

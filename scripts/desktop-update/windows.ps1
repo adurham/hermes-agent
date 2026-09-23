@@ -1206,6 +1206,8 @@ function Set-InstallRootCurrentDirectory([string]$Root) {
 }
 
 $finalCode = 1
+$manualAction = $false
+$manualMsg = ""
 $finalMsg = "update did not complete"
 $script:TreeSafeToFinalize = $true
 
@@ -1620,6 +1622,36 @@ try {
         }
     }
 
+    # Desktop stopped every locally running profile gateway before handing off
+    # so their venv launchers could not hold the update lock. That happens
+    # before `hermes update` captures its Windows pause inventory, leaving the
+    # updater nothing to resume on its normal success path. Restore the same
+    # all-profile fleet only after the updated runtime verifies. A remote-served
+    # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
+    if ($res.Code -eq 0 -and -not $desktopBuildFailed -and -not $NoGateway) {
+        $gatewayRestartFailed = $false
+        try {
+            # Resolve again after update: PM may have published a new generation,
+            # and its command can include an isolation/bootstrap prefix.
+            $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+            $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start", "--all")
+            $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway restart"
+            $gatewayRestartFailed = $gatewayRestart.Code -ne 0
+        } catch {
+            $gatewayRestartFailed = $true
+            Write-HandoffLog "gateway restart setup failed: $($_.Exception.Message)"
+        }
+        if ($gatewayRestartFailed) {
+            # The update itself succeeded; a restart miss is a manual follow-up
+            # (Write-Result's manual flag -> Desktop boot dialog), never a failed
+            # update: a non-zero exit here would run the error finale and hide
+            # the fact that the new runtime is installed and verified.
+            $manualAction = $true
+            $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
+            Write-HandoffLog $manualMsg
+        }
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."
@@ -1651,7 +1683,8 @@ try {
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
     } else {
-        Write-Result ($finalCode -eq 0) $finalCode $finalMsg
+        if ($finalCode -eq 0 -and $manualAction) { $finalMsg = $manualMsg }
+        Write-Result ($finalCode -eq 0) $finalCode $finalMsg ($finalCode -eq 0 -and $manualAction)
         Remove-MarkerIfOwned
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg

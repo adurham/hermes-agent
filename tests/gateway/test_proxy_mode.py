@@ -1,5 +1,6 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -79,11 +80,12 @@ class _FakeSession:
         pass
 
 def _patch_aiohttp(session):
-    """Patch aiohttp.ClientSession to return our fake session."""
-    return patch(
-        "aiohttp.ClientSession",
-        return_value=session,
+    """Install the optional aiohttp boundary without requiring the extra."""
+    module = types.SimpleNamespace(
+        ClientSession=MagicMock(return_value=session),
+        ClientTimeout=MagicMock(),
     )
+    return patch.dict("sys.modules", {"aiohttp": module})
 
 class TestGetProxyUrl:
     """Test _get_proxy_url() config resolution."""
@@ -100,6 +102,39 @@ class TestGetProxyUrl:
         cfg = {"gateway": {"proxy_url": "http://10.0.0.1:8642"}}
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
+
+class _SelectiveScope(dict):
+    """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
+    def get(self, name, default=None):
+        if name == "GATEWAY_PROXY_URL":
+            return "http://proxy.local:8642"
+        if name == "GATEWAY_PROXY_KEY":
+            raise RuntimeError("resolver boom")
+        return dict.get(self, name, default)
+
+
+class TestProxyKeyScopeFailure:
+    """The proxy key read must propagate a bound-scope failure -- the ambient env
+    may hold another profile's credential (pre-fix: ``except Exception -> os.getenv``)."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_key_scope_failure_never_borrows_env(self, monkeypatch):
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "foreign-key")
+        runner = _make_runner()
+        runner._run_still_current_fn = lambda *a, **k: True
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(_SelectiveScope())
+        try:
+            with _patch_aiohttp(MagicMock()):
+                with pytest.raises(RuntimeError, match="resolver boom"):
+                    await runner._run_agent_via_proxy("hi", "ctx", [], _make_source(), "sess-1")
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
 
 class TestResolveProxyUrl:
 
@@ -230,7 +265,7 @@ class TestRunAgentViaProxy:
                 pass
 
         with patch("gateway.run._load_gateway_config", return_value={}):
-            with patch("aiohttp.ClientSession", return_value=_ErrorSession()):
+            with _patch_aiohttp(_ErrorSession()):
                 with patch("aiohttp.ClientTimeout"):
                     result = await runner._run_agent_via_proxy(
                         message="hi",
