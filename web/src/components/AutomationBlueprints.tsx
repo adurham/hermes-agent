@@ -178,12 +178,13 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
 
   useEffect(() => {
     let cancelled = false;
-    setBlueprints(null);
-    setLoadError(null);
     api
       .getAutomationBlueprints(profile)
       .then((r) => {
-        if (!cancelled) setBlueprints(r.blueprints);
+        if (!cancelled) {
+          setLoadError(null);
+          setBlueprints(r.blueprints);
+        }
       })
       .catch((e) => {
         if (!cancelled) setLoadError(errorMessage(e));
