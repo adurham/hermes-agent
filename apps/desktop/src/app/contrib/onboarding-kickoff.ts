@@ -12,11 +12,13 @@ import {
 import { $setupSession, guideSourceConnectionId, SETUP_CHAT_TITLE } from '@/components/onboarding-chat/setup-profile'
 import { chatMessageText } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { prefetchConnectorCatalog } from '@/store/connector-catalog'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { skipGuide } from '@/store/onboarding-gate'
+import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
   $activeGatewayProfile,
@@ -29,6 +31,14 @@ import { $activeSessionId, $messages, $selectedStoredSessionId } from '@/store/s
 import { $sessionStates } from '@/store/session-states'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
+
+/** The connectors card is two turns after the guide opens; its two reads are slow cold, so they start now. */
+function prefetchGuideCatalogs(storedId: null | string, runtimeId: string): void {
+  if (storedId) {
+    prefetchConnectorCatalog(storedId, runtimeId)
+    prefetchOnboardingPlugins(storedId)
+  }
+}
 
 export interface OnboardingKickoffOptions extends Pick<
   ReturnType<typeof useSessionActions>,
@@ -81,6 +91,7 @@ export async function adoptGuideSession(
     runtimeId: adoptedRuntimeId,
     storedId: canonical.id
   })
+  prefetchGuideCatalogs(canonical.id, adoptedRuntimeId ?? canonical.id)
 
   if (freeTier) {
     await guideRequest('config.set', {
@@ -181,6 +192,14 @@ export function useOnboardingKickoff({
       }
 
       const storedId = $selectedStoredSessionId.get()
+      $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
+      prefetchGuideCatalogs(storedId, runtimeId)
+      $setupSession.set({
+        connectionId: guideSourceConnectionId(storedId),
+        profile: setupProfile,
+        runtimeId,
+        storedId
+      })
 
       // Set the title explicitly so the backend does not name the session after the hidden runbook message.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)

@@ -187,7 +187,7 @@ export async function devResetOnboardingFlow(): Promise<void> {
   await $gateway.get()?.request('onboarding.reset_setup_profile', {})
   setGuideKickoff({ status: 'idle' })
   setPhase('idle')
-  setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [...DEFAULT_ANSWERS.connectors] })
+  setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [], plugins: [], pluginOutcomes: {} })
 }
 
 declare global {
