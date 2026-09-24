@@ -115,6 +115,7 @@ it.skipIf(process.platform !== 'win32')(
         hermesHome: home,
         channel: 'stable' as const
       }
+
       await expect(readSourceUpdate(probe)).resolves.toMatchObject({ supported: true, channel: 'stable', behind: null })
       await expect(readSourceUpdate({ ...probe, branch: 'main&echo INJECTED' })).rejects.toThrow(
         'unsafe Windows command argument'
