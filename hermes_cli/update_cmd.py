@@ -96,7 +96,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _clear_stale_sqlite_sidecars,
-    _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
+    _checkout_version, _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
     _print_fts_optimize_available_notice, _print_update_completion, _print_update_summary,
@@ -1184,12 +1184,8 @@ class _UpdateOptions:
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     """Snapshot pre-update state and resolve the flags/config ``_cmd_update_impl`` runs on."""
 
-    # Captured before any pull so the completion line can report the transition.
-    # Snapshot the pre-update version before files are replaced so the completion line can report the
-    # transition (prime-agent#630 port).
-    # Snapshot the pre-update version before any code is pulled so the completion line can report the
-    # transition (prime-agent#630 port).
-    pre_update_version = _read_project_version()
+    # Captured before any pull so the completion line can report the transition (prime-agent#630 port).
+    pre_update_version = _checkout_version()
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None)
     assume_yes = bool(getattr(args, "yes", False))

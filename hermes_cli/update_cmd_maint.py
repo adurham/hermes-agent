@@ -331,19 +331,35 @@ def _read_project_version() -> str | None:
         return None
 
 
+def _checkout_version() -> str | None:
+    """The checkout's runtime identity, computed exactly as ``write_source_stamp`` publishes it.
+
+    pyproject.toml is an inert 0.0.0 on source checkouts; the release a checkout
+    runs is derived from its reachable tags.
+    """
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.version_info import _git_version_info
+    info = _git_version_info(Path(_m().PROJECT_ROOT), include_untracked=True)
+    return info.derived_version if info.commit else None
+
+
 def _update_complete_message(pre_version: str | None) -> str:
     """Completion line with ``vA → vB`` when known; plain when either side is unknown or
     the version did not change.
 
     Ported from PrimeIntellect-ai/prime-agent#630: after a successful self-update, show both versions
     (``v0.19.4 → v0.20.0``) so the user can see what they actually got. Falls back to the plain message when
-    either side is unknown or the version did not change (e.g. several commits landed within one release).
+    either side is unknown or the version did not change.
     """
-    post_version = _read_project_version()
+    def shown(version: str) -> str:
+        # A tagless checkout's identity is ``git.<sha>``, not a release number.
+        return f"v{version}" if version[:1].isdigit() else version
+
+    post_version = _checkout_version()
     if pre_version and post_version and pre_version != post_version:
-        return f"✓ Update complete! (v{pre_version} → v{post_version})"
+        return f"✓ Update complete! ({shown(pre_version)} → {shown(post_version)})"
     if post_version:
-        return f"✓ Update complete! (v{post_version})"
+        return f"✓ Update complete! ({shown(post_version)})"
     return "✓ Update complete!"
 
 
