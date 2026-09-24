@@ -301,6 +301,7 @@ def test_build_backend_output_is_streamed_before_build_finishes(installable_proj
     import io
     from pm.environment import PythonEnvironment
 
+    monkeypatch.setenv("HERMES_VERBOSE", "1")  # live backend output is the streamed (CI) view's contract
     source, uv, env = installable_project
     release = tmp_path / "release-build"
     stdout_marker = "construction-root: backend stdout"

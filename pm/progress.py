@@ -21,6 +21,9 @@ import time
 from typing import IO, Callable, Mapping, Optional, Protocol, Sequence
 
 TAIL_LINES = 80
+# A child that never prints a newline (a bare progress stream, a binary blob) must not
+# grow memory without bound; the end of an over-long line is the informative part.
+MAX_LINE = 4096
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -79,7 +82,7 @@ class LiveTail:
     def write(self, text: str) -> int:
         # npm and uv redraw with bare CRs; each redraw is a line of progress.
         lines = (self._partial + text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        self._partial = lines.pop()
+        self._partial = lines.pop()[-MAX_LINE:]
         for line in lines:
             self._line(line)
         return len(text)
@@ -106,7 +109,7 @@ class LiveTail:
         self._emit("".join(f"{self.indent}    {line}\n" for line in self.tail))
 
     def _line(self, line: str) -> None:
-        line = _ANSI.sub("", line).rstrip()
+        line = _ANSI.sub("", line[-MAX_LINE:]).rstrip()
         if not line.strip():
             return
         self.tail.append(line)
