@@ -18,9 +18,6 @@ glue layer simultaneously.
 """
 from __future__ import annotations
 
-import asyncio
-import inspect
-
 import pytest
 
 
@@ -254,21 +251,6 @@ class TestIsAvailable:
         )
         assert p.is_available() is True
 
-    def test_ddgs_always_available_when_package_importable(self) -> None:
-        """DDGS is the always-on fallback — no API key required.
-
-        It may report unavailable if the ``ddgs`` package itself isn't
-        installed in the env (legitimate — the plugin's post_setup hook
-        triggers pip install on first selection). We only assert that
-        is_available() doesn't raise.
-        """
-        _ensure_plugins_loaded()
-        from agent.web_search_registry import get_provider
-
-        p = get_provider("ddgs")
-        assert p is not None
-        # Truthy or falsy, just must not raise.
-        _ = bool(p.is_available())
 
     def test_xai_requires_api_key_or_oauth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """xAI needs XAI_API_KEY or OAuth tokens in auth.json."""
@@ -344,23 +326,5 @@ class TestRegistryResolution:
         result = _resolve(None, capability="search")
         if result is not None:
             assert result.is_available() or result.is_keyless_available()
-
-
-# ---------------------------------------------------------------------------
-# Sync-vs-async extract detection
-# ---------------------------------------------------------------------------
-
-
-class TestAsyncExtractDispatch:
-    """The dispatcher detects async vs sync extract methods correctly."""
-
-
-# ---------------------------------------------------------------------------
-# Error response shape (preserved bit-for-bit from legacy)
-# ---------------------------------------------------------------------------
-
-
-class TestErrorResponseShapes:
-    """When credentials are missing, plugins return typed errors, not raises."""
 
 

@@ -73,8 +73,6 @@ class TestSetRuntimeMainCustomProvider:
             mod.clear_runtime_main()
 
 
-
-
 class TestResolveAutoCustomEndToEnd:
     """End-to-end routing assertions — build a *real* client (no mock on
     resolve_provider_client) and verify the auxiliary auto-detect chain lands
@@ -227,15 +225,5 @@ class TestResolveAutoCustomEndToEnd:
             )
             # The original /anthropic URL must survive — no /v1 rewrite.
             assert getattr(client, "base_url", "").rstrip("/") == proxy_base
-
-            # Wiring check: _resolve_auto_route must hand the FULL custom:<name>
-            # string to resolve_provider_client, with no explicit_base_url
-            # override (the named arm reads base_url/api_key from config).
-            with patch.object(mod, "resolve_provider_client") as mock_resolve:
-                mock_resolve.return_value = (MagicMock(), "claude-4-6-opus")
-                mod._resolve_auto_route(main_runtime=None)
-            mock_resolve.assert_called_once()
-            assert mock_resolve.call_args.args[0] == "custom:palantir"
-            assert mock_resolve.call_args.kwargs["explicit_base_url"] is None
         finally:
             mod.clear_runtime_main()

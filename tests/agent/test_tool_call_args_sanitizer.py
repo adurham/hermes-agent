@@ -107,8 +107,6 @@ def _disabled_test_marker_message_inserted_when_missing():
         "content": marker,
     }
     assert messages[2] == {"role": "user", "content": "next turn"}
-
-
 def test_multiple_corrupted_tool_calls_in_one_message():
     marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
     messages = [

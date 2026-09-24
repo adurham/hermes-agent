@@ -47,7 +47,6 @@ google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
-hindsight-client = false
 honcho-ai = false
 httplib2 = false
 httpx = false
@@ -1791,7 +1790,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.21.4"
+version = "0.21.5"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },

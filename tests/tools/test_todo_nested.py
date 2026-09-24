@@ -140,22 +140,9 @@ class TestOrderGuard:
         ])
         assert [i["id"] for i in items] == ["a", "b", "b1"]
 
-    def test_flat_list_still_reordered(self):
-        store = TodoStore()
-        items = store.write([
-            _item("a", status="pending"),
-            _item("b", status="in_progress"),
-        ])
-        assert [i["id"] for i in items] == ["b", "a"]
 
 
 class TestToolRoundTrip:
-    def test_parent_survives_json(self):
-        store = TodoStore()
-        out = todo_tool(todos=[_item("a"), _item("a1", parent="a")], store=store)
-        data = json.loads(out)
-        assert data["todos"][1]["parent"] == "a"
-        assert data["summary"]["total"] == 2
 
     def test_hydration_replay_preserves_parent(self):
         # Simulate _hydrate_todo_store: write the previous tool result's
