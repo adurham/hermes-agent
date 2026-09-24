@@ -27,8 +27,8 @@ dependencies = [
   # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
   # install in the hours before the quarantine would have pulled it.
   #
-  # After a pin change, run `python -m pm.build_env --source . --lock-only`
-  # so the transitive resolution stays consistent. Do not introduce ranges
+  # After a pin change, run `hermes pm lock` so the transitive resolution
+  # stays consistent. Do not introduce ranges
   # without a written justification.
   #
   # Scope rule: only packages used by EVERY hermes session belong here.

@@ -413,16 +413,34 @@ sync. The `dev` and `test` dependency groups belong only to the separate test
 environment, not the selected application venv. After changing extras, reactivate
 before starting another Python process.
 
-For a new project dependency, edit `pyproject.toml` and regenerate `uv.lock`:
+### Syncing after you edit pyproject.toml
 
-```bash
-python -m pm.build_env --source . --lock-only
-```
+1. Edit `pyproject.toml`. Pin every dependency as the
+   [Dependency Pinning Policy](https://github.com/NousResearch/hermes-agent/blob/main/AGENTS.md#dependency-pinning-policy)
+   requires. Express platform limits with PEP 508 markers, or gate a whole
+   extra in `[tool.hermes.extras-platforms]`.
+2. Relock:
 
-This resolves the source lock without creating or selecting an application
-environment. Use the checkout's prepared Python. For JS dependencies, update
-the owning package manifest and lock. Do not edit PM facts or generated
-workspaces, and do not install packages directly into a selected generation.
+   ```bash
+   hermes pm lock
+   ```
+
+   This re-resolves `uv.lock` from `pyproject.toml` with the same settings CI
+   checks, including the 14-day `exclude-newer` quarantine. It changes no
+   environment. When the lock is already current, it says so and writes
+   nothing. (`hermes pm lock --bump NAME VERSION` is a different operation: it
+   pins a managed tool in `pm/lock.json` and does not touch `uv.lock`.)
+3. Source the activation script again (`source ./activate`, or
+   `. .\activate.ps1` in PowerShell) to sync the application venv and the test
+   interpreter to the new lock. Activation covers `[all]`. If you added an
+   opt-in extra outside `[all]`, `hermes pm lock` prints the command that also
+   puts it in the test interpreter, for example
+   `source ./activate --test-extras all,NAME`.
+4. Commit `pyproject.toml` and `uv.lock` together.
+
+For JS dependencies, update the owning package manifest and lock. Do not edit
+PM facts or generated workspaces, and do not install packages directly into a
+selected generation.
 
 ### Test and editor environments
 
@@ -515,7 +533,8 @@ not substitutes for an installed application's update mechanism.
 
 | Command | Effect |
 |---|---|
-| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, then write the tool pin. |
+| `pm lock` | Relock `uv.lock` from `pyproject.toml`. Changes no environment; writes nothing when the lock is current. |
+| `pm lock --bump NAME VERSION` | Resolve and hash supported target artifacts, then write the tool pin to `pm/lock.json`. |
 | `pm update [names...]` | Query upstream versions, change tool pins, and install changed tools. |
 | `pm update --check` | Query without writing. Exit 1 can mean updates exist; inspect output to distinguish an error. |
 | `pm update --target TARGET` | Resolve versions for the specified target. |

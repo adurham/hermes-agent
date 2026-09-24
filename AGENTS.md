@@ -326,8 +326,8 @@ All dependencies carry upper bounds (litellm compromise #2796/#2810; Mini Shai-H
 May 2026). PyPI: `>=floor,<next_major` (`"httpx>=0.28.1,<1"`); pre-1.0: `<0.(minor+2)`
 (`>=0.29,<0.32`). Git URLs: 40-char commit SHA. GitHub Actions: SHA + `# vN` comment. CI-only
 Python requirements: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers.
-After changing `pyproject.toml`, run `python -m pm.build_env --source . --lock-only`
-with the checkout's prepared Python. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+After changing `pyproject.toml`, run `hermes pm lock`, re-source `./activate`, and commit
+`pyproject.toml` with `uv.lock`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
 
 PM owns Hermes Python dependency changes. Use `pm.sync_venv(['extra'], explicit=True)`
 for declared runtime extras, `hermes pm install` for setup/sync, and `hermes pm repair`

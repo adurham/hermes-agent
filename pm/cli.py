@@ -20,8 +20,96 @@ from pm.store import ALL_TARGETS, current_target, hash_url
 from pm.update import Resolved, resolve_package, reuse_index_responses
 
 
-@reuse_index_responses()
 def cmd_lock(args) -> int:
+    """No arguments: relock uv.lock from pyproject.toml. --bump: pin a tool in pm/lock.json."""
+    if args.name is None:
+        return _relock_project(repo_root())
+    return _pin_tool(args)
+
+
+def _relock_project(root: Path) -> int:
+    """The contributor's one step after editing pyproject.toml.
+
+    The same PM operations as `python -m pm.build_env --source . --check-lock`
+    and `--lock-only`, so the exclude-newer quarantine and resolver settings
+    cannot drift between the two entry points. No environment changes here:
+    activation owns syncing, and a relock that also installed would hide
+    which of the two failed.
+    """
+    import pm
+
+    try:
+        pm.check_project_lock(root, explicit=True)
+    except InstallError:
+        # Stale is the expected case, and the check's own "✗ … failed" tail
+        # reads like an error, so say what happens next. An unreachable index
+        # fails the relock below too, and that error names the index knobs.
+        print("uv.lock is out of date with pyproject.toml; relocking")
+    else:
+        print("✓ uv.lock is already current with pyproject.toml; nothing written")
+        return 0
+    before = _locked_extras(root)
+    try:
+        pm.lock_project(root, explicit=True)
+    except InstallError as exc:
+        print(f"✗ uv.lock refresh failed: {exc}")
+        return 1
+    print("✓ uv.lock updated from pyproject.toml")
+    windows = sys.platform == "win32"
+    activate = r". .\activate.ps1" if windows else "source ./activate"
+    print(f"Next: re-source activation to sync the environments: {activate}")
+    opt_in = _new_opt_in_extras(root, before)
+    if opt_in:
+        # Activation syncs [all] plus extras already recorded, and --test-extras
+        # REPLACES the default rather than adding to it, so [all] stays listed.
+        names = ",".join(["all", *opt_in])
+        flag = f"-TestExtras '{names}'" if windows else f"--test-extras {names}"
+        print(f"New extras outside [all] ({', '.join(opt_in)}) need: {activate} {flag}")
+    print("Then commit pyproject.toml and uv.lock together.")
+    return 0
+
+
+def _locked_extras(root: Path) -> set[str]:
+    """Extras the current uv.lock already resolves for the root project."""
+    import tomllib
+
+    try:
+        with (root / "uv.lock").open("rb") as f:
+            lock = tomllib.load(f)
+        with (root / "pyproject.toml").open("rb") as f:
+            name = tomllib.load(f)["project"]["name"]
+    except (OSError, ValueError, KeyError):
+        return set()
+    for package in lock.get("package", ()):
+        if package.get("name") == name:
+            return set(package.get("metadata", {}).get("provides-extras", ()))
+    return set()
+
+
+def _new_opt_in_extras(root: Path, before: set[str]) -> list[str]:
+    """Extras this relock introduced that the default [all] closure does not reach."""
+    import re
+    import tomllib
+
+    with (root / "pyproject.toml").open("rb") as f:
+        project = tomllib.load(f)["project"]
+    extras = project.get("optional-dependencies", {})
+    self_ref = re.compile(rf"\s*{re.escape(project['name'])}\s*\[([^\]]+)\]")
+    covered, pending = set(), ["all"]
+    while pending:
+        extra = pending.pop()
+        if extra in covered:
+            continue
+        covered.add(extra)
+        for requirement in extras.get(extra, ()):
+            match = self_ref.match(requirement)
+            if match:
+                pending.extend(part.strip() for part in match.group(1).split(","))
+    return sorted(set(extras) - before - covered)
+
+
+@reuse_index_responses()
+def _pin_tool(args) -> int:
     """--bump <name> <version>: resolve every target's archives, hash them,
     write. A target with one archive pins the object; several pin a list.
     Target-independent urls collapse to one "any" artifact."""
@@ -646,9 +734,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="hermes pm")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("lock", help="write versions+hashes into pm/lock.json")
-    p.add_argument("--bump", dest="name", required=True)
-    p.add_argument("version")
+    lock_parser = p = sub.add_parser(
+        "lock", help="relock uv.lock from pyproject.toml (or --bump a tool pin in pm/lock.json)",
+        description="With no arguments: re-resolve uv.lock from pyproject.toml; changes no "
+                    "environment and writes nothing when the lock is current. With --bump NAME "
+                    "VERSION: pin a pm tool's artifacts in pm/lock.json; uv.lock is untouched.")
+    p.add_argument("--bump", dest="name", metavar="NAME",
+                   help="pin tool NAME at VERSION in pm/lock.json instead of relocking uv.lock")
+    p.add_argument("version", nargs="?", metavar="VERSION", help="the tool version (only with --bump)")
     p.set_defaults(func=cmd_lock)
 
     p = sub.add_parser("install", help="install packages (default: all required)")
@@ -704,6 +797,8 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_update)
 
     args = parser.parse_args(argv)
+    if args.cmd == "lock" and (args.name is None) != (args.version is None):
+        lock_parser.error("--bump NAME and VERSION go together; run with neither to relock uv.lock")
     from pm.runtime import is_runtime, run_cli
 
     try:
