@@ -591,6 +591,48 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Close-VerifiedDesktop $desktopExe $windows[0].Id
 }
 
+# Evidence for a GUI-driver failure, taken while the installer is still alive: which Hermes
+# processes exist (was Hermes.exe ever started, and by whom), the installer's thread states,
+# and a full memory dump of the installer. The installer's tracing log is buffered and never
+# reaches disk when the job kills it; the dump still holds it. A Launch that left the
+# installer on LAUNCHING had no other trace (tests/install/e2e-assets/install-and-launch.ahk).
+function Save-GuiDriverFailureEvidence([System.Diagnostics.Process]$Installer, [string]$OutDir) {
+    New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
+    Get-CimInstance Win32_Process |
+        Where-Object { $_.Name -match '^(hermes|msedgewebview2|python|uv|git|node)' -or $_.ParentProcessId -eq $Installer.Id } |
+        Sort-Object CreationDate |
+        Select-Object ProcessId, ParentProcessId, CreationDate, Name, CommandLine |
+        Format-Table -AutoSize -Wrap | Out-String -Width 400 |
+        Tee-Object -FilePath (Join-Path $OutDir "processes.txt") | Write-Host
+    if ($Installer.HasExited) {
+        Write-Host "  Hermes-Setup.exe already exited (code $($Installer.ExitCode) at $($Installer.ExitTime))"
+        return
+    }
+    $Installer.Refresh()
+    $Installer.Threads |
+        Select-Object Id, ThreadState, WaitReason, StartTime, TotalProcessorTime |
+        Format-Table -AutoSize | Out-String -Width 200 |
+        Tee-Object -FilePath (Join-Path $OutDir "installer-threads.txt") | Write-Host
+    if (-not ('HdE2E.Dump' -as [type])) {
+        Add-Type -Namespace HdE2E -Name Dump -MemberDefinition @'
+[DllImport("dbghelp.dll", SetLastError = true)]
+public static extern bool MiniDumpWriteDump(IntPtr hProcess, uint processId, Microsoft.Win32.SafeHandles.SafeFileHandle hFile, uint dumpType, IntPtr exceptionParam, IntPtr userStreamParam, IntPtr callbackParam);
+'@
+    }
+    $dumpPath = Join-Path $OutDir "Hermes-Setup.dmp"
+    $file = [System.IO.File]::Create($dumpPath)
+    try {
+        # MiniDumpWithFullMemory | MiniDumpWithHandleData | MiniDumpWithThreadInfo
+        $ok = [HdE2E.Dump]::MiniDumpWriteDump($Installer.Handle, [uint32]$Installer.Id, $file.SafeFileHandle, 0x1006, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
+        $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    }
+    finally {
+        $file.Close()
+    }
+    if ($ok) { Write-Host "  Hermes-Setup.exe dump: $dumpPath ($([math]::Round((Get-Item $dumpPath).Length / 1MB, 1)) MB)" }
+    else { Write-Host "  Hermes-Setup.exe dump failed (Win32 error $err)" }
+}
+
 function Save-DesktopScreenshot([string]$OutFile) {
     # Single full-desktop screenshot (primary screen).
     try {
@@ -843,6 +885,11 @@ function Invoke-PhaseInstallGui {
         }
         if (Test-Path -LiteralPath $ahkLog) {
             Get-Content -LiteralPath $ahkLog | ForEach-Object { Write-Host "  ahk| $_" }
+        }
+        if ($ahk.ExitCode -ne 0) {
+            # Evidence must not replace the driver's own failure below.
+            try { Save-GuiDriverFailureEvidence $installer (Join-Path $proof "driver-failure") }
+            catch { Write-Host "  evidence capture failed: $_" }
         }
         Assert-True ($ahk.ExitCode -eq 0) "AutoHotkey driver exited 0 (Install clicked, Launch clicked, app window seen)"
 
