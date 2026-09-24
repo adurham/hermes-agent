@@ -8,6 +8,15 @@ from agent.transports.types import NormalizedResponse, ToolCall
 _MCP_PREFIX = "mcp__"
 _THINKING_TYPES = ("thinking", "redacted_thinking")
 
+# FORK: the dynamically synthesized bridge tools (tools/tool_search.py) are dispatched by a name
+# check in agent/tool_executor.py and are NEVER registered in tools/registry.py, so a registry
+# lookup can't resolve them. Mirrored as a literal (rather than importing
+# tools.tool_search.BRIDGE_TOOL_NAMES) because that module imports tools.connectors, which calls
+# ``registry.register(...)`` at import time — under a test that patches ``tools.registry.registry``
+# the registration raises and any broad except around the import would silently disable bridge-name
+# resolution. Kept in sync with tools/tool_search.py::BRIDGE_TOOL_NAMES.
+_BRIDGE_TOOL_NAMES = frozenset({"tool_search", "tool_describe", "tool_call"})
+
 
 def _unprefix_oauth_tool_name(name: str) -> str:
     """Reverse the OAuth-wire ``mcp__`` prefix back to the registered tool name.
@@ -17,19 +26,19 @@ def _unprefix_oauth_tool_name(name: str) -> str:
     from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
     from tools.registry import registry as _tool_registry
     bare = name[len(_MCP_PREFIX):]
+    # FORK: the tool_search/tool_describe/tool_call bridge tools (tools/tool_search.py) are
+    # synthesized dynamically and dispatched by a name check in agent/tool_executor.py — they
+    # are NEVER in tools/registry.py, so the lookups below always miss for them. Checked FIRST
+    # and against a literal set, deliberately not via `from tools.tool_search import
+    # BRIDGE_TOOL_NAMES`: that module pulls in tools.connectors, which calls
+    # ``registry.register(...)`` at import time, and under a test that patches
+    # ``tools.registry.registry`` with a stand-in the registration raises — silently turning
+    # this lookup into a no-op and leaving the wire name stuck as ``mcp__tool_call``.
+    if bare in _BRIDGE_TOOL_NAMES:
+        return bare
     for candidate in (name, "mcp_" + bare, bare):
         if _tool_registry.get_entry(candidate):
             return candidate
-    # FORK: the tool_search/tool_describe/tool_call bridge tools (tools/tool_search.py) are
-    # synthesized dynamically and dispatched by a name check in agent/tool_executor.py — they are
-    # NEVER in tools/registry.py, so every lookup above misses and the name would stay stuck as
-    # ``mcp__tool_call``. Recognize the fixed bridge-tool name set explicitly.
-    try:
-        from tools.tool_search import BRIDGE_TOOL_NAMES as _bridge_names
-        if bare in _bridge_names:
-            return bare
-    except Exception:
-        pass
     return _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(bare, name)
 
 

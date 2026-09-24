@@ -376,7 +376,18 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
 
 def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
     """Fold the children's spend into the parent's session cost (source/status
-    only set when the parent had none of its own)."""
+    only set when the parent had none of its own).
+
+    Also maintains the fork's per-session subagent counters
+    (``session_subagent_cost_usd`` / ``_input_tokens`` / ``_output_tokens`` /
+    ``_count``). ``/usage`` and the on-exit summary read those to print a
+    parent-vs-children breakdown, so they must be folded in alongside
+    ``session_estimated_cost_usd`` — additive across ``delegate_task()`` calls,
+    same semantics as ``session_estimated_cost_usd``. Do NOT assume the token
+    counters can be re-derived here: the caller pops ``_child_cost_usd`` and the
+    children have already been closed, so the token split arrives via
+    ``_rollup_subagent_tokens`` in the same finalization pass.
+    """
     if children_cost_total <= 0.0:
         return
     try:
@@ -388,6 +399,49 @@ def _rollup_children_cost(parent_agent, children_cost_total: float) -> None:
             parent_agent.session_cost_status = "estimated"
     except Exception:
         logger.debug("Subagent cost rollup failed", exc_info=True)
+    try:
+        prior_sub = float(getattr(parent_agent, "session_subagent_cost_usd", 0.0) or 0.0)
+        parent_agent.session_subagent_cost_usd = prior_sub + children_cost_total
+    except Exception:
+        logger.debug("Subagent-cost counter update failed", exc_info=True)
+
+
+def _rollup_subagent_tokens(parent_agent, results: List[Dict[str, Any]]) -> None:
+    """Fold the children's token counts and spawn count into the parent's
+    ``session_subagent_*_tokens`` / ``session_subagent_count`` counters.
+
+    Fork-only: ``/usage`` and the exit summary render these as the
+    ``(N children, X↓/Y↑ tok)`` breakdown. The per-child numbers live in each
+    entry's ``tokens`` dict, captured in ``_run_single_child`` before
+    ``AIAgent.close()`` — hence a re-walk of ``results`` here rather than a
+    read of the (already closed) child objects.
+    """
+    added_in = added_out = 0
+    spawned = 0
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        tokens = entry.get("tokens") or {}
+        if not isinstance(tokens, dict):
+            continue
+        try:
+            added_in += int(tokens.get("input", 0) or 0)
+            added_out += int(tokens.get("output", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        if entry.get("status") is not None or entry.get("summary") is not None:
+            spawned += 1
+    if not (added_in or added_out or spawned):
+        return
+    try:
+        prior_in = int(getattr(parent_agent, "session_subagent_input_tokens", 0) or 0)
+        prior_out = int(getattr(parent_agent, "session_subagent_output_tokens", 0) or 0)
+        prior_n = int(getattr(parent_agent, "session_subagent_count", 0) or 0)
+        parent_agent.session_subagent_input_tokens = prior_in + added_in
+        parent_agent.session_subagent_output_tokens = prior_out + added_out
+        parent_agent.session_subagent_count = prior_n + spawned
+    except Exception:
+        logger.debug("Subagent token-counter update failed", exc_info=True)
 
 def _finalize_child_results(
     results: List[Dict[str, Any]], task_list: List[Dict[str, Any]], children: List[tuple[int, Dict[str, Any], Any]],
@@ -399,6 +453,7 @@ def _finalize_child_results(
         child_by_index = {index: child for index, _task, child in children}
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
+        _rollup_subagent_tokens(parent_agent, results)
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> Dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""
