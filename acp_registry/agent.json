@@ -1,16 +1,20 @@
 {
   "id": "hermes-agent",
   "name": "Hermes Agent",
-  "version": "0.21.3",
+  "version": "0.21.5",
   "description": "Self-improving open-source AI agent by Nous Research with ACP editor integration, persistent memory, skills, and rich tool support.",
   "repository": "https://github.com/adurham/hermes-agent",
   "website": "https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/features/acp.md",
-  "authors": ["Nous Research"],
+  "authors": [
+    "Nous Research"
+  ],
   "license": "MIT",
   "distribution": {
     "uvx": {
-      "package": "hermes-agent[acp]==0.21.3",
-      "args": ["hermes-acp"]
+      "package": "hermes-agent[acp]==0.21.5",
+      "args": [
+        "hermes-acp"
+      ]
     }
   }
 }
