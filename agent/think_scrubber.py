@@ -50,6 +50,8 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
+        self.last_hidden: str = ""
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
@@ -60,19 +62,22 @@ class StreamingThinkScrubber:
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion ("" when it is all reasoning or held back)."""
+        self.last_hidden = ""
         if not text:
             return ""
         buf = self._buf + text
         self._buf = ""
         out: list[str] = []
+        hidden: list[str] = []
 
         while buf:
             if self._in_block:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
-                    # No close yet: hold back a possible partial close-tag prefix, drop the rest.
-                    self._hold_partial(buf, self._CLOSE_TAGS)
+                    # No close yet: hold back a possible partial close-tag prefix; the rest is reasoning.
+                    hidden.append(self._hold_partial(buf, self._CLOSE_TAGS))
                     break
+                hidden.append(buf[:close_idx])
                 buf = buf[close_idx + close_len:]
                 self._in_block = False
                 continue
@@ -84,6 +89,8 @@ class StreamingThinkScrubber:
             open_idx, open_len = self._find_open_at_boundary(buf, out)
             if pair is not None and (open_idx == -1 or pair[0] <= open_idx):
                 self._emit(out, buf[:pair[0]])
+                # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
+                hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
                 buf = buf[pair[1]:]
                 continue
             if open_idx != -1:
@@ -97,6 +104,7 @@ class StreamingThinkScrubber:
             self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
             break
 
+        self.last_hidden = "".join(hidden)
         return "".join(out)
 
     def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:

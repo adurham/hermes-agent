@@ -463,6 +463,21 @@ class TestExtractReasoning:
         msg = _mock_assistant_msg(reasoning="thinking hard")
         assert agent._extract_reasoning(msg) == "thinking hard"
 
+    def test_thinking_block_string_payload_still_extracted(self, agent):
+        msg = _mock_assistant_msg(
+            content=[{"type": "thinking", "thinking": "  block reasoning  "}]
+        )
+        assert agent._extract_reasoning(msg) == "block reasoning"
+
+    def test_thinking_block_list_payload_flattened_not_crashed(self, agent):
+        # Non-strict OpenAI-compatible backends (Mistral via custom provider) can
+        # deliver the thinking value as a JSON array; .strip() on a list crashed
+        # the whole API call with AttributeError (#106006). Flatten instead.
+        msg = _mock_assistant_msg(
+            content=[{"type": "thinking", "thinking": ["list-shaped reasoning", "part two"]}]
+        )
+        assert agent._extract_reasoning(msg) == "list-shaped reasoningpart two"
+
 
 class TestSessionFilenameSafety:
     def test_safe_session_filename_component_contains_traversal(self):
@@ -4095,7 +4110,8 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
 
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
-        """Continuation retries must not shrink a higher provider default cap."""
+        """Continuation retries must not shrink a higher provider default cap — and must
+        raise it, since re-sending the same cap just truncates again (#72770)."""
         self._setup_agent(agent)
         agent.max_tokens = None
         requested_caps = []
@@ -4122,7 +4138,7 @@ class TestRunConversation:
 
         assert result["completed"] is True
         assert result["final_response"] == "Part 1 Part 2"
-        assert requested_caps == [65536, 65536]
+        assert requested_caps == [65536, 131072]
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Local Ollama-hosted GLM (no :cloud suffix) misreports truncated output as stop."""
@@ -5663,6 +5679,7 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client = MagicMock()
         stream_cm = MagicMock()
         stream_cm.__enter__.return_value.get_final_message.return_value = response
+        stream_cm.__enter__.return_value.__iter__.return_value = iter([SimpleNamespace(type="message_stop")])
         agent._anthropic_client.messages.stream.return_value = stream_cm
 
         with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True) as refresh:
