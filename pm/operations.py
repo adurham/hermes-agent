@@ -132,7 +132,7 @@ def _python(environment: Path) -> Path:
 
 def _selection(root: Path) -> dict:
     try:
-        record = json.loads((root / "active.json").read_text(encoding="utf-8"))
+        record = json.loads((root / "active.json").read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:

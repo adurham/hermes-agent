@@ -41,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     requirements = list(args.requirement)
     if args.requirements is not None:
-        requirements.extend(line.strip() for line in args.requirements.read_text(encoding="utf-8").splitlines()
+        requirements.extend(line.strip() for line in args.requirements.read_text(encoding="utf-8-sig").splitlines()
                             if line.strip() and not line.lstrip().startswith("#"))
     if args.exact_lock:
         if args.ci or args.prune_cache:

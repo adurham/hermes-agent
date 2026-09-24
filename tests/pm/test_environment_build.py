@@ -94,7 +94,7 @@ def installable_project(locked_project, build_worker):
     metadata = source / "pyproject.toml"
     metadata.write_text(metadata.read_text().replace("package=false", "package=true") +
                         '\n[build-system]\nrequires=[]\nbuild-backend="local_backend"\nbackend-path=["."]\n')
-    (source / "root_app.py").write_text("VALUE = 'installed from the explicit source'\n")
+    (source / "root_app.py").write_text("VALUE = 'installed from the explicit source'\n", encoding="utf-8")
     # A local PEP 517/660 backend: no registry or build-tool downloads in this fixture.
     (source / "local_backend.py").write_text('''
 from pathlib import Path
@@ -199,7 +199,7 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
 
     source, _, env = locked_project
     manifest = source / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    manifest.write_text(manifest.read_text(encoding="utf-8-sig").replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
     monkeypatch.setattr(paths, "repo_root", lambda: source)
     pm.lock_project(source, offline=True, explicit=True)
     base = tmp_path / "shipped"
@@ -232,7 +232,7 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
     write_features(["other"], tmp_path)
     _wheel(tmp_path / "wheels", "member_dep", "1.1")
     member = source / "member" / "pyproject.toml"
-    member.write_text(member.read_text().replace("member-dep==1.0", "member-dep==1.1"), encoding="utf-8")
+    member.write_text(member.read_text(encoding="utf-8-sig").replace("member-dep==1.0", "member-dep==1.1"), encoding="utf-8")
     pm.sync_venv(explicit=True, plugin_dirs=[source / "member"])
     second = selected_venv(source)
     assert second != first
@@ -253,7 +253,7 @@ def test_worker_sync_reuses_unions_and_reports_real_lock_drift(locked_project, b
 
     source, _, env = locked_project
     manifest = source / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    manifest.write_text(manifest.read_text(encoding="utf-8-sig").replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
     monkeypatch.setattr(paths, "repo_root", lambda: source)
     pm.lock_project(source, offline=True, explicit=True)
     assert pm.check() == []
@@ -282,7 +282,7 @@ def test_worker_sync_reuses_unions_and_reports_real_lock_drift(locked_project, b
                 cwd=tmp_path, env=env) == "1.0 1.0"
     assert pm.check() == []
     _wheel(tmp_path / "wheels", "base_dep", "1.1")
-    manifest.write_text(manifest.read_text().replace("base-dep==1.0", "base-dep==1.1"), encoding="utf-8")
+    manifest.write_text(manifest.read_text(encoding="utf-8-sig").replace("base-dep==1.0", "base-dep==1.1"), encoding="utf-8")
     pm.lock_project(source, offline=True, explicit=True)
     assert pm.check() == ["venv: out of sync with uv.lock"]
     lock = Lockfile(paths.lockfile_path())
@@ -370,7 +370,7 @@ def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnost
         "[os.write(2, b'x' * 65536) for _ in range(128)]; "
         "os.write(2, b'final diagnostic'); raise SystemExit(1)"
     )
-    with open(os.devnull, "w") as output:
+    with open(os.devnull, "w", encoding="utf-8") as output:
         environment = PythonEnvironment(uv=Path(sys.executable), python=Path(sys.executable),
             destination=tmp_path / "venv", cache=tmp_path / "cache", env=dict(os.environ), output=output)
         tracemalloc.start()
@@ -536,7 +536,7 @@ def test_failed_build_removes_only_its_candidate(installable_project, tmp_path, 
         (source / "root_app.py").unlink()
     elif damage == "check":
         backend = source / "local_backend.py"
-        backend.write_text(backend.read_text().replace("base-dep==1.0", "base-dep==2.0"))
+        backend.write_text(backend.read_text(encoding="utf-8-sig").replace("base-dep==1.0", "base-dep==2.0"), encoding="utf-8")
         # Same-size edits within one timestamp tick otherwise reuse the backend's .pyc.
         shutil.rmtree(source / "__pycache__", ignore_errors=True)
     else:
@@ -561,14 +561,14 @@ def test_lock_upgrade_and_group_selection_use_the_same_environment(locked_projec
 
     source, uv, env = locked_project
     manifest = source / "pyproject.toml"
-    manifest.write_text(manifest.read_text().replace('base-dep==1.0', 'base-dep>=1,<2') +
+    manifest.write_text(manifest.read_text(encoding="utf-8-sig").replace('base-dep==1.0', 'base-dep>=1,<2') +
                         '\n[dependency-groups]\nqa=["other-dep==1.0"]\n')
     environment = PythonEnvironment(uv=uv, python=Path(sys.executable), destination=tmp_path / "candidate",
                                     cache=tmp_path / "cache", env=env, offline=True)
     environment.lock(source, timeout=60)
     _wheel(tmp_path / "wheels", "base_dep", "1.1")
     environment.lock(source, timeout=60)
-    packages = tomllib.loads((source / "uv.lock").read_text())["package"]
+    packages = tomllib.loads((source / "uv.lock").read_text(encoding="utf-8-sig"))["package"]
     assert next(p["version"] for p in packages if p["name"] == "base-dep") == "1.0"
     environment.lock(source, upgrade=True, timeout=60)
     locked = (source / "uv.lock").read_bytes()
@@ -619,7 +619,7 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
 
     source, uv, env = locked_project
     project = source / "pyproject.toml"
-    project.write_text(project.read_text().replace(
+    project.write_text(project.read_text(encoding="utf-8-sig").replace(
         '[tool.uv.workspace]\nmembers=["member"]\n', "",
     ).replace('base-dep==1.0', 'base-dep>=1,<2'))
     _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
@@ -648,8 +648,8 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     recorded = tmp_path / "first" / "workspace"
     recorded_lock = (recorded / "uv.lock").read_bytes()
     import tomllib
-    document = tomllib.loads((recorded / "pyproject.toml").read_text())
-    assert document["project"] == tomllib.loads(project.read_text())["project"]
+    document = tomllib.loads((recorded / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    assert document["project"] == tomllib.loads(project.read_text(encoding="utf-8-sig"))["project"]
     [relative] = document["tool"]["uv"]["workspace"]["members"]
     copied = recorded / relative / "pyproject.toml"
     assert copied.read_bytes() == before_member
@@ -658,8 +658,8 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     assert workspace.members_stamp([original_member]) != stamp
 
     # Repair replays recorded inputs, not today's edited source/plugins.
-    (original_member / "pyproject.toml").write_text("broken plugin TOML")
-    project.write_text("broken source TOML")
+    (original_member / "pyproject.toml").write_text("broken plugin TOML", encoding="utf-8")
+    project.write_text("broken source TOML", encoding="utf-8")
     second = PythonEnvironment(uv=uv, python=Path(sys.executable), destination=tmp_path / "second" / "venv",
                                cache=tmp_path / "cache", env=env, offline=True)
     second.create()
@@ -692,7 +692,7 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
     facts = paths.runtime_facts_path().read_bytes()
     home = Path(os.environ["HERMES_HOME"])
     config = home / "config.yaml"
-    config.write_text("plugins: {enabled: []}\nsecurity: {allow_lazy_installs: true}\n")
+    config.write_text("plugins: {enabled: []}\nsecurity: {allow_lazy_installs: true}\n", encoding="utf-8")
     config_bytes = config.read_bytes()
     if failure == "facts":
         def refuse(*args, **kwargs):
@@ -728,7 +728,7 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
 
     source, uv, env = locked_project
     metadata = source / "pyproject.toml"
-    metadata.write_text(metadata.read_text().replace('[tool.uv.workspace]\nmembers=["member"]\n', ""))
+    metadata.write_text(metadata.read_text(encoding="utf-8-sig").replace('[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
     _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
     source_lock = (source / "uv.lock").read_bytes()
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
@@ -747,7 +747,7 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     generations = prepared["environment"].parent.parent
     prior_generations = set(generations.iterdir())
     plugin = source / "member" / "pyproject.toml"
-    plugin.write_text(plugin.read_text().replace('member-dep==1.0', 'member-dep==2.0'))
+    plugin.write_text(plugin.read_text(encoding="utf-8-sig").replace('member-dep==1.0', 'member-dep==2.0'), encoding="utf-8")
     with pytest.raises(ResolutionConflict):
         Venv().apply(["chosen"], plugin_dirs=[source / "member"])
     assert selected_venv(source) == prepared["environment"]
