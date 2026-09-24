@@ -2352,9 +2352,10 @@ export const deOverrides = {
         notice: {
           loggedOut: {
             title: 'Nous-Konto verbinden',
-            message: 'Führen Sie /portal in der TUI aus oder öffnen Sie das Nous-Portal, um Ihr Konto zu verbinden.',
-            action: 'Portal öffnen ↗'
+            message: 'Melden Sie sich mit Ihrem Nous-Konto an, um hier Guthaben, Tarif und Nutzung zu sehen.',
+            action: 'Anmelden'
           },
+          openPortal: 'Portal öffnen ↗',
           noCard: {
             title: 'Keine Zahlungsmethode hinterlegt',
             message:
