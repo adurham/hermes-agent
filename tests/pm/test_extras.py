@@ -162,6 +162,20 @@ def test_ensure_import_syncs_when_missing(monkeypatch, synced, tmp_path):
     assert synced == [["fal"]]
 
 
+def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch, synced):
+    import builtins
+
+    monkeypatch.setattr(extras, "available", lambda _: False)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: True))
+    prompts = []
+    monkeypatch.setattr(builtins, "input", lambda text: prompts.append(text) or "n")
+    with pytest.raises(pm.InstallError, match="declined"):
+        extras.ensure_import("fal")
+    assert "fal" in prompts[0] and "fal_client" in prompts[0]
+    assert synced == []
+
+
 def test_ensure_import_propagates_install_error(monkeypatch):
     def boom(x=None):
         raise pm.InstallError("venv", "lazy installs are disabled")

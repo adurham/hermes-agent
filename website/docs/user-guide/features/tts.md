@@ -113,6 +113,8 @@ tts:
     # normalize_audio: true
 ```
 
+KittenTTS cannot be installed in the managed Python 3.14 environment: its `misaki` dependency requires Python <3.13. The `kittentts` extra is gated off there; selecting the provider without installing it will report it unavailable. Use another provider until its dependencies support the managed interpreter.
+
 MiniMax TTS selects its region, endpoint, and credential together:
 
 - `region: "global"` uses `https://api.minimax.io/v1/t2a_v2` with `MINIMAX_API_KEY`.

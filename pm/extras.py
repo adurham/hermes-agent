@@ -178,6 +178,22 @@ def ensure_import(extra: str) -> None:
             f"extra {extra!r} is not supported on this platform "
             f"(gate: {marker!r}); the adapter degrades without it",
         )
+    import sys
+    from pm.package import InstallError
+
+    # prompt_toolkit already owns stdin during a CLI turn; never read from it.
+    app_running = False
+    if "prompt_toolkit.application.current" in sys.modules:
+        from prompt_toolkit.application.current import get_app_or_none
+
+        app_running = bool(getattr(get_app_or_none(), "is_running", False))
+    if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            answer = input(f"\nExtra {extra!r} requires: {', '.join(missing(extra))}\nInstall now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer and answer not in {"y", "yes"}:
+            raise InstallError("venv", f"installation of extra {extra!r} declined")
     from pm.client import sync_venv
 
     sync_venv([extra])
@@ -191,7 +207,6 @@ def ensure_import(extra: str) -> None:
     if runtime_facts_path().is_file():
         selected = site_packages(selected_venv(repo_root())).resolve()
         if selected not in {Path(entry).resolve() for entry in sys.path}:
-            from pm.package import InstallError
             raise InstallError("venv", f"{extra} installed; restart Hermes to activate the new dependency environment")
 
 
