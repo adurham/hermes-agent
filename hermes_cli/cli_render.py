@@ -500,14 +500,11 @@ class _PaintedLine(str):
 
 def _painted_columns():
     """The width the terminal soft-wraps a print at right now, or ``None``."""
+    from prompt_toolkit.application import get_app_or_none
+    app = get_app_or_none()
     try:
-        from prompt_toolkit.application import get_app_or_none
-        app = get_app_or_none()
         if app is not None:
             return app.output.get_size().columns
-    except Exception:
-        pass
-    try:
         return os.get_terminal_size(sys.__stdout__.fileno()).columns
     except (AttributeError, OSError, ValueError):
         return None
@@ -549,19 +546,38 @@ def _ansi_drop_cells(line: str, cells: int) -> str:
     return "".join(out)
 
 
-def _terminal_reflows() -> bool:
-    """Whether the terminal re-wraps the rows it shows when its width changes.
+# Environment a terminal (or multiplexer) sets for its own children. Checked first: an xterm
+# started from a VTE shell inherits VTE_VERSION but sets XTERM_VERSION itself.
+_NO_REFLOW_ENV = ("STY", "XTERM_VERSION")
+_REFLOW_ENV = ("TMUX", "VTE_VERSION", "KITTY_WINDOW_ID", "WT_SESSION", "KONSOLE_VERSION",
+               "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "GHOSTTY_RESOURCES_DIR")
+_REFLOW_TERM_PROGRAMS = ("iTerm.app", "Apple_Terminal", "WezTerm", "vscode", "ghostty", "Tabby", "Hyper")
+# TERM is all that survives ssh; these prefixes name terminals that truncate rows in place.
+_NO_REFLOW_TERM_PREFIXES = ("linux", "st", "screen", "mosh", "vt", "cons")
+_REFLOW_TERM_PREFIXES = ("tmux", "xterm-kitty", "alacritty", "foot", "xterm-ghostty", "wezterm", "contour")
 
-    Most do (tmux, VTE, kitty, iTerm2, Terminal.app, WezTerm, Alacritty, Windows Terminal):
-    a shrink pushes the rows that grew into scrollback. xterm, GNU screen and the Linux
-    console keep every row in place, truncated. Unknown terminals count as reflowing.
-    """
+
+def _terminal_reflows() -> bool | None:
+    """Whether the terminal re-wraps the rows it shows when its width changes: ``True``
+    (tmux, VTE, kitty, iTerm2, Terminal.app, WezTerm, Alacritty, Windows Terminal — a shrink
+    pushes the rows that grew into scrollback), ``False`` (xterm, GNU screen, st, mosh, the
+    Linux console keep every row in place, truncated) or ``None`` when nothing says (xterm or
+    iTerm2 over ssh both look like ``TERM=xterm-256color``)."""
     env = os.environ
     if env.get("TMUX"):
         return True
-    if env.get("STY") or env.get("XTERM_VERSION"):
+    if any(env.get(name) for name in _NO_REFLOW_ENV):
         return False
-    return env.get("TERM", "") != "linux"
+    if any(env.get(name) for name in _REFLOW_ENV) or env.get("TERM_PROGRAM") in _REFLOW_TERM_PROGRAMS:
+        return True
+    if env.get("LC_TERMINAL") == "iTerm2":  # iTerm2 sets it so that ssh forwards it (LC_*)
+        return True
+    term = env.get("TERM", "").lower()
+    if term.startswith(_NO_REFLOW_TERM_PREFIXES):
+        return False
+    if term.startswith(_REFLOW_TERM_PREFIXES):
+        return True
+    return None
 
 
 def _output_tail_fitting(lines: list[str], max_rows: int, columns: int, painted: bool = True) -> list[str]:

@@ -15,6 +15,10 @@ from hermes_cli.cli_render import _hold_paints, _release_paints
 from hermes_constants import get_hermes_home
 
 
+# A replay ``fit`` with no room: nothing is replayed.
+_NO_REPLAY = (0, 0, False)
+
+
 def _is_eio(exc: BaseException) -> bool:
     return getattr(exc, "errno", None) == errno.EIO
 
@@ -132,7 +136,9 @@ class CLITerminalMixin:
         fit = self._clear_prompt_toolkit_screen(app, rebuild_scrollback=self._redraw_rebuilds_scrollback())
         if getattr(self, "_terminal_io_broken", False):
             return
-        _replay_output_history(fit)
+        # A viewport refill paints at once, before prompt_toolkit's next erase; after CSI 3J
+        # the whole history goes through the usual print (the screen was cleared anyway).
+        _replay_output_history(fit, None if fit is None else app.renderer.output)
         self._pet_queue_kitty_frame()
         self._app_invalidate(app, "force_full_redraw", swallow=True)
 
@@ -187,32 +193,28 @@ class CLITerminalMixin:
             pass
         self._force_full_redraw()
 
-    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False, reflowed: bool = False):
+    def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False):
         """Clear the terminal and reset prompt_toolkit renderer state.
 
         Returns the ``fit`` for the replay that follows (``_transcript_room``). ``None``
-        means replay the whole history (scrollback wiped by CSI 3J, or the clear failed).
-        Without 3J the older transcript stays in scrollback, so the replay may only repaint
-        what the viewport held (#95375); the viewport is erased row by row because CSI 2J
-        makes scroll-on-clear terminals (tmux, VTE) copy the whole screen into scrollback
-        first, stacking a duplicate.
+        means replay the whole history (scrollback wiped by CSI 3J). Without 3J the older
+        transcript stays in scrollback, so the replay may only repaint what the viewport held
+        (#95375); the viewport is erased row by row because CSI 2J makes scroll-on-clear
+        terminals (tmux, VTE) copy the whole screen into scrollback first, stacking a duplicate.
+        A clear that fails replays nothing: the history is already on screen or in scrollback.
         """
         if getattr(self, "_terminal_io_broken", False):
-            return None
+            return _NO_REPLAY
         try:
             renderer = app.renderer
             out = renderer.output
+            fit = None if rebuild_scrollback else self._transcript_room(app)
             out.reset_attributes()
-            fit = None
             if rebuild_scrollback:
                 out.erase_screen()
-                try:
-                    out.write_raw("\x1b[3J")
-                except Exception:
-                    pass
+                out.write_raw("\x1b[3J")
             else:
-                fit = self._transcript_room(app, reflowed=reflowed)
-                for row in range(out.get_size().rows):
+                for row in range(1, out.get_size().rows + 1):  # CUP rows count from 1
                     out.cursor_goto(row, 0)
                     out.erase_end_of_line()
             out.cursor_goto(0, 0)
@@ -226,18 +228,18 @@ class CLITerminalMixin:
                 self._mark_terminal_io_broken("clear_screen")
         except Exception:
             pass
-        return None
+        return _NO_REPLAY
 
     @staticmethod
-    def _transcript_room(app, *, reflowed: bool = False):
+    def _transcript_room(app):
         """``(rows, columns, painted)``: the viewport rows the transcript fills above the
-        prompt chrome, how to count them — at the current ``columns``, or with ``painted`` at
-        the width each line was painted at (a terminal that does not reflow keeps them so).
+        prompt chrome, and how to count them — at the current ``columns``, or with ``painted``
+        at the width each line was painted at, as a terminal that does not reflow keeps them.
+        Unless the terminal is known to reflow, count as painted: that replays at least what
+        the viewport held, never less.
 
         The chrome is the renderer's last paint: prompt_toolkit may draw the app taller than
-        its preferred height (it fills the rows below the cursor it measured). ``reflowed``:
-        the terminal just re-wrapped that paint to a narrower width, so each of its rows
-        now takes as many rows as the new width needs.
+        its preferred height (it fills the rows below the cursor it measured).
         """
         from cli import _terminal_reflows
         renderer = app.renderer
@@ -245,44 +247,53 @@ class CLITerminalMixin:
         screen = renderer._last_screen
         if screen is None:
             drawn = app.layout.container.preferred_height(size.columns, size.rows).preferred
-        elif reflowed and size.columns > 0:
-            # prompt_toolkit writes a row up to its last cell that shows something (trailing
-            # blanks without a colour are left to erase-to-end-of-line): that is its width.
-            has_style = renderer._style_string_has_style
-
-            def shows(ch):
-                if ch.char != " ":
-                    return True
-                try:
-                    return bool(has_style[ch.style]) if has_style is not None else bool(ch.style)
-                except Exception:
-                    return bool(ch.style)
-            drawn = 0
-            for y in range(screen.height):
-                last = max((x for x, ch in screen.data_buffer[y].items() if shows(ch)), default=0)
-                drawn += -(-(last + 1) // size.columns)
         else:
             drawn = screen.height
         rows = max(0, size.rows - max(renderer._min_available_height, drawn))
-        return rows, size.columns, not _terminal_reflows()
+        return rows, size.columns, _terminal_reflows() is not True
+
+    @staticmethod
+    def _aim_erase_at_reflowed_chrome(app, columns: int, reflows) -> int:
+        """Point prompt_toolkit's erase at the top of its last paint as a reflowing terminal
+        re-wrapped it to ``columns``; return how many transcript rows that erase takes if the
+        terminal did not reflow after all (#95375).
+
+        ``renderer.erase()`` moves up ``_cursor_pos.y`` rows — right where rows stay in place,
+        short of the top on a reflowing terminal, whose re-wrapped chrome rows would stay
+        above the new paint. prompt_toolkit writes a row up to its last cell that shows
+        something (the blanks after it are erase-to-end-of-line, which a reflow drops): that
+        width, re-wrapped, is the row's height now.
+        """
+        renderer = app.renderer
+        screen, cursor = renderer._last_screen, renderer._cursor_pos
+        if reflows is False or screen is None or columns <= 0:
+            return 0
+        has_style = renderer._style_string_has_style
+        rows = cursor.x // columns
+        for y in range(cursor.y):
+            row = screen.data_buffer[y]
+            last = max((x for x, ch in row.items() if ch.char != " " or has_style[ch.style]), default=0)
+            rows += -(-(last + 1) // columns)
+        renderer._cursor_pos = cursor._replace(y=rows)
+        return 0 if reflows else rows - cursor.y
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
 
         Never clears scrollback (the startup banner lives there and replay cannot rebuild
         it) and never resets the renderer before prompt_toolkit's own ``_on_resize``,
-        which erases via the cached cursor position. The status bar / input rules are
-        suppressed while the reflow settles: on column shrink the terminal reflows
+        which erases the chrome from the cached cursor position. The status bar / input
+        rules are suppressed while the reflow settles: on column shrink the terminal reflows
         already-painted rows into scrollback first, so a fresh bar looks duplicated
-        (#19280, #22976). Suppression cannot erase the already-reflowed OLD bar
-        (``renderer.erase()`` uses ``_cursor_pos.y`` cached at the OLD width), so on an
-        OBSERVED column shrink on a reflowing terminal we wipe the viewport (banner-safe)
-        and replay what it held first. Otherwise the transcript is left as the terminal shows
-        it and the stale-cursor erase still covers the chrome: a widen re-wraps nothing into
-        extra rows, and a terminal that does not reflow (xterm) truncates rows in place —
-        rows the replay could not size for both kinds of terminal, so it would duplicate or
-        drop them (#95375). With ``display.cli_rebuild_scrollback_on_redraw`` (3J +
-        whole-history replay) every width change rebuilds.
+        (#19280, #22976). On a column shrink a reflowing terminal has re-wrapped the old
+        chrome into more rows than that cached cursor reaches, so the erase is aimed at the
+        re-wrapped top instead; the transcript above is left exactly as the terminal
+        re-wrapped it, never erased and replayed (a replay cannot know which rows the
+        terminal kept on screen and which it pushed into scrollback, #95375). When nothing
+        says whether the terminal reflows, the rows that aim would take on one that does not
+        are replayed: the erase never takes more than the replay puts back.
+        With ``display.cli_rebuild_scrollback_on_redraw`` (3J + whole-history replay) every
+        width change rebuilds.
         Same-width SIGWINCH (tmux attach, GNOME tab bar, focus) and the first signal
         without a seeded baseline are left alone — 2J+replay against preserved scrollback
         duplicates ``_OUTPUT_HISTORY`` (#65293). tmux-attach's stale previous_screen is
@@ -302,18 +313,18 @@ class CLITerminalMixin:
                 new_width = None
             prev_width = getattr(self, "_last_resize_width", None)
             width_changed = new_width is not None and prev_width is not None and new_width != prev_width
-            rebuild = self._redraw_rebuilds_scrollback()
-            if width_changed and (rebuild or (new_width < prev_width and _terminal_reflows())):
-                try:
-                    fit = self._clear_prompt_toolkit_screen(app, rebuild_scrollback=rebuild, reflowed=True)
-                    _replay_output_history(fit)
-                except Exception:
-                    pass
+            restore_rows = 0
+            if width_changed and self._redraw_rebuilds_scrollback():
+                _replay_output_history(self._clear_prompt_toolkit_screen(app, rebuild_scrollback=True))
+            elif width_changed and new_width < prev_width:
+                restore_rows = self._aim_erase_at_reflowed_chrome(app, new_width, _terminal_reflows())
             if new_width is not None:
                 self._last_resize_width = new_width
             if width_changed:
                 self._pet_queue_kitty_frame()
             original_on_resize()
+            if restore_rows:
+                _replay_output_history((restore_rows, new_width, True))
             self._schedule_status_bar_unsuppress(app)
         finally:
             # Output held since the signal paints now, against the settled screen.
@@ -353,8 +364,13 @@ class CLITerminalMixin:
             # Fail open: never leave the bar stuck hidden.
             self._status_bar_suppressed_after_resize = False
 
-    def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.12) -> None:
-        """Debounce resize redraws so footer chrome is not stamped into scrollback."""
+    def _schedule_resize_recovery(self, app, original_on_resize, delay: float = 0.3) -> None:
+        """Debounce resize redraws so footer chrome is not stamped into scrollback.
+
+        The delay outwaits tmux, which re-wraps a pane on every resize but signals it at most
+        every 250 ms, so mid-drag the width a recovery reads is stale — also over ssh from a
+        tmux pane, where nothing says tmux is there (#95375).
+        """
         try:
             lock = getattr(self, "_resize_recovery_lock", None)
             if lock is None:
@@ -398,6 +414,15 @@ class CLITerminalMixin:
         self._last_resize_width = width
         original_on_resize = app._on_resize
         app._on_resize = lambda: self._schedule_resize_recovery(app, original_on_resize)
+        # A paint before the recovery lands at the new width from the old geometry and strands
+        # chrome rows; the recovery repaints everything anyway (#95375).
+        original_invalidate = app.invalidate
+
+        def _invalidate_unless_resizing() -> None:
+            if not getattr(self, "_resize_recovery_pending", False):
+                original_invalidate()
+
+        app.invalidate = _invalidate_unless_resizing
 
     def _try_attach_clipboard_image(self) -> bool:
         """Save a clipboard image to ~/.hermes/images/ and attach it; True if attached."""

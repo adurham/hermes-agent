@@ -121,6 +121,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _query_osc11_background,
     _record_output_history,
     _record_output_history_entry,
+    _release_paints,
     _render_final_assistant_content,
     _rich_text_from_ansi,
     _strip_markdown_syntax,
@@ -650,12 +651,15 @@ def _suspend_output_history():
         _OUTPUT_HISTORY_SUPPRESSED = old_value
 
 
-def _replay_output_history(fit=None) -> None:
+def _replay_output_history(fit=None, output=None) -> None:
     """Repaint recent output above the prompt after a full screen clear.
 
     ``fit=(rows, columns, painted)`` replays only the newest lines whose wrapped height
     fits ``rows`` (see ``_output_tail_fitting``) — the older ones are still in scrollback
-    (#95375).
+    (#95375). ``output``: paint now, straight to this prompt_toolkit output, where the caller
+    just erased the viewport and reset the renderer — ``run_in_terminal`` would first erase
+    below the top row, which scroll-on-clear terminals (tmux) take as a clear and copy the
+    blank screen into scrollback.
     """
     global _OUTPUT_HISTORY_REPLAYING
     if not _OUTPUT_HISTORY_ENABLED or not _OUTPUT_HISTORY:
@@ -677,7 +681,12 @@ def _replay_output_history(fit=None) -> None:
             rendered_lines = _output_tail_fitting(rendered_lines, *fit)
         if rendered_lines:
             # One payload: per-line pt prints each force a sync redraw (a waterfall of old output).
-            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            if output is None:
+                _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            else:
+                from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
+                from prompt_toolkit.styles import Style
+                _paint_formatted_text(output, _PT_ANSI("\n".join(rendered_lines) + "\n"), Style([]))
             width = _painted_columns()
             for line in rendered_lines:  # repainted: they wrap at today's width from now on
                 if isinstance(line, _PaintedLine):
@@ -1479,6 +1488,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             else:
                 raise
         finally:
+            # A resize right before exit leaves its recovery (and the paints it held) unrun.
+            _release_paints()
             self._tui_shutdown()
 
         # /update relaunch happens here, after prompt_toolkit restored terminal modes, on the

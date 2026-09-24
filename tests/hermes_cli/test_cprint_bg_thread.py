@@ -142,44 +142,12 @@ def test_cprint_swallows_prompt_toolkit_import_error(monkeypatch):
 
 
 
-def test_cprint_from_a_worker_is_recorded_when_painted(monkeypatch):
-    """#95375: a worker's print is queued for the app loop. A resize replay that runs before
-    it must not find it in the history (it would print it, then the queued print again), and
-    the row is tagged with the width the terminal wraps it at when it is painted."""
-    cli._configure_output_history(True, 10)
-    painted = []
-    monkeypatch.setattr(cli, "_pt_print", lambda x: painted.append(x))
-    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
-    queued = []
-
-    class FakeLoop:
-        def is_running(self):
-            return True
-
-        def call_soon_threadsafe(self, cb, *args):
-            queued.append(cb)
-
-    fake_app = SimpleNamespace(
-        _is_running=True, loop=FakeLoop(),
-        output=SimpleNamespace(get_size=lambda: SimpleNamespace(columns=77)))
-    fake_pt_app = types.ModuleType("prompt_toolkit.application")
-    fake_pt_app.get_app_or_none = lambda: fake_app
-    fake_pt_app.run_in_terminal = lambda fn, **kw: fn()
-    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
-
-    cli._cprint("streamed line")  # not on the app loop: no running loop in this thread
-
-    assert painted == [] and list(cli._OUTPUT_HISTORY) == []
-    queued.pop()()
-    assert painted == ["streamed line"]
-    assert list(cli._OUTPUT_HISTORY) == ["streamed line"]
-    assert cli._OUTPUT_HISTORY[0].width == 77
-
-
-def test_cprint_waits_for_a_pending_resize_recovery(monkeypatch):
-    """#95375: between a resize and its recovery a paint would erase the re-wrapped chrome
-    from a stale cursor, leaving rows of it in the transcript. Held output is neither on
-    screen nor in the history the recovery replays; it paints, in order, afterwards."""
+def test_cprint_is_recorded_when_painted_and_waits_for_a_pending_resize(monkeypatch):
+    """#95375: a worker's print is queued for the app loop; a resize replay that runs before it
+    must not find it in the history (it would print it, then the queued print again), and the
+    row is tagged with the width the terminal wraps it at when painted. Between a resize and
+    its recovery a paint would erase the re-wrapped chrome from a stale cursor: held output is
+    neither on screen nor in the replayed history, and paints, in order, afterwards."""
     from hermes_cli import cli_render
 
     cli._configure_output_history(True, 10)
@@ -204,14 +172,17 @@ def test_cprint_waits_for_a_pending_resize_recovery(monkeypatch):
     monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
     monkeypatch.setattr(cli_render, "_HELD_PAINTS", None)
 
-    cli._cprint("before")
+    cli._cprint("before")  # not on the app loop: no running loop in this thread
+    assert painted == [] and list(cli._OUTPUT_HISTORY) == []
     queued.pop()()
+    assert painted == ["before"] and list(cli._OUTPUT_HISTORY) == ["before"]
+    assert cli._OUTPUT_HISTORY[0].width == 77
+
     cli_render._hold_paints()
     cli._cprint("during 1")
     cli._cprint("during 2")
     for cb in queued:
         cb()
-
     assert painted == ["before"] and list(cli._OUTPUT_HISTORY) == ["before"]
     cli_render._release_paints()
     assert painted == ["before", "during 1", "during 2"]
