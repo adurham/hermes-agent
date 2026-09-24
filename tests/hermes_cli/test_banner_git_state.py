@@ -358,7 +358,6 @@ def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
     is an ancestor of HEAD — that is "ahead", and reporting it as behind
     nudges the user into `hermes update`, which can wipe the carried work.
     """
-    from unittest.mock import MagicMock
 
     from hermes_cli import banner
 
@@ -385,7 +384,6 @@ def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):
 
 def test_check_via_local_git_ssh_fastpath_genuinely_behind(tmp_path):
     """SSH fast path reports the exact count (compare API) when behind."""
-    from unittest.mock import MagicMock
 
     from hermes_cli import banner
 
@@ -413,7 +411,6 @@ def test_check_via_local_git_ssh_fastpath_genuinely_behind(tmp_path):
 
 def test_check_via_local_git_ssh_fastpath_offline_keeps_sentinel(tmp_path):
     """Behind + compare API unreachable = honest no-count sentinel, never 1."""
-    from unittest.mock import MagicMock
 
     from hermes_cli import banner
 

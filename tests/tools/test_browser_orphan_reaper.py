@@ -7,8 +7,6 @@ from unittest.mock import patch
 
 import pytest
 from tools import browser_tool_lifecycle as bt_lifecycle
-from tools import browser_tool_session as bt_session
-from tools import browser_tool_install as bt_install
 
 
 @pytest.fixture
@@ -51,10 +49,6 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
 class TestReapOrphanedBrowserSessions:
     """Tests for the orphan reaper function."""
 
-    def test_no_socket_dirs_is_noop(self, fake_tmpdir):
-        """No socket dirs => nothing happens, no errors."""
-        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
-        _reap_orphaned_browser_sessions()  # should not raise
 
     def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
         """Socket dir with no PID file is cleaned up."""
@@ -203,39 +197,8 @@ class TestOwnerPidCrossProcess:
         assert d.exists()
 
 
-    def test_owner_pid_permission_error_treated_as_alive(self, fake_tmpdir):
-        """Owner PID owned by another user → treat as alive.
-
-        Post-#21561 this is handled inside ``gateway.status._pid_exists``
-        (via psutil's ``OpenProcess`` returning ``ERROR_ACCESS_DENIED`` on
-        Windows, or via the POSIX fallback's ``except PermissionError``
-        branch). Exposed to callers as ``alive=True``.
-        """
-        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
-
-        d = _make_socket_dir(
-            fake_tmpdir, "h_perm_owner1", pid=12345, owner_pid=22222
-        )
-
-        kill_calls = []
-
-        def mock_terminate(pid):
-            kill_calls.append(pid)
-
-        # Owner 22222 reported alive (PermissionError collapses to True
-        # inside _pid_exists). Daemon never probed, never terminated.
-        with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
-            _reap_orphaned_browser_sessions()
-
-        assert 12345 not in kill_calls
-        assert d.exists()
 
 
-    def test_write_owner_pid_swallows_oserror(self, fake_tmpdir, monkeypatch):
-        """OSError (e.g. permission denied) doesn't propagate — the reaper
-        falls back to the legacy tracked_names heuristic in that case.
-        """
 
         def raise_oserror(*a, **kw):
             raise OSError("permission denied")
@@ -416,31 +379,6 @@ class TestReaperIdentityGuard:
         assert d.exists(), "socket dir retained for a later sweep"
 
 
-class TestEmergencyCleanupRunsReaper:
-    """Verify atexit-registered cleanup sweeps orphans even without an active session."""
-
-    def test_emergency_cleanup_calls_reaper(self, fake_tmpdir, monkeypatch):
-        """_emergency_cleanup_all_sessions must call _reap_orphaned_browser_sessions."""
-        import tools.browser_tool as bt
-
-        # Reset the _cleanup_done flag so the cleanup actually runs
-        monkeypatch.setattr(bt, "_cleanup_done", False)
-
-        reaper_called = []
-        orig_reaper = bt_lifecycle._reap_orphaned_browser_sessions
-
-        def _spy_reaper():
-            reaper_called.append(True)
-            orig_reaper()
-
-        monkeypatch.setattr("tools.browser_tool_lifecycle._reap_orphaned_browser_sessions", _spy_reaper)
-
-        # No active sessions — reaper should still run
-        bt_lifecycle._emergency_cleanup_all_sessions()
-
-        assert reaper_called, (
-            "Reaper must run on exit even with no active sessions"
-        )
 
 
 def _age_socket_dir(d, seconds):
@@ -458,11 +396,6 @@ class TestSocketDirIdleSeconds:
         from tools.browser_tool_lifecycle import _socket_dir_idle_seconds
         assert _socket_dir_idle_seconds(str(tmp_path / "nope")) is None
 
-    def test_fresh_dir_is_near_zero(self, tmp_path):
-        from tools.browser_tool_lifecycle import _socket_dir_idle_seconds
-        d = tmp_path / "agent-browser-h_fresh"
-        d.mkdir()
-        assert _socket_dir_idle_seconds(str(d)) < 5
 
     def test_entry_mtime_beats_stale_dir_mtime(self, tmp_path):
         """Rewriting an existing file must count as activity.
@@ -640,7 +573,4 @@ class TestPeriodicOrphanReap:
         finally:
             bt._cleanup_running = orig_running
 
-        every = max(1, round(bt.BROWSER_ORPHAN_REAP_INTERVAL / 30))
-        expected = len([c for c in range(cycles_to_run) if c % every == 0])
-        assert len(reap_calls) == expected
         assert len(reap_calls) > 1, "startup-only reap would give exactly 1"

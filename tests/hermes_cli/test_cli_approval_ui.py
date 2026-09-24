@@ -500,10 +500,6 @@ class TestModalPaintNow:
                 )
         assert not thread.is_alive()
         return result["value"]
-
-
-
-
     def test_secret_response_teardown_paints(self):
         """_submit_secret_response tears the secret panel down via _paint_now,
         so the panel clears immediately rather than being held by the throttle."""

@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from agent.rate_limit_tracker import (
     RateLimitBucket,
-    RateLimitState,
     parse_rate_limit_headers,
     format_rate_limit_display,
     format_rate_limit_compact,
@@ -80,7 +79,6 @@ class TestBucket:
 
 
 
-class TestFormatting:
 
 
 
