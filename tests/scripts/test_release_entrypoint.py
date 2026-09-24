@@ -89,7 +89,7 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
             return "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd\n"
         return ""
 
-    result = _release(source, commit, execute=execute, autopublish=True)
+    result = _release(source, commit, execute=execute, autopublish=True, skip_bundles=True)
 
     assert result["version"] == "0.21.5"
     assert result["tag"] == "rc.1-v0.21.5"
@@ -100,11 +100,14 @@ def test_release_claims_the_first_attempt_creates_a_draft_and_dispatches(source)
     assert git(source, "rev-parse", "rc.1-v0.21.5^{commit}") == commit
     claim = json.loads(git(source, "tag", "-l", "rc.1-v0.21.5", "--format=%(contents)"))
     assert isinstance(claim.pop("claimEpoch"), int)
+    # The claim is the one record of the attempt's policy, flags included.
     assert claim == {
         "attempt": 1,
         "autopublish": True,
         "commit": commit,
         "schema": 1,
+        "skipBundles": True,
+        "skipTests": False,
         "version": "0.21.5",
     }
     create = calls[0]
@@ -132,6 +135,7 @@ def test_release_output_names_the_wait_and_the_publish_step():
     from scripts.releases.entrypoint import next_steps
 
     result = {"version": "0.21.5", "tag": "rc.1-v0.21.5", "autopublish": False,
+              "skip_bundles": False, "skip_tests": False,
               "run_url": "https://github.com/example/hermes-agent/actions/runs/7",
               "url": "https://github.com/example/hermes-agent/releases/tag/untagged-0123abcd",
               "final_url": "https://github.com/example/hermes-agent/releases/tag/v0.21.5"}
@@ -146,6 +150,22 @@ def test_release_output_names_the_wait_and_the_publish_step():
     automatic = next_steps({**result, "autopublish": True})
     assert "Autopublish is on." in automatic
     assert "publish --version" not in automatic
+    assert "skipped" not in text
+    skipped = next_steps({**result, "skip_bundles": True, "skip_tests": True})
+    assert "Bundles are skipped." in skipped and "Tests are skipped." in skipped
+
+
+def test_a_final_tag_for_the_next_version_refuses_the_cut(source):
+    """A started publication owns its version even before its release is public."""
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    commit = git(source, "rev-parse", "HEAD")
+    git(source, "tag", "v0.21.5", commit)
+    git(source, "push", "-q", "origin", "refs/tags/v0.21.5")
+
+    with pytest.raises(ReleaseRefused, match="v0.21.5 already has a final tag"):
+        _release(source, commit, execute=_must_not_execute)
+    assert "rc." not in git(source, "ls-remote", "origin", "refs/tags/*")
 
 
 def test_second_cut_after_abandon_is_attempt_two_of_the_same_version(source):

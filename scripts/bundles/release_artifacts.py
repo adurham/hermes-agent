@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from scripts.releases.stable import read_admitted_candidate, successful_smoke_results, validate_candidates
+from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 
 
 def sha256_file(file: Path) -> str:
@@ -165,7 +165,7 @@ def assemble(root: Path, tag: str, commit: str, public_base: str, out: Path,
     from scripts.releases.handoff import receipt_name, validate_receipt
     from scripts.releases.r2 import put, staging_key_for
 
-    smoke_results = successful_smoke_results(smoke_results)
+    smoke_results = accepted_smoke_results(smoke_results)
     expected = ("win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64", "termux", "windows-universal")
     by_name = {}
     for name in expected:

@@ -82,6 +82,46 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
         assert jobs[name]["if"] == "always()"
 
 
+def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
+    """The gate's SKIPPED_BY table and the workflow's conditions describe the same graph."""
+    from scripts.releases.stable import SKIPPED_BY
+
+    jobs = workflow("stable-release.yml")["jobs"]
+    outputs = {"skipTests": "needs.admit.outputs.skip-tests",
+               "skipBundles": "needs.admit.outputs.skip-bundles"}
+
+    def needs_of(name):
+        needs = jobs[name].get("needs", [])
+        return [needs] if isinstance(needs, str) else needs
+
+    def removed_by(name, flag):
+        condition = str(jobs[name].get("if", ""))
+        if f"{outputs[flag]} != 'true'" in condition:
+            return True
+        # Without a status function a job skips when any job it needs skipped.
+        return ("always()" not in condition and "!cancelled()" not in condition
+                and any(flag in SKIPPED_BY.get(need, ()) and removed_by(need, flag)
+                        for need in needs_of(name)))
+
+    for name, flags in SKIPPED_BY.items():
+        assert name in jobs
+        for flag in flags:
+            assert removed_by(name, flag), f"{name} does not skip under {flag}"
+    # The image publish-docker pushes and the candidates are built under
+    # skip-tests; they are told to run without their own tests.
+    for name in ("docker", "candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
+                 "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
+        assert jobs[name]["with"]["skip-tests"] == "${{ needs.admit.outputs.skip-tests == 'true' }}"
+    assert {"skip-bundles", "skip-tests"} <= set(jobs["admit"]["outputs"])
+    for name in ("acceptance", "publication", "complete"):
+        gate = next(step for step in jobs[name]["steps"]
+                    if "scripts.releases.stable gate" in step.get("run", ""))
+        assert gate["env"]["SKIP_BUNDLES"] == "${{ needs.admit.outputs.skip-bundles }}"
+        assert gate["env"]["SKIP_TESTS"] == "${{ needs.admit.outputs.skip-tests }}"
+        gated = gate["run"].split(" gate ", 1)[1].split()
+        assert set(gated) <= set(needs_of(name)), name
+
+
 def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
     jobs = workflow("ci.yaml")["jobs"]
     checks = {name for name, job in jobs.items() if "uses" in job}
@@ -93,7 +133,9 @@ def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
 def test_claim_custody_and_final_payload_identity_reach_every_privileged_phase():
     release = workflow("stable-release.yml")
     jobs = release["jobs"]
-    assert "autopublish" not in release["on"]["workflow_dispatch"]["inputs"]
+    # The claim is the one record of the attempt's policy; a dispatch cannot override it.
+    inputs = set(release["on"]["workflow_dispatch"]["inputs"])
+    assert not {"autopublish", "skip-bundles", "skip-tests"}.intersection(inputs)
     assert {"claim-tag", "claim-object", "tag", "commit", "version", "release-id", "release-epoch"} <= \
         set(jobs["admit"]["outputs"])
     for name in ("publish-bundles", *("candidates-darwin-arm64", "candidates-darwin-x64",

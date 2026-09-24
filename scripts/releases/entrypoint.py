@@ -179,11 +179,13 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
 
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             execute, autopublish: bool = False, no_changelog: bool = False,
+            skip_bundles: bool = False, skip_tests: bool = False,
             published: tuple[str, str | None] = (SEED, None)) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
-    None before the first publication.
+    None before the first publication. ``skip_bundles`` and ``skip_tests`` are
+    written into the claim, which is the one record every later job reads.
     """
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
@@ -194,6 +196,12 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     published_version, published_commit = published
     _require_ancestry(repo, commit, published_commit)
     version = derive_next_version(published=published_version, bump=bump)
+    if _git(repo, "ls-remote", remote, f"refs/tags/v{version}"):
+        # A final tag records a started publication. Until its GitHub release is
+        # public the published identity still names the previous version.
+        raise ReleaseRefused(
+            f"v{version} already has a final tag. Its publication is still finishing. "
+            "Wait for Stable Release Publication, then cut again.")
     attempt = next_attempt(version, _claims(repo))
     tag = attempt_ref(version, attempt)
     # Built before the claim: a body GitHub refuses would otherwise burn the attempt.
@@ -212,6 +220,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "attempt": attempt,
         "commit": commit,
         "autopublish": autopublish,
+        "skipBundles": skip_bundles,
+        "skipTests": skip_tests,
         "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.check_output(
@@ -266,7 +276,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     run_url = _dispatched_run(found, tag)
     return {"version": version, "tag": tag, "commit": commit, "url": url,
             "final_url": f"https://github.com/{repository}/releases/tag/v{version}",
-            "run_url": run_url, "autopublish": autopublish}
+            "run_url": run_url, "autopublish": autopublish,
+            "skip_bundles": skip_bundles, "skip_tests": skip_tests}
 
 
 def _dispatched_run(raw: str, tag: str) -> str:
@@ -388,6 +399,12 @@ def next_steps(result: dict) -> str:
         "The draft exists now. Edit its notes while the workflow runs; the edits carry through to publication.",
         "Wait for that workflow to finish. It builds and tests this commit.",
     ]
+    if result["skip_bundles"]:
+        lines.append("Bundles are skipped. Only the tag, the GitHub release and the Docker image "
+                     "ship; the desktop, Termux and Store channels stay on the previous release.")
+    if result["skip_tests"]:
+        lines.append("Tests are skipped. No CI, E2E, native smoke or upgrade acceptance job runs. "
+                     "The build is published untested.")
     if result["autopublish"]:
         lines.append("Autopublish is on. A green workflow publishes the release. You do not run publish.")
     else:
@@ -419,6 +436,7 @@ def cmd_release(args) -> None:
     result = release(
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
         execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
+        skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
         published=published_stable_identity(repository),
     )
     print(next_steps(result))

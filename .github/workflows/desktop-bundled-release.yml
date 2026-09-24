@@ -97,6 +97,10 @@ on:
         description: 'Comma-separated job groups. Default: every group.'
         type: string
         default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
+      skip-tests:
+        description: 'Stable candidates only: build and stage without native smokes or in-build test suites (the claim skipped tests).'
+        type: boolean
+        default: false
     outputs:
       darwin-arm64-receipt-url:
         value: ${{ jobs.stage-receipt-darwin-arm64.outputs.receipt-url }}
@@ -643,6 +647,7 @@ jobs:
           }
 
       - name: Verify native signature cache contracts
+        if: inputs.skip-tests != true
         shell: bash
         working-directory: apps/desktop
         run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
@@ -1305,6 +1310,7 @@ jobs:
       && needs.stage-receipt-darwin-arm64.result == 'success'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && inputs.skip-tests != true
     permissions:
       contents: read
     strategy:
@@ -1337,6 +1343,7 @@ jobs:
       && needs.stage-receipt-darwin-x64.result == 'success'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && inputs.skip-tests != true
     permissions:
       contents: read
     strategy:
@@ -1368,6 +1375,7 @@ jobs:
       && needs.build-win32-x64.result == 'success' && needs.validate.outputs.win32-x64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && inputs.skip-tests != true
     permissions:
       contents: read
     uses: ./.github/workflows/desktop-bundle-smoke.yml
@@ -1395,6 +1403,7 @@ jobs:
       && needs.build-win32-arm64.result == 'success' && needs.validate.outputs.win32-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
+      && inputs.skip-tests != true
     permissions:
       contents: read
     uses: ./.github/workflows/desktop-bundle-smoke.yml
@@ -2430,6 +2439,7 @@ jobs:
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
+          SKIP_TESTS: ${{ inputs.skip-tests }}
         run: |
           python - <<'PY'
           import json, os
@@ -2438,7 +2448,8 @@ jobs:
           needs = json.loads(os.environ['RELEASE_NEEDS'])
           outputs = needs['validate'].get('outputs', {})
           selected = {group: outputs.get(group) == 'true' for group in JOB_GROUPS}
-          require_success(needs, phase_jobs(selected, os.environ['RELEASE_PHASE']))
+          require_success(needs, phase_jobs(selected, os.environ['RELEASE_PHASE'],
+                                            skip_tests=os.environ['SKIP_TESTS'] == 'true'))
           PY
 
   publish-canary:

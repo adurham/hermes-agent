@@ -18,12 +18,20 @@ ALL_JOBS = ",".join(JOB_GROUPS)
 # declares. `phase_jobs` turns a selection into the list the stable phase
 # result requires.
 GROUP_JOBS = {
-    "darwin-arm64": ("build-darwin-arm64", "smoke-darwin-arm64"),
-    "darwin-x64": ("build-darwin-x64", "smoke-darwin-x64"),
-    "win32-arm64": ("build-win32-arm64", "smoke-win32-arm64"),
-    "win32-x64": ("build-win32-x64", "smoke-win32-x64"),
+    "darwin-arm64": ("build-darwin-arm64",),
+    "darwin-x64": ("build-darwin-x64",),
+    "win32-arm64": ("build-win32-arm64",),
+    "win32-x64": ("build-win32-x64",),
     "win32-bundle": ("assemble-win32-bundle",),
     "termux": ("termux-deb",),
+}
+# The native smoke each group runs after its build. A claim that skipped
+# tests runs none of them.
+GROUP_SMOKES = {
+    "darwin-arm64": ("smoke-darwin-arm64",),
+    "darwin-x64": ("smoke-darwin-x64",),
+    "win32-arm64": ("smoke-win32-arm64",),
+    "win32-x64": ("smoke-win32-x64",),
 }
 
 
@@ -55,11 +63,12 @@ def selects_all(raw: str | None) -> bool:
     return all(parse_jobs(raw).values())
 
 
-def phase_jobs(selected: dict[str, bool], phase: str) -> list[str]:
+def phase_jobs(selected: dict[str, bool], phase: str, *, skip_tests: bool = False) -> list[str]:
     """Jobs the stable phase result judges: an unselected group never fails it.
 
     B4 moved candidate-manifest into stable-release.yml, so the desktop
-    workflow no longer owns it and the phase result never names it.
+    workflow no longer owns it and the phase result never names it. A claim
+    that skipped tests runs no smoke, so the smokes are not judged.
     """
     required = ["validate"]
     if phase == "publish":
@@ -69,6 +78,8 @@ def phase_jobs(selected: dict[str, bool], phase: str) -> list[str]:
     for group, jobs in GROUP_JOBS.items():
         if selected.get(group):
             required.extend(jobs)
+            if not skip_tests:
+                required.extend(GROUP_SMOKES.get(group, ()))
     return required
 
 

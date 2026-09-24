@@ -183,7 +183,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
 
 
 def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: str,
-                    release_epoch: int) -> dict:
+                    release_epoch: int, *, skip_tests: bool) -> dict:
     """Read the accepted candidate from the attempt-scoped release archive."""
     from hermes_cli.release_channels import decode_json, require_sha256
 
@@ -196,6 +196,7 @@ def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: st
     candidate = decode_json(publisher.reader.read_bytes(key, digest))
     stable.validate_candidates(candidate, payload_tag, commit, publisher.public_base, release_epoch,
                                archive=tag)
+    stable.require_smokes_match_claim(candidate, skip_tests=skip_tests)
     return candidate
 
 
@@ -345,10 +346,14 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         identity["token"] = current[0]["identity"]["token"]
         if identity != current[0]["identity"]:
             raise ChannelError("Protected R2 identity differs from the existing product")
-    release_epoch = stable.final_context({**env, "RELEASE_TAG": payload_tag})[2]["claim_epoch"] \
+    final_claim = stable.final_context({**env, "RELEASE_TAG": payload_tag})[2] \
         if policy == "stable-release" else None
-    accepted = accepted_stable(publisher, env, tag, commit, release_epoch) \
-        if release_epoch is not None else None
+    if final_claim is not None and final_claim["skip_bundles"]:
+        raise ChannelError("A release that skipped bundles has no native bytes to advance a protected head")
+    release_epoch = final_claim["claim_epoch"] if final_claim is not None else None
+    accepted = accepted_stable(publisher, env, tag, commit, release_epoch,
+                               skip_tests=final_claim["skip_tests"]) \
+        if final_claim is not None else None
     # Native handoffs were staged under the attempt ref for stable attempts
     # (identical for canary, where tag == payload_tag).
     handoff.fetch(tag, commit, list(NATIVE_LEGS), root,
@@ -371,7 +376,8 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
         if policy == "stable-release":
             if release_epoch is None:
                 raise ChannelError("Stable release epoch is unavailable")
-            return accepted_stable(publisher, env, tag, commit, release_epoch) == accepted
+            return accepted_stable(publisher, env, tag, commit, release_epoch,
+                                   skip_tests=final_claim["skip_tests"]) == accepted
         return True
 
     source_version = payload_tag[1:].split("+", 1)[0]

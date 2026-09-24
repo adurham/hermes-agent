@@ -67,7 +67,8 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
             with pytest.raises(ValueError, match=name):
                 require_success(needs, required)
     summary = tmp_path / "summary.md"
-    env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT)}
+    env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT),
+           "SKIP_BUNDLES": "false", "SKIP_TESTS": "false"}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
     empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
@@ -77,6 +78,35 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     result = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode != 0
     assert "publication=cancelled" in result.stderr
+
+
+@pytest.mark.parametrize("skip_bundles,skip_tests", [(True, False), (False, True), (True, True)])
+def test_gate_requires_every_flag_removed_job_to_have_skipped(tmp_path, skip_bundles, skip_tests):
+    from scripts.releases.stable import SKIPPED_BY, gate_expectations
+
+    required = ["admit", "docker", "publish-docker", *SKIPPED_BY]
+    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests)
+    # The flags remove jobs; they never remove admission or the Docker image.
+    assert expected["admit"] == expected["docker"] == expected["publish-docker"] == "success"
+    assert expected["transitions-win32"] == expected["pm-bundle"] == "skipped"
+    needs = {name: {"result": result} for name, result in expected.items()}
+    env = {**os.environ, "RELEASE_NEEDS": json.dumps(needs), "PYTHONPATH": str(ROOT),
+           "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+           "SKIP_BUNDLES": "true" if skip_bundles else "false",
+           "SKIP_TESTS": "true" if skip_tests else "false"}
+    argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode == 0
+    # A removed job that ran anyway blocks the release, and so does an unflagged gate.
+    removed = next(name for name, result in expected.items() if result == "skipped")
+    env["RELEASE_NEEDS"] = json.dumps({**needs, removed: {"result": "success"}})
+    ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    assert ran.returncode != 0 and f"{removed}=success (expected skipped)" in ran.stderr
+    env["RELEASE_NEEDS"] = json.dumps(needs)
+    env["SKIP_BUNDLES"] = env["SKIP_TESTS"] = "false"
+    assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True).returncode != 0
+    del env["SKIP_TESTS"]
+    missing = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+    assert missing.returncode != 0 and "SKIP_TESTS must be" in missing.stderr
 
 
 def test_validate_candidates_keys_the_archive_by_the_attempt_ref():
@@ -335,7 +365,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     env = {"RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object,
            "GITHUB_SHA": commit, "GITHUB_REF": ref}
     message = {"schema": 1, "version": "1.2.3", "attempt": 1, "commit": commit,
-               "autopublish": False, "claimEpoch": 1_790_000_000}
+               "autopublish": False, "skipBundles": False, "skipTests": False,
+               "claimEpoch": 1_790_000_000}
 
     def git(argv):
         if argv[1] == "ls-remote":
@@ -353,7 +384,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     assert check_claim(env, git) == {
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
-        "autopublish": False, "claim_epoch": 1_790_000_000,
+        "autopublish": False, "skip_bundles": False, "skip_tests": False,
+        "claim_epoch": 1_790_000_000,
     }
     # The metadata binds the attempt its ref names.
     for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
@@ -380,7 +412,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
     metadata = json.dumps({
         "schema": 1, "version": "1.2.3", "attempt": 1, "commit": actual,
-        "autopublish": False, "claimEpoch": 1_790_000_000,
+        "autopublish": False, "skipBundles": False, "skipTests": False,
+        "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
         ["git", "tag", "-a", "rc.1-v1.2.3", "-m", metadata], check=True,
@@ -408,7 +441,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         check_claim(env)
 
 
-def _claim_fixture(tmp_path, *, tag, version):
+def _claim_fixture(tmp_path, *, tag, version, skip_bundles=False, skip_tests=False):
     """A real checkout + bare remote carrying one annotated attempt claim."""
     from scripts.releases.versioning import parse_attempt_ref
 
@@ -426,7 +459,8 @@ def _claim_fixture(tmp_path, *, tag, version):
     attempt = parse_attempt_ref(tag)[1]
     metadata = json.dumps({
         "schema": 1, "version": version, "attempt": attempt, "commit": commit,
-        "autopublish": False, "claimEpoch": epoch,
+        "autopublish": False, "skipBundles": skip_bundles, "skipTests": skip_tests,
+        "claimEpoch": epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
         ["git", "tag", "-a", tag, "-m", metadata], cwd=repo, check=True,
@@ -489,10 +523,11 @@ def test_strip_refuses_an_unbalanced_fence(body):
         strip_draft_warning(body)
 
 
-def _publish_record(commit, tag_object, *, epoch, release_id=42):
+def _publish_record(commit, tag_object, *, epoch, release_id=42, skip_bundles=False):
     return {"claim_tag": "rc.2-v1.2.3", "claim_object": tag_object, "tag": "v1.2.3",
             "commit": commit, "version": "1.2.3", "attempt": 2, "release_id": release_id,
-            "autopublish": False, "claim_epoch": epoch}
+            "autopublish": False, "skip_bundles": skip_bundles, "skip_tests": False,
+            "claim_epoch": epoch}
 
 
 def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_path, monkeypatch):
@@ -677,10 +712,11 @@ WINDOWS_VERSION = "2026.5761.123.0"
 RELEASE_EPOCH = 1_787_965_323
 
 
-def _fake_stable_context():
+def _fake_stable_context(*, skip_tests=False):
     def context(env):
         return "v1.2.3", RECEIPT_COMMIT, {"claim_tag": ATTEMPT, "claim_object": "0" * 40,
-                                          "claim_epoch": RELEASE_EPOCH}
+                                          "claim_epoch": RELEASE_EPOCH, "skip_bundles": False,
+                                          "skip_tests": skip_tests}
     return context
 
 
@@ -942,3 +978,37 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     with pytest.raises(ValueError, match="smoke-darwin-x64"):
         stable.main(["candidate-manifest"], failed)
     assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
+
+
+def test_a_claim_that_skipped_tests_records_skipped_smokes_never_passed(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_darwin_handoff(built, "arm64")
+    _stage_darwin_handoff(built, "x64")
+    _stage_windows_handoff(built, "x64")
+    _stage_windows_handoff(built, "arm64")
+    _stage_universal_bundle(built)
+    _stage_termux_handoff(built)
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(skip_tests=True))
+    calls = {call: {"result": "success"} for call in stable.CALL_SMOKE_JOBS}
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
+    # A build call that failed still leaves no manifest, even with the smokes off.
+    failed = {**env, "RELEASE_NEEDS": json.dumps({**calls, "candidates-win32-x64": {"result": "failure"}})}
+    with pytest.raises(ValueError, match="candidates-win32-x64"):
+        stable.main(["candidate-manifest"], failed)
+    assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
+
+    stable.main(["candidate-manifest"], env)
+
+    stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
+    manifest = json.loads(stored)
+    assert manifest["smoke_results"] == {job: {"result": "skipped"} for job in stable.SMOKE_JOBS}
+    stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
+                               RELEASE_EPOCH, archive=ATTEMPT)
+    stable.require_smokes_match_claim(manifest, skip_tests=True)
+    with pytest.raises(ValueError, match="test policy"):
+        stable.require_smokes_match_claim(manifest, skip_tests=False)

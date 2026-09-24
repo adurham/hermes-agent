@@ -436,8 +436,9 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         monkeypatch.setattr(channel_releases, "admit_transaction",
                             lambda policy, env, **_kwargs: (tag, commit))
         monkeypatch.setattr(channel_releases.stable, "final_context",
-                            lambda env: (tag, commit, {"claim_epoch": 1_787_965_323}))
-        monkeypatch.setattr(channel_releases, "accepted_stable", lambda *args: accepted)
+                            lambda env: (tag, commit, {"claim_epoch": 1_787_965_323,
+                                                       "skip_bundles": False, "skip_tests": False}))
+        monkeypatch.setattr(channel_releases, "accepted_stable", lambda *args, **kwargs: accepted)
         promotion_attempts = [0]
         def promote_stable_feeds(*args):
             promotion_attempts[0] += 1
@@ -556,10 +557,16 @@ def test_accepted_stable_reads_the_release_archive_by_tag(monkeypatch):
         key = f"releases/tag/{attempt}/release-candidates.json"
         objects[key] = raw
         candidate_env = {"CANDIDATE_MANIFEST_SHA256": hashlib.sha256(raw).hexdigest(), "CANDIDATE_MANIFEST_URL": pub.public_base + "/" + key}
-        assert channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch) == candidate
+        assert channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
+                                                skip_tests=False) == candidate
+        # Passed smokes cannot stand behind a claim that skipped tests, or the reverse.
+        with pytest.raises(ValueError, match="test policy"):
+            channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
+                                             skip_tests=True)
         faults["stale_public"] = b"{}"
         with pytest.raises(ChannelError):
-            channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch)
+            channel_releases.accepted_stable(pub, candidate_env, attempt, commit, release_epoch,
+                                             skip_tests=False)
 
 
 def test_request_inputs_are_rejected_before_allocating():

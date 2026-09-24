@@ -147,6 +147,17 @@ def promote_stable(tag: str, digest: str, *, run=output, sleep=time.sleep) -> No
                 raise DockerReleaseError(f"Docker {alias}{suffix} alias read-back mismatch")
 
 
+def stable_alias_digest(run=output) -> str | None:
+    """The slim ``stable`` alias digest, or None when the alias does not exist yet."""
+    try:
+        digest = _inspect(f"{IMAGE}:stable", run)
+    except subprocess.CalledProcessError:
+        return None
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise DockerReleaseError(f"Docker stable alias digest is invalid: {digest!r}")
+    return digest
+
+
 def published_digest(tag: str, run=output) -> str:
     """Read both attempt images; return the slim digest bound to the release receipt.
 

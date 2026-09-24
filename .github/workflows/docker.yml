@@ -34,6 +34,11 @@ on:
         required: false
         type: string
         default: ''
+      skip-tests:
+        description: "Release test phase only: build and archive the image without its integration tests (the claim skipped tests)."
+        required: false
+        type: boolean
+        default: false
     outputs:
       manifest-digest:
         description: "Immutable digest of the published versioned multi-arch manifest."
@@ -228,6 +233,7 @@ jobs:
         run: mv install-stamp.json "$RUNNER_TEMP/install-stamp.json"
 
       - name: Set up locked Python and test dependencies
+        if: inputs.skip-tests != true
         uses: ./.github/actions/setup-pm
         with:
           extras: '[]'
@@ -238,6 +244,7 @@ jobs:
         run: mv "$RUNNER_TEMP/install-stamp.json" install-stamp.json
 
       - name: Run docker integration tests
+        if: inputs.skip-tests != true
         env:
           # Skip rebuild; use the image already loaded by the build step.
           HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test

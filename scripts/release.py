@@ -2742,6 +2742,14 @@ def main():
     release_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
     release_cmd.add_argument("--autopublish", action="store_true",
                              help="Publish on green instead of leaving a draft")
+    release_cmd.add_argument("--skip-bundles", action="store_true",
+                             help="Release only the tag and the Docker image: no desktop, Termux or "
+                                  "PM bundle builds, smokes, feeds or Store check. The desktop update "
+                                  "channel stays on the previous bundle release.")
+    release_cmd.add_argument("--skip-tests", action="store_true",
+                             help="Emergency release: skip CI, Nix, PM bundle, install/update E2E, "
+                                  "Termux, Windows, native smoke and upgrade acceptance jobs. "
+                                  "Artifacts still build and publish.")
     # SUPPRESS keeps a --no-changelog given before the subcommand from being
     # reset by this parser's default.
     release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,

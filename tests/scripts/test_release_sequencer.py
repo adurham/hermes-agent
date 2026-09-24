@@ -217,7 +217,8 @@ def test_an_unpublished_claim_below_the_head_is_refused():
 def _claim_message(version, attempt, commit, *, autopublish=False,
                    epoch=1_790_000_000):
     return {"schema": 1, "version": version, "attempt": attempt, "commit": commit,
-            "autopublish": autopublish, "claimEpoch": epoch}
+            "autopublish": autopublish, "skipBundles": False, "skipTests": False,
+            "claimEpoch": epoch}
 
 
 def _final_message(version, attempt, commit, *, release_id, epoch=1_790_000_000):
@@ -309,7 +310,7 @@ def test_two_outstanding_attempts_are_refused_across_versions():
 
 
 def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b" * 64,
-                       drafts_on_claim_tag=False):
+                       drafts_on_claim_tag=False, skip_bundles=False):
     """Two green claims with their final tags; releases start as drafts."""
     commit = "a" * 40
     tags = {}
@@ -319,7 +320,8 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
         claim = {
             "schema": 1, "version": version, "attempt": 1, "commit": commit,
-            "autopublish": False, "claimEpoch": 1_790_000_000 + index,
+            "autopublish": False, "skipBundles": skip_bundles, "skipTests": False,
+            "claimEpoch": 1_790_000_000 + index,
         }
         final = {
             "schema": 1, "version": version, "commit": commit,
@@ -496,3 +498,39 @@ def test_a_publish_that_died_before_the_retarget_is_repaired():
     assert steps == [{"advance": "0.21.5"}]
     assert events == [("advance", "v0.21.5")]
     assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
+
+
+def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_aliases(monkeypatch):
+    """Its receipt binds no manifest; the R2 head and Store stay put; one pass finishes it."""
+    from scripts.releases import channel_releases, docker, sequencer, store
+
+    docker_digest = "sha256:" + "b" * 64
+    _tags, releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=None, docker_digest=docker_digest, skip_bundles=True)
+    alias = [None]
+    events = []
+
+    def promote(claim_tag, digest):
+        events.append(("aliases", claim_tag))
+        alias[0] = digest
+
+    monkeypatch.setattr(channel_releases, "advance_stable",
+                        lambda *_args: pytest.fail("the protected R2 head moved"))
+    monkeypatch.setattr(store, "check_from_env", lambda _env: pytest.fail("the Store was checked"))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.4")
+    monkeypatch.setattr(docker, "promote_stable", promote)
+    monkeypatch.setattr(docker, "stable_alias_digest", lambda: alias[0])
+    env = {"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.5"}
+
+    def no_archive(_key):
+        pytest.fail("a release that skipped bundles has no archive to read")
+
+    steps = sequencer.reconcile(env, run=run, read_archive=no_archive)
+
+    assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
+    assert events == [("aliases", "rc.1-v0.21.5")]
+    assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
+    # The R2 head still names 0.21.4, but the stable alias carries the 0.21.5
+    # receipt digest, so the next pass has nothing left to advance.
+    assert sequencer.reconcile(env, run=run, read_archive=no_archive) == []
+    assert events == [("aliases", "rc.1-v0.21.5")]

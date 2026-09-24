@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -21,8 +20,6 @@ from scripts.releases.versioning import (
     version_from_tag,
 )
 
-SHA256 = re.compile(r"[a-f0-9]{64}")
-DOCKER_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 MAX_ATTEMPTS = 3
 CLAIM_GRACE = timedelta(hours=1)
 
@@ -214,7 +211,7 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
 
 def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
-    from scripts.releases.stable import tagger_epoch
+    from scripts.releases.stable import tagger_epoch, validate_claim, validate_final
 
     run([
         "git", "fetch", "origin", "+refs/tags/v*:refs/tags/v*",
@@ -240,14 +237,11 @@ def discover(repository: str, run=output) -> list[dict]:
         tag = f"v{version}"
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
-        claim_epoch = claim.get("claimEpoch")
-        expected_claim = {
-            "schema": 1, "version": version, "attempt": attempt, "commit": commit,
-            "autopublish": claim["autopublish"], "claimEpoch": claim_epoch,
-        }
-        if (claim != expected_claim or not isinstance(claim["autopublish"], bool)
-                or not isinstance(claim_epoch, int) or claim_epoch <= 0):
-            raise ValueError(f"{claim_tag} metadata is invalid")
+        try:
+            validate_claim(claim, version=version, attempt=attempt, commit=commit)
+        except ValueError as error:
+            raise ValueError(f"{claim_tag} metadata is invalid") from error
+        claim_epoch = claim["claimEpoch"]
         if tagger_epoch(claim_ref["object"], run) != claim_epoch:
             raise ValueError(f"{claim_tag} epoch differs from its annotated tagger timestamp")
 
@@ -266,21 +260,11 @@ def discover(repository: str, run=output) -> list[dict]:
             if final_ref["commit"] != commit:
                 raise ValueError(f"{tag} points at a different commit than {claim_tag}")
             final = _tag_message(tag, final_ref["object"], run)
-            expected_final = {
-                "schema": 1, "version": version, "commit": commit,
-                "claimTag": claim_tag, "claimTagObject": claim_ref["object"],
-                "autopublish": claim["autopublish"],
-                "claimEpoch": claim_epoch,
-                "releaseId": final.get("releaseId"),
-                "candidateManifestSha256": final.get("candidateManifestSha256"),
-                "dockerManifestDigest": final.get("dockerManifestDigest"),
-                "archive": f"releases/tag/{claim_tag}/",
-            }
-            if (final != expected_final
-                    or not isinstance(final["releaseId"], int) or final["releaseId"] <= 0
-                    or not SHA256.fullmatch(final["candidateManifestSha256"] or "")
-                    or not DOCKER_DIGEST.fullmatch(final["dockerManifestDigest"] or "")):
-                raise ValueError(f"{tag} metadata differs from {claim_tag}")
+            try:
+                validate_final(final, version=version, commit=commit, claim_tag=claim_tag,
+                               claim_object=claim_ref["object"], claim=claim)
+            except ValueError as error:
+                raise ValueError(f"{tag} metadata differs from {claim_tag}") from error
             if release is None or release.get("id") != final["releaseId"]:
                 state, needs_retarget = "burned", False
             else:
@@ -306,6 +290,8 @@ def discover(repository: str, run=output) -> list[dict]:
             "attempt": attempt,
             "state": state,
             "autopublish": claim["autopublish"],
+            "skip_bundles": claim["skipBundles"],
+            "skip_tests": claim["skipTests"],
             "claim_tag": claim_tag,
             "claim_object": claim_ref["object"],
             "claim_epoch": claim_epoch,
@@ -319,6 +305,22 @@ def discover(repository: str, run=output) -> list[dict]:
         })
 
     return sorted(records, key=lambda record: _key(record["version"]))
+
+
+def channel_head(desktop_head: str | None, records: list[dict],
+                 stable_alias_digest: str | None) -> str | None:
+    """The newest version whose publication pass finished.
+
+    A bundle release finishes when the protected R2 head names it. A release
+    that skipped bundles never moves that head. It finishes when the Docker
+    ``stable`` alias carries the digest its final receipt binds.
+    """
+    versions = [desktop_head] if desktop_head is not None else []
+    if stable_alias_digest is not None:
+        versions += [record["version"] for record in records
+                     if record["state"] == "published"
+                     and record["docker_manifest_digest"] == stable_alias_digest]
+    return max(versions, key=_key, default=None)
 
 
 def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
@@ -362,7 +364,9 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     if any(record["needs_retarget"] for record in records):
         records = discover(repository, run)
 
-    read_head = read_head or (lambda: channel_releases.stable_head_version(env))
+    read_head = read_head or (lambda: channel_head(
+        channel_releases.stable_head_version(env), discover(repository, run),
+        docker.stable_alias_digest()))
     head = read_head()
     requested = env.get("REQUESTED_VERSION") or None
     steps = plan(records, head=head, requested_version=requested)
@@ -370,16 +374,19 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
 
     if advance_head is None:
         def production_advance(record: dict) -> None:
-            with tempfile.TemporaryDirectory() as directory:
-                channel_releases.advance_stable(env, record, Path(directory))
+            if not record["skip_bundles"]:
+                with tempfile.TemporaryDirectory() as directory:
+                    channel_releases.advance_stable(env, record, Path(directory))
             # The stable/latest aliases move onto the attempt's image here, in
             # the publication pass with the feed pointer, never in the green
-            # build that pushed the image under the attempt ref.
+            # build that pushed the image under the attempt ref. A release
+            # that skipped bundles moves only these aliases.
             docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
-            # The Store check joins the pass here (after the feeds and aliases
-            # move). It never releases the held submission: the API cannot,
-            # so it prints the Publish now step. A failed submission is red.
-            store.check_from_env(env)
+            if not record["skip_bundles"]:
+                # The Store check joins the pass here (after the feeds and aliases
+                # move). It never releases the held submission: the API cannot,
+                # so it prints the Publish now step. A failed submission is red.
+                store.check_from_env(env)
         advance_head = production_advance
 
     for step in steps:

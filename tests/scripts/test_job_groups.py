@@ -57,6 +57,9 @@ def test_phase_jobs_judge_only_the_selected_groups():
     assert "candidate-manifest" not in candidate
     partial = {**{group: False for group in JOB_GROUPS}, "darwin-arm64": True}
     assert phase_jobs(partial, "candidate") == ["validate", "build-darwin-arm64", "smoke-darwin-arm64"]
+    # A claim that skipped tests still judges every build, and no smoke.
+    untested = phase_jobs(every, "candidate", skip_tests=True)
+    assert untested == [job for job in candidate if not job.startswith("smoke-")]
     assert phase_jobs(every, "publish") == ["validate", "stable-publish", "stable-store"]
     with pytest.raises(ValueError, match="Unknown release phase"):
         phase_jobs(every, "promote")

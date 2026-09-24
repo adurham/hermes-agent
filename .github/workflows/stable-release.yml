@@ -38,6 +38,8 @@ jobs:
       version: ${{ steps.admit.outputs.version }}
       release-id: ${{ steps.admit.outputs.release-id }}
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
+      skip-bundles: ${{ steps.admit.outputs.skip-bundles }}
+      skip-tests: ${{ steps.admit.outputs.skip-tests }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -55,6 +57,7 @@ jobs:
   ci:
     name: Full CI pipeline
     needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     permissions:
       contents: read
       pull-requests: write
@@ -67,9 +70,15 @@ jobs:
   docker:
     name: Docker build and tests
     needs: [admit, ci]
+    # The image publish-docker pushes is built here, so a claim that skipped
+    # tests still runs this job with its tests off.
+    if: >-
+      !cancelled() && needs.admit.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     uses: ./.github/workflows/docker.yml
     with:
       release-phase: test
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
       tag: ${{ needs.admit.outputs.tag }}
       version: ${{ needs.admit.outputs.version }}
 
@@ -82,6 +91,8 @@ jobs:
 
   pm-bundle:
     needs: [admit, ci, docker]
+    # Needing ci already removes it under skip-tests.
+    if: needs.admit.outputs.skip-bundles != 'true'
     uses: ./.github/workflows/pm-bundle.yml
     with:
       release: true
@@ -118,6 +129,10 @@ jobs:
   candidates-darwin-arm64:
     name: Build signed release candidates (darwin-arm64)
     needs: [admit, ci, docker]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.docker.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -130,10 +145,15 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: darwin-arm64
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
 
   candidates-darwin-x64:
     name: Build signed release candidates (darwin-x64)
     needs: [admit, ci, docker]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.docker.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -146,10 +166,15 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: darwin-x64
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
 
   candidates-win32-arm64:
     name: Build signed release candidates (win32-arm64)
     needs: [admit, ci, docker]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.docker.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -162,10 +187,15 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: win32-arm64
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
     needs: [admit, ci, docker]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.docker.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -178,10 +208,17 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: win32-x64
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
     needs: [admit, ci, docker, candidates-win32-arm64, candidates-win32-x64]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.docker.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
+      && needs.candidates-win32-arm64.result == 'success'
+      && needs.candidates-win32-x64.result == 'success'
     permissions:
       contents: write
       actions: read
@@ -194,10 +231,15 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: win32-bundle
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
 
   candidates-termux:
     name: Build signed release candidates (termux)
     needs: [admit, ci, docker]
+    if: >-
+      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      && needs.docker.result == 'success'
+      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -210,10 +252,12 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: termux
+      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
 
   transitions-darwin-arm64:
     name: Pin actual OLD and NEW signed packages (darwin-arm64)
     needs: [admit, candidates-darwin-arm64]
+    if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
@@ -247,6 +291,7 @@ jobs:
   transitions-darwin-x64:
     name: Pin actual OLD and NEW signed packages (darwin-x64)
     needs: [admit, candidates-darwin-x64]
+    if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
@@ -280,6 +325,7 @@ jobs:
   transitions-win32:
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
+    if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
@@ -316,7 +362,7 @@ jobs:
     # The recorded smoke results are the calls' own workflow results: a
     # call's stable-phase-result fails when its smokes fail, so a failed
     # smoke fails this job's RELEASE_NEEDS check and stages no manifest.
-    if: always()
+    if: always() && needs.admit.outputs.skip-bundles != 'true'
     needs: [admit, candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux]
     runs-on: ubuntu-24.04
@@ -398,6 +444,7 @@ jobs:
   bootstrap-version:
     name: Bootstrap installer release identity
     needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -448,6 +495,8 @@ jobs:
       - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-darwin-x64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux candidate-manifest transitions-darwin-arm64 transitions-darwin-x64 transitions-win32 windows-packaged macos-packaged-arm64 macos-packaged-x64 bootstrap-version
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
+          SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
+          SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
 
   publish-docker:
     name: Publish tested Docker image
@@ -463,6 +512,7 @@ jobs:
   publish-bundles:
     name: Publish tested bundle artifacts
     needs: [admit, acceptance, candidate-manifest]
+    if: needs.admit.outputs.skip-bundles != 'true'
     permissions:
       contents: write
       actions: read
@@ -479,7 +529,7 @@ jobs:
   publication:
     name: All artifact publication succeeded
     if: always()
-    needs: [acceptance, publish-docker, publish-bundles]
+    needs: [admit, acceptance, publish-docker, publish-bundles]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -491,6 +541,8 @@ jobs:
       - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
+          SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
+          SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
 
   complete:
     name: Stable release is green
@@ -518,7 +570,10 @@ jobs:
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidate-manifest publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
+          SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
+          SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
       - name: Validate the accepted candidate archive
+        if: needs.admit.outputs.skip-bundles != 'true'
         run: python -m scripts.releases.stable complete
         env:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
@@ -532,6 +587,7 @@ jobs:
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - name: Render the admitted candidate smoke results
+        if: needs.admit.outputs.skip-bundles != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}

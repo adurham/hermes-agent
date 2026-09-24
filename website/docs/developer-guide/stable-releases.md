@@ -13,11 +13,16 @@ files on `main`.
 
 1. Refresh `origin/main` and the remote attempt and marker refs (`rc.*` and
    `abandoned-rc.*`). Derive the next SemVer from the published release family
-   seeded at `0.21.4` alone. Attempts do not move the version line.
+   seeded at `0.21.4` alone: the newer of the protected R2 stable head and the
+   newest published non-prerelease GitHub release with a `vX.Y.Z` tag. A
+   release that skipped bundles moves only the second. Attempts do not move the
+   version line. A cut whose next version already has a final `vX.Y.Z` tag is
+   refused until that publication finishes.
 2. Push an annotated `rc.<N>-vX.Y.Z` attempt ref atomically, create one
    non-prerelease GitHub draft on it, and dispatch `Stable Release` on that exact
    ref. The attempt number comes from the existing attempt refs of that version.
-   The claim message binds its commit, attempt number, autopublish policy, and
+   The claim message binds its commit, attempt number, autopublish policy,
+   `skipBundles` and `skipTests` flags, and
    one monotonically allocated epoch. That epoch is the release date and native
    packaging clock for every matrix leg and retry. One outstanding attempt, of
    any version, blocks a new `release`.
@@ -31,7 +36,8 @@ files on `main`.
    publication.
 6. Create the annotated final `vMAJOR.MINOR.PATCH` receipt at publish, not at
    green. It binds the winning attempt's ref, object, commit, archive prefix,
-   candidate-manifest SHA256, Docker manifest digest, and autopublish policy.
+   candidate-manifest SHA256 (`null` when the claim skipped bundles), Docker
+   manifest digest, and autopublish policy.
 7. The stable publication controller resolves releases oldest first. It creates
    `vX.Y.Z`, retargets the still-draft release onto it, strips the warning
    blocks, makes the release public as the last call, then verifies and promotes
@@ -89,6 +95,59 @@ Add `--autopublish` to publish immediately when the claim becomes the oldest
 green release. Without it, the release stays a draft until an explicit publish
 or a later green claim forces ordered resolution.
 
+### Skip bundles or tests
+
+Two `release` flags remove parts of the pipeline. They can be used together,
+and they combine with `--autopublish`.
+
+```sh
+# Tag, GitHub release and Docker image only
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --skip-bundles --remote origin
+# Emergency release: build and publish everything, run no tests
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --skip-tests --remote origin
+```
+
+| | `--skip-bundles` | `--skip-tests` |
+|---|---|---|
+| Source CI (`ci.yaml`), Nix, Termux, Windows live, install/update E2E, bootstrap identity | run | skipped |
+| Docker image | built, tested, published | built and published, `tests/docker` skipped |
+| Native PM bundle check | skipped | skipped |
+| Desktop and Termux candidates | skipped | built, signed and staged, with no native smokes or in-build test suites |
+| Signed-package upgrade acceptance (`transitions-*`, `*-packaged`) | skipped | skipped |
+| Publication | final tag, GitHub release, Docker `stable`/`latest` aliases | everything, as a normal release |
+
+The flags are written into the claim message, never passed as workflow
+inputs. `admit` reads them from the claim and emits `skip-bundles` and
+`skip-tests`. Every job condition and every gate reads those outputs. A
+recovery rerun cannot change them. To change a flag, `abandon` the attempt and
+cut again.
+
+The gates stay strict. `scripts.releases.stable gate` reads the flags and
+requires each job the flags remove to report `skipped`, and every other gated
+job to report `success`. A job that ran although a flag removes it also
+blocks the release. `SKIPPED_BY` in `scripts/releases/stable.py` is the one
+table of which flag removes which job.
+
+**`--skip-bundles`.** The draft, Docker image, final tag and GitHub release are
+the whole release. No candidate manifest exists, so the final tag records
+`candidateManifestSha256: null`. Publication moves only the Docker aliases. The
+protected R2 stable head, App Installer and macOS feeds, APT channel,
+downloads page, `releases/stable/release-candidates.json`, signed-package
+baseline, and Store submission all stay on the previous bundle release. Source
+checkouts on the official repository follow
+`releases/stable/release-candidates.json`, so they also stay on the previous
+bundle release. Such a release is complete when the Docker `stable` alias
+carries the digest its final tag binds. The sequencer uses that alias, next to
+the R2 head, to decide which releases still need their publication pass.
+
+**`--skip-tests`.** Every artifact is built, signed, staged and published the
+same way as a normal release. The candidate manifest records each native smoke
+as `skipped`, never as passed. The next release uses that manifest as its
+upgrade baseline like any other. Every reader that knows the claim (`complete`
+and the protected R2 advance) refuses a manifest whose smoke results disagree
+with the claim's `skipTests` flag. Use it only for an emergency fix, and cut a
+normal release after it.
+
 The claim push is the atomic version lock. Two callers may derive the same next
 version, but only one push wins; the loser reports the winning tagger, time, and
 commit. A rejected or abandoned claim remains spent. To publish or abandon:
@@ -106,7 +165,8 @@ marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
 
 Do not manually dispatch `Stable Release` from a final tag. Recovery keeps the
-original claim ref, object SHA, commit, draft database ID, and autopublish policy.
+original claim ref, object SHA, commit, draft database ID, autopublish policy,
+and skip flags.
 
 ## Failure and recovery
 
@@ -331,8 +391,9 @@ local helper suite. Never store the bootstrap output as a repo channel list.
 
 ## Signed-package baseline
 
-The last successful stable release records
+The last successful stable release that shipped bundles records
 `releases/stable/release-candidates.json` on the configured R2 public origin.
+A release that skipped bundles does not replace it.
 It identifies actual Windows universal MSIX bundles, macOS ZIPs and package
 provenance. The next run combines those records with its candidate manifest
 and uses the existing native bundled-update drivers.
@@ -357,6 +418,8 @@ See [the bundled update contract](https://github.com/NousResearch/hermes-agent/b
   because it is flaky. It is reported as deferred, not passed. Stabilize it
   and prove repeatable CI runs before adding it to this gate.
 - Install/update E2E and native signed-package acceptance are **not** deferred.
+  Only a claim cut with `--skip-tests` removes them, and the gate then requires
+  them to be skipped.
 - PR-only history, label and diff review checks do not apply to a stable tag.
   All applicable source CI jobs still run, regardless of changed paths.
 - OSV vulnerability findings retain their existing advisory policy. Required
