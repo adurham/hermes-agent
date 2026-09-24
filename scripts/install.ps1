@@ -49,6 +49,9 @@ $script:RunAsFile = [bool]{}.File
 # $PSBoundParameters inside a FUNCTION refers to the function's own binding,
 # so the script's binding is captured here, once, at script scope.
 $script:BoundParams = $PSBoundParameters
+# Under iex, script scope is the caller's session and outlives a run; start
+# each run without the previous run's answer (see Set-LauncherUserPath).
+$script:BinDirOnCallerPath = $null
 $RepoUrl = if ($env:HERMES_REPO_URL) { $env:HERMES_REPO_URL } else { "https://github.com/NousResearch/hermes-agent.git" }
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
@@ -971,6 +974,25 @@ function Set-LauncherUserPath([string]$binDir) {
         [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
         Write-Ok "added $binDir to your user PATH (new shells pick it up)"
     }
+    # The registry write only reaches shells started later. $env:Path is
+    # process-wide, so prepending it here makes `hermes` resolve in the
+    # caller's own window whenever this code runs in the caller's process
+    # (`irm | iex`, `& .\install.ps1`); a -File child just discards it.
+    # Recorded before the first prepend only (the -IncludeDesktop ladder
+    # publishes twice): it is what the caller's shell inherited.
+    $sessionEntries = @($env:Path -split ';' | ForEach-Object { $_.TrimEnd('\') })
+    $onPath = $sessionEntries -contains $binDir.TrimEnd('\')
+    if ($null -eq $script:BinDirOnCallerPath) { $script:BinDirOnCallerPath = $onPath }
+    if (-not $onPath) { $env:Path = "$binDir;$env:Path" }
+}
+
+function Write-PathReloadHint {
+    # A script file may be a separate powershell.exe (-File), whose $env:Path
+    # dies with it; the parent keeps the PATH it started with until reloaded.
+    # iex'd text always runs in the caller's process, where the prepend in
+    # Set-LauncherUserPath already made `hermes` resolvable.
+    if (-not $script:RunAsFile -or $script:BinDirOnCallerPath -ne $false) { return }
+    Log 'Restart your terminal to use hermes, or run: $env:Path = [Environment]::GetEnvironmentVariable(''Path'',''User'') + '';'' + [Environment]::GetEnvironmentVariable(''Path'',''Machine'')'
 }
 
 function Stage-Config {
@@ -1231,6 +1253,7 @@ try {
     foreach ($s in $Stages) {
         Invoke-StageByName $s.name
     }
+    Write-PathReloadHint
 } catch {
     Write-Err "$_"
     if ($script:RunAsFile) { exit 1 }

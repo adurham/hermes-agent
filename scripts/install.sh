@@ -721,6 +721,23 @@ stage_complete() {
     log_success "Hermes Agent install complete. Run: hermes"
 }
 
+print_path_reload_hint() {
+    # The rc files only reach shells started later, and this installer is
+    # always a child (`curl | bash`, `bash install.sh`) that cannot change its
+    # parent's PATH. The inherited PATH is the parent's, so it says whether
+    # the user can run `hermes` right away.
+    case ":$PATH:" in *":$HOME/.local/bin:"*|*":$HOME/.local/bin/:"*) return 0 ;; esac
+    local rc
+    local login_shell="${SHELL:-}"
+    case "${login_shell##*/}" in
+        zsh) rc="source ~/.zshrc" ;;
+        fish) rc="source ~/.config/fish/config.fish" ;;
+        bash|"") rc="source ~/.bashrc" ;;
+        *) rc=". ~/.profile" ;;
+    esac
+    log "Reload your shell to use hermes: open a new terminal, or run: $rc"
+}
+
 run_stage() (
     # Keep failure handling out of conditional calls, which disable errexit.
     set -e
@@ -777,4 +794,5 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
         rc=$?
         [ "$rc" -eq 0 ] || exit "$rc"
     done
+    print_path_reload_hint
 fi
