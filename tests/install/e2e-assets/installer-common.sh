@@ -69,12 +69,15 @@ resolve_update_ref() {
 
 run_source_installer() {
   local repo="$1" work="$2" logs="$3" ref="$4" label="$5" desktop="${6:-}"
-  local script="$work/install-$label.sh" text rc=0
+  local script="$work/install-$label.sh" text help_text rc=0
   # Buffer before grep: git show | grep -q can lose to SIGPIPE under pipefail.
   text="$(git -C "$repo" show "$ref:scripts/install.sh")" || return
   git -C "$repo" show "$ref:scripts/install.sh" > "$script" || return
   local flags=(--skip-setup)
-  if grep -qF -- --skip-browser <<< "$text"; then flags+=(--skip-browser); fi
+  # Rejection messages also mention --skip-browser. Only pass it when this
+  # version's public help advertises the flag as supported.
+  help_text="$(bash "$script" --help < /dev/null 2>/dev/null)" || help_text=""
+  if grep -qF -- --skip-browser <<< "$help_text"; then flags+=(--skip-browser); fi
   if [ "$desktop" = desktop ]; then
     grep -qF -- --include-desktop <<< "$text" \
       || { fail "ref $ref does not support --include-desktop; this leg cannot mean what it claims"; return 1; }
