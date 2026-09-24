@@ -24,6 +24,10 @@ concurrency:
 jobs:
   core:
     name: Desktop core E2E (Linux)
+    # ubuntu-latest-32-core is not provisioned on forks — skip so a
+    # workflow_call from another repo's fork doesn't queue forever and hold
+    # the calling run (ci.yaml's all-checks-pass lists this lane) open.
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
     steps:
