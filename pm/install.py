@@ -739,7 +739,7 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         receipt.finalize(outcome, 0 if outcome == "ok" else 1, token=token)
 
 
-def drift() -> dict[str, str]:
+def drift(*, include_venv: bool = True) -> dict[str, str]:
     """Cheap stamp comparisons of the installed state
     against the lockfile. Maps package names to reasons; empty means healthy. Never
     installs, never touches the network. An install pm has never touched
@@ -769,7 +769,7 @@ def drift() -> dict[str, str]:
         venv = get_package("venv")
     except KeyError:
         venv = None
-    if venv is not None and (paths.runtime_facts_path().is_file() or facts.get("venv") is not None):
+    if include_venv and venv is not None and (paths.runtime_facts_path().is_file() or facts.get("venv") is not None):
         try:
             if not venv_is_current():
                 problems["venv"] = "out of sync with uv.lock"
@@ -778,9 +778,9 @@ def drift() -> dict[str, str]:
     return problems
 
 
-def check() -> list[str]:
+def check(*, include_venv: bool = True) -> list[str]:
     """Human-readable startup diagnostics. Use drift() for package identities."""
-    return [f"{name}: {reason}" for name, reason in drift().items()]
+    return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
 def _store_path_dirs() -> list[str]:
@@ -835,9 +835,9 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
     """
     import os
 
-    problems = check()
-    if allow_incomplete:
-        problems = [problem for problem in problems if not problem.startswith("venv:")]
+    # The venv verdict is discarded here, and computing it imports application
+    # config readers (ruamel) that the bare update interpreter does not carry.
+    problems = check(include_venv=not allow_incomplete)
     if problems:
         return problems
     dirs = _store_path_dirs()
