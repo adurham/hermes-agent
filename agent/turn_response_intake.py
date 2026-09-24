@@ -191,4 +191,65 @@ def normalize_model_response(
     if hasattr(agent, "_codex_incomplete_retries"):
         agent._codex_incomplete_retries = 0
         agent._codex_reasoning_only_streak = 0
+
+    # ── FORK: Bare-XML tool-call recovery (client-side safety net) ─────────
+    # Restored from the pre-decomposition ``run_conversation`` post-response
+    # block (dropped by the v2026.9.14 merge ``f6edb27b86``). It sits here,
+    # immediately before the loop's ``run_tool_round if
+    # assistant_message.tool_calls else finish_text_response`` dispatch — the
+    # modern successor of the original ``if assistant_message.tool_calls:``
+    # check — because a recovered call must turn THIS response into a tool
+    # turn (mutating the message later, inside ``finish_text_response``, could
+    # no longer change the dispatch).
+    #
+    # If the model leaked a tool call as bare <invoke>/<parameter> XML in
+    # content but produced NO structured tool_calls, recover it so the tool
+    # actually runs instead of the XML painting as a final answer (and the
+    # action silently dropping). Backend parsers (e.g. exo's DSv4 recovery)
+    # are the primary fix site; this catches any leak that still slips
+    # through. Only fires when the model returned no structured calls — never
+    # overrides a real tool_calls payload.
+    if not assistant_message.tool_calls:
+        _leaked_content = getattr(assistant_message, "content", None)
+        if isinstance(_leaked_content, str):
+            from agent.conversation_loop import (
+                _recover_bare_tool_calls_from_content, _strip_orphan_toolcall_tail,
+            )
+
+            # Orphan TAIL first: closers with the opener lost upstream can't
+            # be recovered as a call (the tool name is gone), but the
+            # surviving body is the answer — strip the raw tag fragments so
+            # they never paint into the final response.
+            _stripped_content = _strip_orphan_toolcall_tail(_leaked_content)
+            if _stripped_content != _leaked_content:
+                agent._vprint(
+                    f"{agent.log_prefix}🔧 Stripped orphan tool-call "
+                    f"tail (</parameter>/</invoke> closers with no "
+                    f"opener) from final content"
+                )
+                logger.info(
+                    "Stripped orphan tool-call tail from final content "
+                    "(tail was: %r)",
+                    _leaked_content[len(_stripped_content or ""):][:160],
+                )
+                assistant_message.content = _stripped_content
+                _leaked_content = _stripped_content
+            _recovered_calls = _recover_bare_tool_calls_from_content(_leaked_content)
+            if _recovered_calls:
+                agent._vprint(
+                    f"{agent.log_prefix}🔧 Recovered {len(_recovered_calls)} "
+                    f"leaked tool call(s) from content "
+                    f"({', '.join(c.function.name for c in _recovered_calls)}) "
+                    f"— executing instead of leaking as text"
+                )
+                logger.info(
+                    "Recovered %d bare-XML tool call(s) from leaked content: %s",
+                    len(_recovered_calls),
+                    [c.function.name for c in _recovered_calls],
+                )
+                assistant_message.tool_calls = _recovered_calls
+                # Drop the leaked XML from the stored content so the raw tags
+                # never persist into conversation history (which would
+                # re-prime the model to leak again next turn).
+                assistant_message.content = None
     return _verdict("fallthrough")

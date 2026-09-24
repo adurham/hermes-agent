@@ -74,7 +74,7 @@ registry.register(
     toolset="desktop_ui",
     schema=PREVIEW_SCHEMA,
     handler=_handle_preview,
-    emoji="🖼️",
+    emoji="🖼",
 )
 
 

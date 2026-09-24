@@ -254,14 +254,33 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
-    # Rolling history for status-bar averages (last 10).
+    # Rolling history for status-bar averages (last 10). FORK (restored — the
+    # call site was dropped by the v2026.9.14 merge f6edb27b86): delegates to the
+    # shared writer in ``agent/conversation_loop`` so all FOUR deques stay in the
+    # fork's contract — ``_api_latency_history`` holds DECODE-ONLY wall time
+    # (full duration minus TTFT, floored at 0) so the velocity readout is true
+    # decode throughput, ``_api_full_latency_history`` keeps the unmodified
+    # full-wall duration for the (still full-wall) avg_latency readout,
+    # ``_api_output_history`` is unchanged, and ``_api_ttft_history`` is
+    # appended ONLY when a first stream chunk/event actually fired (so a
+    # non-streaming call never pollutes it).
+    #
+    # TTFT source at HEAD: ``agent._last_api_first_chunk_at`` is the fork-era
+    # ``_ttft_box["value"]`` successor — per-ATTEMPT state, reset to None by
+    # ``build_api_request`` before every attempt and stamped by the streaming
+    # path (``_StreamingCall.run`` from the stream diag) or the Codex event loop
+    # at the first chunk/event, so a stale value can never leak across calls.
+    # The attempt start is derived exactly as ``_record_api_call_row`` derives
+    # ``started_at`` (``ended_at - api_duration``), confining the drift to the
+    # few ms of usage folding above.
+    ttft_value = None
+    _first_chunk_at = getattr(agent, "_last_api_first_chunk_at", None)
+    if isinstance(_first_chunk_at, (int, float)) and not isinstance(_first_chunk_at, bool):
+        ttft_value = max(float(_first_chunk_at) - (time.time() - float(api_duration or 0.0)), 0.0)
     with suppress(Exception):
-        hist = getattr(agent, "_api_latency_history", None)
-        if hist is not None:
-            hist.append(float(api_duration))
-        ohist = getattr(agent, "_api_output_history", None)
-        if ohist is not None:
-            ohist.append(int(canonical_usage.output_tokens or 0))
+        _loop_mod()._append_status_history(
+            agent, api_duration, ttft_value, canonical_usage.output_tokens,
+        )
 
     _cache_pct = ""
     if canonical_usage.cache_read_tokens and prompt_tokens:

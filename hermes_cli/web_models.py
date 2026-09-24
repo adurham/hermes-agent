@@ -243,6 +243,19 @@ class TTSLeaseRequest(BaseModel):
     lease: str
     active: bool = True
 
+class PetDialogueRequest(BaseModel):
+    """POST /api/pet/dialogue: one announced pet beat for the desktop's LLM dialogue line."""
+    # What just happened / what's blocking — e.g. the last tool name + a
+    # short summary, or the approval/clarify prompt text. Free text, capped
+    # server-side by auxiliary.pet_dialogue.max_context_chars.
+    context: str = ""
+    # "completed" | "waiting" — which of the two announced beats this is for.
+    beat: str = "completed"
+    # Slug of the active pet (e.g. "hatsune-miku") so the prompt can ask for
+    # persona-appropriate phrasing without the desktop needing to know the
+    # persona details itself.
+    pet_slug: str = ""
+
 class OAuthSubmitBody(BaseModel):
     session_id: str
     code: str
