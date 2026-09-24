@@ -108,6 +108,12 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 # time while keeping a genuinely hung file bounded.
 _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 
+# Prepended to a file's captured output when its process tree was SIGKILL'd for blowing the
+# per-file cap (see `_run_one_file_once`). `_clean_pass_durations` uses it to tell a
+# timeout-kill apart from an ordinary assertion failure: only the former must be kept out of
+# the duration cache, or the timeout scaler compounds. Keep the two in sync.
+_TIMEOUT_KILL_MARKER = "process tree SIGKILL'd"
+
 # One-shot retry of failing test FILES. A file that exits non-zero is re-run
 # once in a fresh subprocess; if the re-run passes, the file counts as passed
 # but is loudly reported as FLAKY so it gets fixed rather than hidden.
@@ -379,18 +385,35 @@ def _clean_pass_durations(
     failures: List[Tuple[Path, str, Dict[str, int]]],
     flaky: List[Tuple[Path, str]],
 ) -> List[Tuple[Path, float]]:
-    """Keep only durations from files that passed on their first attempt.
+    """Keep durations from files whose run finished on its first attempt.
 
     ``file_times`` records every file's total subprocess wall, including a
     timed-out attempt (~the cap) and retry-summed walls for FLAKY files.
-    Feeding those into the cache would let the timeout scaler compound: a
+    Feeding THOSE into the cache would let the timeout scaler compound: a
     file that hung once is cached at ~300s, gets a 900s bound next run,
     hangs again and is cached at ~900s, and so on until the job timeout
     is the only bound left. A duration is a measurement of a healthy run
-    or it is not a measurement; failed and retried files keep their last
-    known-good entry instead.
+    or it is not a measurement.
+
+    A file that exited normally but failed its ASSERTIONS is a different
+    case, and excluding it is a trap: a large file with a handful of
+    long-standing failures can then never be recorded, so
+    ``_effective_file_timeout`` never sees it, and it is left on the flat
+    cap until it exceeds it — after which it is killed every run and
+    records nothing again. That is a permanent loop, hit live on the
+    homelab runner: ``tests/tui_gateway/test_tui_gateway_server.py`` runs
+    302s against a 300s cap and has 6 standing failures, so it was killed
+    before collection ("no tests ran") with no cache entry in sight.
+
+    So only TIMEOUT-KILLED attempts and retried/FLAKY files are excluded; assertion failures
+    keep their wall time, which is what the scaler needs. A timeout kill is recognised by the
+    marker ``_run_one_file_once`` prepends to the captured output (rc 124 is the runner's own
+    convention but is not carried on the failure record).
     """
-    excluded = {f for f, _o, _s in failures} | {f for f, _o in flaky}
+    excluded = {f for f, _o in flaky}
+    for f, output, _summary in failures:
+        if _TIMEOUT_KILL_MARKER in (output or ""):
+            excluded.add(f)
     return [(f, t) for f, t in file_times if f not in excluded]
 
 
@@ -539,7 +562,7 @@ def _run_one_file_once(
         rc = 124  # de facto convention for "killed by timeout".
         output = (
             f"({file_timeout:.0f}s exceeded; "
-            f"process tree SIGKILL'd)\n{output}"
+            f"{_TIMEOUT_KILL_MARKER})\n{output}"
         )
     except BaseException:
         # KeyboardInterrupt / runner crash — make sure no zombie
