@@ -94,7 +94,11 @@ export function LocalModelsSettings(): ReactElement {
   return <ScopedLocalModelsSettings key={JSON.stringify(localModelsKey(owner))} owner={owner} />
 }
 
-function ScopedLocalModelsSettings({ owner }: { owner: LocalModelsOwner }): ReactElement {
+interface ScopedLocalModelsSettingsProps {
+  owner: LocalModelsOwner
+}
+
+function ScopedLocalModelsSettings({ owner }: ScopedLocalModelsSettingsProps): ReactElement {
   const { t } = useI18n()
   const copy = t.settings.localModels
   const client: QueryClient = useQueryClient()
@@ -878,7 +882,12 @@ function browsedModelId(group: HFFileGroup): string {
   return first.replace(/-\d{5}-of-\d{5}\.gguf$/i, '').replace(/\.gguf$/i, '')
 }
 
-function BrowseSection({ owner, onChanged }: { owner: LocalModelsOwner; onChanged: () => void }): ReactElement {
+interface BrowseSectionProps {
+  owner: LocalModelsOwner
+  onChanged: () => void
+}
+
+function BrowseSection({ owner, onChanged }: BrowseSectionProps): ReactElement {
   const client: QueryClient = useQueryClient()
   const { t } = useI18n()
   const copy = t.settings.localModels

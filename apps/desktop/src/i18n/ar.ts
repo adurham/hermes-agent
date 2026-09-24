@@ -2494,6 +2494,8 @@ export const ar = defineLocale({
     }
   },
   updates: {
+    discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',
+    discontinuedBody: 'لم يعد إصدار Hermes هذا مدعومًا وقد يتوقف عن العمل — ألغِ تثبيته. ستبقى بياناتك على القرص.',
     channels: { stable: 'مستقر', canary: 'تجريبي' },
     bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
     bundleSwapPendingDesc:

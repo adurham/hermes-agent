@@ -1738,6 +1738,7 @@ export const en: Translations = {
       }
     },
     localModels: {
+      connectionChanged: 'Local models connection changed',
       title: 'Local Models',
       runtimeTitle: 'Local runtime',
       runtimeReady: backend => `Ready · ${backend}`,

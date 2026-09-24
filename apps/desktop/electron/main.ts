@@ -2360,10 +2360,10 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // Gate deps shared by the primary-window boot path and the pool-backend
 // spawn path. Consulting the on-disk marker, the in-process updateInFlight
 // flag, AND the successful detached hand-off state is load-bearing (#73822):
-// applyUpdates kills its own backend BEFORE the Windows venv-blocker scan but
-// only writes the marker AFTER it, so a marker-only gate lets the renderer's
-// ~1s reconnect respawn a backend inside the update's own critical section —
-// which the scan then reports as a blocker, aborting every update attempt.
+// applyUpdates stops its own backend before committing the update hand-off.
+// A marker-only gate lets the renderer's reconnect respawn a backend during
+// that critical section, racing the update and leaving a live process on the
+// runtime being replaced.
 // The hand-off state closes the later Windows `cmd start` wrapper gap: the
 // wrapper exits 0 before the real PowerShell script claims the marker, and
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
@@ -11577,8 +11577,8 @@ async function spawnPoolBackend(
 
   // Same update mutual exclusion as the primary window's waitForLocalStart
   // (#73822): pool backends spawn from the same venv, so an ungated respawn
-  // during applyUpdates' critical section re-locks the venv and trips the
-  // venv-blocker preflight. No boot-progress UI here — pool backends boot
+  // during applyUpdates' critical section starts a backend on the runtime
+  // being replaced. No boot-progress UI here — pool backends boot
   // silently for background profiles — so we only log while parked.
   {
     let poolAnnounced = false

@@ -1688,6 +1688,7 @@ export const zh = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: '本地模型连接已更改',
       title: '本地模型',
       runtimeTitle: '本地运行时',
       runtimeReady: backend => `就绪 · ${backend}`,
@@ -3822,6 +3823,8 @@ export const zh = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: '此版本的 Hermes 已停止支持',
+    discontinuedBody: '此版本的 Hermes 已停止支持，可能无法正常运行——请卸载。您的数据仍保留在磁盘上。',
     channels: { stable: '稳定版', canary: '预览版' },
     bundleSwapPending: '重启以完成更新',
     bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',

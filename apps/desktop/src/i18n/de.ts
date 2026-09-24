@@ -1,9 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
-export const de = defineLocale({
+export const deOverrides = {
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',
@@ -2115,6 +2115,7 @@ export const de = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: 'Verbindung für lokale Modelle geändert',
       title: 'Lokale Modelle',
       runtimeTitle: 'Lokale Laufzeit',
       runtimeReady: backend => `Bereit · ${backend}`,
@@ -4480,6 +4481,61 @@ export const de = defineLocale({
     }
   },
   updates: {
+    discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',
+    discontinuedBody: 'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
+    channels: { stable: 'Stabil', canary: 'Canary' },
+    appName: 'Hermes',
+    availableBodyRelease: tag => `Version ${tag} ist bereit zur Installation.`,
+    releaseAvailable: tag => `Version ${tag} ist verfügbar.`,
+    checkingShort: 'Wird geprüft…',
+    availableBodyAppInstaller: 'Eine neue Hermes-Version ist bereit. Hermes wird geschlossen, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    applyingBodyAppInstaller: 'Hermes wird geschlossen und Windows schließt das Update ab. Danach startet Hermes automatisch neu.',
+    applyingCloseAppInstaller: 'Dieses Fenster schließt sich, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    checkUnknownTitleAppInstaller: 'Update-Check fehlgeschlagen',
+    checkUnknownBodyAppInstaller: 'Windows konnte gerade nicht nach Updates suchen. Updates werden auch beim Neustart von Hermes automatisch installiert.',
+    versionDetailsTitle: 'Versionsdetails',
+    versionDetailsBody: 'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
+    versionDetailsVersion: 'Version',
+    versionDetailsCommit: 'Commit',
+    versionDetailsBuildOrigin: 'Build-Ursprung',
+    versionDetailsDistribution: 'Distribution',
+    versionDetailsDistributionDesktop: 'Desktop-App',
+    versionDetailsDistributionDesktopMsix: 'Desktop-App (MSIX)',
+    versionDetailsDistributionDesktopInstaller: 'Desktop-App (Installer)',
+    versionDetailsDistributionSourceInstaller: 'Quellcode (Installationsskript)',
+    versionDetailsDistributionSource: 'Quellcode',
+    versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsRuntime: 'Laufzeit',
+    versionDetailsRuntimeEmbedded: 'Eingebettete Laufzeit',
+    versionDetailsRuntimeExternal: 'Extern (nutzt die Laufzeit des Computers)',
+    versionDetailsInstallId: 'Installations-ID',
+    versionDetailsUncommittedChanges: 'nicht committete Änderungen',
+    version: value => `Version ${value}`,
+    versionUnavailable: 'Version nicht verfügbar',
+    bundleOutOfSync: 'App-Build ist veraltet',
+    bundleOutOfSyncDesc:
+        'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
+    bundleOutOfSyncAction: 'Installer herunterladen',
+    bundleSwapPending: 'Neustart zum Abschließen des Updates',
+    bundleSwapPendingDesc:
+        'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
+    bundleSwapPendingAction: 'Hermes neu starten',
+    checkNow: 'Jetzt prüfen',
+    seeWhatsNew: 'Neuigkeiten ansehen',
+    releaseNotes: 'Versionshinweise',
+    onLatest: 'Sie verwenden die neueste Version.',
+    installing: 'Ein Update wird derzeit installiert.',
+    cantReach: 'Der Update-Server konnte nicht erreicht werden.',
+    tapCheck: 'Tippen Sie auf „Jetzt prüfen“, um nach Updates zu suchen.',
+    updateReady: count => `Ein neues Update ist bereit (${count} Änderung${count === 1 ? '' : 'en'} enthalten).`,
+    updateReadyUnknown: 'Ein neues Update ist bereit.',
+    lastChecked: age => `Zuletzt geprüft ${age}`,
+    justNowSuffix: ' · gerade eben',
+    never: 'nie',
+    justNow: 'gerade eben',
+    minAgo: count => `${count} Min. zuvor`,
+    hoursAgo: count => `${count} Std. zuvor`,
+    daysAgo: count => `${count} Tage zuvor`,
     stages: {
       idle: 'Wird vorbereitet…',
       prepare: 'Wird vorbereitet…',
@@ -5978,4 +6034,6 @@ export const de = defineLocale({
       toggle: open => `${open ? 'Anzeigen' : 'Ausblenden'}: Sidebar`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const de = defineLocale(deOverrides)

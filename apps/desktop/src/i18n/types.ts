@@ -1469,6 +1469,7 @@ export interface Translations {
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
+      connectionChanged: string
       title: string
       runtimeTitle: string
       runtimeReady: (backend: string) => string
