@@ -506,17 +506,23 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
     manifest_bytes = b'{"schema":2}\n'
     manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
     docker_digest = "sha256:" + "d" * 64
+    docker_desktop_digest = "sha256:" + "e" * 64
     release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": True, "prerelease": False,
                "body": _fenced_body(), "published_at": None}
     patches = []
     requested_keys = []
+    inspected_images = []
 
     def run(argv):
         if argv[0] == "git":
             return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
         if argv[:3] == ["docker", "buildx", "imagetools"]:
-            assert argv[4].endswith("nousresearch/hermes-agent:rc.2-v1.2.3")
-            return json.dumps(docker_digest)
+            inspected_images.append(argv[4])
+            assert argv[4] in {
+                "nousresearch/hermes-agent:rc.2-v1.2.3",
+                "nousresearch/hermes-agent:rc.2-v1.2.3-desktop",
+            }
+            return json.dumps(docker_desktop_digest if argv[4].endswith("-desktop") else docker_digest)
         if argv[:3] == ["gh", "api", "--method"]:
             fields = {}
             for _flag, value in zip(argv[5::2], argv[6::2]):
@@ -551,6 +557,10 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
     assert receipt["archive"] == "releases/tag/rc.2-v1.2.3/"
     assert receipt["candidateManifestSha256"] == manifest_digest
     assert receipt["dockerManifestDigest"] == docker_digest
+    assert inspected_images == [
+        "nousresearch/hermes-agent:rc.2-v1.2.3",
+        "nousresearch/hermes-agent:rc.2-v1.2.3-desktop",
+    ]
     assert receipt["releaseId"] == 42
     remote = subprocess.check_output(
         ["git", "ls-remote", "origin", "refs/tags/v1.2.3", "refs/tags/v1.2.3^{}"],
