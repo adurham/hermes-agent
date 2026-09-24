@@ -99,8 +99,11 @@ def blocked_git_mutation(cmd, kwargs, protected_roots):
         return None
     if verb == "branch" and (not after or after[0] in {"--list", "--show-current", "-a", "-r", "-v", "-vv"}):
         return None
-    if verb == "tag" and (not after or after[0] in {"--list", "-l"}):
-        return None
+    if verb == "tag" and (not after or any(arg in {"--list", "-l"} for arg in after)):
+        # --merged/--contains can precede --list. Do not let a combined
+        # listing and write option bypass the checkout guard.
+        if not any(arg in {"-d", "--delete", "-f", "--force", "-a", "--annotate", "-s", "--sign", "-u", "--local-user"} for arg in after):
+            return None
     for target in targets:
         try:
             resolved = target.resolve()

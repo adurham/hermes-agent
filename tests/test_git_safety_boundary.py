@@ -48,9 +48,11 @@ def test_checkout_guard_covers_write_verbs_without_blocking_queries(tmp_path):
         ["config", "url.https://example.invalid/.insteadOf", "git@example.invalid:"],
         ["update-ref", "refs/heads/main", "abc"], ["branch", "-f", "main"],
         ["worktree", "add", "../other"], ["tag", "v1"],
+        ["tag", "--delete", "--list", "v1"], ["tag", "--list", "--force", "v1"],
     ):
         assert blocked_git_mutation(["git", *argv], options, (root,)) == argv[0]
         assert blocked_git_mutation(["git", *argv], {"cwd": tmp_path}, (root,)) is None
     for argv in (["status"], ["config", "--get", "url.x.insteadOf"],
-                 ["worktree", "list"], ["branch", "--show-current"], ["tag", "-l"]):
+                 ["worktree", "list"], ["branch", "--show-current"], ["tag", "-l"],
+                 ["tag", "--merged", "HEAD", "--list", "v[0-9]*"]):
         assert blocked_git_mutation(["git", *argv], options, (root,)) is None

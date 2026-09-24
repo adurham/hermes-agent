@@ -215,8 +215,7 @@ def test_shutdown_mid_tool_kills_the_command_and_keeps_its_result(monkeypatch):
     monkeypatch.setattr(server, "_flush_sessions_before_exit", lambda budget_s=None: 0)
     monkeypatch.setattr(server, "_close_session_by_id", lambda sid, **kw: at_teardown.append(list(messages)))
     # The join returns as soon as the turn ends; 0.5s is too tight for the kill + bookkeeping under -n 40.
-    from tui_gateway import session_reaper
-    monkeypatch.setattr(session_reaper, "_EXIT_TURN_SETTLE_S", 10.0)
+    monkeypatch.setattr(server, "_EXIT_TURN_SETTLE_S", 10.0)
     session = {"agent": _Agent(), "session_key": "sess-mid-tool", "running": True,
                "_run_thread": run_thread, "history_lock": threading.RLock()}
     with server._sessions_lock:
