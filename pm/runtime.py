@@ -135,7 +135,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
         generation = Path("generations") / uuid.uuid4().hex
         environment = root / generation
         try:
-            print("Preparing the isolated PM runtime…", file=sys.stderr, flush=True)
+            print("Preparing the isolated Hermes runtime…", file=sys.stderr, flush=True)
             executable = stage_runtime(uv, python, environment, project=project, offline=offline, cache=cache)
             (environment / ".lease-managed").touch()
             _write(environment / "pm-runtime.json", {"inputs": identity})

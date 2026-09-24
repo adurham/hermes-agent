@@ -167,7 +167,7 @@ assert importlib.util.find_spec('idna') is None
         assert not (hermes_home / "installs").exists()
         result = _bare(bootstrap_python, repo, bootstrap + cli.format(action="install"), env=env)
         assert "✓ venv" in result.stdout
-        assert "Preparing the isolated PM runtime" in result.stderr
+        assert "Preparing the isolated Hermes runtime" in result.stderr
         if bootstrap_name:
             # The installed launcher still starts on the old interpreter after
             # a source swap. Completion must re-exec before importing the app.
