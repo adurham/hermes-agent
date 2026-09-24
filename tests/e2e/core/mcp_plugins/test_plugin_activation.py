@@ -32,10 +32,11 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pm_dependencies import select_test_dependencies
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    REPO_ROOT,
     E2EHome,
-    _select_test_dependencies,
     apply_known,
     build_home as _build_home,
     calls_received,
@@ -79,7 +80,7 @@ def _known(request: pytest.FixtureRequest) -> None:
 
 def build_home(root: Path, base_url: str, *, extra: dict[str, Any] | None = None) -> E2EHome:
     eh = _build_home(root, base_url, extra=extra)
-    _select_test_dependencies(eh)
+    select_test_dependencies(eh.hermes_home, REPO_ROOT)
     eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
     return eh
 
