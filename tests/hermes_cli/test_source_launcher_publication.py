@@ -334,6 +334,60 @@ def test_windows_commands_survive_generation_collection(tmp_path, monkeypatch, s
 
 
 @pytest.mark.platforms("windows")
+@pytest.mark.parametrize("launcher_form", ["native", "cmd", "native-with-maker"])
+def test_running_source_launcher_can_republish_itself(tmp_path, monkeypatch, launcher_form):
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    selected = select_generation(repo, "selected", "ready")
+    if launcher_form == "native-with-maker":
+        import distlib
+
+        shutil.copytree(Path(distlib.__file__).parent, site_packages(selected) / "distlib")
+    entry = repo / "hermes_cli/main.py"
+    entry.write_text(
+        "from pathlib import Path\n"
+        "from hermes_cli._launchers import ensure_install_launchers, ENTRY_POINTS\n"
+        "def main():\n"
+        "    root = Path(__file__).resolve().parents[1]\n"
+        "    written = ensure_install_launchers(root, root / '.hermes/bin')\n"
+        "    print('published', len(written), len(ENTRY_POINTS), flush=True)\n"
+        "    return 0 if len(written) == len(ENTRY_POINTS) else 1\n",
+        encoding="utf-8",
+    )
+    out = repo / ".hermes/bin"
+    if launcher_form == "cmd":
+        monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    launchers = _launchers.ensure_install_launchers(repo, out)
+    assert len(launchers) == len(_launchers.ENTRY_POINTS)
+    command = next(Path(p) for p in launchers if Path(p).stem == "hermes")
+    assert command.suffix == (".cmd" if launcher_form == "cmd" else ".exe")
+    result = subprocess.run([str(command)], cwd=tmp_path, capture_output=True,
+                            text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "published 2 2" in result.stdout
+    assert _launchers.ensure_install_launchers(repo, out)
+    selected_python = _launchers.resolve_store_python(repo)
+    assert selected_python is not None and selected_python.samefile(interpreter)
+
+
+@pytest.mark.platforms("windows")
+def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypatch):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    local = repo / ".hermes/bin"
+    original = Path(_launchers.ensure_install_launchers(repo, local)[0])
+    assert original.suffix == ".exe"
+    new_python = home / "tools" / "repinned" / "python.exe"
+    new_python.parent.mkdir()
+    new_python.touch()
+    (home / "tools/facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "repinned"}}}), encoding="utf-8")
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    result = _launchers.stage_launcher("hermes", repo, local)
+    assert result == local / "hermes.cmd"
+    assert not original.exists()  # cmd.exe must not run the old exe first
+    assert result is not None and str(new_python) in result.read_text(encoding="utf-8-sig")
+
+
+@pytest.mark.platforms("windows")
 def test_windows_repair_upgrades_healthy_old_pm_external_launchers(tmp_path, monkeypatch):
     from hermes_cli._install_repair import ensure_windows_bin_launchers
 
