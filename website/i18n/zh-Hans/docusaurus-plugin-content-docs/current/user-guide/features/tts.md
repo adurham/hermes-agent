@@ -98,6 +98,8 @@ tts:
     # normalize_audio: true
 ```
 
+KittenTTS 无法安装到受管理的 Python 3.14 环境：其依赖 `misaki` 要求 Python `<3.13`。`kittentts` extra 在该环境中被禁用；选择此提供商但未安装时会报告不可用。在其依赖支持受管理解释器之前，请使用其他提供商。
+
 **速度控制**：全局 `tts.speed` 值默认应用于所有提供商。每个提供商可用自身的 `speed` 设置覆盖它（例如 `tts.openai.speed: 1.5`）。提供商级别的速度优先于全局值。默认值为 `1.0`（正常速度）。
 
 
