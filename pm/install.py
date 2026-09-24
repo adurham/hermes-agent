@@ -654,6 +654,9 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False, plu
                 if change is not None:
                     change.publish(paths.repo_root())
                 if not current:
+                    if result.get("environment") is not None:
+                        from pm.environments import flush_before_selecting
+                        flush_before_selecting()
                     facts.record_state("venv", stamp, enabled, **result)
                 if change is not None:
                     finish_publication(paths.repo_root())
