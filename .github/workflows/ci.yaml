@@ -351,6 +351,60 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
+  # ─────────────────────────────────────────────────────────────────────
+  # FORK-ONLY JS/TS checks. Same gating story as the Python lane: the
+  # upstream job needs ubuntu-latest-32-core, so on the fork JS checks ran
+  # nowhere and the desktop/TUI/web suites were only ever run by hand.
+  #
+  # run-workspace-checks.mjs is itself parallel-by-check and the payload is
+  # ~612s, so a standard ubuntu-latest runner is the right size — the 32-core
+  # runner upstream uses is about setup amortisation, not raw throughput.
+  # ─────────────────────────────────────────────────────────────────────
+  js-tests-fork:
+    name: JS & TS checks (fork)
+    needs: detect
+    if: github.repository == 'adurham/hermes-agent' && needs.detect.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+
+      - name: grab npm 12
+        run: |
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            tests-js/node_modules
+            web/node_modules
+          key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
+
+      - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          command: npm ci
+
+      - name: Run all workspace checks
+        run: node .github/scripts/run-workspace-checks.mjs
+
   installer-tests:
     name: Installer tests
     needs: detect
