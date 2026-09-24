@@ -93,7 +93,7 @@ def _s6_running() -> bool:
     service-manager runtime-registration path inert in production (PR #30136 review).
     """
     try:
-        comm = Path("/proc/1/comm").read_text(encoding="utf-8-sig").strip()
+        comm = Path("/proc/1/comm").read_text(encoding="utf-8").strip()
     except OSError:
         return False
     return comm == "s6-svscan" and Path("/run/s6/basedir").is_dir()
