@@ -166,6 +166,9 @@ def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch,
     import builtins
 
     monkeypatch.setattr(extras, "available", lambda _: False)
+    # The prompt lists missing modules; don't depend on whether the test
+    # environment happens to have fal_client installed.
+    monkeypatch.setattr(extras, "missing", lambda _: ["fal_client"])
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: True))
     prompts = []
