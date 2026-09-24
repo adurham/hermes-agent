@@ -186,3 +186,4 @@ b90b7ae7ed19223cd647ea175d4f4207d25e0f82	2026-09-24T23:48:13-05:00	fix(delegate)
 a30bd337e5fb3c411649088c954e37061297b85b	2026-09-24T23:48:13-05:00	fix(tui-gateway): report recently failed async delegations in subagent.list
 4153869e6ed28715a265d995fce9516cb85ac768	2026-09-25T00:10:54-05:00	fix(tui-gateway): tolerate stores without db_path in session.list subagent scope
 c488b42a82bcb9e8c920e5b7fc2df21c6b47516a	2026-09-25T01:21:15-05:00	fix(desktop): show recently failed delegations in the Agents panel and status bar
+9fb2dd4c3961005d99b34aae22343e73423ec5f0	2026-09-24T18:38:38-05:00	fix(acp): stamp ended_at on ACP sessions at adapter shutdown (#118216)
