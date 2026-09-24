@@ -443,8 +443,6 @@ function Get-Uv {
 # the same store slot (<store>\git-<version>-<target>\) pm uses. Returns the
 # git.exe path, or $null when no pinned artifact exists for this target.
 function Get-PinnedGit {
-    $existing = Get-Command git -ErrorAction SilentlyContinue
-    if ($existing) { return $existing.Source }  # dev shortcut; fetches nothing
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:GitPinFiles[$target]
     if (-not $pin) { return $null }
@@ -482,18 +480,14 @@ function Get-PinnedGit {
     return $gitExe
 }
 
-# Ensure a usable git for the rest of the ladder: pinned pm store slot
-# first, then PATH. Returns $true on success.
+# Each -Stage is a new PowerShell process. Restore the pinned pm store Git
+# PATH in every stage that invokes git; never inherit an unpinned system Git.
 function Ensure-Git {
     $g = Get-PinnedGit
     if (-not $g) { return $false }
-    if ($g -ne "git") {
-        # Store-staged git: expose cmd + usr\bin on this process's PATH so
-        # bare `git` works for the rest of the ladder (the same dirs pm's
-        # git package env() composes).
-        $gitEntry = Split-Path (Split-Path $g -Parent) -Parent
-        $env:Path = "$gitEntry\cmd;$gitEntry\usr\bin;$env:Path"
-    }
+    # The same dirs pm's git package env() composes.
+    $gitEntry = Split-Path (Split-Path $g -Parent) -Parent
+    $env:Path = "$gitEntry\cmd;$gitEntry\usr\bin;$env:Path"
     return $true
 }
 
@@ -552,12 +546,13 @@ $Stages = @(
 $Stages += @{ name = "complete"; title = "Finish install"; category = "runtime"; needs_user_input = $false }
 function Stage-Prerequisites {
     if (-not (Ensure-Git)) {
-        Fail "git is required. Install Git for Windows: https://git-scm.com/download/win"
+        Fail "no pinned Git artifact for this Windows architecture"
     }
     Log "prerequisites ok (git)"
 }
 
 function Stage-Repository {
+    if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the initial
     # commit yet", #40998). Move it aside -- never delete it, it may hold
@@ -886,7 +881,10 @@ function Confirm-DesktopArtifact {
 
 function Stage-Complete {
     $commit = $Commit
-    if (-not $commit) { $commit = Invoke-Native { git -C $InstallDir rev-parse HEAD 2>$null } }
+    if (-not $commit) {
+        if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
+        $commit = Invoke-Native { git -C $InstallDir rev-parse HEAD 2>$null }
+    }
     if ($commit) {
         $marker = [ordered]@{
             schemaVersion = 1
