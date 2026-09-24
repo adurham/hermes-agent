@@ -2,7 +2,7 @@ name: browserclaw
 repo: https://github.com/GoldenLoaf24h/browserclaw
 sha: 8b604c603e4889dde93bdb9c5d57541849d14d98
 subdir: "plugins/browserclaw"
-description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge. Disclosure — patches Hermes' tool-preview/progress rendering process-wide at load: rebinds the private TurnRunner._progress_build_message, BasePlatformAdapter.format_tool_event for every platform adapter, and every prepare_tool_preview reference found in sys.modules (guarded, fail-open)."
+description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge. Disclosure — patches Hermes' tool-preview/progress rendering process-wide at load: rebinds the private TurnRunner._progress_build_message, BasePlatformAdapter.format_tool_event for every platform adapter, and agent.display's get_tool_verb / build_tool_preview / get_tool_emoji / prepare_tool_preview on the module and on every reference found in sys.modules (guarded, fail-open)."
 maintainer: GoldenLoaf24h
 tier: community
 category: web
