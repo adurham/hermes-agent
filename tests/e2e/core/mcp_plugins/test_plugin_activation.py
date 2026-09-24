@@ -34,9 +34,10 @@ import pytest
 
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    E2EHome,
     _select_test_dependencies,
     apply_known,
-    build_home,
+    build_home as _build_home,
     calls_received,
     inbound,
     provider,
@@ -74,6 +75,13 @@ KNOWN: dict[str, str] = {
 @pytest.fixture(autouse=True)
 def _known(request: pytest.FixtureRequest) -> None:
     apply_known(request, KNOWN)
+
+
+def build_home(root: Path, base_url: str, *, extra: dict[str, Any] | None = None) -> E2EHome:
+    eh = _build_home(root, base_url, extra=extra)
+    _select_test_dependencies(eh)
+    eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+    return eh
 
 
 PLUGIN = "e2eplug"
@@ -116,6 +124,16 @@ def _toggle_on(host, key: str) -> list[dict[str, Any]]:
     result = host.rpc.call("plugins.manage", {"action": "toggle", "key": key, "enable": True}, timeout=180)
     assert result.get("ok") and not result.get("unchanged"), result
     return ((result.get("activation") or {}).get("live_now") or {}).get("mcp_servers") or []
+
+
+def test_plugin_sandbox_selects_real_pm_tools_offline(tmp_path: Path) -> None:
+    """The same isolated home used by activation can resolve PM's pinned toolchain without downloads."""
+    eh = build_home(tmp_path, "http://127.0.0.1:1")
+    child = subprocess.run([sys.executable, "-c",
+                            "from pm._uv import _toolchain; assert _toolchain(realize=False) is not None"],
+                           env=eh.env({"HERMES_DISABLE_LAZY_INSTALLS": "1"}), cwd=eh.project,
+                           capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
 
 
 # 1. live activation in an open chat ------------------------------------------------------------
@@ -251,8 +269,6 @@ def name_collision(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     root = tmp_path_factory.mktemp("name_collision")
     with provider(script((tool_name("srv", "ro_probe"), {"nonce": "dup"}))) as srv:
         eh = build_home(root, srv.base_url, extra={"plugins": {"enabled": ["foo"]}})
-        _select_test_dependencies(eh)
-        eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
         live = write_portable_plugin(eh, "foo", {"srv": portable_stdio(
             root / "live.jsonl", eh.tag, MCPE2E_CANARY="CANARY-LIVE")}, name="foo", version="2.0.0")
         backup = write_portable_plugin(eh, "foo.bak-x", {"srv": portable_stdio(
