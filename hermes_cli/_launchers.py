@@ -20,8 +20,7 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from hermes_constants import get_hermes_home
-from pm.environments import dependency_home_root, store_root
+from pm.environments import store_root
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -37,12 +36,14 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     python = python or resolve_store_python(root) or Path(sys.executable)
     entry = f"exec({code!r})" if code is not None else (
         f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)")
+    default_home = (f"{str(home)!r}" if home is not None else
+                    "str(__import__('hermes_constants').get_default_hermes_root())")
     bootstrap = (
         "import os, sys, runpy; "
-        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(home or get_hermes_home())!r}; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
         "os.environ.pop('VIRTUAL_ENV', None); "
         f"sys.path.insert(0, {str(root)!r}); "
+        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {default_home}; "
         "import hermes_bootstrap; "
         + entry
     )
@@ -214,7 +215,6 @@ def mint_launcher(
     code = f"import base64; exec(base64.b64decode('{encoded}'))"
     body = (
         "@echo off\r\n"
-        "chcp 65001 >nul\r\n"
         f'"{python_exe}" -I -c "{code}" %*\r\n'
     )
     return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
@@ -226,10 +226,11 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     # install's dependency root, not whichever profile triggered publication.
     return (
         "import os, re, sys\n"
-        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {str(dependency_home_root())!r}\n"
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
+        "from hermes_constants import get_default_hermes_root\n"
+        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())\n"
         "if sys.argv[1:2] == ['--print-runtime-command']:\n"
         "    sys.dont_write_bytecode = True\n"
         "    from pathlib import Path\n"

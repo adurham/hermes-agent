@@ -180,7 +180,7 @@ def _git_dir(root: Path) -> Path:
     """``root``'s git dir: ``.git`` itself, or where a linked worktree's ``.git`` file points."""
     dot_git = root / ".git"
     if dot_git.is_file():
-        text = dot_git.read_text(encoding="utf-8").strip()
+        text = dot_git.read_text(encoding="utf-8-sig").strip()
         if text.startswith("gitdir:"):
             return root / text[len("gitdir:"):].strip()
     return dot_git
@@ -417,7 +417,7 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
 def _restore_holding_claim(root: Path, marker: Path) -> bool:
     global _merge_advice_shown
     git_dir = marker.parent
-    fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8").splitlines())
+    fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8-sig").splitlines())
     try:
         owner = int(fields.get("pid", ""))
     except ValueError:
@@ -441,7 +441,7 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     if any((git_dir / name).exists() for name in _GIT_OPERATION_IN_PROGRESS):
         merge_head = git_dir / "MERGE_HEAD"
         if (not _merge_advice_shown and merge_head.is_file()
-                and merge_head.read_text(encoding="utf-8").strip() == target):
+                and merge_head.read_text(encoding="utf-8-sig").strip() == target):
             # The killed updater's own merge: its conflict markers may sit in startup modules.
             _merge_advice_shown = True
             print(f"⚠ A killed `hermes update` left its merge unfinished. Run `git -C {root} merge --abort`, "

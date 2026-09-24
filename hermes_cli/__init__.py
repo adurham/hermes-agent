@@ -24,8 +24,19 @@ def __getattr__(name: str) -> str:
     if name != "__version__":
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from hermes_cli.steward import read_install_stamp
-    from pm.paths import repo_root
-
+    try:
+        from pm.paths import repo_root
+    except ModuleNotFoundError as exc:
+        if exc.name != "pm" and not (exc.name or "").startswith("pm."):
+            raise
+        # The old editable finder may not know the new pm package yet.
+        import json
+        from pathlib import Path
+        try:
+            stamp = json.loads((Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(encoding="utf-8-sig"))
+            return str(stamp.get("baseVersion") or "0.0.0")
+        except (OSError, ValueError, AttributeError):
+            return "0.0.0"
     return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
 
 

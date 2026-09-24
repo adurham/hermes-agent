@@ -42,7 +42,8 @@ def fixture_tree(tmp_path, monkeypatch):
     )
     for path in (repo / "hermes_cli/main.py", repo / "acp_adapter/entry.py"):
         path.write_text(entry, encoding="utf-8")
-    home = tmp_path / "custom 'café home"
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
     store = home / "tools"
@@ -103,6 +104,25 @@ def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, mo
             assert Path(receipt["home"]) == home
             assert Path(receipt["exe"]).samefile(interpreter)
     assert not (repo / "venv").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_launcher_resolves_default_home_at_use_not_publication(tmp_path, monkeypatch):
+    repo, published_home, _ = fixture_tree(tmp_path, monkeypatch)
+    launcher = Path(_launchers.ensure_install_launchers(repo, tmp_path / "commands")[0])
+    new_user_home = tmp_path / "second-user"
+    new_user_home.mkdir()
+    monkeypatch.setenv("HOME", str(new_user_home))
+    monkeypatch.setenv("HERMES_HOME", str(new_user_home / ".hermes"))
+    select_generation(repo, "second", "from-second-user")
+    env = dict(os.environ)
+    env.pop("HERMES_HOME")
+    result = subprocess.run([str(launcher)], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert json.loads(result.stdout)["home"] == str(new_user_home / ".hermes")
+    assert json.loads(result.stdout)["value"] == "from-second-user"
+    assert published_home != new_user_home / ".hermes"
 
 
 @pytest.mark.parametrize("publisher", [
