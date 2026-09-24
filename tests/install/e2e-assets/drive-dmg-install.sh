@@ -4,7 +4,7 @@
 # The Setup app is Tauri (Rust + system webview), so Playwright/Electron
 # attach never works. Launch the binary bare in the background (it inherits
 # the redirect env), click "Install Hermes ->" with native input, then watch
-# the install land on disk: checkout + venv console script.
+# the install land on disk: checkout + installed source launcher + app.
 #
 # Usage:
 #   drive-dmg-install.sh --app-bin <path> --install-dir <path> \
@@ -97,10 +97,12 @@ click_install() {
   echo "clicked ${cx},${cy} (window ${x},${y} ${wd}x${ht})"
 }
 
-HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
-# The bootstrap runs 11 stages; checkout + venv land in the first few and
-# the desktop app build is near the end, so success requires all three or
+# Use the same source-launcher selection as the later read-only checkpoint:
+# PM installs publish .hermes/bin/hermes; older releases use venv/bin/hermes.
+# The desktop app build is near the end, so success requires all three or
 # the EXIT trap kills the installer mid-build.
+# shellcheck source=source-driver.sh
+source "$(dirname "${BASH_SOURCE[0]}")/source-driver.sh"
 installed_app() {
   local cand
   for cand in \
@@ -112,7 +114,7 @@ installed_app() {
   return 1
 }
 install_complete() {
-  [ -d "$INSTALL_DIR/.git" ] && [ -x "$HERMES_BIN" ] && installed_app
+  [ -d "$INSTALL_DIR/.git" ] && source_hermes "$INSTALL_DIR" >/dev/null 2>&1 && installed_app
 }
 # The bootstrap parks on an error screen instead of exiting when a stage
 # fails (e.g. a transient 429 downloading install.sh), with a Retry button
@@ -139,7 +141,7 @@ FIRST_SHOT=0
 CLICKS=0
 while :; do
   if install_complete; then
-    log "install landed: checkout + venv console script + Hermes.app present"
+    log "install landed: checkout + source launcher + Hermes.app present"
     shot "02-install-landed"
     break
   fi
