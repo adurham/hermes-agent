@@ -60,6 +60,9 @@ def write_source_stamp(root: Path) -> dict | None:
         with suppress(OSError):
             os.unlink(tmp_name)
     _reset_version_info_cache()
+    # Every path that publishes a new checkout identity (completion handoff, the PM
+    # updater's finish, boot-time adoption) moves the installers' receipt with it.
+    refresh_bootstrap_receipt(root, stamp)
     return stamp
 
 

@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from hermes_cli.source_completion import complete_source_checkout
+from hermes_cli.source_stamp import write_source_stamp
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -61,7 +62,9 @@ def _verify_bootstrap_receipt(root: Path) -> subprocess.CompletedProcess:
                            "--repo", str(root)], capture_output=True, text=True, encoding="utf-8")
 
 
-def test_update_completion_moves_an_installer_receipt_to_the_updated_head(tmp_path, monkeypatch):
+def test_publishing_checkout_identity_moves_an_installer_receipt_to_head(tmp_path):
+    # write_source_stamp is the one seam: the completion handoff, the PM updater's finish and
+    # boot-time adoption all publish identity through it, and the receipt must follow every one.
     root = _repo(tmp_path)
     release = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
     branch = subprocess.run(["git", "branch", "--show-current"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
@@ -72,17 +75,14 @@ def test_update_completion_moves_an_installer_receipt_to_the_updated_head(tmp_pa
     subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "update"], cwd=root, check=True, capture_output=True,
                    env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"})
-    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
-
-    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+    assert write_source_stamp(root) is not None
     result = _verify_bootstrap_receipt(root)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_completion_never_invents_an_installer_receipt(tmp_path, monkeypatch):
+def test_publishing_checkout_identity_never_invents_an_installer_receipt(tmp_path):
     # The receipt's presence is what marks a script install; a manual clone stays one.
     root = _repo(tmp_path)
-    _completion_dependencies(monkeypatch, lambda **_kwargs: True)
 
-    assert complete_source_checkout(root, desktop=False, assume_yes=True)
+    assert write_source_stamp(root) is not None
     assert not (root / ".hermes-bootstrap-complete").exists()
