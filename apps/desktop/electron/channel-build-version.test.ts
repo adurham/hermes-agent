@@ -336,8 +336,6 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       'scripts/release-content-types.json',
       'scripts/build/python.mjs',
       'scripts/bundles/desktop_prepare.py',
-      'scripts/releases/bundle_env.py',
-      'scripts/releases/versioning.py',
       'hermes_cli/update_channel.py',
       'hermes_cli/release_channels.py',
       'hermes_cli/__init__.py',
@@ -348,8 +346,12 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       fs.copyFileSync(path.join(repo, file), destination)
     }
 
-    // The version parser imports the PM package; copy its complete sibling tree.
-    fs.cpSync(path.join(repo, 'pm'), path.join(root, 'pm'), { recursive: true })
+    // The version parser imports the PM package, and desktop_prepare imports
+    // release helpers that import each other (versioning -> semver). Copy both
+    // complete trees so a new intra-package import cannot break the fixture.
+    for (const tree of ['pm', 'scripts/releases']) {
+      fs.cpSync(path.join(repo, tree), path.join(root, tree), { recursive: true })
+    }
     fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
     const assets: string = path.join(app, 'assets/appx')
     fs.mkdirSync(assets)
