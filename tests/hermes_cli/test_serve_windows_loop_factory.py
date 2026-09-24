@@ -1,20 +1,17 @@
-"""#120164 — Windows serve must run uvicorn on a SelectorEventLoop.
+"""Windows serve must run uvicorn on a SelectorEventLoop.
 
-uvicorn 0.41's ``asyncio_loop_factory`` returns ProactorEventLoop on win32.
-Driving uvicorn's socket stack on the proactor loop binds-but-never-accepts:
-READY prints, then ``Accept failed on a socket`` + WinError 10014, exit 1,
-desktop ECONNREFUSED (regression of #50641, whose fix trusted
-``config.get_loop_factory()`` back when that still meant selector on Windows).
+Regression for #120164. uvicorn 0.41's ``asyncio_loop_factory`` returns
+ProactorEventLoop on win32. Driving uvicorn's socket stack on the proactor loop
+binds-but-never-accepts: READY prints, then ``Accept failed on a socket`` +
+WinError 10014, exit 1, desktop ECONNREFUSED (regression of #50641, whose fix
+trusted ``config.get_loop_factory()`` back when that still meant selector).
 """
 
 import asyncio
-import sys
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="Windows serve-runner path under test"
-)
+pytestmark = pytest.mark.windows_only
 
 
 class _ProactorConfig:

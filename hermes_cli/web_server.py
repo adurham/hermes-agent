@@ -1397,15 +1397,11 @@ def _windows_serve_loop_factory(config):
     uvicorn 0.41's ``asyncio_loop_factory`` returns ProactorEventLoop on
     win32, on which uvicorn's socket stack binds-but-never-accepts (READY
     prints, then WinError 10014 accept failures, exit 1, desktop
-    ECONNREFUSED — #120164, regression of #50641). Force the selector loop
-    uvicorn served on before; a factory that already yields selector loops
-    (older uvicorn, explicit ``--loop``) passes through untouched.
+    ECONNREFUSED — #120164, regression of #50641). A factory that already
+    yields selector loops (older uvicorn, explicit ``--loop``) passes through.
     """
-    try:
-        factory = config.get_loop_factory()
-    except Exception:
-        return asyncio.SelectorEventLoop
-    if factory is None or getattr(factory, "__name__", "") == "ProactorEventLoop":
+    factory = config.get_loop_factory()
+    if factory is None or factory is asyncio.ProactorEventLoop:  # type: ignore[attr-defined]
         return asyncio.SelectorEventLoop
     return factory
 
