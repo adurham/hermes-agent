@@ -267,6 +267,46 @@ export function buildMatrices(envs, tags) {
   return byOs;
 }
 
+/** Source-leg presets: the OS matrices each named route runs. */
+const ROUTE_OSES = /** @type {Record<string, Os[]>} */ ({
+  all: ['linux', 'windows', 'macos'],
+  both: ['linux'],
+  update: ['linux'],
+  installer: ['linux'],
+  'windows-desktop': ['windows'],
+  'macos-desktop': ['macos'],
+  // Bundled legs come from bundle-plan.mjs, not this matrix.
+  bundled: [],
+  'windows-bundled': [],
+  'macos-bundled': [],
+});
+
+/**
+ * Narrow the matrices to a route: a preset keeps whole OS matrices; anything else selects
+ * legs by name, so a leg name, a fragment of one, or a pasted job name ("<leg> / e2e") runs
+ * just those legs. A route that selects nothing throws rather than yielding a green empty run.
+ *
+ * @param {Record<Os, {include: MatrixEntry[]}>} matrices
+ * @param {string} route
+ * @returns {Record<Os, {include: MatrixEntry[]}>}
+ */
+export function selectRoute(matrices, route) {
+  const oses = ROUTE_OSES[route];
+  /** @type {(os: Os, entry: MatrixEntry) => boolean} */
+  const keep = oses
+    ? (os) => oses.includes(os)
+    : (_os, entry) => entry.name.includes(route) || route.startsWith(`${entry.name} /`);
+  /** @type {Record<Os, {include: MatrixEntry[]}>} */
+  const picked = { linux: { include: [] }, windows: { include: [] }, macos: { include: [] } };
+  for (const os of /** @type {Os[]} */ (Object.keys(picked))) {
+    picked[os].include = matrices[os].include.filter((entry) => keep(os, entry));
+  }
+  if (!oses && Object.values(picked).every((m) => m.include.length === 0)) {
+    throw new Error(`route ${JSON.stringify(route)} is not a preset and matches no leg name`);
+  }
+  return picked;
+}
+
 /**
  * Does this method id need the starting tag to ship the desktop app?
  * Shared by the plan chart (pre-desktop cells) and the results chart
@@ -460,6 +500,7 @@ async function main() {
   const { values } = parseArgs({
     options: {
       tags: { type: 'string', default: '[]' },
+      route: { type: 'string', default: 'all' },
       format: { type: 'string', default: 'json' },
       artifacts: { type: 'string' },
     },
@@ -485,7 +526,7 @@ async function main() {
     process.stdout.write(renderMarkdownPlan(envs, tags));
     return;
   }
-  const matrices = buildMatrices(envs, tags);
+  const matrices = selectRoute(buildMatrices(envs, tags), values.route || 'all');
   process.stdout.write(`${JSON.stringify(matrices, null, 2)}\n`);
 }
 
