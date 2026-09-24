@@ -2,8 +2,8 @@
 
 `Stable Release` is the release gate. A successful builder alone is not a
 stable release. Stable releases use attempt refs as locks and final tags as
-publish receipts; neither tag is a workflow trigger. Canary builds retain their
-separate push-driven workflow.
+publish receipts; neither tag is a workflow trigger. Canary builds have their
+own scheduled workflow.
 
 The committed project version is always `0.0.0`. Release jobs derive the payload
 version from the admitted ref and stamp isolated build trees. Do not bump version
@@ -271,8 +271,11 @@ Canary source identity is only
 SemVer-equal to its stable core; the protected channel record and embedded UTC
 timestamp decide progression. Desktop clients treat that validated channel
 sequence as the update authority rather than asking SemVer to order build
-metadata. Every `main` push queues a canary run with
-`cancel-in-progress: false`. Historical `-canary.` identities are unsupported.
+metadata. `Canary Release` runs once a day at 06:41 UTC from the default
+branch, and a manual dispatch starts one at any time. Runs queue with
+`cancel-in-progress: false`. If `main` has no new commits, the run resumes an
+unpublished canary or does nothing. Historical `-canary.` identities are
+unsupported.
 If a process stops after pushing the canary tag, rerunning the command verifies
 the exact remote tag object, repairs the missing draft, and redispatches until the
 protected canary head receipts that tag.
