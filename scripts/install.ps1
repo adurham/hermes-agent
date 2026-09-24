@@ -541,7 +541,14 @@ function Get-PinnedGit {
         # System32; a GNU tar earlier on PATH (Cygwin/MSYS) reads C:\ as a
         # remote host, so never resolve it from PATH.
         $inboxTar = Join-Path $env:SystemRoot 'System32\tar.exe'
-        Invoke-Native { & $inboxTar -xf $tarPath -C $extractDir }
+        # MSYS ships these as symlinks into /proc. Without symlink rights (not
+        # elevated, no Developer Mode) tar cannot create them and fails the
+        # whole extract. Skip exactly the links pm's own extractor skips
+        # (pm/store.py extract_tar git_msys) so any other failure still fails.
+        # '^' anchors bsdtar's otherwise any-path-component match.
+        $msysProcLinks = @('dev/fd', 'dev/stdin', 'dev/stdout', 'dev/stderr', 'etc/mtab')
+        $excludes = foreach ($link in $msysProcLinks) { '--exclude'; "^$link" }
+        Invoke-Native { & $inboxTar @excludes -xf $tarPath -C $extractDir }
         if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
         # Layout: Git-<ver>/cmd\git.exe — flatten the single wrapper dir.
         $inner = @(Get-ChildItem $extractDir)

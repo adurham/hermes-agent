@@ -92,6 +92,33 @@ def test_git_tar_skips_only_msys_proc_links_and_rejects_other_unsafe_entries(tmp
     assert not (tmp_path / "escaped").exists()
 
 
+def test_install_ps1_bootstrap_skips_the_same_msys_links_as_pm(tmp_path):
+    """The pre-PM bootstrap's tar.exe excludes must stay the links PM skips."""
+    import re
+    from pathlib import Path
+    from pm.packages import Git
+
+    installer = Path(__file__).resolve().parents[2] / "scripts" / "install.ps1"
+    listed = re.search(r"\$msysProcLinks = @\(([^)]*)\)", installer.read_text(encoding="utf-8")).group(1)
+    excluded = set(re.findall(r"'([^']+)'", listed))
+    # The pinned Git-for-Windows archives' symlinks (tar -tvf, 2.53.0.windows.3).
+    links = {"dev/fd": "/proc/self/fd", "dev/stdin": "/proc/self/fd/0", "dev/stdout": "/proc/self/fd/1",
+             "dev/stderr": "/proc/self/fd/2", "etc/mtab": "/proc/mounts"}
+    archive = tmp_path / "git.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tf:
+        for name, target in links.items():
+            info = tarfile.TarInfo(name)
+            info.type, info.linkname = tarfile.SYMTYPE, target
+            tf.addfile(info)
+        binary = tarfile.TarInfo("cmd/git.exe")
+        binary.size = 1
+        tf.addfile(binary, io.BytesIO(b"x"))
+    dest = tmp_path / "out"
+    Git().unpack(archive, dest, "win32-x64")
+    skipped = {name for name in links if not os.path.lexists(dest / name)}
+    assert excluded == skipped == set(links)
+
+
 def test_target_uses_shared_native_arch(monkeypatch):
     from hermes_platform.host import facts
     from pm import store
