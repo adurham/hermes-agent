@@ -1199,8 +1199,9 @@ def _promote_staged_desktop_app(
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
+    from pm.progress import run_contained
+
     build_label = "source build" if source_mode else "packaged app"
-    print(f"→ Building desktop {build_label}...")
     build_env = dict(env)
     if sys.platform == "win32":
         # The installer stages pinned Git in its own PowerShell process. Product
@@ -1222,10 +1223,11 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
     try:
-        subprocess.run(build_cmd, cwd=desktop_dir, env=build_env, check=True)
+        run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            subprocess.run([npm, "run", "builder", "--", "--dir", "--publish", "never",
-                            f"-c.directories.output={staging_dir}"], cwd=desktop_dir, env=build_env, check=True)
+            run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
+                           f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
+                          cwd=desktop_dir, env=build_env)
         packaged_executable = (
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )

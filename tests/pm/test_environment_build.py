@@ -389,9 +389,11 @@ def test_streaming_bounds_memory_without_losing_failure_class(tmp_path, diagnost
     assert "final diagnostic" in str(actual)
 
 
-def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path):
+def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path, monkeypatch):
     import io
     from pm.environment import PythonEnvironment
+
+    monkeypatch.setenv("HERMES_VERBOSE", "1")  # CI's streamed log, not the contained view
 
     released = tmp_path / "release-child"
 
@@ -433,11 +435,13 @@ def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path):
 
 
 @pytest.fixture(params=["environment", "cli"])
-def streaming_runner(request, tmp_path):
+def streaming_runner(request, tmp_path, monkeypatch):
     import contextlib
     import io
     from pm.cli import _run_live
     from pm.environment import PythonEnvironment
+
+    monkeypatch.setenv("HERMES_VERBOSE", "1")  # CI's streamed log, not the contained view
 
     output = io.StringIO()
     environment = PythonEnvironment(
