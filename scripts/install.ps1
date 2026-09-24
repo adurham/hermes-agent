@@ -773,7 +773,12 @@ function Stage-Repository {
         }
         Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
         if ($LASTEXITCODE) { Fail "git checkout failed" }
-        Invoke-Logged -MayFail "Fast-forwarding to origin/$Branch" { git -C $InstallDir merge --ff-only "origin/$Branch" }
+        # --no-stat: across a large gap (v2026.7.1 -> today is ~27k lines) the
+        # diffstat arrives as one burst. Hermes-Setup.exe forwards every line
+        # to its window as a separate event; the burst overflows the Windows
+        # posted-message queue (10k), events drop, and the installer's Launch
+        # button can then hang on "Launching" forever.
+        Invoke-Logged -MayFail "Fast-forwarding to origin/$Branch" { git -C $InstallDir merge --ff-only --no-stat "origin/$Branch" }
         if ($LASTEXITCODE) {
             # A release cut off the main line, a force-pushed remote, or the
             # user's own commits cannot fast-forward. Every stage below reads
