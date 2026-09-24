@@ -120,10 +120,35 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
         publish_stage("Updating Python dependencies")
         refuse_foreign_owned_venv(root)
         pm.sync_venv(explicit=True, project_root=root)
+        collect_superseded_generations(root)
         publish_launchers(root)
         return {"state": "synced", "ok": True}
     except Exception as exc:
         return {"state": "failed", "ok": False, "detail": str(exc)}
+
+
+def collect_superseded_generations(project_root: Path) -> None:
+    """Collect what a publish just superseded, as the Docker boot already does.
+
+    Without this only a manual `hermes pm gc` reclaimed old environments. Safe
+    right after a sync: the collectors skip leased, selected and day-young
+    generations and yield to any in-flight install instead of waiting.
+    """
+    import logging
+
+    from hermes_cli.runtime_state import collect_generations
+    from pm.environments import install_state_dir
+    from pm.runtime import collect_runtime_generations
+
+    try:
+        removed = collect_generations(project_root) + collect_runtime_generations(
+            install_state_dir(project_root) / "pm-runtime")
+    except (OSError, ValueError) as exc:
+        # Reclaiming space must never turn a committed update into a failure.
+        logging.getLogger(__name__).warning("dependency generation cleanup skipped: %s", exc)
+        return
+    if removed:
+        logging.getLogger(__name__).info("collected %d unused dependency generations", len(removed))
 
 
 #: Answered from the tree alone; a metadata query must never wait on (or fail with)
@@ -267,6 +292,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         # PM installs retain their recorded extras and plugin union instead.
         extras = ["all"] if not runtime_facts_path(root).is_file() else None
         pm.sync_venv(extras, explicit=True, project_root=root)
+        collect_superseded_generations(root)
         # These can predate the swap. Once PM commits the replacement they
         # must not make early recovery immediately rebuild it a second time.
         for name in (".update-incomplete", ".lazy-refresh-incomplete"):
