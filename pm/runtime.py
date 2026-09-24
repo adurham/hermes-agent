@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from typing import Callable
 import uuid
 
 from pm.package import InstallError
@@ -102,6 +103,22 @@ def _validate(python: Path, env: dict[str, str]) -> str:
     return checked.stderr.strip() or f"exit {checked.returncode}" if checked.returncode else ""
 
 
+# Generations this process resolved for a child. The lease is taken under
+# .prepare.lock, which the collector also holds, so a publish + `pm gc` between
+# this return and the child's own lease cannot remove the child's generation.
+# It lives as long as this process (one lease per generation, not per call):
+# children may still be starting from an older generation after a newer one
+# is chosen.
+_HELD: dict[Path, Callable[[], None]] = {}
+
+
+def _hold_for_children(environment: Path) -> None:
+    from hermes_cli.runtime_state import lease_directory
+
+    if environment not in _HELD:
+        _HELD[environment] = lease_directory(environment)
+
+
 def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False,
                     project: Path | None = None, bootstrap: bool = True,
                     cache: Path | None = None) -> Path:
@@ -128,6 +145,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
         if fact.get("inputs") == identity:
             environment = root / fact["generation"]
             if (environment / "pm-runtime.json").is_file() and not _validate(_python(environment), env):
+                _hold_for_children(environment)
                 return _python(environment)
         if not bootstrap:
             raise InstallError("pm-runtime", "not installed or outdated and lazy installs are disabled",
@@ -140,10 +158,11 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
             (environment / ".lease-managed").touch()
             _write(environment / "pm-runtime.json", {"inputs": identity})
             _write(selected, {"inputs": identity, "generation": generation.as_posix()})
-            return executable
         except BaseException:
             shutil.rmtree(environment, ignore_errors=True)
             raise
+        _hold_for_children(environment)
+        return executable
 
 
 def lease_current_runtime() -> None:
