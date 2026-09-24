@@ -246,7 +246,7 @@ def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monke
     import importlib
     import os
     from collections import Counter
-    from hermes_cli.runtime_state import _lock
+    from pm.filesystem import lock_fd
     from pm.cli import _install_names
 
     ensure = importlib.import_module("pm.install")
@@ -262,7 +262,7 @@ def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monke
     def verify(package, fact, store, target):
         fd = os.open(store.root / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            locked.append(not _lock(fd, wait=False))
+            locked.append(not lock_fd(fd, wait=False))
         finally:
             os.close(fd)
         checked[package.name] += 1
@@ -301,7 +301,7 @@ def test_standalone_warm_ensure_does_not_wait_for_unrelated_writer(pm_env):
 def test_install_forgets_verification_when_state_operation_releases_lock(pm_env, monkeypatch):
     import importlib
     import os
-    from hermes_cli.runtime_state import _lock
+    from pm.filesystem import lock_fd
     from pm.cli import _install_names
 
     ensure = importlib.import_module("pm.install")
@@ -319,7 +319,7 @@ def test_install_forgets_verification_when_state_operation_releases_lock(pm_env,
         # acquire the lock independently, and invalidate prior observations.
         fd = os.open(runtime / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            assert _lock(fd, wait=False), "tool lock leaked into the state operation"
+            assert lock_fd(fd, wait=False), "tool lock leaked into the state operation"
             binary.write_text("corrupt", encoding="utf-8")
         finally:
             os.close(fd)

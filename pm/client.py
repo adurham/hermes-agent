@@ -207,8 +207,8 @@ def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dir
             f"({sys.prefix}); only an explicit install may change what later processes boot into",
         )
     if selection is not None and "expected_config" not in selection:
-        from hermes_cli.runtime_state import _digest
-        selection = {**selection, "expected_config": _digest(Path(selection["home"]) / "config.yaml") or "missing"}
+        from pm.filesystem import file_digest
+        selection = {**selection, "expected_config": file_digest(Path(selection["home"]) / "config.yaml") or "missing"}
     foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
     if is_runtime() and not foreign:
         from pm.install import sync_venv as direct

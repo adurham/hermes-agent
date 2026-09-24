@@ -254,7 +254,7 @@ def _ensure_generation(
     Build at the final path: Windows launchers and scripts embed that path.
     The prior generation survives both successful replacement and failed builds.
     """
-    from hermes_cli.runtime_state import _lock
+    from pm.filesystem import lock_fd
     from pm._uv import _toolchain
     from pm.install import _refuse_lazy, lazy_installs_allowed
     from pm.lock import Lockfile, _write
@@ -293,7 +293,7 @@ def _ensure_generation(
         raise _refuse_lazy(name, "isolated Python environment is missing or outdated")
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".install.lock").open("a+b") as mutex:
-        _lock(mutex.fileno(), wait=True)
+        lock_fd(mutex.fileno(), wait=True)
         base_python = selected_python()
         existing = current(base_python)
         if existing is not None:

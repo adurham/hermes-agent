@@ -64,8 +64,8 @@ def _read(path: Path, *, strict: bool = False) -> dict:
 
 
 def _write(path: Path, data: dict) -> None:
-    from hermes_cli.runtime_state import _atomic_bytes
-    _atomic_bytes(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    from pm.filesystem import durable_write_bytes
+    durable_write_bytes(path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
 class StaleLockRow(RuntimeError):
@@ -109,12 +109,12 @@ class Lockfile:
 
     def save(self) -> None:
         """Merge touched rows under the file's lock, or leave all rows unchanged."""
-        from hermes_cli.runtime_state import _lock
+        from pm.filesystem import lock_fd
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.path.with_name(f".{self.path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            _lock(fd, wait=True)
+            lock_fd(fd, wait=True)
             current = _read(self.path, strict=True)["packages"]
             updated = dict(current)
             for name in self._touched:

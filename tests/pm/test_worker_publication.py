@@ -233,7 +233,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
         f"    if {phase!r} == 'journal' and path.name == 'publication.json': os._exit(17)\n"
         f"    if {phase!r} == 'payload' and path == Path({str(payload)!r}): os._exit(17)\n"
         f"    if {phase!r} == 'commit' and path.name == 'publication.json' and json.loads(data).get('committed'): os._exit(17)\n"
-        "publication._atomic_bytes = state._atomic_bytes = write\n"
+        "publication.durable_write_bytes = state._atomic_bytes = write\n"
         "original_replace = os.replace\ndef replace(source, target):\n    original_replace(source, target)\n"
         f"    if {phase!r} == 'backup' and Path(target).name.startswith('.previous-'): os._exit(17)\n"
         f"    if {phase!r} == 'tree' and Path(target) == Path({str(target)!r}): os._exit(17)\n"

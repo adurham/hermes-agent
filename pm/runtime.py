@@ -110,7 +110,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     Generations are immutable after publication. Failed preparation leaves the
     previous generation intact, including when an old worker is still running.
     """
-    from hermes_cli.runtime_state import _lock
+    from pm.filesystem import lock_fd
     from pm.lock import _write
     from pm.runtime_stage import stage_runtime
 
@@ -119,7 +119,7 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
     env = runtime_environment()
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".prepare.lock").open("a+b") as lock:
-        _lock(lock.fileno(), wait=True)
+        lock_fd(lock.fileno(), wait=True)
         selected = root / "selected.json"
         try:
             fact = json.loads(selected.read_text(encoding="utf-8"))
@@ -162,14 +162,15 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     once every worker launched from it has exited; generations published before leases
     existed stay, as the application collector keeps its own.
     """
-    from hermes_cli.runtime_state import _lock, leases_held
+    from pm.filesystem import lock_fd
+    from hermes_cli.runtime_state import leases_held
 
     generations = root / "generations"
     removed: list[Path] = []
     if not generations.is_dir():
         return removed
     with (root / ".prepare.lock").open("a+b") as lock:
-        if not _lock(lock.fileno(), wait=False):
+        if not lock_fd(lock.fileno(), wait=False):
             return removed  # a stage is in flight; maintenance skips rather than queues
         try:
             selected = json.loads((root / "selected.json").read_text(encoding="utf-8-sig")).get("generation", "")

@@ -400,12 +400,12 @@ def test_metadata_write_failure_rolls_back_new_install(monkeypatch, tmp_path, is
     # The PM worker process publishes the plugin; fail its metadata write there.
     worker_toolchain(client, monkeypatch, isolated_python,
         "import pm.publication as publication\n"
-        "original = publication._atomic_bytes\n"
+        "original = publication.durable_write_bytes\n"
         "def fail_metadata(path, data):\n"
         f"    if Path(path) == Path({str(metadata)!r}):\n"
         "        raise OSError('disk full')\n"
         "    return original(path, data)\n"
-        "publication._atomic_bytes = fail_metadata\n")
+        "publication.durable_write_bytes = fail_metadata\n")
 
     with pytest.raises(PluginOperationError, match="disk full"):
         _install_plugin_core(repo.as_uri(), force=False, ref=old_sha)

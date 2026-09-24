@@ -30,12 +30,12 @@ def test_failed_publication_preserves_selection_and_imports(plugin_world, monkey
     if failure == "config":
         prelude = (
             "from pm import publication\n"
-            "atomic_bytes = publication._atomic_bytes\n"
+            "atomic_bytes = publication.durable_write_bytes\n"
             "def fail(path, data):\n"
             f"    if path == Path({str(config)!r}) and b'publication-candidate' in data:\n"
             "        raise OSError('fixture config disk full')\n"
             "    return atomic_bytes(path, data)\n"
-            "publication._atomic_bytes = fail\n"
+            "publication.durable_write_bytes = fail\n"
         )
     else:
         # Config and facts now publish in the worker; the failed command must
