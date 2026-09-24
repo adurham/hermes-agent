@@ -730,6 +730,29 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
 class Ripgrep(BinaryPackage):
     name = "ripgrep"
     binary_rel = {"win32": "rg.exe", "posix": "rg"}
+    # The ARM64 Windows release links the VC++ runtime dynamically (the x64
+    # one embeds it), and a fresh Windows has no vcruntime140.dll: rg.exe
+    # dies with STATUS_DLL_NOT_FOUND. Our pinned Python ships the ARM64 DLL.
+    deps = ("python",)
+
+    def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
+        super().stage(store, staged, version, target)
+        if target != "win32-arm64":
+            return
+        from pm.install import _installed_location, _lockfile
+        from pm.registry import get_package
+
+        python = get_package("python")
+        location = _installed_location(python, _lockfile(), target)
+        fact = location[0].get("python") if location is not None else None
+        if fact is None:
+            raise InstallError(self.name, "ARM64 rg.exe needs vcruntime140.dll from python, which is not installed")
+        runtime = location[1].entry(fact["entry"]) / "vcruntime140.dll"
+        if not runtime.is_file():
+            raise InstallError(self.name, f"python's entry has no {runtime.name}")
+        # App-local copy: the loader searches the exe's own folder first, and
+        # the entry digest is recorded over it.
+        shutil.copy2(runtime, staged / runtime.name)
 
     def verify(self, entry: Path, target: str) -> str:
         if target == "linux-arm64-bionic":
