@@ -286,9 +286,12 @@ Chromium 由 PM 准备，不使用 `npx playwright install`。
 实际可执行路径记录在 `/etc/hermes/agent-browser-executable-path`。
 `PLAYWRIGHT_BROWSERS_PATH` 指向 `/opt/hermes/tools`，不在数据卷内。
 
-镜像通过内部 `HERMES_DISABLE_LAZY_INSTALLS` 策略关闭按需安装。
-仅修改 `security.allow_lazy_installs` 不能覆盖它。新增所需依赖应烘焙进派生镜像，
-或作为独立工具放在单独环境或服务中。旧 `lazy-packages` overlay 不再使用。
+可选后端 SDK（Edge TTS、Firecrawl、Exa、平台适配器、插件依赖）在首次使用时安装到
+`/opt/data/installs` 下的 PM 依赖代，容器重建和镜像更新后仍然保留；镜像自带的
+`/opt/hermes/.venv` 永不修改。每次启动时，容器在服务启动前按新镜像的锁文件重新解析
+已记录的选择；若失败（例如离线），则使用镜像自带环境启动，并保留已记录的 extras，
+留待下次启动或安装时重建。设置 `security.allow_lazy_installs: false` 可拒绝按需安装。
+旧 `lazy-packages` overlay 不再使用。
 
 构建来源记录在 `/etc/hermes/image-provenance.json`，构建戳记位于 `/opt/hermes/install-stamp.json`。
 没有戳记的本地构建报告未知版本，不猜测提交。`hermes update` 不修改镜像所有的代码，应用更新需替换镜像。

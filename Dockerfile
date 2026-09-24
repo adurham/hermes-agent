@@ -451,10 +451,10 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
-ENV HERMES_DISABLE_LAZY_INSTALLS=1
-# Lazy installs are fully disabled in the published image (see
-# HERMES_DISABLE_LAZY_INSTALLS above): the venv is sealed and opt-in backend
-# SDKs are not installed at runtime.
+# Opt-in backend SDKs install on first use into PM dependency generations under
+# /opt/data/installs (the sealed /opt/hermes/.venv is never written); stage2
+# re-resolves them against each new image. security.allow_lazy_installs: false
+# turns this off.
 
 # Xfce, dbus and the display-allocation lock need one; containers have no logind
 # to create /run/user/<uid>. The default fallback ($HOME/.cache) is the /opt/data

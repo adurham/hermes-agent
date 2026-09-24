@@ -257,13 +257,11 @@ fi
 # --- Immutable install tree ---
 # Do not chown runtime code or dependency trees under $INSTALL_DIR back to the
 # hermes user. Hosted/container instances keep mutable state under
-# $HERMES_HOME (/opt/data) and run with PYTHONDONTWRITEBYTECODE plus
-# HERMES_DISABLE_LAZY_INSTALLS=1. Keeping /opt/hermes root-owned and
-# non-writable prevents an agent session from self-modifying the installed
-# source, venv, TUI bundle, or node_modules and bricking the gateway.
-#
-# Lazy installs are fully disabled at runtime (HERMES_DISABLE_LAZY_INSTALLS=1,
-# see the Dockerfile), so no writable lazy-install target is provisioned here.
+# $HERMES_HOME (/opt/data) and run with PYTHONDONTWRITEBYTECODE. Keeping
+# /opt/hermes root-owned and non-writable prevents an agent session from
+# self-modifying the installed source, venv, TUI bundle, or node_modules and
+# bricking the gateway. On-demand dependency installs go to PM generations
+# under $HERMES_HOME/installs, never into this tree.
 
 # Always reset ownership of $HERMES_HOME/profiles to hermes on every
 # boot. Profile dirs and files can land owned by root when commands
@@ -646,6 +644,27 @@ if [ -f "$HERMES_HOME/config.yaml" ]; then
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
+
+# --- Refresh the dependency generation for this image ---
+# Opt-in dependencies (lazy extras, plugin deps) live in PM generations on the
+# volume, selected by $HERMES_HOME/installs/*/facts.json. An image upgrade
+# replaces uv.lock under that durable selection, so re-resolve it here, before
+# any supervised service boots onto a generation built for the previous image.
+# On failure (e.g. offline) PM falls back to the image's own environment and
+# keeps the extras recorded for the next boot or install. Then collect the
+# generations nothing selects any more: no service holds a lease yet, and
+# collect_generations keeps anything younger than a day.
+s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
+from pathlib import Path
+from hermes_cli.runtime_state import collect_generations
+from pm.environments import install_state_dir
+from pm.recovery import refresh_dependencies
+from pm.runtime import collect_runtime_generations
+root = Path("'"$INSTALL_DIR"'")
+print("[stage2] dependency environment:", refresh_dependencies(root))
+removed = collect_generations(root) + collect_runtime_generations(install_state_dir(root) / "pm-runtime")
+print("[stage2] collected", len(removed), "unused dependency generations")
+' || echo "[stage2] Warning: dependency refresh failed; continuing"
 
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering

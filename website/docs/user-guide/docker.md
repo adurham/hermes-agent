@@ -534,11 +534,15 @@ Chromium is staged through PM, not `npx playwright install`. The build records
 its resolved executable in `/etc/hermes/agent-browser-executable-path`.
 `PLAYWRIGHT_BROWSERS_PATH` names `/opt/hermes/tools`, outside the data mount.
 
-The image disables on-demand dependency installation with its internal
-`HERMES_DISABLE_LAZY_INSTALLS` policy. Changing `security.allow_lazy_installs`
-alone does not override that image policy. The old `lazy-packages` overlay is
-not used. Build additional required dependencies into a derived image, or run
-an independent tool in a separate environment/service.
+Opt-in backend SDKs (Edge TTS, Firecrawl, Exa, platform adapters, plugin
+dependencies) install on first use into PM dependency generations under
+`/opt/data/installs`, so they survive container recreation and image updates.
+The image's own `/opt/hermes/.venv` is never modified. On each boot the
+container re-resolves the recorded selection against the new image's lock
+before services start; if that fails (for example offline), it boots the
+image's own environment and keeps the recorded extras for the next boot or
+install. Set `security.allow_lazy_installs: false` to refuse on-demand
+installs. The old `lazy-packages` overlay is not used.
 
 Image provenance lives at `/etc/hermes/image-provenance.json`, outside both the
 source and data mounts. The build stamp lives at `/opt/hermes/install-stamp.json`.
