@@ -459,6 +459,14 @@ def _run_one_file(
     file, rc, output, summary, subproc_wall = _run_one_file_once(
         file, pytest_args, repo_root, file_timeout
     )
+    # Duration of the FIRST attempt alone. A retried file's wall time is only meaningful to the
+    # timeout scaler as one attempt: `_run_one_file` accumulates every attempt into
+    # `subproc_wall`, and `_clean_pass_durations` keeps that sum for a file whose failure is
+    # deterministic (the retry only marks the file FLAKY when it PASSES). Caching 2x a real
+    # runtime inflates the 3x headroom the scaler derives from it — observed live as 607s
+    # recorded for a file that takes ~303s (two attempts summed), on a box where a doubled
+    # bound is exactly what a slow file must not get.
+    first_attempt_wall = subproc_wall
     attempt = 0
     # A worker killed by signal (OOM, SIGKILL) or the file timeout is a runaway, not a flake:
     # relaunching it doubles the damage while the first tree is still being reaped.
@@ -480,7 +488,11 @@ def _run_one_file(
             )
             with _flaky_lock:
                 _FLAKY_RESULTS.append((file, output))
-    return file, rc, output, summary, subproc_wall
+    # Return the single-attempt wall for the duration cache. A FLAKY outcome (failed then
+    # passed on retry) is excluded from the cache by `_clean_pass_durations` anyway; what
+    # reaches it is either a clean pass (one attempt — equal either way) or a deterministic
+    # failure, where the summed total would double the recorded runtime.
+    return file, rc, output, summary, first_attempt_wall
 
 
 # Files that failed once and passed on retry, with both attempts' output.
