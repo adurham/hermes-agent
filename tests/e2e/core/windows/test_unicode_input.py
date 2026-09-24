@@ -36,8 +36,6 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
-KNOWN: dict[str, str] = {}  # nothing red on origin/main in this file
-
 TEXT = "Grüße, 日本語 und Emoji 😂👍🏽"
 REPLY = "Réponse ✓ 😂"
 BMP = "Grüße, 日本語"
@@ -139,8 +137,8 @@ def test_classic_cli_console_non_ascii_reaches_wire(tmp_path: Path) -> None:
             console.proc.write(f"{BMP} {tag}")
             wait_until(lambda: tag in console.screen, 30, "the composer to echo the typed text")
             echoed = _plain(console.screen)
-            # Enter immediately after input is deliberately treated as a pasted newline by
-            # the classic composer; wait for the typed text to settle before submitting.
+            # An Enter within 50 ms of the last composer change is read as a pasted newline, and the
+            # echo can paint inside that window: submit only once the typed echo has gone quiet.
             wait_until(lambda: console.quiet_for(0.2), 30, "the typed composer to settle before Enter")
             console.proc.write("\r")
             try:
