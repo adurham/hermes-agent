@@ -9,4 +9,5 @@ import sys
 
 from packaging.markers import Marker
 
-print("1" if Marker(sys.argv[1]).evaluate(environment=json.loads(sys.argv[2])) else "0")
+if __name__ == "__main__":
+    print("1" if Marker(sys.argv[1]).evaluate(environment=json.loads(sys.argv[2])) else "0")
