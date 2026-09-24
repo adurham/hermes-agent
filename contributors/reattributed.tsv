@@ -108,3 +108,4 @@ f84db42a32b28a00a2ef1e11e5471a27d22cc37f	2026-09-25T11:06:00-05:00	fix(cron): de
 67c6fdc092331ab6c51a7d00612031614ccd3570	2026-09-25T11:36:29-05:00	fix(desktop): stop home-directory repo scans when no roots are configured
 d10afb5a8851be2b0f6fe5d3b04022c3a8877d6c	2026-09-25T18:52:11-05:00	fix(tests): import CONFIG_SCHEMA from its defining module
 3521034ed6b282ba6126b73bb04e3c958570432d	2026-09-24T18:51:45-05:00	fix(desktop): isolate Inbox session actions from the row resume (#85163)
+1ec4957d4c31b719fb4d8caf546fc44c43edfb81	2026-09-24T18:55:04-05:00	fix(desktop): drop ghost sidebar rows absorbed by a reorganized compression chain (#85331)
