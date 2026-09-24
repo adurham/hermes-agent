@@ -17816,3 +17816,67 @@ install in this clone) — TS/TSX conflicts were verified by re-reading and by
 checking every named import against its module's real exports, but a
 `tsc --noEmit` + vitest pass on the desktop tree is still owed. Also owed: a
 broader pytest sweep beyond `tests/agent`, `tests/tools`, `tests/hermes_cli`.
+
+---
+
+### CI coverage restored on the fork + hlxc as the out-of-CI runner — 2026-09-24
+
+**Problem.** The fork had **no Python CI at all**, and no JS CI either. Upstream's
+`tests` / `tests-os` / `js-tests` jobs are gated `github.repository ==
+'NousResearch/hermes-agent'` because their runners (`ubuntu-latest-96-core`,
+`windows-latest-32-core`, `ubuntu-latest-32-core`) are not provisioned for a
+personal fork — an unprovisioned large-runner job queues forever and holds the
+`ci-${{ github.ref }}` concurrency group (the 2026-09-07 fix above, which is
+correct and stays). The side effect was never noticed: the gate skips the whole
+lane, so every suite had to be run **by hand on the user's Mac**, draining
+battery, and the `macos_only` / `windows_only` marked tests — which are skipped
+on the Linux lane *by design* — ran nowhere at all.
+
+**Fix, part 1: fork-side CI jobs.** Three new jobs in `ci.yaml`, each gated to
+the fork so upstream is untouched and never spins these runners:
+
+- `tests-fork` — the identical suite (`scripts/run_tests.sh`, same hermetic
+  env, same `uv.lock`, same extras) on standard `ubuntu-latest`, sharded 6 ways
+  with the runner's **own** `--slice I/N`. The shard balancer is LPT-fed from
+  the restored `test_durations.json`. Verified before shipping: the 6 shards are
+  a clean partition of all **4916** test files, 0 overlap, **819±1 files /
+  ~3549s** of estimated work each. `timeout-minutes: 75` carries the ~59 min
+  of per-shard work with headroom.
+- `tests-os-macos-fork` / `tests-os-windows-fork` — `macos_only` / `windows_only`
+  on standard `macos-latest` / `windows-latest`. Deliberately **two separate
+  jobs, not one matrix**: upstream's matrix has one unprovisioned leg that holds
+  the whole job open; separate jobs can't couple that way. File selection reuses
+  `scripts/ci/list_os_marked_tests.py` (so collection never imports unrelated
+  modules) and `-m` stays authoritative for which tests run; the exit-5
+  zero-tests guard is preserved, because a green job that ran nothing is worse
+  than a red one.
+- `js-tests-fork` — `run-workspace-checks.mjs` on standard `ubuntu-latest`.
+  That script is parallel-by-check over ~612s of payload, so the 32-core runner
+  upstream uses is about amortising setup, not throughput.
+
+**Also fixed: a blocking lint was red on `origin/main`, skipping the whole
+suite.** `Windows footguns` fails on two bare `os.geteuid()` calls in
+`hermes_cli/gateway.py` (the systemctl helper's guard, and the systemd-refresh
+early return added with this sync). Six sibling `os.geteuid()` calls in the same
+file already carry `# windows-footgun: ok`; these two were the outliers. Because
+that job is blocking, its failure skipped `tests`, `js-tests` and `tests-os` on
+every push — CI was red AND not testing anything. Both now carry the exemption
+and `scripts/check-windows-footguns.py --all` is green over 1723 files.
+
+**Fix, part 2: `hlxc` (hermes-gw-01) as the out-of-CI runner.** CI covers the
+hosted matrix; this box covers what CI structurally cannot — long/unsharded
+runs, and anything needing a specific local environment. `scripts/hlxc-test.sh`
+(installed as `/usr/local/bin/hlxc-test`) runs the suite from a **separate
+checkout at `/srv/hermes-ci/repo`** and hard-refuses if that path ever resolves
+to `/opt/hermes-agent` — which is the LIVE install serving three running
+services (`hermes-gateway`, `hermes-gateway-dashboard`, `hermes-serve`). A test
+run must never contend with or mutate production. Verified on the box: 6 cores /
+8 GB, Python 3.11.15, deps synced from `uv.lock` with CI's extras, `tests/ci/`
+=> 135 passed in 6.0s, and all three live services stayed `active` throughout a
+`tests/hermes_cli/` run.
+
+**Still owed.** The fork's CI minutes are free (public repo), so the sharded
+lane costs nothing, but `tests-fork`'s first real run will calibrate whether
+`HERMES_TEST_WORKERS: 4` is the right pin and whether 6 shards is the right
+count. The pre-existing failure backlog (57 failures present *before* this sync
+on the same files) is unrelated to CI and still stands.
