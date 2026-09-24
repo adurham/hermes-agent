@@ -45,7 +45,7 @@ function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv,
     // every non-checker invocation untouched.
     const launcher = path.join(install, '.hermes', 'bin', 'hermes')
     const original = `${launcher}.e2e-original`
-    if (!fs.statSync(launcher).isFile() || fs.existsSync(original)) {
+    if (!fs.lstatSync(launcher).isFile() || fs.existsSync(original)) {
       throw new Error('source app-update requires an unmodified installation launcher')
     }
     fs.copyFileSync(launcher, original)
