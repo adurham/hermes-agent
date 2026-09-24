@@ -239,7 +239,7 @@ jobs:
     uses: ./.github/workflows/case-collision-check.yml
 
   lazy-deps-guard:
-    name: No imports of deleted tools.lazy_deps
+    name: No production imports of the tools.lazy_deps stub
     needs: detect
     uses: ./.github/workflows/lazy-deps-guard.yml
 
