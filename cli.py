@@ -120,6 +120,8 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _painted_columns,
     _PaintedLine,
     _panel_box_width,
+    _panel_cwidth,
+    _panel_ljust,
     _post_stream_transform_output,
     _prepend_note_to_message,
     _preserve_windows_dot_segments_for_markdown,

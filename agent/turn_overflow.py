@@ -226,10 +226,36 @@ class _Recovery(OverflowVerdict):
 def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> OverflowVerdict:
     """413: compress and retry. A 413 is a BYTE-size error, so progress is scored in
     payload bytes — never the token estimate, which is deliberately byte-blind to images
-    and wedged sessions on "no progress"."""
+    and wedged sessions on "no progress". Image-dominated 413s are tried on the shrink
+    path FIRST — see the FORK block below."""
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = st.agent
+
+    # FORK: image-dominated 413 recovery (restored from the pre-merge conversation_loop
+    # handler; merge note: keep this block FIRST — before ``count_attempt``/compress).
+    # A single oversized image part (e.g. a 35 MB phone photo → ~47 MB base64) blows the
+    # provider's HTTP body limit (Anthropic 32 MB → 413 request_too_large) no matter how
+    # few conversation tokens exist. History compression CANNOT fix this — the oversized
+    # payload is one image in the protected last-N turns, so compressing 93→10 messages
+    # leaves the same image in place and the retry 413s again ("cannot compress
+    # further"). Try shrinking image parts FIRST; fall through to history compression
+    # only when there were no shrinkable images. Gated on the shared single-shot
+    # ``image_shrink_retry_attempted`` flag (the ``image_too_large`` 400 path in
+    # agent/turn_recovery.py arms the same one), so this can never double-apply and a
+    # genuinely text-too-large 413 still reaches compression after one image attempt.
+    if not _retry.image_shrink_retry_attempted:
+        _retry.image_shrink_retry_attempted = True
+        if agent._try_shrink_image_parts_in_messages(st.api_messages):
+            agent._buffer_diagnostic_status(
+                "📐 Payload too large (413) — shrank oversized image(s) and retrying..."
+            )
+            return st.done("continue")
+        logger.info(
+            "413 payload-too-large: no shrinkable image parts "
+            "found; falling through to history compression."
+        )
+
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted

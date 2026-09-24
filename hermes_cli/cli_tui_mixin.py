@@ -67,14 +67,17 @@ class _Panel:
     """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
 
     def __init__(self, border: str, box_width: int, title: str = "", title_style: str = ""):
-        from cli import _append_blank_panel_line, _append_panel_line
+        from cli import _append_blank_panel_line, _append_panel_line, _panel_cwidth
         self.lines, self.border, self.width = [], border, box_width
         self._row, self._blank = _append_panel_line, _append_blank_panel_line
         if title:
-            # Title inlined into the top rule: ``╭─ Title ───╮``.
+            # Title inlined into the top rule: ``╭─ Title ───╮``. The dash run is sized by
+            # the title's DISPLAY width (cwidth), not ``len()``: a wide-glyph title (emoji,
+            # CJK) is fewer Python characters than cells, so a ``len()``-sized rule would
+            # overrun the rows below and detach the ╮ corner from the box's right edge.
             self.lines.append((border, "╭─ "))
             self.lines.append((title_style, title))
-            self.lines.append((border, " " + ("─" * max(0, box_width - len(title) - 3)) + "╮\n"))
+            self.lines.append((border, " " + ("─" * max(0, box_width - _panel_cwidth(title) - 3)) + "╮\n"))
         else:
             self.lines.append((border, "╭" + ("─" * box_width) + "╮\n"))
 
@@ -1606,6 +1609,7 @@ class CLITuiMixin:
             preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
             _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
         elif _effective_mode == "interrupt":
+            _redirect_degraded_to_steer = False
             if not images and text:
                 try:
                     if (
@@ -1613,9 +1617,26 @@ class CLITuiMixin:
                         and getattr(self.agent, "_supports_active_turn_redirect", False) is True
                         and hasattr(self.agent, "redirect")):
                         redirected = bool(self.agent.redirect(text))
+                        # redirect() silently degrades to a queued steer() when a tool call is in
+                        # flight (same True return, very different UX): a genuine redirect cancels
+                        # the live model request NOW, a degraded steer only lands once the running
+                        # tool (e.g. a long SSH command) finishes on its own. Claiming
+                        # "Redirected current turn" for the degraded case tells the user their
+                        # correction is live while it is really queued -- and if the turn ends on a
+                        # generic interrupted/retry filler before the steer drains, the correction
+                        # is orphaned with no visible trace. Read the flag the agent stamps on every
+                        # accepted redirect (agent/interrupt_control.py) and print an honest
+                        # message for the degraded case instead.
+                        _redirect_degraded_to_steer = bool(
+                            getattr(self.agent, "_last_redirect_degraded_to_steer", False))
                 except Exception:
                     redirected = False
-            if redirected:
+            if redirected and _redirect_degraded_to_steer:
+                preview = text[:80] + ("..." if len(text) > 80 else "")
+                _cprint(
+                    f"  {_ACCENT}⏩ Queued (tool still running — "
+                    f"applies once it finishes): '{preview}'{_RST}")
+            elif redirected:
                 preview = text[:80] + ("..." if len(text) > 80 else "")
                 _cprint(f"  {_ACCENT}↪ Redirected current turn: '{preview}'{_RST}")
             else:

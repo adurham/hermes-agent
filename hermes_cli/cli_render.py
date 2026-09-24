@@ -964,10 +964,32 @@ def _build_compact_banner() -> str:
     )
 
 
+def _panel_cwidth(text: str) -> int:
+    """Display (terminal-cell) width of panel text.
+
+    ``len()`` counts Python codepoints, which undercounts wide glyphs (emoji, CJK) and
+    emoji+VS-16 sequences; a panel sized/padded with it draws its right border one or more
+    cells short of the top/bottom rules. Mirrors the pre-split cli.py's
+    ``HermesCLI._panel_cwidth``: delegates to ``agent.display.display_cwidth()`` — see that
+    docstring for the emoji+VS-16 gap in ``get_cwidth``.
+    """
+    try:
+        from agent.display import display_cwidth
+    except Exception:  # pragma: no cover — agent layer unavailable (partial installs)
+        return len(text)
+    return display_cwidth(text)
+
+
+def _panel_ljust(text: str, inner_width: int) -> str:
+    """``str.ljust`` equivalent that pads by display cells, not Python codepoints."""
+    return text + (" " * max(0, inner_width - _panel_cwidth(text)))
+
+
 def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
-    """Stable TUI panel width wide enough for the title and content (incl. borders)."""
+    """Stable TUI panel width wide enough for the title and content (incl. borders), measured in
+    display cells so a wide-glyph title/content line cannot compute a box narrower than it renders."""
     term_cols = shutil.get_terminal_size((100, 20)).columns
-    longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
+    longest = max([_panel_cwidth(title)] + [_panel_cwidth(line) for line in content_lines] + [min_width - 4])
     inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
     return inner + 2  # leading/trailing space inside the borders
 
@@ -983,7 +1005,7 @@ _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)
 
 
 def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
-    lines.extend(((border_style, "│ "), (content_style, text.ljust(max(0, box_width - 2))), (border_style, " │\n")))
+    lines.extend(((border_style, "│ "), (content_style, _panel_ljust(text, max(0, box_width - 2))), (border_style, " │\n")))
 
 
 def _append_blank_panel_line(lines, border_style: str, box_width: int) -> None:
