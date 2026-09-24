@@ -826,7 +826,15 @@ class CuaDriver(BinaryPackage):
 class AgentBrowser(BinaryPackage):
     name = "agent-browser"
     optional = True
+    # Browser tools find agent-browser only in PM's store or on PATH (no npx
+    # fallback), and their readiness check never installs it, so an install
+    # without it silently loses every browser_* tool.
+    # Default-install it; `install.sh --skip-browser` declines it.
+    default = True
     deps = ("chromium",)
+    # Termux owns its browser stack (`npm install -g agent-browser`; see
+    # tools/browser_tool_install.py), and PM has no bionic Chromium to drive.
+    gaps = {"linux-arm64-bionic": "Termux installs agent-browser through npm"}
     flatten = True
     probe_version = False
     url = "https://registry.npmjs.org/agent-browser/-/agent-browser-{version}.tgz"
@@ -882,6 +890,8 @@ class Chromium(Package):
     name = "chromium"
     optional = True
     on_path = False
+    # Neither Chrome-for-Testing nor Playwright's mirror builds for Android.
+    gaps = {"linux-arm64-bionic": "no Chromium build for Android/Termux"}
     emulated_arch_targets = frozenset({"win32-arm64"})
     _CDN = "https://cdn.playwright.dev"
 

@@ -280,7 +280,31 @@ def _install_flag_error(args, *, extras: list[str], cross_target, tools_only: bo
         return "--trust-recorded installs the default closure and then stops; it does not take names, --extra, or --target"
     if extras and cross_target:
         return "--extra syncs this install's venv and cannot combine with --target"
+    without = getattr(args, "without", None) or ()
+    if without and (extras or cross_target or args.names):
+        return "--without shapes the default closure; it does not take names, --extra, or --target"
+    if without:
+        from pm.defaults import default_package_names
+
+        allowed = default_package_names()
+        unknown = [name for name in without if name not in allowed]
+        if unknown:
+            return (f"--without accepts only optional default packages ({', '.join(allowed)}); "
+                    f"not {', '.join(unknown)}")
     return None
+
+
+def _install_defaults(names: list[str], *, verify: bool) -> None:
+    """Install the optional defaults; a failure warns and never fails the install.
+
+    They are conveniences (the browser tools), not what Hermes needs to run:
+    a Chromium download that fails behind a proxy must not abort an install
+    whose required closure and venv are fine.
+    """
+    for name in names:
+        if _install_names([name], verify=verify):
+            print(f"⚠ optional {name} was not installed; its tools stay unavailable until "
+                  f"`hermes pm install {name}` succeeds", flush=True)
 
 
 def _install_python_environments(extras: list[str], *, sync: bool, test_environment) -> int:
@@ -330,6 +354,18 @@ def cmd_install(args) -> int:
         print(f"✗ {error}")
         return 1
     names = args.names if args.names or extras else source_install_packages(_lockfile().names())
+    without = list(dict.fromkeys(getattr(args, "without", None) or ()))
+    if without:
+        from pm.defaults import record_declined
+
+        # Persisted before anything installs: later bare installs and
+        # `hermes update` read the same record, so the opt-out sticks.
+        record_declined(add=without)
+    defaults: list[str] = []
+    if not (args.names or extras):
+        from pm.defaults import default_packages
+
+        defaults = default_packages(_lockfile().names())
     # Only the whole default closure verifies everything an activated shell
     # composes from, so only it advances the prologue's input stamps.
     full_closure = not (args.names or tools_only or cross_target)
@@ -343,6 +379,12 @@ def cmd_install(args) -> int:
     tool_names = names if args.names else tool_roots(names)
     if _install_names(tool_names, target=cross_target, verify=not trust_recorded):
         return 1
+    if args.names and not cross_target:
+        from pm.defaults import record_declined
+
+        # Naming a declined default is the opt-back-in: updates carry it again.
+        record_declined(remove=args.names)
+    _install_defaults(defaults, verify=not trust_recorded)
     if not cross_target and (not args.names or tools_only):
         from pm.install import activate
 
@@ -745,10 +787,13 @@ def main(argv=None) -> int:
     p.add_argument("version", nargs="?", metavar="VERSION", help="the tool version (only with --bump)")
     p.set_defaults(func=cmd_lock)
 
-    p = sub.add_parser("install", help="install packages (default: all required)")
+    p = sub.add_parser("install", help="install packages (default: all required + optional defaults)")
     p.add_argument("names", nargs="*")
     p.add_argument("--extra", action="append", default=[], metavar="NAME",
                    help="enable a declared dependency extra in the venv (repeatable)")
+    p.add_argument("--without", action="append", default=[], metavar="NAME",
+                   help="leave an optional default package (agent-browser) out of this and every later "
+                        "default install and update; `hermes pm install NAME` opts back in (repeatable)")
     p.add_argument("--tools-only", action="store_true",
                    help="install the tool closure, put it on PATH, and stop before the venv sync")
     p.add_argument("--trust-recorded", action="store_true",

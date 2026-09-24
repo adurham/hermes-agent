@@ -51,6 +51,10 @@ class Package:
     name: unique id.
     deps: packages installed before this one.
     optional: not part of the root closure; installed on demand.
+    default: an optional package the default install also carries (installers,
+        bare `pm install`, `hermes update`) unless the user declined it
+        (pm/defaults.py). It stays optional: a failed download warns instead of
+        failing the install, and its absence never blocks PATH activation.
     internal: tooling PM uses inside install/build steps — never on PATH
         and never selected as an application root. Dependencies and explicit
         build requests can select it. node/npm are shipped runtime tools
@@ -65,6 +69,7 @@ class Package:
     name: str = ""
     deps: tuple[str, ...] = ()
     optional: bool = False
+    default: bool = False
     internal: bool = False
     on_path: bool = True
     url: str = ""
