@@ -135,6 +135,7 @@ def _read_terminal_receipt(request: dict) -> dict | None:
 def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     import pm
     from pm import receipt
+    from pm.client import ensure_tools_for_sync
     from pm.environments import activation_environment, project_python
 
     root = Path(request["source"])
@@ -145,6 +146,9 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     arm_completion(root)
     with receipt.worker_context(update_id):
         try:
+            # This file runs from the new tree, so its lockfile carries the new
+            # pins; tools (incl. bumped uv/python) land before the sync uses them.
+            ensure_tools_for_sync()
             pm.sync_venv(explicit=True, project_root=root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)

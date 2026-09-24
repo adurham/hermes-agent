@@ -49,6 +49,10 @@ def transition(tmp_path):
         "def accept_worker_receipt(data, update_id):\n"
         "    assert data['update_id'] == update_id\n"
     )
+    (root / "pm/client.py").write_text(
+        "from hermes_cli.probe import event\n"
+        "ensure_tools_for_sync = lambda: event('tools')\n"
+    )
     (package / "probe.py").write_text(
         "import json, os, pathlib, sys\n"
         "def event(name, **values):\n"

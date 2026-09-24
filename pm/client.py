@@ -230,6 +230,28 @@ def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None
                           "plugins": plugin_inputs.encode(plugins)}, project_root=project_root)
 
 
+def ensure_tools_for_sync() -> None:
+    """Publish every required tool in this tree's lockfile, then put them on PATH.
+
+    Updates call this before the venv sync: the sync only pulls uv/python in
+    through its own dependency, so a bumped ripgrep/ffmpeg/node pin was never
+    installed and activation skipped the managed tool dirs on every start.
+    Publishing tools first also lets native builds resolve compilers and git
+    from the pinned store instead of the host (as `hermes pm install` does).
+    An update is an explicit user action, so the lazy-install policy does not
+    gate it; a failed download fails the update.
+    """
+    from pm.install import activate
+    from pm.lock import Lockfile
+    from pm.registry import tool_roots
+
+    for name in tool_roots(Lockfile(paths.lockfile_path()).names()):
+        ensure(name, explicit=True)
+    problems = activate(allow_incomplete=True)
+    if problems:
+        raise RuntimeError(f"tools not on PATH before venv sync: {'; '.join(problems)}")
+
+
 def stage_only(name, target, *, progress=None) -> Path:
     if is_runtime():
         from pm.install import stage_only as direct

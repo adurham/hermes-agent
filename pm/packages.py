@@ -663,9 +663,9 @@ class Gh(BinaryPackage):
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """Static ffmpeg. GPLv3 builds; always bundled.
     optional=False: ffmpeg is a required runtime tool. Sealed bundles ship
-    it baked into the payload (post_update skips provisioning sealed
-    installs — the artifact is atomic); dev installs get it re-ensured by
-    step_provision_runtimes when the pin bumps. Windows + Linux:
+    it baked into the payload; every `hermes update` and `hermes pm install`
+    re-ensures it from the new lockfile before the venv sync
+    (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
     BtbN/FFmpeg-Builds (dated autobuild tag; ships ffprobe too).
     macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
     single-binary — no ffprobe).
