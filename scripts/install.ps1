@@ -155,11 +155,6 @@ function Get-LongProfileRoot {
         }
     }
 
-    if ($script:LongProfileRoot) {
-        Write-PathDiag "long profile root: $script:LongProfileRoot"
-    } else {
-        Write-PathDiag "no long profile root found; 8.3 paths left as-is (tried: $($candidates -join ', '))"
-    }
     return $script:LongProfileRoot
 }
 
@@ -267,7 +262,6 @@ function Set-LongProfileEnvVars {
             Set-Item -Path "Env:$name" -Value $expanded
             $rewrote = $true
             $script:NormalizedPathRewrites[$name] = $expanded
-            Write-PathDiag "expanded 8.3 short path in %$name%: $current -> $expanded"
         }
     }
     return $rewrote
@@ -315,9 +309,6 @@ function Initialize-ResolvedPaths {
     Set-Variable -Scope 1 -Name HermesHome -Value $resolvedHome
     Set-Variable -Scope 1 -Name InstallDir -Value $resolvedDir
     $env:HERMES_HOME = $resolvedHome
-    if ($script:NormalizedProfilePaths) {
-        Write-PathDiag "resolved install paths: HermesHome=$resolvedHome InstallDir=$resolvedDir"
-    }
 
     # Captured here, where the values are final. The report goes to STDOUT as
     # JSON under -ShowResolvedPaths: on Windows a child's stderr does not
@@ -362,7 +353,7 @@ function Invoke-VerifiedDownload {
     $httpFailure = ""
     foreach ($candidate in $urls) {
         try {
-            Invoke-WebRequest -Uri $candidate -OutFile $OutFile -UseBasicParsing
+            Invoke-DownloadWithProgress -Uri $candidate -OutFile $OutFile
         } catch {
             $errorType = $_.Exception.GetType().FullName
             if ($_.Exception -is [System.Net.WebException]) {
@@ -393,6 +384,56 @@ function Invoke-VerifiedDownload {
     Fail "failed to download from $tried"
 }
 
+# Runs the same Invoke-WebRequest call the direct version made, on a
+# separate runspace, so the main thread can log $OutFile's size on disk as
+# it grows. This preserves the exact exception TYPE Invoke-VerifiedDownload's
+# catch block dispatches on for both PS 5.1 and pwsh 7 -- EndInvoke's
+# terminating error is unwrapped via .InnerException before it is
+# rethrown, so the caller sees the same WebException / HttpRequestException
+# / HttpResponseException it would have gotten from a direct call.
+function Invoke-DownloadWithProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$OutFile
+    )
+    if (Test-Path $OutFile) { Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue }
+
+    $ps = [powershell]::Create()
+    $ps.AddScript({
+        param($Uri, $OutFile)
+        # Invoke-WebRequest's own progress bar is a well-known throughput
+        # killer; we're logging progress ourselves from outside, so turn it off.
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing
+    }).AddArgument($Uri).AddArgument($OutFile) | Out-Null
+
+    $handle = $ps.BeginInvoke()
+    $lastMb = -1
+    try {
+        while (-not $handle.IsCompleted) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path $OutFile) {
+                $mb = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
+                if ($mb -ne $lastMb) {
+                    Log "  downloading $Uri : $mb MB"
+                    $lastMb = $mb
+                }
+            }
+        }
+        $ps.EndInvoke($handle) | Out-Null
+    } catch {
+        $inner = $_.Exception.InnerException
+        if ($inner) { throw $inner } else { throw }
+    } finally {
+        $ps.Dispose()
+    }
+
+    if (Test-Path $OutFile) {
+        $finalMb = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
+        Log "  downloaded $Uri : $finalMb MB"
+    }
+}
+
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
@@ -402,7 +443,7 @@ function Get-Uv {
     if ($existing) {
         # Developer shortcut: fetches nothing, but only for a new-enough uv.
         if (Test-UvAtLeastPin $existing.Source) { return $existing.Source }
-        Log "uv on PATH ($($existing.Source)) is older than the pinned $($script:UvPinVersion) or does not run; staging the pin"
+        Log "uv on PATH ($($existing.Source)) is older than the pinned $($script:UvPinVersion) or does not run; downloading our own copy"
     }
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:UvPinFiles[$target]
@@ -413,10 +454,10 @@ function Get-Uv {
     $uvExe = Join-Path $entry "uv.exe"
     if (Test-Path $uvExe) {
         if (Test-UvAtLeastPin $uvExe) { return $uvExe }
-        Log "cached pinned uv does not run; restaging it"
+        Log "cached pinned uv does not run; downloading our own copy"
         Remove-Item -Path $uvExe -Force
     }
-    Log "staging pinned uv $($script:UvPinVersion) ($target) into the pm store"
+    Log "downloading uv $($script:UvPinVersion) ($target)"
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-uv-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -449,7 +490,7 @@ function Get-PinnedGit {
     $entry = Join-Path (Get-PmStoreRoot) "git-$($script:GitPinVersion)-$target"
     $gitExe = Join-Path $entry "cmd\git.exe"
     if (Test-Path $gitExe) { return $gitExe }
-    Log "staging pinned git $($script:GitPinVersion) ($target) into the pm store"
+    Log "installing git $($script:GitPinVersion) ($target)"
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
