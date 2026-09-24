@@ -67,7 +67,7 @@ _LINUX_RAM_KEYS = frozenset({"MemTotal", "MemAvailable", "MemFree"})
 def _linux_meminfo_text() -> str | None:
     """Raw /proc/meminfo, or None when procfs cannot be read."""
     try:
-        return Path("/proc/meminfo").read_text(encoding="utf-8-sig")
+        return Path("/proc/meminfo").read_text(encoding="utf-8")
     except OSError:
         return None
 

@@ -584,7 +584,7 @@ def _read_pid() -> Optional[int]:
 def _pid_proc_starttime(pid: int) -> Optional[str]:
     """/proc/<pid>/stat starttime (field 22) on Linux, else None — cheap PID-recycling detector."""
     try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8-sig")
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
     except OSError:
         return None
     # comm may contain spaces/parens, so split after the LAST ")"; field 22 -> tail index 19.
