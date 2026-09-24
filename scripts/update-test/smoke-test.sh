@@ -96,7 +96,7 @@ STATUS_BEFORE="$(git -C "$INSTALL" status --porcelain)"
 mkdir -p "$ROOT/pristine/home" "$ROOT/pristine/userdata"
 cp -a "$H/." "$ROOT/pristine/home/"
 cp -a "$HERMES_DESKTOP_USER_DATA_DIR/." "$ROOT/pristine/userdata/"
-"${RUN[@]}" pre --source "$INSTALL" --ref main --backup-root "$BACKUPS" > "$ROOT/pre.log" 2>&1
+"${RUN[@]}" pre --source "$INSTALL" --backup-root "$BACKUPS" > "$ROOT/pre.log" 2>&1
 check $? "pre exits 0"
 SNAP="$(ls -1d "$BACKUPS"/*/ | head -1)"; SNAP="${SNAP%/}"
 for f in hermes-backup.zip home manifest.json hermes-home.txt target-sha; do
@@ -116,10 +116,9 @@ check $? "clone keeps directory mtimes"
 
 echo
 echo "--- pre points the install at the rehearsal copy ---"
-[ "$(git -C "$SNAP/serve.git" rev-parse refs/heads/main)" = "$HEAD_SHA" ]; check $? "serve.git main is the custom ref"
 [ "$(git -C "$INSTALL" config --local --get-regexp 'insteadOf' | wc -l | tr -d ' ')" = 2 ]; check $? "two insteadOf entries written (repo-local)"
 [ -f "$H/.skip_upstream_prompt" ]; check $? "upstream-prompt marker created"
-git -C "$INSTALL" remote get-url origin | grep -q 'serve.git'; check $? "remote get-url resolves to the rehearsal copy"
+[ "$(git -C "$INSTALL" remote get-url origin)" = "$INSTALL" ]; check $? "remote get-url resolves to --source"
 git -C "$INSTALL" config --get remote.origin.url | grep -q 'NousResearch'; check $? "config --get remote.origin.url stays official"
 
 echo

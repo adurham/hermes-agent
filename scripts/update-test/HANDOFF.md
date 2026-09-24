@@ -21,7 +21,7 @@ instructions:
    & ([scriptblock]::Create((irm $scriptUrl))) pre
    ```
 
-   this backs up your entire hermes home and any desktop app settings. _from this point on, nothing you do in hermes will be preserved, until you restore your backup at the end._
+   this backs up your entire hermes home and any desktop app settings, then points your install's updates at the test fork's `main` (no local mirror: `hermes update` fetches straight from the fork, so it needs network). _from this point on, nothing you do in hermes will be preserved, until you restore your backup at the end._
 
 3. boot hermes up to ensure everything is working, still. if you normally have a background service, gateway, etc, make sure it's running.
 
