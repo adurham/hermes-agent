@@ -1,8 +1,9 @@
 name: Canary Release
 
-# Automatic canaries are daily: the schedule caps them at one per 24h, and
-# release.py exits clean when HEAD already carries the last canary tag, so a
-# quiet day ships nothing. workflow_dispatch fires one on demand at any time.
+# Automatic canaries are daily: the schedule caps new tags at one per 24h.
+# With no new commits, release.py resumes an existing unpublished canary until
+# its protected head is live; only a published canary makes a quiet day a no-op.
+# workflow_dispatch fires one on demand at any time.
 #
 # Source identity is the exact stable version plus build metadata:
 # v<stable>+canary.<YYYYMMDDTHHMMSSZ>. It compares equal to the stable; only
