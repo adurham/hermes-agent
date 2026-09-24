@@ -13,6 +13,14 @@ from hermes_cli import venv_sync
 from pm.environments import runtime_facts_path
 
 
+@pytest.fixture(autouse=True)
+def _no_tool_downloads(monkeypatch):
+    """The launch sync publishes lockfile tools first; these tests cover the sync decision."""
+    import pm.client
+
+    monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: None)
+
+
 @pytest.fixture
 def completion_tail(monkeypatch):
     """Record the source-completion child prepare_launch spawns after a sync instead of running it.

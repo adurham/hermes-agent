@@ -290,8 +290,12 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         arm_completion(root)
         # Main-era installs have no PM ledger; carry what their venv held.
         # Established PM installs retain their recorded extras and plugin union instead.
+        from pm.client import ensure_tools_for_sync
         from pm.extras import legacy_selection
         extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
+        # Same order as `hermes update`: an interrupted update or a hand-run
+        # `git pull` leaves this tree's lockfile ahead of the installed tools.
+        ensure_tools_for_sync()
         pm.sync_venv(extras, explicit=True, project_root=root)
         collect_superseded_generations(root)
         # These can predate the swap. Once PM commits the replacement they
