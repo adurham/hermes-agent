@@ -139,8 +139,14 @@ def test_classic_cli_console_non_ascii_reaches_wire(tmp_path: Path) -> None:
             console.proc.write(f"{BMP} {tag}")
             wait_until(lambda: tag in console.screen, 30, "the composer to echo the typed text")
             echoed = _plain(console.screen)
+            # Enter immediately after input is deliberately treated as a pasted newline by
+            # the classic composer; wait for the typed text to settle before submitting.
+            wait_until(lambda: console.quiet_for(0.2), 30, "the typed composer to settle before Enter")
             console.proc.write("\r")
-            wait_until(lambda: srv.main_requests(), 90, "the typed turn to reach the provider")
+            try:
+                wait_until(lambda: srv.main_requests(), 90, "the typed turn to reach the provider")
+            except AssertionError as exc:
+                raise AssertionError(f"{exc}; console tail: {ascii(_plain(console.screen)[-600:])}") from exc
             user = last_user(srv.main_requests()[0])
         finally:
             screen = console.screen
