@@ -394,7 +394,7 @@ import {
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
-import { PrimaryProfilePin } from './primary-profile-pin'
+import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 import { applyDesktopIdentity, PRODUCT_IDENTITY } from './product-identity'
 import {
   assertLocalProfileCanStart,
@@ -12384,7 +12384,15 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   migrateActiveProfileIfMissing()
 
   const connectionAttempt = backendConnectionState.startAttempt()
-  const primaryProfile = primaryProfileKey()
+  // ONE launch-profile decision for this attempt (#108417): routing pin,
+  // --profile argv, and the child env all derive from the same read, so a
+  // hermes:profile:remember landing mid-startup becomes the NEXT boot's
+  // preference instead of splitting routing identity from the launch
+  // argument. (The pin below still honors a live primary — but a primary
+  // being live means startHermes never got here.)
+  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(
+    readActiveDesktopProfile
+  )
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.
   primaryProfilePin.pin(primaryProfile)
@@ -12449,9 +12457,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
-    const activeProfile = readActiveDesktopProfile()
-
+    // unaffected. `activeProfile` is the SAME decision that pinned routing
+    // above — never re-read here (#108417).
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)
     }
@@ -12540,7 +12547,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
-    const profile = primaryProfileKey()
+    const profile = primaryProfile
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
@@ -12649,6 +12656,11 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
         return
       }
 
+      // The CURRENT owner failed to start: its routing identity must not
+      // outlive it. A newer attempt already re-pins on its own decision
+      // (#108417), and the stale branch above never reaches this clear.
+      primaryProfilePin.clear()
+
       rememberLog(`Hermes backend failed to start: ${error.message}`)
       updateBootProgress(
         {
@@ -12678,6 +12690,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
 
       rememberLog(formatBackendExitLine('Hermes backend exited', code, signal, primaryOutputTail))
+
+      // The current primary child is gone; release its routing pin so the
+      // next startHermes() re-reads active-profile.json instead of re-pinning
+      // the dead child's profile (#108417). Supervisor respawns go through
+      // startHermes, which makes a fresh decision — a respawn cannot inherit
+      // a pin from a process that no longer exists.
+      primaryProfilePin.clear()
 
       if (!scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })) {
         sendBackendExit({ code, signal })
@@ -12787,6 +12806,12 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error
     }
+
+    // The startup attempt this pin belongs to is being torn down: release its
+    // routing identity so a later start re-reads the preference. The
+    // attempt guard above means a superseded attempt's failure never clears
+    // a newer attempt's pin (#108417).
+    primaryProfilePin.clear()
 
     await backendConnectionState.stopProcess(localBackendLifecycle.stop)
 
