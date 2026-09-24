@@ -24,9 +24,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import pytest
 
+from agent.image_token_cost import DEFAULT_IMAGE_TOKEN_COST
 from agent.model_metadata import (
-    _IMAGE_TOKEN_COST,
-    _is_image_part,
+    _count_image_tokens,
     estimate_request_tokens_rough,
 )
 
@@ -37,27 +37,62 @@ def _make_data_url_screenshot(payload_size: int = 200_000) -> str:
 
 
 class TestImageDetection:
+    """Detection semantics of the live image-part predicate.
+
+    The fork-local ``agent.model_metadata._is_image_part`` was retired
+    2026-09-24 (dead since the native ``current_image_token_cost`` path
+    shipped); the production copy lives in ``context_compressor`` and
+    these probes pin its shape coverage.
+    """
+
+    @staticmethod
+    def _is_image_part(part):
+        from agent.context_compressor import _is_image_part
+
+        return _is_image_part(part)
+
     def test_openai_chat_completions_image_url_dict(self):
-        assert _is_image_part({"type": "image_url", "image_url": {"url": "data:..."}})
+        assert self._is_image_part({"type": "image_url", "image_url": {"url": "data:..."}})
 
     def test_openai_chat_completions_image_url_string(self):
-        assert _is_image_part({"type": "image_url", "image_url": "data:..."})
+        assert self._is_image_part({"type": "image_url", "image_url": "data:..."})
 
     def test_openai_responses_input_image(self):
-        assert _is_image_part({"type": "input_image", "image_url": "data:..."})
+        assert self._is_image_part({"type": "input_image", "image_url": "data:..."})
 
     def test_anthropic_native_image(self):
-        assert _is_image_part({
+        assert self._is_image_part({
             "type": "image",
             "source": {"type": "base64", "media_type": "image/png", "data": "..."},
         })
 
     def test_text_part_is_not_image(self):
-        assert not _is_image_part({"type": "text", "text": "hello"})
+        assert not self._is_image_part({"type": "text", "text": "hello"})
 
     def test_non_dict_is_not_image(self):
-        assert not _is_image_part("plain string")
-        assert not _is_image_part(None)
+        assert not self._is_image_part("plain string")
+        assert not self._is_image_part(None)
+
+
+class TestImageCountUsesLiveCounter:
+    """``_count_image_tokens`` is the live counter the estimator delegates to."""
+
+    def test_counts_image_url_part(self):
+        msg = {"content": [{"type": "text", "text": "x"},
+                           {"type": "image_url", "image_url": "data:..."}]}
+        assert _count_image_tokens(msg, 100) == 100
+
+    def test_counts_anthropic_content_blocks_images(self):
+        msg = {
+            "content": [{"type": "text", "text": "x"}],
+            "anthropic_content_blocks": [
+                {"type": "image", "source": {"type": "base64", "data": "..."}},
+            ],
+        }
+        assert _count_image_tokens(msg, 100) == 100
+
+    def test_text_only_message_is_free(self):
+        assert _count_image_tokens({"content": "hello"}, 100) == 0
 
 
 class TestImageEstimateUsesFixedCredit:
@@ -77,12 +112,12 @@ class TestImageEstimateUsesFixedCredit:
         est = estimate_request_tokens_rough(msgs)
 
         # Old broken behaviour: ~200_000 / 4 ≈ 50_000.
-        # New behaviour: tiny text + 1 × _IMAGE_TOKEN_COST credit.
-        assert est < _IMAGE_TOKEN_COST + 200, (
-            f"image estimate too large; expected ~{_IMAGE_TOKEN_COST}, got {est}"
+        # New behaviour: tiny text + 1 × DEFAULT_IMAGE_TOKEN_COST credit.
+        assert est < DEFAULT_IMAGE_TOKEN_COST + 200, (
+            f"image estimate too large; expected ~{DEFAULT_IMAGE_TOKEN_COST}, got {est}"
         )
-        assert est >= _IMAGE_TOKEN_COST, (
-            f"image credit must be at least {_IMAGE_TOKEN_COST}, got {est}"
+        assert est >= DEFAULT_IMAGE_TOKEN_COST, (
+            f"image credit must be at least {DEFAULT_IMAGE_TOKEN_COST}, got {est}"
         )
 
     def test_anthropic_native_image_uses_credit_too(self):
@@ -101,8 +136,8 @@ class TestImageEstimateUsesFixedCredit:
             ],
         }]
         est = estimate_request_tokens_rough(msgs)
-        assert est < _IMAGE_TOKEN_COST + 200, est
-        assert est >= _IMAGE_TOKEN_COST, est
+        assert est < DEFAULT_IMAGE_TOKEN_COST + 200, est
+        assert est >= DEFAULT_IMAGE_TOKEN_COST, est
 
     def test_multiple_images_stack_linearly(self):
         msgs = [{
@@ -115,7 +150,7 @@ class TestImageEstimateUsesFixedCredit:
             ],
         }]
         est = estimate_request_tokens_rough(msgs)
-        assert 3 * _IMAGE_TOKEN_COST <= est < 3 * _IMAGE_TOKEN_COST + 200, est
+        assert 3 * DEFAULT_IMAGE_TOKEN_COST <= est < 3 * DEFAULT_IMAGE_TOKEN_COST + 200, est
 
     def test_text_only_message_unchanged(self):
         """No images → behavior is the legacy len/4 estimate."""
@@ -173,4 +208,4 @@ class TestRegressionFromScreenshotBug:
             f"estimator still inflating image-bearing sessions: {est:,}"
         )
         # Sanity: it's still a non-trivial number (text content + 5 image credits).
-        assert est > 5 * _IMAGE_TOKEN_COST
+        assert est > 5 * DEFAULT_IMAGE_TOKEN_COST

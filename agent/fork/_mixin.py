@@ -14,7 +14,7 @@ The real implementations live in the sibling modules:
   ``agent.fork.rate_limit_tracker``  — rate-limit observability
   ``agent.fork.anthropic_recovery``  — refusal retry + CC alias translation
   ``agent.fork.tool_search_lazy``    — lazy MCP tool gating
-  ``agent.fork.diagnostics``         — usage history + tools sig + xAI hint
+  ``agent.fork.diagnostics``         — tools-signature hash (xAI hint retired to upstream)
 
 Each forwarder is a 4-line method that imports and dispatches. Why a
 mixin instead of methods on ``AIAgent`` directly?
@@ -79,12 +79,6 @@ class ForkForwardersMixin:
         """Forwarder — see ``agent.fork.tool_search_lazy.currently_deferred_names``."""
         from agent.fork.tool_search_lazy import currently_deferred_names
         return currently_deferred_names(self)
-
-    @staticmethod
-    def _decorate_xai_entitlement_error(detail: str) -> str:
-        """Forwarder — see ``agent.fork.diagnostics.decorate_xai_entitlement_error``."""
-        from agent.fork.diagnostics import decorate_xai_entitlement_error
-        return decorate_xai_entitlement_error(detail)
 
     def _log_rate_limit_first_capture(self, state: "RateLimitState") -> None:
         """Forwarder — see ``agent.fork.rate_limit_tracker.log_rate_limit_first_capture``."""

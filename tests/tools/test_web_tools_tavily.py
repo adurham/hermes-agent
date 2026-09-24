@@ -1,11 +1,15 @@
 """Tests for Tavily web backend integration.
 
 Coverage:
-  _tavily_request() — keyed Bearer vs keyless header, attribution, error bodies.
+  _tavily_request() — keyed Bearer auth, attribution, error bodies. Tavily is
+      keyed-only on this fork (FORK.md 2026-09-01: "Tavily kept keyed-only;
+      removed from the default-on keyless ring"), so the keyless header
+      (X-Tavily-Access-Mode) is deliberately GONE: a call without a key fails
+      with the required-key error and never reaches Tavily.
   _normalize_tavily_search_results() — search response normalization.
   _normalize_tavily_documents() — extract response normalization, failed_results.
   web_search_tool / web_extract_tool — Tavily dispatch paths.
-  auto-detect ranking — keyed paid-band; keyless only when Tavily is selected.
+  auto-detect ranking — keyed paid-band; no keyless path exists.
 """
 
 import json
@@ -30,25 +34,27 @@ def _ok_response(payload=None):
 class TestTavilyRequest:
     """Test suite for the _tavily_request helper."""
 
-    def test_keyless_when_no_api_key(self):
-        """No TAVILY_API_KEY → keyless header, no Authorization, no body key."""
-        mock_response = _ok_response()
+    def test_no_api_key_never_falls_back_to_keyless(self):
+        """Keyed-only contract (fork-deliberate, FORK.md 2026-09-01).
+
+        No TAVILY_API_KEY → provider.search() fails with the required-key error
+        and NO HTTP request is made — the fork removed the whole keyless path,
+        so there is no anonymous request against a vendor the user never opted
+        into. The keyless access-mode header no longer exists at all.
+        """
+        from plugins.web.tavily.provider import TavilyWebSearchProvider, _tavily_headers
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
-            with patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post:
-                from plugins.web.tavily.provider import _tavily_request
-                _tavily_request("search", {"query": "test"})
+            with patch("plugins.web.tavily.provider.httpx.post") as mock_post:
+                result = TavilyWebSearchProvider().search("test")
+                mock_post.assert_not_called()
 
-                mock_post.assert_called_once()
-                headers = mock_post.call_args.kwargs["headers"]
-                payload = mock_post.call_args.kwargs["json"]
-                assert headers["X-Client-Name"] == "hermes-agent"
-                assert headers["X-Tavily-Access-Mode"] == "keyless"
-                assert "Authorization" not in headers
-                assert "api_key" not in payload
-                assert payload["query"] == "test"
-                assert "api.tavily.com/search" in mock_post.call_args.args[0]
+        assert result["success"] is False
+        assert "TAVILY_API_KEY" in result["error"]
+        # The header builder knows only keyed auth — no keyless branch survives.
+        assert set(_tavily_headers("tvly-test-key")) == {"Authorization", "X-Client-Name"}
+        assert "X-Tavily-Access-Mode" not in _tavily_headers("tvly-test-key")
 
     def test_keyed_uses_bearer_not_body(self):
         """TAVILY_API_KEY → Bearer auth, attribution, no body api_key."""
@@ -301,24 +307,25 @@ class TestWebSearchTavily:
             assert len(result["data"]["web"]) == 1
             assert result["data"]["web"][0]["title"] == "Result"
 
-    def test_search_keyless_dispatch(self):
-        """Opt-in keyless Tavily hits Tavily's own endpoint, not the ring."""
-        mock_response = _ok_response({
-            "results": [{"title": "Result", "url": "https://r.com", "content": "desc"}]
-        })
+    def test_no_key_selected_tavily_surfaces_key_error_not_keyless(self):
+        """A selected Tavily with no key is an honest failure, never a keyless call.
 
+        The fork's Tavily has no anonymous path, so the tool returns the
+        required-key error and no request reaches Tavily's endpoint (no
+        X-Tavily-Access-Mode header can appear). The one-shot keyless rescue is
+        disabled here so the assertion is about Tavily alone, not the ring.
+        """
         with patch("tools.web_tools._get_backend", return_value="tavily"), \
-             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
+             patch("plugins.web.tavily.provider.httpx.post") as mock_post, \
+             patch("tools.web_tools_rescue._keyless_rescue_enabled", return_value=False), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             from tools.web_tools import web_search_tool
             result = json.loads(web_search_tool("test query"))
-            assert result["success"] is True
-            headers = mock_post.call_args.kwargs["headers"]
-            assert headers["X-Tavily-Access-Mode"] == "keyless"
-            assert headers["X-Client-Name"] == "hermes-agent"
-            assert "Authorization" not in headers
-            assert "api.tavily.com/search" in mock_post.call_args.args[0]
+
+        assert result["success"] is False
+        assert "TAVILY_API_KEY" in result["error"]
+        mock_post.assert_not_called()
 
 
 

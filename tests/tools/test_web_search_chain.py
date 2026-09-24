@@ -124,7 +124,8 @@ class TestRunSearchChain:
 
         result = web_tools._run_search_chain(("brave-free", "ddgs"), "query", 5)
         assert result["success"] is True
-        brave.search.assert_called_once_with("query", 5)
+        # Bucketed fetch (5 → 10), same as _memoized_search, so near-identical limits share a memo entry.
+        brave.search.assert_called_once_with("query", 10)
         ddgs.search.assert_not_called()
 
     def test_failover_on_429_to_second(self, monkeypatch):
@@ -223,6 +224,100 @@ class TestRunSearchChain:
         result = web_tools._run_search_chain(("brave-free", "ddgs"), "query", 5)
         assert result["success"] is True
         ddgs.search.assert_called_once()
+
+
+# ---------------------------------------------------------------------------#
+# Chain caching: _run_search_chain shares the web_result_cache TTL memo
+# ---------------------------------------------------------------------------#
+
+
+class TestChainMemoCache:
+    """The chain path shares upstream's TTL memo with the single-provider path.
+
+    Regression for the de-fork audit defect: ``_run_search_chain`` used to call
+    ``provider.search()`` directly, bypassing the ``web.cache_enabled`` /
+    ``web.cache_ttl_minutes`` contract that ``_memoized_search`` honors. Both
+    paths now key the same ``search_memo`` on (provider name, normalized query,
+    bucketed limit).
+    """
+
+    def test_chained_search_populates_the_memo(self, monkeypatch):
+        from tools import web_tools
+        from tools.web_result_cache import search_memo
+
+        search_memo.clear()
+        brave = _make_provider("brave-free", search_response={"success": True, "data": {"web": [{"title": "r1"}]}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"brave-free": brave}.get(n))
+
+        result = web_tools._run_search_chain(("brave-free",), "cached query", 5)
+        assert result["success"] is True
+
+        hit = search_memo.lookup("brave-free", "cached query", 5)
+        assert hit is not None, "a successful chained search must populate the shared memo"
+        assert hit["data"]["web"][0]["title"] == "r1"
+
+    def test_repeated_chained_search_served_from_the_memo(self, monkeypatch):
+        """Second identical walk is answered from the memo — no second paid call."""
+        from tools import web_tools
+        from tools.web_result_cache import search_memo
+
+        search_memo.clear()
+        brave = _make_provider("brave-free", search_response={"success": True, "data": {"web": [{"title": "r1"}]}})
+        ddgs = _make_provider("ddgs", search_response={"success": True, "data": {"web": [{"title": "r2"}]}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"brave-free": brave, "ddgs": ddgs}.get(n))
+
+        first = web_tools._run_search_chain(("brave-free", "ddgs"), "repeat query", 5)
+        second = web_tools._run_search_chain(("brave-free", "ddgs"), "repeat query", 5)
+
+        assert first == second
+        brave.search.assert_called_once(), "the second walk must not re-hit the vendor"
+        ddgs.search.assert_not_called()
+
+    def test_chain_memo_respects_case_and_limit_buckets(self, monkeypatch):
+        """The chain keys the memo exactly like _memoized_search: case-folded query, bucketed limit."""
+        from tools import web_tools
+        from tools.web_result_cache import search_memo
+
+        search_memo.clear()
+        brave = _make_provider("brave-free", search_response={"success": True, "data": {"web": [{"title": "r1"}]}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"brave-free": brave}.get(n))
+
+        web_tools._run_search_chain(("brave-free",), "Mixed CASE query", 5)
+        # Same bucket (<=10) + case-folded query: a memo hit, no second vendor call.
+        web_tools._run_search_chain(("brave-free",), "  mixed case   QUERY ", 8)
+        brave.search.assert_called_once()
+
+    def test_chain_memo_disabled_by_config(self, monkeypatch):
+        """web.cache_enabled: false disables the memo for the chain path too."""
+        from tools import web_tools
+        import tools.web_result_cache as wrc
+
+        search_memo = wrc.search_memo
+        search_memo.clear()
+        monkeypatch.setattr(wrc, "_web_config", lambda: {"cache_enabled": False})
+        brave = _make_provider("brave-free", search_response={"success": True, "data": {"web": []}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"brave-free": brave}.get(n))
+
+        web_tools._run_search_chain(("brave-free",), "q", 5)
+        web_tools._run_search_chain(("brave-free",), "q", 5)
+        assert brave.search.call_count == 2
+
+    def test_chain_never_memoizes_failures(self, monkeypatch):
+        """A failed member must be re-tried next walk — failures are not sticky."""
+        from tools import web_tools
+        from tools.web_result_cache import search_memo
+
+        search_memo.clear()
+        brave = _make_provider("brave-free", search_response={"success": False, "error": "HTTP 429"})
+        ddgs = _make_provider("ddgs", search_response={"success": True, "data": {"web": [{"title": "r2"}]}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"brave-free": brave, "ddgs": ddgs}.get(n))
+
+        web_tools._run_search_chain(("brave-free", "ddgs"), "q failure", 5)
+        web_tools._run_search_chain(("brave-free", "ddgs"), "q failure", 5)
+
+        assert brave.search.call_count == 2, "the failed first member must be re-tried"
+        assert ddgs.search.call_count == 1, "the successful member is memoized under its own name"
+        assert search_memo.lookup("brave-free", "q failure", 5) is None
 
 
 # ---------------------------------------------------------------------------#
