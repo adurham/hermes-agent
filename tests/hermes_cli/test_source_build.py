@@ -206,7 +206,7 @@ def test_preparation_reuses_only_the_exact_completed_workspace_union(source_chec
     prepare_source_dependencies(root, ("ui-tui", "web"), env=env)
     first = _events(root)
     assert [event["step"] for event in first] == ["deps"]
-    assert first[0]["python"] == sys.executable
+    assert first[0]["python"] == env["HERMES_PYTHON"]
     assert first[0]["ci"] == "1"
     assert "esbuild" not in first[0]
     assert first[0]["npmrc"] == str(Path(os.environ["HERMES_HOME"]) / "npmrc")
