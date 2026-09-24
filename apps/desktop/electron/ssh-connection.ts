@@ -196,6 +196,7 @@ function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
 }
 
 function shortControlDir(): string {
+  // no-tmp: ok — AF_UNIX's short path budget rules out a deep HOME/TMPDIR; the parent and child are checked before use.
   return `/tmp/hermes-ssh-${process.getuid!()}`
 }
 
@@ -215,14 +216,15 @@ function defaultControlDir(): string {
 function checkShortControlParent(): void {
   // /tmp can be a symlink on macOS. Inspect its resolved directory before
   // creating anything there; the sticky bit protects an owned child from rename.
-  const st = fs.statSync(fs.realpathSync('/tmp'))
+  const parent = path.dirname(shortControlDir())
+  const st = fs.statSync(fs.realpathSync(parent))
 
   if (
     !st.isDirectory() ||
     (st.uid !== 0 && st.uid !== process.getuid!()) ||
     ((st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0)
   ) {
-    throw new Error('Unsafe SSH control parent: /tmp must be owned by root or this user and sticky if writable.')
+    throw new Error(`Unsafe SSH control parent: ${parent} must be owned by root or this user and sticky if writable.`)
   }
 }
 
