@@ -3,6 +3,47 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-09-24 (desktop package.json version was 2 releases behind; the lock kept the pre-rename rcedit entry)
+
+**Two separate staleness bugs behind one dirty file, found while answering "are we
+on the latest upstream tag?".** Both predate the v2026.9.24 sync; the sync surfaced them
+because a `git status` right after it should have been clean.
+
+**1. `apps/desktop/package.json` sat at 0.21.3 while the code was 0.21.5.**
+`hermes_cli/__init__.py` (the canonical version, 0.21.5), `pyproject.toml`, and
+`acp_registry/agent.json` were all synced — only the desktop manifest was behind.
+Root cause: the fork's auto-sync (`apps/desktop/scripts/sync-version.mjs`, wired into
+the `prebuild` npm script) only fires on `npm run build`, so a sync that never rebuilds
+the desktop app leaves the manifest stale; there is no check anywhere in CI for it.
+Fixed with the established manual-bump convention (`f0cad06871`, `8c25573607`,
+`d9c4cdeedc`, `e2a664f87a`) rather than running a build: same value the build would write,
+verified below.
+
+**2. `package-lock.json` pinned the *pre-rename* `rcedit` entry (0.21.3 workspace version
++ rcedit 5.0.2 + its 3 transitive packages).** The `rcedit → resedit` swap
+(`9d0d09564b`, 2026-08-08) updated `apps/desktop/package.json` and the lock, but a later
+lock-touching commit (`9d78bd4657`) restored the stale rcedit block: the lock's
+`apps/desktop.devDependencies` said `rcedit: 5.0.2` while the manifest said `resedit:
+1.7.2`. So the lock disagreed with the manifest on a package that was removed a month
+earlier — not just the version field.
+
+**Verification (no build, no install):** regenerated the lock in a scratch sandbox
+(`~/.hermes/cache/scratch/npmlock-full`, every workspace manifest + lock copied, then
+`npm install --package-lock-only --ignore-scripts`): the only changes were exactly the
+two stale regions above — the version line and the rcedit→resedit region (93 net lines)
+— and a second pass from the regenerated lock produced **zero** further change
+(idempotent). The checked-in fix applies those two edits surgically, which leaves the
+rest of the lock byte-identical. `npm ci --dry-run` (which validates lock⇄manifest
+consistency) exits 0 both before and after, so this was never build-breaking — it is
+drift, and this removes it.
+
+**Residual, not fixed here:** two upstream test *names* still say "rcedit"
+(`apps/desktop/scripts/set-exe-identity.test.mjs`) — cosmetic, upstream-owned.
+
+**Files:** `apps/desktop/package.json`, `package-lock.json`
+
+---
+
 ### Converter consolidation: retired the fork's vendored Anthropic converter — 2026-09-14 (owner-approved)
 
 **Decision:** adopt upstream's `agent/anthropic_message_convert.py` as the one
