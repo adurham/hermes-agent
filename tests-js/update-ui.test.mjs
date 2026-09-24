@@ -157,6 +157,42 @@ test.skipIf(process.platform === 'win32')('probe Git reaches the staged main eve
   }
 })
 
+test.skipIf(process.platform === 'win32')('preloaded historical Desktop Git check reads staged origin rather than the public API', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-historical-probe-'))
+  const git = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+  try {
+    const checkout = path.join(root, 'checkout')
+    const bare = path.join(root, 'serve.git')
+    fs.mkdirSync(checkout)
+    const run = (args, cwd = checkout) => execFileSync(git, args, { cwd, encoding: 'utf8' }).trim()
+    run(['init', '-b', 'main'])
+    run(['-c', 'user.name=Fixture', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'base'])
+    run(['-c', 'user.name=Fixture', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'staged'])
+    const sha = run(['rev-parse', 'HEAD'])
+    run(['clone', '--bare', checkout, bare], root)
+    run(['remote', 'add', 'origin', 'https://github.com/NousResearch/hermes-agent.git'])
+    const cfg = path.join(root, 'gitconfig')
+    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/NousResearch/hermes-agent.git'])
+    const shim = path.join(root, 'git')
+    fs.writeFileSync(shim, `#!/bin/sh\nif [ "$1 $2 $3" = "remote get-url origin" ]; then printf '%s\\n' 'https://github.com/NousResearch/hermes-agent.git'; else exec '${git}' "$@"; fi\n`, { mode: 0o700 })
+    const launchEnv = { HERMES_DESKTOP_USER_DATA_DIR: root }
+    sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, { ...process.env, GIT_CONFIG_GLOBAL: cfg }, launchEnv)
+    const script = 'const {spawn} = require("node:child_process"); const child = spawn(process.argv[1], process.argv.slice(3), {cwd:process.argv[2], env:{...process.env, GIT_CONFIG_GLOBAL:"/dev/null"}}); child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr); child.on("close", code => process.exitCode=code)'
+    for (const [args, expected] of [
+      [['remote', 'get-url', 'origin'], `file://${bare}`],
+      [['ls-remote', 'origin', 'refs/heads/main'], `${sha}\trefs/heads/main`],
+    ]) {
+      const result = spawnSync(process.execPath, ['-e', script, shim, checkout, ...args], {
+        encoding: 'utf8', env: { ...process.env, ...launchEnv, GIT_CONFIG_GLOBAL: '/dev/null' },
+      })
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim()).toBe(expected)
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('preloaded Electron-style execFile transports explicit branch into the checker', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-branch-probe-'))
   try {

@@ -31,7 +31,7 @@ import { parseArgs } from 'node:util';
 import { _electron } from '@playwright/test';
 import { prepareWindowForInput } from './window-input.cjs';
 import { assertStagedBranch, pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } from './update-ui.cjs';
-import { prepareSourceBranchEnvironment } from './source-branch-probe.cjs';
+import { installSourceBranchProbe, prepareSourceBranchEnvironment } from './source-branch-probe.cjs';
 import { observeSourceUpdate } from './source-update-observer.mjs';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
 import { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } from './smoke-env.mjs';
@@ -159,6 +159,7 @@ async function main() {
     cwd: launch.cwd,
     env: launchEnv,
   });
+  if (!values['no-update']) await installSourceBranchProbe(app);
   const window = await pickAppWindow(app, log);
   await window.screenshot({ path: `${values.spec}.window.png` }).catch(() => {});
 
