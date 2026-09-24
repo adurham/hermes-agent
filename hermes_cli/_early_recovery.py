@@ -462,17 +462,7 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     if restore or added:
         print("⚠ A previous `hermes update` was killed while git was writing the new code — "
               f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
-        failed = None
-        if restore:
-            run = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",
-                      "--pathspec-file-nul", stdin="\0".join(restore))
-            failed = run if run.returncode else None
-        if added and not failed:
-            run = git("rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
-                      "--pathspec-file-nul", stdin="\0".join(added))
-            failed = run if run.returncode else None
-            for rel in added:
-                (root / rel).unlink(missing_ok=True)
+        failed = _put_back_paths(git, root, restore, added)
         if failed:
             # No manual recipe: a reset would also wipe the edits this restore keeps, and the
             # marker stays so the next launch retries.
@@ -490,6 +480,23 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     if stash:
         print(f"  Your local changes are still in the update's stash ({stash}).", file=sys.stderr)
     return True
+
+
+def _put_back_paths(git, root: Path, restore: list[str], added: list[str]) -> subprocess.CompletedProcess | None:
+    """Return ``restore`` to HEAD and drop ``added``; the failed git run, or None."""
+    if restore:
+        run = git("restore", "--source=HEAD", "--staged", "--worktree", "--pathspec-from-file=-",
+                  "--pathspec-file-nul", stdin="\0".join(restore))
+        if run.returncode:
+            return run
+    if added:
+        run = git("rm", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
+                  "--pathspec-file-nul", stdin="\0".join(added))
+        for rel in added:
+            (root / rel).unlink(missing_ok=True)
+        if run.returncode:
+            return run
+    return None
 
 
 def relaunch_after_restore() -> None:
@@ -515,6 +522,34 @@ def _pytest_owns_live_checkout(root: Path) -> bool:
     return "PYTEST_CURRENT_TEST" in os.environ and root == Path(__file__).resolve().parent.parent
 
 
+def _missing_environment(root: Path) -> bool:
+    """True when PM recorded an environment whose site-packages is gone."""
+    from pm.environments import runtime_facts_path, selected_venv, site_packages
+
+    if not runtime_facts_path(root).is_file():
+        return False
+    try:
+        return not site_packages(selected_venv(root)).is_dir()
+    except RuntimeError:
+        return True  # PM validates the recorded state before rebuilding.
+
+
+def _count_failed_attempt(marker: Path) -> None:
+    """Bump ``marker``'s attempt count in its own format so the retry limit can trip."""
+    import json
+
+    # Best-effort: an unwritable marker only means the limit trips later.
+    with contextlib.suppress(OSError):
+        attempts = _read_marker_attempts(marker) + 1
+        body = marker.read_text(encoding="utf-8-sig")
+        if any(line.startswith("pid=") for line in body.splitlines()):
+            lines = [line for line in body.splitlines() if not line.startswith("attempts=")]
+            body = "\n".join([*lines, f"attempts={attempts}"]) + "\n"
+        else:
+            body = json.dumps({"attempts": attempts})
+        marker.write_text(body, encoding="utf-8")
+
+
 def recover_if_needed(project_root: Path | None = None, argv: list[str] | None = None, *, explicit: bool = False) -> bool:
     """Ask PM to restore dependencies before activation; leave failed requests retryable."""
     global _UPDATE_RETRY_RECOVERED
@@ -527,21 +562,13 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
     args = command_argv(sys.argv[1:] if argv is None else argv)
     if not explicit and args[:1] == ["pm"]:
         return False  # PM's command boundary owns the explicit repair.
-    from pm.environments import install_state_dir, runtime_facts_path, selected_venv, site_packages
+    from pm.environments import install_state_dir
 
     missing_marker = install_state_dir(root) / ".repair-incomplete"
     marker_paths = (root / ".update-incomplete", root / ".lazy-refresh-incomplete", missing_marker)
     markers = [path for path in marker_paths if path.is_file()]
 
-    def missing_environment():
-        if not runtime_facts_path(root).is_file():
-            return False
-        try:
-            return not site_packages(selected_venv(root)).is_dir()
-        except RuntimeError:
-            return True  # PM validates the recorded state before rebuilding.
-
-    if not (root / "pyproject.toml").is_file() or not (explicit or markers or missing_environment()):
+    if not (root / "pyproject.toml").is_file() or not (explicit or markers or _missing_environment(root)):
         return False
     lock = _claim_recovery_lock(root)
     if lock is None:
@@ -550,7 +577,7 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         # Recheck after locking: another launch can finish between discovery and claim.
         markers = [path for path in marker_paths if path.is_file()]
         if not markers:
-            if not explicit and not missing_environment():
+            if not explicit and not _missing_environment(root):
                 return False
             missing_marker.write_text('{"attempts": 0}', encoding="utf-8")
             markers = [missing_marker]
@@ -569,20 +596,8 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         print("hermes: dependency environment repaired", file=sys.stderr)
         return True
     except Exception as exc:
-        import json
-
         for marker in markers:
-            try:
-                attempts = _read_marker_attempts(marker) + 1
-                body = marker.read_text(encoding="utf-8-sig")
-                if any(line.startswith("pid=") for line in body.splitlines()):
-                    lines = [line for line in body.splitlines() if not line.startswith("attempts=")]
-                    body = "\n".join([*lines, f"attempts={attempts}"]) + "\n"
-                else:
-                    body = json.dumps({"attempts": attempts})
-                marker.write_text(body, encoding="utf-8")
-            except OSError:
-                pass
+            _count_failed_attempt(marker)
         print(f"hermes: dependency repair failed: {exc}; run `hermes pm repair`", file=sys.stderr)
         return False
     finally:
