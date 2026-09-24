@@ -540,7 +540,7 @@ import {
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
-import { createWindowRevealController } from './window-reveal'
+import { wireWindowReveal } from './window-reveal'
 import {
   bindGeometryPersistence,
   computeWindowOptions,
@@ -12959,23 +12959,8 @@ function installPreviewGuestPreload() {
 // though the renderer finished loading. Keep the themed path as the preferred
 // reveal, then fall back a few seconds after the renderer loads. `show` and
 // `onRevealed` carry the caller's reveal action and post-visible work; whichever
-// path wins runs them exactly once.
-function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onRevealed?: () => void } = {}) {
-  const controller = createWindowRevealController(
-    {
-      isDestroyed: () => win.isDestroyed(),
-      isVisible: () => win.isVisible(),
-      show: show ?? (() => win.show())
-    },
-    { onRevealed }
-  )
-
-  win.once('ready-to-show', controller.reveal)
-  win.webContents.once('did-finish-load', controller.scheduleFallback)
-  win.on('closed', controller.dispose)
-
-  return controller
-}
+// path wins runs them exactly once. Callers that pass `onRevealFailed` also get
+// the pre-paint failure branch (see window-reveal.ts).
 
 // Secondary "session windows" — one extra OS window per chat so a user can
 // work with multiple chats side by side. The registry guarantees one window
@@ -13939,6 +13924,17 @@ function spawnHudWindow(sessionId, profile) {
       // Compositor overlay adapters (Hyprland float+pin today). Electron
       // alwaysOnTop is already set; this is the dialect some WMs actually hear.
       void promoteHudOverlay({ title: HUD_WINDOW_TITLE })
+    },
+    // #108230: the HUD is born `show: false` + transparent, and its renderer
+    // lifecycle is deliberately log-only (#81290 — a dead renderer should be
+    // diagnosable, not resurrected). But a load failure or renderer crash
+    // BEFORE first paint leaves a hidden window every toggle claims is open.
+    // Tear it down instead: requestHudClose is bounded, and the 'closed'
+    // handler below owns the one teardown path (snap shortcut, main-window
+    // restore, broadcastHudState(false)) so the toggles converge to closed.
+    onRevealFailed: reason => {
+      rememberLog(`[renderer:hud] window never revealed; tearing it down (${reason})`)
+      destroyHudWindow(win)
     }
   })
 
