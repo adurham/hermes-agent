@@ -571,6 +571,21 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     if found is None:
         pytest.skip("no pre-hand-off release tag reachable from HEAD (shallow clone without tags?)")
     tag, _purge_file = found
+    old_manifest = _git("show", f"{tag}:pyproject.toml")
+    assert old_manifest.returncode == 0, old_manifest.stderr
+    old_deps = tomllib.loads(old_manifest.stdout)["project"]["dependencies"]
+    # The old updater starts under its installed dependencies, then switches code in place.
+    # The current test environment deliberately lacks PyYAML; provision the legacy direct
+    # requirement in an isolated PM environment rather than mutating the test interpreter.
+    from packaging.requirements import Requirement
+    from pm import ensure_environment
+
+    legacy_yaml = [r for r in old_deps if Requirement(r).name.lower() == "pyyaml"]
+    assert len(legacy_yaml) == 1, f"{tag} no longer declares exactly one PyYAML requirement"
+    legacy_python = ensure_environment(
+        "pre-handoff-updater", [*PYPROJECT["project"]["dependencies"], *legacy_yaml],
+        root=tmp_path / "legacy-deps", explicit=True,
+    )
     pkg_tops = sorted({p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]})
     old_entries = [n for n in _git("ls-tree", "--name-only", tag).stdout.split()
                    if n.endswith(".py") or n in pkg_tops]
@@ -592,7 +607,7 @@ def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     spec_path = tmp_path / "stale-spec.json"
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     env = isolated_env(tmp_path / "sbx")
-    cp = run([PY, str(runner), str(spec_path)], env=env, cwd=tmp_path, writable=[tmp_path], timeout=600)
+    cp = run([str(legacy_python), str(runner), str(spec_path)], env=env, cwd=tmp_path, writable=[tmp_path], timeout=600)
     assert cp.returncode == 0 and out.exists(), describe(cp)
     report = json.loads(out.read_text(encoding="utf-8"))
     # Non-vacuous: the purge really left root modules cached that lack symbols the new tree defines.
