@@ -31,14 +31,30 @@ def test_missing_value_fails_before_any_install_work(option: str, suffix: list[s
     assert not result.stdout
 
 
-@pytest.mark.parametrize("flag", ["--skip-browser", "--no-playwright"])
-def test_removed_browser_skip_never_becomes_noninteractive(flag: str) -> None:
-    result = subprocess.run(["bash", str(INSTALL_SH), flag, "--manifest"],
-                            capture_output=True, text=True, timeout=10)
-    assert result.returncode == 1
-    assert "no longer skips the browser install" in result.stderr
-    assert "--non-interactive" in result.stderr
-    assert not result.stdout
+@pytest.mark.parametrize("flags, expected", [
+    ([], ["-m", "pm.cli", "install"]),
+    (["--skip-browser"], ["-m", "pm.cli", "install", "--without", "agent-browser"]),
+    (["--no-playwright"], ["-m", "pm.cli", "install", "--without", "agent-browser"]),
+])
+def test_browser_skip_becomes_the_pm_opt_out(tmp_path: Path, flags: list[str], expected: list[str]) -> None:
+    """The skip flag is PM's persisted opt-out, not a no-op and not --non-interactive."""
+    bash = shutil.which("bash")
+    assert bash
+    record = tmp_path / "pm-argv"
+    boot = tmp_path / "boot-python"
+    boot.write_text(f'#!{bash}\nprintf "%s\\n" "$@" > {shlex.quote(str(record))}\n', encoding="utf-8")
+    boot.chmod(0o755)
+    # Source the real script, replace only the interpreter acquisition, and run
+    # the real PM stage function.
+    script = ('source "$1" "${@:4}" --manifest; INSTALL_DIR="$2"; FIXTURE_PY="$3"; '
+              'bootstrap_python() { boot_py="$FIXTURE_PY"; }; bootstrap_pm; '
+              'printf "noninteractive=%s\\n" "$NON_INTERACTIVE"')
+    result = subprocess.run([bash, "-c", script, "test", str(INSTALL_SH), str(tmp_path), str(boot), *flags],
+                            env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert record.read_text(encoding="utf-8").splitlines() == expected
+    assert "noninteractive=false" in result.stdout
 
 
 def _environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:

@@ -31,6 +31,7 @@ JSON=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 VERBOSE=false
+SKIP_BROWSER=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -52,9 +53,7 @@ while [ $# -gt 0 ]; do
         --json|-Json) JSON=true; shift ;;
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
-        --skip-browser|--no-playwright)
-            echo "$1 no longer skips the browser install; pm manages browser dependencies. Remove this flag and use --non-interactive to skip setup prompts." >&2
-            exit 1 ;;
+        --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
@@ -62,6 +61,11 @@ while [ $# -gt 0 ]; do
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
+            echo "                  [--skip-browser]"
+            echo
+            echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
+            echo "                  Alias: --no-playwright. Remembered by later installs and"
+            echo "                  'hermes update'; undo with 'hermes pm install agent-browser'."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -587,9 +591,13 @@ bootstrap_python() {
 # enters its independently locked runtime before mutating application deps.
 bootstrap_pm() {
     local boot_py
+    local pm_args=(install)
+    # PM records the opt-out, so later installs and `hermes update` keep the
+    # browser tools off until `hermes pm install agent-browser` opts back in.
+    [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
     bootstrap_python
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
-        "$boot_py" -m pm.cli install) \
+        "$boot_py" -m pm.cli "${pm_args[@]}") \
         || fail "pm install failed"
     log_success "dependencies installed"
 }

@@ -6,6 +6,10 @@
 #   -NonInteractive       skip stages that need input
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
+#   -SkipBrowser          do not install the browser tools (agent-browser +
+#                         Chromium); remembered by later installs and
+#                         `hermes update`, undone by
+#                         `hermes pm install agent-browser`
 #   -Verbose              stream every child command's output (the default
 #                         with redirected output and in CI)
 [CmdletBinding(PositionalBinding=$false)]
@@ -20,6 +24,10 @@ param(
     [switch]$NonInteractive,
     [switch]$Json,
     [switch]$IncludeDesktop,
+    # Same opt-out as install.sh --skip-browser: PM records it, so later
+    # installs and `hermes update` keep the browser tools off until
+    # `hermes pm install agent-browser` opts back in.
+    [switch]$SkipBrowser,
     # Print the paths this install would use, as JSON on stdout, and exit
     # without touching anything. The first question on any "installer says a
     # path doesn't exist" report is which paths it actually resolved --
@@ -909,7 +917,11 @@ function Invoke-BootstrapPm {
     Push-Location $InstallDir
     try {
         # Finish bootstrap uv before PM replaces or cleans its store entry.
-        Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli install }
+        # Bare $SkipBrowser, like $InstallDir: under iex/scriptblock entry the
+        # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
+        $pmArgs = @('install')
+        if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
+        Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
         if ($LASTEXITCODE) { Fail "dependency install failed" }
     } finally {
         Pop-Location
