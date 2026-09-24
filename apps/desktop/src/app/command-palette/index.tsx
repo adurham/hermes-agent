@@ -46,6 +46,7 @@ import {
   Package,
   Palette,
   PawPrint,
+  Pin,
   Plus,
   RefreshCw,
   Settings,
@@ -70,11 +71,12 @@ import {
   setCommandPaletteOpen
 } from '@/store/command-palette'
 import { $bindings, bindingsFor } from '@/store/keybinds'
-import { $dismissedAutoProjectIds, filterVisibleProjects } from '@/store/layout'
+import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
 import { openBrowserTab } from '@/store/preview'
 import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
 import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
@@ -90,6 +92,7 @@ import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
+import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
 import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
@@ -662,6 +665,8 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const liveSessions = useStore($sessions)
   const liveCronSessions = useStore($cronSessions)
   const liveMessagingSessions = useStore($messagingSessions)
+  const pinnedSessionIds = useStore($pinnedSessionIds)
+  const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
   const removedSessionIds = useStore($removedSessionIds)
 
   // getServers is the shared choke point that also drops malformed (null/
@@ -686,7 +691,19 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       })
   }, [liveCronSessions, liveMessagingSessions, liveSessions, removedSessionIds, sessionsQuery.data])
 
-  const sessions = useMemo(() => liveRows.map(toSessionEntry), [liveRows])
+  // Same resolution as the sidebar's Pinned section: local pin order first,
+  // then server-flagged pins, minus our own in-flight unpins.
+  const pinnedSessions = useMemo(() => {
+    const byAnyId = buildSessionByAnyId(liveRows, [], [])
+
+    return resolvePinnedSessions(pinnedSessionIds, byAnyId, liveRows, unconfirmedPinWrites).map(toSessionEntry)
+  }, [liveRows, pinnedSessionIds, unconfirmedPinWrites])
+
+  const sessions = useMemo(() => {
+    const pinned = new Set(pinnedSessions.map(session => session.id))
+
+    return liveRows.filter(session => !pinned.has(session.id)).map(toSessionEntry)
+  }, [liveRows, pinnedSessions])
 
   const archivedSessions = useMemo(() => (archivedQuery.data?.sessions ?? []).map(toSessionEntry), [archivedQuery.data])
 
@@ -1198,6 +1215,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
       }))
     })
 
+    // Pinned before Sessions: rankGroups' stable sort keeps source order on
+    // equal scores, so a pin wins a tie with an unpinned row of the same name.
+    if (pinnedSessions.length > 0) {
+      result.push({
+        heading: t.sidebar.pinned,
+        items: pinnedSessions.map(session => ({
+          icon: Pin,
+          id: `pinned-${session.id}`,
+          keywords: sessionKeywords(session, 'pinned'),
+          label: session.title,
+          runWithEvent: goSession(session.id)
+        }))
+      })
+    }
+
     if (sessions.length > 0) {
       result.push({
         heading: t.commandCenter.sections.sessions,
@@ -1276,6 +1308,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     goSession,
     mcpServers,
     mode,
+    pinnedSessions,
     previewTheme,
     resolvedMode,
     resolveThemeMode,
