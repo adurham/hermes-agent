@@ -614,8 +614,9 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
     from hermes_cli.plugins_cmd import _console
     if install_deps:
         import pm
+        from pm.plugin_inputs import Candidates
         try:
-            pm.sync_venv(extra_plugin_dirs=[Path(path)])
+            pm.sync_venv(plugins=Candidates([Path(path)]))
         except Exception as exc:  # validation still runs; the probe reports what is missing
             print(f"dependency preparation failed: {exc}", file=sys.stderr)
     report = validate_plugin_dir(Path(path))

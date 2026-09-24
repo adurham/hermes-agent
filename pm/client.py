@@ -9,19 +9,11 @@ import sys
 import threading
 import uuid
 
-from pm import paths
+from pm import paths, plugin_inputs
 from pm.package import InstallError, Runner, StatePackage
+from pm.plugin_inputs import Candidates, Members, PluginInput, Selection
 from pm.runtime import is_runtime, runtime_command, runtime_environment
 from pm.worker_operations import OPERATIONS
-
-
-def _members(value):
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        return {"sources": [[str(Path(key).absolute()), str(Path(source).absolute())]
-                            for key, source in value.items()]}
-    return {"paths": [str(Path(path).absolute()) for path in value]}
 
 
 def _missing_or_refuse(name):
@@ -190,7 +182,7 @@ def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=No
     return Runner(name, env_for(name, base_env=base_env))
 
 
-def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dirs=(), selection=None, staged_plugin=None, repair=False,
+def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None, repair=False,
               project_root: Path | None = None) -> None:
     from pm.environments import running_from_selected_environment
 
@@ -206,17 +198,16 @@ def sync_venv(extras=None, *, explicit=False, plugin_dirs=None, extra_plugin_dir
             f"{list(extras)}: this process is not running from the install's dependency environment "
             f"({sys.prefix}); only an explicit install may change what later processes boot into",
         )
-    if selection is not None and "expected_config" not in selection:
+    if isinstance(plugins, Selection) and "expected_config" not in plugins.data:
         from pm.filesystem import file_digest
-        selection = {**selection, "expected_config": file_digest(Path(selection["home"]) / "config.yaml") or "missing"}
+        plugins = Selection({**plugins.data,
+                             "expected_config": file_digest(Path(plugins.data["home"]) / "config.yaml") or "missing"})
     foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
     if is_runtime() and not foreign:
         from pm.install import sync_venv as direct
-        return direct(extras, explicit=explicit, plugin_dirs=plugin_dirs,
-                      selection=selection, staged_plugin=staged_plugin, extra_plugin_dirs=extra_plugin_dirs, repair=repair)
+        return direct(extras, explicit=explicit, plugins=plugins, repair=repair)
     _request("sync_venv", {"extras": extras, "explicit": explicit, "repair": repair,
-                          "plugin_dirs": _members(plugin_dirs), "selection": selection, "staged_plugin": staged_plugin,
-                          "extra_plugin_dirs": [str(Path(p).absolute()) for p in extra_plugin_dirs]}, project_root=project_root)
+                          "plugins": plugin_inputs.encode(plugins)}, project_root=project_root)
 
 
 def stage_only(name, target, *, progress=None) -> Path:
@@ -314,16 +305,14 @@ def ensure_python_tool(
     }))
 
 
-def venv_is_current(*, extras: list[str] | None = None, plugin_dirs=None, extra_plugin_dirs=(),
+def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
                     project_root: Path | None = None) -> bool:
     """Check through a ready PM, never bootstrap dependencies for a probe."""
     if is_runtime() and (project_root is None or Path(project_root).resolve() == paths.repo_root().resolve()):
         from pm.install import venv_is_current as direct
-        return direct(extras=extras, plugin_dirs=plugin_dirs, extra_plugin_dirs=extra_plugin_dirs, project_root=project_root)
-    members = plugin_dirs
+        return direct(extras=extras, plugins=plugins, project_root=project_root)
     try:
-        return bool(_request("venv_is_current", {"extras": extras, "plugin_dirs": _members(members),
-                            "extra_plugin_dirs": [str(Path(p).absolute()) for p in extra_plugin_dirs]},
+        return bool(_request("venv_is_current", {"extras": extras, "plugins": plugin_inputs.encode(plugins)},
                              project_root=project_root))
     except InstallError as exc:
         if exc.package == "pm-runtime":

@@ -63,14 +63,15 @@ def admit_plugin_set_change(
     """
     from hermes_constants import get_hermes_home
     from pm.client import sync_venv
+    from pm.plugin_inputs import Selection
 
     home = Path(active_plugins_dir).parent if active_plugins_dir is not None else get_hermes_home()
     try:
-        sync_venv(explicit=True, selection={
+        sync_venv(explicit=True, plugins=Selection({
             "home": str(home.resolve()), "enabled": sorted(candidate_enabled),
             "disabled": sorted(candidate_disabled), "extra_dirs": [str(Path(d).resolve()) for d in extra_dirs],
             **({"expected_config": expected_config} if expected_config is not None else {}),
-        })
+        }))
     except Exception as exc:
         from pm.workspace import ResolutionConflict
 

@@ -9,6 +9,8 @@ import subprocess
 import sys
 
 import pytest
+
+from pm.plugin_inputs import Members
 from tests.pm._fixtures import (
     _run,
     _wheel,
@@ -218,7 +220,7 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
     locked = (source / "uv.lock").read_bytes()
 
     # Admission adds only a plugin, not a list of the bundle's optional extras.
-    pm.sync_venv(explicit=True, plugin_dirs=[source / "member"])
+    pm.sync_venv(explicit=True, plugins=Members([source / "member"]))
     first = selected_venv(source)
     assert first != base
     executable = first / python_relative
@@ -233,7 +235,7 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
     _wheel(tmp_path / "wheels", "member_dep", "1.1")
     member = source / "member" / "pyproject.toml"
     member.write_text(member.read_text(encoding="utf-8-sig").replace("member-dep==1.0", "member-dep==1.1"), encoding="utf-8")
-    pm.sync_venv(explicit=True, plugin_dirs=[source / "member"])
+    pm.sync_venv(explicit=True, plugins=Members([source / "member"]))
     second = selected_venv(source)
     assert second != first
     second_fact = Facts(runtime_facts_path(source)).get("venv")
@@ -261,21 +263,21 @@ def test_worker_sync_reuses_unions_and_reports_real_lock_drift(locked_project, b
     # The worker imports its own class; this trap affects only inline installs.
     monkeypatch.setattr("pm.packages.Venv.apply", lambda *a, **kw: pytest.fail("venv apply ran in caller"))
 
-    pm.sync_venv(["chosen"], explicit=True, plugin_dirs=[])
+    pm.sync_venv(["chosen"], explicit=True, plugins=Members([]))
     first = selected_venv(source)
     first_fact = Facts(runtime_facts_path(source)).get("venv")
-    pm.sync_venv(["chosen"], explicit=True, plugin_dirs=[])
+    pm.sync_venv(["chosen"], explicit=True, plugins=Members([]))
     assert selected_venv(source) == first
     assert Facts(runtime_facts_path(source)).get("venv") == first_fact
     assert _run([str(first / ("Scripts/python.exe" if os.name == "nt" else "bin/python")), "-I", "-c",
                  "import base_dep, chosen_dep, importlib.util; assert importlib.util.find_spec('other_dep') is None; print(chosen_dep.__version__)"],
                 cwd=tmp_path, env=env) == "1.0"
 
-    pm.sync_venv(["other"], explicit=True, plugin_dirs=[])
+    pm.sync_venv(["other"], explicit=True, plugins=Members([]))
     second = selected_venv(source)
     assert second != first
     assert Facts(runtime_facts_path(source)).get("venv")["extras"] == ["chosen", "other"]
-    pm.sync_venv(["chosen"], explicit=True, plugin_dirs=[])
+    pm.sync_venv(["chosen"], explicit=True, plugins=Members([]))
     assert selected_venv(source) == second
     assert _run([str(second / ("Scripts/python.exe" if os.name == "nt" else "bin/python")), "-I", "-c",
                  "import chosen_dep, other_dep; print(chosen_dep.__version__, other_dep.__version__)"],
@@ -687,7 +689,7 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
     monkeypatch.setattr("pm._uv._toolchain", lambda **kw: (uv, Path(sys.executable)))
     engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
-    engine.sync_venv(["chosen"], plugin_dirs=[], explicit=True)
+    engine.sync_venv(["chosen"], plugins=Members([]), explicit=True)
     old = selected_venv(source)
     facts = paths.runtime_facts_path().read_bytes()
     home = Path(os.environ["HERMES_HOME"])
@@ -700,12 +702,12 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
         with monkeypatch.context() as fault:
             fault.setattr(Facts, "record_state", refuse)
             with pytest.raises(OSError, match="facts disk full"):
-                engine.sync_venv(["other"], plugin_dirs=[], explicit=True)
+                engine.sync_venv(["other"], plugins=Members([]), explicit=True)
         assert selected_venv(source) == old
         assert paths.runtime_facts_path().read_bytes() == facts
     elif failure == "missing-cfg":
         (old / "pyvenv.cfg").unlink()
-        engine.sync_venv(["chosen"], plugin_dirs=[], explicit=True)
+        engine.sync_venv(["chosen"], plugins=Members([]), explicit=True)
         assert selected_venv(source) != old
         assert (selected_venv(source) / "pyvenv.cfg").is_file()
     else:

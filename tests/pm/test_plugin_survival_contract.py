@@ -36,6 +36,7 @@ import pytest
 import hermes_yaml as yaml
 
 import pm.workspace as ws
+from pm.plugin_inputs import Members
 
 
 def _write_enabled(home: Path, enabled: list, provider: str | None = None) -> None:
@@ -309,7 +310,7 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
     assert selected_venv(core) == selected
     # Even a precomputed member list cannot bypass a newly broken profile.
     with pytest.raises(ValueError, match="config.yaml"):
-        sync_venv(explicit=True, plugin_dirs=[])
+        sync_venv(explicit=True, plugins=Members([]))
     assert Facts(runtime_facts_path(core), strict=True).get("venv") == recorded
 
     home_b = tmp_path / "home-b"
