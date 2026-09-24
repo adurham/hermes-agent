@@ -31,7 +31,7 @@ WORKTREE = Path(__file__).resolve().parents[4]
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 UID = os.getuid()
 
-_ENV_ALLOW = ("LANG", "LC_ALL", "TZ", "TERM", "SHELL", "USER", "LOGNAME", "TMPDIR")
+_ENV_ALLOW = ("LANG", "LC_ALL", "TZ", "TERM", "SHELL", "USER", "LOGNAME", "TMPDIR", "SSL_CERT_FILE")
 _SHIMMED = ("systemctl", "launchctl", "sudo", "loginctl", "journalctl")
 
 
