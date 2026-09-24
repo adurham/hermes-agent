@@ -44,7 +44,132 @@ drift, and this removes it.
 
 ---
 
-### Converter consolidation: retired the fork's vendored Anthropic converter — 2026-09-14 (owner-approved)
+### De-fork audit — 2026-09-24 (post-v2026.9.24: 6-slice sweep, 7 retirements + 2 live defects fixed; one regression flagged DO-NOT-REMOVE)
+
+Companion to the `v2026.9.21` and `v2026.9.24` sync entries above — this is the
+de-fork pass those two merges never got (their own entries only cover conflict
+resolution and merge defects). Same question as every pass: *which fork-only work
+has upstream now caught up on, and which is still carrying its weight.* Run as
+**6 parallel slices** on the un-audited delta (`v2026.9.14..v2026.9.24`, ~6811
+upstream commits), same split as the 2026-09-23 pass: (1) agent core +
+`agent/fork/*`, (2) delegation / personas / consult / tool_search, (3)
+`hermes_cli` + a CONFIG-KEY supersession sweep of the live install, (4) `tools/`
++ `plugins/`, (5) gateway + `apps/desktop` TS, (6) scripts / CI / tests / repo
+hygiene. Full reports: `~/.hermes/cache/scratch/defork-2026-09-24/*.md`
+(+ the executor reports `exec-*.md`).
+
+**RETIRED (7 items, all executed — dead or superseded duplicates):**
+1. `agent/fork/diagnostics.py::decorate_xai_entitlement_error` + its `_mixin.py`
+   forwarder — upstream's copy is byte-identical (`agent/api_error_summary.py`)
+   and the live MRO already resolved to upstream's class. Zero behavior change
+   (proven live, 14 tests).
+2. The duplicate `_apply_claude_code_identity` def in `agent/anthropic_adapter.py`
+   — byte-identical body, zero call sites (post-delete repo-wide grep: no hits).
+3. Seven dead helpers in `agent/model_metadata.py` (the `_estimate_message_chars`
+   family + `_IMAGE_TOKEN_COST`) — no production caller since upstream's
+   `current_image_token_cost` path went live; 3 orphaned test files repointed
+   onto the live estimator (29 + 9 tests).
+4. The dead `fast_mode=` flag plumbing in `agent/usage_pricing.py` — no
+   production caller, upstream ships served-fast pricing natively now, and HEAD
+   already carries it. **Do NOT "restore" by migrating the fork's opus-4-6
+   entry into upstream's fast table** — upstream pins table keys set-equal to
+   the wire gate by test, and upstream's fast rows are 2× standard (not the
+   fork's 6×).
+5. `_run_search_chain` cache bypass (defect, not drift): `tools/web_tools.py`'s
+   chained search never touched the web-result TTL memo; it now shares
+   `tools.web_result_cache.search_memo` with the single-provider path
+   (+5 regression tests). This CORRECTS the old "chain has its own per-provider
+   dedupe/cache" claim in the soft-fork row — that was never true.
+6. `tests/tools/test_web_tools_tavily.py` — was byte-identical to upstream's and
+   asserting the keyless header the fork deliberately removed (2 genuine
+   failures); rewritten to assert the fork's actual keyed-only contract.
+7. `web.search_chain` now DECLARED in `hermes_cli/config_defaults.py` (was
+   read by `_get_search_chain()` but never in DEFAULT_CONFIG; default `[]` =
+   single-provider behavior).
+
+**CONFIRMED-CONVERGED, no code change (doc rows only):** MCP disk cache + MCP
+circuit breaker (upstream ships both; fork files byte-identical), 
+`tools/skill_manager_tool.py` and `tools/kanban_tools.py` (fork delta exactly
+zero), `tools/approval.py` timeout residue (already converged). Delete the stale
+soft-fork rows for skill_manager/approval; refresh the mcp_tool row (it is now a
+1-line compat map).
+
+**CI — a live wedge fixed:** `.github/workflows/e2e-desktop-core.yml` was
+UNGATED (upstream file, arrived in the v2026.9.24 tag after the fork's own
+gating sweep), so every fork run sat `queued` forever with
+`Desktop core E2E (Linux)` never picked up and the run could never reach a
+terminal state (proven on runs 36032404230 / 36035779208). Fixed with the
+fork's byte-exact gate idiom on the job + a matching gate on the `ci.yaml`
+caller. **Next sync:** upstream's `ci.yaml` caller for `tests-os.yml` (line ~84)
+is ungated — resolve that hunk by KEEPING the fork gate; upstream also has
+ungated `tests.yml` e2e jobs that only stay harmless while the gated caller is
+their sole entry point.
+
+**REGRESSION FLAGGED — DO NOT REMOVE: `agent.strip_cache_on_overload`.**
+`conversation_loop.py::_strip_cache_control` (its enforcement helper) has no
+caller except self-recursion: the enforcement call site was lost in a refactor,
+while `cli.py` and the example config still advertise the key. This is a
+**regression to rewire, not dead code to delete** — and the flag + helper must
+not be swept by a future dead-code pass before the rewire lands. Same for
+`agent/fork/diagnostics.py::tools_signature` (+ its `_mixin` forwarder): proven
+uncalled, but FORK.md documents it as retained — remove only together with this
+doc.
+
+**Repo hygiene (31 tracked files deleted):** the entire `.sync/` directory (27
+files — v2026.9.14 sync-time artifacts: `guidance-g*.md` whose consumer
+`scripts/fork-merge-plan.py` was itself deleted, a two-releases-stale
+`manifest.json`, `merge-plan.txt`, baseline logs), `FORK_INVENTORY.md` (Aug-8
+generated inventory; superseded by this file, which is the only ref to it),
+`hermes-already-has-routines.md` (zero inbound refs), and `cron-heartbeat` /
+`cron-started` (runtime state accidentally committed at merge `c046c29dca`,
+absent from both parents and upstream) — both now in `.gitignore`.
+`scripts/corporate-rip.py`'s stale toolset map repaired from primary evidence
+(4 yuanbao paths renamed to `tests/gateway/`, 1 feishu_doc test purged with no
+successor, moa+rl entries retired — both features were deleted outright
+upstream). `.upstream-candidates/` KEPT deliberately (all 7 PRs closed
+unmerged; content already in the fork).
+
+**Explicitly NOT retired after re-verification** (same shape as every prior
+pass): the whole memory subsystem (warm-tier migration onto upstream's
+holographic provider is COMPLETE — no bespoke ranker survives), the delegation
+stack (`model_by_role` / `reasoning_effort_by_role` / `max_iterations_by_role` /
+auto-route / personas / ruflo — upstream's `_resolve_auto_route` is provider
+routing for aux tasks, a different layer), `tool_search_lazy` + the
+core-toolset deferral (upstream's tool_search bridge defers schemas
+client-side; the fork's `tools.tool_search.defer_toolsets` block is read by a
+different code path than the top-level `tool_search.*` block — **the two
+blocks are NOT aliases; do not "consolidate" them**), `consult` + nudge,
+skill/memory recall, `web.search_chain` itself (upstream's registry walk picks
+ONE provider; the fork's ordered chain is a different mechanism),
+Anthropic-native search swap, CC wire-shape parity, `image_routing`'s exo gates,
+every `agent/fork/*` module except item 1's dead shim, and the desktop pet
+zone/voice surface (product-visible). Desktop/gateway slice: 7 named
+"supersessions" were all REFUTED on the true three-dot delta (upstream's
+post-tag commits had been misread as fork deletions) — no desktop code was
+changed.
+
+**Config-key sweep (the live install):** `~/.hermes/config.yaml` had four
+residue keys with ZERO readers repo-wide and absent from DEFAULT_CONFIG —
+`display.intraline_streaming`, `memory.flush_min_turns`,
+`sessions.write_json_snapshots` (feature removed upstream in `7a5fc1b2a9`; the
+surviving test pins the new no-snapshot behavior) and
+`run_without_messaging_platforms` (removed in a prior fork release, per this
+file). All four unset (backup: `~/.hermes/config.yaml.bak-20260924-143112`).
+No shared key's fork default differs from upstream's while unset — no silent
+default drift.
+
+**Doc debt folded in here / still to fold:** the `## Tests` section (~line
+11853) is stale (3 dead paths, one file wrongly claimed fork-added — it ships
+upstream, undercount by 126 files); ~12 lines still list `fork-merge-plan.py`
+and `hermes_usage_tracker.py` as live (both long deleted); the soft-fork rows
+for `skill_manager_tool.py`/`approval.py` should be deleted and the `mcp_tool.py`
+row refreshed. `test_submit_shim.py` must NOT be deleted — its one-release
+window has not started (the shim is in no release tag).
+
+*Also landed alongside (own commit, pre-audit):* the desktop `package.json` +
+lockfile version/lock drift fix (`bd72ac733c`).
+
+---
 
 **Decision:** adopt upstream's `agent/anthropic_message_convert.py` as the one
 true OpenAI→Anthropic message converter and delete the fork's vendored copy
