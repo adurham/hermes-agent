@@ -194,13 +194,12 @@ def get_sandbox_dir() -> Path:
 
 
 def _load_json_store(path: Path) -> dict:
-    """Load a JSON file as a dict, returning ``{}`` on any error."""
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            pass
-    return {}
+    """Treat a missing or damaged snapshot store as empty."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save_json_store(path: Path, data: dict) -> None:
