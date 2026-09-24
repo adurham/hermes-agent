@@ -160,8 +160,8 @@ def _tar_filter(member, dest: str):
 def extract_tar(archive: Path, dest: Path, *, git_msys: bool = False) -> None:
     """Extract a tarball with one containment policy for PM's tar consumers.
 
-    MSYS Git ships dev/fd links into /proc; those aren't usable on Windows.
-    Skip only those known links, never a filter error or failed file write.
+    MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
+    on Windows. Skip only those known links, never a filter error or failed file write.
     """
     import tarfile
 
@@ -169,9 +169,10 @@ def extract_tar(archive: Path, dest: Path, *, git_msys: bool = False) -> None:
     real_dest = os.path.realpath(dest)
     with tarfile.open(archive) as tf:
         if git_msys:
-            members = (m for m in tf if not (
-                m.issym() and m.name.lstrip("./").startswith("dev/")
-                and m.linkname.startswith("/proc/")))
+            members = (m for m in tf if not (m.issym() and (
+                (m.name.lstrip("./").startswith("dev/") and m.linkname.startswith("/proc/"))
+                or (m.name == "etc/mtab" and m.linkname == "/proc/mounts")
+            )))
             for member in members:
                 tf.extract(member, dest, filter=lambda item, path: _tar_filter(item, real_dest))
         else:

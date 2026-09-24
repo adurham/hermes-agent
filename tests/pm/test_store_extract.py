@@ -42,6 +42,35 @@ def test_symlinks_escaping_the_destination_are_rejected(tmp_path, linkname):
         extract(archive, tmp_path / "out")
     assert not (tmp_path / "out" / "python/bin/evil").is_symlink()
 
+def test_git_tar_ignores_msys_mount_table_link(tmp_path):
+    from pm.packages import Git
+
+    archive = tmp_path / "git.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tf:
+        mtab = tarfile.TarInfo("etc/mtab")
+        mtab.type, mtab.linkname = tarfile.SYMTYPE, "/proc/mounts"
+        tf.addfile(mtab)
+        binary = tarfile.TarInfo("cmd/git.exe")
+        binary.size = 1
+        tf.addfile(binary, io.BytesIO(b"x"))
+    dest = tmp_path / "out"
+    Git().unpack(archive, dest, "win32-x64")
+    assert (dest / "cmd/git.exe").read_bytes() == b"x"
+    assert not (dest / "etc/mtab").is_symlink()
+
+
+def test_git_tar_rejects_unrelated_mount_table_links(tmp_path):
+    from pm.packages import Git
+
+    archive = tmp_path / "git.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tf:
+        mtab = tarfile.TarInfo("etc/mtab")
+        mtab.type, mtab.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        tf.addfile(mtab)
+    with pytest.raises(tarfile.FilterError):
+        Git().unpack(archive, tmp_path / "out", "win32-x64")
+
+
 def test_git_tar_skips_only_msys_proc_links_and_rejects_other_unsafe_entries(tmp_path):
     from pm.packages import Git
 
