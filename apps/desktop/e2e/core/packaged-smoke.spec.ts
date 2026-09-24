@@ -45,7 +45,6 @@ import {
   currentSessionId,
   DESKTOP_ROOT,
   recordWebSockets,
-  REPO_ROOT,
   sandboxProcesses,
   send,
   storedSessionForMarker,
@@ -74,6 +73,7 @@ interface BuildConfig {
 }
 
 const builderRequire = createRequire(path.join(DESKTOP_ROOT, 'package.json'))
+
 // Playwright's TS loader intercepts CJS require() of the config's ESM hooks.
 // Load it in plain Node, exactly as electron-builder does.
 const BUILD = JSON.parse(
