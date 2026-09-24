@@ -314,8 +314,8 @@ from agent.tool_guardrails import LoopCapConfig  # noqa: E402
 def test_loop_cap_zero_disables_and_junk_falls_back():
     # 0 is a legitimate "unlimited" value; negatives / junk fall back to default.
     assert LoopCapConfig.from_mapping({"max_web_searches": 0}).max_web_searches == 0
-    assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == 50
-    assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == 50
+    assert LoopCapConfig.from_mapping({"max_web_searches": -5}).max_web_searches == LoopCapConfig().max_web_searches
+    assert LoopCapConfig.from_mapping({"max_subagents": "nope"}).max_subagents == LoopCapConfig().max_subagents
 
 
 def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():

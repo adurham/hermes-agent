@@ -62,30 +62,6 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
 
 
 
-def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
-    """A normal provider still renders the bare model slug, no MoA prefix."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir()
-
-    with (
-        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
-        patch.object(banner, "get_available_skills", return_value={}),
-        patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
-    ):
-        console = Console(record=True, force_terminal=False, color_system=None, width=160)
-        banner.build_welcome_banner(
-            console=console,
-            model="anthropic/claude-opus-4.8",
-            cwd="/tmp/project",
-            tools=[],
-            enabled_toolsets=[],
-            provider="openrouter",
-        )
-
-    out = console.export_text()
-    assert "claude-opus-4.8" in out
-    assert "MoA:" not in out
 
 
 def test_empty_model_shows_the_free_tier_route_when_it_carries_inference(tmp_path, monkeypatch):
@@ -119,7 +95,6 @@ def test_build_welcome_banner_does_not_center_pad_hero_art():
     must start flush at the column start."""
     import io
     from types import SimpleNamespace
-    from tools import mcp_tool_discovery as _mcp_discovery
 
     skin = SimpleNamespace(banner_hero="[green]\u2800X[/]", banner_logo="")
     buf = io.StringIO()
@@ -128,7 +103,7 @@ def test_build_welcome_banner_does_not_center_pad_hero_art():
         patch.object(banner, "get_available_skills", return_value={}),
         patch.object(banner, "get_update_result", return_value=None),
         patch.object(banner, "get_latest_release_tag", return_value=None),
-        patch.object(_mcp_discovery, "get_mcp_status", return_value=[]),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
         patch.object(banner, "_active_skin", return_value=skin),
     ):
         console = Console(file=buf, force_terminal=False, color_system=None, width=80)

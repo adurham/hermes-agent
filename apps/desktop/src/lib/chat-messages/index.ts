@@ -8,6 +8,7 @@ export {
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
   mergeFinalAssistantText,
+  normalizeWs,
   pendingToolCallPart,
   reasoningPart,
   renderMediaTags,

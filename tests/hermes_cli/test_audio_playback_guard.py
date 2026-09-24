@@ -32,7 +32,6 @@ import os
 import sys
 import types
 
-import pytest
 
 from tui_gateway import server
 

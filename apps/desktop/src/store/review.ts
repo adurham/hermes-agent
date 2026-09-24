@@ -9,6 +9,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { modeBound } from '@/store/interface-mode'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
@@ -36,10 +37,13 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-// Defaults to true: the review pane is the only signal that surfaces
-// uncommitted changes at a glance, and gating it behind an undiscoverable
-// ⌘G left it permanently hidden for users who never happened to press it.
-export const $reviewOpen = persistentAtom(OPEN_KEY, true, Codecs.bool)
+// Defaults to true (fork fix: the pane is the only at-a-glance signal for
+// uncommitted changes, and ⌘G is undiscoverable) — Simple mode rests it closed
+// via policy without touching the preference, and ⌘G still opens it for the
+// session.
+const $reviewOpenPref = persistentAtom(OPEN_KEY, true, Codecs.bool)
+
+export const $reviewOpen = modeBound('reviewOpen', $reviewOpenPref, open => $reviewOpenPref.set(open))
 
 // The split-button's remembered default action ('commit' | 'commitPush').
 export type CommitAction = 'commit' | 'commitPush'

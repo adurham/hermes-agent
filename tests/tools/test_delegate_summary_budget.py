@@ -10,7 +10,6 @@ full summaries verbatim into the parent.
 import os
 import tempfile
 
-import pytest
 
 import tools.delegate_tool as dt
 from tools.delegate_tool_results import _MIN_SUMMARY_CHARS, _parent_summary_char_budget

@@ -20,6 +20,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
+import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -28,10 +29,10 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
-import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
+import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
-import { $openStoredSessionIds } from '@/store/session-states'
+import { $attentionSessionIds, $openStoredSessionIds, openSessionTile } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -51,6 +52,7 @@ import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
+import { SessionRowSlot } from './session-row-slots'
 import { splitDragHandleProps } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -544,6 +546,7 @@ function SidebarSessionRowImpl({
               return (
                 <>
                   {leadNode}
+                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title} placement="row">
@@ -579,6 +582,7 @@ function SidebarSessionRowImpl({
                       </span>
                     )}
                   </span>
+                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                 </>
               )
             }
@@ -592,6 +596,7 @@ function SidebarSessionRowImpl({
                     entire width — nothing truncates against the kebab. */}
                 <div className="flex min-w-0 items-center gap-1.5">
                   {leadNode}
+                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   <span
                     className={cn(
                       'min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-tertiary)',
@@ -601,6 +606,7 @@ function SidebarSessionRowImpl({
                     {context}
                   </span>
                   {handoffBadge}
+                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>
                 {/* Title + preview: ONE grouped cell with its own tight
