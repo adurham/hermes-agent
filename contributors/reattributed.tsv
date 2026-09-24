@@ -24,3 +24,4 @@ b200d3a690ccfd2dea12b478c62501076cf0ffa1	2026-09-24T20:03:11-05:00	fix(desktop):
 0e31fd3b45e123c91f54ecf4860f989748604101	2026-09-24T19:34:05-05:00	test(desktop): type the session-timer element props instead of casting unknown
 fe3c6837be5389bb28717f9b8c1c0aaf7a10c3bb	2026-09-24T23:23:28-05:00	fix(desktop): gate the session.info branch write on the selected session
 4050c915802499d31c5e0dfe8c7aaafe9e18a4c9	2026-09-24T18:56:16-05:00	fix(desktop): track the pointer when dragging a nested section's sash
+8a0371f0f6dfdc58cdd7fbebf60d3ca90225267b	2026-09-24T18:58:41-05:00	fix(desktop): portal dropdown submenus into the parent menu's container
