@@ -181,7 +181,7 @@ def touch_activity_if_due(state: dict, label: str) -> None:
         if cb:
             cb(f"{label} ({int(now - state['start'])}s elapsed)")
     except Exception:
-        pass
+        logger.debug("activity callback failed during a long-running command", exc_info=True)
 
 
 def get_sandbox_dir() -> Path:
