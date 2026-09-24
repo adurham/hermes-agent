@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -28,6 +29,13 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
     # node runs the TUI behind the dashboard's /api/pty; carry it when the
     # runner's store has it, or PM in the sandbox reports it not installed.
     names = ("uv", "python") + (("node",) if facts.get("node") else ())
+    if "node" not in names and os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
+        # A node on PATH alone (actions/setup-node) is invisible to PM, so
+        # every /api/pty chat would fail later with an opaque close 1011.
+        raise AssertionError(
+            f"HERMES_E2E_REQUIRE_TUI=1 but the PM store has no node: {source} "
+            "(install it with setup-pm `toolchain: all`)"
+        )
     records = {name: facts.get(name) for name in names}
     python = records["python"]
     if not python or (source / python["entry"]).resolve() != Path(sys.base_prefix).resolve():

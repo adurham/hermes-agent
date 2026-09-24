@@ -132,12 +132,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Set up Node
-        # The boot-contract suite feeds serve's stdout through Desktop's own
-        # backend-ready.ts (native TS stripping needs Node >= 22.18).
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Set up locked Python, Node and test dependencies
+        # toolchain: all puts PM's locked Node in the runner's PM store, not
+        # only on PATH. The E2E sandboxes copy node from that store
+        # (tests/e2e/core/_pm_dependencies.py) and forbid lazy installs, and
+        # the dashboard's /api/pty resolves the TUI's node through PM only.
+        # A setup-node binary on PATH is invisible to PM, so every /api/pty
+        # chat refused to start. The locked Node also satisfies the
+        # boot-contract suite (backend-ready.ts needs Node >= 22.18).
+        uses: ./.github/actions/setup-pm
         with:
-          node-version: 26
+          toolchain: all
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
 
       - name: Install Node deps and build the Ink TUI
         # tests/e2e/core/terminal drives the real `hermes --tui` over a PTY;
@@ -159,13 +167,6 @@ jobs:
           sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
           rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
           rg --version
-
-      - name: Set up locked Python and test dependencies
-        uses: ./.github/actions/setup-pm
-        with:
-          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
-          test-environment: 'true'
-          prune-python-cache: true
 
       - name: Require a WAL-capable SQLite
         # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail
