@@ -63,7 +63,7 @@ from tests.e2e.core.upgrade import _helpers as H
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
-    pytest.mark.linux_only,
+    pytest.mark.platforms("linux"),
     # The real updater runs against a throwaway local origin + install inside the sandbox, never
     # this checkout (the guard this bypasses exists to stop `hermes update` on the real repo).
     pytest.mark.live_system_guard_bypass,

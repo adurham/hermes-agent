@@ -204,6 +204,10 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
             rel = f.relative_to(WORKTREE).as_posix()
             if f.name.startswith("test_") or f.name == "conftest.py" or f.stem == "__main__":
                 continue
+            # This frozen old-updater shim exits at import time to force a relaunch.
+            # Importing it is neither safe nor an import-graph smoke test.
+            if rel == "hermes_cli/psutil_android.py":
+                continue
             if tracked is not None and rel not in tracked:
                 continue
             if all(p.isidentifier() for p in parts):
@@ -456,6 +460,15 @@ def _sandbox_or_skip() -> None:
 # --------------------------------------------------------------------------- (a) import smoke
 
 
+def test_relaunch_shim_is_excluded_only_while_it_exits_on_import():
+    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
+    top_level = ast.parse(shim.read_text(encoding="utf-8")).body
+    assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+               and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
+               for node in top_level)
+    entries, _ = _shipped_modules()
+    assert "hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
+
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
     core, extras = _requirements()
@@ -523,7 +536,8 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
 
 def _pre_handoff_tag() -> tuple[str, str] | None:
     """Newest release tag whose updater still ran post-pull phases in the pre-pull interpreter."""
-    cp = _git("tag", "--merged", "HEAD", "--sort=-v:refname", "--list", "v20*")
+    cp = _git("for-each-ref", "--merged=HEAD", "--sort=-version:refname",
+              "--format=%(refname:short)", "refs/tags/v20*")
     for tag in cp.stdout.split()[:15] if cp.returncode == 0 else []:
         if _git("cat-file", "-e", f"{tag}:hermes_cli/update_handoff.py").returncode == 0:
             continue
