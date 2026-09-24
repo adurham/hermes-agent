@@ -398,6 +398,11 @@ class Venv(StatePackage):
         candidate = generation / "venv"
         environment = managed_environment(candidate, env=source_build_environment(project),
                                           explicit=explicit or repair, output=sys.stderr)
+        if not repair:
+            # Inspection may skip a broken secondary profile, but publishing a replacement
+            # graph must not silently evict its recorded members (including passed candidates).
+            from pm.plugins_state import enabled_plugins_ordered
+            enabled_plugins_ordered()
         members = [] if repair else (enabled_member_dirs() if plugin_dirs is None else plugin_dirs)
         try:
             generation.mkdir(parents=True)

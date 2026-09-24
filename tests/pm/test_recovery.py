@@ -213,11 +213,12 @@ def test_uncertain_profile_selection_skips_sync_but_not_admission_or_recorded_re
     )
     assert result.stdout.strip() == "1.0"
     assert Path(Facts(paths.runtime_facts_path()).get("venv")["resolved_lock"]).read_bytes() == old_lock
-    engine.sync_venv(explicit=True)
+    with pytest.raises(ValueError, match="config.yaml"):
+        engine.sync_venv(explicit=True)
     assert str(sibling_config) in caplog.text
-    current = selected_venv(core)
+    assert selected_venv(core) == repaired
     result = subprocess.run(
-        [str(current / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
+        [str(repaired / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
          "-I", "-c", "import core_dep; print(core_dep.__version__)"],
         cwd=tmp_path, capture_output=True, text=True, check=True, timeout=30,
     )
