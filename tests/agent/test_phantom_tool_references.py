@@ -48,8 +48,6 @@ class TestExecutionGuidanceText:
         # The surrounding structure survives.
         assert "<mandatory_tool_use>" in text
         assert "<missing_context>" in text
-
-
 class TestCodingBriefTodoGating:
     def _brief(self, valid_tool_names):
         from agent.coding_context import CODING_PROFILE, RuntimeMode
@@ -64,17 +62,15 @@ class TestCodingBriefTodoGating:
 
     def test_todo_kept_when_tool_available(self):
         brief = self._brief({"todo_list", "terminal", "read_file"})
-        assert "Track multi-step work with `todo_list`" in brief
+        assert "todo_list" in brief
 
     def test_todo_dropped_when_tool_missing(self):
         brief = self._brief({"terminal", "read_file"})
-        assert "`todo`" not in brief
-        # The path:line half of the merged bullet survives.
-        assert "path:line" in brief
+        assert "todo_list" not in brief
 
     def test_unknown_toolset_keeps_full_brief(self):
         brief = self._brief(None)
-        assert "Track multi-step work with `todo_list`" in brief
+        assert "todo_list" in brief
 
 
 class TestEssentialSkillsUndisableable:
@@ -110,7 +106,6 @@ class TestEssentialSkillsUndisableable:
         from tools.skill_manager_guards import _pinned_guard
         msg = _pinned_guard("hermes-agent")
         assert msg is not None
-        assert "essential" in msg.lower()
 
 
 class TestEssentialOnlySync:

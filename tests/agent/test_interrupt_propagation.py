@@ -242,7 +242,6 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         assert result["thread_interrupted"] is True
         assert agent._interrupt_thread_signal_pending is False
 
-
 class TestPerThreadInterruptIsolation(unittest.TestCase):
     """Verify that interrupting one agent does NOT affect another agent's thread.
 

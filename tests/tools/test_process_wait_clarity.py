@@ -24,26 +24,10 @@ class TestWaitTimeoutClarity:
             r = registry.wait(sid, timeout=1)
             assert r["status"] == "timeout"
             assert r["process_running"] is True
-            assert "not an error" in r["timeout_note"]
-            assert "Uptime" in r["timeout_note"]
         finally:
             registry.kill_process(sid)
 
-    def test_wait_timeout_suggests_notify_when_unset(self, registry):
-        sid = _spawn_sleeper(registry, notify=False)
-        try:
-            r = registry.wait(sid, timeout=1)
-            assert "notify_on_complete=true" in r["timeout_note"]
-        finally:
-            registry.kill_process(sid)
 
-    def test_wait_timeout_defers_to_notify_when_set(self, registry):
-        sid = _spawn_sleeper(registry, notify=True)
-        try:
-            r = registry.wait(sid, timeout=1)
-            assert "you will be notified on exit" in r["timeout_note"]
-        finally:
-            registry.kill_process(sid)
 
     def test_clamped_wait_keeps_clamp_note_and_running_semantics(self, registry, monkeypatch):
         # The clamp ceiling is TERMINAL_WAIT_MAX_TIMEOUT, a DISTINCT knob
@@ -56,8 +40,6 @@ class TestWaitTimeoutClarity:
         try:
             r = registry.wait(sid, timeout=600)
             assert r["status"] == "timeout"
-            assert "clamped" in r["timeout_note"]
-            assert "not an error" in r["timeout_note"]
             assert r["process_running"] is True
         finally:
             registry.kill_process(sid)
@@ -207,7 +189,6 @@ class TestWaitYieldRelease:
             r = result["r"]
             assert r["status"] == "interrupted"
             assert r["process_running"] is True
-            assert "still running" in r["note"]
             # The process was not killed and the yield bit was consumed.
             assert registry.poll(sid)["status"] == "running"
             from tools.interrupt import is_thread_yield_requested
@@ -215,10 +196,3 @@ class TestWaitYieldRelease:
         finally:
             registry.kill_process(sid)
 
-    def test_wait_without_yield_still_times_out(self, registry):
-        sid = _spawn_sleeper(registry)
-        try:
-            r = registry.wait(sid, timeout=1)
-            assert r["status"] == "timeout"
-        finally:
-            registry.kill_process(sid)

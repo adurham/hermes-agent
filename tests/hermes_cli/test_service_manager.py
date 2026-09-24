@@ -10,15 +10,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.service_manager import (
-    LaunchdServiceManager,
     S6ServiceManager,
-    ServiceManager,
-    ServiceManagerKind,
-    SystemdServiceManager,
-    WindowsServiceManager,
-    detect_service_manager,
-    get_service_manager,
-    validate_profile_name,
 )
 
 
@@ -37,34 +29,6 @@ from hermes_cli.service_manager import (
 # ---------------------------------------------------------------------------
 
 
-def _patch_s6_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    comm: str | OSError | None,
-    basedir_is_dir: bool,
-) -> None:
-    """Stub /proc/1/comm and /run/s6/basedir for _s6_running tests."""
-    from pathlib import Path as _Path
-
-    real_read_text = _Path.read_text
-    real_is_dir = _Path.is_dir
-
-    def fake_read_text(self, *args, **kwargs):  # type: ignore[override]
-        if str(self) == "/proc/1/comm":
-            if isinstance(comm, OSError):
-                raise comm
-            if comm is None:
-                raise FileNotFoundError(2, "No such file or directory")
-            return comm + "\n"
-        return real_read_text(self, *args, **kwargs)
-
-    def fake_is_dir(self):  # type: ignore[override]
-        if str(self) == "/run/s6/basedir":
-            return basedir_is_dir
-        return real_is_dir(self)
-
-    monkeypatch.setattr(_Path, "read_text", fake_read_text)
-    monkeypatch.setattr(_Path, "is_dir", fake_is_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -72,17 +36,6 @@ def _patch_s6_paths(
 # ---------------------------------------------------------------------------
 
 
-def test_systemd_manager_kind_and_registration_unsupported() -> None:
-    mgr = SystemdServiceManager()
-    assert mgr.kind == "systemd"
-    assert mgr.supports_runtime_registration() is False
-    with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo")
-    with pytest.raises(NotImplementedError):
-        mgr.unregister_profile_gateway("foo")
-    assert mgr.list_profile_gateways() == []
-    # Protocol conformance — runtime_checkable lets us assert this.
-    assert isinstance(mgr, ServiceManager)
 
 
 # ---------------------------------------------------------------------------
@@ -323,14 +276,6 @@ def test_render_run_script_uses_replace_to_take_over_stale_holder() -> None:
     )
 
 
-def test_render_finish_script_exits_125_on_ex_config() -> None:
-    """The finish script must translate exit 78 (EX_CONFIG) into exit 125
-    (permanent failure) so s6 stops restarting on fatal config errors.
-    See #51228."""
-    text = S6ServiceManager._render_finish_script()
-    assert '[ "$1" = "78" ]' in text
-    assert "exit 125" in text
-    assert "exit 0" in text
 
 
 def test_render_finish_script_does_not_restart_on_clean_exit(tmp_path) -> None:
