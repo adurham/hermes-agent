@@ -306,6 +306,7 @@ else:
   }
 })
 
+// Four real manifest/recording pairs cross Node and Python process boundaries.
 test('actual MSIX manifest writer consumes the channel quad across rollover instead of semver patch', (): void => {
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-manifest-'))
   const app: string = path.join(root, 'apps/desktop')
@@ -452,4 +453,4 @@ print(out.read_text(encoding='utf-8'))
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
-})
+}, 20_000)
