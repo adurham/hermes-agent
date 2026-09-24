@@ -552,6 +552,15 @@ function Stage-Prerequisites {
 }
 
 function Stage-Repository {
+    # Refuse an occupied non-checkout before provisioning Git. This check
+    # needs no tool download and must not overwrite a user's existing files.
+    if (-not (Test-Path (Join-Path $InstallDir ".git")) -and (Test-Path -LiteralPath $InstallDir)) {
+        $item = Get-Item -LiteralPath $InstallDir -Force
+        $empty = $item.PSIsContainer -and -not $item.LinkType -and -not (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1)
+        if (-not $empty) {
+            Fail "$InstallDir exists and is not a Hermes git checkout. Move it aside, or install elsewhere with -InstallDir <path>."
+        }
+    }
     if (-not (Ensure-Git)) { Fail "no pinned Git artifact for this Windows architecture" }
     # An interrupted clone from an older installer can leave a .git with no
     # initial commit, where stash/checkout abort ("You do not have the initial
@@ -620,15 +629,9 @@ function Stage-Repository {
             Log "not fast-forwardable; reset to origin/$Branch"
         }
     } else {
-        # Moving a clone onto an existing directory would nest it, so a
-        # pre-existing destination must be empty (taken over) or we refuse:
-        # whatever lives there is not ours. Mirrors scripts/install.sh.
+        # Moving a clone onto an existing directory would nest it. The
+        # preflight above already refused nonempty or linked destinations.
         if (Test-Path -LiteralPath $InstallDir) {
-            $item = Get-Item -LiteralPath $InstallDir -Force
-            $empty = $item.PSIsContainer -and -not $item.LinkType -and -not (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1)
-            if (-not $empty) {
-                Fail "$InstallDir exists and is not a Hermes git checkout. Move it aside, or install elsewhere with -InstallDir <path>."
-            }
             Remove-Item -LiteralPath $InstallDir -Force
         }
         Log "cloning $RepoUrl ($Branch) into $InstallDir"
