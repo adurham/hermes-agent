@@ -43,6 +43,11 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
     stage("prerequisites")
     staged = list(store.glob("git-*/cmd/git.exe"))
     assert len(staged) == 1
+    # A wrong Git earlier on the parent's PATH must not win in either new stage.
+    poison = tmp_path / "poison"
+    poison.mkdir()
+    (poison / "git.cmd").write_text("@echo unpinned git invoked 1>&2 & exit /b 73\r\n", encoding="utf-8")
+    env["PATH"] = str(poison) + os.pathsep + env["PATH"]
     stage("repository")  # new process; prerequisites' PATH cannot propagate
     stage("complete")  # the marker's bare git call is also a new process
     checkout = home / "hermes-agent"
