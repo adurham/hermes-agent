@@ -61,7 +61,7 @@ def _resident_runtime() -> tuple[Path, Path] | None:
     if payload is not None:
         runtime = payload / "pm-runtime"
     else:
-        from hermes_cli.steward import install_stamp_path
+        from pm.paths import install_stamp_path
 
         stamp_path = install_stamp_path(project)
         try:

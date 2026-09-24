@@ -32,7 +32,8 @@ def _is_sealed(project_root: Path) -> bool:
     """
     if (project_root / ".git").exists():
         return False
-    from hermes_cli.steward import install_stamp_path, read_install_stamp
+    from hermes_cli.steward import read_install_stamp
+    from pm.paths import install_stamp_path
     stamp_path = install_stamp_path(project_root)
     data = read_install_stamp(project_root)
     if not data:
