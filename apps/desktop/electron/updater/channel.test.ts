@@ -175,6 +175,15 @@ async function retiredFixture(
   return { ...f, retired }
 }
 
+test.each(['NODE_OPTIONS', 'PATH', 'HERMES_PYTHON'])(
+  'channel manifest rejects process-control bundle key %s',
+  async (key: string): Promise<void> => {
+    const f = await fixture()
+    f.manifest.request.bundleEnv[key] = null
+    expect((): void => { decodeChannelManifest(JSON.stringify(f.manifest)) }).toThrow('Invalid bundle environment name')
+  }
+)
+
 test('receiver kind mirrors the identity comparison between retired channel and destination', async (): Promise<void> => {
   const f = await retiredFixture()
 

@@ -66,7 +66,8 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
     summary = tmp_path / 'summary.md'
     jobs = _workflow()['jobs']
-    bundle_env = {'HERMES_HOME': None, 'EMPTY': '', 'LABEL': '<script>\n"café" & value</script>'}
+    bundle_env = {'HERMES_HOME': None, 'HERMES_SKIP_INTRO': '',
+                  'HERMES_SHARED_AUTH_DIR': '<script>\n"café" & value</script>'}
     env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
                GITHUB_REPOSITORY='fixture-owner/fixture-repo',
                HERMES_BUNDLE_ENV_JSON=json.dumps(bundle_env), CI_SECRET='must-not-appear',
@@ -91,8 +92,8 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         page = response.read().decode()
     assert f'href="https://github.com/fixture-owner/fixture-repo/commit/{sha}"' in page
     assert 'Bundle environment' in page and 'HERMES_HOME' in page and 'Unset' in page
-    assert '<code>EMPTY</code></td><td><code>&quot;&quot;</code>' in page
-    assert html.escape(json.dumps(bundle_env['LABEL'], ensure_ascii=False)) in page
+    assert '<code>HERMES_SKIP_INTRO</code></td><td><code>&quot;&quot;</code>' in page
+    assert html.escape(json.dumps(bundle_env['HERMES_SHARED_AUTH_DIR'], ensure_ascii=False)) in page
     assert '<script>' not in page and 'must-not-appear' not in page and 'CI_SECRET' not in page
     links = re.findall(r'\]\((https?://[^)]+)\)', text)
     download_links = [url for url in links if url.endswith('.msix')]

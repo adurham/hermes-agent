@@ -138,6 +138,10 @@ export class AppInstallerStrategy {
     if (!feedBaseUrl && !sourceUri) {
       const { code, stdout } = await this.deps.run(this.deps.python, this.deps.script)
       sourceUri = parseCheckOutput(code, stdout).sourceUri
+
+      if (sourceUri) {
+        channelPublicBase(sourceUri)
+      }
     }
 
     if (!feedBaseUrl && !sourceUri) {

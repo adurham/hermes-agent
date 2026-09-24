@@ -361,8 +361,14 @@ function request(fields: Fields): ChannelRequest {
   const environment = fields.object('bundleEnv')
   const bundleEnv: ChannelBuild['bundleEnv'] = {}
 
+  // Match the build-time allowlist: a channel request cannot inject process flags.
+  const allowed = new Set([
+    'HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX', 'HERMES_DESKTOP_USER_DATA_DIR',
+    'HERMES_SHARED_AUTH_DIR', 'HERMES_GUEST_ONBOARDING', 'HERMES_SKIP_INTRO'
+  ])
+
   for (const key of environment.keys()) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!allowed.has(key)) {
       throw new Error('Invalid bundle environment name')
     }
 
