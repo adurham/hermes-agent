@@ -64,8 +64,13 @@ exit $LASTEXITCODE
                          cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=120)
     assert (run.returncode == 0) == (exit_code == 0), run.stdout + run.stderr
+    from hermes_platform.host.facts import native_arch
+
+    # The request names the machine's architecture: a bare version lets uv
+    # pick an emulated x86_64 build on Windows-on-ARM.
+    uv_arch = "aarch64" if native_arch() == "arm64" else "x86_64"
     assert [json.loads(line) for line in log.read_text(encoding="utf-8-sig").splitlines()] == [
-        ["python", "find", "--managed-python", "--no-project", "3.12"],
+        ["python", "find", "--managed-python", "--no-project", f"cpython-3.12-windows-{uv_arch}-none"],
     ]
     if stage == "python-deps":
         assert json.loads(pm_log.read_text(encoding="utf-8-sig")) == ["install"]
