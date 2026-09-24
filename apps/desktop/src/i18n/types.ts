@@ -1119,6 +1119,8 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      voiceShortcutHintTitle: string
+      voiceShortcutHintDesc: string
       showOptions: string
     }
     hudModifier: {

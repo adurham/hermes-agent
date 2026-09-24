@@ -1342,6 +1342,9 @@ export const en: Translations = {
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      voiceShortcutHintTitle: 'Voice recording shortcut',
+      voiceShortcutHintDesc:
+        'Set the voice recording shortcut in Settings → Keyboard Shortcuts ("Start / stop dictation"). The voice.record_key config value only applies to the CLI and TUI.',
       showOptions: 'Show options'
     },
     hudModifier: {

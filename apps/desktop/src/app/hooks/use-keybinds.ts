@@ -69,7 +69,12 @@ import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerDictation, requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import {
+  requestComposerDictation,
+  requestComposerFocus,
+  requestModelMenuToggle,
+  requestVoiceToggle
+} from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
@@ -325,6 +330,43 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       ),
     []
   )
+
+  useEffect(() => {
+    const updateF12Ownership = () => {
+      const hasF12Binding = [...$comboIndex.get().keys()].some(combo => combo === 'f12' || combo.endsWith('+f12'))
+      window.hermesDesktop?.setF12ShortcutActive?.(hasF12Binding || $capture.get() !== null)
+    }
+
+    const stopBindings = $comboIndex.subscribe(updateF12Ownership)
+    const stopCapture = $capture.subscribe(updateF12Ownership)
+
+    return () => {
+      stopBindings()
+      stopCapture()
+      window.hermesDesktop?.setF12ShortcutActive?.(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const stopF12Shortcut = window.hermesDesktop?.onF12Shortcut?.(input => {
+      const target = document.activeElement ?? document.body ?? document.documentElement
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          altKey: input.alt,
+          bubbles: true,
+          cancelable: true,
+          code: input.code,
+          ctrlKey: input.control,
+          key: input.key,
+          metaKey: input.meta,
+          repeat: input.repeat,
+          shiftKey: input.shift
+        })
+      )
+    })
+
+    return () => stopF12Shortcut?.()
+  }, [])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

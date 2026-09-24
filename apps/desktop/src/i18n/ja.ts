@@ -794,7 +794,6 @@ export const ja = defineLocale({
         maxSnapshots: 'チェックポイント上限'
       },
       voice: {
-        recordKey: '音声ショートカット',
         maxRecordingSeconds: '最大録音時間',
         autoTts: '応答を読み上げる'
       },
@@ -1027,7 +1026,10 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      voiceShortcutHintTitle: '音声録音ショートカット',
+      voiceShortcutHintDesc:
+        '「設定 → キーボードショートカット」で音声録音ショートカット（「音声入力を開始 / 停止」）を設定します。voice.record_key は CLI と TUI 専用です。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',

@@ -947,7 +947,6 @@ export const zh = defineLocale({
         maxSnapshots: '检查点上限'
       },
       voice: {
-        recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
         autoTts: '朗读回复',
         voiceChatMode: '语音聊天模式',
@@ -1307,6 +1306,9 @@ export const zh = defineLocale({
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      voiceShortcutHintTitle: '语音录制快捷键',
+      voiceShortcutHintDesc:
+        '请在“设置 → 键盘快捷键”中设置语音录制快捷键（“开始 / 停止听写”）。voice.record_key 配置项仅适用于 CLI 和 TUI。',
       showOptions: '显示选项'
     },
     hudModifier: {

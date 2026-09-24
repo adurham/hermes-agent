@@ -1303,7 +1303,6 @@ export const de = defineLocale({
         maxSnapshots: 'Checkpoint-Limit'
       },
       voice: {
-        recordKey: 'Sprach-Tastenkürzel',
         maxRecordingSeconds: 'Maximale Aufnahmelänge',
         autoTts: 'Antworten vorlesen',
         voiceChatMode: 'Sprachchat-Modus',
