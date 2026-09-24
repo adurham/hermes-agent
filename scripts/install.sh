@@ -10,6 +10,8 @@
 #   --stage NAME [--json] run one stage
 #   --non-interactive     skip stages that need input
 #   --include-desktop     build the desktop app too (products stage)
+#   --verbose             stream every child command's output (the default
+#                         off a terminal and in CI)
 set -u
 
 # Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
@@ -28,6 +30,7 @@ WANT_MANIFEST=false
 JSON=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+VERBOSE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,11 +56,12 @@ while [ $# -gt 0 ]; do
             echo "$1 no longer skips the browser install; pm manages browser dependencies. Remove this flag and use --non-interactive to skip setup prompts." >&2
             exit 1 ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
+        --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
             echo "Usage: install.sh [--branch NAME] [--commit SHA] [--dir PATH]"
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
-            echo "                  [--non-interactive] [--include-desktop]"
+            echo "                  [--non-interactive] [--include-desktop] [--verbose]"
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -66,8 +70,92 @@ done
 INSTALL_DIR="${INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 export HERMES_HOME
 
-log() { printf "\033[1;34m[hermes]\033[0m %s\n" "$1"; }
-fail() { STAGE_REASON="$1"; printf "\033[1;31m[hermes]\033[0m %s\n" "$1" >&2; exit 1; }
+INSTALL_LOG="$HERMES_HOME/logs/install.log"
+
+# Same glyphs as the pre-pm installer. Colour only on a terminal, so CI
+# transcripts and the Hermes-Setup driver read plain text.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RED=$'\033[0;31m' C_GREEN=$'\033[0;32m' C_YELLOW=$'\033[0;33m'
+    C_CYAN=$'\033[0;36m' C_MAGENTA=$'\033[0;35m' C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m' C_NC=$'\033[0m'
+else
+    C_RED="" C_GREEN="" C_YELLOW="" C_CYAN="" C_MAGENTA="" C_BOLD="" C_DIM="" C_NC=""
+fi
+
+log() { printf '%s→%s %s\n' "$C_CYAN" "$C_NC" "$1"; }
+log_success() { printf '%s✓%s %s\n' "$C_GREEN" "$C_NC" "$1"; }
+log_warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_NC" "$1"; }
+log_error() { printf '%s✗%s %s\n' "$C_RED" "$C_NC" "$1" >&2; }
+fail() { STAGE_REASON="$1"; log_error "$1"; exit 1; }
+
+print_banner() {
+    printf '\n%s%s' "$C_MAGENTA" "$C_BOLD"
+    printf '%s\n' "┌─────────────────────────────────────────────────────────┐"
+    printf '%s\n' "│             ☤ Hermes Agent Installer                    │"
+    printf '%s\n' "├─────────────────────────────────────────────────────────┤"
+    printf '%s\n' "│  An open source AI agent by Nous Research.              │"
+    printf '%s\n' "└─────────────────────────────────────────────────────────┘"
+    printf '%s\n' "$C_NC"
+}
+
+# Interactive runs collapse child-process output (git, uv, pm, the builds)
+# into one status line. CI, --verbose and a non-terminal stdout -- the
+# Hermes-Setup --json driver, E2E transcripts -- keep the full stream those
+# readers parse.
+quiet_output() {
+    [ "$VERBOSE" = true ] && return 1
+    if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${HERMES_INSTALL_VERBOSE:-}" ]; then
+        return 1
+    fi
+    [ -t 1 ]
+}
+
+status_line() {
+    local text="  $1" width=$(( $2 - 1 ))
+    [ "${#text}" -le "$width" ] || text="${text:0:width}"
+    printf '\r\033[K%s%s%s' "$C_DIM" "$text" "$C_NC"
+}
+
+# run_logged [--may-fail] LABEL CMD...: run CMD. Quiet mode shows LABEL with
+# CMD's latest output line rewritten in place, appends everything to
+# $INSTALL_LOG and, on failure, prints the tail and the log path; --may-fail
+# is for probes whose failure the caller handles (no report). Otherwise LABEL
+# is logged and the output streams untouched. Returns CMD's exit status.
+run_logged() {
+    local may_fail=false
+    if [ "$1" = --may-fail ]; then may_fail=true; shift; fi
+    local label="$1"; shift
+    if ! quiet_output || ! { mkdir -p "${INSTALL_LOG%/*}" && : >> "$INSTALL_LOG"; } 2>/dev/null; then
+        log "$label"
+        "$@"
+        return
+    fi
+    local start cols rc line shown
+    start=$(( $(wc -l < "$INSTALL_LOG") + 1 ))
+    cols="$(tput cols 2>/dev/null)" || cols=80
+    [ "${cols:-0}" -gt 20 ] 2>/dev/null || cols=80
+    printf '==> %s (%s)\n' "$label" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$INSTALL_LOG"
+    status_line "$label" "$cols"
+    # stdin closed: under `curl | bash` it is the script itself, and nothing
+    # run here may prompt behind a status line.
+    "$@" </dev/null 2>&1 | {
+        while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
+            printf '%s\n' "$line" >&3
+            # git and uv redraw progress with bare CRs; show the newest.
+            shown="${line##*$'\r'}"
+            [ -z "$shown" ] || status_line "$label: $shown" "$cols"
+        done
+    } 3>>"$INSTALL_LOG"
+    rc=${PIPESTATUS[0]}
+    printf '\r\033[K'
+    if [ "$rc" -ne 0 ] && [ "$may_fail" = false ]; then
+        log_error "$label failed (exit $rc). Last output:"
+        tail -n +"$(( start + 1 ))" "$INSTALL_LOG" | tail -n 20 | sed 's/^/    /' >&2
+        printf '    full log: %s\n' "$INSTALL_LOG" >&2
+    fi
+    return "$rc"
+}
 
 # --- BEGIN GENERATED: bootstrap pins (scripts/gen-bootstrap-pins.py) ---
 # Derived from pm/lock.json. DO NOT EDIT BY HAND:
@@ -154,7 +242,7 @@ ensure_uv() {
             UV_CMD="$_path_uv"
             return 0
         fi
-        log "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
+        log_warn "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
     fi
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
@@ -167,7 +255,7 @@ ensure_uv() {
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
     UV_CMD="$_entry/uv"
     if [ ! -x "$UV_CMD" ]; then
-        log "staging pinned uv $UV_PIN_VERSION ($_target) into the pm store"
+        log "Downloading uv $UV_PIN_VERSION ($_target)"
         local _tmp
         # no-tmp: ok — last-resort fallback when mktemp itself is missing
         _tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-uv-bootstrap.$$")"
@@ -220,7 +308,7 @@ ensure_uv() {
     if ! "$UV_CMD" --version >/dev/null 2>&1; then
         fail "pinned uv staged but does not run on this host"
     fi
-    log "uv ready ($("$UV_CMD" --version 2>/dev/null))"
+    log_success "uv ready ($("$UV_CMD" --version 2>/dev/null))"
 }
 
 check_platform() {
@@ -321,7 +409,7 @@ emit_manifest() {
 stage_prerequisites() {
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager."
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
-    log "prerequisites ok (git, curl)"
+    log_success "prerequisites ok (git, curl)"
 }
 
 stage_repository() {
@@ -332,17 +420,17 @@ stage_repository() {
     if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
-        log "$INSTALL_DIR has no commits (interrupted clone); moving it aside to $broken"
+        log_warn "$INSTALL_DIR has no commits (interrupted clone); moving it aside to $broken"
         mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside"
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
-        log "updating $INSTALL_DIR"
+        log "Updating $INSTALL_DIR ($BRANCH)"
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if [ -n "${HERMES_REPO_URL:-}" ]; then
             git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
         fi
-        git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -354,15 +442,17 @@ stage_repository() {
             # index-level conflict state keeps the working-tree changes for
             # the stash below (#4735).
             if [ -n "$(git -C "$INSTALL_DIR" ls-files --unmerged)" ]; then
-                log "clearing unmerged index entries from a previous conflict"
+                log_warn "clearing unmerged index entries from a previous conflict"
                 git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR"
             fi
-            git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
+            run_logged "Stashing local changes" \
+                git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
                 || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"
-            log "local changes stashed as hermes-install-autostash-$stamp"
+            log_warn "local changes stashed as hermes-install-autostash-$stamp"
         fi
-        git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
-        if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
+        run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
+            git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
             # A release cut off the main line, a force-pushed remote, or the
             # user's own commits cannot fast-forward. Every stage below reads
             # files only the new tree has (pm/), so an install left on the old
@@ -382,11 +472,12 @@ stage_repository() {
                 rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$stamp-$prior"
                 git -C "$INSTALL_DIR" update-ref "$rescue_ref" HEAD \
                     || fail "cannot back up $dropped local commit(s); refusing to reset"
-                log "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
+                log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
                 log "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
             fi
-            git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" || fail "git reset failed"
-            log "not fast-forwardable; reset to origin/$BRANCH"
+            run_logged "Resetting to origin/$BRANCH" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" \
+                || fail "git reset failed"
+            log_warn "not fast-forwardable; reset to origin/$BRANCH"
         fi
     else
         # `mv <clone> <existing dir>` nests the checkout INSIDE it as
@@ -399,16 +490,21 @@ stage_repository() {
                 fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>."
             fi
         fi
-        log "cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
         mkdir -p "$(dirname "$INSTALL_DIR")"
-        local staged attempt cloned=false
+        local staged attempt label cloned=false progress=()
+        # Phase lines ("Receiving objects: 42%") feed the status line; git
+        # prints none to a pipe unless asked.
+        if quiet_output; then progress=(--progress); fi
         staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone"
         for attempt in 1 2 3; do
             # Treeless: every commit and release tag (runtime identity is the
             # nearest reachable release; --commit pins and branch switches
             # still resolve), trees and blobs fetched on demand, so the
             # download stays close to a --depth 1 clone.
-            if git clone --filter=tree:0 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+            label="Cloning $REPO_URL ($BRANCH) into $INSTALL_DIR"
+            [ "$attempt" = 1 ] || label="$label (attempt $attempt of 3)"
+            if run_logged "$label" git clone ${progress[@]+"${progress[@]}"} \
+                --filter=tree:0 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi
@@ -418,11 +514,12 @@ stage_repository() {
         if [ "$cloned" = false ]; then
             # The checkout step is where throttled downloads die: clone the
             # graph alone, then retry materializing the tree separately.
-            log "direct clone failed; trying deferred checkout"
-            if git clone --filter=tree:0 --no-checkout \
-                --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+            log_warn "direct clone failed; trying deferred checkout"
+            if run_logged "Cloning history" git clone ${progress[@]+"${progress[@]}"} \
+                --filter=tree:0 --no-checkout --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 for attempt in 1 2; do
-                    if git -C "$staged/tree" reset --hard HEAD; then
+                    if run_logged "Checking out files (attempt $attempt of 2)" \
+                        git -C "$staged/tree" reset --hard HEAD; then
                         cloned=true
                         break
                     fi
@@ -439,6 +536,7 @@ stage_repository() {
             fail "cannot publish cloned checkout"
         fi
         rmdir "$staged"
+        log_success "Hermes Agent cloned"
     fi
     if [ -n "$INSTALL_COMMIT" ]; then
         # A pin must come from the branch being installed: the complete
@@ -446,7 +544,8 @@ stage_repository() {
         # next plain rerun "update" onto a different line.
         git -C "$INSTALL_DIR" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
             || fail "commit $INSTALL_COMMIT is not on branch $BRANCH"
-        git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" || fail "could not pin commit $INSTALL_COMMIT"
+        run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \
+            || fail "could not pin commit $INSTALL_COMMIT"
     fi
 }
 
@@ -454,7 +553,7 @@ stage_venv() {
     # Keep the installer stage protocol; PM alone creates dependency environments.
     local boot_py
     bootstrap_python
-    log "bootstrap Python ready; PM prepares the dependency environment"
+    log_success "bootstrap Python ready; PM prepares the dependency environment"
 }
 
 # Tool-only bootstrap: acquire uv and Python before PM's own dependencies exist.
@@ -476,7 +575,8 @@ bootstrap_python() {
     # This interpreter only boots PM; PM still owns the exact runtime pin.
     if ! boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py" 2>/dev/null)" \
         && ! boot_py="$("$UV_CMD" python find --system --no-project "$_py" 2>/dev/null)"; then
-        "$UV_CMD" python install --no-bin --no-registry "$_py" || fail "bootstrap Python installation failed"
+        run_logged "Downloading Python $_py" "$UV_CMD" python install --no-bin --no-registry "$_py" \
+            || fail "bootstrap Python installation failed"
         boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
     fi
     boot_py="${boot_py%$'\r'}"
@@ -488,8 +588,10 @@ bootstrap_python() {
 bootstrap_pm() {
     local boot_py
     bootstrap_python
-    log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
-    (cd "$INSTALL_DIR" && "$boot_py" -m pm.cli install) || fail "pm install failed"
+    (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
+        "$boot_py" -m pm.cli install) \
+        || fail "pm install failed"
+    log_success "dependencies installed"
 }
 
 stage_python_deps() {
@@ -515,7 +617,7 @@ append_shell_path() {
     fi
     mkdir -p "$(dirname "$rc")"
     printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc"
-    log "added ~/.local/bin to PATH in $rc"
+    log_success "added ~/.local/bin to PATH in $rc"
 }
 
 wire_shell_path() {
@@ -555,10 +657,11 @@ stage_products() {
     if [ "$INCLUDE_DESKTOP" = true ] || desktop_product_present; then
         args+=(--desktop)
     fi
-    (cd "$INSTALL_DIR" && "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
+    (cd "$INSTALL_DIR" && run_logged "Building the hermes command and apps" \
+        "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
         || fail "app products or command publication failed"
     wire_shell_path
-    log "app products and hermes command ready"
+    log_success "app products and hermes command ready"
 }
 
 stage_desktop() {
@@ -580,7 +683,7 @@ stage_config() {
     if [ ! -f "$HERMES_HOME/config.yaml" ] && [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
         cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
     fi
-    log "config prepared in $HERMES_HOME"
+    log_success "config prepared in $HERMES_HOME"
 }
 
 # Interactive stages read the terminal, not stdin: under `curl | bash` stdin
@@ -615,7 +718,7 @@ stage_complete() {
             "$commit" "$BRANCH" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$INSTALL_DIR/.hermes-bootstrap-complete.tmp"
         mv -f "$INSTALL_DIR/.hermes-bootstrap-complete.tmp" "$INSTALL_DIR/.hermes-bootstrap-complete"
     fi
-    log "install complete. Run: hermes"
+    log_success "Hermes Agent install complete. Run: hermes"
 }
 
 run_stage() (
@@ -668,6 +771,7 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
 
     # No --stage: run the whole ladder — the same authoritative list the
     # manifest prints, so --include-desktop inserts desktop here too.
+    print_banner
     for s in $(stage_names); do
         run_stage "$s"
         rc=$?
