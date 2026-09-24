@@ -3476,7 +3476,9 @@ export interface Translations {
     versionDetailsDistributionDesktopMsix: string
     versionDetailsDistributionDesktopInstaller: string
     versionDetailsDistributionSourceInstaller: string
+    versionDetailsDistributionSourceInstallerDesktop: string
     versionDetailsDistributionSource: string
+    versionDetailsDistributionSourceDesktop: string
     versionDetailsDistributionStore: string
     versionDetailsRuntime: string
     versionDetailsRuntimeEmbedded: string
