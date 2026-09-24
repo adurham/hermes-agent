@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import socket
 import sqlite3
@@ -87,6 +88,7 @@ def hermetic_env(home: Path, extra: dict[str, str] | None = None) -> dict[str, s
         # The live-DB guard treats $HOME/.hermes/state.db of a pytest descendant as production;
         # this HOME is the test's own tmp dir (asserted above).
         HERMES_STATE_DB_GUARD_BYPASS="1",
+        HERMES_DISABLE_LAZY_INSTALLS="1",
     )
     env.update(extra or {})
     return env
@@ -184,6 +186,32 @@ def write_profile_home(p: Profile, extra_config: dict[str, Any] | None = None) -
     (p.home / ".env").write_text(f"{PROVIDER_KEY_ENV}={p.provider_key}\n", encoding="utf-8")
 
 
+def _select_test_dependencies(sb: Sandbox) -> None:
+    """Boot real entrypoints against the PM test venv, not a checkout's unrelated .venv.
+
+    Bootstrap selects dependencies from HOME's PM facts even when the invoking Python is
+    already the test interpreter. Keep that selection in the sandbox, backed by the actual
+    test environment rather than syncing into either the sandbox or the developer's HOME.
+    """
+    from pm.environments import install_key, site_packages
+
+    test_venv = Path(sys.prefix)
+    if not (test_venv / "pyvenv.cfg").is_file():
+        return  # Nix/system Python has no venv to redirect; bootstrap keeps its own imports.
+    selected = site_packages(test_venv)
+    assert selected.is_dir(), f"test interpreter lacks site-packages: {test_venv}"
+    state = sb.hermes_home / "installs" / install_key(REPO_ROOT)
+    environment = state / "environments" / "dashboard-test" / "venv"
+    environment.mkdir(parents=True)
+    shutil.copyfile(test_venv / "pyvenv.cfg", environment / "pyvenv.cfg")
+    target = environment / selected.relative_to(test_venv)
+    target.parent.mkdir(parents=True)
+    target.symlink_to(selected, target_is_directory=True)
+    (state / "facts.json").write_text(json.dumps({"packages": {"venv": {
+        "environment": str(environment),
+    }}}), encoding="utf-8")
+
+
 def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
                  responder: Callable[[Profile], Any] | None = None) -> Sandbox:
     """Launch profile at HOME/.hermes, the rest under profiles/<name>; each owns a started provider
@@ -200,6 +228,7 @@ def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
         write_profile_home(p)
         profiles[name] = p
     sb = Sandbox(root=root, profiles=profiles)
+    _select_test_dependencies(sb)
     _assert_profiles_root_under(sb)
     (root / "web_dist").mkdir(exist_ok=True)
     (root / "web_dist" / "index.html").write_text(
