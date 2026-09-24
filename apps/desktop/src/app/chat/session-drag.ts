@@ -47,6 +47,7 @@ import {
 } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $treeDragging,
+  closeTreePane,
   type DropHint,
   reorderTreePanes,
   revealTreePane,
@@ -54,8 +55,9 @@ import {
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { reorderCommitHaptic } from '@/lib/reorder'
+import { requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
-import { openSessionTile, type TileDock } from '@/store/session-states'
+import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
@@ -242,6 +244,8 @@ export function startSessionDrag(
       }
 
       if (split) {
+        const fromMain = payload.id === $selectedStoredSessionId.get()
+
         openSessionTile(payload.id, split.pos, split.anchor, split.before)
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never
@@ -251,6 +255,22 @@ export function startSessionDrag(
         // `session-tile:` pane that doesn't exist for the main session was a
         // silent no-op.
         revealTreePane(ownPaneId)
+
+        // Dragging MAIN's own tab out is a MOVE. A session lives in exactly one
+        // surface (two panes on one runtime would fight over it), so once the
+        // tile exists main lets go the way its Close does: the next stacked
+        // tab shifts in, else a fresh draft. Never promote the tile just
+        // minted — that would pull the chat straight back and read as a dead
+        // drop.
+        if (fromMain && $sessionTiles.get().some(t => t.storedSessionId === payload.id)) {
+          const next = nextSessionTileForWorkspace()
+
+          if (next && next !== payload.id) {
+            closeTreePane('workspace')
+          } else {
+            requestFreshSession()
+          }
+        }
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })

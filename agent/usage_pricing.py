@@ -634,6 +634,8 @@ def normalize_usage(
         cache_write_5m_tokens=cache_write_5m_tokens, cache_write_1h_tokens=cache_write_1h_tokens,
         server_tool_web_search_requests=server_tool_web_search_requests,
         server_tool_web_fetch_requests=server_tool_web_fetch_requests,
+        # Upstream: the raw provider usage object, kept verbatim for downstream detail.
+        raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )
 
 
@@ -646,6 +648,11 @@ def estimate_usage_cost(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
     fast_mode: bool = False,  # FORK: Anthropic ``speed: "fast"`` premium (see fast_mode_multiplier)
 ) -> CostResult:
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider or '')
+    reported = profile.get_usage_cost(model_name, usage) if profile else None
+    if reported is not None:
+        return reported
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(

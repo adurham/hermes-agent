@@ -195,7 +195,7 @@ docker compose exec gateway \
 
 ## Related
 
-- [SECURITY.md](https://github.com/adurham/hermes-agent/blob/main/SECURITY.md) — Hermes trust model and vulnerability reporting
-- [Docker](/user-guide/docker) — running Hermes in a container
+- [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) — Hermes trust model and vulnerability reporting
+- [Docker](../docker.md) — running Hermes in a container
 - [Egress proxy](iron-proxy.md) — credential-injection firewall for the sandbox
 - [docker-compose.yml](https://github.com/adurham/hermes-agent/blob/main/docker-compose.yml) — default compose configuration

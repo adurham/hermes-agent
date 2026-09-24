@@ -24,6 +24,21 @@
 // native rcedit.exe run under Wine on macOS/Linux) with zero new footprint —
 // resedit is already pulled in transitively via electron-builder.
 //
+// ASAR-INTEGRITY NOTE (#105629, upstream v2026.9.21)
+// -----------------------------------------------
+// Upstream moved its stamping hook from afterPack to afterExtract because
+// rcedit cannot commit resource changes to the PE that electron-builder
+// rewrites for ASAR integrity ("Fatal error: Unable to commit changes"), so
+// their hook has to fire on the pristine electron.exe before the rewrite.
+// That constraint is specific to rcedit's write path. This script uses
+// resedit, which reconstructs the PE from the parsed image instead of
+// patching it in place, so the stamp survives the integrity rewrite and can
+// stay on afterPack — where it ALSO covers `hermes desktop`, the installer's
+// --update rebuild, and a dev's manual `npm run pack`, none of which run
+// afterExtract-only installs. If this script is ever switched back to
+// rcedit, the hook MUST move to afterExtract in the same change.
+//
+
 // HOW IT RUNS
 // -----------
 // Primarily as an electron-builder `afterPack` hook (scripts/after-pack.mjs),

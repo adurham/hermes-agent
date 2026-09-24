@@ -134,6 +134,10 @@ interface SidebarSessionsSectionProps {
   projectOverview?: SidebarProjectTree[]
   // Per-project preview rows (from the backend tree), keyed by project id.
   projectOverviewPreviews?: Record<string, SessionInfo[]>
+  // The exclusion the previews were built with (pins, filter misses, removed
+  // ids) plus how many of each project's `sessionCount` it hides — applied
+  // again when a row hydrates its full lanes on "Show all".
+  projectOverviewHidden?: { isHidden: (session: SessionInfo) => boolean; counts: Record<string, number> }
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
@@ -182,6 +186,11 @@ interface SidebarSessionsSectionProps {
   // pinned, messaging groups, and the project overview, where the order isn't
   // strictly by recency so a bucket would be misleading.
   grouping?: 'date' | 'none' | 'status'
+  // Keep the caller's row order instead of re-sorting by group recency
+  // (defaults to `pinned`, the only pre-ordered caller). The search results
+  // set it too: their order is the backend's ranking (exact id matches
+  // first), which recency re-sorting would bury under newer quoting rows.
+  preserveOrder?: boolean
   // Inbox style: render every flat session row as a three-line card (project ·
   // age / title / model · size). A render variant that composes with whichever
   // grouping is active — the flat recents list opts in; dense tree surfaces
@@ -213,6 +222,7 @@ export function SidebarSessionsSection({
   groups,
   projectOverview,
   projectOverviewPreviews,
+  projectOverviewHidden,
   projectsLoading = false,
   onEnterProject,
   projectContent,
@@ -232,6 +242,7 @@ export function SidebarSessionsSection({
   dndSensors,
   showProfileTags = false,
   grouping = 'none',
+  preserveOrder = pinned,
   card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
@@ -247,12 +258,10 @@ export function SidebarSessionsSection({
   // render as a drill-in row so the user can see it exists).
   const hasProjectOverview = Boolean(projectOverview?.length)
 
-  // Lanes count as content even with no rows left in them: the backend only
-  // emits a lane that has sessions, so a lane surviving with zero rows means
-  // they were filtered out (pinned) — the branch is real and must still render.
-  // A genuinely empty project has no lanes at all and keeps its empty state.
+  // Declared repos are content even before their first session: each repo header owns the action that starts
+  // a session in that folder. Lanes likewise survive filtering and must still render.
   const hasProjectContent = Boolean(
-    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.some(repo => repo.groups.length > 0))
+    projectContent && (projectContent.sessionCount > 0 || projectContent.repos.length > 0)
   )
 
   const showEmptyState =
@@ -266,8 +275,8 @@ export function SidebarSessionsSection({
   // recency sort — the drag order is layered on per date group below, so the
   // buckets stay truthful and a reorder never costs the list its dividers.
   const displayEntries = useMemo(
-    () => flattenSessionsWithBranches(sessions, { preserveOrder: pinned }),
-    [sessions, pinned]
+    () => flattenSessionsWithBranches(sessions, { preserveOrder }),
+    [sessions, preserveOrder]
   )
 
   const renderRow = useCallback(
@@ -385,15 +394,18 @@ export function SidebarSessionsSection({
   // together. Compute boundaries from the whole pool, just like Updated.
   const renderPreviewRows = useCallback(
     (items: SessionInfo[], projectId: string) => {
-      const rows = groupEntriesByRecency(flattenSessionsWithBranches(items), undefined, undefined, 2).map(row =>
-        row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row
-      )
+      const rows = groupEntriesByRecency(
+        flattenSessionsWithBranches(items),
+        undefined,
+        undefined,
+        showAllSessions ? Infinity : 2
+      ).map(row => (row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row))
 
       const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
 
       return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
     },
-    [isListGroupOpen, manualOrderIds, renderListRow]
+    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for
@@ -518,6 +530,8 @@ export function SidebarSessionsSection({
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
       <Component
         activeProjectId={activeProjectId}
+        hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
+        isSessionHidden={projectOverviewHidden?.isHidden}
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}

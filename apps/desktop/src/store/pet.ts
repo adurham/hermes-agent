@@ -1,8 +1,8 @@
 import { atom, computed } from 'nanostores'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $busy } from '@/store/session'
 
 /**
  * Petdex mascot state for the desktop floating pet.
@@ -238,7 +238,7 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
 
 /**
  * Resolve the live activity state from the dedicated activity atom, falling back
- * to the always-present `$busy` chat signal so the pet reacts out of the box.
+ * to the primary session view's turn-busy so the pet reacts out of the box.
  *
  * `awaitingInput` (a clarify/approval blocking on the user) is an explicit flag
  * on `$petActivity` — set by the controller from `$attentionSessionIds` and
@@ -329,8 +329,12 @@ export const $petRoamDir = atom<-1 | 0 | 1>(0)
  * effect gates on this — never on `$petState` itself, which would feed back
  * on its own `$petMotion`-driven pose.
  */
+// Turn-busy comes from the active runtime's own slice (`$primaryBusy` in
+// session-view.tsx explains why the global `$busy` mirror can't be trusted:
+// #84434 / #84438). The pop-out overlay push reads the same atom so both
+// surfaces derive the pose from one signal.
 export const $petAtRest = computed(
-  [$petActivity, $busy],
+  [$petActivity, PRIMARY_SESSION_VIEW.$busy],
   (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
 )
 
@@ -346,7 +350,7 @@ export const $petAtRest = computed(
  * within a frame, which is what actually stops `PetSprite`'s `rowOverride`
  * from masking that pose (see `roamWalkRow`: no override once dir is 0).
  */
-export const $petCanRoam = computed([$petActivity, $busy], (activity, busy): boolean => {
+export const $petCanRoam = computed([$petActivity, PRIMARY_SESSION_VIEW.$busy], (activity, busy): boolean => {
   const state = deriveLivePetState(activity, busy)
 
   return state === 'idle' || state === 'run' || state === 'review'
@@ -367,7 +371,7 @@ export const $petCanRoam = computed([$petActivity, $busy], (activity, busy): boo
  * roam-disabled pet's busy pose is completely unaffected.
  */
 export const $petState = computed(
-  [$petActivity, $busy, $petMotion, $petRoamPaused],
+  [$petActivity, PRIMARY_SESSION_VIEW.$busy, $petMotion, $petRoamPaused],
   (activity, busy, motion, roamPaused): PetState => {
     const base = deriveLivePetState(activity, busy)
 
@@ -392,4 +396,4 @@ export const $petState = computed(
  * show a "working…" bubble for a walk that isn't work. Consumers that show
  * agent-status TEXT (not just the sprite pose) should read this instead.
  */
-export const $petRealState = computed([$petActivity, $busy], deriveLivePetState)
+export const $petRealState = computed([$petActivity, PRIMARY_SESSION_VIEW.$busy], deriveLivePetState)

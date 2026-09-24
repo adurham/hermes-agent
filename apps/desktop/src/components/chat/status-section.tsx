@@ -1,3 +1,5 @@
+import './status-stack.css'
+
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type PointerEvent as ReactPointerEvent, useRef, useState } from 'react'
 
@@ -81,16 +83,16 @@ export function StatusSection({
   }
 
   return (
-    <div>
-      <div className="flex items-center gap-1 pr-1">
+    <div data-slot="status-section">
+      <div className="status-section-header flex items-center gap-1 pr-1">
         <button
           aria-expanded={!collapsed}
-          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"
+          className="status-section-trigger flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"
           onClick={() => setCollapsed(open => !open)}
           type="button"
         >
           <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
-          {icon && <span className="flex shrink-0 items-center">{icon}</span>}
+          {icon && <span className="status-section-icon flex shrink-0 items-center">{icon}</span>}
           <span className="min-w-0 truncate">{label}</span>
           {collapsedIndicator && <span className="flex shrink-0 items-center">{collapsedIndicator}</span>}
         </button>
