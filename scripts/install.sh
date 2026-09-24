@@ -380,7 +380,11 @@ stage_repository() {
         local staged attempt cloned=false
         staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone"
         for attempt in 1 2 3; do
-            if git clone --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
+            # Treeless: every commit and release tag (runtime identity is the
+            # nearest reachable release; --commit pins and branch switches
+            # still resolve), trees and blobs fetched on demand, so the
+            # download stays close to a --depth 1 clone.
+            if git clone --filter=tree:0 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 cloned=true
                 break
             fi
@@ -388,11 +392,10 @@ stage_repository() {
             [ "$attempt" = 3 ] || sleep "$((attempt * 5))"
         done
         if [ "$cloned" = false ]; then
-            # Full history, blobs on demand: --commit, tags and later branch
-            # switches all still resolve (a shallow single-branch clone
-            # could not check out anything but the tip).
-            log "direct clone failed; trying deferred blob download"
-            if git clone --filter=blob:none --no-checkout \
+            # The checkout step is where throttled downloads die: clone the
+            # graph alone, then retry materializing the tree separately.
+            log "direct clone failed; trying deferred checkout"
+            if git clone --filter=tree:0 --no-checkout \
                 --branch "$BRANCH" "$REPO_URL" "$staged/tree"; then
                 for attempt in 1 2; do
                     if git -C "$staged/tree" reset --hard HEAD; then

@@ -633,16 +633,20 @@ function Stage-Repository {
         try {
             $cloned = $false
             foreach ($attempt in 1..3) {
-                Invoke-Native { git clone --branch $Branch $RepoUrl $tree }
+                # Treeless: every commit and release tag (runtime identity is the
+                # nearest reachable release; -Commit pins and branch switches
+                # still resolve), trees and blobs fetched on demand, so the
+                # download stays close to a --depth 1 clone.
+                Invoke-Native { git clone --filter=tree:0 --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
             }
             if (-not $cloned) {
-                # Full history, blobs on demand: -Commit, tags and later branch
-                # switches all still resolve.
-                Log "direct clone failed; trying deferred blob download"
-                Invoke-Native { git clone --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
+                # The checkout step is where throttled downloads die: clone the
+                # graph alone, then retry materializing the tree separately.
+                Log "direct clone failed; trying deferred checkout"
+                Invoke-Native { git clone --filter=tree:0 --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) {
                     foreach ($attempt in 1..2) {
                         Invoke-Native { git -C $tree reset --hard HEAD }
