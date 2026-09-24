@@ -305,7 +305,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   // audio, data-*), fall back to shallow primitive-key comparison — conservative:
   // if we're not sure, claim not-equal (one extra setMessages is harmless, but
   // skipping an update would break the UI).
+  // SAFETY: both parts already narrowed by `type` to flat primitive part kinds;
+  // the cast only exposes their keys for comparison, never reinterprets them.
   const aPrimitive = aPart as unknown as Record<string, unknown>
+  // SAFETY: same narrowing as above; key comparison only.
   const bPrimitive = bPart as unknown as Record<string, unknown>
   const aKeys = Object.keys(aPrimitive).filter(k => typeof aPrimitive[k] !== 'object' || aPrimitive[k] === null)
   const bKeys = Object.keys(bPrimitive).filter(k => typeof bPrimitive[k] !== 'object' || bPrimitive[k] === null)
@@ -916,7 +919,34 @@ export function preserveLocalPendingTurnMessages(
     const isPendingAssistant =
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
-    if (!isOptimisticUser && !isPendingAssistant) {
+    // A settled live-tail reply the backend has not committed yet is the only
+    // copy of that reply and must survive a stale refreshed page (#121613).
+    // Stream-id rows already enter through isPendingAssistant; this covers the
+    // settled rows that do not (an interim id the completion settled onto, or
+    // an appended `assistant-<ts>` bubble). Only the single newest row is
+    // guarded: anything with a newer local row after it (stale compression
+    // history, a superseded segment, the next turn's stream) belongs to the
+    // reconcile paths. Interim, hidden, and persisted rows stay out for the
+    // same reason: superseded interims, invisible rows, and fetchable rows
+    // are not the live tail.
+    //
+    // A page that brings its own assistant row for this same reply ordinal has
+    // rotated or compacted the transcript: that answer owns the slot, so the
+    // cached row is superseded history rather than a live tail — resurrecting
+    // it puts the pre-compression answer back on screen beside its
+    // replacement. A stale page ends at the prompt (the reply is uncommitted),
+    // so the ordinal stays empty there and the only copy still survives.
+    const isSettledUnpersistedAssistant =
+      index === previousMessages.length - 1 &&
+      message.role === 'assistant' &&
+      message.pending !== true &&
+      message.interim !== true &&
+      message.hidden !== true &&
+      message.rowId === undefined &&
+      chatMessageText(message).trim() !== '' &&
+      !nextByRoleOrdinal.has(`assistant:${ordinal}`)
+
+    if (!isOptimisticUser && !isPendingAssistant && !isSettledUnpersistedAssistant) {
       continue
     }
 
@@ -999,7 +1029,7 @@ export function preserveLocalPendingTurnMessages(
     // (#70209). Only text-identical rows are dropped — a settled row the backend
     // has NOT committed yet is the only copy of that reply and must survive.
     if (
-      isPendingAssistant &&
+      (isPendingAssistant || isSettledUnpersistedAssistant) &&
       message.pending !== true &&
       candidates.some(
         candidate =>
