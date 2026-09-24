@@ -2508,7 +2508,7 @@ def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subpro
     and prefixing a read with ``sudo -n`` would wrongly fail against a restart-only grant.
     """
     argv = _systemctl_cmd(system) + args
-    if system and os.geteuid() != 0 and args and args[0] not in _SYSTEMCTL_READONLY_VERBS:
+    if system and os.geteuid() != 0 and args and args[0] not in _SYSTEMCTL_READONLY_VERBS:  # windows-footgun: ok — Linux systemd helper, never invoked on Windows
         sudo_args = _sudo_normalized_systemctl_args(args)
         if _can_passwordless_sudo_systemctl(sudo_args):
             sudo_path = shutil.which("sudo") or "sudo"
@@ -3376,7 +3376,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     # a raw PermissionError/CalledProcessError up through systemd_restart's
     # graceful-SIGUSR1 path, which no longer gates on root before reaching
     # here.
-    if system and os.geteuid() != 0:
+    if system and os.geteuid() != 0:  # windows-footgun: ok — systemd unit write, POSIX-only path
         return False
 
     unit_path.write_text(new_unit, encoding="utf-8")
