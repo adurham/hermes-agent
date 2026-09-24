@@ -96,6 +96,8 @@ source "$(dirname "$0")/e2e-assets/ts-prefix.sh" 2>/dev/null || ts_prefix() { ca
 source "$(dirname "$0")/e2e-assets/preserve-plugins.sh"
 # shellcheck source=e2e-assets/source-driver.sh
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
+# shellcheck source=e2e-assets/source-update-command.sh
+source "$ASSETS/source-update-command.sh"
 # shellcheck source=e2e-assets/installer-common.sh
 source "$(dirname "$0")/e2e-assets/installer-common.sh"
 # shellcheck source=e2e-assets/source-build-env.sh
@@ -301,15 +303,16 @@ phase_update() {
   trap mock_stop EXIT
   case "$UPDATE_METHOD" in
     hermes-update)
-      # The CLI route a dmg user takes from a terminal. `--yes` reaches the
-      # update subcommand only in later releases; ask the installed hermes.
+      # The CLI route a dmg user takes from a terminal. Probe the installed
+      # help for both flags: this fixture stages unpublished main in serve.git,
+      # so newer updaters need explicit --branch main (not the channel object).
       local hermes help
       hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
-      local update_cmd=("$hermes" update)
       help="$(source_build_env "$hermes" update --help 2>&1)" || fail "installed update --help failed: $help"
-      if grep -qF -- --yes <<< "$help"; then
-        update_cmd=("$hermes" update --yes)
-      fi
+      build_source_update_command "$hermes" "$help"
+      printf '  CLI update invocation:'
+      printf ' %q' "${update_cmd[@]}"
+      printf '\n'
       local rc=0
       (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
       log_group "hermes update transcript" "$LOG_DIR/update.log"
