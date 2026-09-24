@@ -724,7 +724,8 @@ def test_entrypoint_in_a_fresh_process(case, tmp_path):
         f"{case} called a service manager: {shim_log.read_text(encoding='utf-8')}")
     if entry.prints_version:
         from hermes_cli.version_info import get_version_info
-        assert get_version_info().derived_version in cp.stdout, describe(cp)
+        commit = get_version_info().commit
+        assert commit and commit[:7] in cp.stdout, describe(cp)
     db = hermes_home / "state.db"
     if db.exists():
         assert _db_rows(db, "PRAGMA integrity_check") == [("ok",)], f"{case} left a corrupt state.db"
@@ -779,8 +780,9 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
             record = json.loads(record_file.read_text(encoding="utf-8"))
             assert record.get("port") == port, record
 
-            # bwrap's own argv also carries these strings: match the interpreter's argv[1] exactly.
-            reaper_proc = next(p for p in psutil.Process(proc.pid).children(recursive=True)
+            # With bwrap the reaper is a child; without it (CI) it is proc itself.
+            root = psutil.Process(proc.pid)
+            reaper_proc = next(p for p in [root, *root.children(recursive=True)]
                                if p.cmdline()[1:2] == [str(reaper)])
             serve = next(p for p in reaper_proc.children() if p.cmdline()[1:3] == ["-m", "hermes_cli.main"])
             descendants = [p.pid for p in serve.children(recursive=True)]
