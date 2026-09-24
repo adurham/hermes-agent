@@ -9,7 +9,9 @@ import pytest
 from tests.installation_launcher_fixture import publish_fixture_launcher
 
 if os.name == 'posix':
+    import fcntl
     import pty
+    import termios
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +20,13 @@ def _with_controlling_terminal(tty_path: str):
     def attach() -> None:
         os.setsid()  # windows-footgun: ok (posix-only test)
         fd = os.open(tty_path, os.O_RDWR)
-        os.close(fd)
+        try:
+            # Opening a PTY slave does not always acquire it on Darwin.
+            fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
+            probe = os.open('/dev/tty', os.O_RDONLY)
+            os.close(probe)
+        finally:
+            os.close(fd)
     return attach
 
 
@@ -45,6 +53,7 @@ def test_installer_post_pm_stages(tmp_path: Path, stage: str, expected: list[str
             result = subprocess.run(command, cwd=tmp_path, env={**env, 'STAGE_EXIT': str(code)}, capture_output=True,
                                     text=True, encoding='utf-8', timeout=20, stdin=subprocess.DEVNULL,
                                     preexec_fn=_with_controlling_terminal(tty_path))
+            assert calls.exists(), (result.returncode, result.stdout, result.stderr)
             assert (result.returncode == 0) == (code == 0), result.stdout + result.stderr
             assert json.loads(calls.read_text()) == expected
     finally:
