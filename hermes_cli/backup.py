@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import zipfile
+import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,6 +141,17 @@ _EXCLUDED_PREFIXES = (
 # ``container_boot._STALE_RUNTIME_FILES``; import filters too because older backups predate the
 # backup-side exclusions.
 _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
+
+try:  # zipfile already imports lzma (free); it is absent only from Pythons built without liblzma
+    import lzma
+    _LZMA_ERRORS: tuple[type[BaseException], ...] = (lzma.LZMAError,)
+except ImportError:  # pragma: no cover
+    _LZMA_ERRORS = ()
+
+# What reading a member's data raises when the archive itself is bad (a bzip2 bad stream and a
+# media read error are OSError, caught alongside): bad deflate stream, bad CRC, truncated stream.
+_ZIP_MEMBER_READ_ERRORS: tuple[type[BaseException], ...] = (
+    zipfile.BadZipFile, zlib.error, EOFError, *_LZMA_ERRORS)
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 # vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
@@ -623,6 +635,377 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
 
 # --- Import ---
 
+def _find_corrupt_members(zf: zipfile.ZipFile, members: List[str]) -> List[str]:
+    """Return ``"<member>: <error>"`` for every member whose data does not decompress or
+    fails its CRC, streaming each one in 1 MiB chunks so a multi-GB ``state.db`` is never
+    held in memory.
+
+    ``is_zipfile()``/``namelist()`` only read the central directory, so an archive with a
+    rotten member passes them and the damage surfaces as ``zlib.error``/``BadZipFile`` in
+    the middle of the restore, after earlier members already replaced the user's files
+    (#121258). Not ``zf.testzip()``: it lets ``zlib.error`` escape and names at most the
+    first bad member.
+    """
+    bad: list[str] = []
+    for member in members:
+        try:
+            with zf.open(member) as src:
+                while src.read(1 << 20):  # CRC is checked when the stream hits EOF
+                    pass
+        except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+            bad.append(f"{member}: {exc}")
+    return bad
+
+
+def _import_skipped(rel: str) -> bool:
+    """True for a HERMES_HOME-relative member the import deliberately does not restore: runtime
+    state (``_IMPORT_SKIP_NAMES``), PM-local interpreter/dependency roots, or an archived SQLite
+    WAL/SHM/journal. A ``.db`` member is page-restored into the live file, and a sidecar from a
+    different image would replay a foreign WAL on next open (older archives may ship these)."""
+    try:
+        parts = tuple(normalize_archive_parts(rel))
+    except ValueError:
+        return False  # A rejected traversal is still reported by the import itself.
+    return (parts[-1] in _IMPORT_SKIP_NAMES or
+            profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS or
+            rel.endswith(_SQLITE_SIDECAR_SUFFIXES))
+
+
+def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
+    """Classify an archive member exactly as the restore does: return ``(rel, skipped)``.
+
+    ``_external/`` members are home-relative and never skipped; every other member is
+    HERMES_HOME-relative after stripping the archive ``prefix``. Shared by the integrity
+    pre-flight and ``_import_members`` so the two cannot disagree on what gets restored."""
+    if member.startswith(_EXTERNAL_PREFIX):
+        return member[len(_EXTERNAL_PREFIX):], False
+    rel = member[len(prefix):] if prefix and member.startswith(prefix) else member
+    return rel, _import_skipped(rel)
+
+
+def run_import(args) -> Optional[int]:
+    """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    zip_path = Path(args.zipfile).expanduser().resolve()
+
+    if not zip_path.is_file():
+        print(f"Error: File not found: {zip_path}")
+        sys.exit(1)
+
+    if not zipfile.is_zipfile(zip_path):
+        print(f"Error: Not a valid zip file: {zip_path}")
+        sys.exit(1)
+
+    # The restore target must be the home the command operates under — the
+    # same path printed as "Target:" via display_hermes_home(). Resolving
+    # through get_default_hermes_root() instead maps a profile home
+    # (<root>/profiles/<name>) back to <root>, silently retargeting the
+    # restore at the live root while the profile directory stays empty.
+    hermes_root = get_hermes_home()
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        # Validate
+        ok, reason = _validate_backup_zip(zf)
+        if not ok:
+            print(f"Error: {reason}")
+            sys.exit(1)
+
+        prefix = _detect_prefix(zf)
+        members = [n for n in zf.namelist() if not n.endswith("/")]
+        file_count = len(members)
+
+        print(f"Backup contains {file_count} files")
+        print(f"Target: {display_hermes_home()}")
+
+        if prefix:
+            print(f"Detected archive prefix: {prefix!r} (will be stripped)")
+
+        # Check for existing installation
+        has_config = (hermes_root / "config.yaml").exists()
+        has_env = (hermes_root / ".env").exists()
+
+        if (has_config or has_env) and not args.force:
+            print()
+            print("Warning: Target directory already has Hermes configuration.")
+            print("Importing will overwrite existing files with backup contents.")
+            print()
+            try:
+                answer = input("Continue? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted.")
+                sys.exit(1)
+            if answer not in {"y", "yes"}:
+                print("Aborted.")
+                return
+
+        # Refuse damaged archives before writing any user files. Runtime and PM-local
+        # members skipped below cannot block restoration of the portable data.
+        print("\nChecking archive integrity ...")
+        corrupt = _find_corrupt_members(zf, [m for m in members if not _import_member_rel(m, prefix)[1]])
+        if corrupt:
+            _print_capped(f"Error: backup archive is damaged ({len(corrupt)} member(s) fail to "
+                          f"decompress or fail their CRC); nothing was restored:", corrupt, "  ")
+            return 1
+
+        # Extract
+        print(f"\nImporting {file_count} files ...")
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        errors = []
+        restored = 0
+        restored_external = 0
+        skipped_runtime: list[str] = []
+        # (rel, live_counts, imported_counts) for every session database the
+        # import replaced with one holding fewer rows. A restore is allowed to
+        # do that — it just must not do it silently (issue #100960).
+        db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
+        home_dir = Path.home().resolve()
+        # Resolved once: every member is published via a temp file, and mkstemp
+        # would otherwise create newly restored files as 0600.
+        new_file_mode = _default_new_file_mode()
+        t0 = time.monotonic()
+
+        for member in members:
+            # External memory-provider state captured under the reserved
+            # ``_external/`` arc prefix restores to its original home-relative
+            # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
+            if member.startswith(_EXTERNAL_PREFIX):
+                ext_rel = member[len(_EXTERNAL_PREFIX):]
+                if not ext_rel:
+                    continue
+                target = home_dir / ext_rel
+                # Security: the resolved target must stay under the home dir.
+                try:
+                    target.resolve().relative_to(home_dir)
+                except ValueError:
+                    errors.append(f"  {member}: path traversal blocked")
+                    continue
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _extract_member_atomically(zf, member, target, new_file_mode)
+                    # External provider configs commonly hold credentials.
+                    if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
+                        try:
+                            os.chmod(target, 0o600)
+                        except OSError:
+                            pass
+                    restored += 1
+                    restored_external += 1
+                except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+                    errors.append(f"  {member}: {exc}")
+                if restored % 500 == 0:
+                    print(f"  {restored}/{file_count} files ...")
+                continue
+
+            # Strip prefix if detected
+            if prefix and member.startswith(prefix):
+                rel = member[len(prefix):]
+            else:
+                rel = member
+
+            if not rel:
+                continue
+
+            try:
+                parts = tuple(normalize_archive_parts(rel))
+            except ValueError:
+                errors.append(f"  {rel}: path traversal blocked")
+                continue
+
+            # Never overwrite volatile gateway/process runtime state. These are
+            # namespaced to the machine/container the backup was taken on;
+            # clobbering them (especially gateway_state.json) breaks the gateway
+            # reconciler on the target and disconnects hosted instances from the
+            # Nous portal. Matched by basename so both the root profile and
+            # named profiles (profiles/<name>/gateway_state.json) are covered.
+            if parts[-1] in _IMPORT_SKIP_NAMES:
+                skipped_runtime.append(rel)
+                continue
+
+            # Older archives may contain PM selections pointing at another machine.
+            # Match their home-root paths; a plugin's own facts.json is user data.
+            if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
+                skipped_runtime.append(rel)
+                continue
+
+            # A ``.db`` member is page-restored into the live file below; a
+            # WAL/SHM/journal member from the archive describes a different
+            # database image, and installing it beside the restored file (over
+            # a live sidecar, via os.replace) would replay a foreign WAL on
+            # the next open. Current backups never ship these
+            # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
+            if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
+                skipped_runtime.append(rel)
+                continue
+
+            target = hermes_root.joinpath(*parts)
+
+            # Security: reject absolute paths and traversals
+            try:
+                target.resolve().relative_to(hermes_root.resolve())
+            except ValueError:
+                errors.append(f"  {rel}: path traversal blocked")
+                continue
+
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.suffix == ".db":
+                    # Count before the write: afterwards the rows this import
+                    # drops are gone and there is nothing left to compare.
+                    before = _count_session_rows(target)
+                    _import_db_member(zf, member, target, new_file_mode)
+                    after = _count_session_rows(target)
+                    if before and after and after[1] < before[1]:
+                        db_shrunk.append((rel, before, after))
+                else:
+                    _extract_member_atomically(zf, member, target, new_file_mode)
+                if target.name in _SECRET_FILE_NAMES:
+                    os.chmod(target, 0o600)
+                restored += 1
+            except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+                errors.append(f"  {rel}: {exc}")
+
+            if restored % 500 == 0:
+                print(f"  {restored}/{file_count} files ...")
+
+        elapsed = time.monotonic() - t0
+
+        # Summary
+        print()
+        print(f"Import {'incomplete' if errors else 'complete'}: {restored} files restored in {elapsed:.1f}s")
+        print(f"  Target: {display_hermes_home()}")
+
+        if restored_external:
+            print(
+                f"\n  Restored {restored_external} memory-provider file(s) to "
+                f"their original location(s) outside {display_hermes_home()}."
+            )
+
+        if errors:
+            print(f"\n  Warnings ({len(errors)} files skipped):")
+            for e in errors[:10]:
+                print(e)
+            if len(errors) > 10:
+                print(f"  ... and {len(errors) - 10} more")
+
+        if db_shrunk:
+            # The backup predates work that is now overwritten. Say so: the
+            # reported incident was twelve sessions disappearing with nothing
+            # logged anywhere (issue #100960).
+            print("\n  ⚠ Session data replaced by older backup contents:")
+            for rel, before, after in db_shrunk:
+                print(
+                    f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
+                    f" -> {after[0]} / {after[1]}"
+                )
+            print(
+                "    Anything recorded after the backup was taken is not in it. "
+                f"{_snapshot_recovery_hint()}"
+            )
+
+        if skipped_runtime:
+            print(
+                f"\n  Preserved {len(skipped_runtime)} runtime state "
+                f"file(s) (kept this machine's, not the backup's):"
+            )
+            for rel in sorted(skipped_runtime)[:10]:
+                print(f"    {rel}")
+            if len(skipped_runtime) > 10:
+                print(f"    ... and {len(skipped_runtime) - 10} more")
+
+        # Post-import: restore profile wrapper scripts
+        profiles_dir = hermes_root / "profiles"
+        restored_profiles = []
+        if profiles_dir.is_dir():
+            try:
+                from hermes_cli.profiles import (
+                    create_wrapper_script, check_alias_collision,
+                    _is_wrapper_dir_in_path, _get_wrapper_dir,
+                )
+                for entry in sorted(profiles_dir.iterdir()):
+                    if not entry.is_dir():
+                        continue
+                    profile_name = entry.name
+                    # Only create wrappers for directories with config
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                        continue
+                    collision = check_alias_collision(profile_name)
+                    if collision:
+                        print(f"  Skipped alias '{profile_name}': {collision}")
+                        restored_profiles.append((profile_name, False))
+                    else:
+                        wrapper = create_wrapper_script(profile_name)
+                        restored_profiles.append((profile_name, wrapper is not None))
+
+                if restored_profiles:
+                    created = [n for n, ok in restored_profiles if ok]
+                    skipped = [n for n, ok in restored_profiles if not ok]
+                    if created:
+                        print(f"\n  Profile aliases restored: {', '.join(created)}")
+                    if skipped:
+                        print(f"  Profile aliases skipped:  {', '.join(skipped)}")
+                    if not _is_wrapper_dir_in_path():
+                        print(f"\n  Note: {_get_wrapper_dir()} is not in your PATH.")
+                        print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
+                        print('    export PATH="$HOME/.local/bin:$PATH"')
+            except ImportError:
+                # hermes_cli.profiles might not be available (fresh install)
+                if any(profiles_dir.iterdir()):
+                    print("\n  Profiles detected but aliases could not be created.")
+                    print("  Run: hermes profile list  (after installing hermes)")
+
+        # Guidance
+        print()
+        if not (hermes_root / "hermes-agent").is_dir():
+            print("Note: The hermes-agent codebase was not included in the backup.")
+            print("  If this is a fresh install, run: hermes update")
+
+        if restored_profiles:
+            gw_profiles = [n for n, _ in restored_profiles]
+            print("\nTo re-enable gateway services for profiles:")
+            for pname in gw_profiles:
+                print(f"  hermes -p {pname} gateway install")
+
+        # Bring the restored install to life: the backup may contain bot
+        # tokens and registered cron jobs, but they're inert without a
+        # gateway process. Install/start the service automatically (a
+        # platform-less gateway is a supported mode, so this is safe even
+        # for backups with no messaging config). Best-effort and prompt-free;
+        # failures print a manual fallback and never fail the import.
+        native_default = _get_platform_default_hermes_home()
+        default_has_install = any(
+            (native_default / marker).exists()
+            for marker in ("config.yaml", ".env", "state.db")
+        )
+        # A restore into a sandbox or profile home must not silently install
+        # a second gateway pointed at it — on the default service name that
+        # would shadow or hijack the machine's primary install. Only revive
+        # the service automatically when the restore landed in the default
+        # home, or when no other install exists on this machine.
+        if hermes_root != native_default and default_has_install:
+            print(
+                "\nRestored into a non-default home; leaving the gateway service "
+                "alone to avoid clashing with the install at "
+                f"{native_default}."
+            )
+            print("To start a gateway for this home, run:  hermes gateway install")
+        else:
+            try:
+                from hermes_cli.gateway import ensure_gateway_service, _is_service_running
+
+                if not _is_service_running():
+                    print()
+                    ensure_gateway_service(context="import")
+            except Exception:
+                print("\nStart the gateway to activate cron jobs and messaging:")
+                print("  hermes gateway install")
+
+        if errors:
+            print(f"Import incomplete: {len(errors)} file(s) were not restored (see Warnings above). "
+                  "Fix the cause and re-run the import.")
+            return 1
+        print("Done. Your Hermes configuration has been restored.")
+
+
 
 # --- Quick state snapshots (used by /snapshot slash command and hermes backup --quick) ---
 
@@ -773,324 +1156,6 @@ def copy_db_and_verify(src: Path, dst: Path) -> bool:
 
 
 # ---- END PLUGIN-COMPAT ----
-
-
-# ---------------------------------------------------------------------------
-# Backup
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Import
-# ---------------------------------------------------------------------------
-
-def run_import(args) -> None:
-    """Restore a Hermes backup from a zip file."""
-    zip_path = Path(args.zipfile).expanduser().resolve()
-
-    if not zip_path.is_file():
-        print(f"Error: File not found: {zip_path}")
-        sys.exit(1)
-
-    if not zipfile.is_zipfile(zip_path):
-        print(f"Error: Not a valid zip file: {zip_path}")
-        sys.exit(1)
-
-    # The restore target must be the home the command operates under — the
-    # same path printed as "Target:" via display_hermes_home(). Resolving
-    # through get_default_hermes_root() instead maps a profile home
-    # (<root>/profiles/<name>) back to <root>, silently retargeting the
-    # restore at the live root while the profile directory stays empty.
-    hermes_root = get_hermes_home()
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        # Validate
-        ok, reason = _validate_backup_zip(zf)
-        if not ok:
-            print(f"Error: {reason}")
-            sys.exit(1)
-
-        prefix = _detect_prefix(zf)
-        members = [n for n in zf.namelist() if not n.endswith("/")]
-        file_count = len(members)
-
-        print(f"Backup contains {file_count} files")
-        print(f"Target: {display_hermes_home()}")
-
-        if prefix:
-            print(f"Detected archive prefix: {prefix!r} (will be stripped)")
-
-        # Check for existing installation
-        has_config = (hermes_root / "config.yaml").exists()
-        has_env = (hermes_root / ".env").exists()
-
-        if (has_config or has_env) and not args.force:
-            print()
-            print("Warning: Target directory already has Hermes configuration.")
-            print("Importing will overwrite existing files with backup contents.")
-            print()
-            try:
-                answer = input("Continue? [y/N] ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
-                sys.exit(1)
-            if answer not in {"y", "yes"}:
-                print("Aborted.")
-                return
-
-        # Extract
-        print(f"\nImporting {file_count} files ...")
-        hermes_root.mkdir(parents=True, exist_ok=True)
-
-        errors = []
-        restored = 0
-        restored_external = 0
-        skipped_runtime: list[str] = []
-        # (rel, live_counts, imported_counts) for every session database the
-        # import replaced with one holding fewer rows. A restore is allowed to
-        # do that — it just must not do it silently (issue #100960).
-        db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
-        home_dir = Path.home().resolve()
-        # Resolved once: every member is published via a temp file, and mkstemp
-        # would otherwise create newly restored files as 0600.
-        new_file_mode = _default_new_file_mode()
-        t0 = time.monotonic()
-
-        for member in members:
-            # External memory-provider state captured under the reserved
-            # ``_external/`` arc prefix restores to its original home-relative
-            # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
-            if member.startswith(_EXTERNAL_PREFIX):
-                ext_rel = member[len(_EXTERNAL_PREFIX):]
-                if not ext_rel:
-                    continue
-                target = home_dir / ext_rel
-                # Security: the resolved target must stay under the home dir.
-                try:
-                    target.resolve().relative_to(home_dir)
-                except ValueError:
-                    errors.append(f"  {member}: path traversal blocked")
-                    continue
-                try:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    _extract_member_atomically(zf, member, target, new_file_mode)
-                    # External provider configs commonly hold credentials.
-                    if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
-                        try:
-                            os.chmod(target, 0o600)
-                        except OSError:
-                            pass
-                    restored += 1
-                    restored_external += 1
-                except (PermissionError, OSError) as exc:
-                    errors.append(f"  {member}: {exc}")
-                if restored % 500 == 0:
-                    print(f"  {restored}/{file_count} files ...")
-                continue
-
-            # Strip prefix if detected
-            if prefix and member.startswith(prefix):
-                rel = member[len(prefix):]
-            else:
-                rel = member
-
-            if not rel:
-                continue
-
-            try:
-                parts = tuple(normalize_archive_parts(rel))
-            except ValueError:
-                errors.append(f"  {rel}: path traversal blocked")
-                continue
-
-            # Never overwrite volatile gateway/process runtime state. These are
-            # namespaced to the machine/container the backup was taken on;
-            # clobbering them (especially gateway_state.json) breaks the gateway
-            # reconciler on the target and disconnects hosted instances from the
-            # Nous portal. Matched by basename so both the root profile and
-            # named profiles (profiles/<name>/gateway_state.json) are covered.
-            if parts[-1] in _IMPORT_SKIP_NAMES:
-                skipped_runtime.append(rel)
-                continue
-
-            # Older archives may contain PM selections pointing at another machine.
-            # Match their home-root paths; a plugin's own facts.json is user data.
-            if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
-                skipped_runtime.append(rel)
-                continue
-
-            # A ``.db`` member is page-restored into the live file below; a
-            # WAL/SHM/journal member from the archive describes a different
-            # database image, and installing it beside the restored file (over
-            # a live sidecar, via os.replace) would replay a foreign WAL on
-            # the next open. Current backups never ship these
-            # (_EXCLUDED_SUFFIXES); older or hand-built archives might.
-            if rel.endswith(_SQLITE_SIDECAR_SUFFIXES):
-                skipped_runtime.append(rel)
-                continue
-
-            target = hermes_root.joinpath(*parts)
-
-            # Security: reject absolute paths and traversals
-            try:
-                target.resolve().relative_to(hermes_root.resolve())
-            except ValueError:
-                errors.append(f"  {rel}: path traversal blocked")
-                continue
-
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.suffix == ".db":
-                    # Count before the write: afterwards the rows this import
-                    # drops are gone and there is nothing left to compare.
-                    before = _count_session_rows(target)
-                    _import_db_member(zf, member, target, new_file_mode)
-                    after = _count_session_rows(target)
-                    if before and after and after[1] < before[1]:
-                        db_shrunk.append((rel, before, after))
-                else:
-                    _extract_member_atomically(zf, member, target, new_file_mode)
-                if target.name in _SECRET_FILE_NAMES:
-                    os.chmod(target, 0o600)
-                restored += 1
-            except (PermissionError, OSError) as exc:
-                errors.append(f"  {rel}: {exc}")
-
-            if restored % 500 == 0:
-                print(f"  {restored}/{file_count} files ...")
-
-        elapsed = time.monotonic() - t0
-
-        # Summary
-        print()
-        print(f"Import complete: {restored} files restored in {elapsed:.1f}s")
-        print(f"  Target: {display_hermes_home()}")
-
-        if restored_external:
-            print(
-                f"\n  Restored {restored_external} memory-provider file(s) to "
-                f"their original location(s) outside {display_hermes_home()}."
-            )
-
-        if errors:
-            print(f"\n  Warnings ({len(errors)} files skipped):")
-            for e in errors[:10]:
-                print(e)
-            if len(errors) > 10:
-                print(f"  ... and {len(errors) - 10} more")
-
-        if db_shrunk:
-            # The backup predates work that is now overwritten. Say so: the
-            # reported incident was twelve sessions disappearing with nothing
-            # logged anywhere (issue #100960).
-            print("\n  ⚠ Session data replaced by older backup contents:")
-            for rel, before, after in db_shrunk:
-                print(
-                    f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
-                    f" -> {after[0]} / {after[1]}"
-                )
-            print(
-                "    Anything recorded after the backup was taken is not in it. "
-                f"{_snapshot_recovery_hint()}"
-            )
-
-        if skipped_runtime:
-            print(
-                f"\n  Preserved {len(skipped_runtime)} runtime state "
-                f"file(s) (kept this machine's, not the backup's):"
-            )
-            for rel in sorted(skipped_runtime)[:10]:
-                print(f"    {rel}")
-            if len(skipped_runtime) > 10:
-                print(f"    ... and {len(skipped_runtime) - 10} more")
-
-        # Post-import: restore profile wrapper scripts
-        profiles_dir = hermes_root / "profiles"
-        restored_profiles = []
-        if profiles_dir.is_dir():
-            try:
-                from hermes_cli.profiles import (
-                    create_wrapper_script, check_alias_collision,
-                    _is_wrapper_dir_in_path, _get_wrapper_dir,
-                )
-                for entry in sorted(profiles_dir.iterdir()):
-                    if not entry.is_dir():
-                        continue
-                    profile_name = entry.name
-                    # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
-                        continue
-                    collision = check_alias_collision(profile_name)
-                    if collision:
-                        print(f"  Skipped alias '{profile_name}': {collision}")
-                        restored_profiles.append((profile_name, False))
-                    else:
-                        wrapper = create_wrapper_script(profile_name)
-                        restored_profiles.append((profile_name, wrapper is not None))
-
-                if restored_profiles:
-                    created = [n for n, ok in restored_profiles if ok]
-                    skipped = [n for n, ok in restored_profiles if not ok]
-                    if created:
-                        print(f"\n  Profile aliases restored: {', '.join(created)}")
-                    if skipped:
-                        print(f"  Profile aliases skipped:  {', '.join(skipped)}")
-                    if not _is_wrapper_dir_in_path():
-                        print(f"\n  Note: {_get_wrapper_dir()} is not in your PATH.")
-                        print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
-                        print('    export PATH="$HOME/.local/bin:$PATH"')
-            except ImportError:
-                # hermes_cli.profiles might not be available (fresh install)
-                if any(profiles_dir.iterdir()):
-                    print("\n  Profiles detected but aliases could not be created.")
-                    print("  Run: hermes profile list  (after installing hermes)")
-
-        # Guidance
-        print()
-        if not (hermes_root / "hermes-agent").is_dir():
-            print("Note: The hermes-agent codebase was not included in the backup.")
-            print("  If this is a fresh install, run: hermes update")
-
-        if restored_profiles:
-            gw_profiles = [n for n, _ in restored_profiles]
-            print("\nTo re-enable gateway services for profiles:")
-            for pname in gw_profiles:
-                print(f"  hermes -p {pname} gateway install")
-
-        # Bring the restored install to life: the backup may contain bot
-        # tokens and registered cron jobs, but they're inert without a
-        # gateway process. Install/start the service automatically (a
-        # platform-less gateway is a supported mode, so this is safe even
-        # for backups with no messaging config). Best-effort and prompt-free;
-        # failures print a manual fallback and never fail the import.
-        native_default = _get_platform_default_hermes_home()
-        default_has_install = any(
-            (native_default / marker).exists()
-            for marker in ("config.yaml", ".env", "state.db")
-        )
-        # A restore into a sandbox or profile home must not silently install
-        # a second gateway pointed at it — on the default service name that
-        # would shadow or hijack the machine's primary install. Only revive
-        # the service automatically when the restore landed in the default
-        # home, or when no other install exists on this machine.
-        if hermes_root != native_default and default_has_install:
-            print(
-                "\nRestored into a non-default home; leaving the gateway service "
-                "alone to avoid clashing with the install at "
-                f"{native_default}."
-            )
-            print("To start a gateway for this home, run:  hermes gateway install")
-        else:
-            try:
-                from hermes_cli.gateway import ensure_gateway_service, _is_service_running
-
-                if not _is_service_running():
-                    print()
-                    ensure_gateway_service(context="import")
-            except Exception:
-                print("\nStart the gateway to activate cron jobs and messaging:")
-                print("  hermes gateway install")
-
-        print("Done. Your Hermes configuration has been restored.")
 
 
 # ---------------------------------------------------------------------------

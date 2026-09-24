@@ -15,7 +15,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import signal
 import socket
 import sqlite3
@@ -187,29 +186,9 @@ def write_profile_home(p: Profile, extra_config: dict[str, Any] | None = None) -
 
 
 def _select_test_dependencies(sb: Sandbox) -> None:
-    """Boot real entrypoints against the PM test venv, not a checkout's unrelated .venv.
+    from tests.e2e.core._pm_dependencies import select_test_dependencies
 
-    Bootstrap selects dependencies from HOME's PM facts even when the invoking Python is
-    already the test interpreter. Keep that selection in the sandbox, backed by the actual
-    test environment rather than syncing into either the sandbox or the developer's HOME.
-    """
-    from pm.environments import install_key, site_packages
-
-    test_venv = Path(sys.prefix)
-    if not (test_venv / "pyvenv.cfg").is_file():
-        return  # Nix/system Python has no venv to redirect; bootstrap keeps its own imports.
-    selected = site_packages(test_venv)
-    assert selected.is_dir(), f"test interpreter lacks site-packages: {test_venv}"
-    state = sb.hermes_home / "installs" / install_key(REPO_ROOT)
-    environment = state / "environments" / "dashboard-test" / "venv"
-    environment.mkdir(parents=True)
-    shutil.copyfile(test_venv / "pyvenv.cfg", environment / "pyvenv.cfg")
-    target = environment / selected.relative_to(test_venv)
-    target.parent.mkdir(parents=True)
-    target.symlink_to(selected, target_is_directory=True)
-    (state / "facts.json").write_text(json.dumps({"packages": {"venv": {
-        "environment": str(environment),
-    }}}), encoding="utf-8")
+    select_test_dependencies(sb.hermes_home, REPO_ROOT)
 
 
 def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),

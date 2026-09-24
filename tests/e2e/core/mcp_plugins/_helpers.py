@@ -14,7 +14,6 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -121,28 +120,9 @@ class E2EHome:
 
 
 def _select_test_dependencies(eh: E2EHome) -> None:
-    """Select the prepared test dependencies inside this fake HOME, not the real install.
+    from tests.e2e.core._pm_dependencies import select_test_dependencies
 
-    PM's startup selection reads facts from the child's HOME. Without these facts
-    each fresh MCP home can bootstrap its own full runtime under CI contention.
-    """
-    from pm.environments import install_key, site_packages
-
-    test_venv = Path(sys.prefix)
-    if not (test_venv / "pyvenv.cfg").is_file():
-        return  # System Python has no prepared venv to select.
-    selected = site_packages(test_venv)
-    assert selected.is_dir(), f"test interpreter lacks site-packages: {test_venv}"
-    state = eh.hermes_home / "installs" / install_key(REPO_ROOT)
-    environment = state / "environments" / "mcp-test" / "venv"
-    environment.mkdir(parents=True)
-    shutil.copyfile(test_venv / "pyvenv.cfg", environment / "pyvenv.cfg")
-    target = environment / selected.relative_to(test_venv)
-    target.parent.mkdir(parents=True)
-    target.symlink_to(selected, target_is_directory=True)
-    (state / "facts.json").write_text(json.dumps({"packages": {"venv": {
-        "environment": str(environment),
-    }}}), encoding="utf-8")
+    select_test_dependencies(eh.hermes_home, REPO_ROOT)
 
 
 def build_home(root: Path, base_url: str, *, mcp_servers: dict[str, dict] | None = None,
