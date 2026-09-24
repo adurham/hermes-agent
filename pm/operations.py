@@ -28,7 +28,7 @@ def _require_install_allowed(explicit: bool) -> None:
 def build_environment(
     *, source: Path, out: Path, python: Path | None = None,
     cache: Path | None = None, env: Mapping[str, str] | None = None,
-    extras: Sequence[str] = (), groups: Sequence[str] = (), only_groups: bool = False,
+    extras: Sequence[str] = (), groups: Sequence[str] = (),
     all_extras: bool = False, no_install_project: bool = False,
     frozen: bool = True, sealed: bool = False, offline: bool = False,
     explicit: bool = False, timeout: int = 1800,
@@ -60,7 +60,7 @@ def build_environment(
         offline=offline, explicit=explicit, output=sys.stderr,
     )
     with _fresh_build(environment, sealed=sealed):
-        environment.sync(source, extras=extras, groups=groups, only_groups=only_groups, all_extras=all_extras,
+        environment.sync(source, extras=extras, groups=groups, all_extras=all_extras,
                          no_install_project=no_install_project, frozen=frozen, timeout=timeout)
     return environment.executable
 

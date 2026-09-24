@@ -306,14 +306,12 @@ class PythonEnvironment:
     def sync(self, source: Path, *, extras: Sequence[str] = (), groups: Sequence[str] = (),
              timeout: int = 1800, frozen: bool = True, all_extras: bool = False,
              no_install_project: bool = False, locked: bool = False,
-             no_default_groups: bool = False, only_groups: bool = False) -> None:
+             no_default_groups: bool = False) -> None:
         """Install the root and every member; resolve only in a writable workspace.
 
         ``frozen=False`` is reserved for the caller-owned generated workspace,
         never the original project's lock. Seed/replay policy belongs to PM.
         """
-        if only_groups and (not groups or extras or all_extras):
-            raise ValueError("group-only builds require groups and cannot select extras")
         if not frozen:
             self.lock(source, timeout=timeout)
         # Locking members alone is insufficient: plain sync only installs root deps.
@@ -333,7 +331,7 @@ class PythonEnvironment:
         for extra in sorted(set(extras)):
             command += ["--extra", extra]
         for group in sorted(set(groups)):
-            command += ["--only-group" if only_groups else "--group", group]
+            command += ["--group", group]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)

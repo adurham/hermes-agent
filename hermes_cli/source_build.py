@@ -71,11 +71,10 @@ def build_source_tui(project_root: Path, *, env: dict) -> None:
     run_source_script(project_root, "scripts/build/tui.mjs", env=env)
 
 
-def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None,
-                     explicit: bool = False) -> None:
+def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None) -> None:
     if icons is None:
         icons = project_root
-        run_source_script(project_root, "scripts/generate-icons.mjs", *(() if explicit else ("--on-demand",)), env=env)
+        run_source_script(project_root, "scripts/generate-icons.mjs", env=env)
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
                       "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env)
 
@@ -107,14 +106,14 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         build_source_tui(project_root, env=env)
     if "web" in frontends:
         publish_stage("Building the web UI")
-        build_source_web(project_root, env=env, explicit=True)
+        build_source_web(project_root, env=env)
     if desktop:
         from hermes_cli.main_desktop import _install_rebuilt_desktop_app, build_prepared_desktop
 
         publish_stage("Building the desktop app")
         build_prepared_desktop(
             project_root / "apps/desktop", source_mode=False,
-            npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root, explicit=True,
+            npm=shutil.which("npm", path=env["PATH"]), env=env, icons=project_root,
         )
         # A current release/ can still sit beside a stale installed copy (an earlier
         # update rebuilt but never installed); healing must not wait for the next build.

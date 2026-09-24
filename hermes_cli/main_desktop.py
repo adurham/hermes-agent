@@ -1177,7 +1177,7 @@ def _promote_staged_desktop_app(
 
 
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
-                           icons: Path | None = None, explicit: bool = False) -> Optional[Path]:
+                           icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
     build_label = "source build" if source_mode else "packaged app"
     print(f"→ Building desktop {build_label}...")
@@ -1185,7 +1185,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     if _force_adhoc_macos_signing(build_env, source_mode=source_mode):
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
-    build_args = (["--icons", str(icons)] if icons else []) + ([] if explicit else ["--on-demand"])
+    build_args = ["--icons", str(icons)] if icons else []
     build_cmd = [npm, "run", "build", "--", *build_args]
     staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir)
     if staging_dir is not None:
@@ -1357,8 +1357,7 @@ def cmd_gui(args: argparse.Namespace):
         elif needs_build:
             prepare_source_dependencies(PROJECT_ROOT, ("ui-tui", "web", "apps/desktop"), env=build_env,
                                         explicit=force_build or getattr(args, "build_only", False))
-            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env,
-                                           explicit=force_build or getattr(args, "build_only", False))
+            built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
             if not source_mode:
                 packaged_executable = built
         else:

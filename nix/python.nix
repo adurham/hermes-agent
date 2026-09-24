@@ -165,11 +165,6 @@ in
 {
   inherit python;
 
-  # Equivalent to uv's --only-group: use the lock-derived dependency spec,
-  # without installing Hermes or its runtime dependencies in the build env.
-  iconBuildVenv = pythonSet.mkVirtualEnv "hermes-icon-build-env"
-    pythonSet.hermes-agent.dependency-groups.icon-build;
-
   venv = pythonSet.mkVirtualEnv "hermes-agent-env" {
     hermes-agent = dependency-groups;
   };

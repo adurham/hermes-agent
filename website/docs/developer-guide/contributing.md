@@ -118,9 +118,9 @@ Use a Node/npm version accepted by the corresponding `package.json` engines.
 Native desktop dependencies can also require the platform build toolchain.
 
 Logos and icons are generated from `assets/nous-girl-*.svg` and
-`assets/backgrounds/`. `node scripts/generate-icons.mjs` uses the locked,
-isolated `icon-build` dependency group. Do not commit generated PNG/ICO/ICNS
-outputs or add icon renderers to production dependencies.
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` renders them with the
+Hermes runtime Python (`HERMES_PYTHON`, else `python` on PATH): Pillow and
+resvg-py are core dependencies. Do not commit generated PNG/ICO/ICNS outputs.
 
 ### Run tests
 

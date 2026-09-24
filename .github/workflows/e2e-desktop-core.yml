@@ -60,19 +60,20 @@ jobs:
             pyproject.toml
             uv.lock
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.14
         uses: ./.github/actions/retry
         with:
-          command: uv python install 3.11
+          command: uv python install 3.14
 
       - name: Install Python dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11 --extra all --extra dev
+          command: uv sync --locked --python 3.14 --extra all --extra dev
 
       - name: Build the desktop app
         working-directory: apps/desktop
-        run: npm run build
+        # The generator uses the runtime's Pillow + resvg-py, not a build-only venv.
+        run: HERMES_PYTHON="$GITHUB_WORKSPACE/.venv/bin/python" npm run build
 
       - name: Run the core suite under xvfb
         working-directory: apps/desktop

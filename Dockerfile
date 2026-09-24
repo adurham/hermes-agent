@@ -222,50 +222,7 @@ ENV HERMES_PYTHON=/usr/local/bin/python3
 # native extensions must use the compiler installed in this image.
 ENV CC=gcc CXX=g++
 
-# Frontend dependencies never enter the runtime layers.
-FROM runtime_base AS frontend_build
-COPY package.json package-lock.json ./
-COPY web/package.json web/
-COPY ui-tui/package.json ui-tui/
-COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
-COPY apps/shared/ apps/shared/
-COPY scripts/build/node-deps.mjs scripts/build/node-deps.mjs
-ENV npm_config_install_links=false
-RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
-
-COPY pyproject.toml uv.lock ./
-COPY web/ web/
-COPY ui-tui/ ui-tui/
-COPY scripts/build/*.mjs scripts/build/
-COPY scripts/build/icon_environment.py scripts/build/icon_environment.py
-COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
-COPY assets/ assets/
-RUN node scripts/generate-icons.mjs --source /opt/hermes --out /tmp/hermes-icons && \
-    node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
-    node scripts/build/web.mjs --source /opt/hermes --icons /tmp/hermes-icons --out /opt/products/web
-
-FROM runtime_base AS runtime
-# Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
-COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
-RUN mkdir -p /opt/hermes/node_modules/.bin && \
-    ln -s ../typescript/bin/tsc /opt/hermes/node_modules/.bin/tsc
-
-# ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
-# The photon plugin's Node sidecar needs its own node_modules
-# (spectrum-ts). The install tree is immutable at runtime, so a lazy
-# `npm ci` on first connect would hit EROFS — bake the deps here instead
-# (deterministic installs, NS-559). The patch script is copied alongside
-# the manifests because package.json's postinstall runs it, which also
-# means the spectrum-ts patch is applied at build time. Layer-cached:
-# only re-runs when the sidecar manifests/patch change.
-COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
-     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
-     plugins/platforms/photon/sidecar/
-RUN cd plugins/platforms/photon/sidecar && \
-    npm ci --no-audit --fetch-retries=5 && \
-    npm cache clean --force
-
+FROM runtime_base AS python_deps
 # ---------- Layer-cached Python dependency install ----------
 # Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
 # download + native-extension compile layer is cached unless those inputs
@@ -319,6 +276,57 @@ RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3
     --out /opt/hermes/.venv --no-install-project --sealed \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra hindsight --extra matrix --extra google-chat
+
+# Icons render on the runtime environment: Pillow and resvg-py are core
+# dependencies. A stage of its own so the frontend stage keeps building its
+# Node dependencies in parallel with the Python ones.
+FROM python_deps AS icons
+COPY scripts/generate_icons.py scripts/
+COPY assets/ assets/
+RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/hermes --out /tmp/hermes-icons
+
+# Frontend dependencies never enter the runtime layers.
+FROM runtime_base AS frontend_build
+COPY package.json package-lock.json ./
+COPY web/package.json web/
+COPY ui-tui/package.json ui-tui/
+COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+COPY apps/shared/ apps/shared/
+COPY scripts/build/node-deps.mjs scripts/build/node-deps.mjs
+ENV npm_config_install_links=false
+RUN node scripts/build/node-deps.mjs --source /opt/hermes --workspace ui-tui --workspace web
+
+COPY pyproject.toml uv.lock ./
+COPY web/ web/
+COPY ui-tui/ ui-tui/
+COPY scripts/build/*.mjs scripts/build/
+COPY scripts/generate-icons.mjs scripts/generate_icons.py scripts/
+COPY assets/ assets/
+COPY --from=icons /tmp/hermes-icons /tmp/hermes-icons
+RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
+    node scripts/build/web.mjs --source /opt/hermes --icons /tmp/hermes-icons --out /opt/products/web
+
+FROM python_deps AS runtime
+# Standalone TypeScript linting is a runtime feature; Vite/esbuild are not.
+COPY --from=frontend_build /opt/hermes/node_modules/typescript /opt/hermes/node_modules/typescript
+RUN mkdir -p /opt/hermes/node_modules/.bin && \
+    ln -s ../typescript/bin/tsc /opt/hermes/node_modules/.bin/tsc
+
+# ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
+# The photon plugin's Node sidecar needs its own node_modules
+# (spectrum-ts). The install tree is immutable at runtime, so a lazy
+# `npm ci` on first connect would hit EROFS — bake the deps here instead
+# (deterministic installs, NS-559). The patch script is copied alongside
+# the manifests because package.json's postinstall runs it, which also
+# means the spectrum-ts patch is applied at build time. Layer-cached:
+# only re-runs when the sidecar manifests/patch change.
+COPY plugins/platforms/photon/sidecar/package.json \
+     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+     plugins/platforms/photon/sidecar/
+RUN cd plugins/platforms/photon/sidecar && \
+    npm ci --no-audit --fetch-retries=5 && \
+    npm cache clean --force
 
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
