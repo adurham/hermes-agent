@@ -1638,7 +1638,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry), \
              patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp_tool_discovery import discover_mcp_tools
             discover_mcp_tools()
 
             # Built-in entry is not overwritten: its description and its own
@@ -1686,7 +1686,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool_discovery._connect_server", side_effect=flaky_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp_tool_discovery import discover_mcp_tools
             result = discover_mcp_tools()
 
         assert "good_ping" in result
@@ -3831,27 +3831,27 @@ class TestSanitizeMcpNameComponent:
 
 
     def test_dots_replaced(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp_tool_schema import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("ai.exa") == "ai_exa"
 
     def test_slashes_replaced(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp_tool_schema import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("ai.exa/exa") == "ai_exa_exa"
 
     def test_mixed_special_characters(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp_tool_schema import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("@scope/my-pkg.v2") == "_scope_my_pkg_v2"
 
     def test_alphanumeric_and_underscores_preserved(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp_tool_schema import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("my_server_123") == "my_server_123"
 
     def test_empty_string(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp_tool_schema import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("") == ""
 
     def test_none_returns_empty(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp_tool_schema import sanitize_mcp_name_component
         assert sanitize_mcp_name_component(None) == ""
 
     def test_slash_in_convert_mcp_schema(self):
@@ -4014,9 +4014,9 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_server_with_underscores(self):
         """Server names containing underscores are correctly matched."""
+        from tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
         from tools.mcp_tool import (
-            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
-            _parallel_safe_servers, _lock,
+            _mcp_tool_server_names, _parallel_safe_servers, _lock,
         )
         with _lock:
             _parallel_safe_servers.add("my_server")
@@ -4030,9 +4030,9 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_uses_exact_registered_server(self):
         """Ambiguous MCP names must not match a shorter parallel-safe prefix."""
+        from tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
         from tools.mcp_tool import (
-            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
-            _parallel_safe_servers, _lock,
+            _mcp_tool_server_names, _parallel_safe_servers, _lock,
         )
         with _lock:
             _parallel_safe_servers.add("a")
@@ -4061,9 +4061,9 @@ class TestMcpParallelToolCalls:
         """
         from tools.registry import registry
         from tools.mcp_tool_registration import _register_server_tools
+        from tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
         from tools.mcp_tool import (
-            _mcp_tool_server_names, _parallel_safe_servers,
-            is_mcp_tool_parallel_safe, _lock,
+            _mcp_tool_server_names, _parallel_safe_servers, _lock,
         )
 
         server = _make_mock_server(
@@ -4091,9 +4091,9 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
         """Tool name that is just 'mcp_{server}' without a tool part returns False."""
+        from tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
         from tools.mcp_tool import (
-            is_mcp_tool_parallel_safe, _mcp_tool_server_names,
-            _parallel_safe_servers, _lock,
+            _mcp_tool_server_names, _parallel_safe_servers, _lock,
         )
         with _lock:
             _parallel_safe_servers.add("docs")

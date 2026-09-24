@@ -1041,7 +1041,7 @@ class TestBackgroundReviewExternalGuard:
             # because the #67140 provenance guard fails closed for skills
             # with no usage record -- this test targets the external-dirs
             # guard specifically, so the provenance guard must pass.
-            from tools.skill_manager_tool import mark_background_review_skill_read
+            from tools.skill_manager_guards import mark_background_review_skill_read
             mark_background_review_skill_read(local_skill / "SKILL.md")
             result = _patch_skill("local-skill", "OLD_MARKER", "NEW_MARKER")
 

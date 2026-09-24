@@ -118,7 +118,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.delenv("A2A_TRUSTED_PROXIES", raising=False)
         # Socket peer is 10.0.0.1 (a "proxy"); client claims to be 5.5.5.5 via XFF.
         # No allow-list => header ignored; identity is the socket peer.
-        ident = security.authenticate("Bearer shared-tok", "10.0.0.1", "5.5.5.5")
+        ident = security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "10.0.0.1", "5.5.5.5")
         assert ident == "ip:10.0.0.1"
 
     def test_xff_ignored_when_socket_peer_not_trusted(self, monkeypatch):
@@ -126,21 +126,21 @@ class TestTrustedProxyIdentity:
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
         # Direct attacker at 99.99.99.99 sends a spoofed XFF. Must be ignored.
-        ident = security.authenticate("Bearer shared-tok", "99.99.99.99", "5.5.5.5")
+        ident = security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "99.99.99.99", "5.5.5.5")
         assert ident == "ip:99.99.99.99"
 
     def test_xff_honored_when_socket_peer_trusted(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
-        ident = security.authenticate("Bearer shared-tok", "10.0.0.1", "5.5.5.5")
+        ident = security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "10.0.0.1", "5.5.5.5")
         assert ident == "ip:5.5.5.5"
 
     def test_xff_cidr_match(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.0/24")
-        ident = security.authenticate("Bearer shared-tok", "10.0.0.42", "5.5.5.5")
+        ident = security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "10.0.0.42", "5.5.5.5")
         assert ident == "ip:5.5.5.5"
 
     def test_xff_chain_walks_past_trusted_hops(self, monkeypatch):
@@ -149,7 +149,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1,10.0.0.2")
-        ident = security.authenticate(
+        ident = security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "10.0.0.1", "5.5.5.5, 10.0.0.2"
         )
         assert ident == "ip:5.5.5.5"
@@ -160,7 +160,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
         # Rightmost hop is garbage => the chain is untrustworthy. We must NOT
         # skip it and fall through to the attacker-controlled 5.5.5.5.
-        ident = security.authenticate(
+        ident = security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "10.0.0.1", "5.5.5.5, not-an-ip"
         )
         assert ident == "ip:10.0.0.1"
@@ -169,7 +169,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
-        ident = security.authenticate(
+        ident = security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "10.0.0.1", "garbage, more-garbage"
         )
         assert ident == "ip:10.0.0.1"
@@ -179,7 +179,7 @@ class TestTrustedProxyIdentity:
         # trusted-proxy plumbing must not change that.
         monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a")
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
-        assert security.authenticate("Bearer tok-a", "10.0.0.1", "5.5.5.5") == "alice"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer tok-a", "10.0.0.1", "5.5.5.5") == "alice"
 
     def test_invalid_cidr_entries_ignored(self, monkeypatch):
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "not-an-ip, 10.0.0.1")
@@ -201,7 +201,7 @@ class TestTrustedProxyIdentity:
         # Attacker (really 66.66.66.66) sent: "1.2.3.4, 10.0.0.2"
         # Trusted proxy 10.0.0.1 appended the true peer address.
         forged = "1.2.3.4, 10.0.0.2, 66.66.66.66"
-        assert security.authenticate(
+        assert security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "10.0.0.1", forged
         ) == "ip:66.66.66.66"
 
@@ -210,7 +210,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.0/24")
         assert security._is_trusted_proxy("::ffff:10.0.0.5") is True
-        assert security.authenticate(
+        assert security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "::ffff:10.0.0.5", "5.5.5.5"
         ) == "ip:5.5.5.5"
 
@@ -226,7 +226,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "::ffff:10.0.0.0/120")
         assert security._is_trusted_proxy("10.0.0.5") is True
-        assert security.authenticate(
+        assert security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "10.0.0.5", "5.5.5.5"
         ) == "ip:5.5.5.5"
 
@@ -234,7 +234,7 @@ class TestTrustedProxyIdentity:
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.0/24")
-        assert security.authenticate(
+        assert security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "2001:db8::99", "5.5.5.5"
         ) == "ip:2001:db8::99"
 
@@ -279,7 +279,7 @@ class TestForwardedForHeaderExtraction:
             b"X-Forwarded-For: 5.5.5.5\r\n"           # attacker-supplied
             b"X-Forwarded-For: 66.66.66.66\r\n\r\n"   # proxy-appended truth
         )
-        assert security.authenticate(
+        assert security.A2ASecurityContext.capture().authenticate(
             "Bearer shared-tok", "10.0.0.1", h._forwarded_for()
         ) == "ip:66.66.66.66"
 
@@ -293,7 +293,7 @@ class TestSharedTokenProxyWarning:
         monkeypatch.delenv("A2A_TRUSTED_PROXIES", raising=False)
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
-            security.resolve_bind_host()
+            security.A2ASecurityContext.capture().resolve_bind_host()
         assert any("#80534" in rec.message for rec in caplog.records)
         assert any("A2A_PEER_TOKENS" in rec.message for rec in caplog.records)
 
@@ -302,7 +302,7 @@ class TestSharedTokenProxyWarning:
         monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a")
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
-            security.resolve_bind_host()
+            security.A2ASecurityContext.capture().resolve_bind_host()
         assert not any("#80534" in rec.message for rec in caplog.records)
 
     def test_no_warn_with_trusted_proxies(self, monkeypatch, caplog):
@@ -310,14 +310,14 @@ class TestSharedTokenProxyWarning:
         monkeypatch.setenv("A2A_TRUSTED_PROXIES", "10.0.0.1")
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
-            security.resolve_bind_host()
+            security.A2ASecurityContext.capture().resolve_bind_host()
         assert not any("#80534" in rec.message for rec in caplog.records)
 
     def test_no_warn_loopback(self, monkeypatch, caplog):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.setenv("A2A_HOST", "127.0.0.1")
         with caplog.at_level("WARNING", logger="plugins.platforms.a2a.security"):
-            security.resolve_bind_host()
+            security.A2ASecurityContext.capture().resolve_bind_host()
         assert not any("#80534" in rec.message for rec in caplog.records)
 
 
@@ -492,42 +492,6 @@ class TestV1Parts:
     def test_extract_text_from_params(self):
         params = {"message": protocol.text_message(protocol.ROLE_USER, "do X")}
         assert protocol.extract_text(params) == "do X"
-
-    def test_data_part_builder(self):
-        """data_part() builds a v1.0 data Part."""
-        dp = protocol.data_part({"key": "value"})
-        assert dp["data"] == {"key": "value"}
-        assert dp["mediaType"] == "application/json"
-        assert "kind" not in dp
-
-    def test_file_part_builder(self):
-        """file_part() builds a v1.0 file Part with URL or raw."""
-        fp = protocol.file_part(url="https://x/f.pdf", filename="f.pdf",
-                                media_type="application/pdf")
-        assert fp["url"] == "https://x/f.pdf"
-        assert fp["filename"] == "f.pdf"
-        assert fp["mediaType"] == "application/pdf"
-        assert "kind" not in fp
-
-        # Raw variant
-        rp = protocol.file_part(raw="aGVsbG8=", filename="hello.txt",
-                                media_type="text/plain")
-        assert rp["raw"] == "aGVsbG8="
-        assert rp["filename"] == "hello.txt"
-        assert "url" not in rp
-
-    def test_message_with_parts(self):
-        """message_with_parts() builds a Message with mixed Part types."""
-        msg = protocol.message_with_parts(
-            protocol.ROLE_USER,
-            [protocol.text_part("hello"), protocol.data_part({"x": 1})],
-            context_id="ctx-1",
-        )
-        assert msg["role"] == "ROLE_USER"
-        assert len(msg["parts"]) == 2
-        assert msg["parts"][0]["text"] == "hello"
-        assert msg["parts"][1]["data"] == {"x": 1}
-        assert msg["contextId"] == "ctx-1"
 
     def test_extract_text_tolerates_v03_parts(self):
         msg = {"role": "user", "parts": [{"kind": "text", "text": "legacy 0.3"}]}

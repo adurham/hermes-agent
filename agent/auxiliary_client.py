@@ -6335,7 +6335,7 @@ def _anthropic_cached_client_is_stale(cache_key: tuple, cached_client: Any) -> b
             # path (mark_exhausted_and_rotate) — trust it, don't
             # second-guess it here.
             return False
-        from agent.anthropic_adapter import resolve_anthropic_token
+        from agent.anthropic_credentials import resolve_anthropic_token
         current_token = resolve_anthropic_token()
     except Exception:
         # Any resolution failure here must never block a cache hit — the

@@ -65,7 +65,7 @@ def build_tool_search_config(agent) -> Optional[Dict[str, Any]]:
     mcp_servers = cfg.get("mcp_servers") if isinstance(cfg, dict) else None
     if isinstance(mcp_servers, dict):
         try:
-            from tools.mcp_tool import sanitize_mcp_name_component as _san
+            from tools.mcp_tool_schema import sanitize_mcp_name_component as _san
         except Exception:
             _san = lambda s: re.sub(r"[^A-Za-z0-9_]", "_", str(s or ""))
         for name, server_cfg in mcp_servers.items():
