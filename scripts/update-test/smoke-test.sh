@@ -17,6 +17,7 @@ export HOME="$ROOT/home"; mkdir -p "$HOME"
 export GIT_CONFIG_GLOBAL="$ROOT/gitconfig-test"; : > "$GIT_CONFIG_GLOBAL"
 export HERMES_HOME="$ROOT/home/.hermes"
 export HERMES_DESKTOP_USER_DATA_DIR="$ROOT/electron-user-data"
+export HERMES_STOP_LOG="$ROOT/gateway-stop.log"
 
 H="$HERMES_HOME"; INSTALL="$H/hermes-agent"
 
@@ -60,11 +61,12 @@ git -C "$INSTALL" -c commit.gpgsign=false commit -qm initial
 git -C "$INSTALL" remote add origin https://github.com/NousResearch/hermes-agent.git
 HEAD_SHA="$(git -C "$INSTALL" rev-parse HEAD)"
 mkdir -p "$INSTALL/.hermes/bin" "$INSTALL/.hermes-runtime/python"
-# A fake launcher that understands `backup -o <zip>`: pre calls it for the data backup.
+# A fake launcher for the backup and profile-scoped gateway stop.
 cat > "$INSTALL/.hermes/bin/hermes" <<'SH'
 #!/bin/sh
 if [ "$1" = backup ] && [ "$2" = -o ]; then printf 'fake-zip\n' > "$3"; exit 0; fi
-echo hermes 0.0.0
+if [ "$1" = gateway ] && [ "$2" = stop ]; then printf '%s\n' "$HERMES_HOME" > "$HERMES_STOP_LOG"; exit 0; fi
+exit 1
 SH
 chmod +x "$INSTALL/.hermes/bin/hermes"
 printf 'big' > "$INSTALL/.hermes-runtime/python/interpreter.bin"
@@ -145,6 +147,7 @@ echo
 echo "--- post ---"
 "${RUN[@]}" post --backup-root "$BACKUPS" --yes > "$ROOT/post.log" 2>&1
 check $? "post exits 0"
+[ "$(cat "$HERMES_STOP_LOG" 2>/dev/null)" = "$H" ]; check $? "post stops only this home's gateway"
 [ -f "$H/config.yaml" ]; check $? "config.yaml restored"
 [ -f "$H/.env" ]; check $? ".env restored"
 [ -f "$H/memories/note.md" ]; check $? "memories restored"
