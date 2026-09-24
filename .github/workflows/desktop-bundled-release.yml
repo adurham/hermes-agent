@@ -1508,7 +1508,7 @@ jobs:
           # ensureWindowsBundleTools resolves the winCodeSign kit, ATS dlib
           # and dotnet runtime through electron-builder's toolset cache.
           path: ${{ github.workspace }}/.cache/electron-builder
-          # Saved by the build-win32-release legs during preparation.
+          # Saved by the Windows release build legs during preparation.
           key: eb3-${{ runner.os }}-${{ runner.arch }}-builder-${{ steps.toolchain.outputs.builder }}
           restore-keys: |
             eb3-${{ runner.os }}-${{ runner.arch }}-

@@ -15,7 +15,7 @@ const config = require('../electron-builder.config.cjs')
 const repo = path.resolve(import.meta.dirname, '../../..')
 const desktop = path.resolve(import.meta.dirname, '..')
 const digestModule = pathToFileURL(path.join(import.meta.dirname, 'payload-digests.mjs')).href
-const python = process.env.HERMES_PYTHON || 'python'
+const python = process.env.HERMES_PYTHON || (process.platform === 'win32' ? 'py' : 'python3')
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-digest-order-'))
