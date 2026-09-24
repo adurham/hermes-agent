@@ -37,6 +37,13 @@ $ErrorActionPreference = "Stop"
 # path/expression. The flag is checked before the entry dispatch at the bottom
 # (part 2), so dot-sourcing still loads every function definition.
 $script:IsDotSourced = $MyInvocation.InvocationName -eq '.'
+# `iex (irm .../install.ps1)` runs this text inside the caller's session,
+# where `exit` closes their PowerShell window (or ends their script). Only a
+# script file (-File, `& .\install.ps1`) owns its process and may exit with a
+# code. A scriptblock literal records the file its text was parsed from;
+# iex'd text has none. ($MyInvocation.MyCommand.Path is the CALLER's script
+# under iex, so it cannot tell the two apart.)
+$script:RunAsFile = [bool]{}.File
 # $PSBoundParameters inside a FUNCTION refers to the function's own binding,
 # so the script's binding is captured here, once, at script scope.
 $script:BoundParams = $PSBoundParameters
@@ -577,11 +584,9 @@ function Test-UvAtLeastPin([string]$Path) {
     try { return ([version]$have -ge [version]$script:UvPinVersion) } catch { return $false }
 }
 function Fail([string]$msg) {
-    Write-Host "[hermes] $msg" -ForegroundColor Red
-    # `exit` unwinds past the stage dispatcher's try/catch, so a -Json caller
-    # would otherwise get NO frame at all; emit the failure frame here.
-    if ($Json -and $Stage) { Emit-Frame $false $Stage $false $msg }
-    exit 1
+    # Throw, never exit: the entry points below own reporting and the exit
+    # code, and the stage dispatcher's catch emits the -Json failure frame.
+    throw $msg
 }
 
 function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = "") {
@@ -1096,6 +1101,7 @@ if ($Stage) {
         if ($Json) { Emit-Frame $true $Stage $false }
         exit 0
     } catch {
+        Write-Host "[hermes] $_" -ForegroundColor Red
         if ($Json) { Emit-Frame $false $Stage $false "$_" }
         exit 1
     }
@@ -1103,6 +1109,13 @@ if ($Stage) {
 
 # No -Stage: run the whole ladder — the same authoritative list the
 # manifest prints, so -IncludeDesktop inserts desktop here too.
-foreach ($s in $Stages) {
-    Invoke-StageByName $s.name
+try {
+    foreach ($s in $Stages) {
+        Invoke-StageByName $s.name
+    }
+} catch {
+    Write-Host "[hermes] $_" -ForegroundColor Red
+    if ($script:RunAsFile) { exit 1 }
+    # Under iex: report failure without closing the user's window.
+    $global:LASTEXITCODE = 1
 }
