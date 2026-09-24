@@ -1,6 +1,5 @@
 """Hermes CLI - Unified command-line interface for Hermes Agent."""
 
-import os
 import sys
 
 __release_date__ = "2026.9.24"
@@ -40,8 +39,8 @@ def __getattr__(name: str) -> str:
     return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
 
 
-def _ensure_utf8():
-    """Force UTF-8 stdout/stderr to prevent UnicodeEncodeError crashes.
+def _ensure_utf8() -> bool:
+    """Force UTF-8 stdout/stderr to prevent UnicodeEncodeError crashes; True when a stream was repaired.
 
     The CLI prints box-drawing characters and the ☤ glyph in the setup wizard, doctor, and status
     banners; under a non-UTF-8 codec that raises before the command can even start (e.g.
@@ -68,11 +67,10 @@ def _ensure_utf8():
             repaired = True
         except (AttributeError, OSError, ValueError):
             pass
-    # Only nudge child processes toward UTF-8 when a non-UTF-8 locale was actually detected; on a
-    # healthy UTF-8 host children inherit it from the locale already.
-    if repaired:
-        os.environ.setdefault("PYTHONUTF8", "1")
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    return repaired
 
 
-_ensure_utf8()
+# Import repairs only this process's streams. Gateway, compute host, and test code import this
+# package as a library; rewriting their os.environ would leak into every child they spawn, so the
+# child-process UTF-8 hint is applied by the CLI entry point (hermes_cli.main.main) instead.
+_stdio_repaired = _ensure_utf8()

@@ -228,6 +228,10 @@ else:
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "bootstrap-before-app"
 
+
+# "any": the OS lanes select only platforms-marked tests, and Windows is where hermes_cli's
+# stdio repair fires on a cp1252 pipe.
+@pytest.mark.platforms("any")
 def test_library_imports_of_dual_use_entry_modules_stay_side_effect_free(tmp_path):
     # The codex hermes-tools MCP server and the compute host are ``python -m`` entry points
     # that agent/gateway code and tests also import; there the bootstrap exported TMPDIR and
