@@ -24,7 +24,6 @@ from scripts.releases.versioning import (
 SHA256 = re.compile(r"[a-f0-9]{64}")
 DOCKER_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 MAX_ATTEMPTS = 3
-RETRY_BACKOFF = timedelta(minutes=15)
 CLAIM_GRACE = timedelta(hours=1)
 
 
@@ -112,13 +111,6 @@ def _workflow_runs(repository: str, run=output) -> list[dict]:
     return rows
 
 
-def _utc(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("Workflow timestamp must include a timezone")
-    return parsed.astimezone(timezone.utc)
-
-
 def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
                   now: datetime | None = None, has_draft: bool = False) -> tuple[str, dict | None]:
     """Keep failed claims live until two failed-job retries are exhausted.
@@ -147,24 +139,20 @@ def classify_runs(runs: list[dict], *, claimed_at: datetime | None = None,
         return "green", None
     if attempt >= MAX_ATTEMPTS:
         return "burned", None
-    updated_at = latest.get("updated_at")
-    if not isinstance(updated_at, str):
-        raise ValueError("Failed stable workflow has no completion time")
-    return "running", {
-        "run_id": latest["id"],
-        "attempt": attempt,
-        "due_at": _utc(updated_at) + RETRY_BACKOFF,
-    }
+    return "running", {"run_id": latest["id"], "attempt": attempt}
 
 
-def retry_due(records: list[dict], *, now: datetime | None = None) -> list[dict]:
-    """Return the oldest unresolved retry once its backoff has elapsed."""
-    now = now or datetime.now(timezone.utc)
+def retry_due(records: list[dict]) -> list[dict]:
+    """Return the oldest unresolved claim's retry, if it is waiting on one.
+
+    No backoff: the failure event's own reconcile pass reruns the failed jobs,
+    because nothing else wakes the reconciler to apply a delayed retry.
+    """
     for record in records:
         if record.get("state") != "running":
             continue
         retry = record.get("retry")
-        if retry is None or retry["due_at"] > now:
+        if retry is None:
             return []
         return [{
                 "version": record["version"], "run_id": retry["run_id"],

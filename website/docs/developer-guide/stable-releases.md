@@ -110,14 +110,15 @@ original claim ref, object SHA, commit, draft database ID, and autopublish polic
 
 ## Failure and recovery
 
-A failed stable run becomes retry-eligible after 15 minutes, then reruns only
-failed jobs in the same GitHub Actions run. The quarter-hour reconciler applies
-only the oldest unresolved eligible retry, because GitHub keeps only one pending
-run in the shared stable-release concurrency group. It does not occupy a runner
-during the backoff. At most two retries are admitted (run attempts 2 and 3).
-After attempt 3 fails, the claim is burned and the sequencer may resolve later
-claims. The same controller recovers a lost retry request or a crash between any
-publication mutations.
+When a stable run fails, its completion event starts `Stable Release
+Publication`, which at once reruns only the failed jobs in the same GitHub
+Actions run. There is no backoff and no schedule. The pass applies only the
+oldest unresolved retry, because GitHub keeps only one pending run in the shared
+stable-release concurrency group. The rerun waits in that group until the pass
+ends. At most two retries are admitted (run attempts 2 and 3). After attempt 3
+fails, the claim is burned and the sequencer may resolve later claims. A lost
+retry request, or a crash between publication mutations, is recovered by the
+next failure event or by dispatching `Stable Release Publication` by hand.
 
 A newly pushed claim with no observed workflow run remains unresolved for one
 hour. This grace window covers the non-atomic draft and dispatch steps. After the

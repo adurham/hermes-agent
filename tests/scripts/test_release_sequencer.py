@@ -82,20 +82,14 @@ def test_unstarted_claim_waits_for_its_grace_period_before_burning():
     )
 
 
-def test_failed_run_retries_twice_after_backoff_before_burning():
-    from datetime import datetime, timezone
-
+def test_failed_run_retries_twice_before_burning():
     from scripts.releases.sequencer import classify_runs, retry_due
 
-    now = datetime(2026, 9, 22, 1, 30, tzinfo=timezone.utc)
-    failed = {
-        "id": 42, "status": "completed", "conclusion": "failure",
-        "run_attempt": 1, "updated_at": "2026-09-22T01:14:59Z",
-    }
+    failed = {"id": 42, "status": "completed", "conclusion": "failure", "run_attempt": 1}
     state, retry = classify_runs([failed])
     assert state == "running"
     assert retry is not None
-    assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}], now=now) == [{
+    assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}]) == [{
         "version": "0.21.5", "run_id": 42, "attempt": 2,
     }]
     newer = dict(retry)
@@ -103,12 +97,48 @@ def test_failed_run_retries_twice_after_backoff_before_burning():
     assert retry_due([
         {"version": "0.21.5", "state": state, "retry": retry},
         {"version": "0.21.6", "state": state, "retry": newer},
-    ], now=now) == [{"version": "0.21.5", "run_id": 42, "attempt": 2}]
+    ]) == [{"version": "0.21.5", "run_id": 42, "attempt": 2}]
     failed["run_attempt"] = 2
     state, retry = classify_runs([failed])
-    assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}], now=now)[0]["attempt"] == 3
+    assert retry_due([{"version": "0.21.5", "state": state, "retry": retry}])[0]["attempt"] == 3
     failed["run_attempt"] = 3
     assert classify_runs([failed]) == ("burned", None)
+
+
+@pytest.mark.parametrize(("attempt", "reruns"), [(1, True), (3, False)])
+def test_the_pass_that_observes_a_failure_reruns_it_unless_burned(attempt, reruns):
+    """No cron re-wakes the reconciler, so the failure event's own pass must rerun."""
+    from datetime import datetime, timezone
+
+    from scripts.releases.sequencer import reconcile
+
+    commit = "a" * 40
+    tags = {"rc.1-v0.21.5": ("1" * 40, commit, _claim_message("0.21.5", 1, commit))}
+    failed = {
+        "id": 42, "status": "completed", "conclusion": "failure", "run_attempt": attempt,
+        # Completed this instant: the pass observing the failure event.
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "head_branch": "rc.1-v0.21.5", "head_sha": commit,
+    }
+    discover_run = _discover_run(tags, workflow_runs=[failed])
+    posted = []
+
+    def run(argv):
+        if argv[:4] == ["gh", "api", "--method", "POST"]:
+            posted.append(argv[-1])
+            return ""
+        if argv == ["gh", "api", "repos/example/project/actions/runs/42"]:
+            return json.dumps({"id": 42, "run_attempt": attempt + 1, "status": "queued"})
+        return discover_run(argv)
+
+    steps = reconcile({"GITHUB_REPOSITORY": "example/project"}, run=run,
+                      read_head=lambda: None, advance_head=lambda record: None)
+    if reruns:
+        assert posted == ["repos/example/project/actions/runs/42/rerun-failed-jobs"]
+        assert steps == [{"retry": "0.21.5", "attempt": 2}]
+    else:
+        assert posted == []
+        assert steps == []
 
 
 def test_a_succeeded_run_is_green_only_with_its_draft():

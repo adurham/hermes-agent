@@ -209,7 +209,7 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     assert stable["concurrency"] == publication["concurrency"] == {
         "group": "stable-release", "cancel-in-progress": "false",
     }
-    assert {"workflow_dispatch", "workflow_run", "schedule"} <= set(publication["on"])
+    assert {"workflow_dispatch", "workflow_run"} <= set(publication["on"])
     assert publication["on"]["workflow_run"] == {
         "workflows": ["Stable Release"], "types": ["completed"],
     }
@@ -220,7 +220,6 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     checkout = reconcile["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     assert checkout["with"]["persist-credentials"] == "false"
-    assert publication["on"]["schedule"] == [{"cron": "*/15 * * * *"}]
     assert not any(step.get("run", "").startswith("sleep ") for step in reconcile["steps"])
 
 
