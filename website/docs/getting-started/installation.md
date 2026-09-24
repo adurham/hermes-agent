@@ -136,9 +136,12 @@ For the POSIX source script, provide Git, curl, tar, and SHA-256 utilities.
 Windows can bootstrap its pinned Git for Windows archive when Git is absent.
 An existing uv can bootstrap PM; otherwise the script downloads its verified pin.
 
-Hermes requires **Python 3.14** (`>=3.14,<3.15`). PM selects the managed tool
-versions from `pm/lock.json`; it does not adopt arbitrary system Node versions
-as the installed runtime.
+Current first-party installations run on **Python 3.14**. The broader
+`>=3.11,<3.15` range in `pyproject.toml` lets older Python installations
+run the updater before PM switches them to 3.14; it does not promise current
+runtime support on 3.11–3.13. PM selects the managed tool versions from
+`pm/lock.json`; it does not adopt arbitrary system Node versions as the
+installed runtime.
 
 Source builds can require a native compiler and platform development libraries.
 Building Electron from source adds Node native-module requirements. These
