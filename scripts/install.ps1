@@ -882,10 +882,17 @@ function Stage-Config {
 }
 
 function Invoke-InstalledHermes([string[]]$CommandArgs) {
-    . (Join-Path $InstallDir 'scripts/desktop-update/runtime.ps1')
-    $command = @(Get-HermesRuntimeCommand -InstallRoot $InstallDir)
-    $runtimeArgs = @($command | Select-Object -Skip 1) + $CommandArgs
-    Invoke-Native { & $command[0] @runtimeArgs }
+    # Load the helper from its text, not its path. Under `irm | iex` this
+    # installer runs as a string that execution policy never checks, but
+    # dot-sourcing a .ps1 from disk is a file load. The default Restricted
+    # policy (Windows Sandbox, fresh machines) refuses that load.
+    $runtimeHelper = Join-Path $InstallDir 'scripts/desktop-update/runtime.ps1'
+    . ([ScriptBlock]::Create([IO.File]::ReadAllText($runtimeHelper)))
+    # Not `$command`: Invoke-Native's `$Command` parameter shadows it
+    # (names are case-insensitive) and the block would invoke itself.
+    $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallDir)
+    $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1) + $CommandArgs
+    Invoke-Native { & $runtimeCommand[0] @runtimeArgs }
     if ($LASTEXITCODE) { Fail "hermes $($CommandArgs -join ' ') failed (exit $LASTEXITCODE)" }
 }
 

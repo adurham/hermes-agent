@@ -24,7 +24,7 @@ function Install-HermesArm64OpenSSL {
     $required = @('include\openssl\ssl.h', 'lib\libcrypto.lib', 'lib\libssl.lib')
     $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $prefix $_) -PathType Leaf) })
     if ($missing.Count) {
-        Write-Host 'Installing static ARM64 OpenSSL development libraries via vcpkg...'
+        Write-Host 'Building static ARM64 OpenSSL from source via vcpkg; this can take several minutes...'
         Invoke-HermesBuildCommand $Vcpkg @('install', 'openssl:arm64-windows-static-md', '--classic', '--disable-metrics', "--x-install-root=$(Join-Path $Root 'installed')")
     } else {
         Write-Host "ARM64 OpenSSL development libraries found: $prefix"
@@ -75,13 +75,17 @@ function Initialize-HermesArm64BuildTools {
             throw 'ARM64 C++ or Clang build tools are missing. Run setup-hermes.ps1 once in an Administrator PowerShell to install them.'
         }
         $installer = Join-Path $buildRoot 'vs-buildtools.exe'
+        Write-Host 'Installing Visual Studio Build Tools (ARM64 C++ and Clang) to compile dependencies that have no ARM64 Windows wheel (such as cryptography).'
+        Write-Host 'This downloads several GB and can take 20+ minutes. The Visual Studio installer shows its progress in its own window.'
         Invoke-WebRequest -UseBasicParsing 'https://aka.ms/vs/17/release/vs_BuildTools.exe' -OutFile $installer
         $signature = Get-AuthenticodeSignature -LiteralPath $installer
         if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation(?:,|$)') {
             throw 'Visual Studio installer does not have a valid Microsoft signature'
         }
+        # --passive shows the installer's progress window without asking
+        # anything; --quiet showed nothing for the whole install.
         $installArgs = @(
-            '--quiet', '--wait', '--norestart', '--nocache',
+            '--passive', '--wait', '--norestart', '--nocache',
             '--add', 'Microsoft.VisualStudio.Workload.VCTools', '--includeRecommended',
             '--add', 'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
             '--add', 'Microsoft.VisualStudio.Component.VC.Llvm.Clang'
@@ -141,6 +145,7 @@ function Initialize-HermesArm64BuildTools {
     if ($cargoBin -notin ($env:PATH -split ';')) { $env:PATH = "$cargoBin;$env:PATH" }
     $rustup = Get-Command rustup.exe -ErrorAction SilentlyContinue
     if (-not $rustup) {
+        Write-Host 'Installing the Rust toolchain (1.98.0, ARM64) for those source builds...'
         $installer = Join-Path $buildRoot 'rustup-init.exe'
         $url = 'https://static.rust-lang.org/rustup/archive/1.28.2/aarch64-pc-windows-msvc/rustup-init.exe'
         Invoke-WebRequest -UseBasicParsing $url -OutFile $installer
@@ -153,6 +158,7 @@ function Initialize-HermesArm64BuildTools {
     $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
     $rustInfo = if ($rustc) { (& $rustc.Source -vV) -join "`n" } else { '' }
     if ($rustInfo -notmatch 'host: aarch64-pc-windows-msvc') {
+        Write-Host 'Installing Rust 1.98.0 for ARM64...'
         Invoke-HermesBuildCommand $rustup.Source @('toolchain', 'install', '1.98.0-aarch64-pc-windows-msvc', '--profile', 'minimal')
         $env:RUSTUP_TOOLCHAIN = '1.98.0-aarch64-pc-windows-msvc'
     }
@@ -177,9 +183,11 @@ function Initialize-HermesArm64BuildTools {
     if (-not $vcpkgRoot) {
         $vcpkgRoot = Join-Path $buildRoot 'vcpkg'
         if (-not (Test-Path -LiteralPath (Join-Path $vcpkgRoot '.git'))) {
+            Write-Host 'Downloading vcpkg to build OpenSSL for ARM64...'
             Invoke-HermesBuildCommand 'git' @('clone', 'https://github.com/microsoft/vcpkg.git', $vcpkgRoot)
             Invoke-HermesBuildCommand 'git' @('-C', $vcpkgRoot, 'checkout', '--detach', '00c5775211f45cd08b37fce0484b4cb940e422ab')
         }
+        Write-Host 'Building vcpkg...'
         Invoke-HermesBuildCommand (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') @('-disableMetrics')
     }
     $env:VCPKG_ROOT = $vcpkgRoot
