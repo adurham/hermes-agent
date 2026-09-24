@@ -166,8 +166,6 @@ def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch,
     import builtins
 
     monkeypatch.setattr(extras, "available", lambda _: False)
-    # The prompt lists missing modules; don't depend on whether the test
-    # environment happens to have fal_client installed.
     monkeypatch.setattr(extras, "missing", lambda _: ["fal_client"])
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: True))
@@ -175,7 +173,8 @@ def test_ensure_import_respects_terminal_decline_without_installing(monkeypatch,
     monkeypatch.setattr(builtins, "input", lambda text: prompts.append(text) or "n")
     with pytest.raises(pm.InstallError, match="declined"):
         extras.ensure_import("fal")
-    assert "fal" in prompts[0] and "fal_client" in prompts[0]
+    # Users know the feature, not the Python modules behind it.
+    assert "'fal' feature" in prompts[0] and "fal_client" not in prompts[0]
     assert synced == []
 
 
