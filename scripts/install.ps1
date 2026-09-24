@@ -384,13 +384,29 @@ function Invoke-VerifiedDownload {
     Fail "failed to download from $tried"
 }
 
+# Best-effort: how big is $Uri, per the server? Returns 0 when the server
+# doesn't say (missing/blocked Content-Length on a redirect chain), never
+# throws -- a failed probe here must fall back to an indeterminate bar, not
+# abort a download that Invoke-WebRequest itself would still complete.
+function Get-RemoteContentLength([string]$Uri) {
+    try {
+        $resp = Invoke-WebRequest -Uri $Uri -Method Head -UseBasicParsing -ErrorAction Stop
+        $len = $resp.Headers['Content-Length']
+        if ($len) { return [long]([string]$len -split ',' | Select-Object -First 1) }
+    } catch {
+        # HEAD unsupported / blocked: fall back silently.
+    }
+    return 0
+}
+
 # Runs the same Invoke-WebRequest call the direct version made, on a
-# separate runspace, so the main thread can log $OutFile's size on disk as
-# it grows. This preserves the exact exception TYPE Invoke-VerifiedDownload's
-# catch block dispatches on for both PS 5.1 and pwsh 7 -- EndInvoke's
-# terminating error is unwrapped via .InnerException before it is
-# rethrown, so the caller sees the same WebException / HttpRequestException
-# / HttpResponseException it would have gotten from a direct call.
+# separate runspace, so the main thread can drive Write-Progress off
+# $OutFile's size on disk while it downloads. This preserves the exact
+# exception TYPE Invoke-VerifiedDownload's catch block dispatches on for
+# both PS 5.1 and pwsh 7 -- EndInvoke's terminating error is unwrapped via
+# .InnerException before it is rethrown, so the caller sees the same
+# WebException / HttpRequestException / HttpResponseException it would
+# have gotten from a direct call.
 function Invoke-DownloadWithProgress {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
@@ -398,26 +414,34 @@ function Invoke-DownloadWithProgress {
     )
     if (Test-Path $OutFile) { Remove-Item -Path $OutFile -Force -ErrorAction SilentlyContinue }
 
+    $totalBytes = Get-RemoteContentLength $Uri
+    $activity = "Downloading $(Split-Path -Leaf $Uri)"
+
     $ps = [powershell]::Create()
     $ps.AddScript({
         param($Uri, $OutFile)
-        # Invoke-WebRequest's own progress bar is a well-known throughput
-        # killer; we're logging progress ourselves from outside, so turn it off.
+        # Invoke-WebRequest's own progress bar fights ours (and is a known
+        # throughput killer); we're rendering progress from outside, so
+        # turn it off inside the runspace.
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing
     }).AddArgument($Uri).AddArgument($OutFile) | Out-Null
 
     $handle = $ps.BeginInvoke()
-    $lastMb = -1
     try {
         while (-not $handle.IsCompleted) {
-            Start-Sleep -Milliseconds 500
-            if (Test-Path $OutFile) {
-                $mb = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
-                if ($mb -ne $lastMb) {
-                    Log "  downloading $Uri : $mb MB"
-                    $lastMb = $mb
-                }
+            Start-Sleep -Milliseconds 200
+            $haveBytes = if (Test-Path $OutFile) { (Get-Item $OutFile).Length } else { 0 }
+            if ($totalBytes -gt 0) {
+                $pct = [math]::Min(100, [math]::Round(($haveBytes / $totalBytes) * 100))
+                $haveMb = [math]::Round($haveBytes / 1MB, 1)
+                $totalMb = [math]::Round($totalBytes / 1MB, 1)
+                Write-Progress -Activity $activity -Status "$haveMb MB / $totalMb MB" -PercentComplete $pct
+            } else {
+                # Unknown size: PercentComplete -1 draws an indeterminate/marquee
+                # bar in hosts that support it, and is simply ignored elsewhere.
+                $haveMb = [math]::Round($haveBytes / 1MB, 1)
+                Write-Progress -Activity $activity -Status "$haveMb MB (size unknown)" -PercentComplete -1
             }
         }
         $ps.EndInvoke($handle) | Out-Null
@@ -425,12 +449,8 @@ function Invoke-DownloadWithProgress {
         $inner = $_.Exception.InnerException
         if ($inner) { throw $inner } else { throw }
     } finally {
+        Write-Progress -Activity $activity -Completed
         $ps.Dispose()
-    }
-
-    if (Test-Path $OutFile) {
-        $finalMb = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
-        Log "  downloaded $Uri : $finalMb MB"
     }
 }
 
