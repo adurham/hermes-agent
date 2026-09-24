@@ -100,8 +100,9 @@ click_install() {
 # Use the same source-launcher selection as the later read-only checkpoint:
 # PM installs publish .hermes/bin/hermes; older releases use venv/bin/hermes.
 # The first packaged app can land before the products stage finishes (and can
-# be rebuilt again). Wait for the bootstrap's terminal marker, published only
-# after every stage succeeds, before the EXIT trap stops the installer.
+# be rebuilt again). Wait for native bootstrap completion, not install.sh's
+# marker (historical releases predate it, and it precedes the native handoff).
+# The published native bootstrap logs completion only after every stage succeeds.
 # shellcheck source=source-driver.sh
 source "$(dirname "${BASH_SOURCE[0]}")/source-driver.sh"
 installed_app() {
@@ -114,8 +115,17 @@ installed_app() {
   done
   return 1
 }
+BOOTSTRAP_LOG="$HOME/.hermes/logs/bootstrap-installer.log"
+bootstrap_completed() {
+  [ -f "$BOOTSTRAP_LOG" ] || return 1
+  local line
+  while IFS= read -r line; do
+    [[ "$line" == *"bootstrap complete install_root=$INSTALL_DIR" ]] && return 0
+  done < "$BOOTSTRAP_LOG"
+  return 1
+}
 install_complete() {
-  [ -f "$INSTALL_DIR/.hermes-bootstrap-complete" ] \
+  bootstrap_completed \
     && [ -d "$INSTALL_DIR/.git" ] \
     && source_hermes "$INSTALL_DIR" >/dev/null 2>&1 \
     && installed_app
@@ -126,7 +136,6 @@ install_complete() {
 # watch for new failure lines, let the regular click drive the retry, and
 # give up after a few so a persistent failure reports the real error
 # instead of burning the whole install timeout.
-BOOTSTRAP_LOG="$HOME/.hermes/logs/bootstrap-installer.log"
 bootstrap_error() {
   [ -f "$BOOTSTRAP_LOG" ] || return 0
   # Match REAL failure shapes only: the structured stage log's state=Failed,

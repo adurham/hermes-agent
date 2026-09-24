@@ -1,7 +1,8 @@
-"""The DMG driver must wait for bootstrap completion, not merely a packaged Desktop."""
+"""The DMG driver must wait for native bootstrap completion, not install.sh's marker."""
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -18,6 +19,9 @@ DRIVER = Path(__file__).resolve().parents[2] / "install/e2e-assets/drive-dmg-ins
     ("launcher", False),
     ("app", False),
     ("completion", False),
+    ("historical", True),
+    ("marker-only", False),
+    ("wrong-root-log", False),
 ])
 def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expected):
     root = tmp_path / "installed source"
@@ -34,7 +38,7 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
         launcher.chmod(0o755)
     if missing != "app":
         (root / "apps/desktop/release/mac-arm64/Hermes.app").mkdir(parents=True)
-    if missing != "completion":
+    if missing not in {"completion", "historical", "wrong-root-log"}:
         (root / ".hermes-bootstrap-complete").write_text("completed", encoding="utf-8")
     # The legacy file must not mask a missing PM publication.
     legacy = root / "venv/bin/hermes"
@@ -48,7 +52,7 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
         "osascript": "#!/bin/sh\nprintf 'no-window\\n'\n",
         "cliclick": "#!/bin/sh\nexit 0\n",
         "screencapture": "#!/bin/sh\nexit 0\n",
-        "sleep": "#!/bin/sh\n/bin/sleep 0.05\n",
+        "sleep": f"#!/bin/sh\n{shutil.which('sleep')} 0.05\n",
     }.items():
         command = mocks / name
         command.write_text(script, encoding="utf-8")
@@ -58,6 +62,14 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
     app_bin.chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
+    if missing != "marker-only":
+        logs = home / ".hermes/logs"
+        logs.mkdir(parents=True)
+        logged_root = tmp_path / "other-install" if missing in {"completion", "wrong-root-log"} else root
+        (logs / "bootstrap-installer.log").write_text(
+            f"INFO hermes_bootstrap_lib::bootstrap: bootstrap complete install_root={logged_root}\n",
+            encoding="utf-8",
+        )
     result = subprocess.run(
         ["bash", str(DRIVER), "--app-bin", str(app_bin), "--install-dir", str(root),
          "--install-timeout-secs", "2", "--proof-dir", str(tmp_path / "proof")],
