@@ -226,11 +226,14 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
 
 def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
     publish = workflow("docker.yml")["jobs"]["release-publish-manifest"]
-    step = next(item for item in publish["steps"] if item.get("name") == "Create versioned manifest list")
+    step = next(item for item in publish["steps"] if item.get("name") == "Create both immutable versioned manifest lists")
     digest_dir = tmp_path / "digests"
     digest_dir.mkdir()
-    for arch, digest in (("amd64", "a" * 64), ("arm64", "b" * 64)):
-        (digest_dir / f"{arch}.digest").write_text(f"sha256:{digest}\n", encoding="utf-8")
+    for variant in ("slim", "desktop"):
+        for arch, digest in (("amd64", "a" * 64), ("arm64", "b" * 64)):
+            artifact = digest_dir / f"docker-publish-digest-{variant}-{arch}-0.21.5"
+            artifact.mkdir()
+            (artifact / f"{arch}.digest").write_text(f"sha256:{digest}\n", encoding="utf-8")
 
     marker = tmp_path / "create-called"
     bindir = tmp_path / "bin"

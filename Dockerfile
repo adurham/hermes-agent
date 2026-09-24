@@ -76,11 +76,15 @@ RUN apt-get -o Acquire::Retries=3 update && \
     libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
     rm -rf /var/lib/apt/lists/*
 
-# Bot Screen (opt-in): TigerVNC + the Xfce components + a headed chromium, so a
-# container that cannot run apt at run time (unprivileged user, no sudo — every
-# hosted instance) can still stream a desktop. ~550 MB. Nothing here starts at
-# boot; the layer costs no memory until a screen is started. Same package list
-# as tools/bot_desktop/runtime.py::PACKAGES["apt"].
+# Bot Screen (opt-in): PACKAGES["apt"] from tools/bot_desktop/runtime.py plus apt
+# `chromium` for the restricted-userns sandbox fallback. PM already stages
+# pinned full Chromium for both variants; no separate Playwright install.
+# Nothing starts
+# at boot. docker.yml builds both variants and publishes these packages under
+# the `-desktop` tags: hosted sandboxes pull a prebuilt image and never run a
+# build, and cannot apt at run time either (unprivileged, no sudo). Only this
+# build step needs root —
+# Xvnc is a userspace X server, so the runtime user can drive it.
 #   docker build --build-arg HERMES_BOT_DESKTOP=1 .
 ARG HERMES_BOT_DESKTOP=0
 RUN if [ "$HERMES_BOT_DESKTOP" = "1" ]; then \
@@ -331,6 +335,14 @@ RUN cd plugins/platforms/photon/sidecar && \
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui
 COPY --from=frontend_build /opt/products/web /opt/hermes/hermes_cli/web_dist
+# ---------- Bot Screen X socket directory ----------
+# Xvnc would create this itself (/tmp is 1777); pre-creating it keeps ownership
+# deterministic when HERMES_UID is remapped between boots.
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
+# XDG_RUNTIME_DIR (set below) sits under a predictable name in world-writable /tmp.
+# Shipping it root-owned means stage2 finds a directory it trusts and chowns it.
+RUN mkdir -p /tmp/hermes-runtime && chmod 0700 /tmp/hermes-runtime
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
@@ -442,6 +454,12 @@ ENV HERMES_DISABLE_LAZY_INSTALLS=1
 # Lazy installs are fully disabled in the published image (see
 # HERMES_DISABLE_LAZY_INSTALLS above): the venv is sealed and opt-in backend
 # SDKs are not installed at runtime.
+
+# Xfce, dbus and the display-allocation lock need one; containers have no logind
+# to create /run/user/<uid>. The default fallback ($HOME/.cache) is the /opt/data
+# volume, which a host-side install may share — two instances would then contend
+# for one lock. Container-scoped instead; seeded 0700 by docker/stage2-hook.sh.
+ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
 
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the

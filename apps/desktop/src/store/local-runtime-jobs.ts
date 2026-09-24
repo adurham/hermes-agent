@@ -35,7 +35,7 @@ export interface LocalModelsOwner extends LocalModelsScope {
   legacyBaseUrl?: string
 }
 
-export function localModelsOwner(profile?: string, connectionId?: string): LocalModelsOwner {
+export function localModelsOwner(profile?: string, connectionId?: string | null): LocalModelsOwner {
   const pin: string | null = connectionId ?? getApiRequestConnection()
 
   return {
@@ -45,7 +45,7 @@ export function localModelsOwner(profile?: string, connectionId?: string): Local
   }
 }
 
-export function useLocalModelsOwner(profile?: string, connectionId?: string): LocalModelsOwner {
+export function useLocalModelsOwner(profile?: string, connectionId?: string | null): LocalModelsOwner {
   const identity: string = useStoresSelector([$apiRequestScope, $connection], (): string =>
     JSON.stringify(localModelsOwner(profile, connectionId))
   )

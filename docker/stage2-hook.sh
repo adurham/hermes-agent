@@ -386,6 +386,31 @@ as_hermes mkdir -p \
     "$HERMES_HOME/pairing" \
     "$HERMES_HOME/platforms/pairing"
 
+# --- XDG_RUNTIME_DIR ---
+# 0700 as dbus requires. It lives in world-writable /tmp under a predictable name
+# and holds the display-allocation lock, so it is a security boundary: refuse a
+# symlink or a directory someone else owns (chowning that one would hand hermes a
+# directory whose creator keeps an fd into it), and chown rather than assume —
+# `usermod -u` above does not chown outside the home dir, so a HERMES_UID remap
+# would leave it owned by the old uid and every Xfce/dbus/lock open would EACCES.
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    xdg_owner=""
+    if [ -e "$XDG_RUNTIME_DIR" ]; then xdg_owner=$(stat -c %u "$XDG_RUNTIME_DIR" 2>/dev/null || echo unknown); fi
+    if refuse_symlinked_path "create" "$XDG_RUNTIME_DIR"; then
+        :
+    elif [ -n "$xdg_owner" ] && [ "$xdg_owner" != "0" ] && [ "$xdg_owner" != "$actual_hermes_uid" ]; then
+        echo "[stage2] Warning: $XDG_RUNTIME_DIR is owned by uid $xdg_owner (not root or hermes) — refusing to adopt it"
+    else
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || \
+            echo "[stage2] Warning: could not create XDG_RUNTIME_DIR $XDG_RUNTIME_DIR (continuing)"
+        if [ -d "$XDG_RUNTIME_DIR" ]; then
+            chown hermes:hermes "$XDG_RUNTIME_DIR" 2>/dev/null || \
+                echo "[stage2] Warning: could not chown XDG_RUNTIME_DIR $XDG_RUNTIME_DIR (rootless?)"
+            chmod 0700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+        fi
+    fi
+fi
+
 # --- Install-method stamp ---
 # The 'docker' stamp is baked into the immutable install tree at
 # /opt/hermes/.install_method (see Dockerfile), NOT written here into
