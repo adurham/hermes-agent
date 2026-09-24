@@ -78,6 +78,14 @@ async function openAbout(page, { prepare, log, shot, confirmSettings = false, hi
   }
 }
 
+async function assertStagedBranch(page, expectedSha, log) {
+  const status = await page.evaluate(() => window.hermesDesktop.updates.check({ force: true }))
+  log(`[source-branch-check] ${JSON.stringify(status)}`)
+  if (status.error || status.branch !== 'main' || status.targetSha !== expectedSha || !status.updateAvailable) {
+    throw new Error('Desktop source check did not offer staged Git main; refusing to click an unrelated update')
+  }
+}
+
 async function waitForUpdate(page, { log, shot }) {
   const update = page.getByRole('button', { name: /update now/i }).first()
   const details = page.getByRole('button', { name: /^see what['’]s new$/i }).first()
@@ -119,4 +127,4 @@ async function readManualUpdateCommand(page) {
   return command
 }
 
-module.exports = { pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate }
+module.exports = { assertStagedBranch, pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate }
