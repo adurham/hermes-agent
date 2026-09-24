@@ -71,12 +71,18 @@ test.each([true, false])('reveals the actual update button without applying (det
 
 test('checks the live Desktop bridge against the staged target before opening About', async () => {
   const sha = 'a'.repeat(40)
-  const f = fixture({ statusOverride: { supported: true, branch: 'main', targetSha: sha, updateAvailable: true } })
+  const f = fixture({ statusOverride: { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: 1, dirty: false } })
   await updateUi.assertStagedBranch(f.page, sha, f.log)
   expect(f.log).toHaveBeenCalledWith(expect.stringContaining('"targetSha"'))
+  const current = fixture({ statusOverride: { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: 1, updateAvailable: true } })
+  await updateUi.assertStagedBranch(current.page, sha, current.log)
   for (const statusOverride of [
     { supported: true, error: 'release-unavailable', branch: 'main' },
-    { supported: true, branch: 'main', targetSha: 'b'.repeat(40), updateAvailable: true },
+    { supported: true, branch: 'main', targetSha: 'b'.repeat(40), behind: 1, updateAvailable: true },
+    { supported: true, branch: 'main', targetSha: sha, behind: 1, dirty: true },
+    { supported: true, branch: 'main', targetSha: sha, behind: 0 },
+    { supported: true, branch: 'main', currentSha: sha, targetSha: sha, behind: 1 },
+    { supported: true, branch: 'main', targetSha: sha, behind: 1, updateAvailable: false },
   ]) {
     const refused = fixture({ statusOverride })
     await expect(updateUi.assertStagedBranch(refused.page, sha, refused.log)).rejects.toThrow(/refusing to click/)

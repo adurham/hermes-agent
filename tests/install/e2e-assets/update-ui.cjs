@@ -81,7 +81,13 @@ async function openAbout(page, { prepare, log, shot, confirmSettings = false, hi
 async function assertStagedBranch(page, expectedSha, log) {
   const status = await page.evaluate(() => window.hermesDesktop.updates.check({ force: true }))
   log(`[source-branch-check] ${JSON.stringify(status)}`)
-  if (status.error || status.branch !== 'main' || status.targetSha !== expectedSha || !status.updateAvailable) {
+  // Historical Desktop status has no updateAvailable field: its About/overlay
+  // offers the button when behind > 0. Never accept an explicit false from a
+  // newer checker, a dirty source tree, or merely a matching remote tip.
+  if (status.supported !== true || status.error || status.dirty === true ||
+      status.branch !== 'main' || status.targetSha !== expectedSha ||
+      !Number.isInteger(status.behind) || status.behind <= 0 ||
+      status.currentSha === expectedSha || status.updateAvailable === false) {
     throw new Error('Desktop source check did not offer staged Git main; refusing to click an unrelated update')
   }
 }

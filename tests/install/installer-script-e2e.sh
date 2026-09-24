@@ -452,6 +452,19 @@ case "$UPDATE_METHOD" in
     # fixup) runs for real in the installed code.
     EXPECT_DESKTOP=present
     HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed desktop command"
+    # v2026.6.19's installer writes this marker into its checkout without
+    # ignoring it. Its Electron checker reports git status --porcelain verbatim;
+    # teach only this disposable clone that the installer's own state is not
+    # a source edit. Keep the marker for install-method detection and refuse
+    # any other dirty state rather than masking it for the GUI update.
+    marker_status="$(git -C "$INSTALL_DIR" status --porcelain --untracked-files=all)"
+    if [ "$marker_status" = '?? .install_method' ] &&
+       [ "$(cat "$INSTALL_DIR/.install_method")" = git ]; then
+      printf '\n/.install_method\n' >> "$(git -C "$INSTALL_DIR" rev-parse --absolute-git-dir)/info/exclude"
+      ok "ignored only the installer's generated .install_method in local Git exclude"
+    fi
+    [ -z "$(git -C "$INSTALL_DIR" status --porcelain --untracked-files=all)" ] \
+      || fail "installed source has changes other than the generated install marker"
     ASSETS="$REPO_ROOT/tests/install/e2e-assets"
     SPEC="$WORK_ROOT/launch-spec.json"
 
