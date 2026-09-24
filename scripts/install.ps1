@@ -6,6 +6,7 @@
 #   -NonInteractive       skip stages that need input
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
+[CmdletBinding(PositionalBinding=$false)]
 param(
     [string]$Branch = "main",
     [string]$Commit = "",
@@ -410,7 +411,11 @@ function Get-Uv {
     }
     $entry = Join-Path (Get-PmStoreRoot) "uv-$($script:UvPinVersion)-$target"
     $uvExe = Join-Path $entry "uv.exe"
-    if (Test-Path $uvExe) { return $uvExe }
+    if (Test-Path $uvExe) {
+        if (Test-UvAtLeastPin $uvExe) { return $uvExe }
+        Log "cached pinned uv does not run; restaging it"
+        Remove-Item -Path $uvExe -Force
+    }
     Log "staging pinned uv $($script:UvPinVersion) ($target) into the pm store"
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-uv-bootstrap-$PID"
     try {
@@ -690,9 +695,12 @@ function Get-BootstrapPython {
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
     $pyPin = $lock.packages.python
     $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
-    Invoke-Native { & $uv python install --no-bin --no-registry $pyVersion } | Out-Host
-    if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyVersion }) -join "`n"
+    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyVersion 2>$null }) -join "`n"
+    if ($LASTEXITCODE -or -not $bootPy) {
+        Invoke-Native { & $uv python install --no-bin --no-registry $pyVersion } | Out-Host
+        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
+        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyVersion }) -join "`n"
+    }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     return $bootPy.Trim()
 }

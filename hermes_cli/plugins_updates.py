@@ -368,6 +368,8 @@ def default_fetch(url: str) -> str:
     import urllib.request
 
     with urllib.request.urlopen(https_update_url(url), timeout=_FETCH_TIMEOUT) as resp:
+        # urllib follows redirects automatically; do not trust a feed moved onto plaintext.
+        https_update_url(resp.geturl())
         data = resp.read(_MAX_FEED_BYTES)
     return data.decode("utf-8", errors="replace")
 

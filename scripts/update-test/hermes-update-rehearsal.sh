@@ -470,10 +470,12 @@ cmd_post() {
   say "  to how they were at $SNAP"
   confirm "Put everything back from $SNAP?"
 
-  step "stopping Hermes"
-  pkill -f "Hermes.app/Contents/MacOS" 2>/dev/null || true
-  pkill -f "hermes gateway" 2>/dev/null || true
-  ok "asked Hermes to stop (if anything was running)"
+  step "stopping this home's gateway"
+  local hermes_exe
+  hermes_exe="$(resolve_hermes_exe)" || die "no Hermes launcher for $INSTALL_DIR; stop this home's gateway before restoring"
+  HERMES_HOME="$HERMES_HOME" "$hermes_exe" gateway stop \
+    || die "could not stop this home's gateway; restore has not started"
+  ok "stopped this home's gateway (close the desktop app before restoring its data)"
 
   local aside="$SNAP/replaced"
   [ ! -e "$aside" ] || die "$aside already exists (an interrupted post?) — nothing was changed; move it away and run post again"

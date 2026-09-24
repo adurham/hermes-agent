@@ -9,6 +9,7 @@ _WRAPPERS = {"env", "nohup", "setsid", "timeout", "sudo", "xargs", "nice", "ioni
 _MUTATIONS = {
     "pull", "reset", "stash", "checkout", "switch", "restore",
     "clean", "rebase", "merge", "cherry-pick", "revert", "apply", "am",
+    "commit", "add", "rm", "update-ref", "branch", "worktree", "tag",
 }
 _TARGET_OPTIONS = {"--git-dir", "--work-tree"}
 _VALUE_OPTIONS = _TARGET_OPTIONS | {"-C", "-c", "--namespace", "--super-prefix"}
@@ -84,9 +85,21 @@ def blocked_git_mutation(cmd, kwargs, protected_roots):
     if tail is None:
         return None
     verb, targets, after = _git_verb_and_targets(tail, kwargs or {})
-    if verb not in _MUTATIONS:
+    if verb == "config":
+        # Querying config is safe; writing URL rewrites into the checkout is not.
+        if any(arg in {"--get", "--get-all", "--get-regexp", "--list", "-l"} for arg in after):
+            return None
+        if not any("url." in arg and ".insteadof" in arg.lower() for arg in after):
+            return None
+    elif verb not in _MUTATIONS:
         return None
     if verb == "stash" and after and after[0] in {"list", "show"}:
+        return None
+    if verb == "worktree" and after and after[0] == "list":
+        return None
+    if verb == "branch" and (not after or after[0] in {"--list", "--show-current", "-a", "-r", "-v", "-vv"}):
+        return None
+    if verb == "tag" and (not after or after[0] in {"--list", "-l"}):
         return None
     for target in targets:
         try:

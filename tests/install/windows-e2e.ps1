@@ -446,9 +446,10 @@ function Invoke-RefInstaller {
     $script = Join-Path $WorkRoot "install-$Label.ps1"
     (Invoke-Git @("-C", $RepoRoot, "show", "$Ref`:scripts/install.ps1")) -join "`n" |
         Set-Content -LiteralPath $script -Encoding UTF8
-    $flags = @("-SkipSetup", "-HermesHome", $HermesHome, "-InstallDir", $InstallDir)
+    $flags = @("-HermesHome", $HermesHome, "-InstallDir", $InstallDir)
     $text = Get-Content -LiteralPath $script -Raw
     if ($text -match '\$NonInteractive') { $flags += "-NonInteractive" }
+    else { $flags += "-SkipSetup" }
     if ($IncludeDesktop) {
         # The desktop stage is the point of this leg: a ref without the
         # parameter is a hard failure, not a silent plain install.

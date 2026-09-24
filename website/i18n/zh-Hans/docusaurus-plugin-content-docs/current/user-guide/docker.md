@@ -276,7 +276,7 @@ docker run -d \
 
 
 - 按提交的 `uv.lock` 同步的 Python 3.14 环境，然后无依赖地安装 Hermes 源码。
-- 选定的 extras：`all`、`messaging`、`otlp`、`anthropic`、`bedrock`、`azure-identity`、`hindsight` 和 `matrix`，不是 `--all-extras`。
+- 选定的 extras：`all`、`messaging`、`otlp`、`anthropic`、`bedrock`、`azure-identity` 和 `matrix`，不是 `--all-extras`。
 - 从摘要固定的 Node 镜像提供的 Node.js 26 和 npm。
 - PM 固定版本的 uv、Chromium 和 headless shell，位于 `/opt/hermes/tools`。
 - 系统 Git、ripgrep、FFmpeg、OpenSSH、Docker CLI 和 Chromium 所需共享库。

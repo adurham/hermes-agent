@@ -105,9 +105,10 @@ def _hermes_home_points_at_production(value: str) -> bool:
 # root ends up INSIDE a guarded real home (the operator's, or a custom one
 # honored below), so the session sandbox, pytest's basetemp and every
 # ``tempfile`` default in the code under test trip the real-home guard. Strip
-# Hermes' own export (the marker tells it apart from a user-set var, which is
-# left alone) and pin the system default so the import-time hook stays a
-# no-op. The parallel runner exports its own disk-backed TMPDIR anyway.
+# Hermes' own export (the marker tells it apart from a user-set var), and
+# relocate even user-set temp directories inside a guarded home. Pin the
+# system default so the import-time hook stays a no-op. The parallel runner
+# exports its own disk-backed TMPDIR anyway.
 from hermes_constants import SCRATCH_DIR_MARKER_ENV, SCRATCH_TMP_ENV_VARS
 
 _HERMES_EXPORTED_TMP = os.environ.get(SCRATCH_DIR_MARKER_ENV, "")
@@ -116,7 +117,21 @@ if _HERMES_EXPORTED_TMP:
         if os.environ.get(_key, "").strip() == _HERMES_EXPORTED_TMP:
             del os.environ[_key]
     del os.environ[SCRATCH_DIR_MARKER_ENV]
-    tempfile.tempdir = None  # drop the cached redirect so gettempdir() re-resolves
+
+from hermes_state_guard import _real_platform_state_root
+
+_real_test_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
+_guarded_tmp_roots = [_real_test_root]
+_custom_test_home = os.environ.get("HERMES_HOME")
+if _custom_test_home:
+    _guarded_tmp_roots.append(Path(_custom_test_home).expanduser().resolve())
+for _key in SCRATCH_TMP_ENV_VARS:
+    _value = os.environ.get(_key)
+    if _value:
+        _path = Path(_value).expanduser().resolve()
+        if any(_path.is_relative_to(_root) for _root in _guarded_tmp_roots):
+            del os.environ[_key]
+tempfile.tempdir = None  # re-resolve after stripping guarded temp directories
 os.environ.setdefault("TMPDIR", tempfile.gettempdir())
 
 if _hermes_home_points_at_production(os.environ.get("HERMES_HOME", "")):

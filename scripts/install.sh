@@ -31,7 +31,7 @@ INCLUDE_DESKTOP=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --branch|-Branch) BRANCH="$2"; shift 2 ;;
+        --branch|-Branch) BRANCH="${2:?--branch needs a value}"; shift 2 ;;
         --commit|-Commit) INSTALL_COMMIT="$2"; shift 2 ;;
         --dir) INSTALL_DIR="$2"; shift 2 ;;
         --hermes-home|-HermesHome) HERMES_HOME="$2"; shift 2 ;;
@@ -39,7 +39,10 @@ while [ $# -gt 0 ]; do
         --stage|-Stage) STAGE="$2"; shift 2 ;;
         --json|-Json) JSON=true; shift ;;
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
-        --skip-setup|--skip-browser) NON_INTERACTIVE=true; shift ;;
+        --skip-setup) NON_INTERACTIVE=true; shift ;;
+        --skip-browser|--no-playwright)
+            echo "$1 no longer skips the browser install; pm manages browser dependencies. Remove this flag and use --non-interactive to skip setup prompts." >&2
+            exit 1 ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         -h|--help)
             echo "Usage: install.sh [--branch NAME] [--commit SHA] [--dir PATH]"

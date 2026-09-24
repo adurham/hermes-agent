@@ -35,3 +35,22 @@ def test_guard_blocks_native_and_shell_git_mutations_without_touching_checkout(t
     git(ordinary, "reset", "--hard", old)
     assert git(ordinary, "rev-parse", "HEAD") == old
     assert not (ordinary / "sentinel").exists()
+
+
+def test_checkout_guard_covers_write_verbs_without_blocking_queries(tmp_path):
+    from tests.git_safety import blocked_git_mutation
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    options = {"cwd": root}
+    for argv in (
+        ["commit", "-am", "change"], ["add", "-A"], ["rm", "-r", "."],
+        ["config", "url.https://example.invalid/.insteadOf", "git@example.invalid:"],
+        ["update-ref", "refs/heads/main", "abc"], ["branch", "-f", "main"],
+        ["worktree", "add", "../other"], ["tag", "v1"],
+    ):
+        assert blocked_git_mutation(["git", *argv], options, (root,)) == argv[0]
+        assert blocked_git_mutation(["git", *argv], {"cwd": tmp_path}, (root,)) is None
+    for argv in (["status"], ["config", "--get", "url.x.insteadOf"],
+                 ["worktree", "list"], ["branch", "--show-current"], ["tag", "-l"]):
+        assert blocked_git_mutation(["git", *argv], options, (root,)) is None

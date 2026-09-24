@@ -482,3 +482,25 @@ def test_default_fetch_refuses_non_https_feeds_before_any_request(monkeypatch, u
     monkeypatch.setattr(urllib.request, "urlopen", never)
     with pytest.raises(ValueError, match="https://"):
         default_fetch(url)
+
+
+def test_default_fetch_refuses_https_to_http_redirect_before_reading(monkeypatch):
+    import urllib.request
+    from hermes_cli.plugins_updates import default_fetch
+
+    class RedirectedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def geturl(self):
+            return "http://feed.example/insecure.yml"
+
+        def read(self, *_):
+            raise AssertionError("insecure feed must not be read")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_a, **_kw: RedirectedResponse())
+    with pytest.raises(ValueError, match="https://"):
+        default_fetch("https://feed.example/secure.yml")

@@ -523,7 +523,7 @@ The image uses Debian 13.4 and includes:
 - A Python 3.14 environment synchronized from the committed `uv.lock`, followed
   by a no-dependency editable install of Hermes.
 - The curated extras `all`, `messaging`, `otlp`, `anthropic`, `bedrock`,
-  `azure-identity`, `hindsight`, and `matrix`. This is not `--all-extras`.
+  `azure-identity`, and `matrix`. This is not `--all-extras`.
 - Node.js 26 and npm from the digest-pinned Node source image.
 - PM-pinned uv, Chromium, and Chromium headless shell in `/opt/hermes/tools`.
 - System Git, ripgrep, FFmpeg, OpenSSH, Docker CLI, and Chromium shared libraries.
