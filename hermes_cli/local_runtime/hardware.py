@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.estimator import HardwareBudget
@@ -31,6 +32,9 @@ _GIB = 1 << 30
 # reality). Small cards give up window to this; spill mode is their path to big models.
 _MARGIN_FLOOR = 2 << 30
 _MARGIN_FRACTION = 0.09
+# Room left on top of what other programs hold when a model launches: a browser tab or a chat app
+# can take another GiB between launch and the next request.
+_LAUNCH_HEADROOM = 1 << 30
 # UMA headroom: on unified-memory machines the model shares physical memory with the OS and every
 # app, so budget from RAM minus this fraction.
 _UMA_HEADROOM_FRACTION = 0.20
@@ -351,3 +355,28 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
                           uma=False, gpu_name=gpu_name, platform=sys.platform)
+
+
+def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBudget | None:
+    """Capacity less what other programs hold on the card right now, or None when that can't apply.
+
+    Capacity assumes other programs hold no more than the fixed margin. Beside a heavier desktop the
+    capacity-sized window doesn't fit, and Windows pages part of the model to host memory without
+    an error: a 32 GiB card with 4.5-6.3 GiB held by other apps decoded at ~24 tok/s at the
+    capacity window, and at ~90 tok/s at a window sized from free memory.
+
+    ``own_bytes`` is what the managed server holds now and frees before the new instance loads.
+    A stopped server's memory reads as free by the time its process has exited (measured on
+    Windows: free memory was fully back at the first reading after exit). None for unified memory
+    (its live budget is already free memory) and when the device query fails, so callers keep the
+    capacity plan.
+    """
+    if capacity.uma:
+        return None
+    vram = _nvidia_vram()
+    if vram is None:
+        return None
+    total, free, _name = vram
+    others = max(0, total - free - max(0, own_bytes))
+    usable = min(capacity.usable_vram_bytes, max(0, total - others - _LAUNCH_HEADROOM))
+    return replace(capacity, usable_vram_bytes=usable)
