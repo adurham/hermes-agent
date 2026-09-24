@@ -435,12 +435,31 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     # leaves nobody to relaunch. It also outlives the swap safely because it
     # relaunches itself afterwards. Windows keeps stopping it: there, the exe
     # lock would make the rename fail anyway.
+    #
+    # Spare that Desktop's whole process tree, not just its main process. Its
+    # zygote, renderer, GPU and network-service helpers run the same release
+    # exe but are siblings of us, not ancestors. Stopping them leaves a main
+    # process with no renderer. It cannot draw its update overlay, relaunch, or
+    # quit, so it outlives the update forever. (That is the v2026.7.1 Linux
+    # in-app update E2E: the receipt succeeds and then the app hangs.)
     spared: set[int] = set()
     if sys.platform != "win32":
         try:
-            spared = {parent.pid for parent in psutil.Process(me).parents()}
+            ancestors = list(psutil.Process(me).parents())
         except Exception:
-            spared = set()
+            ancestors = []
+        for parent in ancestors:
+            spared.add(parent.pid)
+            try:
+                parent_exe = Path(parent.exe()).resolve()
+            except Exception:
+                continue
+            # Only a Desktop ancestor's descendants. Every process descends from
+            # init, so sparing all ancestors' trees would spare everything.
+            if release_dir not in parent_exe.parents:
+                continue
+            with contextlib.suppress(Exception):
+                spared.update(child.pid for child in parent.children(recursive=True))
     victims = []
     try:
         proc_iter = psutil.process_iter(["pid", "exe"])
