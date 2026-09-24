@@ -150,8 +150,12 @@ def _next_claim_epoch(repo: Path) -> int:
     return max(int(time.time()), max(previous, default=0) + 1)
 
 
+# GitHub refuses a release body longer than this with HTTP 422.
+GITHUB_BODY_LIMIT = 125_000
+
+
 def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: str,
-               published: tuple[str, str | None]) -> str:
+               published: tuple[str, str | None], no_changelog: bool) -> str:
     """The commit changelog from the stable base to the cut commit.
 
     GitHub's generate-notes lists merged pull requests since the last published
@@ -169,12 +173,12 @@ def _changelog(repo: Path, repository: str, *, commit: str, tag: str, version: s
     commits = release_script.get_commits(since_tag=base, until=commit, cwd=repo)
     return release_script.generate_changelog(
         commits, tag, version, repo_url=f"https://github.com/{repository}",
-        prev_tag=receipt if base else None,
+        prev_tag=receipt if base else None, no_changelog=no_changelog,
     )
 
 
 def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
-            execute, autopublish: bool = False,
+            execute, autopublish: bool = False, no_changelog: bool = False,
             published: tuple[str, str | None] = (SEED, None)) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
@@ -192,6 +196,15 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     version = derive_next_version(published=published_version, bump=bump)
     attempt = next_attempt(version, _claims(repo))
     tag = attempt_ref(version, attempt)
+    # Built before the claim: a body GitHub refuses would otherwise burn the attempt.
+    body = draft_body(version=version, attempt_ref=tag, notes=_changelog(
+        repo, repository, commit=commit, tag=tag, version=version, published=published,
+        no_changelog=no_changelog,
+    ))
+    if len(body) > GITHUB_BODY_LIMIT:
+        raise ReleaseRefused(
+            f"the {tag} draft body is {len(body)} characters; GitHub accepts at most "
+            f"{GITHUB_BODY_LIMIT}. Nothing was claimed. Re-run with --no-changelog.")
     claim_epoch = _next_claim_epoch(repo)
     claim = json.dumps({
         "schema": 1,
@@ -222,14 +235,11 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     _refresh_claims(repo, remote)
     _outstanding_attempt(repo, remote)
     try:
-        notes = _changelog(repo, repository, commit=commit, tag=tag, version=version,
-                           published=published)
-        # The body carries a warning at both ends, so it is built here and
-        # handed over as a file.
+        # The body carries a warning at both ends, so it is handed over as a file.
         file = tempfile.NamedTemporaryFile(
             "w", suffix=".md", delete=False, encoding="utf-8", newline="\n")
         try:
-            file.write(draft_body(version=version, attempt_ref=tag, notes=notes))
+            file.write(body)
         finally:
             file.close()
         try:
@@ -408,7 +418,7 @@ def cmd_release(args) -> None:
     from scripts.releases.versioning import published_stable_identity
     result = release(
         commit, bump=args.bump, repo=repo, remote=remote, repository=repository,
-        execute=execute, autopublish=args.autopublish,
+        execute=execute, autopublish=args.autopublish, no_changelog=args.no_changelog,
         published=published_stable_identity(repository),
     )
     print(next_steps(result))

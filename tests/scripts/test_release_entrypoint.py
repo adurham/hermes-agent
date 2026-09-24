@@ -323,6 +323,66 @@ def test_a_dispatch_that_never_starts_is_an_error(source):
     assert "rc.1-v0.21.5" in git(source, "tag", "--list")
 
 
+def _oversized_commit(repo, tmp_path):
+    """A commit whose subject alone overflows GitHub's release body limit."""
+    from scripts.releases.entrypoint import GITHUB_BODY_LIMIT
+
+    message = tmp_path / "message.txt"
+    message.write_text("feat: " + "x" * GITHUB_BODY_LIMIT, encoding="utf-8")
+    git(repo, "commit", "--allow-empty", "--quiet", "-F", str(message))
+    git(repo, "push", "--quiet", "origin", "main")
+    return git(repo, "rev-parse", "HEAD")
+
+
+def test_an_oversized_body_is_refused_before_the_claim(source, tmp_path):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    commit = _oversized_commit(source, tmp_path)
+
+    with pytest.raises(ReleaseRefused, match="--no-changelog"):
+        _release(source, commit, execute=lambda command: pytest.fail(f"must not run {command}"))
+
+    # Nothing was claimed, so the attempt is not burned.
+    assert git(source, "ls-remote", "origin", "refs/tags/*") == ""
+    assert git(source, "tag", "-l", "rc.*") == ""
+
+
+def test_no_changelog_releases_what_the_full_changelog_could_not(source, tmp_path):
+    from scripts.releases.entrypoint import GITHUB_BODY_LIMIT
+
+    commit = _oversized_commit(source, tmp_path)
+    seen = {}
+
+    def execute(command):
+        if command[:3] == ["gh", "release", "create"]:
+            with open(command[command.index("--notes-file") + 1], encoding="utf-8") as file:
+                seen["body"] = file.read()
+        return ""
+
+    result = _release(source, commit, execute=execute, no_changelog=True)
+
+    assert result["tag"] == "rc.1-v0.21.5"
+    assert len(seen["body"]) <= GITHUB_BODY_LIMIT
+    assert "<!-- HERMES_BUILDS_TABLE -->" in seen["body"]
+
+
+@pytest.mark.parametrize("argv", [
+    ["release", "--commit", "HEAD", "--no-changelog"],
+    ["--no-changelog", "release", "--commit", "HEAD"],
+])
+def test_release_command_accepts_no_changelog(argv, monkeypatch):
+    from scripts import release as release_script
+    from scripts.releases import entrypoint
+
+    seen = {}
+    monkeypatch.setattr(entrypoint, "cmd_release", lambda args: seen.setdefault("args", args))
+    monkeypatch.setattr(release_script.sys, "argv", ["release.py", *argv])
+
+    release_script.main()
+
+    assert seen["args"].no_changelog is True
+
+
 def test_publish_and_abandon_output_name_the_result():
     from scripts.releases.entrypoint import abandon_steps, publish_steps
 

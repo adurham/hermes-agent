@@ -2742,6 +2742,10 @@ def main():
     release_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
     release_cmd.add_argument("--autopublish", action="store_true",
                              help="Publish on green instead of leaving a draft")
+    # SUPPRESS keeps a --no-changelog given before the subcommand from being
+    # reset by this parser's default.
+    release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,
+                             help="Leave the commit list out of the draft body")
     release_cmd.add_argument("--remote", type=str)
     publish_cmd = subcommands.add_parser(
         "publish", help="Publish a green stable release through the ordered sequencer")
