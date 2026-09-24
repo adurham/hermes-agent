@@ -2470,7 +2470,7 @@ requires-dist = [
     { name = "supermemory", marker = "extra == 'supermemory'", specifier = "==3.50.0" },
     { name = "tenacity", marker = "python_full_version >= '3.14'", specifier = "==9.1.4" },
     { name = "tomli-w", marker = "python_full_version >= '3.14'", specifier = "==1.2.0" },
-    { name = "truststore", marker = "python_full_version >= '3.14'", specifier = ">=0.10.4,<0.11" },
+    { name = "truststore", marker = "python_full_version >= '3.14'", specifier = "==0.10.4" },
     { name = "tzdata", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "urllib3", marker = "python_full_version >= '3.14'", specifier = ">=2.7.0,<3" },
     { name = "uvicorn", marker = "python_full_version >= '3.14'", specifier = ">=0.31.0,<1" },
