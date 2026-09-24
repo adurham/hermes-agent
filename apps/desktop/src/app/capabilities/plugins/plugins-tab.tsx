@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { setEnvVar } from '@/api/config'
+import { setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -11,8 +12,10 @@ import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/p
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
@@ -41,6 +44,7 @@ import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
 import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
+import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
@@ -358,7 +362,33 @@ function PackageRow({
               checked={desktopOn}
               onCheckedChange={on => {
                 triggerHaptic('selection')
-                void setPluginEnabled(desktop.id, on)
+
+                void (async () => {
+                  await setPluginEnabled(desktop.id, on)
+                  // #96969: when the feature's agent-side tools live in a
+                  // toolset (the built-in Kanban board has no agent-plugin
+                  // half), flip that opt-in with the panel through the same
+                  // PUT /api/tools/toolsets/{name} the Toolsets tab uses —
+                  // scoped to the profile this page shows, since the toolset
+                  // is per-profile config. Refresh the Toolsets cache so its
+                  // row repaints, and say what happened either way.
+                  const toolset = DESKTOP_PLUGIN_TOOLSETS[desktop.id]
+
+                  if (!toolset) {
+                    return
+                  }
+
+                  try {
+                    await setToolsetEnabled(toolset, on, profile)
+                    void queryClient.invalidateQueries({ queryKey: TOOLSETS_QUERY_KEY })
+                    notify({
+                      kind: 'success',
+                      message: on ? p.toolsetOn(pkg.name, scopeLabel) : p.toolsetOff(pkg.name, scopeLabel)
+                    })
+                  } catch (err) {
+                    notifyError(err, p.toolsetToggleFailed(pkg.name))
+                  }
+                })()
               }}
             />
           ) : pkg.desktopMissing ? (

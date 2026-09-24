@@ -83,6 +83,15 @@ vi.mock('@/contrib/runtime-loader', async importOriginal => ({
   uninstallDiskPlugin: (id: string) => uninstallDiskPlugin(id)
 }))
 
+// #96969: a Desktop switch whose feature also ships an agent toolset must
+// reach the same PUT /api/tools/toolsets/{name} the Toolsets tab uses.
+const setToolsetEnabled = vi.fn(async () => ({ enabled: true, name: 'kanban', ok: true }))
+
+vi.mock('@/api/toolsets', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  setToolsetEnabled: (...args: unknown[]) => setToolsetEnabled(...(args as Parameters<typeof setToolsetEnabled>))
+}))
+
 beforeEach(() => {
   $pluginRecords.set({})
   $agentPlugins.set([])
@@ -93,6 +102,7 @@ beforeEach(() => {
   requestGateway.mockReset()
   requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
   setEnvVar.mockClear()
+  setToolsetEnabled.mockClear()
 })
 
 afterEach(() => {
