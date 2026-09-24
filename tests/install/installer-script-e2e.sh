@@ -115,6 +115,8 @@ source "$(dirname "$0")/e2e-assets/mock-provider.sh"
 source "$(dirname "$0")/e2e-assets/source-driver.sh"
 # shellcheck source=e2e-assets/installer-common.sh
 source "$(dirname "$0")/e2e-assets/installer-common.sh"
+# shellcheck source=e2e-assets/source-update-command.sh
+source "$(dirname "$0")/e2e-assets/source-update-command.sh"
 # shellcheck source=e2e-assets/source-build-env.sh
 source "$ASSETS/source-build-env.sh"
 # Full transcript in the job log, collapsed (GitHub renders ::group:: as a
@@ -425,11 +427,7 @@ case "$UPDATE_METHOD" in
     # installed hermes; older ones read the prompt from stdin, so close it.
     HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
     help="$(source_build_env "$HERMES" update --help 2>&1)" || fail "installed update --help failed: $help"
-    if grep -qF -- --yes <<< "$help"; then
-      update_cmd=("$HERMES" update --yes)
-    else
-      update_cmd=("$HERMES" update)
-    fi
+    build_source_update_command "$HERMES" "$help"
     rc=0
     (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
     log_group "hermes update transcript" "$LOG_DIR/update.log"
