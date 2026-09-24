@@ -1461,6 +1461,11 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
+        # FORK: the exo canonical serializer keys off ``provider`` at the transport's
+        # last-touch chokepoint (byte-stable key order + pad omission for the prefix
+        # cache). Dropped for this call site by the v2026.9.14 merge, leaving the
+        # serializer inert on the live chat path.
+        provider=getattr(agent, "provider", None),
         max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
