@@ -79,8 +79,16 @@ async function openAbout(page, { prepare, log, shot, confirmSettings = false, hi
 }
 
 async function assertStagedBranch(page, expectedSha, log) {
-  const status = await page.evaluate(() => window.hermesDesktop.updates.check({ force: true }))
-  log(`[source-branch-check] ${JSON.stringify(status)}`)
+  let status
+  for (let attempt = 0; attempt < 3; attempt++) {
+    status = await page.evaluate(() => window.hermesDesktop.updates.check({ force: true }))
+    log(`[source-branch-check] ${JSON.stringify(status)}`)
+    // The app's mount-time poller can fetch the same origin/main concurrently;
+    // Git rejects the losing ref update even though the winning fetch succeeded.
+    // Retry only that transient lock race, never a missing channel or other error.
+    if (status.error !== 'fetch-failed' || !/cannot lock ref 'refs\/remotes\/origin\/main'/.test(status.message || '')) break
+    await page.waitForTimeout(1_000)
+  }
   // Historical Desktop status has no updateAvailable field: its About/overlay
   // offers the button when behind > 0. Never accept an explicit false from a
   // newer checker, a dirty source tree, or merely a matching remote tip.

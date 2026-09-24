@@ -76,6 +76,13 @@ test('checks the live Desktop bridge against the staged target before opening Ab
   expect(f.log).toHaveBeenCalledWith(expect.stringContaining('"targetSha"'))
   const current = fixture({ statusOverride: { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: 1, updateAvailable: true } })
   await updateUi.assertStagedBranch(current.page, sha, current.log)
+  const racing = fixture()
+  let checks = 0
+  racing.page.evaluate = fn => ++checks === 1
+    ? { supported: true, error: 'fetch-failed', message: "error: cannot lock ref 'refs/remotes/origin/main'" }
+    : current.page.evaluate(fn)
+  await updateUi.assertStagedBranch(racing.page, sha, racing.log)
+  expect(checks).toBe(2)
   for (const statusOverride of [
     { supported: true, error: 'release-unavailable', branch: 'main' },
     { supported: true, branch: 'main', targetSha: 'b'.repeat(40), behind: 1, updateAvailable: true },
