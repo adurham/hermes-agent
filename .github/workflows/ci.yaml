@@ -447,7 +447,11 @@ jobs:
     needs: detect
     # The deterministic core suite (apps/desktop/e2e/core): transcript
     # integrity, boot/respawn/orphans, clarify+approval. Required; retries 0.
-    if: ${{ needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true' }}
+    # e2e-desktop-core.yml runs on ubuntu-latest-32-core, not provisioned on
+    # forks — skip on forks (the called workflow's own job carries the same
+    # gate) or the job queues forever and holds all-checks-pass, and so the
+    # whole run, open.
+    if: github.repository == 'NousResearch/hermes-agent' && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true')
     uses: ./.github/workflows/e2e-desktop-core.yml
 
   docs-site:

@@ -49,32 +49,34 @@ TOOLSET_FILES: dict[str, list[str]] = {
     ],
     "feishu_doc": [
         "tools/feishu_doc_tool.py",
-        "tests/tools/test_feishu_tools.py",
+        # tests/tools/test_feishu_tools.py was purged in 5f6b1d251f ("test:
+        # purge low-value tests, lane py17") with no replacement file; the
+        # tool module itself is still live, so only it is ripped now.
     ],
     "feishu_drive": [
         "tools/feishu_drive_tool.py",
     ],
     "yuanbao": [
         "tools/yuanbao_tools.py",
-        "tests/test_yuanbao_integration.py",
-        "tests/test_yuanbao_markdown.py",
-        "tests/test_yuanbao_pipeline.py",
-        "tests/test_yuanbao_proto.py",
+        # Renamed out of the flat tests/ root by d10bb2ab6f ("test: make
+        # tests/ mirror the source tree; drop issue numbers from filenames").
+        "tests/gateway/test_yuanbao_integration.py",
+        "tests/gateway/test_yuanbao_markdown.py",
+        "tests/gateway/test_yuanbao_pipeline.py",
+        "tests/gateway/test_yuanbao_proto.py",
     ],
     "homeassistant": [
         "tools/homeassistant_tool.py",
         "tests/tools/test_homeassistant_tool.py",
         "tests/gateway/test_homeassistant.py",
     ],
-    "moa": [
-        "tools/mixture_of_agents_tool.py",
-        "tests/tools/test_mixture_of_agents_tool.py",
-    ],
-    "rl": [
-        "tools/rl_training_tool.py",
-        "rl_cli.py",
-        "tests/tools/test_rl_training_tool.py",
-    ],
+    # ``moa`` and ``rl`` were removed rather than renamed: MoA became a virtual
+    # provider (agent/moa_*.py — no toolset module left to rip; upstream
+    # c6575df927 deleted tools/mixture_of_agents_tool.py and its test) and the
+    # RL/Atropos feature was retired wholesale (upstream 5af672c753 deleted
+    # tools/rl_training_tool.py, rl_cli.py, tests/tools/test_rl_training_tool.py
+    # and environments/). No dedicated source files remain for either, which is
+    # this map's own bar for inclusion.
     "spotify": [
         "plugins/spotify",  # whole directory
         "tests/hermes_cli/test_spotify_auth.py",
