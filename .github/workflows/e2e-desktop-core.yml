@@ -68,7 +68,7 @@ jobs:
       - name: Install Python dependencies
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.14 --extra all --extra dev
+          command: uv sync --locked --python 3.14 --extra all --group dev
 
       - name: Build the desktop app
         working-directory: apps/desktop

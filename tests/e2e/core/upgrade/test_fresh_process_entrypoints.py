@@ -63,7 +63,7 @@ pytestmark = [
 
 PY = sys.executable
 PYPROJECT = tomllib.loads((WORKTREE / "pyproject.toml").read_text(encoding="utf-8"))
-PROJECT_VERSION = PYPROJECT["project"]["version"]
+
 TRACEBACK = "Traceback (most recent call last)"
 
 # Third-party import name -> distribution. A module failing ONLY because one of these is
@@ -709,7 +709,8 @@ def test_entrypoint_in_a_fresh_process(case, tmp_path):
     assert not shim_log.exists() or not shim_log.read_text(encoding="utf-8").strip(), (
         f"{case} called a service manager: {shim_log.read_text(encoding='utf-8')}")
     if entry.prints_version:
-        assert PROJECT_VERSION in cp.stdout, describe(cp)
+        from hermes_cli.version_info import get_version_info
+        assert get_version_info().derived_version in cp.stdout, describe(cp)
     db = hermes_home / "state.db"
     if db.exists():
         assert _db_rows(db, "PRAGMA integrity_check") == [("ok",)], f"{case} left a corrupt state.db"

@@ -9,17 +9,18 @@ import pytest
 from tests.installation_launcher_fixture import publish_fixture_launcher
 
 if os.name == 'posix':
-    import fcntl
     import pty
-    import termios
 
 ROOT = Path(__file__).resolve().parents[2]
 
 def _with_controlling_terminal(slave: int):
     """preexec_fn: make ``slave`` this child's controlling terminal, so /dev/tty opens."""
+    tty_path = os.ttyname(slave)
+
     def attach() -> None:
         os.setsid()  # windows-footgun: ok (posix-only test)
-        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        fd = os.open(tty_path, os.O_RDWR)
+        os.close(fd)
     return attach
 
 

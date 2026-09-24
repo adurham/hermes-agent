@@ -350,7 +350,7 @@ def test_channel_windows_record_stage_and_assembly_handoff_shell(tmp_path, r2_se
     prefix = handoff.channel_prefix(request)
     for key in ("metadata-windows-x64.json", "handoff-win32-x64.json"):
         r2_server.store.pop(prefix + key)
-    script = workflow_step("desktop-bundled-release.yml", "build-win32-commit", "Record and stage channel windows packages")
+    script = workflow_step("desktop-bundled-release.yml", "build-win32-x64-commit", "Record and stage channel windows packages")
     result = run_shell(tmp_path, r2_server, script, env)
     assert result.returncode == 0, result.stdout + result.stderr
     # One-dispatch: the env-default commit equals the request's own, which is

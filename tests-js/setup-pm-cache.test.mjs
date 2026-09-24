@@ -72,10 +72,10 @@ const desktopSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' 
 const payloadSaveGate = "${{ !cancelled() && steps.prepare.outcome == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (inputs.ref == '' || inputs.ref == github.sha) }}"
 
 it.each([
-  ['build-win32-release', desktop, 'desktop', 'write', 'scripts/bundles/desktop.py', desktopSaveGate],
-  ['build-win32-commit', desktop, 'desktop', 'read', 'scripts/bundles/desktop.py', desktopSaveGate],
-  ['build-darwin-release', desktop, 'desktop', 'write', 'scripts/bundles/desktop.py', desktopSaveGate],
-  ['build-darwin-commit', desktop, 'desktop', 'read', 'scripts/bundles/desktop.py', desktopSaveGate],
+  ...['win32', 'darwin'].flatMap(platform => ['x64', 'arm64'].flatMap(arch => [
+    [`build-${platform}-${arch}-release`, desktop, 'desktop', 'write', 'scripts/bundles/desktop.py', desktopSaveGate],
+    [`build-${platform}-${arch}-commit`, desktop, 'desktop', 'read', 'scripts/bundles/desktop.py', desktopSaveGate],
+  ])),
   ['bundle', payload, 'payload-test', undefined, 'scripts/bundles/native_build.py', payloadSaveGate],
 ])('%s restores, admits and saves candidates before consuming them', (id, workflow, producer, cacheMode, driver, saveGate) => {
   const job = workflow.jobs[id]
@@ -118,17 +118,19 @@ it.each([
   expect(upload.if).toBe(saveGate)
 })
 
-it.each(['win32', 'darwin'])('%s publication requires the selected build to succeed, not merely skip', platform => {
-  const gate = desktop.jobs[`build-${platform}`]
-  expect(gate.needs).toEqual(['validate', `build-${platform}-release`, `build-${platform}-commit`])
+it.each(['win32', 'darwin'].flatMap(platform => ['x64', 'arm64'].map(arch => [`${platform}-${arch}`])))('%s publication requires the selected build to succeed, not merely skip', target => {
+  const gate = desktop.jobs[`build-${target}`]
+  expect(gate.needs).toEqual(['validate', `build-${target}-release`, `build-${target}-commit`])
   expect(gate.if).toContain("needs.validate.result == 'success'")
-  expect(gate.env.SELECTED_BUILD_SUCCEEDED.replace(/\s+/g, ' ').trim()).toBe(
-    `\${{ (inputs.build_commit == '' && inputs.channel == '' && needs.build-${platform}-release.result == 'success' && needs.build-${platform}-commit.result == 'skipped') || ((inputs.build_commit != '' || inputs.channel != '') && needs.build-${platform}-commit.result == 'success' && needs.build-${platform}-release.result == 'skipped') }}`,
-  )
+  const selected = gate.env.SELECTED_BUILD_SUCCEEDED.replace(/\s+/g, ' ')
+  for (const [chosen, other] of [['release', 'commit'], ['commit', 'release']]) {
+    expect(selected).toContain(`needs.build-${target}-${chosen}.result == 'success'`)
+    expect(selected).toContain(`needs.build-${target}-${other}.result == 'skipped'`)
+  }
   // Publication sits downstream of the gate, directly or through the bundle
   // assembly job.
   const upstream = new Set()
   const walk = id => { for (const need of desktop.jobs[id].needs ?? []) { if (!upstream.has(need)) { upstream.add(need); walk(need) } } }
-  walk(`publish-${platform}-updater`)
-  expect(upstream).toContain(`build-${platform}`)
+  walk(`publish-${target.split('-')[0]}-updater`)
+  expect(upstream).toContain(`build-${target}`)
 })

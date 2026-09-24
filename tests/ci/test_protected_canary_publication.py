@@ -147,7 +147,7 @@ def test_canary_metadata_is_recorded_and_receipt_bound(canary, r2_server, platfo
     root = clone / "apps/desktop/release"
     native_leg(root, identity, env, platform, "x64")
     name = "Stage Windows packages to R2" if platform == "win32" else "Stage macOS packages and feed inputs to R2"
-    script = step_script(f"build-{platform}-release", name)
+    script = step_script(f"build-{platform}-x64-{'commit' if commit_build else 'release'}", name)
     result = run(script, **env, TARGET=f"{platform}-x64")
     assert result.returncode == 0, result.stdout + result.stderr
     prefix = f"releases/commit/{env['RELEASE_COMMIT']}/" if commit_build else f"releases/tag/{env['RELEASE_TAG']}/"
@@ -174,7 +174,7 @@ def stage_canary(clone, identity, env, run):
                 shutil.rmtree(root)
             native_leg(root, identity, env, platform, arch)
             name = "Stage Windows packages to R2" if platform == "win32" else "Stage macOS packages and feed inputs to R2"
-            result = run(step_script(f"build-{platform}-release", name), **env, TARGET=f"{platform}-{arch}")
+            result = run(step_script(f"build-{platform}-{arch}-release", name), **env, TARGET=f"{platform}-{arch}")
             assert result.returncode == 0, result.stdout + result.stderr
     bundle = root / f"{identity['artifactNamePascal']}-{env['FIXTURE_WINDOWS_VERSION']}-win.msixbundle"
     with zipfile.ZipFile(bundle, "w") as package:

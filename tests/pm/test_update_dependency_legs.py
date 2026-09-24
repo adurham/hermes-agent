@@ -63,6 +63,8 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
     shutil.copy2(uv, managed)
     python = Path(sys._base_executable).resolve()
     python_root = python.parent if os.name == 'nt' else python.parents[1]
+    if not python_root.is_relative_to(tmp_path) and python_root == Path('/usr'):
+        pytest.skip("system Python prefix is not an isolated package fixture")
     target = current_target()
     facts = Facts(runtime / 'facts.json')
     for name, package, entry in [('uv', Uv(), managed.parent), ('python', Python(), python_root)]:

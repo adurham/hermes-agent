@@ -265,7 +265,7 @@ jobs:
         # in the venv up front.
         uses: ./.github/actions/retry
         with:
-          command: uv sync --locked --python 3.11.15 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
+          command: uv sync --locked --python 3.11.15 --extra all --group dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
 
       - name: Install bubblewrap
         # Every spawned updater runs in bwrap (own PID namespace, no user

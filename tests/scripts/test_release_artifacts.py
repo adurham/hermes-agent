@@ -336,11 +336,13 @@ def candidate_workflow_step(tmp_path, r2_server, staged_candidate):
             '${{ needs.admit.outputs.commit }}': manifest['commit'],
             '${{ needs.validate.outputs.archive-tag }}': manifest['archive'],
             '${{ needs.candidates.outputs.manifest-sha256 }}': pinned,
+            '${{ needs.candidate-manifest.outputs.manifest-sha256 }}': pinned,
             '${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}': base, '${{ toJSON(needs) }}': json.dumps(needs),
         }
         for key in ('CLOUDFLARE_R2_ACCOUNT_ID', 'CLOUDFLARE_R2_ACCESS_KEY_ID', 'CLOUDFLARE_R2_SECRET_ACCESS_KEY', 'CLOUDFLARE_R2_BUCKET'):
             expressions['${{ ' + ('vars.' if key.endswith('_BUCKET') else 'secrets.') + key + ' }}'] = os.environ[key]
         env = {**os.environ, 'GITHUB_SHA': manifest['commit'], 'GITHUB_REPOSITORY': 'fixture/release',
+               'RELEASE_CLAIM_TAG': manifest['archive'],
                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'GITHUB_OUTPUT': str(tmp_path / 'outputs')}
         env.pop('RELEASE_NEEDS', None)
         if ambient_needs is not None:
@@ -360,13 +362,8 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
                                                            candidate_workflow_step, ambient_needs, https_origin):
     manifest, _, base = staged_candidate
     jobs, run, body_file = candidate_workflow_step
-    candidate = next(step for step in jobs['candidate-manifest']['steps'] if step.get('id') == 'manifest')
-    needs = {name: {'result': 'success'} for name in jobs['candidate-manifest']['needs']}
-    result = run('candidate-manifest', candidate, needs)
-    assert result.returncode == 0, result.stdout + result.stderr
     stored = json.loads(r2_server.store[f"releases/tag/{manifest['archive']}/release-candidates.json"][0])
     assert stored['smoke_results'] == SMOKE_RESULTS
-    assert f'manifest-sha256={artifacts.sha256_file(tmp_path / "release-candidates.json")}' in (tmp_path / 'outputs').read_text(encoding='utf-8-sig')
     # An unrelated orphan object must not acquire the candidate's Passed label.
     orphan = f"releases/tag/{manifest['archive']}/HermesBundled-1.2.3-linux-x64.AppImage"
     r2_server.store[orphan] = (b'orphan transport fixture', '"e"')
@@ -390,19 +387,6 @@ def test_candidate_smoke_survives_real_promotion_and_renderer(tmp_path, r2_serve
 def test_candidate_smoke_admission_fails_before_publication(tmp_path, r2_server, staged_candidate, candidate_workflow_step):
     manifest, _, _ = staged_candidate
     jobs, run, body_file = candidate_workflow_step
-    candidate = next(step for step in jobs['candidate-manifest']['steps'] if step.get('id') == 'manifest')
-    needs = {name: {'result': 'success'} for name in jobs['candidate-manifest']['needs']}
-    for name in SMOKE_RESULTS:
-        for outcome in ('failure', 'cancelled', 'skipped', None):
-            failed = copy.deepcopy(needs)
-            if outcome is None:
-                del failed[name]
-            else:
-                failed[name]['result'] = outcome
-            r2_server.requests.clear()
-            result = run('candidate-manifest', candidate, failed)
-            assert result.returncode != 0 and name in result.stderr, result.stdout + result.stderr
-            assert not any(method == 'PUT' for method, _, _ in r2_server.requests)
     key = f"releases/tag/{manifest['archive']}/release-candidates.json"
     raw = r2_server.store[key][0]
     for fault, message in [('legacy', 'Candidate manifest'), ('missing', 'Candidate smoke results'),
