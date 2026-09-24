@@ -389,18 +389,21 @@ function Invoke-Pre {
   # disk; past the cap Windows deletes the snapshot. The cap is a ceiling, not
   # a reservation. Raised AFTER the snapshot: on client Windows the storage
   # association may only exist once a shadow does.
-  $storageLines = @()
+  # Each original cap is recorded BEFORE it is raised, so a pre that dies
+  # mid-way still leaves post and status the record to put it back from;
+  # restoring a cap that never got raised is a no-op.
+  $storageFile = Join-Path $script:Snap 'shadowstorage.txt'
+  Set-Content -LiteralPath $storageFile -Encoding utf8 -Value @()
   foreach ($v in $volumes) {
     $orig = Get-ShadowStorageMax $v
     if ($null -eq $orig) { Warn "could not read the snapshot room on $v; leaving it as it is"; continue }
     if ($orig -ge $ShadowStorageMax) { Ok "snapshot room on $v is $(Format-Bytes $orig)"; continue }
+    Add-Content -LiteralPath $storageFile -Encoding utf8 -Value "$v`t$orig"
     if (Set-ShadowStorageMax $v $ShadowStorageMax) {
-      $storageLines += "$v`t$orig"
       Ok "snapshot room on $v raised from $(Format-Bytes $orig) to $(Format-Bytes $ShadowStorageMax) (post puts it back)"
     }
     else { Warn "could not raise the snapshot room on $v; it stays $(Format-Bytes $orig) -- writing more than that to the disk before post drops the snapshot" }
   }
-  Set-Content -LiteralPath (Join-Path $script:Snap 'shadowstorage.txt') -Encoding utf8 -Value $storageLines
 
   # Plain text, not JSON: post compares this string byte-for-byte to decide
   # whether the backup belongs to the home it is about to restore.
@@ -469,6 +472,15 @@ function Invoke-Status {
   if (Test-Path -LiteralPath (Join-Path $snap 'shadows.txt')) {
     foreach ($s in Read-Shadows) {
       Say "snapshot      $($s.Volume) $(if (Test-ShadowAlive $s) { 'present' } else { 'GONE -- post cannot roll back' })"
+    }
+  }
+  # The raised cap outlives this backup if post never runs; say how to undo it.
+  $storageFile = Join-Path $snap 'shadowstorage.txt'
+  if (Test-Path -LiteralPath $storageFile) {
+    foreach ($line in @(Get-Content -LiteralPath $storageFile | Where-Object { $_.Trim() })) {
+      $f = $line -split "`t"
+      $d = $f[0].TrimEnd('\')
+      Say "snapshot room $($f[0]) was $(Format-Bytes ([UInt64]$f[1])) before pre (post puts it back; without post: vssadmin resize shadowstorage /for=$d /on=$d /maxsize=$($f[1]))"
     }
   }
   Say "data backup   $(if (Test-Path -LiteralPath (Join-Path $snap 'hermes-backup.zip')) { 'hermes-backup.zip' } else { 'none' })"
