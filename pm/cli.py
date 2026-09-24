@@ -38,13 +38,14 @@ def _relock_project(root: Path) -> int:
     """
     import pm
 
+    print("→ Checking uv.lock…", flush=True)
     try:
-        pm.check_project_lock(root, explicit=True)
+        # Quiet: stale is the expected case here, so uv's failure tail would
+        # read like an error. An unreachable index fails the relock below too,
+        # and that error names the index knobs.
+        pm.check_project_lock(root, explicit=True, quiet=True)
     except InstallError:
-        # Stale is the expected case, and the check's own "✗ … failed" tail
-        # reads like an error, so say what happens next. An unreachable index
-        # fails the relock below too, and that error names the index knobs.
-        print("uv.lock is out of date with pyproject.toml; relocking")
+        print("uv.lock is out of date with pyproject.toml; relocking", flush=True)
     else:
         print("✓ uv.lock is already current with pyproject.toml; nothing written")
         return 0

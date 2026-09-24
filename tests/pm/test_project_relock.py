@@ -39,6 +39,8 @@ def test_relock_writes_nothing_when_current_and_names_new_opt_in_extras(tmp_path
 
     def check(source, **kw):
         assert (source, kw.get("explicit")) == (tmp_path, True)
+        # A stale lock is this command's expected case: no red failure report.
+        assert kw.get("quiet") is True
         if stale:
             raise InstallError("venv", "The lockfile at `uv.lock` needs to be updated")
 
@@ -57,6 +59,7 @@ def test_relock_writes_nothing_when_current_and_names_new_opt_in_extras(tmp_path
     # Relocking never syncs an environment; activation owns that.
     assert relocks == [(tmp_path, {"explicit": True})]
     out = capsys.readouterr().out
+    assert "out of date" in out and "✗" not in out
     assert "activate" in out
     # beta is new and outside [all]; alpha was already locked and is in [all].
     assert "all,beta" in out and "alpha" not in out

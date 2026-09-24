@@ -342,10 +342,11 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
 
 def check_project_lock(source: Path, *, python: Path | None = None, cache: Path | None = None,
                        env: Mapping[str, str] | None = None, offline: bool = False,
-                       explicit: bool = False) -> None:
+                       explicit: bool = False, quiet: bool = False) -> None:
     _python_operation("check_project_lock", {
         "source": Path(source), "python": python, "cache": cache,
         "env": dict(env) if env is not None else None, "offline": offline, "explicit": explicit,
+        "quiet": quiet,
     })
 
 
