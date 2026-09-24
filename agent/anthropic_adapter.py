@@ -1739,6 +1739,11 @@ def drop_orphan_server_tool_uses_in_storage(
             if (
                 t == "tool_search_tool_result"
                 or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
+                # Native web_search halves too: without this, a ``server_tool_use``
+                # legitimately paired with a ``web_search_tool_result`` is misread as
+                # orphaned and dropped, stranding the result (same rationale as
+                # agent/fork/anthropic_server_tool_passes.py::_drop_unpaired_server_tool_use).
+                or t == "web_search_tool_result"
             ):
                 tu_id = block.get("tool_use_id")
                 if isinstance(tu_id, str):
@@ -1780,8 +1785,15 @@ def drop_orphan_server_tool_uses_in_storage(
         if not isinstance(acb, list):
             continue
         use_ids_in_msg = {
+            # Scope to web_search uses: this pass exists for the web_search pair
+            # (the tool_search pass above handles its own kinds, globally). Counting
+            # ALL server_tool_use ids here makes a perfect tool_search pair look
+            # "unpaired" (its result id is not in the web_search-only result set)
+            # and deletes the use, stranding the result — mirror of the sibling
+            # agent/fork/anthropic_server_tool_passes.py::_strip_web_search_orphans.
             b["id"] for b in acb
-            if isinstance(b, dict) and b.get("type") == "server_tool_use" and b.get("id")
+            if isinstance(b, dict) and b.get("type") == "server_tool_use"
+            and b.get("name") == "web_search" and b.get("id")
         }
         result_ids_in_msg = {
             b.get("tool_use_id") for b in acb

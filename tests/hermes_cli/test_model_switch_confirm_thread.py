@@ -51,9 +51,14 @@ class _StubCLI:
     _pending_model_switch_note = None
     _pending_one_turn_model_restore = None
     _app = None
+    reasoning_config = None
+    _reasoning_effort_by_model: dict = {}
 
     def _confirm_expensive_model_switch(self, result):
         return True
+
+    def _apply_reasoning_for_new_model(self, new_model: str) -> None:
+        pass
 
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global, one_turn, custom_provs=None

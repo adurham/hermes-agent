@@ -94,3 +94,113 @@ def test_missing_history_attr_does_not_raise():
     import types
     bare = types.SimpleNamespace()
     _append_status_history(bare, api_duration=5.0, ttft_value=None, output_tokens=10)
+
+
+# ---------------------------------------------------------------------------
+# Wiring regression: the PRODUCTION call site must reach this helper.
+#
+# The v2026.9.14 merge (f6edb27b86) rewrote the fork's monolithic
+# ``run_conversation`` onto upstream's ``turn_*`` modules and dropped this
+# helper's only call site, leaving all four deques frozen — avg_latency and
+# avg_ttft read ``None`` forever. These tests exercise
+# ``record_response_usage`` (the anchor that replaced the old call site) so
+# the wiring cannot silently regress again.
+# ---------------------------------------------------------------------------
+
+import time as _time
+from types import SimpleNamespace as _NS
+
+
+class _Compressor:
+    context_length = 200_000
+    max_tokens = 8000
+    threshold_tokens = 190_000
+    _verify_compaction_cleared_threshold = False
+    _context_probed = False
+    awaiting_real_usage_after_compression = False
+
+    def update_from_response(self, _usage):
+        pass
+
+
+def _usage_agent():
+    return _NS(
+        _session_db=None, session_id=None, _session_db_created=True,
+        model="m", provider="p", base_url="", api_mode="chat_completions", api_key="",
+        session_api_calls=0, context_compressor=_Compressor(), quiet_mode=True,
+        verbose_logging=False, client=None, _last_turn_usage=None,
+        _last_prompt_size_tokens=0, _ensure_db_session=lambda: None,
+        _vprint=lambda *a, **k: None, _safe_print=lambda *a, **k: None,
+        log_prefix="", _current_streamed_assistant_text="",
+        session_prompt_tokens=0, session_completion_tokens=0, session_total_tokens=0,
+        session_input_tokens=0, session_output_tokens=0, session_cache_read_tokens=0,
+        session_cache_write_tokens=0, session_reasoning_tokens=0,
+        session_estimated_cost_usd=0.0, session_cost_status="unknown",
+        session_cost_source="none",
+        _api_latency_history=deque(maxlen=10),
+        _api_full_latency_history=deque(maxlen=10),
+        _api_output_history=deque(maxlen=10),
+        _api_ttft_history=deque(maxlen=10),
+    )
+
+
+def _usage_response():
+    return _NS(
+        usage=_NS(prompt_tokens=100, completion_tokens=30, total_tokens=130,
+                  prompt_tokens_details=None, completion_tokens_details=None),
+        id="probe", provider=None, model="m",
+    )
+
+
+def test_record_response_usage_writes_all_four_deques():
+    """Streaming call: first chunk 2.0s before the call ended, 10.0s wall.
+
+    Mirrors the reader math in ``cli.py`` avg_latency / avg_velocity / avg_ttft.
+    """
+    from agent.turn_usage import record_response_usage
+
+    agent = _usage_agent()
+    agent._last_api_first_chunk_at = _time.time() - 2.0
+    record_response_usage(
+        agent, _usage_response(), messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1, api_duration=10.0, compression_attempts=0, max_compression_attempts=3,
+    )
+    assert abs(agent._api_full_latency_history[-1] - 10.0) < 1e-6
+    assert abs(agent._api_latency_history[-1] - 2.0) < 0.5  # decode-only = 10 − ~8
+    assert agent._api_output_history[-1] == 30
+    assert len(agent._api_ttft_history) == 1
+    assert abs(agent._api_ttft_history[-1] - 8.0) < 0.5
+    # The readers are no longer starved: avg_latency / avg_ttft resolve.
+    assert agent._api_full_latency_history[-1] is not None
+    assert sum(agent._api_ttft_history) / len(agent._api_ttft_history) is not None
+
+
+def test_record_response_usage_non_streaming_records_full_wall_and_no_ttft():
+    """No first-chunk stamp (non-streaming / no delta) => full wall, TTFT skipped."""
+    from agent.turn_usage import record_response_usage
+
+    agent = _usage_agent()
+    agent._last_api_first_chunk_at = None
+    record_response_usage(
+        agent, _usage_response(), messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1, api_duration=6.0, compression_attempts=0, max_compression_attempts=3,
+    )
+    assert agent._api_latency_history[-1] == 6.0
+    assert agent._api_full_latency_history[-1] == 6.0
+    assert len(agent._api_ttft_history) == 0
+    assert agent._api_output_history[-1] == 30
+
+
+def test_record_response_usage_without_deques_does_not_raise():
+    """A minimal agent surface (no deque attrs) must not break the usage fold."""
+    from agent.turn_usage import record_response_usage
+
+    agent = _usage_agent()
+    for name in ("_api_latency_history", "_api_full_latency_history",
+                 "_api_output_history", "_api_ttft_history"):
+        delattr(agent, name)
+    record_response_usage(
+        agent, _usage_response(), messages=[{"role": "user", "content": "hi"}],
+        api_call_count=1, api_duration=1.0, compression_attempts=0, max_compression_attempts=3,
+    )
+

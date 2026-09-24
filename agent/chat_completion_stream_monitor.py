@@ -2,12 +2,67 @@
 
 import time
 from types import SimpleNamespace
+from typing import Optional
 
 from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
 
 
 class StreamingWaitMonitor:
+    # FORK: a thinking_delta within this window means thinking is *currently* flowing
+    # (``thinking_active`` in the pre-refactor inline heartbeat); mirrors the old
+    # block-type state machine's "we are inside a thinking block" semantics.
+    _THINKING_ACTIVE_WINDOW = 10.0
+
+    def _anthropic_phase_detail(self, waiting_secs: int, first_chunk_seen: bool) -> Optional[str]:
+        """FORK: fine-grained wait phase for the Anthropic wire (or None).
+
+        Refines the coarse two-way ``first_chunk`` / ``post_chunk`` phase with the
+        wire-observed signals the pre-refactor inline heartbeat fed to
+        ``run_agent._classify_anthropic_stream_phase`` (ping cadence, message_start
+        arrival, thinking deltas, content silence). Returns ``None`` — and the caller
+        keeps today's coarse phase byte-for-byte — on every non-Anthropic wire and on
+        any import problem, so this is strictly additive on the Anthropic streaming
+        path. An Anthropic request that simply has not observed a signal yet (no ping,
+        no message_start) reports the pre-refactor "queued/prefilling" copy, which is
+        the honest reading of that state.
+
+        Signal sources (all already collected for this request):
+          * ``_ping_seen`` / ``_ping_count`` / ``_last_ping_time`` — SSE observer in
+            ``_StreamingCall._call_anthropic``.
+          * ``_message_start_seen`` — same observer (raw ``message_start`` SSE event).
+          * ``_last_reasoning_time`` / ``_thinking_chars`` — ``_emit_reasoning``.
+          * ``_last_content_time`` — ``_count_chunk`` (pings never advance it).
+        """
+        try:
+            if getattr(self.agent, "api_mode", None) != "anthropic_messages":
+                return None
+            from run_agent import _classify_anthropic_stream_phase
+
+            now = time.time()
+            last_reasoning = float(getattr(self, "_last_reasoning_time", 0.0) or 0.0)
+            thinking_active = bool(
+                last_reasoning and (now - last_reasoning) <= self._THINKING_ACTIVE_WINDOW
+            )
+            _thinking_cfg = (self.api_kwargs or {}).get("thinking") or {}
+            thinking_requested = bool(
+                isinstance(_thinking_cfg, dict)
+                and _thinking_cfg.get("type") in ("adaptive", "enabled")
+            )
+            _last_content = float(getattr(self, "_last_content_time", 0.0) or 0.0) or now
+            return _classify_anthropic_stream_phase(
+                thinking_active=thinking_active,
+                thinking_chars=int(getattr(self, "_thinking_chars", 0) or 0),
+                first_event_seen=bool(first_chunk_seen),
+                content_silence=int(max(0.0, now - _last_content)),
+                thinking_requested=thinking_requested,
+                message_start_arrived=bool(getattr(self, "_message_start_seen", False)),
+                ping_seen=bool(getattr(self, "_ping_seen", False)),
+                user_elapsed=int(waiting_secs),
+            )
+        except Exception:
+            return None
+
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
         instead of the 60s neutral "waiting on <model>" notice. Polled ~1s only while no
@@ -45,8 +100,15 @@ class StreamingWaitMonitor:
             stale = self._stream_stale_timeout
             watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
-            phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
-            if not self._mon.wait_notice.should_emit(phase, watchdog):
+            first_chunk_seen = isinstance(diag, dict) and bool(diag.get("first_chunk_at"))
+            phase = "post_chunk" if first_chunk_seen else "first_chunk"
+            # FORK: refine the phase for the Anthropic wire from the wire-observed
+            # signals (the sole consumer of the SSE ping fields). ``phase`` stays the
+            # wait-notice template key; the fine phase rides along as a display detail
+            # and extends the emit key so a phase transition re-emits exactly once.
+            phase_detail = self._anthropic_phase_detail(waiting_secs, first_chunk_seen)
+            emit_key = f"{phase}:{phase_detail}" if phase_detail else phase
+            if not self._mon.wait_notice.should_emit(emit_key, watchdog):
                 self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, {phase})")
                 return
             # FORK: rate-limit signal — tells the user whether a stall is plausibly
@@ -64,9 +126,22 @@ class StreamingWaitMonitor:
                         _rl_bit = f"; {_fragment}"
             except Exception:
                 pass  # Never let display formatting break the heartbeat.
+            # FORK: real-evidence diag bits (pre-refactor inline heartbeat format):
+            # ping count + last-arrival age. Without these, every long pre-event wait
+            # reads identically regardless of whether pings are actually flowing.
+            _ping_bit = ""
+            try:
+                _ping_count = int(getattr(self, "_ping_count", 0) or 0)
+                _last_ping = float(getattr(self, "_last_ping_time", 0.0) or 0.0)
+                if _last_ping > 0:
+                    _age = int(max(0.0, time.time() - _last_ping))
+                    _ping_bit = f"; {_ping_count} ping{'s' if _ping_count != 1 else ''}, last {_age}s ago"
+            except Exception:
+                pass  # Never let display formatting break the heartbeat.
             self._mon.wait_notice_started_ts = self._mon.last_heartbeat
             self.agent._emit_wait_notice(wn.wait_notice_text(
-                self.api_kwargs.get('model', 'the provider'), waiting_secs, phase, watchdog) + _rl_bit)
+                self.api_kwargs.get('model', 'the provider'), waiting_secs, phase, watchdog)
+                + (f" ({phase_detail})" if phase_detail else "") + _ping_bit + _rl_bit)
         else:
             # Chunks are flowing — keep the tracker fresh, leave the display alone.
             self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, no chunks yet)")

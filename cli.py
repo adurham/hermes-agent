@@ -2615,114 +2615,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self._last_input_mode_recovery = self._last_termios_drift_check = 0.0
         self._input_mode_recovery_notice_shown = self._termios_drift_notice_shown = False
 
-    def _init_model_routing(self, model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, checkpoints, pass_session_id, ignore_rules):
-        """Resolve model/provider/base_url, turn limits, toolsets, checkpoints, prompt/personality, reasoning + routing config."""
-        self._init_model_and_provider(model, provider, api_key, base_url)
-        self._init_turn_limits(max_turns, run_budget)
-        self._init_toolsets(toolsets)
-        self._init_checkpoints_and_rules(checkpoints, pass_session_id, ignore_rules)
-        self._init_prompt_and_reasoning(reasoning)
-
-    def _init_model_and_provider(self, model, provider, api_key, base_url):
-        """Priority: CLI args > env vars > config file."""
-        # LLM_MODEL/OPENAI_MODEL env vars are deliberately NOT checked (multi-agent setups
-        # would stomp each other through the environment).
-        _model_config = CLI_CONFIG["model"]
-        # A dict-valued default carries its own provider, which must feed requested_provider
-        # instead of being replaced by the merged model.provider (typically "auto").
-        _config_model, _nested_provider = _split_model_config_default(
-            _model_config.get("default") or _model_config.get("model") or ""
-        )
-        # resume must not clobber an explicit -m with the session's stored model.
-        self._explicit_model_override = bool(model)
-        self.model = model or _config_model or ""
-        _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
-        _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
-        if self.model:
-            from hermes_cli.model_switch import resolve_startup_model_route
-
-            _startup_route = resolve_startup_model_route(
-                self.model,
-                explicit_provider=provider or "",
-                current_provider=(provider or _nested_provider or _cfg_provider or ""),
-                user_providers=CLI_CONFIG.get("providers"),
-                custom_providers=CLI_CONFIG.get("custom_providers"),
-            )
-            if _startup_route is not None:
-                self.model = _startup_route.model
-                _startup_provider_override = _startup_route.provider
-                _startup_base_url_override = _startup_route.base_url
-                _startup_api_key_override = _startup_route.api_key
-        # ``moa:<preset>`` selects the MoA virtual provider before provider resolution so the
-        # real provider never sees the unknown model; the prefix wins over --provider.
-        # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with
-        # interactive ``/moa`` and the model picker). See #56828.
-        _moa_provider_override, self.model = _normalize_moa_model(self.model)
-
-        if self.model == "":  # auto-detect from a local server
-            _base_url = _model_config.get("base_url") or ""
-            if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):
-                from hermes_cli.runtime_provider import _auto_detect_local_model
-                self.model = _auto_detect_local_model(_base_url) or self.model
-        # Provider normalisation may silently override the default but must warn for an
-        # explicit choice (a config model equal to the global fallback is NOT explicit).
-        self._model_is_default = not model and not _config_model
-
-        # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
-        # See #28660.
-        self._explicit_api_key = api_key or _startup_api_key_override or None
-        self._explicit_base_url = base_url
-
-        # Resolved lazily at use-time via _ensure_runtime_credentials().
-        self.requested_provider = (
-            _moa_provider_override or provider or _startup_provider_override or _nested_provider
-            or _cfg_provider or "auto"
-        )
-        # `--provider <custom>` without `-m` uses that entry's default_model, else the global
-        # default goes to the custom endpoint and the compressor gets the wrong context length.
-        # Explicit `-m` still wins. See #86978.
-        if not model and provider:
-            try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
-
-                _named_custom = _get_named_custom_provider(provider)
-            except Exception as exc:
-                logger.warning(
-                    "Could not resolve --provider %s default model; keeping global model.default (%s)",
-                    provider, exc,
-                )
-                _named_custom = None
-            _provider_default = str((_named_custom or {}).get("model") or "").strip()
-            if _provider_default:
-                self.model = _provider_default
-                self._model_is_default = False
-        self._provider_source: Optional[str] = None
-        self.provider = self.requested_provider
-        self.api_mode = "chat_completions"
-        self.acp_command: Optional[str] = None
-        self.acp_args: list[str] = []
-        self.base_url = (
-            base_url or _startup_base_url_override or _model_config.get("base_url", "")
-            or os.getenv("OPENROUTER_BASE_URL", "")
-        ) or None
-        # Key matches the resolved base_url; re-resolved by _ensure_runtime_credentials().
-        _keys = ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
-        if not (self.base_url and base_url_host_matches(self.base_url, "openrouter.ai")):
-            _keys = _keys[::-1]
-        self.api_key = api_key or os.getenv(_keys[0]) or os.getenv(_keys[1])
-
-    def _init_turn_limits(self, max_turns, run_budget):
-        """max_turns: CLI arg > config > env var > default; run budget: CLI flag > config."""
-        # resolve_turn_limit() accepts "none"/"unlimited" (-> sys.maxsize) alongside ints.
-        # KEEP the root-level CLI_CONFIG["max_turns"] fallback: it is never migrated on disk
-        # and other config paths may bypass the load-time fold.
-        from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
-        self.max_turns = _resolve_turn_limit(next(
-            (v for v in (max_turns, CLI_CONFIG["agent"].get("max_turns"), CLI_CONFIG.get("max_turns")) if v is not None),
-            os.getenv("HERMES_MAX_ITERATIONS"),
-        ))
-        self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
-
     def _init_toolsets(self, toolsets):
         self.enabled_toolsets = toolsets
         from agent.skill_utils import parse_config_string_list
@@ -2748,18 +2640,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
-
-    def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
-        cp_cfg = CLI_CONFIG.get("checkpoints", {})
-        if isinstance(cp_cfg, bool):
-            cp_cfg = {"enabled": cp_cfg}
-        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
-        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
-        self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
-        self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
-        self.pass_session_id = pass_session_id
-        # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
-        self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
@@ -2850,42 +2730,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttles UI repaints
         self._init_ui_state()
-
-    def _init_session_store(self):
-        """Open the session store early (so /title works before the first message) + opportunistic maintenance."""
-        self._session_db = None
-        self._session_db_unavailable = False
-        try:
-            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
-            # path a moment later from the REPL thread, and a second writer repeats the full
-            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
-            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
-            from hermes_state_registry import acquire
-            self._session_db = acquire()
-        except Exception as e:
-            # Without a store the transcript is NOT persisted while the chat looks healthy,
-            # so surface it prominently rather than only logging.
-            # #41386: a failed session store means the transcript is NOT persisted to state.db — the live
-            # chat looks healthy but resume later shows a truncated/empty session. A buried log line is not
-            # enough; surface it prominently so the user knows persistence is off for this run and can fix
-            # the store before relying on resume.
-            self._session_db_unavailable = True
-            logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
-            try:
-                Console(stderr=True).print(
-                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] to disk and "
-                    "cannot be resumed later. Searching past sessions is also disabled.\n"
-                    f"  Reason: {e}\n"
-                    "  Fix the state.db store (e.g. `hermes update` to rebuild the venv) to restore persistence."
-                )
-            except Exception:
-                print(
-                    "WARNING: Session store unavailable — this conversation will NOT be "
-                    f"saved to disk and cannot be resumed later. Reason: {e}"
-                )
-        _run_state_db_auto_maintenance(self._session_db)
-        _run_checkpoint_auto_maintenance()
 
     def _init_ui_state(self):
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
@@ -3745,36 +3589,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     _PET_FRAME_INTERVAL = 0.16
     _PET_CFG_INTERVAL = 2.5
-
-    def _get_status_bar_field_set(self) -> Optional[frozenset]:
-        """Return the set of visible status-bar fields from config.
-
-        Reads ``display.status_bar.fields`` from the module-level
-        ``CLI_CONFIG`` (no per-render YAML parse — the status bar repaints
-        every frame). Returns ``None`` when the user has not customized the
-        bar (use built-in defaults, i.e. show everything), or a
-        ``frozenset`` of field names when the list is non-empty.
-
-        Available fields: model, context_detail, context_pct, cache_hit,
-        latency, tps, ttft, compressions, bg_tasks, bg_processes, bg_subagents,
-        goal, duration, prompt_elapsed, idle_since, focus, yolo, stash,
-        battery, title, total_tokens.
-        ``total_tokens`` is opt-in only (never shown by default).
-        The field order is fixed; the config controls visibility only.
-        """
-        if hasattr(self, "_status_bar_field_set_cache"):
-            return self._status_bar_field_set_cache
-        result = None
-        try:
-            display = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
-            status_bar = (display or {}).get("status_bar") if isinstance(display, dict) else None
-            fields = status_bar.get("fields") if isinstance(status_bar, dict) else None
-            if isinstance(fields, list) and fields:
-                result = frozenset(str(f) for f in fields)
-        except Exception:
-            result = None
-        self._status_bar_field_set_cache = result
-        return result
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
@@ -5095,49 +4909,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     self._console_print(line)
         except Exception:
             pass
-    def _show_status(self):
-        """Show compact startup status line."""
-        # Avoid pulling the full tool registry into the bare Termux prompt path.
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") == "1":
-            tool_status = "tools deferred"
-        else:
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets, quiet_mode=True)
-            tool_count = len(tools) if tools else 0
-            tool_status = f"{tool_count} tools"
-
-        # Format model name (shorten if needed)
-        model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-        if len(model_short) > 30:
-            model_short = model_short[:27] + "..."
-
-        # Get API status indicator
-        if self.api_key:
-            api_indicator = "[green bold]●[/]"
-        else:
-            api_indicator = "[red bold]●[/]"
-
-        # Build status line with proper markup — skin-aware colors
-        try:
-            from hermes_cli.skin_engine import get_active_skin
-            skin = get_active_skin()
-            separator_color = skin.get_color("banner_dim", "#B8860B")
-            accent_color = skin.get_color("ui_accent", "#FFBF00")
-            label_color = skin.get_color("ui_label", "#DAA520")
-        except Exception:
-            separator_color, accent_color, label_color = "#B8860B", "#FFBF00", "cyan"
-        toolsets_info = ""
-        if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [dim {separator_color}]·[/] [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}[/]"
-
-        provider_info = f" [dim {separator_color}]·[/] [dim]provider: {self.provider}[/]"
-        if self._provider_source:
-            provider_info += f" [dim {separator_color}]·[/] [dim]auth: {self._provider_source}[/]"
-
-        self._console_print(
-            f"  {api_indicator} [{accent_color}]{model_short}[/] "
-            f"[dim {separator_color}]·[/] [bold {label_color}]{tool_status}[/]"
-            f"{toolsets_info}{provider_info}"
-        )
 
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
@@ -5542,8 +5313,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             save_config_value("model.context_length", None)
 
     def _apply_model_switch_result(
-        self, result, persist_global: bool, custom_providers=None
+        self, result, persist_global: bool, custom_providers=None, reasoning_effort: str = ""
     ) -> None:
+        """Picker-path commit (superset of CLIModelSwitchMixin._apply_model_switch_result).
+
+        Keeps the fork's inline staging + per-model ``_apply_reasoning_for_new_model``
+        resolution and accepts the mixin's ``reasoning_effort`` (ride-along
+        ``--reasoning <level>`` / the picker's effort step), which is applied AFTER the
+        agent swap — ``agent.switch_model`` re-resolves ``reasoning_config`` from
+        config.yaml and would clobber an earlier write.
+        """
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
@@ -5672,6 +5451,15 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             _cprint("    Prompt caching: enabled")
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
+
+        # Pick-path ride-along effort (the picker's effort step): applied AFTER the staging
+        # swap, since the agent re-resolved reasoning_config from config.yaml. Persistence
+        # matches the pick itself (--global).
+        if reasoning_effort:
+            from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+
+            _apply_reasoning_after_switch(self, reasoning_effort, persist_global=persist_global)
+
         if persist_global:
             HermesCLI._clear_persisted_context_for_model_switch(self, result)
             _persist_global_model_switch(result)
@@ -5687,12 +5475,17 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         HermesCLI._persist_model_switch_to_session(self, result)
 
     def _confirm_and_apply_cli_model_switch(
-        self, result, persist_global: bool, one_turn: bool, custom_provs=None
+        self, result, persist_global: bool, one_turn: bool, custom_provs=None, reasoning_effort: str = ""
     ) -> None:
         """Confirm an expensive model switch and apply it to CLI state.
 
         Runs on a worker thread when the TUI is active (see
         _handle_model_switch) so the confirmation modal can render.
+
+        ``reasoning_effort`` is the ride-along ``/model <name> --reasoning <level>``
+        value, passed POSITIONALLY by ``_run_confirm_and_apply``; it is applied after
+        the agent swap (``agent.switch_model`` re-resolves ``reasoning_config`` from
+        config.yaml and would clobber an earlier write).
         """
         if not self._confirm_expensive_model_switch(result):
             _cprint("  Model switch cancelled.")
@@ -5810,6 +5603,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         # Warning from validation
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
+
+        # Ride-along effort (--reasoning <level>): applied AFTER the agent swap, since
+        # switch_model re-resolved reasoning_config from config.yaml. Session-scoped unless
+        # the pick itself persists (--global); --once never writes config.
+        if reasoning_effort:
+            from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+
+            _apply_reasoning_after_switch(
+                self, reasoning_effort, persist_global=persist_global and not one_turn
+            )
 
         # Persistence
         if persist_global:

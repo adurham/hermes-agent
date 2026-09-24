@@ -22,7 +22,7 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
 from hermes_cli.web_server_gateway import _split_text_for_speak_stream
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import AudioTranscriptionRequest, TTSSpeakRequest, TTSLeaseRequest, VoiceLiveSessionRequest
+from hermes_cli.web_models import AudioTranscriptionRequest, PetDialogueRequest, TTSSpeakRequest, TTSLeaseRequest, VoiceLiveSessionRequest
 from typing import Any, Dict, Optional
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -279,6 +279,112 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
 
     voices.sort(key=lambda item: str(item.get("label") or "").lower())
     return {"available": True, "voices": voices}
+
+
+# FORK: restored from the pre-decomposition web_server (lost in the Sep 2026 router
+# split / v2026.9.14 merge). The desktop still calls this path from
+# ``apps/desktop/src/api/system.ts`` (``fetchPetDialogue``) via
+# ``pet-bubble.tsx``'s ``speakAnnouncedBeat``.
+@router.post("/api/pet/dialogue")
+async def pet_dialogue(payload: PetDialogueRequest):
+    """Generate a short, in-character line for the desktop pet's voice/bubble
+    at a turn-completed or needs-user beat, via a cheap auxiliary LLM call.
+
+    Opt-in (``auxiliary.pet_dialogue.enabled``, off by default) and layered
+    on TOP of the existing static line pool in
+    ``apps/desktop/src/components/pet/pet-bubble.tsx`` — the desktop always
+    has a static fallback ready and calls this endpoint with a short client
+    timeout, so an LLM hiccup or feature-disabled response never blocks or
+    breaks the pet's status display. Only ever called for the two ANNOUNCED
+    beats (turn finished / needs user), never the continuous run/review
+    rotation, which stays fully local to avoid an LLM call on a ~2.6s
+    cadence.
+    """
+    from hermes_cli.config import load_config_readonly
+    from utils import is_truthy_value
+
+    config = load_config_readonly()
+    task_config = (config.get("auxiliary") or {}).get("pet_dialogue") or {}
+
+    if not is_truthy_value(task_config.get("enabled"), default=False):
+        raise HTTPException(status_code=404, detail="auxiliary.pet_dialogue.enabled is false")
+
+    max_context_chars = int(task_config.get("max_context_chars", 400) or 400)
+    context = (payload.context or "").strip()[:max_context_chars]
+    beat = payload.beat if payload.beat in ("completed", "waiting") else "completed"
+    persona = (
+        "You are voicing Hatsune Miku, the Vocaloid virtual idol, as a desktop "
+        "mascot for an AI coding agent. She's upbeat and a little playful, and "
+        "refers to the user as \"producer\" (a real term from her fandom for "
+        "whoever's directing her) ONLY when a beat is direct address to them."
+        if payload.pet_slug.lower() in ("hatsune-miku", "miku", "hatsunemiku")
+        else "You are voicing a small, upbeat desktop pet mascot for an AI coding agent."
+    )
+    # DELIVERY rules, not just content rules: this line is SPOKEN through a
+    # TTS -> RVC voice-conversion pipeline, not just displayed as text — see
+    # FORK.md's pet-voice entries for the tuning history behind these. The
+    # LLM has zero built-in awareness of that, so cadence/word-choice
+    # guidance has to be explicit or every generated line reads flat next to
+    # the hand-tuned static pool ("Yay!... done!") it's meant to complement.
+    delivery_rules = (
+        "This line will be SPOKEN aloud through text-to-speech, not just "
+        "displayed — write for the ear, not the eye:\n"
+        "- Use punctuation to control pacing: \"!\" for a punchy beat, \"...\" "
+        "for a short pause between two beats (e.g. \"Yay!... done!\" has an "
+        "excited burst, a beat, then a calmer landing — copy that shape, "
+        "don't just write a flat sentence with an exclamation point stuck on "
+        "the end).\n"
+        "- Prefer short, simple, high-energy words over long or complex "
+        "ones — the voice synthesis renders short punchy words far more "
+        "clearly than long ones.\n"
+        "- Avoid commas, semicolons, or subordinate clauses — those read as "
+        "flat/monotone once spoken. Two short beats separated by \"...\" or "
+        "\"!\" beats a single long sentence."
+    )
+    beat_instruction = (
+        "The agent just finished a task. Write ONE short, cheerful exclamation "
+        "(2-6 words) celebrating that it's done."
+        if beat == "completed"
+        else "The agent needs the user's input/approval right now. Write ONE "
+        "short line (2-6 words) letting them know it's their turn."
+    )
+    user_prompt = f"{beat_instruction}\n\nWhat just happened: {context or '(no details given)'}"
+
+    try:
+        from agent.auxiliary_client import call_llm
+
+        # Off-loop like every other blocking provider round-trip in this router:
+        # the aux call can wait up to auxiliary.pet_dialogue.timeout (8s), and
+        # parking the ASGI loop stalls every other request the desktop/dashboard
+        # shares this backend with.
+        def _generate() -> str:
+            response = call_llm(
+                task="pet_dialogue",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            f"{persona} {delivery_rules} Respond with ONLY the line "
+                            "itself — no quotes, no extra commentary."
+                        ),
+                    },
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.9,
+                max_tokens=24,
+            )
+            return (response.choices[0].message.content or "").strip().strip('"').strip("'")
+
+        line = await asyncio.to_thread(_generate)
+
+        if not line:
+            raise HTTPException(status_code=502, detail="Empty response from pet_dialogue model")
+
+        return {"ok": True, "line": line}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"pet_dialogue call failed: {exc}")
 
 
 @router.post("/api/audio/speak")

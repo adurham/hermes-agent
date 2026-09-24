@@ -523,3 +523,75 @@ class TestNonExoFailSafe:
         assert json.dumps(kwargs["messages"], separators=(",", ":")).encode() == (
             json.dumps(msgs, separators=(",", ":")).encode()
         )
+
+
+# ---------------------------------------------------------------------------
+# (e) LIVE-PATH wiring — the serializer must actually FIRE for a real exo agent.
+#
+# The tests above pass ``provider=`` straight to ``build_kwargs``, so they stay
+# green even when the provider kwarg is never threaded from the agent through
+# ``_build_chat_completions_kwargs``' shared kwargs dict. That is exactly how
+# the v2026.9.14 merge silently made the whole serializer INERT on the live
+# path (the fork's ``provider=getattr(agent, "provider", None)`` line was lost
+# from the shared dict; the transport then received ``provider=None`` and
+# skipped canonicalization). These tests drive ``build_api_kwargs`` — the real
+# per-turn entry point — on a real ``AIAgent``.
+# ---------------------------------------------------------------------------
+
+
+def _exo_agent(base_url: str = "http://127.0.0.1:52415/v1"):
+    from run_agent import AIAgent
+
+    return AIAgent(
+        api_key="test-key",
+        base_url=base_url,
+        model="deepseek-ai/DeepSeek-V4-Flash-0731",
+        provider="exo",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_id="sess-exo-live",
+    )
+
+
+def test_live_path_canonicalizes_for_exo_agent() -> None:
+    """A real exo agent's built request must come out canonicalized."""
+    from agent.chat_completion_helpers import build_api_kwargs
+
+    agent = _exo_agent()
+    messages = [
+        {"content": "hi", "role": "user"},
+        {"content": "hey", "role": "assistant", "reasoning_content": " "},
+    ]
+
+    kwargs = build_api_kwargs(agent, messages)
+
+    # Frozen key order (input was deliberately scrambled).
+    assert list(kwargs["messages"][0].keys()) == ["role", "content"]
+    # Whitespace-only pad omitted at the wire.
+    assert "reasoning_content" not in kwargs["messages"][1]
+
+
+def test_live_path_leaves_non_exo_agent_untouched() -> None:
+    """The same builder for a non-exo agent must not canonicalize."""
+    from agent.chat_completion_helpers import build_api_kwargs
+    from run_agent import AIAgent
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.deepseek.com/v1",
+        model="deepseek-chat",
+        provider="deepseek",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        session_id="sess-nonexo-live",
+    )
+    messages = [
+        {"content": "hi", "role": "user"},
+        {"content": "hey", "role": "assistant", "reasoning_content": " "},
+    ]
+
+    kwargs = build_api_kwargs(agent, messages)
+
+    assert kwargs["messages"][1]["reasoning_content"] == " "

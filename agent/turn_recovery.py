@@ -499,8 +499,7 @@ def _recover_format_errors(
             if isinstance(_m, dict) and "reasoning_details" in _m:
                 _m.pop("reasoning_details", None)
                 _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
-        logger.warning(
+        logger.debug(
             "%sThinking block signature recovery: stripped "
             "reasoning_details from %d api_messages "
             "(canonical messages unchanged)",
@@ -1826,6 +1825,20 @@ def route_classified_error(
                 _retry.restart_with_compressed_messages = True
                 return _verdict("break")
         # Compression exhausted or didn't help: fall through to normal error handling.
+
+    # FORK: Overloaded — strip prompt-cache breakpoints so the retry request lands on a
+    # different routing pool (cached vs uncached requests may be served by separate
+    # capacity). One-shot: arms ``agent._strip_cache_for_overload``; the next
+    # ``turn_api_request.build_api_request`` consumes it (strips every ``cache_control``
+    # breakpoint) and clears it. Gated on the opt-in ``agent.strip_cache_on_overload``
+    # config flag; reset at turn start by ``turn_context._reset_per_turn_agent_state``.
+    if (
+        getattr(agent, "_strip_cache_on_overload", False)
+        and classified.reason == FailoverReason.overloaded
+        and not getattr(agent, "_strip_cache_for_overload", False)
+    ):
+        agent._strip_cache_for_overload = True
+        _vlines(agent, "🔄 Overloaded — stripping prompt cache to force fresh routing on retry...")
 
     # Eager fallback: rate-limit/billing switch immediately (primary won't recover in
     # the retry window); transport errors get 1 retry first.

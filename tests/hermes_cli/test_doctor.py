@@ -7,11 +7,13 @@ import types
 import io
 import contextlib
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import config as config_mod
 from hermes_cli import doctor as doctor_mod
+import hermes_cli.doctor as doctor
 from hermes_cli.doctor_config import _has_provider_env_config
 import shutil
 from hermes_cli import doctor_tools
@@ -277,6 +279,59 @@ class TestDoctorDisabledToolsetNames:
         monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config_module)
 
         assert doctor._disabled_toolset_names() == set()
+
+
+class TestToolAvailabilityFiltersDisabledToolsets:
+    """The doctor Tool Availability loop must drop toolsets in agent.disabled_toolsets.
+
+    A toolset the user explicitly turned off still fails the raw
+    dependency/env-var probe, so without the filter it reports as an unmet
+    requirement (⚠ row) — or, when its deps happen to be present, as a false ✓.
+    """
+
+    def _run_check(self, monkeypatch, available, unavailable, disabled):
+        # The production filter lazy-imports ``_disabled_toolset_names`` from
+        # ``hermes_cli.doctor`` at call time, so patch it on the owning module.
+        monkeypatch.setattr(doctor, "_disabled_toolset_names", lambda: set(disabled))
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: (list(available), [dict(u) for u in unavailable]),
+            TOOLSET_REQUIREMENTS={name: {"name": name} for name in available},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        return buf.getvalue(), f
+
+    def test_disabled_toolsets_are_removed_from_the_warn_and_ok_rows(self, monkeypatch):
+        out, _ = self._run_check(
+            monkeypatch,
+            available=["web", "files", "tts"],
+            unavailable=[{"name": "discord", "missing_vars": ["DISCORD_BOT_TOKEN"]},
+                         {"name": "browser-cdp", "tools": ["browser_cdp"]}],
+            disabled={"discord", "tts", "browser-cdp"},
+        )
+
+        rows = [line for line in out.splitlines() if line.strip()]
+        assert not any("discord" in line for line in rows), rows
+        assert not any("browser-cdp" in line for line in rows), rows
+        # A disabled toolset that passed the dependency probe must not show a ✓ either.
+        assert not any("tts" in line for line in rows), rows
+        # Enabled, genuinely-unavailable toolsets keep warning.
+        assert any("files" in line for line in rows), rows
+
+    def test_unrelated_unavailable_toolsets_still_warn(self, monkeypatch):
+        out, _ = self._run_check(
+            monkeypatch,
+            available=["files"],
+            unavailable=[{"name": "discord", "missing_vars": ["DISCORD_BOT_TOKEN"]}],
+            disabled=set(),
+        )
+
+        assert any("discord" in line for line in out.splitlines()), out
 
 
 class TestHonchoDoctorConfigDetection:

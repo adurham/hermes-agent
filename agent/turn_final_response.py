@@ -1,4 +1,5 @@
-"""No-tool-call (final text) branch of the conversation turn loop: empty/think-only recovery,
+"""No-tool-call (final text) branch of the conversation turn loop: fork bare-XML leak
+recovery (orphan-tail strip + recovered tool-call handoff), empty/think-only recovery,
 intent-ack / stall-guard continuation, length-continuation joining, dropped-tool-call
 re-prompt, scaffolding pop, stop gates, then the durable final flush. Extracted from
 ``run_conversation``; nothing here imports ``agent.conversation_loop`` at module level

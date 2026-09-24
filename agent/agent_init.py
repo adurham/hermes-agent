@@ -1496,6 +1496,13 @@ def _apply_agent_section(agent, _agent_cfg):
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
 
+    # FORK: cache-strip-on-overload escape hatch (agent.strip_cache_on_overload). The
+    # overloaded-error handler arms ``_strip_cache_for_overload`` for one retry request;
+    # ``turn_api_request.build_api_request`` consumes it (strips every cache_control
+    # breakpoint) and clears it. Defaults already set by agent/fork/diagnostics.init_state().
+    with suppress(Exception):
+        agent._strip_cache_on_overload = bool(_agent_section.get("strip_cache_on_overload", False))
+
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     """``int(raw)`` when positive, else None. ``reject`` lists types refused outright (bool, float)."""

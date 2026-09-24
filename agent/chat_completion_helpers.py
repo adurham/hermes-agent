@@ -2980,6 +2980,18 @@ class _StreamingCall(StreamingWaitMonitor):
         self._ping_seen = False
         self._ping_count = 0
         self._last_ping_time = 0.0  # 0 == no ping yet
+        # FORK: heartbeat wait-phase signals for the stream-phase classifier
+        # (agent/chat_completion_stream_monitor.py::_anthropic_phase_detail). These mirror
+        # the pre-refactor inline tracking in the anthropic stream loop:
+        #   _message_start_seen   — request accepted (raw SSE event, observer-installed).
+        #   _last_reasoning_time  — last thinking_delta (was ``thinking_active``).
+        #   _thinking_chars       — cumulative thinking_delta chars (was ``thinking_chars``).
+        #   _last_content_time    — last real stream event (was ``last_content_time``);
+        #                           drives the classifier's ``content_silence``.
+        self._message_start_seen = False
+        self._last_reasoning_time = 0.0
+        self._thinking_chars = 0
+        self._last_content_time = time.time()
         # FORK: whether the stream has produced a semantic event yet — gates the cold-start vs
         # mid-stream stale threshold split (agent/fork/stream_recovery.effective_stale_timeout).
         self.first_event_seen = {"yes": False}
@@ -3122,6 +3134,11 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _emit_reasoning(self, text: str) -> None:
         self._fire_first_delta()
+        # FORK: heartbeat wait-phase signals (thinking_active / thinking_chars in the
+        # pre-refactor inline heartbeat) — read by the stream-phase classifier when the
+        # Anthropic monitor emits its 60s+ wait notice.
+        self._last_reasoning_time = time.time()
+        self._thinking_chars += len(text)
         self.agent._fire_reasoning_delta(text)
 
     def _emit_tool_started(self, name: str) -> None:
@@ -3144,6 +3161,9 @@ class _StreamingCall(StreamingWaitMonitor):
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
         self.last_chunk_time["t"] = time.time()
+        # FORK: content-silence clock for the heartbeat wait phase (pings do NOT advance
+        # this — they are liveness, not content; see the SSE observer above).
+        self._last_content_time = self.last_chunk_time["t"]
         self.agent._touch_activity("receiving stream response")
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
@@ -3614,6 +3634,12 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._ping_seen = True
                 self._ping_count += 1
                 self._last_ping_time = now
+            elif event_name == "message_start":
+                # FORK: request-accepted proof for the heartbeat wait phase — the raw SSE
+                # observer sees message_start before (and even when) the high-level
+                # iterator is still silent, so a long pre-content wait can be labeled
+                # "thinking server-side" instead of "queued".
+                self._message_start_seen = True
 
         set_sse_event_callback(_on_sse_event)
         stream = self._set_managed_stream(relay_llm.stream(self.api_kwargs, _open_anthropic_stream,

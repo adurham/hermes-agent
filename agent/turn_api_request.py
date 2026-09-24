@@ -99,6 +99,7 @@ def build_api_request(
     middleware/hooks/debug dumps observe the payload)."""
     from agent.conversation_loop import (
         _moa_client_consumes_prepared_request, _redecorate_prompt_cache_for_provider,
+        _strip_cache_control,
     )
 
     agent._reset_stream_delivery_tracking()
@@ -120,6 +121,14 @@ def build_api_request(
         api_kwargs = agent._build_api_kwargs(api_messages)
     else:
         api_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
+    # FORK: overloaded-error recovery — the retry request is re-sent with every
+    # ``cache_control`` breakpoint stripped so a poisoned/oversized cache write can't
+    # re-trigger the same failure (and so the retry lands on a different routing pool).
+    # Armed by ``turn_recovery.route_classified_error`` on FailoverReason.overloaded when
+    # ``agent.strip_cache_on_overload`` is on; one-shot, consumed (and cleared) here.
+    if getattr(agent, "_strip_cache_for_overload", False):
+        agent._strip_cache_for_overload = False
+        _strip_cache_control(api_kwargs)
     # Messages were scrubbed above; this walk covers the rest of the payload (tool descriptions,
     # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
     sanitize_outbound_kwargs(agent, api_kwargs)

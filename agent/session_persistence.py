@@ -354,6 +354,29 @@ class SessionPersistenceMixin:
         from agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
             self._drop_trailing_empty_response_scaffolding(messages)
+            # FORK: Co-locate ``server_tool_use`` and its ``tool_search_tool_*_tool_result``
+            # partner in the same message before persisting. Anthropic delivers them in
+            # different turns; if compaction later cuts the boundary between them, the next
+            # request 400s with "server_tool_use ... was found without a corresponding
+            # tool_search_tool_*_tool_result block". Merging at capture time means the pair
+            # always travels together — the compactor's existing tool_call/result group logic
+            # handles them without needing server-tool awareness. Mutates in place; no-op when
+            # nothing is orphaned, idempotent on subsequent calls.
+            try:
+                from agent.anthropic_adapter import (
+                    relocate_orphaned_tool_search_results_in_storage,
+                    drop_orphan_server_tool_uses_in_storage,
+                )
+                n_relocated = relocate_orphaned_tool_search_results_in_storage(messages)
+                # Defense in depth: a stream interruption can leave a ``server_tool_use`` on
+                # disk whose result never arrived. Drop it — otherwise every subsequent API
+                # call 400s forever and the only recovery is `--no-resume`.
+                n_dropped = drop_orphan_server_tool_uses_in_storage(messages)
+                if (n_relocated or n_dropped) and getattr(self, "verbose_logging", False):
+                    logger.debug("Pair fix-up at persist: relocated=%d dropped=%d", n_relocated, n_dropped)
+            except Exception as e:
+                if getattr(self, "verbose_logging", False):
+                    logger.debug("Pair relocation failed (non-fatal): %s", e)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.

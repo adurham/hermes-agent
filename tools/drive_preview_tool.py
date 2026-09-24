@@ -139,7 +139,7 @@ registry.register(
         action=args.get("action", ""), limit=args.get("max"), callback=kw.get("callback"),
         **{k: args.get(k) for k in ("ref", "selector", "text", "key", "submit", "amount", "to", "full")},
     ),
-    emoji="🖱️")
+    emoji="🖱")
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

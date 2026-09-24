@@ -460,6 +460,19 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
     sys.path.insert(0, str(PROJECT_ROOT))
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
     available, unavailable = _apply_doctor_tool_availability_overrides(*check_tool_availability())
+
+    # FORK: toolsets the user has explicitly turned off via agent.disabled_toolsets never
+    # load into the live agent regardless of dependency/capability status, so a raw
+    # availability verdict for them is just noise — filter them out of this section
+    # entirely rather than reporting a false "problem" (⚠) or a false ✓ for something
+    # intentionally disabled. Fails open (config read error -> empty set -> more rows,
+    # never fewer). Lazy import: hermes_cli.doctor imports this module at module scope,
+    # so a top-level import here would cycle.
+    from hermes_cli.doctor import _disabled_toolset_names
+    disabled_names = _disabled_toolset_names()
+    available = [tid for tid in available if tid not in disabled_names]
+    unavailable = [item for item in unavailable if item.get("name") not in disabled_names]
+
     # Web is split into search/extract readiness rows so an explicitly
     # selected but unconfigured backend cannot look healthy.
     web_rows = []

@@ -84,7 +84,7 @@ registry.register(
         start_line=args.get("start_line"), count=args.get("count"), callback=kw.get("callback")
     ),
     check_fn=check_read_terminal_requirements,
-    emoji="🖥️",
+    emoji="🖥",
 )
 
 

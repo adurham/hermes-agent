@@ -49,9 +49,15 @@ def init_state(agent) -> None:
     Called once from ``agent.agent_init.init_agent``.  Sets:
 
     * ``agent._strip_cache_on_overload`` — opt-in flag for stripping cache
-      breakpoints on retry when an overloaded_error fires.
+      breakpoints on retry when an overloaded_error fires (config key:
+      ``agent.strip_cache_on_overload``; see cli.py defaults and
+      cli-config.yaml.example).
+    * ``agent._strip_cache_for_overload`` — one-shot request flag: armed by the
+      overloaded-error handler (turn_recovery.route_classified_error) and
+      consumed by the next request build (turn_api_request.build_api_request).
     * ``agent._tools_hash_cache``        — memoized (id, hex) tuple of the
       most-recently-hashed tools[].  Cleared when tools change.
     """
     agent._strip_cache_on_overload = False
+    agent._strip_cache_for_overload = False
     agent._tools_hash_cache = None

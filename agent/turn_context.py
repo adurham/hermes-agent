@@ -572,6 +572,10 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
+    # FORK: one-shot cache-strip-on-overload arm (turn_recovery.route_classified_error
+    # sets it; turn_api_request.build_api_request consumes it). Cleared here so an arm
+    # that outlives its request (terminal error, abort) can never strip a later turn.
+    ("_strip_cache_for_overload", False),
 )
 
 

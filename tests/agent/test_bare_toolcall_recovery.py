@@ -198,3 +198,103 @@ class TestStripOrphanToolCallTail:
         assert _strip_orphan_toolcall_tail("normal answer") == "normal answer"
         assert _strip_orphan_toolcall_tail("") == ""
         assert _strip_orphan_toolcall_tail(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Wiring regression: the recovery must run at the INTAKE stage so a recovered
+# call flips the loop's tool/text dispatch.
+#
+# The v2026.9.14 merge (f6edb27b86) dropped the fork's post-response call site
+# inside ``run_conversation``; both helpers lived on caller-less. The restored
+# site is ``agent/turn_response_intake.py::normalize_model_response`` — it runs
+# immediately before ``conversation_loop``'s
+# ``run_tool_round if assistant_message.tool_calls else finish_text_response``
+# dispatch, which is the only place where recovering a call can still turn the
+# turn into a tool turn.
+# ---------------------------------------------------------------------------
+
+import time as _time
+from types import SimpleNamespace as _NS
+
+from agent.conversation_loop import _LoopState, _run_phase
+from agent.turn_final_response import finish_text_response
+from agent.turn_response_intake import normalize_model_response
+from agent.turn_tool_round import run_tool_round
+
+
+class _Transport:
+    def __init__(self, message):
+        self._message = message
+
+    def normalize_response(self, response, strip_tool_prefix=False):
+        return self._message
+
+
+def _run_intake(message):
+    """Drive the REAL phase machinery: the call at conversation_loop.py:1829."""
+    agent = _NS(
+        api_mode="chat_completions", quiet_mode=True, verbose_logging=False, log_prefix="",
+        _vprint=lambda *a, **k: None, tool_progress_callback=None,
+        _incomplete_scratchpad_retries=0, _buffer_vprint=lambda *a, **k: None,
+        _codex_incomplete_retries=0, _codex_reasoning_only_streak=0,
+        _get_transport=lambda: _Transport(message),
+    )
+    state = _LoopState(
+        user_message="hi", system_message=None, moa_config=None, original_user_message="hi",
+        conversation_history=[], effective_task_id=None, turn_id="probe",
+        _should_review_memory=False, _plugin_user_context=None, _ext_prefetch_cache=None,
+        messages=[], active_system_prompt=None, current_turn_user_idx=0,
+        _preflight_compression_blocked=False, max_compression_attempts=3,
+        api_call_count=1, api_duration=0.1, api_start_time=_time.time(),
+        api_request_id="probe:dispatch", response=None,
+    )
+    verdict = _run_phase(normalize_model_response, agent, state)
+    # The loop's dispatch expression (conversation_loop.py:1835).
+    dispatch = run_tool_round if state.assistant_message.tool_calls else finish_text_response
+    return verdict, state.assistant_message, dispatch
+
+
+class TestIntakeStageRecoveryWiring:
+    def test_leaked_call_flips_dispatch_to_tool_round(self):
+        """A recovered bare-XML call must make THIS response a tool turn."""
+        leaked = (
+            "Config on disk looks good. Let me check the auxiliary section:\n"
+            "<tool_call>\n"
+            '<invoke name="read_file">\n'
+            '<parameter name="limit" string="false">15</parameter>\n'
+            '<parameter name="path" string="true">~/.hermes/config.yaml</parameter>\n'
+            "</invoke>"
+        )
+        verdict, message, dispatch = _run_intake(
+            _NS(content=leaked, tool_calls=None, finish_reason="stop",
+                reasoning_content=None, reasoning=None)
+        )
+        assert verdict.action == "fallthrough"
+        assert [tc.function.name for tc in message.tool_calls] == ["read_file"]
+        # Leaked XML stripped from stored content so it never re-primes the model.
+        assert message.content is None
+        assert dispatch is run_tool_round
+
+    def test_orphan_tail_is_stripped_and_stays_a_text_turn(self):
+        """The closer-only shape has no recoverable name: strip, keep text turn."""
+        orphan = "    return -1\n</parameter>\n</invoke>\n</tool_calls>"
+        verdict, message, dispatch = _run_intake(
+            _NS(content=orphan, tool_calls=None, finish_reason="stop",
+                reasoning_content=None, reasoning=None)
+        )
+        assert verdict.action == "fallthrough"
+        assert not message.tool_calls
+        assert message.content == "    return -1"
+        assert "</invoke>" not in message.content
+        assert dispatch is finish_text_response
+
+    def test_plain_prose_is_untouched(self):
+        verdict, message, dispatch = _run_intake(
+            _NS(content="just a normal answer", tool_calls=None, finish_reason="stop",
+                reasoning_content=None, reasoning=None)
+        )
+        assert verdict.action == "fallthrough"
+        assert not message.tool_calls
+        assert message.content == "just a normal answer"
+        assert dispatch is finish_text_response
+
