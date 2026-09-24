@@ -452,6 +452,9 @@ function Invoke-DownloadWithProgress {
             }
         }
         $ps.EndInvoke($handle) | Out-Null
+        # Invoke-WebRequest's HTTP/DNS failures are non-terminating inside the
+        # runspace: EndInvoke returns normally and the error sits in the stream.
+        $streamError = if ($ps.Streams.Error.Count) { $ps.Streams.Error[0].Exception } else { $null }
     } catch {
         $inner = $_.Exception.InnerException
         if ($inner) { throw $inner } else { throw }
@@ -459,6 +462,9 @@ function Invoke-DownloadWithProgress {
         Write-Progress -Activity $activity -Completed
         $ps.Dispose()
     }
+    # Rethrown as-is (outside the unwrapping catch) so the caller classifies it
+    # and tries the next candidate.
+    if ($streamError) { throw $streamError }
 }
 
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
