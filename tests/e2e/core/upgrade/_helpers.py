@@ -143,7 +143,9 @@ def sandbox_argv(argv: Sequence[str], *, writable: Iterable[Path]) -> list[str]:
     """Wrap ``argv`` in the bwrap sandbox (no-op when bubblewrap is unusable)."""
     if not BWRAP_OK:
         return list(argv)
-    cmd = ["bwrap", "--dev-bind", "/", "/"]
+    # The child's allowlisted PATH may omit the Nix-provided bwrap (notably a login shell
+    # with a clean distro PATH); resolve it in the parent before wrapping the command.
+    cmd = [shutil.which("bwrap") or "bwrap", "--dev-bind", "/", "/"]
     real_hermes = REAL_HOME / ".hermes"
     if real_hermes.is_dir():
         cmd += ["--ro-bind", str(real_hermes), str(real_hermes)]
