@@ -11,6 +11,7 @@ existing home untouched.
 from __future__ import annotations
 
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
@@ -24,7 +25,7 @@ pytestmark = [
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
 ]
 
-PY = str(H.WORKTREE / ".venv" / "bin" / "python")
+PY = sys.executable
 RESTORED = "has been restored"
 CURRENT_CONFIG = "# the user's CURRENT config, which a failed import must not touch\nmodel:\n  default: current-model\n"
 SKILL = "---\nname: demo\ndescription: demo skill from the backup\n---\n" + ("body line\n" * 400)

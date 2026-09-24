@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ pytestmark = [
 ]
 
 
-PY = str(H.WORKTREE / ".venv" / "bin" / "python")
+PY = sys.executable
 
 
 class World:
