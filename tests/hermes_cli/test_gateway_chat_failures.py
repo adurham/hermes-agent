@@ -60,6 +60,47 @@ async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
 
 
 @pytest.mark.asyncio
+async def test_stream_json_oneshot_filters_neighbor_events_that_arrive_before_submit_receipt(capsys):
+    """Same-session work from another admission must not contaminate this invocation's JSONL."""
+    import json
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.stream_json import StreamJsonEmitter
+
+    class Peer:
+        events = asyncio.Queue()
+
+        async def rpc(self, method, **params):
+            assert method == "prompt.submit"
+            for admission, text in (("neighbor", "wrong"), ("mine", "right")):
+                self.events.put_nowait({"method": "event", "params": {
+                    "type": "message.delta", "session_id": "stored", "admission_id": admission,
+                    "payload": {"text": text}}})
+                self.events.put_nowait({"method": "event", "params": {
+                    "type": "tool.start", "session_id": "stored", "admission_id": admission,
+                    "payload": {"tool_call_id": admission + "-tool", "tool_name": "read_file", "args": {}}}})
+                self.events.put_nowait({"method": "event", "params": {
+                    "type": "tool.complete", "session_id": "stored", "admission_id": admission,
+                    "payload": {"tool_call_id": admission + "-tool", "tool_name": "read_file",
+                                "args": {}, "result": text, "is_error": False}}})
+                self.events.put_nowait({"method": "event", "params": {
+                    "type": "message.complete", "session_id": "stored", "admission_id": admission,
+                    "payload": {"text": text, "outcome": "completed"}}})
+            # Force render() to consume the events before this receipt identifies our admission.
+            await asyncio.sleep(0)
+            return {"admission_id": "mine"}
+
+    emitter = StreamJsonEmitter(model="m", session_id="stored")
+    view = GatewayChatView(Peer(), {"stored_session_id": "stored"}, emitter=emitter)
+    assert await asyncio.wait_for(view.run("query", oneshot=True), 2) == 0
+
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert "".join(row.get("text", "") for row in records if row["type"] == "text") == "right"
+    tool_ids = [row.get("tool_call_id") for row in records if row["type"] in {"tool_use", "tool_result"}]
+    assert tool_ids == ["mine-tool", "mine-tool"]
+    assert all("wrong" not in json.dumps(row) and "neighbor-tool" not in json.dumps(row) for row in records)
+
+
+@pytest.mark.asyncio
 async def test_oneshot_replay_gap_fails_instead_of_waiting_forever():
     from hermes_cli.gateway_chat_view import GatewayChatView
     from hermes_cli.gateway_client import GatewayClientError
