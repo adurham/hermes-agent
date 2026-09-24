@@ -24,7 +24,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from agent.model_metadata import (
-    _estimate_message_chars,
+    _estimate_message_tokens_without_images,
     estimate_request_tokens_rough,
 )
 
@@ -57,25 +57,26 @@ class TestNoDoubleCountWhenBlocksAndContentBothPresent:
         }
         # With the bug: chars = len(content) + len(blocks json) -> ~40K
         # After fix: only blocks count, content is skipped.
-        chars = _estimate_message_chars(msg)
-        # Sanity floor: at least the blocks json
-        blocks_only = len(str({"role": "assistant",
-                               "anthropic_content_blocks": msg["anthropic_content_blocks"]}))
+        tokens = _estimate_message_tokens_without_images(msg)
+        # Sanity floor: at least the blocks json (tokens via the same /4 the
+        # estimator uses).
+        blocks_only = (len(str({"role": "assistant",
+                               "anthropic_content_blocks": msg["anthropic_content_blocks"]})) + 3) // 4
         # Allow a little slack for dict-repr formatting.
-        assert chars <= blocks_only + 100, (
-            f"chars={chars} should be near blocks_only={blocks_only}, "
+        assert tokens <= blocks_only + 25, (
+            f"tokens={tokens} should be near blocks_only={blocks_only}, "
             "but content appears to have been double-counted")
         # And it must NOT also include the duplicated content string twice.
-        assert chars < blocks_only + len(msg["content"])
+        assert tokens < blocks_only + len(msg["content"]) // 4
 
     def test_no_blocks_falls_back_to_content_unchanged(self):
         """A normal assistant message (no blocks) still uses content."""
         msg = {"role": "assistant", "content": "hello world"}
-        chars = _estimate_message_chars(msg)
-        assert chars >= len("hello world")
+        tokens = _estimate_message_tokens_without_images(msg)
+        assert tokens >= len("hello world") // 4
         # No regression on the historical path.
-        expected = len(str({"role": "assistant", "content": "hello world"}))
-        assert chars == expected
+        expected = (len(str({"role": "assistant", "content": "hello world"})) + 3) // 4
+        assert tokens == expected
 
 
 class TestPreflightRegressionScenario:

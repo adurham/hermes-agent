@@ -118,33 +118,30 @@ class TestReasoningFieldDuplicationFix:
             "tool_calls": [{"id": "x", "function": {"name": "terminal", "arguments": "{}"}}],
         }
 
-    def test_estimate_message_chars_skips_reasoning_duplicates_when_blocks_present(self):
-        from agent.model_metadata import _estimate_message_chars
+    def test_estimate_message_tokens_skips_reasoning_duplicates_when_blocks_present(self):
+        from agent.model_metadata import _estimate_message_tokens_without_images
 
         thinking_text = "chain of thought " * 200
         msg = self._make_msg_with_blocks(thinking_text)
-        chars = _estimate_message_chars(msg)
+        tokens = _estimate_message_tokens_without_images(msg)
         # Should be close to ONE copy of the thinking text (inside
         # anthropic_content_blocks) plus small JSON structural overhead --
         # not 4x that, which is what the bug produced.
-        assert chars < len(thinking_text) * 1.5
+        assert tokens < len(thinking_text) * 1.5 / 4
 
-    def test_count_message_chars_with_image_credit_skips_reasoning_duplicates(self):
-        from agent.model_metadata import _count_message_chars_with_image_token_credit
+    def test_message_tokens_with_image_credit_skips_reasoning_duplicates(self):
+        from agent.model_metadata import _estimate_message_tokens_without_images
 
         thinking_text = "chain of thought " * 200
         msg = self._make_msg_with_blocks(thinking_text)
-        chars, credit = _count_message_chars_with_image_token_credit(msg)
-        assert chars < len(thinking_text) * 1.5
+        tokens = _estimate_message_tokens_without_images(msg)
+        assert tokens < len(thinking_text) * 1.5 / 4
 
     def test_reasoning_still_counted_when_no_anthropic_content_blocks(self):
         """Non-Anthropic providers (OpenRouter, DeepSeek, local) don't stash
         anthropic_content_blocks -- reasoning fields are the ONLY copy of
         the thinking text there and must still be counted in full."""
-        from agent.model_metadata import (
-            _estimate_message_chars,
-            _count_message_chars_with_image_token_credit,
-        )
+        from agent.model_metadata import _estimate_message_tokens_without_images
 
         thinking_text = "reasoning text " * 100
         msg = {
@@ -153,9 +150,7 @@ class TestReasoningFieldDuplicationFix:
             "reasoning": thinking_text,
             "reasoning_content": thinking_text,
         }
-        assert _estimate_message_chars(msg) > len(thinking_text)
-        chars, _credit = _count_message_chars_with_image_token_credit(msg)
-        assert chars > len(thinking_text)
+        assert _estimate_message_tokens_without_images(msg) > len(thinking_text) / 4
 
     def test_estimate_request_tokens_rough_matches_real_usage_more_closely(self):
         """End-to-end: a session with several interleaved-thinking turns

@@ -400,6 +400,11 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        # Fork-only: ordered web_search failover chain. A non-empty list of provider names makes
+        # web_search walk them in order, falling through on 429/rate-limit/any failure, and takes
+        # precedence over search_backend/backend. Empty (default) = the single-provider path.
+        # Successes share the web_result_cache TTL memo (cache_enabled / cache_ttl_minutes).
+        "search_chain": [],
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract

@@ -144,15 +144,6 @@ class PricingEntry:
     # schema landed).
     cache_write_5m_cost_per_million: Optional[Decimal] = None
     cache_write_1h_cost_per_million: Optional[Decimal] = None
-    # Multiplier applied to every per-token rate (input/output/cache_*)
-    # when the request was made with ``speed: "fast"``.  Anthropic's fast
-    # mode (Opus 4.6 only as of 2026-05) charges 6x standard rates across
-    # the full context window, with cache multipliers stacking on top —
-    # i.e. fast-mode 1h cache write = 2x * 6x base = 12x base input.
-    # None / 1 means fast mode isn't applicable to this model; callers
-    # passing fast_mode=True will see cost reported as if the model
-    # accepted the parameter at standard rates (best-effort safe default).
-    fast_mode_multiplier: Optional[Decimal] = None
     request_cost: Optional[Decimal] = None
     source: CostSource = "none"
     source_url: Optional[str] = None
@@ -314,17 +305,6 @@ for _provider, _url, _version, _rows in _SNAPSHOTS:
         for _model in ((_models,) if isinstance(_models, str) else _models):
             _OFFICIAL_DOCS_PRICING[(_provider, _model)] = _entry
 del _SNAPSHOTS, _provider, _url, _version, _rows, _models, _rates, _entry, _model
-
-# FORK: fast mode (research preview, Opus 4.6 only) bills 6x standard rates across every
-# per-token category; cache TTL multipliers stack on top.
-# https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing
-for _fm_model in ("claude-opus-4-6", "claude-opus-4-6-20250414"):
-    _fm_key = ("anthropic", _fm_model)
-    if _fm_key in _OFFICIAL_DOCS_PRICING:
-        _OFFICIAL_DOCS_PRICING[_fm_key] = replace(
-            _OFFICIAL_DOCS_PRICING[_fm_key], fast_mode_multiplier=Decimal("6"),
-        )
-del _fm_model, _fm_key
 
 # GPT-6 Astra uses whole-request pricing above the 272K prompt tier.  Keep this
 # account-gated model out of generic static catalogs, but retain published billing
@@ -728,7 +708,6 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
-    fast_mode: bool = False,  # FORK: Anthropic ``speed: "fast"`` premium (see fast_mode_multiplier)
 ) -> CostResult:
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
@@ -754,15 +733,6 @@ def estimate_usage_cost(
     # threshold the *_above rates apply to the entire request; None falls back.
     above = entry.tier_threshold_tokens is not None and usage.prompt_tokens > entry.tier_threshold_tokens
     notes: list[str] = []
-
-    # FORK: fast-mode multiplier. With ``speed: "fast"`` (Opus 4.6 only as of 2026-05) Anthropic
-    # charges N x standard rates across every per-token category; cache TTL multipliers stack on
-    # top, so every per-million rate is scaled uniformly. A model with no multiplier defined bills
-    # at standard rates plus a note — Anthropic would 400 the request anyway, and silently
-    # inflating the estimate would be worse than the upstream failure.
-    _fm_mult = entry.fast_mode_multiplier if (fast_mode and entry.fast_mode_multiplier is not None) else Decimal("1")
-    if fast_mode and entry.fast_mode_multiplier is None:
-        notes.append("fast_mode requested but no multiplier defined for this model — billed at standard rates")
 
     # FORK: cache writes are billed per TTL when BOTH the response breakdown and the rate
     # breakdown exist, so the cache_write row below covers only the unsplit remainder.
@@ -797,12 +767,12 @@ def estimate_usage_cost(
                     # No per-TTL rate for this model: bill the tokens at the legacy/flat rate
                     # instead of dropping them (handled by the row above when it is not None).
                     if _cache_write_rate is not None:
-                        amount += Decimal(tokens) * _cache_write_rate * _fm_mult / _ONE_MILLION
+                        amount += Decimal(tokens) * _cache_write_rate / _ONE_MILLION
                         continue
                     note = ("cache-write pricing unavailable for route",)
                 return _unknown_cost(entry.source, *note)
             continue
-        amount += Decimal(tokens) * rate * _fm_mult / _ONE_MILLION
+        amount += Decimal(tokens) * rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 

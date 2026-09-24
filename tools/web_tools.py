@@ -353,13 +353,24 @@ def _run_search_chain(chain: tuple[str, ...], query: str, limit: int) -> dict:
          (treat as a failure, fall through).
       2. If it doesn't ``supports_search()``, log and skip.
       3. If ``is_available()`` is False, log and skip.
-      4. Call ``.search(query, limit)``. On a fallthrough-worthy failure
-         (``_provider_failed``), log the error and continue to the next.
+      4. Serve a fresh memo hit for this (provider, query, limit) when one exists,
+         else call ``.search(query, limit)`` and memoize a success. On a
+         fallthrough-worthy failure (``_provider_failed``), log the error and
+         continue to the next provider.
       5. On success, return the response dict immediately.
+
+    Failover is per-provider: a success through any chain member is memoized under
+    THAT provider's name — the same key ``_memoized_search`` uses — so a repeated
+    identical chained search is served from the shared ``search_memo``. The chain
+    therefore honors the ``web.cache_enabled`` / ``web.cache_ttl_minutes`` TTL
+    contract instead of bypassing it. Failures are never cached (the walk must
+    reach a different provider next time).
 
     If every provider fails, return the last failure's response dict (or a synthesized
     "all providers in chain failed" error if none even produced a response).
     """
+    from tools.web_result_cache import bucket_limit, search_memo, slice_search_response
+
     last_response: dict | None = None
 
     for name in chain:
@@ -384,8 +395,18 @@ def _run_search_chain(chain: tuple[str, ...], query: str, limit: int) -> dict:
             continue
 
         logger.info("web_search chain: trying %s for '%s' (limit %d)", name, query, limit)
+        fetch_limit = bucket_limit(limit)
         try:
-            response = provider.search(query, limit)
+            # Same memo, same key shape as _memoized_search: (provider.name, normalized query, bucketed limit).
+            response = search_memo.lookup(provider.name, query, limit)
+            if response is None:
+                with search_memo.flight_lock(provider.name, query, limit):
+                    # Re-check inside the lock: a concurrent identical call may have stored.
+                    response = search_memo.lookup(provider.name, query, limit)
+                    if response is None:
+                        response = provider.search(query, fetch_limit)
+                        if not _provider_failed(response):
+                            search_memo.store(provider.name, query, limit, response)
         except Exception as exc:  # noqa: BLE001
             logger.warning("web_search chain: %s raised %s; falling through", name, exc)
             last_response = {"success": False, "error": f"Provider '{name}' raised: {exc}"}
@@ -398,7 +419,7 @@ def _run_search_chain(chain: tuple[str, ...], query: str, limit: int) -> dict:
             continue
 
         logger.info("web_search chain: %s succeeded for '%s'", name, query)
-        return response
+        return slice_search_response(response, limit)
 
     if last_response is not None:
         return last_response

@@ -3751,34 +3751,6 @@ _OAUTH_SYSTEM_REPLACEMENTS = (
 _OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
 
 
-def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
-    """OAuth transforms: Claude Code system prefix, product-name sanitizing (avoids server-side
-    content filters), tool/description aliasing, and the same tool renames on replayed tool_use
-    blocks so history matches ``tools[]``. Returns the new ``system``; tools and messages are
-    mutated in place."""
-    cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
-    if isinstance(system, str) and system:
-        system = [{"type": "text", "text": system}]
-    system = [cc_block] + (system if isinstance(system, list) else [])
-    for block in system:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text = block.get("text", "")
-            for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
-                text = text.replace(old, new)
-            text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
-            block["text"] = _apply_oauth_prose_aliases(text)
-    for tool in anthropic_tools or []:
-        if "name" in tool:
-            tool["name"] = to_wire(tool["name"])
-        if isinstance(tool.get("description"), str):
-            tool["description"] = _apply_oauth_prose_aliases(tool["description"])  # prose-safe aliases only
-    for msg in anthropic_messages:
-        for block in msg.get("content") if isinstance(msg.get("content"), list) else []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and "name" in block:
-                block["name"] = to_wire(block["name"])  # tool_result pairs by id, not name
-    return system
-
-
 def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and

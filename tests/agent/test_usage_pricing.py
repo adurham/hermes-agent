@@ -185,43 +185,14 @@ def test_estimate_usage_cost_falls_back_to_legacy_rate_without_breakdown():
     assert float(result.amount_usd) == 0.85673125
 
 
-def test_estimate_usage_cost_fast_mode_applies_6x_multiplier_on_opus_46():
-    """Fast mode (Opus 4.6 only) charges 6x standard rates across every
-    per-token category, with cache TTL multipliers stacking on top.
-    1M input + 1M output @ standard = $30; @ fast mode = $180.
-    """
-    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
-    standard = estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic")
-    fast = estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic", fast_mode=True)
-    assert float(standard.amount_usd) == 30.0
-    assert float(fast.amount_usd) == 180.0
-
-
-def test_estimate_usage_cost_fast_mode_stacks_on_cache_write_multipliers():
-    """Anthropic's docs: 'Cache multipliers apply on top of fast mode
-    pricing'. So 1h cache write on Opus 4.6 fast mode should be
-    2x base x 6x fast = 12x base = $60/MTok.
-    """
-    usage = CanonicalUsage(
-        cache_write_tokens=1_000_000,
-        cache_write_1h_tokens=1_000_000,
-    )
-    fast = estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic", fast_mode=True)
-    assert float(fast.amount_usd) == 60.0
-
-
-def test_estimate_usage_cost_fast_mode_on_unsupported_model_warns_but_doesnt_inflate():
-    """If a caller passes fast_mode=True on a model that doesn't define
-    a multiplier (Opus 4.7, Sonnet, Haiku), don't silently inflate the
-    cost — bill at standard rates and surface a note. Anthropic would
-    400 the request anyway, but the cost calculator shouldn't make the
-    failure mode worse than the upstream 400.
+def test_estimate_usage_cost_fast_mode_legacy_kwarg_removed():
+    """The fork's ``fast_mode=`` kwarg was retired 2026-09-24 (no production
+    caller; upstream's served-fast path via ``usage.speed`` is the live
+    mechanism). Passing it must now fail loudly rather than silently bill.
     """
     usage = CanonicalUsage(input_tokens=1_000_000)
-    result = estimate_usage_cost("claude-opus-4-7", usage, provider="anthropic", fast_mode=True)
-    # Standard rate: 1M * $5 / 1M = $5
-    assert float(result.amount_usd) == 5.0
-    assert any("fast_mode" in n for n in result.notes)
+    with pytest.raises(TypeError):
+        estimate_usage_cost("claude-opus-4-6", usage, provider="anthropic", fast_mode=True)
 
 
 def test_nous_portal_pricing_preserves_vendor_prefixed_model_ids(monkeypatch):
