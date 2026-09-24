@@ -142,8 +142,6 @@ def extra_supported(extra: str, *, environment: dict[str, str] | None = None,
     import platform
     import sys
 
-    from packaging.markers import Marker
-
     if environment is None:
         environment = {
             "sys_platform": sys.platform,
@@ -152,11 +150,35 @@ def extra_supported(extra: str, *, environment: dict[str, str] | None = None,
             "os_name": os.name,
         }
     try:
+        from packaging.markers import Marker
+    except ImportError:
+        # The historical update takeover runs PM in the OLD venv's
+        # interpreter, which need not ship `packaging`. PM's runtime does.
+        return _evaluate_in_runtime(marker, environment)
+    try:
         return bool(Marker(marker).evaluate(environment=environment))
     except Exception:
         # A malformed marker must never brick availability — treat as
         # ungated and let the resolver be the authority.
         return True
+
+
+def _evaluate_in_runtime(marker: str, environment: dict[str, str]) -> bool:
+    import json
+    import subprocess
+
+    from pm.runtime import runtime_command, runtime_environment
+
+    try:
+        command = runtime_command(Path(__file__).with_name("_marker_eval.py"),
+                                  [marker, json.dumps(environment)])
+        result = subprocess.run(command, env=runtime_environment(), capture_output=True,
+                                text=True, timeout=60)
+    except Exception:
+        return True  # same fallback as a malformed marker: the resolver decides
+    if result.returncode != 0:
+        return True
+    return result.stdout.strip() == "1"
 
 
 def install_hint(extra: str) -> str:
@@ -269,7 +291,8 @@ def legacy_selection(project_root: Path) -> list[str]:
         # would install every sibling the user never chose.
         extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"}
         # PM refuses a gated extra outside its platform even if a hand-synced venv carried it.
-        if extra_supported(extra, importable=lambda _anchor: False)
-        and any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)
+        # Installed first: judging a gate may cost a PM-runtime subprocess.
+        if any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)
+        and extra_supported(extra, importable=lambda _anchor: False)
     )
     return ["all", *carried]

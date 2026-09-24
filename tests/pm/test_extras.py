@@ -238,3 +238,16 @@ def test_legacy_selection_carries_extras_the_main_era_venv_lazily_installed(monk
     assert "messaging" not in selection
     assert "piper" not in selection
     assert extras.legacy_selection(tmp_path / "no-venv") == ["all"]
+
+
+def test_runtime_marker_evaluation_answers_for_the_given_environment():
+    """The delegate really evaluates the marker (in PM's runtime interpreter)."""
+    import subprocess
+    from pathlib import Path
+
+    helper = Path(extras.__file__).with_name("_marker_eval.py")
+    env = '{"sys_platform": "linux"}'
+    out = [subprocess.run([sys.executable, str(helper), marker, env], capture_output=True,
+                          text=True, timeout=60, check=True).stdout.strip()
+           for marker in ("sys_platform == 'linux'", "sys_platform == 'win32'")]
+    assert out == ["1", "0"]
