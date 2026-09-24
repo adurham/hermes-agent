@@ -34,6 +34,12 @@ class VersionInfo:
     commit_date: int | None = None
     distribution: Literal["docker", "nix", "desktop-app"] | None = None
 
+    @property
+    def display_version(self) -> str:
+        """``<base>+<distance>``: the short form surfaces label a version by.
+        The commit is shown beside it where there is room, never inside it."""
+        return _derived_version(self.base_version, self.distance)
+
 
 def _derived_version(
     base_version: str,
