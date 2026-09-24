@@ -211,9 +211,21 @@ def is_deferrable_tool_name(
         (``config.effective_defer_tools``);
       * a ``ToolSearchConfig`` — the fork's convention, which additionally enables the
         toolset-level rules below that a bare name set cannot express;
-      * ``None`` — load the user config lazily (fork behavior, so every pre-existing
-        caller keeps honoring the user's lists). Hot paths (``classify_tools``) pass the
-        config once to avoid a per-tool config load.
+      * ``None`` — NO defer set: structural classification only (rules 1 and 5). This
+        is upstream's own ``None`` semantics and answers "is this name structurally
+        eligible to live behind the bridge at all?", NOT "is policy deferring it right
+        now?". Every production caller resolves the config first and passes it (or
+        ``config.effective_defer_tools``) explicitly — ``classify_tools`` does the load
+        once and threads it through — so no hot path pays a per-tool config load.
+
+        This branch used to ``load_config()`` lazily. That was harmless while the
+        effective defer set held only the user's own (normally empty) lists, but the
+        v2026.9.14 merge introduced upstream's curated ``_DEFAULT_DEFERRED_TOOLS``
+        (19 names, ``session_search`` and the desktop GUI surface among them). The
+        curated set then flowed into every config-less call, so rule 3 fired before
+        rule 5 and reported core/GUI-surface tools as deferrable. Restoring upstream's
+        ``None`` semantics also keeps this predicate hermetic: it no longer varies with
+        whatever is in the invoking user's config.yaml.
 
     FORK override (precedence, highest first):
       1. Bridge tools never defer.
@@ -236,8 +248,7 @@ def is_deferrable_tool_name(
         config = defer_tools
         names = config.effective_defer_tools
     elif defer_tools is None:
-        config = load_config()
-        names = config.effective_defer_tools
+        names = frozenset()
     else:
         names = defer_tools
 

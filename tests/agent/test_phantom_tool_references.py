@@ -20,9 +20,22 @@ class TestHermesAgentHelpGuidance:
         assert "skill_view(name='hermes-agent')" in HERMES_AGENT_HELP_GUIDANCE
 
     def test_no_skills_variant_has_no_skill_view_reference(self):
-        from agent.prompt_builder import HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+        from agent.prompt_builder import (
+            HERMES_AGENT_HELP_GUIDANCE,
+            HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS,
+        )
         assert "skill_view" not in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
-        assert "hermes-agent.nousresearch.com/docs" in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
+        # Both variants must point at the SAME docs location — the no-skills variant
+        # drops the skill_view affordance, not the documentation pointer. Deriving the
+        # URL from the sibling constant keeps this a relation, not a frozen literal, so
+        # it survives re-branding (the fork serves its docs from its own repo, not
+        # hermes-agent.nousresearch.com) without needing an edit here.
+        docs_url = next(
+            tok.rstrip(".,")
+            for tok in HERMES_AGENT_HELP_GUIDANCE.split()
+            if tok.startswith("http")
+        )
+        assert docs_url in HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS
 
 
 class TestExecutionGuidanceText:
