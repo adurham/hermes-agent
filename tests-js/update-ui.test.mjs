@@ -157,6 +157,48 @@ test.skipIf(process.platform === 'win32')('probe Git reaches the staged main eve
   }
 })
 
+test.skipIf(process.platform === 'win32')('historical venv install without a PM launcher still checks staged Git main', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-legacy-branch-'))
+  const git = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()
+  try {
+    const checkout = path.join(root, 'checkout')
+    const bare = path.join(root, 'serve.git')
+    fs.mkdirSync(checkout)
+    const run = (args, cwd = checkout) => execFileSync(git, args, { cwd, encoding: 'utf8' }).trim()
+    run(['init', '-b', 'main'])
+    run(['-c', 'user.name=Fixture', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'old'])
+    const old = run(['rev-parse', 'HEAD'])
+    run(['-c', 'user.name=Fixture', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'target'])
+    const sha = run(['rev-parse', 'HEAD'])
+    run(['clone', '--bare', checkout, bare], root)
+    run(['reset', '--hard', old])
+    run(['remote', 'add', 'origin', 'https://github.com/NousResearch/hermes-agent.git'])
+    const cfg = path.join(root, 'gitconfig')
+    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/NousResearch/hermes-agent.git'])
+    const legacy = path.join(checkout, 'venv', 'bin', 'hermes')
+    fs.mkdirSync(path.dirname(legacy), { recursive: true })
+    fs.writeFileSync(legacy, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+    const launchEnv = { HERMES_DESKTOP_USER_DATA_DIR: root }
+    const capturedEnv = { ...process.env, GIT_CONFIG_GLOBAL: cfg }
+    sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, capturedEnv, launchEnv)
+    expect(fs.existsSync(path.join(checkout, '.hermes', 'bin', 'hermes'))).toBe(false)
+    expect(launchEnv.HERMES_E2E_SOURCE_ROOT).toBe(checkout)
+    expect(launchEnv.HERMES_E2E_SOURCE_URL).toBe(`file://${bare}`)
+    expect(launchEnv.NODE_OPTIONS).toContain('source-branch-probe.cjs')
+    const launcher = path.join(checkout, '.hermes', 'bin', 'hermes')
+    fs.mkdirSync(path.dirname(launcher), { recursive: true })
+    fs.symlinkSync(path.join(root, 'missing'), launcher)
+    expect(() => sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, capturedEnv, launchEnv)).toThrow(/launcher/)
+    fs.unlinkSync(launcher)
+    // A PM tree with no published launcher is unfinished, not legacy.
+    fs.mkdirSync(path.join(checkout, 'pm'))
+    fs.writeFileSync(path.join(checkout, 'pm', 'lock.json'), '{}')
+    expect(() => sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, { ...process.env, GIT_CONFIG_GLOBAL: cfg }, launchEnv)).toThrow(/launcher/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test.skipIf(process.platform === 'win32')('preloaded historical Desktop Git check reads staged origin rather than the public API', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-historical-probe-'))
   const git = execFileSync('which', ['git'], { encoding: 'utf8' }).trim()

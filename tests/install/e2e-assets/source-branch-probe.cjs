@@ -50,7 +50,16 @@ function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv,
     // every non-checker invocation untouched.
     const launcher = path.join(install, '.hermes', 'bin', 'hermes')
     const original = `${launcher}.e2e-original`
-    if (!fs.lstatSync(launcher).isFile() || fs.existsSync(original)) {
+    // Historical venv installs have no PM launcher. Their Electron-side probe
+    // handles the branch selection; only PM source checks need this wrapper.
+    const launcherStat = fs.lstatSync(launcher, { throwIfNoEntry: false })
+    if (!launcherStat) {
+      if (!fs.existsSync(path.join(install, 'pm', 'lock.json'))
+          && fs.existsSync(path.join(install, 'venv', 'bin', 'hermes'))
+          && !fs.existsSync(original)) return
+      throw new Error('source app-update requires an unmodified installation launcher')
+    }
+    if (!launcherStat.isFile() || fs.existsSync(original)) {
       throw new Error('source app-update requires an unmodified installation launcher')
     }
     fs.copyFileSync(launcher, original)
