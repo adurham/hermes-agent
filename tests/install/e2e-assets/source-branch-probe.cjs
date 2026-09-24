@@ -39,6 +39,33 @@ function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv,
   if (advertised !== expectedSha) {
     throw new Error(`staged Git main ${advertised} does not match expected ${expectedSha}`)
   }
+  if (process.platform !== 'win32') {
+    // Packaged Electron ignores NODE_OPTIONS=--require. Select the branch at
+    // the isolated installation's launcher instead, leaving product code and
+    // every non-checker invocation untouched.
+    const launcher = path.join(install, '.hermes', 'bin', 'hermes')
+    const original = `${launcher}.e2e-original`
+    if (!fs.statSync(launcher).isFile() || fs.existsSync(original)) {
+      throw new Error('source app-update requires an unmodified installation launcher')
+    }
+    fs.copyFileSync(launcher, original)
+    const git = sourceProbeGit(launchEnv.HERMES_DESKTOP_USER_DATA_DIR, realGit, staged)
+    const quote = value => `'${value.replace(/'/g, "'\\''")}'`
+    fs.writeFileSync(launcher, `#!/bin/sh
+check_root() {
+  while [ "$#" -gt 1 ]; do
+    if [ "$1" = '--install-root' ] && [ "$2" = ${quote(install)} ]; then return 0; fi
+    shift
+  done
+  return 1
+}
+if [ "$1" = '--run-module' ] && [ "$2" = 'hermes_cli.source_check' ] && check_root "$@"; then
+  exec ${quote(original)} "$@" --git ${quote(git)} --branch main
+fi
+exec ${quote(original)} "$@"
+`, { mode: 0o700 })
+    return
+  }
   launchEnv.HERMES_E2E_SOURCE_ROOT = install
   launchEnv.HERMES_E2E_SOURCE_GIT = sourceProbeGit(launchEnv.HERMES_DESKTOP_USER_DATA_DIR, realGit, staged)
   launchEnv.NODE_OPTIONS = `--require=${JSON.stringify(__filename)}`

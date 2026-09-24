@@ -127,22 +127,30 @@ test.skipIf(process.platform === 'win32')('probe Git reaches the staged main eve
     run(['remote', 'add', 'origin', 'https://github.com/NousResearch/hermes-agent.git'])
     const cfg = path.join(root, 'gitconfig')
     run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/NousResearch/hermes-agent.git'])
+    const python = process.env.HERMES_PYTHON || 'python3'
+    const source = fileURLToPath(new URL('../', import.meta.url))
+    const launcher = path.join(checkout, '.hermes', 'bin', 'hermes')
+    fs.mkdirSync(path.dirname(launcher), { recursive: true })
+    const quote = value => `'${value.replace(/'/g, "'\\''")}'`
+    fs.writeFileSync(launcher, `#!/bin/sh\nif [ "$1" = '--run-module' ]; then shift 2; exec ${quote(python)} -m hermes_cli.source_check "$@"; fi\nprintf '%s\\n' "$@"\n`, { mode: 0o700 })
     const capturedEnv = { ...process.env, GIT_CONFIG_GLOBAL: cfg }
     const launchEnv = { HERMES_DESKTOP_USER_DATA_DIR: root }
     sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, capturedEnv, launchEnv)
-    const env = { ...process.env, GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' }
-    const shim = launchEnv.HERMES_E2E_SOURCE_GIT
-    expect(execFileSync(shim, ['remote', 'get-url', 'origin'], { cwd: checkout, env, encoding: 'utf8' }).trim()).toBe(`file://${bare}`)
-    expect(execFileSync(shim, ['ls-remote', '--heads', 'origin', 'refs/heads/main'], { cwd: checkout, env, encoding: 'utf8' }).split(/\s+/)[0]).toBe(sha)
-    const python = process.env.HERMES_PYTHON || 'python3'
-    const source = fileURLToPath(new URL('../', import.meta.url))
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+      PYTHONPATH: source, GIT_ALLOW_PROTOCOL: 'file' }
     const home = path.join(root, 'profile')
     fs.mkdirSync(home)
-    const code = 'import json,sys; from pathlib import Path; from hermes_cli.source_check import check_for_updates; print(json.dumps(check_for_updates(install_root=Path(sys.argv[1]), home=Path(sys.argv[2]), branch="main", force=True, git=sys.argv[3])))'
-    const status = JSON.parse(execFileSync(python, ['-c', code, checkout, home, shim], {
-      cwd: checkout, encoding: 'utf8', env: { ...env, HERMES_HOME: home, GIT_ALLOW_PROTOCOL: 'file', PYTHONPATH: source },
-    }))
+    const status = JSON.parse(execFileSync(launcher, ['--run-module', 'hermes_cli.source_check',
+      '--install-root', checkout, '--home', home, '--git', git, '--force'],
+    { cwd: checkout, encoding: 'utf8', env }))
     expect(status).toMatchObject({ supported: true, currentSha: base, branch: 'main', targetSha: sha, updateAvailable: true })
+    expect(execFileSync(launcher, ['--version'], { cwd: checkout, env, encoding: 'utf8' }).trim()).toBe('--version')
+    const other = path.join(root, 'other-checkout')
+    fs.mkdirSync(other)
+    const foreign = JSON.parse(execFileSync(launcher, ['--run-module', 'hermes_cli.source_check',
+      '--install-root', other, '--home', home, '--git', git, '--force'],
+    { cwd: checkout, encoding: 'utf8', env }))
+    expect(foreign).toMatchObject({ supported: false, reason: 'not-a-git-checkout' })
     expect(() => sourceBranchProbe.prepareSourceBranchEnvironment(checkout, '0'.repeat(40), git, capturedEnv, launchEnv)).toThrow(/does not match expected/)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
