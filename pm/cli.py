@@ -243,7 +243,9 @@ def cmd_env(args) -> int:
     from pm.install import env_for
 
     names = args.names or _lockfile().names()
-    print(json.dumps(env_for(*names), indent=2, sort_keys=True))
+    # Show only package exports, never the caller's environment (which can
+    # contain credentials and is commonly pasted into support reports).
+    print(json.dumps(env_for(*names, base_env={}), indent=2, sort_keys=True))
     return 0
 
 

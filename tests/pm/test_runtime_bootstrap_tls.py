@@ -175,3 +175,13 @@ raise SystemExit(module['main']())
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+def test_importing_launch_does_not_patch_ssl_context():
+    import subprocess
+    import sys
+
+    from pm.paths import repo_root
+    child = subprocess.run(
+        [sys.executable, "-c", "import ssl; original = ssl.SSLContext; import pm.launch; assert ssl.SSLContext is original"],
+        cwd=repo_root(), capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert child.returncode == 0, child.stderr

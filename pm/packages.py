@@ -621,18 +621,9 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        """stdlib tar extract, but skip members the data filter refuses —
-        the MSYS tree ships dev/fd → /proc/self/fd style links that mean
-        nothing on Windows and must not fail the install."""
-        import tarfile
+        from pm.store import extract_tar
 
-        staged.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive) as tf:
-            for member in tf:
-                try:
-                    tf.extract(member, staged, filter="data")
-                except (tarfile.FilterError, OSError):
-                    continue
+        extract_tar(archive, staged, git_msys=True)
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}

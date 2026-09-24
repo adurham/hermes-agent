@@ -151,7 +151,7 @@ class Facts:
         self._packages = _read(path, strict=strict)["packages"]
 
     def reload(self) -> None:
-        self._packages = _read(self.path)["packages"]
+        self._packages = _read(self.path, strict=True)["packages"]
 
     def get(self, name: str) -> dict | None:
         return self._packages.get(name)
@@ -225,7 +225,7 @@ class Facts:
     def _merge_and_write(self, name: str, fact: dict) -> None:
         """Read-modify-write against disk so concurrent installs of
         different packages never clobber each other."""
-        on_disk = _read(self.path)["packages"]
+        on_disk = _read(self.path, strict=True)["packages"]
         for key, value in self._packages.items():
             on_disk.setdefault(key, value)
         self._packages = on_disk

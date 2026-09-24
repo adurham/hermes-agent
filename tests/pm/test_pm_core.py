@@ -184,6 +184,25 @@ def test_deps_compose_dependents_win(pm_env):
     path = runner.env["PATH"]
     assert path.index("toptool-1.0") < path.index("deptool-1.0")
 
+def test_cli_env_reports_only_package_exports(pm_env, monkeypatch, capsys):
+    import json
+    from argparse import Namespace
+    from pm.cli import cmd_env
+    from pm.install import ensure
+
+    lockfile_path, _, docroot, _ = pm_env
+    _, digest = make_tar(docroot, "deptool-1.0.tar.gz", {"bin/faketool": "y"})
+    _pin(lockfile_path, "deptool", "1.0", digest)
+    ensure("deptool", explicit=True)
+    monkeypatch.setenv("FAKE_API_KEY", "never-print-this-secret")
+    monkeypatch.setenv("PATH", "inherited-path-is-not-a-pm-export")
+    assert cmd_env(Namespace(names=["deptool"])) == 0
+    output = capsys.readouterr().out
+    assert "never-print-this-secret" not in output
+    assert "inherited-path-is-not-a-pm-export" not in output
+    assert json.loads(output)["DEPTOOL_SEEN"] == "1"
+    assert "deptool-1.0" in json.loads(output)["PATH"]
+
 
 def test_activation_trusts_a_recorded_entry_a_deliberate_install_repairs(pm_env, monkeypatch):
     """Shell activation skips the byte re-hash; a deliberate install keeps it.
