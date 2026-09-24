@@ -1165,7 +1165,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     est_tokens = estimate_request_context_tokens(api_kwargs)
     effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
     codex_floor = 0.0
-    if codex and openai_codex_backend:
+    # Local Responses servers keep their configured local stale/TTFB grace: the hosted
+    # large-context floor, hard ceiling and TTFB scale-up/cap below must not tighten it.
+    base_url = getattr(agent, "base_url", None)
+    local = bool(base_url) and is_local_endpoint(base_url)
+    if codex and not local:
         # Raise the stale floor for large payloads so healthy gateway-scale
         # requests aren't aborted mid-prefill.
         codex_floor = openai_codex_stale_timeout_floor(est_tokens)
@@ -1188,13 +1192,13 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
-    elif openai_codex_backend:
+    elif codex and not local:
         # Large requests legitimately spend tens of seconds in admission/prefill before the
         # first SSE event: scale the cutoff up to the idle default unless TTFB_STRICT is set.
         disable_above = env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
         if not strict and disable_above > 0 and est_tokens >= disable_above and ttfb_timeout < idle_default:
-            logger.info("Scaling openai-codex no-event TTFB watchdog from %.0fs to %.0fs "
+            logger.info("Scaling codex-responses no-event TTFB watchdog from %.0fs to %.0fs "
                 "for large request (context=~%s tokens >= %.0f). "
                 "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
@@ -1202,11 +1206,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         # Opt-in ceiling (0 = off): a 120s default here silently undid the scale-up above (#91621).
         ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
-            logger.info("Capping openai-codex no-event TTFB timeout from %.0fs to %.0fs "
+            logger.info("Capping codex-responses no-event TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens) per HERMES_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
-    elif not ttfb_explicit and (base_url := getattr(agent, "base_url", None)) and is_local_endpoint(base_url):
+    elif not ttfb_explicit and local:
         # A local server prefills for minutes before its first event; the chat-completions
         # siblings already grant local endpoints the local stale ceiling, so the Responses
         # transport gets the same grace instead of the 120s hosted cutoff (#92302).
@@ -2250,7 +2254,10 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        # Route through the same seam as normal Codex turns: a direct _run_codex_stream
+        # bypasses the stale/TTFB watchdogs, interrupt handling and client cleanup, so an
+        # unattended cron summary could wedge forever (#70943).
+        return _summary_text(agent, agent._interruptible_api_call(codex_kwargs))
     return _attempt
 
 
