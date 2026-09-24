@@ -11,7 +11,12 @@ import pytest
 
 
 @pytest.mark.platforms("posix")
-def test_isolated_pm_launch_captures_only_final_electron_spawn(tmp_path):
+@pytest.mark.parametrize("packaged", [False, True])
+def test_isolated_pm_launch_captures_only_final_electron_spawn(tmp_path, packaged):
+    launch_argv = (
+        [str(tmp_path / "apps/desktop/release/mac-arm64/Hermes.app/Contents/MacOS/Hermes")]
+        if packaged else ["npm", "exec", "--", "electron", "."]
+    )
     root = Path(__file__).resolve().parents[3]
     helper = root / "tests/install/e2e-assets/launch-capture/pm-launch.py"
     launcher = tmp_path / "hermes"
@@ -22,7 +27,7 @@ def test_isolated_pm_launch_captures_only_final_electron_spawn(tmp_path):
         "assert os.environ.get('PYTHONPATH') is None\n"
         "assert sys.argv[1:] == ['desktop']\n"
         "subprocess.run(['npm', 'run', 'build'], check=True)\n"
-        "subprocess.run(['npm', 'exec', '--', 'electron', '.'], "
+        f"subprocess.run({launch_argv!r}, "
         "cwd=os.getcwd(), env={**os.environ, 'PRODUCT_SENTINEL': 'present'}, check=True)\n",
         encoding="utf-8",
     )
@@ -60,9 +65,10 @@ def test_isolated_pm_launch_captures_only_final_electron_spawn(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "build-ran").is_file()
     assert not (tmp_path / "ambient-hook-ran").exists()
-    assert spec.with_name(spec.name + ".captured").read_text() == "source"
+    shape = "packaged" if packaged else "source"
+    assert spec.with_name(spec.name + ".captured").read_text() == shape
     captured = json.loads(spec.read_text())
-    assert captured["argv"] == ["npm", "exec", "--", "electron", "."]
+    assert captured["argv"] == launch_argv
+    assert captured["matchedShape"] == shape
     assert captured["cwd"] == str(tmp_path)
     assert captured["env"]["PRODUCT_SENTINEL"] == "present"
-    assert captured["matchedShape"] == "source"

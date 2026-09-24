@@ -362,10 +362,17 @@ PYEOF
       hermes="$(source_hermes "$INSTALL_DIR")" || fail "no installed desktop command"
       local spec="$WORK_ROOT/launch-spec.json"
       local rc=0
-      (cd "$INSTALL_DIR" && \
-        PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
-        HERMES_E2E_CAPTURE_LAUNCH="$spec" \
-        source_build_env "$hermes" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+      if [ "$hermes" = "$INSTALL_DIR/.hermes/bin/hermes" ]; then
+        # PM launchers use -I, which ignores PYTHONPATH/sitecustomize. Inject
+        # the capture hook into the installed launcher's isolated command.
+        (cd "$INSTALL_DIR" && source_build_env python3 -I "$ASSETS/launch-capture/pm-launch.py" \
+          "$hermes" "$spec" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+      else
+        (cd "$INSTALL_DIR" && \
+          PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
+          HERMES_E2E_CAPTURE_LAUNCH="$spec" \
+          source_build_env "$hermes" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+      fi
       log_group "hermes desktop (launch capture) transcript" "$LOG_DIR/desktop-launch-capture.log"
       [ "$rc" -eq 0 ] || fail "hermes desktop exited $rc during launch capture"
       [ -f "$spec.captured" ] || fail "hermes desktop exited 0 but no launch was captured"
