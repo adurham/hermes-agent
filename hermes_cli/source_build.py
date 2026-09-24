@@ -85,9 +85,8 @@ def build_source_tui(project_root: Path, *, env: dict) -> None:
 
 
 def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None) -> None:
-    if icons is None:
-        icons = project_root
-        run_source_script(project_root, "scripts/generate-icons.mjs", env=env, label="Generating icons")
+    # Default-brand icons are committed; installs never render them.
+    icons = icons or project_root
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
                       "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env,
                       label="Building the web UI")
