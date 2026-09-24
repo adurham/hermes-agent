@@ -311,6 +311,7 @@ export const ar = defineLocale({
       'composer.focus': 'التركيز على المحرّر',
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',
+      'composer.dictate': 'بدء / إيقاف الإملاء',
       'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
@@ -762,7 +763,6 @@ export const ar = defineLocale({
       'browser.autoLocalForPrivateUrls': 'متصفح محلي للروابط الخاصة',
       'checkpoints.enabled': 'نقاط حفظ الملفات',
       'checkpoints.maxSnapshots': 'حد نقاط الحفظ',
-      'voice.recordKey': 'اختصار الصوت',
       'voice.maxRecordingSeconds': 'أقصى مدة للتسجيل',
       'voice.autoTts': 'قراءة الردود صوتياً',
       'stt.enabled': 'تحويل الكلام إلى نص',
@@ -908,7 +908,10 @@ export const ar = defineLocale({
       failedLoad: 'فشل تحميل الإعدادات',
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
-      invalidJson: 'JSON غير صالح'
+      invalidJson: 'JSON غير صالح',
+      voiceShortcutHintTitle: 'اختصار تسجيل الصوت',
+      voiceShortcutHintDesc:
+        'اضبط اختصار تسجيل الصوت من الإعدادات ← اختصارات لوحة المفاتيح («بدء / إيقاف الإملاء»). قيمة voice.record_key مخصصة لـ CLI وTUI فقط.'
     },
     hudModifier: {
       title: 'استدعاء HUD بضغطة',

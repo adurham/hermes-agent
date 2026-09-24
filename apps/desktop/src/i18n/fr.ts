@@ -1304,7 +1304,6 @@ export const fr = defineLocale({
         maxSnapshots: 'Limite de points de contrôle'
       },
       voice: {
-        recordKey: 'Raccourci vocal',
         maxRecordingSeconds: "Durée maximale d'enregistrement",
         autoTts: 'Lire les réponses à haute voix',
         voiceChatMode: 'Mode de conversation vocale',
