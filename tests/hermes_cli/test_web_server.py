@@ -1420,9 +1420,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "/api/audio/elevenlabs/voices" in paths
 
     def test_elevenlabs_voices_unavailable_without_key(self, monkeypatch):
-        import hermes_cli.web_server as web_server
-
-        monkeypatch.setattr(web_server, "load_env", lambda: {})
+        monkeypatch.setattr(_cfg_mod, "load_env", lambda: {})
         monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
 
         resp = self.client.get("/api/audio/elevenlabs/voices")

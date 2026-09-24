@@ -910,7 +910,7 @@ class TestApiCallsSchema:
         # 3. Re-open. Migration must run.
         migrated = SessionDB(db_path=db_path)
         try:
-            from hermes_state import SCHEMA_VERSION
+            from hermes_state_common import SCHEMA_VERSION
             ver = migrated._conn.execute(
                 "SELECT version FROM schema_version"
             ).fetchone()[0]

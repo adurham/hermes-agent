@@ -137,7 +137,7 @@ class TestClarifyPrimitive:
 
 
     def test_notify_register_unregister_clears_pending(self):
-        """unregister_notify cancels any pending clarify so threads unwind."""
+        """Dropping a session's notify callback cancels any pending clarify so threads unwind."""
         from tools import clarify_gateway as cm
 
         cm.register("id9", "sk9", "Q?", ["A"])
@@ -149,10 +149,15 @@ class TestClarifyPrimitive:
             fut = pool.submit(waiter)
             time.sleep(0.05)
 
-            cm.register_notify("sk9", lambda entry: None)
-            cm.unregister_notify("sk9")
+            # The per-session notify registry is the module's real state
+            # (_notify_cbs); registering then dropping an entry there is what
+            # the removed compat pair did, before clear_session unwinds.
+            with cm._lock:
+                cm._notify_cbs["sk9"] = lambda entry: None
+                cm._notify_cbs.pop("sk9", None)
+            cm.clear_session("sk9")
 
-            # unregister_notify calls clear_session; thread unwinds
+            # clear_session unwinds the blocked thread
             result = fut.result(timeout=10.0)
             assert result == ""
 
@@ -220,10 +225,10 @@ class TestCoverageGaps:
 
 
     def test_get_notify_returns_none_when_not_registered(self):
-        """get_notify returns None for an unregistered session."""
+        """An unregistered session has no notify callback in the registry."""
         from tools import clarify_gateway as cm
 
-        assert cm.get_notify("unregistered") is None
+        assert cm._notify_cbs.get("unregistered") is None
 
     def test_get_clarify_timeout_exception_returns_default(self, monkeypatch):
         """get_clarify_timeout returns 3600 when load_config raises."""

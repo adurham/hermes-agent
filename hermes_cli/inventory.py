@@ -568,7 +568,7 @@ def _has_valid_external_anthropic_credentials() -> bool:
     NOT affect ``is_provider_explicitly_configured()`` or aux-task gating.
     """
     try:
-        from agent.anthropic_adapter import (
+        from agent.anthropic_credentials import (
             read_claude_code_credentials,
             read_hermes_oauth_credentials,
         )

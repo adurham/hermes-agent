@@ -1224,10 +1224,15 @@ def test_gateway_cli_origin_event_left_unrouted():
 
 
 class TestActiveForSession:
-    """active_for_session() is a plugin-compat shim (COMPAT_MANIFEST.md,
-    tools.async_delegation) with no internal callers -- this is its only
-    coverage. It counts LIVE delegations (running/stalling/finalizing) owned
-    by one UI session; completed ones and other sessions must not count.
+    """Per-UI-session live-delegation counts.
+
+    active_for_session() was a plugin-compat shim (COMPAT_MANIFEST.md,
+    tools.async_delegation) with no internal callers -- this was its only
+    coverage. The shim only counted what the module's real ownership API
+    already reports, so the test drives that API directly: _session_records()
+    with _LIVE_STATES (running/stalling/finalizing) keyed on the
+    origin_ui_session_id (TUI tab) selector. Completed delegations and other
+    sessions must not count.
     """
 
     @pytest.fixture(autouse=True)
@@ -1263,9 +1268,15 @@ class TestActiveForSession:
                 }
             )
 
-        assert ad.active_for_session("desktop-sid") == 3
-        assert ad.active_for_session("other-sid") == 1
-        assert ad.active_for_session("") == 0
+        assert len(ad._session_records(
+            ad._LIVE_STATES, session_key="", origin_ui_session_id="desktop-sid",
+            parent_session_id="")) == 3
+        assert len(ad._session_records(
+            ad._LIVE_STATES, session_key="", origin_ui_session_id="other-sid",
+            parent_session_id="")) == 1
+        assert ad._session_records(
+            ad._LIVE_STATES, session_key="", origin_ui_session_id="",
+            parent_session_id="") == []
 
 
 class TestActiveTaskCount:
