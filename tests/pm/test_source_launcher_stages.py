@@ -78,7 +78,6 @@ exit 0
     assert result.returncode == 0, result.stdout + result.stderr
     assert b'REACHED_PATH_PUBLICATION' in result.stdout
     assert calls.read_text(encoding='utf-8-sig').splitlines() == [
-        f'python install --no-bin --no-registry {py_version}',
         f'python find --managed-python --no-project {py_version}',
     ]
     for name in ('hermes', 'hermes-acp'):
