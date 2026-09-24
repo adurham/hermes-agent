@@ -106,9 +106,9 @@ replace a selected release channel with its default branch.
 
 For branch-tracking source installs, the desktop keeps the current named branch
 unless an explicit desktop branch override exists. A detached checkout uses the
-default branch. Older checkouts without source-channel probing show manual
-recovery instructions instead of guessing a target: inspect `hermes update --help`
-in that installation and choose the intended branch or channel before updating.
+default branch. Older checkouts without source-channel probing predate release
+channels, so the desktop updates them from `main` over git; that update brings in
+the probing.
 
 Packaged desktop feed channels derive from their build tag and package owner.
 Changing a source channel is not an MSIX or Store channel switch. Canary builds
