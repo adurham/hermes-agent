@@ -11804,6 +11804,54 @@ quick rename, before it's upstream-shaped.
 * Anything in `agent/fork/` and anything listed under "must never be sent
   upstream" above — the PR #25234 lesson applies without exception.
 
+### Live fork surface — current inventory (verified 2026-09-24)
+
+**Verified against `git diff upstream/main...HEAD` (merge-base = `v2026.9.24`) on
+2026-09-24 — regenerate the counts, don't hand-edit them.** The tables above are
+the detailed history; this is the current-state map. 239 fork-only paths / 636
+shared files differ / 4 upstream files deleted.
+
+**Fork-only code (not tests/docs), by area — everything here has no upstream
+equivalent as of v2026.9.24:**
+
+| Area | What it is |
+|---|---|
+| `agent/fork/*` (13 modules + harness) | skill-recall, memory-recall, session-pin, rate-limit tracker, refusal-recovery, server-tool passes, stream-recovery, lazy MCP tool stubs, diagnostics, consult-nudge, native web search, mixin |
+| `agent/cc_aliases.py`, `agent/cc_canonical/`, `agent/exo_canonical_serializer.py`, `agent/failover_state.py` | CC wire-shape parity (billing identity), exo byte contract, failover state |
+| `agent/hot_tier_audit.py` | hot-memory staleness audit |
+| memory subsystem | `tools/memory_warm.py`, `tools/memory_extraction/*`, `tools/memory_auto_feedback/*`, `hermes_cli/memory_confirm.py` |
+| delegation / personas | `tools/delegation_router.py`, `tools/delegate_tool.py` deltas, `hermes_cli/model_tiers.py`, `hermes_cli/personas.py`, `hermes_cli/persona_library.py`, `hermes_cli/ruflo_agents.py`, `tools/personas_sync.py`, `personas/delegation/*`, `hermes_cli/delegation_stats.py` |
+| agent messaging / cross-session | `tools/agent_messaging_*` (contract, tools, Transport A), `tools/cross_session_*`, `gateway/agent_messaging_bridge.py`, `hermes_cli/agents_inbox.py`, `hermes_cli/subcommands/agents.py` |
+| web plugins | `plugins/web/claude_code/`, `plugins/web/trafilatura/`, `plugins/model-providers/exo/`, `tools/web_tools.py` chain |
+| tooling / CLI | `tools/consult_tool.py`, `tools/hermes_load_tools.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py`, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` |
+| desktop | pet zone/voice (`store/pet-voice.ts`), `lib/model-fallback-label.ts`, `session-row-state.ts` drag handle, `sync-version.mjs`, version-sync prebuild |
+| scripts / CI | `scripts/setup-merge-drivers.sh`, `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_hard_eval.py`, `hermes_token_check.py`, `refresh_cc_canonical.sh`, `check-unspecced-sdk-mocks.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` |
+
+**Deleted from the fork on purpose (do NOT re-carry at the next sync):** Google
+Code Assist OAuth providers, the vendored Anthropic converter, `submit.py` (shim
+only), `swarm_board.py`, `swarm_tool.py`, `keyboard_protocol.py`, the dead-half
+desktop modules — plus the 4 upstream files the fork deletes on purpose
+(`after-extract.mjs` + its test via the resedit divergence, a stray contributor
+email file, `test_stream_flush_left.py`).
+
+**Retired 2026-09-24 (this pass):** the xAI-entitlement shim, the duplicate
+`_apply_claude_code_identity`, 7 dead `model_metadata` helpers, the dead
+`fast_mode=` pricing plumbing, `.sync/` + `FORK_INVENTORY.md` +
+`hermes-already-has-routines.md` + `cron-heartbeat`/`cron-started`.
+
+**Biggest shared-file deltas (soft-fork, churn vs upstream/main):** `cli.py`
+~6.6k lines, `agent/anthropic_adapter.py` ~3.6k, `hermes_cli/gateway.py` ~1.4k,
+`agent/auxiliary_client.py` ~1.1k, `tools/delegate_tool.py` ~0.8k,
+`agent/chat_completion_helpers.py` ~0.4k, `hermes_state.py` ~0.35k.
+
+**Tests:** 132 fork-only test files (verified 2026-09-24 — `tests/**` present in
+the fork and absent upstream; regenerate, don't hand-count). Concentrated in
+`tests/agent` (45), `tests/hermes_cli` (34), `tests/tools` (30), `tests/gateway`
+(6), plus memory-extraction / plugin / state / acp suites. `known_failing.txt`
+is fork-only and all its nodeids still resolve.
+
+---
+
 ## Future upstream merges
 
 **Cadence is the #1 conflict lever.** Conflict count scales with drift, measured:
