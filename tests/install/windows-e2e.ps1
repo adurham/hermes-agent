@@ -521,6 +521,37 @@ function Invoke-ManualCardUpdate([string]$ReceiptPath, [string]$TargetSha) {
     Assert-True ($null -ne (Get-DesktopExe)) "Hermes.exe still present after manual update"
 }
 
+function Clear-HistoricalInstallerChurn {
+    # The GUI driver refuses a dirty source tree. v2026.7.1's installer leaves
+    # its own state there: `npm install` rewrites package-lock.json on Windows
+    # (later installers use `npm ci`, #112378) and v2026.6.19-era installers
+    # write an unignored .install_method. Undo only that installer-generated
+    # state in this disposable clone; any other change still fails, listed.
+    # porcelain=v2: Invoke-Git trims output, which would eat v1's leading " M".
+    $lines = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain=v2", "--untracked-files=all")) -split "\r?\n" |
+        Where-Object { $_ })
+    if ($lines.Count -eq 0) { return }
+    Write-Host "  source status before GUI update:"
+    $lines | ForEach-Object { Write-Host "    $_" }
+    $locks = @(); $other = @()
+    foreach ($line in $lines) {
+        $fields = $line -split " ", 9
+        if ($fields[0] -eq "1" -and $fields[1] -eq ".M" -and $fields.Count -eq 9 -and
+            ($fields[8] -eq "package-lock.json" -or $fields[8] -like "*/package-lock.json")) {
+            $locks += $fields[8]
+        } elseif ($line -eq "? .install_method") {
+            Add-Content -LiteralPath (Join-Path $InstallDir ".git\info\exclude") -Value "/.install_method"
+        } else {
+            $other += $line
+        }
+    }
+    Assert-True ($other.Count -eq 0) "installed source has only installer-generated changes (other: $($other -join '; '))"
+    if ($locks.Count) { Invoke-Git (@("-C", $InstallDir, "checkout", "--") + $locks) | Out-Null }
+    $left = @((Invoke-Git @("-C", $InstallDir, "status", "--porcelain", "--untracked-files=all")) -split "\r?\n" |
+        Where-Object { $_ })
+    Assert-True ($left.Count -eq 0) "undid only installer-generated source churn before the GUI update"
+}
+
 function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     # The hermes-desktop launch surface: `hermes desktop` runs its whole
     # real pipeline; the driver intercepts the product's final spawn
@@ -550,6 +581,7 @@ function Invoke-HermesDesktopAppUpdate([string]$TargetSha) {
     Write-LogGroup "hermes desktop (launch capture) transcript" $log
     Assert-True ($capExit -eq 0) "hermes desktop exited 0 during launch capture"
     Assert-True (Test-Path -LiteralPath "$spec.captured") "a launch was actually captured (exit 0 without a launch must not pass)"
+    Clear-HistoricalInstallerChurn
 
     $node = $DriverNode
     $chatOut = Join-Path $ProofRoot 'update-window'
