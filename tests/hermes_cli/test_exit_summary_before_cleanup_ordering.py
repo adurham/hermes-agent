@@ -49,6 +49,16 @@ from pathlib import Path
 
 CLI_PY = Path(__file__).resolve().parents[2] / "cli.py"
 
+# Upstream's v2026.9.21 CLI decomposition moved exit paths OUT of cli.py: the `-q` path
+# into cli_single_query.py and the interactive shutdown into cli_tui_runtime_mixin.py.
+# The ordering invariant covers all three exit paths, so scan every module that hosts one —
+# pairing is still checked per file (offsets are per-file).
+EXIT_PATH_SOURCES = (
+    CLI_PY,
+    CLI_PY.parent / "hermes_cli" / "cli_single_query.py",
+    CLI_PY.parent / "hermes_cli" / "cli_tui_runtime_mixin.py",
+)
+
 
 def _find_all(pattern: str, text: str) -> list[int]:
     return [m.start() for m in re.finditer(re.escape(pattern), text)]
@@ -130,6 +140,26 @@ def test_print_exit_summary_precedes_run_cleanup_on_every_interactive_exit_site(
             "manually that ordering is still correct for this call site."
         )
 
+    # Same invariant in the extracted shutdown home (upstream's CLI decomposition moved the
+    # interactive exit out of cli.py; scanning only cli.py would silently stop checking it).
+    shutdown_src = (CLI_PY.parent / "hermes_cli" / "cli_tui_runtime_mixin.py").read_text(encoding="utf-8")
+    shutdown_cleanups = [pos for pos, line in zip(
+        (m.start() for m in re.finditer(r"^.*$", shutdown_src, flags=re.MULTILINE)),
+        shutdown_src.splitlines()) if line.strip() == "_run_cleanup()"]
+    shutdown_summaries = _find_all("self._print_exit_summary()", shutdown_src)
+    assert shutdown_cleanups, "expected a _run_cleanup() call in cli_tui_runtime_mixin.py"
+    for cleanup_pos in shutdown_cleanups:
+        preceding = [p for p in shutdown_summaries if p < cleanup_pos]
+        assert preceding, (
+            f"_run_cleanup() at offset {cleanup_pos} in cli_tui_runtime_mixin.py has no "
+            "preceding self._print_exit_summary() call; the watchdog can guillotine the "
+            "cost report if cleanup runs first."
+        )
+        assert cleanup_pos - max(preceding) < 600, (
+            f"_run_cleanup() at offset {cleanup_pos} in cli_tui_runtime_mixin.py is "
+            f"{cleanup_pos - max(preceding)} chars after the nearest exit summary."
+        )
+
 
 def test_memory_confirm_precedes_print_exit_summary_on_every_exit_site():
     """Every `self._print_exit_summary()` / `cli._print_exit_summary()`
@@ -147,15 +177,31 @@ def test_memory_confirm_precedes_print_exit_summary_on_every_exit_site():
     ) + _bare_call_positions("cli._print_exit_summary()", src)
     confirm_positions = _bare_call_positions("_run_memory_confirm_before_exit()", src)
 
-    assert len(confirm_positions) >= 3, (
+    # The `-q` exit path moved to its own sibling in upstream's CLI decomposition; check its
+    # pairing separately (offsets are per-file, so file A's positions can't pair with file B's).
+    sq_src = (CLI_PY.parent / "hermes_cli" / "cli_single_query.py").read_text(encoding="utf-8")
+    sq_summaries = _bare_call_positions("cli._print_exit_summary()", sq_src)
+    sq_confirms = _bare_call_positions("_run_memory_confirm_before_exit()", sq_src)
+    for summary_pos in sq_summaries:
+        preceding = [p for p in sq_confirms if p < summary_pos]
+        assert preceding and summary_pos - max(preceding) < 800, (
+            f"cli_single_query.py's exit summary at offset {summary_pos} is not directly "
+            "preceded by _run_memory_confirm_before_exit(); the memory-confirm LLM spend "
+            "must be folded into the total the summary prints."
+        )
+
+    total_summary_sites = len(summary_call_positions) + len(sq_summaries)
+    total_confirm_sites = len(confirm_positions) + len(sq_confirms)
+
+    assert total_confirm_sites >= 3, (
         "Expected _run_memory_confirm_before_exit() to appear as a bare "
-        "call at least 3 times in cli.py (stdin-unavailable exit, main "
-        f"run() exit, single-query exit); found {len(confirm_positions)}."
+        "call at least 3 times across the exit paths (stdin-unavailable exit, "
+        f"main run() exit, single-query exit); found {total_confirm_sites}."
     )
 
-    assert len(summary_call_positions) >= 3, (
+    assert total_summary_sites >= 3, (
         "Expected at least 3 exit-summary call sites (self._print_exit_summary "
-        f"x2 + cli._print_exit_summary x1); found {len(summary_call_positions)}."
+        f"x2 + cli._print_exit_summary x1); found {total_summary_sites}."
     )
 
     for summary_pos in summary_call_positions:

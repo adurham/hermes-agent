@@ -35,9 +35,9 @@ def _make_cli(approvals_cfg=None):
     obj._invalidate = MagicMock()
     obj._capture_modal_input_snapshot = MagicMock()
     obj._restore_modal_input_snapshot = MagicMock()
-    obj._approval_choices = lambda command, allow_permanent=True, smart_denied=False: (
-        ["once", "session", "always", "deny"] if allow_permanent
-        else ["once", "session", "deny"]
+    obj._approval_choices = lambda command, allow_permanent=True, allow_session=True, smart_denied=False: (
+        [ "once", "deny" ] if (smart_denied or not allow_session)
+        else (["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"])
     )
     if approvals_cfg is not None:
         # Patch the module-level CLI_CONFIG so the helper sees test config.
@@ -144,9 +144,11 @@ class TestApprovalTimeoutWiring:
 
         # Patch _get_approval_timeout to a recognisable sentinel value and
         # immediately put a response into the queue so the loop exits fast.
+        # Upstream's v2026.9.21 decomposition moved the symbol from tools.approval to
+        # tools.approval_context; patch it where the callback now resolves it.
         original_get = None
         try:
-            import tools.approval as approval_mod
+            import tools.approval_context as approval_mod
             original_get = approval_mod._get_approval_timeout
             sentinel_seen = {"called": False}
 
@@ -174,5 +176,5 @@ class TestApprovalTimeoutWiring:
                 "_get_approval_timeout was not consulted — timeout still hardcoded?"
         finally:
             if original_get is not None:
-                import tools.approval as approval_mod
+                import tools.approval_context as approval_mod
                 approval_mod._get_approval_timeout = original_get

@@ -3,6 +3,11 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docs: [
     'user-stories',
+    // The Skills/Plugins hubs live in the navbar. On mobile Docusaurus opens the drawer on the doc
+    // sidebar, with the navbar a "Back to main menu" tap away, so without these links the hubs are
+    // undiscoverable on a phone.
+    {type: 'link', label: 'Browse Skills', href: '/skills'},
+    {type: 'link', label: 'Browse Plugins', href: '/plugins'},
     {
       type: 'category',
       label: 'Getting Started',
@@ -52,6 +57,7 @@ const sidebars: SidebarsConfig = {
           ],
         },
         'user-guide/sessions',
+        'user-guide/session-storage-recovery',
         'user-guide/profiles',
         'user-guide/profile-distributions',
         'user-guide/multi-profile-gateways',
@@ -358,9 +364,10 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-ai-presenter-video',
-                    'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-archify',
+                    'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
+                    'user-guide/skills/optional/creative/creative-auteur',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-comfyui',
@@ -372,6 +379,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-impeccable',
+                    'user-guide/skills/optional/creative/creative-ip-as-logo',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
                     'user-guide/skills/optional/creative/creative-mono-color',
@@ -548,6 +556,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
                     'user-guide/skills/optional/productivity/productivity-here-now',
+                    'user-guide/skills/optional/productivity/productivity-live-dashboard',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
