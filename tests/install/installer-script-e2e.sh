@@ -473,10 +473,19 @@ case "$UPDATE_METHOD" in
 
     step "capturing the hermes desktop launch spec (build runs for real)"
     rc=0
-    (cd "$INSTALL_DIR" && \
-      PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
-      HERMES_E2E_CAPTURE_LAUNCH="$SPEC" \
-      source_build_env "$HERMES" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+    if [ "$HERMES" = "$INSTALL_DIR/.hermes/bin/hermes" ]; then
+      # The PM launcher uses -I: PYTHONPATH/sitecustomize cannot reach it.
+      # Ask the installed launcher for its own isolated command, then inject
+      # the driver hook into that command without changing product code.
+      (cd "$INSTALL_DIR" && source_build_env python3 -I "$ASSETS/launch-capture/pm-launch.py" \
+        "$HERMES" "$SPEC" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+    else
+      # Pre-PM console scripts load sitecustomize from PYTHONPATH.
+      (cd "$INSTALL_DIR" && \
+        PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
+        HERMES_E2E_CAPTURE_LAUNCH="$SPEC" \
+        source_build_env "$HERMES" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+    fi
     log_group "hermes desktop (launch capture) transcript" "$LOG_DIR/desktop-launch-capture.log"
     [ "$rc" -eq 0 ] || fail "hermes desktop exited $rc during launch capture; transcript above"
     # Exit 0 without a capture means a version that never reached its
