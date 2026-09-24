@@ -3400,14 +3400,11 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
 
 /**
  * The App Installer feed base URL for a bundled MSIX install: config.yaml's
- * `updates.desktop_feed_base_url`, then HERMES_DESKTOP_FEED_BASE_URL, then
- * Windows' registered App Installer source when no override is set.
+ * `updates.desktop_feed_base_url`, else Windows' registered App Installer
+ * source.
  */
 function resolveDesktopFeedBaseUrl(): string {
-  return resolveFeedBaseUrl(
-    readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml')),
-    process.env.HERMES_DESKTOP_FEED_BASE_URL
-  )
+  return resolveFeedBaseUrl(readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml')))
 }
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
