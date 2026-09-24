@@ -12,6 +12,12 @@ _MUTATIONS = {
     "commit", "add", "rm", "update-ref", "branch", "worktree", "tag",
 }
 _TARGET_OPTIONS = {"--git-dir", "--work-tree"}
+# `git config` flags that answer a query; any of them makes the call read-only.
+_CONFIG_READ_FLAGS = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
+# `git config` options whose value is the next argv entry, so it is not the key.
+_CONFIG_VALUE_OPTIONS = {"-f", "--file", "--blob", "--type", "--default", "--comment", "--value", "--url"}
+# `git config <subcommand> <key>` (Git 2.46+): the key follows the subcommand.
+_CONFIG_WRITE_SUBCOMMANDS = {"set", "unset", "rename-section", "remove-section"}
 _VALUE_OPTIONS = _TARGET_OPTIONS | {"-C", "-c", "--namespace", "--super-prefix"}
 
 def _command_name(token):
@@ -80,6 +86,27 @@ def _git_verb_and_targets(tail, kwargs):
                 explicit[name] = value
     return None, [], []
 
+def _config_writes_url_rewrite(after):
+    """True when `git config <after>` writes a url.<base>.insteadOf/pushInsteadOf key."""
+    positional = []
+    index = 0
+    while index < len(after):
+        arg = after[index]
+        index += 1
+        if arg in _CONFIG_READ_FLAGS:
+            return False
+        if arg.startswith("-"):
+            if arg in _CONFIG_VALUE_OPTIONS:
+                index += 1
+            continue
+        positional.append(arg)
+    if positional and positional[0] in {"get", "list"}:
+        return False
+    if positional and positional[0] in _CONFIG_WRITE_SUBCOMMANDS:
+        positional = positional[1:]
+    key = positional[0].lower() if positional else ""
+    return key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof"))
+
 def blocked_git_mutation(cmd, kwargs, protected_roots):
     tail = _git_argv_tail(cmd)
     if tail is None:
@@ -87,9 +114,7 @@ def blocked_git_mutation(cmd, kwargs, protected_roots):
     verb, targets, after = _git_verb_and_targets(tail, kwargs or {})
     if verb == "config":
         # Querying config is safe; writing URL rewrites into the checkout is not.
-        if any(arg in {"--get", "--get-all", "--get-regexp", "--list", "-l"} for arg in after):
-            return None
-        if not any("url." in arg and ".insteadof" in arg.lower() for arg in after):
+        if not _config_writes_url_rewrite(after):
             return None
     elif verb not in _MUTATIONS:
         return None
