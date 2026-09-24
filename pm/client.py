@@ -26,10 +26,71 @@ def _missing_or_refuse(name):
     return missing
 
 
+def _refuse_cold_runtime(cold: InstallError, arguments) -> InstallError:
+    """Record a lazy sync refused because PM's own runtime is missing; return the error to raise."""
+    from pm import receipt
+
+    exc = cold
+    if arguments.get("extras"):
+        # The user asked for an extra, not for PM's own runtime: name
+        # the command that provisions both.
+        from pm.extras import install_hint
+
+        exc = InstallError(cold.package, f"{cold.cause} while enabling {list(arguments['extras'])}",
+                           "run `" + "`, `".join(install_hint(extra) for extra in arguments["extras"]) + "`")
+    token = receipt.begin("sync")
+    try:
+        receipt.record_refusal("lazy-install", str(exc))
+        receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
+    finally:
+        receipt.finalize("failed", 1, token=token)
+    return exc
+
+
+def _worker_command(spec, arguments, worker: Path, environment: dict) -> list[str]:
+    """How to start the worker; may disable lazy installs in *environment*."""
+    from pm.install import lazy_installs_allowed
+    from pm.registry import get_package
+
+    # Bootstrap precedes dispatch and must share the operation's selected cache.
+    cache = Path(arguments["cache"]) if arguments.get("cache") is not None else None
+    state_sync = spec.bootstrap == "policy" or (
+        spec.bootstrap == "state" and isinstance(get_package(arguments["name"]), StatePackage))
+    if (state_sync and not arguments.get("explicit") and not arguments.get("repair")
+            and not lazy_installs_allowed()):
+        # A ready PM still decides no-op/refusal under its install lock. A cold
+        # PM is itself a missing prerequisite, not permission to bootstrap tools.
+        try:
+            command = runtime_command(worker, bootstrap=False, cache=cache)
+        except InstallError as cold:
+            raise _refuse_cold_runtime(cold, arguments) from None
+        environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+        return command
+    if spec.bootstrap == "never":
+        return runtime_command(worker, bootstrap=False, cache=cache)
+    return runtime_command(worker, cache=cache)
+
+
+_WORKER_ERRORS = {"ValueError": ValueError, "TypeError": TypeError, "KeyError": KeyError,
+                  "OSError": OSError, "FileExistsError": FileExistsError,
+                  "FileNotFoundError": FileNotFoundError, "PermissionError": PermissionError}
+
+
+def _raise_worker_error(error: dict):
+    """Re-raise a worker failure as the caller-side exception it names."""
+    if "package" in error:
+        from pm.workspace import ResolutionConflict
+        kind = ResolutionConflict if error["type"] == "ResolutionConflict" else InstallError
+        raise kind(error["package"], error["cause"], error["remedy"])
+    if error["type"] == "DownloadPaused":
+        from pm.downloader import DownloadPaused
+        raise DownloadPaused(error["message"])
+    raise _WORKER_ERRORS.get(error["type"], RuntimeError)(error["message"])
+
+
 def _request(operation, arguments, *, callbacks=None, pause_event=None, project_root=None):
     from pm import receipt
-    from pm.install import lazy_installs_allowed
-    from pm.registry import get_package, package_definitions
+    from pm.registry import package_definitions
 
     request_id = uuid.uuid4().hex
     update_id = receipt._ambient_update_id()
@@ -46,38 +107,8 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
                     "lockfile": str(paths.lockfile_path())},
     }
     worker = Path(__file__).with_name("worker.py").resolve()
-    # Bootstrap precedes dispatch and must share the operation's selected cache.
-    cache = Path(arguments["cache"]) if arguments.get("cache") is not None else None
     environment = runtime_environment()
-    state_sync = spec.bootstrap == "policy" or (
-        spec.bootstrap == "state" and isinstance(get_package(arguments["name"]), StatePackage))
-    if (state_sync and not arguments.get("explicit") and not arguments.get("repair")
-            and not lazy_installs_allowed()):
-        # A ready PM still decides no-op/refusal under its install lock. A cold
-        # PM is itself a missing prerequisite, not permission to bootstrap tools.
-        try:
-            command = runtime_command(worker, bootstrap=False, cache=cache)
-        except InstallError as cold:
-            exc = cold
-            if arguments.get("extras"):
-                # The user asked for an extra, not for PM's own runtime: name
-                # the command that provisions both.
-                from pm.extras import install_hint
-
-                exc = InstallError(cold.package, f"{cold.cause} while enabling {list(arguments['extras'])}",
-                                   "run `" + "`, `".join(install_hint(extra) for extra in arguments["extras"]) + "`")
-            token = receipt.begin("sync")
-            try:
-                receipt.record_refusal("lazy-install", str(exc))
-                receipt.record_step("dependency-sync", False, f"{type(exc).__name__}: {exc}")
-            finally:
-                receipt.finalize("failed", 1, token=token)
-            raise exc from None
-        environment["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
-    elif spec.bootstrap == "never":
-        command = runtime_command(worker, bootstrap=False, cache=cache)
-    else:
-        command = runtime_command(worker, cache=cache)
+    command = _worker_command(spec, arguments, worker, environment)
     callback_error = None
     stopped = threading.Event()
     write_lock = threading.Lock()
@@ -136,18 +167,7 @@ def _request(operation, arguments, *, callbacks=None, pause_event=None, project_
             if callback_error is not None:
                 raise callback_error
             if "error" in response:
-                error = response["error"]
-                if "package" in error:
-                    from pm.workspace import ResolutionConflict
-                    kind = ResolutionConflict if error["type"] == "ResolutionConflict" else InstallError
-                    raise kind(error["package"], error["cause"], error["remedy"])
-                if error["type"] == "DownloadPaused":
-                    from pm.downloader import DownloadPaused
-                    raise DownloadPaused(error["message"])
-                kind = {"ValueError": ValueError, "TypeError": TypeError, "KeyError": KeyError,
-                        "OSError": OSError, "FileExistsError": FileExistsError,
-                        "FileNotFoundError": FileNotFoundError, "PermissionError": PermissionError}.get(error["type"], RuntimeError)
-                raise kind(error["message"])
+                _raise_worker_error(response["error"])
             return response["result"]
         finally:
             stopped.set()
