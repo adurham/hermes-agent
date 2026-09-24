@@ -90,8 +90,14 @@ test('test-only source probe pins staged main without changing other Python invo
   expected[expected.indexOf('--git') + 1] = '/real/git'
   expected.push('--branch', 'main')
   expect(sourceBranchProbe.branchProbeArgs(probe, root, '/real/git')).toEqual(expected)
+  const managed = ['--run-module', 'hermes_cli.source_check', ...probe.slice(2)]
+  expect(sourceBranchProbe.branchProbeArgs(managed, root, '/real/git')).toEqual([
+    '--run-module', 'hermes_cli.source_check', ...expected.slice(2),
+  ])
   expect(sourceBranchProbe.branchProbeArgs(probe, '/other/install', '/real/git')).toBe(probe)
+  expect(sourceBranchProbe.branchProbeArgs(managed, '/other/install', '/real/git')).toBe(managed)
   expect(sourceBranchProbe.branchProbeArgs(['-c', 'print("hermes_cli/source_check.py")'], root, '/real/git')).toEqual(['-c', 'print("hermes_cli/source_check.py")'])
+  expect(sourceBranchProbe.branchProbeArgs(['--run-module', 'hermes_cli.config', ...managed.slice(2)], root, '/real/git')).toEqual(['--run-module', 'hermes_cli.config', ...managed.slice(2)])
   expect(sourceBranchProbe.branchProbeArgs([...probe, '--branch', 'topic'], root, '/real/git')).toEqual([...probe, '--branch', 'topic'])
   expect(sourceBranchProbe.branchProbeArgs(probe, root, '')).toBe(probe)
 })

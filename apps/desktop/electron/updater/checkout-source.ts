@@ -49,9 +49,11 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
   // existing path until that transport is migrated.
   const managed = process.platform !== 'win32' && existsSync(path.join(probe.updateRoot, 'pm'))
   const launcher = managed ? resolveInstallationLauncher(probe.updateRoot, false, probe.hermesHome) : null
+
   if (managed && !launcher) {
     throw new Error('The source installation launcher is missing; repair this installation before checking updates.')
   }
+
   if (!managed && !probe.python) {
     throw new Error('No Python interpreter is available to check the source update channel.')
   }

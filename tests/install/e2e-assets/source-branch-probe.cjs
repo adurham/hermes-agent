@@ -45,9 +45,11 @@ function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv,
 }
 
 function branchProbeArgs(args, root, realGit) {
-  if (!root || !realGit || !Array.isArray(args) || args[0] !== '-c'
-      || !args[1]?.includes('runpy.run_path(str(p))')
-      || !args[1]?.includes('hermes_cli/source_check.py')
+  if (!root || !realGit || !Array.isArray(args)) return args
+  const legacy = args[0] === '-c' && args[1]?.includes('runpy.run_path(str(p))')
+    && args[1]?.includes('hermes_cli/source_check.py')
+  const managed = args[0] === '--run-module' && args[1] === 'hermes_cli.source_check'
+  if (!(legacy || managed)
       || args[args.indexOf('--install-root') + 1] !== root
       || !args.includes('--git') || args.includes('--branch')) return args
   const selected = [...args]

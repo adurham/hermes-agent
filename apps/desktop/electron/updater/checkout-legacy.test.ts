@@ -82,6 +82,7 @@ it.skipIf(process.platform === 'win32')('uses the install-scoped PM launcher rat
   fs.mkdirSync(path.join(root, 'pm'))
   fs.mkdirSync(home)
   fs.writeFileSync(launcher, '#!/bin/sh\n[ "$1" = --run-module ] && [ "$2" = hermes_cli.source_check ] || exit 5\nprintf \'%s\\n\' \'{"supported":true,"channel":"stable","behind":-1}\'\n', { mode: 0o755 })
+
   try {
     const probe = { python: '/nonexistent/system-python', git: 'git', updateRoot: root, hermesHome: home, channel: 'stable' as const }
     await expect(readSourceUpdate(probe)).resolves.toMatchObject({ supported: true, channel: 'stable', behind: null })
