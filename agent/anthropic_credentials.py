@@ -706,21 +706,6 @@ def _mirror_claude_code_credentials_to_keychain(
 
 # ── Resolution ──
 
-    # FORK (see FORK.md, 2026-07-13): mirror the refreshed credential into the
-    # macOS Keychain so Hermes and Claude Code stay on one shared token
-    # family. Without this, a Hermes refresh strands the Keychain's refresh
-    # token; Claude Code's next launch retries it, Anthropic's reuse detection
-    # revokes the whole token family, and both apps 401 until /login. Best
-    # effort — all sync failures degrade to logger.debug inside.
-    keychain_oauth: Dict[str, Any] = {
-        "accessToken": access_token,
-        "refreshToken": refresh_token,
-        "expiresAt": expires_at_ms,
-    }
-    if scopes is not None:
-        keychain_oauth["scopes"] = scopes
-    _sync_claude_code_credentials_to_keychain(keychain_oauth)
-
 
 def _sync_claude_code_credentials_to_keychain(oauth_data: Dict[str, Any]) -> None:
     """Mirror refreshed OAuth credentials into the macOS Keychain entry.
