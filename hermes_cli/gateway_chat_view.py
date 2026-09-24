@@ -64,6 +64,10 @@ class GatewayChatView:
                 continue
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
+            if kind == "session.replay_gap":
+                self.failure = GatewayClientError("session_replay_gap")
+                self.changed.set()
+                return
             admission = params.get("admission_id") or payload.get("admission_id")
             handler = {
                 "message.delta": self._delta, "message.complete": self._complete,

@@ -60,6 +60,26 @@ async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
 
 
 @pytest.mark.asyncio
+async def test_oneshot_replay_gap_fails_instead_of_waiting_forever():
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.gateway_client import GatewayClientError
+
+    class Peer:
+        events = asyncio.Queue()
+
+        async def rpc(self, method, **params):
+            assert method == "prompt.submit"
+            self.events.put_nowait({"method": "event", "params": {
+                "type": "session.replay_gap", "session_id": "stored",
+                "payload": {"reason": "subscriber_overflow"}}})
+            return {"admission_id": "mine"}
+
+    view = GatewayChatView(Peer(), {"stored_session_id": "stored"}, quiet=True)
+    with pytest.raises(GatewayClientError, match="session_replay_gap"):
+        await asyncio.wait_for(view.run("query", oneshot=True), 2)
+
+
+@pytest.mark.asyncio
 async def test_oneshot_refuses_unknown_blocked_session_before_submitting(capsys):
     """After a SIGKILL mid-turn the head admission is ``unknown``; a new -q admission would queue
     behind it forever. One-shot refuses BEFORE submitting (exit 3) and names the discard remedy."""
