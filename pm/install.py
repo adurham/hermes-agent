@@ -260,6 +260,54 @@ def _publish_entry(package, store, staged, entry, previous_entry, target):
         _remove_entry(store, previous_entry.name)
 
 
+def _settle_previous_entry(package, store, entry, previous_entry, previous, target) -> None:
+    """Finish or undo a publication an earlier install left behind."""
+    if not previous_entry.exists():
+        return
+    # Facts commit last. Stages have no host-side commit record, so
+    # an interrupted stage always restores its prior usable bytes.
+    if (previous and previous.get("entry") == entry.name
+            and _entry_verified(package, previous, store, target)):
+        _remove_entry(store, previous_entry.name)
+    else:
+        _restore_previous_entry(store, entry, previous_entry)
+
+
+def _entry_current(package, lockfile, facts, store, entry, previous, version, pin, target) -> bool:
+    if facts is not None:
+        return previous is not None and facts.installed(
+            package.name, version, store.root, _identity(lockfile, package.name, target)
+        ) and _entry_verified(package, previous, store, target)
+    try:
+        recorded = (entry / ".pm-stage-pin.json").read_text(encoding="utf-8-sig")
+    except OSError:
+        recorded = None
+    return recorded == pin and not package.verify(entry, target)
+
+
+def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
+    source_facts, source_store = copy_from
+    source = source_facts.get(package.name)
+    if (not source_facts.installed(package.name, version, source_store.root,
+                                   _identity(lockfile, package.name, target))
+            or not _entry_verified(package, source, source_store, target)):
+        raise InstallError(package.name, "bundled copy source failed verification")
+    shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
+    if tree_digest(staged) != source["digest"]:
+        raise InstallError(package.name, "copied bytes do not match the bundled source")
+
+
+def _log_repair(package, previous, version, artifacts) -> None:
+    """Work item 6: replacing an ESTABLISHED fact is a repair — log it,
+    no transaction system, no receipt file."""
+    if not previous or "entry" not in previous:
+        return
+    old_artifact = (previous.get("artifacts") or ["?"])[0]
+    old = f"{previous.get('version', '?')}/{str(old_artifact)[:12]}"
+    new = f"{version}/{artifacts[0]['sha256'][:12]}" if artifacts else version
+    LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
+
+
 def _install(
     package: Package,
     lockfile: Lockfile,
@@ -299,25 +347,9 @@ def _install(
             facts.reload()
         previous = facts.get(package.name) if facts is not None else None
         previous_entry = store.entry(f".previous-{'stage-' if facts is None else ''}{entry_name}")
-        if previous_entry.exists():
-            # Facts commit last. Stages have no host-side commit record, so
-            # an interrupted stage always restores its prior usable bytes.
-            if (previous and previous.get("entry") == entry_name
-                    and _entry_verified(package, previous, store, target)):
-                _remove_entry(store, previous_entry.name)
-            else:
-                _restore_previous_entry(store, entry, previous_entry)
-        if facts is not None:
-            current = previous is not None and facts.installed(
-                package.name, version, store.root, _identity(lockfile, package.name, target)
-            ) and _entry_verified(package, previous, store, target)
-        else:
-            try:
-                recorded = (entry / ".pm-stage-pin.json").read_text(encoding="utf-8-sig")
-            except OSError:
-                recorded = None
-            current = recorded == pin and not package.verify(entry, target)
-        if current and not _fresh_copy:
+        _settle_previous_entry(package, store, entry, previous_entry, previous, target)
+        if (_entry_current(package, lockfile, facts, store, entry, previous, version, pin, target)
+                and not _fresh_copy):
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:
@@ -330,15 +362,7 @@ def _install(
             staged = scratch / "tree"
             try:
                 if copy_from is not None:
-                    source_facts, source_store = copy_from
-                    source = source_facts.get(package.name)
-                    if (not source_facts.installed(package.name, version, source_store.root,
-                                                   _identity(lockfile, package.name, target))
-                            or not _entry_verified(package, source, source_store, target)):
-                        raise InstallError(package.name, "bundled copy source failed verification")
-                    shutil.copytree(source_store.entry(source["entry"]), staged, symlinks=True)
-                    if tree_digest(staged) != source["digest"]:
-                        raise InstallError(package.name, "copied bytes do not match the bundled source")
+                    _copy_verified_source(package, lockfile, copy_from, staged, version, target)
                 else:
                     staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
                                                 progress=progress, pause_event=pause_event,
@@ -365,17 +389,7 @@ def _install(
             except Exception as e:
                 raise InstallError(package.name, f"install failed: {e}") from e
 
-        if previous and "entry" in previous:
-            # Work item 6: replacing an ESTABLISHED fact is a repair —
-            # log it, no transaction system, no receipt file.
-            old_artifact = (previous.get("artifacts") or ["?"])[0]
-            old = f"{previous.get('version', '?')}/{str(old_artifact)[:12]}"
-            new = (
-                f"{version}/{artifacts[0]['sha256'][:12]}"
-                if artifacts
-                else version
-            )
-            LOG.info("repair: %s re-realized %s -> %s", package.name, old, new)
+        _log_repair(package, previous, version, artifacts)
     return entry
 
 
