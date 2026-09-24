@@ -72,7 +72,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 # names (see .hermes/plans/termux-removal-commit-spec.md).
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
+    ca-certificates curl iputils-ping python3 python-is-python3 gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils \
     libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -206,8 +206,9 @@ COPY hermes_constants.py hermes_constants.py
 COPY hermes_cli/__init__.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm")]'; \
-    python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"))]'; \
+    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm", "ffmpeg", "ripgrep")]'; \
+    python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"), ("ffmpeg", "ffmpeg"), ("rg", "ripgrep"))]; Path("/usr/local/bin/ffprobe").symlink_to(installed_package("ffmpeg").binary.with_name("ffprobe"))'; \
+    ffmpeg -version | head -1; ffprobe -version | head -1; rg --version | head -1; \
     python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
     node --version; npm --version; \
     browser_bin="$(python3 -c 'from pm import installed_package; print(installed_package("chromium").binary)')"; \
