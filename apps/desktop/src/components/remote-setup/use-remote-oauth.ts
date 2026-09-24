@@ -31,6 +31,7 @@ export interface RemoteOAuth {
 export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
   const { t } = useI18n()
   const g = t.settings.gateway
+
   const {
     host,
     url,
@@ -42,6 +43,7 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
     reportError,
     notify
   } = options
+
   const [signingIn, setSigningIn] = useState<boolean>(false)
   const loginSeq = useRef<number>(0)
 
