@@ -9,6 +9,7 @@ true; pm owns HOW (uv sync inside the venv package).
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
 from typing import Callable
 
 
@@ -189,7 +190,8 @@ def ensure_import(extra: str) -> None:
         app_running = bool(getattr(get_app_or_none(), "is_running", False))
     if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
         try:
-            answer = input(f"\nExtra {extra!r} requires: {', '.join(missing(extra))}\nInstall now? [Y/n] ").strip().lower()
+            answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"
+                           "Install it now? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer and answer not in {"y", "yes"}:
@@ -235,3 +237,39 @@ def ensure_and_bind(extra, importer, target_globals) -> bool:
 
 def missing(extra: str) -> tuple[str, ...]:
     return tuple(a for a in _anchors(extra) if not _importable(a))
+
+
+def _installed_in(site_packages: Path, anchor: str) -> bool:
+    """Is ``anchor`` installed under a site-packages we must not import from?"""
+    *parents, leaf = anchor.split(".")
+    parent = site_packages.joinpath(*parents)
+    if (parent / leaf).is_dir():
+        return True
+    # A top-level module can be a plain file or a compiled extension.
+    return any(entry.name.rsplit(".", 1)[-1] in {"py", "so", "pyd"}
+               for entry in parent.glob(f"{leaf}.*"))
+
+
+def legacy_selection(project_root: Path) -> list[str]:
+    """The extras PM's first generation selects when it replaces a main-era venv.
+
+    Main-era installers selected ``[all]`` and then lazily installed opt-in
+    extras (FAL, messaging SDKs, ...) into the checkout's own venv, with no
+    ledger. Selecting only ``[all]`` drops those, and the first launch after
+    the migration asks to reinstall a feature that already worked. The old
+    venv's site-packages is read, never imported: the migrating process may
+    not run from it.
+    """
+    root = Path(project_root)
+    trees = [tree for venv in (root / "venv", root / ".venv")
+             for tree in (*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages")
+             if tree.is_dir()]
+    carried = sorted(
+        # An umbrella extra shares its anchor with one member; carrying it
+        # would install every sibling the user never chose.
+        extra for extra in ANCHORS if extra not in {"messaging", "voice", "wake"}
+        # PM refuses a gated extra outside its platform even if a hand-synced venv carried it.
+        if extra_supported(extra, importable=lambda _anchor: False)
+        and any(all(_installed_in(tree, anchor) for anchor in _anchors(extra)) for tree in trees)
+    )
+    return ["all", *carried]

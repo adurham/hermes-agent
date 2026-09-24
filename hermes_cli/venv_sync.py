@@ -288,9 +288,10 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         # tail must leave the tail, not a "current" install with nothing built.
         refuse_foreign_owned_venv(root)
         arm_completion(root)
-        # Main-era installers selected [all] but had no PM ledger. Established
-        # PM installs retain their recorded extras and plugin union instead.
-        extras = ["all"] if not runtime_facts_path(root).is_file() else None
+        # Main-era installs have no PM ledger; carry what their venv held.
+        # Established PM installs retain their recorded extras and plugin union instead.
+        from pm.extras import legacy_selection
+        extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
         pm.sync_venv(extras, explicit=True, project_root=root)
         collect_superseded_generations(root)
         # These can predate the swap. Once PM commits the replacement they
