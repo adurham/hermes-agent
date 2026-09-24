@@ -75,6 +75,12 @@ also invoke setup and gateway configuration. `--non-interactive` on POSIX, or
 `-NonInteractive` on Windows, skips stages that need input. The optional
 `--include-desktop` / `-IncludeDesktop` stage builds the desktop from source.
 
+On a terminal the scripts show one status line per step and write the output
+of git, uv and the builds to `logs/install.log` under the Hermes data
+directory; a failed step prints its last lines and the log path. CI (`CI` or
+`GITHUB_ACTIONS` set), redirected output, `--verbose` / `-Verbose` or
+`HERMES_INSTALL_VERBOSE=1` stream everything instead.
+
 #### Install layout
 
 | Method | Code | CLI entry point | Default user data |
