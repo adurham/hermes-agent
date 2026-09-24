@@ -771,6 +771,9 @@ function Stage-Venv {
 # This tool-only bootstrap runs before PM's own dependencies exist. pm.cli
 # prepares and enters its independently locked runtime before installing apps.
 function Get-BootstrapPython {
+    # The full ladder runs every stage in one process and four of them need
+    # this interpreter; resolve uv and Python once per process.
+    if ($script:BootstrapPython) { return $script:BootstrapPython }
     $uv = Get-Uv
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
     $pyPin = $lock.packages.python
@@ -785,7 +788,8 @@ function Get-BootstrapPython {
         $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
-    return $bootPy.Trim()
+    $script:BootstrapPython = $bootPy.Trim()
+    return $script:BootstrapPython
 }
 
 function Invoke-BootstrapPm {
