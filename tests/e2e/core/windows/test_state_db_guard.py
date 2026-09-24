@@ -28,7 +28,7 @@ from tests.e2e.core.windows._helpers import (
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration, pytest.mark.live_system_guard_bypass]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration, pytest.mark.live_system_guard_bypass]
 
 KNOWN: dict[str, str] = {
     "foreign_holder": "#120205 foreign_state_db_holders() returns [] on Windows; the write-guard never refuses",

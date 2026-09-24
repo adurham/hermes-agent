@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 150.0

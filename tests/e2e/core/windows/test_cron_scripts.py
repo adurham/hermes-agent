@@ -23,7 +23,7 @@ import pytest
 
 from tests.e2e.core.windows._helpers import WinHome, expect, hermes, known, make_home, nonce
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
 KNOWN: dict[str, str] = {
     "sh_script": "#120504 cron .sh scripts resolve bash via bare PATH lookup (WSL stub), not Git Bash",

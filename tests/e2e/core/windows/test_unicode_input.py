@@ -34,7 +34,7 @@ from tests.e2e.core.windows._helpers import (
 from tests.e2e.core.windows._rpc import StdioGateway
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
 KNOWN: dict[str, str] = {}  # nothing red on origin/main in this file
 

@@ -49,7 +49,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
 # Real process-tree kills (taskkill /T /F, psutil) of children this test spawned with a
 # scratch USERPROFILE/HERMES_HOME; the live-system guard would refuse the taskkill argv.
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration, pytest.mark.live_system_guard_bypass]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration, pytest.mark.live_system_guard_bypass]
 
 READY_TIMEOUT = 120.0
 
