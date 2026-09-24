@@ -60,9 +60,11 @@ def complete_source_checkout(
         completion_message=completion_message,
     )
     if complete:
-        from hermes_cli.source_stamp import write_source_stamp
+        from hermes_cli.source_stamp import refresh_bootstrap_receipt, write_source_stamp
 
-        write_source_stamp(root)
+        stamp = write_source_stamp(root)
+        if stamp is not None:
+            refresh_bootstrap_receipt(root, stamp)
     return complete
 
 
