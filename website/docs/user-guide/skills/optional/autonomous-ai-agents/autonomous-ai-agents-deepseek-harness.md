@@ -21,7 +21,7 @@ Delegate coding to DeepSeek Harness (dsh) pointed at a local/OpenAI-compatible e
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `Coding-Agent`, `DeepSeek`, `DSH`, `exo`, `Local-Inference`, `Autonomous` |
-| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`grok`](/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-grok), [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`opencode`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-opencode.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`grok`](../../optional/autonomous-ai-agents/autonomous-ai-agents-grok.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 

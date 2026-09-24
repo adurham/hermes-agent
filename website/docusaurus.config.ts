@@ -83,7 +83,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+          editUrl: 'https://github.com/adurham/hermes-agent/edit/main/website/',
           // Relative `.md` links (readable on GitHub, #114428) must also resolve
           // across the zh-Hans fallback boundary; see src/remark/relativeDocLinks.js.
           beforeDefaultRemarkPlugins: [[relativeDocLinks, {siteDir: __dirname}]],

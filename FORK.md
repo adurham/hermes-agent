@@ -17632,3 +17632,187 @@ Two conflicts, both resolved as union:
 payment class), `py_compile` clean, zero conflict markers, and the mandatory
 ancestry checks pass (`v2026.9.14` is an ancestor of `main`;
 `git tag --points-at $(git merge-base main upstream/main)` = `v2026.9.14`).
+
+---
+
+### Upstream sync — 2026-09-24 (v2026.9.14 → v2026.9.21, 5173 commits, 141 conflict files)
+
+Merged tag `v2026.9.21` into `main` via `sync/upstream-2026-09-21` (merge
+commit `c046c29dca`; second parent `d8f6f2b2b6`-class tag commit
+"chore(release): v0.21.4 (v2026.9.21)"). Range `v2026.9.14..v2026.9.21`:
+5173 upstream commits — 0.72x the previous sync's 7136, and mostly a
+patch rollup (~1800 PRs) rather than a structural release. 141 conflict
+files at merge time.
+
+**Resolution approach.** Same two-tier shape as 2026-09-21: the merge was
+dispatched to 8 parallel subagents, one per disjoint group (`agent/` 19
+files, `hermes_cli/` 17, `tools/`+schema 10, `gateway/` 5, `tests/` 15,
+`apps/desktop/src` 14, `website/` 8, and `cli.py` alone), each pre-loaded
+with the per-file pitfalls from this file's own history. Two workers ran
+out of budget (`cli.py`, `website/`); the parent finished both by hand.
+
+**Mechanical classes cleared without hand-merging:**
+- **~50 generated skill-doc pages** (`website/docs/user-guide/skills/**`,
+  both catalogs): these are BUILD ARTIFACTS owned by
+  `website/scripts/generate-skill-docs.py`, whose fork-side branding line
+  (`adurham/hermes-agent` in the repo-link rewrite) was NOT conflicted.
+  Took upstream's side for every page + the 4 upstream deletions, then
+  re-ran the generator to restore the fork's URLs. Do NOT hand-merge these
+  in a future sync — resolve to upstream, regenerate.
+- **`package-lock.json`**: took upstream wholesale, then re-pinned the
+  `apps/desktop` version entry to the fork's release so lockfile and
+  package.json agree.
+- **`apps/desktop/package.json`**: real union — kept the fork's
+  version/identity/`afterPack`/`resedit`, adopted upstream's three new
+  deps (`dbus-native`, `https-proxy-agent`, `proxy-from-env`).
+
+**Desktop exe-stamping: kept the fork's resedit design against upstream's
+afterExtract move (deliberate divergence).** Upstream v2026.9.21 moved the
+stamp hook `afterPack` → `afterExtract` because rcedit cannot commit
+resource changes to the ASAR-integrity-rewritten PE (#105629). That
+constraint is specific to rcedit's in-place write path. The fork replaced
+rcedit with resedit (`9d0d09564b`, deprecated-dep removal), which rebuilds
+the PE from the parsed image instead, so the stamp survives the integrity
+rewrite and can stay on `afterPack` — where it ALSO covers
+`hermes desktop`, the installer's `--update` rebuild (`hermes desktop
+--build-only`), and a dev's manual `npm run pack`, none of which the
+afterExtract-only path reaches. Took: fork's `after-pack.mjs` +
+`set-exe-identity.mjs`, dropped upstream's `after-extract.mjs`/`.test.mjs`
+pair and the `rcedit` devDependency, and documented the upstream
+constraint in both `set-exe-identity.mjs`'s header and `install.ps1` so a
+future sync does not re-litigate it. If this script is ever switched back
+to rcedit, the hook MUST move to afterExtract in the same change.
+
+**Merge defects caught and fixed (the recurring classes, again):**
+
+1. **Upstream's CLI decomposition deleted a 1164-line block from `cli.py`,
+   but the fork's stale inline copies of those 24 methods survived and
+   SHADOWED the new mixins.** The class body wins over the MRO, so the
+   extracted mixin bodies were dead code and the fork's pre-decomposition
+   copies were live. Most were byte-identical or trivially stale, but one
+   was an outright **runtime TypeError**: the live caller
+   (`cli_tui_mixin.py`, `_tui_build_layout`) passes `connection_widget=`,
+   which the fork's older inline `_build_tui_layout_children` does not
+   accept. Resolution: adopt upstream's deletion wholesale, then PORT the
+   fork's genuine deltas into the mixins that now own them —
+   `reasoning_picker_widget`/`todo_board_widget` params,
+   `_fire_attention_signals` (kept in `cli.py` as the one fork-only method
+   with no mixin home), the delegation-id `/stop <id>` suffix in
+   `_on_tool_complete`, and the exit-ordering fix in `_tui_stdin_usable`.
+   **Lesson for the next sync:** when upstream deletes a block that a
+   mixin also defines, the fork's inline copy is NOT merely redundant — it
+   is the live one. Diff every deleted method against its mixin twin before
+   accepting the deletion, and port deltas rather than dropping them.
+
+2. **Six names the merge dropped from `cli.py`'s import block** while
+   keeping fork code that references them: `json`, `textwrap`, `Mapping`
+   (typing), `Console` (rich), `fast_safe_load`/`base_url_host_matches`/
+   `base_url_hostname` (the whole `from utils import ...` line), and
+   `get_fallback_chain`/`new_session_id`. `py_compile` passes on all of
+   them — the breakage is a module-level `NameError` at import. Caught with
+   an AST undefined-global scan (`/tmp/undef.py` pattern: collect every
+   `Name` load not bound by def/class/import/assign/args/builtins), NOT by
+   compiling. **Run an import smoke test — not just `py_compile` — on every
+   touched module after a sync.**
+
+3. **The fork's `delegate_task` subagent-cost counters were silently
+   dropped** when upstream extracted the rollup into
+   `tools/delegate_tool_results.py::_rollup_children_cost`. Upstream's new
+   helper folded only `session_estimated_cost_usd`; the fork's four
+   counters (`session_subagent_cost_usd`, `_input_tokens`,
+   `_output_tokens`, `_count`) never crossed. All four are read via
+   `getattr(..., 0.0)` defaults, so nothing crashed — `/usage` and the
+   on-exit summary would just have shown zero subagent spend forever.
+   Restored as `_rollup_children_cost`'s second half plus a new
+   `_rollup_subagent_tokens`, wired into `_finalize_child_results` (the
+   `tokens` dict shape verified against `delegate_tool_child_run.py`).
+
+4. **`hermes_cli/main.py` ended up with TWO `_looks_like_hermes_invocation`
+   definitions** — upstream's `(argv0: str)` at L452 and the fork's
+   pytest-guard `()` at L491, added side-by-side. The later definition
+   silently shadowed the earlier, so the fork's argv0 preflight raised
+   `TypeError` at import. Merged into one function with a defaulted
+   `argv0` that applies both the pytest guard and the entry-point check.
+
+5. **The fork's `_STREAM_PAD`-symmetric streaming fix was lost in the
+   cli_render extraction.** `_terminal_width_for_streaming` and
+   `_render_final_assistant_content` were extracted to
+   `hermes_cli/cli_render.py` carrying upstream's single-subtraction math;
+   the fork's double-`_STREAM_PAD` version (the streaming box's matching
+   right margin) existed only in the stale `cli.py` copy. Ported into
+   `cli_render.py`. Covered by `tests/hermes_cli/test_stream_symmetric_wrap.py`.
+
+6. **The fork's exit-ordering fix (summary BEFORE cleanup) had to follow
+   the exit paths into their new homes.** Upstream's decomposition moved
+   the `-q` path to `hermes_cli/cli_single_query.py` and the interactive
+   shutdown to `hermes_cli/cli_tui_runtime_mixin.py`, both carrying
+   upstream's original (wrong) order — `_run_cleanup()` before
+   `_print_exit_summary()`. Restored the fork's order at all three sites
+   and repointed
+   `tests/hermes_cli/test_exit_summary_before_cleanup_ordering.py` to scan
+   the new homes (it hardcoded `cli.py`, so it would have silently stopped
+   checking two of three paths). Also restored the `_fold_curator_cost_before_exit`/
+   `_run_memory_confirm_before_exit` imports the new modules needed.
+
+7. **The fork's four `_fire_attention_signals` calls were lost with the
+   deleted block.** At fork HEAD both existed: the inline `cli.py`
+   callbacks fired `_fire_attention_signals` (approvals.* config + macOS
+   osascript notification) while the mixins fired upstream's `_ring_bell`
+   (display.bell_on_prompt + OSC 9/777). They are complementary, not
+   duplicates. The merge kept only the mixin copies, silently dropping the
+   macOS native notification on approval/sudo/clarify prompts. Ported all
+   four calls back into `hermes_cli/cli_modal_mixin.py`'s live callbacks.
+
+8. **`--link` was a dead CLI knob.** `hermes_cli/subcommands/profile.py`
+   registers `--link`, `create_profile()` supports it, but
+   `hermes_cli/profile_cmd.py` never forwarded it — so `hermes profile
+   create --link` silently made a plain copy. PRE-EXISTING at fork HEAD
+   (both sides), not a merge regression; fixed since it was one line and
+   the feature was otherwise unreachable.
+
+9. **A stale fork test asserted the opposite of upstream's deliberate
+   design.** `test_clone_all_excludes_history_artifacts` asserted
+   `sessions/` must be ABSENT after `--clone-all`; upstream's own
+   `48465c3933` ("--clone-all no longer copies cron jobs") deliberately
+   re-creates `sessions/` and `cron/` as empty skeletons after the
+   content-excluding copy so the clone can run. The test had been failing
+   at fork HEAD since 2026-09-09 (it predates that commit) and was simply
+   never noticed. Rewrote it to assert the real contract — dirs exist,
+   carry no source history — and anti-tautology-checked it by removing
+   `sessions` from the exclude set and confirming it fails.
+
+**Absorbed `origin/main` drift (the work laptop's 4 commits).** `ab50353aff`
++ `14c3a067fa` (docs-URL test de-frozen to a relation), `74d4688b2b`
+(tool-search: config-less `is_deferrable_tool_name` must not apply the
+curated default defer set), `e6dc010207` (todo: restore the emoji status
+markers the v2026.9.14 merge reverted to ASCII). Merged cleanly — but note
+`tools/tool_search.py` is one of the files upstream rewrote most heavily in
+this tag (281 lines changed), so all three fixes were re-verified against
+the merged tree, not just their merge status: `tests/tools/test_tool_search.py`,
+`test_todo_tool.py`, `test_todo_nested.py`, and
+`tests/agent/test_phantom_tool_references.py` = 119 passed.
+
+**Verification.** Zero conflict markers repo-wide (swept every tracked text
+file, not just the UU set). `import` smoke test on 71 facade/sibling modules
+(2 failures found and fixed — items 2 and 4 above). AST undefined-global scan
+on every hand-edited file. Duplicate-top-level-definition scan across all 997
+changed Python files. Fork-only suites: banner, providers, anthropic-native
+web-search, aux-main-first, cc-aliases, prompt-builder, turn-context, cc-proxy
+= 121 passed. Exit-ordering, stream-symmetric-wrap, and attention-signal
+suites = 27 passed. `test_profiles.py` = 110 passed. The mandatory ancestry
+checks pass: `v2026.9.21` is an ancestor of `HEAD`, and
+`git tag --points-at $(git merge-base HEAD upstream/main)` = `v2026.9.21`.
+
+**Post-merge steps run:** `website/scripts/generate-skill-docs.py` (regenerated
+209 per-skill pages + both catalogs + sidebar, restoring the fork's URLs) and
+`scripts/sync-fork-branding.py` (39 files; fork repo URLs restored, and the
+fork-detection constants `OFFICIAL_REPO_URL`/`OFFICIAL_REPO_URLS` verified
+still pointing at NousResearch — repointing those would make `hermes update`
+think its own fork IS upstream and disable the protection).
+
+**Carried forward / not fixed here:** `apps/desktop/scripts/*.mjs` and the
+desktop TS tree were resolved by a subagent without `tsc`/vitest (no npm
+install in this clone) — TS/TSX conflicts were verified by re-reading and by
+checking every named import against its module's real exports, but a
+`tsc --noEmit` + vitest pass on the desktop tree is still owed. Also owed: a
+broader pytest sweep beyond `tests/agent`, `tests/tools`, `tests/hermes_cli`.
