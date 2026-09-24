@@ -6,6 +6,8 @@
 #   -NonInteractive       skip stages that need input
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
+#   -Verbose              stream every child command's output (the default
+#                         with redirected output and in CI)
 [CmdletBinding(PositionalBinding=$false)]
 param(
     [string]$Branch = "main",
@@ -565,7 +567,22 @@ function Ensure-Git {
     return $true
 }
 
-function Log([string]$msg) { Write-Host "[hermes] $msg" -ForegroundColor Blue }
+# The pre-pm installer's line style. ASCII glyphs: Windows PowerShell 5.1
+# reads a BOM-less script as the ANSI code page, so arrows would mojibake.
+function Log([string]$msg) { Write-Host "-> $msg" -ForegroundColor Cyan }
+function Write-Ok([string]$msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
+function Write-Warn([string]$msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
+function Write-Err([string]$msg) { Write-Host "[X] $msg" -ForegroundColor Red }
+
+function Write-Banner {
+    Write-Host ""
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Magenta
+    Write-Host "|             * Hermes Agent Installer                    |" -ForegroundColor Magenta
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Magenta
+    Write-Host "|  An open source AI agent by Nous Research.              |" -ForegroundColor Magenta
+    Write-Host "+---------------------------------------------------------+" -ForegroundColor Magenta
+    Write-Host ""
+}
 
 # Windows PowerShell 5.1 turns a native command's stderr into an ErrorRecord
 # whenever that stream is redirected inside PowerShell (`2>$null`, `2>&1`),
@@ -577,6 +594,76 @@ function Log([string]$msg) { Write-Host "[hermes] $msg" -ForegroundColor Blue }
 function Invoke-Native([scriptblock]$Command) {
     $ErrorActionPreference = 'Continue'
     & $Command
+}
+
+# Interactive runs collapse child-process output (git, uv, pm, the builds)
+# into one status line. CI, -Verbose and redirected output -- the
+# Hermes-Setup -Json driver, E2E transcripts -- keep the full stream those
+# readers parse.
+function Test-QuietOutput {
+    if ($env:CI -or $env:GITHUB_ACTIONS -or $env:HERMES_INSTALL_VERBOSE) { return $false }
+    if ($VerbosePreference -ne 'SilentlyContinue') { return $false }
+    try { return -not [Console]::IsOutputRedirected } catch { return $false }
+}
+
+function Write-StatusLine([string]$Text, [int]$Width) {
+    $line = "  $Text"
+    if ($line.Length -ge $Width) { $line = $line.Substring(0, $Width - 1) }
+    Write-Host ("`r" + $line.PadRight($Width - 1)) -NoNewline -ForegroundColor DarkGray
+}
+
+# Run a native command block like Invoke-Native: $LASTEXITCODE stays the
+# caller's to judge. Quiet mode shows $StatusLabel with the block's newest
+# output line rewritten in place, appends everything to the install log and,
+# on failure, prints the tail and the log path (-MayFail: the caller handles
+# the failure, so no report). Otherwise the label is logged and the output
+# streams to the host -- never to the pipeline, so a function returning a
+# value can call this. The block resolves its variables through this
+# function's scope, so locals here avoid the names call sites use.
+function Invoke-Logged {
+    param([string]$StatusLabel, [scriptblock]$NativeBlock, [switch]$MayFail)
+    $logWriter = $null
+    if (Test-QuietOutput) {
+        $logPath = Join-Path (Join-Path $HermesHome 'logs') 'install.log'
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $logPath) | Out-Null
+            $logWriter = New-Object System.IO.StreamWriter($logPath, $true, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {
+            # An unwritable log must not stop the install: stream instead.
+            $logWriter = $null
+        }
+    }
+    if (-not $logWriter) {
+        Log $StatusLabel
+        Invoke-Native $NativeBlock | Out-Host
+        return
+    }
+    $columns = 80
+    try { $columns = [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width) } catch { $columns = 80 }
+    $recentLines = New-Object 'System.Collections.Generic.Queue[string]'
+    try {
+        $logWriter.WriteLine("==> $StatusLabel ($((Get-Date).ToUniversalTime().ToString('s'))Z)")
+        Write-StatusLine $StatusLabel $columns
+        Invoke-Native { & $NativeBlock 2>&1 } | ForEach-Object {
+            $outputLine = "$_".TrimEnd("`r")
+            $logWriter.WriteLine($outputLine)
+            $recentLines.Enqueue($outputLine)
+            if ($recentLines.Count -gt 20) { [void]$recentLines.Dequeue() }
+            # git and uv redraw progress with bare CRs; show the newest.
+            $newest = ($outputLine -split "`r")[-1].Trim()
+            if ($newest) { Write-StatusLine "${StatusLabel}: $newest" $columns }
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $logWriter.Dispose()
+        Write-Host ("`r" + (' ' * ($columns - 1)) + "`r") -NoNewline
+    }
+    if ($exitCode -and -not $MayFail) {
+        Write-Err "$StatusLabel failed (exit $exitCode). Last output:"
+        foreach ($recent in $recentLines) { Write-Host "    $recent" }
+        Write-Host "    full log: $logPath"
+    }
+    $global:LASTEXITCODE = $exitCode
 }
 
 # Does the uv at $Path run, and is it at least the pinned version? The
@@ -620,7 +707,7 @@ function Stage-Prerequisites {
     if (-not (Ensure-Git)) {
         Fail "no pinned Git artifact for this Windows architecture"
     }
-    Log "prerequisites ok (git)"
+    Write-Ok "prerequisites ok (git)"
 }
 
 function Stage-Repository {
@@ -642,19 +729,20 @@ function Stage-Repository {
         Invoke-Native { git -C $InstallDir rev-parse --verify HEAD 2>$null } | Out-Null
         if ($LASTEXITCODE) {
             $broken = "$InstallDir.broken-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-            Log "$InstallDir has no commits (interrupted clone); moving it aside to $broken"
+            Write-Warn "$InstallDir has no commits (interrupted clone); moving it aside to $broken"
             Move-Item -LiteralPath $InstallDir -Destination $broken
         }
     }
     if (Test-Path (Join-Path $InstallDir ".git")) {
-        Log "updating $InstallDir"
+        Log "Updating $InstallDir ($Branch)"
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if ($env:HERMES_REPO_URL) {
             Invoke-Native { git -C $InstallDir remote set-url origin $RepoUrl }
             if ($LASTEXITCODE) { Fail "cannot point origin at $RepoUrl" }
         }
-        Invoke-Native { git -C $InstallDir fetch origin $Branch }; if ($LASTEXITCODE) { Fail "git fetch failed" }
+        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin $Branch }
+        if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work that
@@ -665,16 +753,17 @@ function Stage-Repository {
             # index-level conflict state keeps the working-tree changes for
             # the stash below (#4735).
             if (Invoke-Native { git -C $InstallDir ls-files --unmerged }) {
-                Log "clearing unmerged index entries from a previous conflict"
+                Write-Warn "clearing unmerged index entries from a previous conflict"
                 Invoke-Native { git -C $InstallDir reset -q }
                 if ($LASTEXITCODE) { Fail "cannot clear the unmerged index in $InstallDir" }
             }
-            Invoke-Native { git -C $InstallDir stash push --include-untracked -m "hermes-install-autostash-$stamp" }
+            Invoke-Logged "Stashing local changes" { git -C $InstallDir stash push --include-untracked -m "hermes-install-autostash-$stamp" }
             if ($LASTEXITCODE) { Fail "could not stash local changes in $InstallDir; commit or move them aside, then rerun" }
-            Log "local changes stashed as hermes-install-autostash-$stamp"
+            Write-Warn "local changes stashed as hermes-install-autostash-$stamp"
         }
-        Invoke-Native { git -C $InstallDir checkout $Branch }; if ($LASTEXITCODE) { Fail "git checkout failed" }
-        Invoke-Native { git -C $InstallDir merge --ff-only "origin/$Branch" }
+        Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
+        if ($LASTEXITCODE) { Fail "git checkout failed" }
+        Invoke-Logged -MayFail "Fast-forwarding to origin/$Branch" { git -C $InstallDir merge --ff-only "origin/$Branch" }
         if ($LASTEXITCODE) {
             # A release cut off the main line, a force-pushed remote, or the
             # user's own commits cannot fast-forward. Every stage below reads
@@ -694,11 +783,12 @@ function Stage-Repository {
                 $rescue = "refs/hermes-update-backups/$rescueKind-$Branch-$stamp-$prior"
                 Invoke-Native { git -C $InstallDir update-ref $rescue HEAD 2>$null }
                 if ($LASTEXITCODE) { Fail "cannot back up $dropped local commit(s); refusing to reset" }
-                Log "$dropped commit(s) not on origin/$Branch backed up to $rescue"
+                Write-Warn "$dropped commit(s) not on origin/$Branch backed up to $rescue"
                 Log "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescue"
             }
-            Invoke-Native { git -C $InstallDir reset --hard "origin/$Branch" }; if ($LASTEXITCODE) { Fail "git reset failed" }
-            Log "not fast-forwardable; reset to origin/$Branch"
+            Invoke-Logged "Resetting to origin/$Branch" { git -C $InstallDir reset --hard "origin/$Branch" }
+            if ($LASTEXITCODE) { Fail "git reset failed" }
+            Write-Warn "not fast-forwardable; reset to origin/$Branch"
         }
     } else {
         # Moving a clone onto an existing directory would nest it. The
@@ -706,7 +796,6 @@ function Stage-Repository {
         if (Test-Path -LiteralPath $InstallDir) {
             Remove-Item -LiteralPath $InstallDir -Force
         }
-        Log "cloning $RepoUrl ($Branch) into $InstallDir"
         $parent = Split-Path $InstallDir
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
         # Clone into a sibling staging dir and publish only a complete,
@@ -715,6 +804,10 @@ function Stage-Repository {
         $staged = Join-Path $parent ".hermes-clone-$PID-$(Get-Random)"
         $tree = Join-Path $staged "tree"
         New-Item -ItemType Directory -Force -Path $staged | Out-Null
+        # Phase lines ("Receiving objects: 42%") feed the status line; git
+        # prints none to a pipe unless asked.
+        $progress = @()
+        if (Test-QuietOutput) { $progress = @('--progress') }
         try {
             $cloned = $false
             foreach ($attempt in 1..3) {
@@ -722,7 +815,9 @@ function Stage-Repository {
                 # nearest reachable release; -Commit pins and branch switches
                 # still resolve), trees and blobs fetched on demand, so the
                 # download stays close to a --depth 1 clone.
-                Invoke-Native { git clone --filter=tree:0 --branch $Branch $RepoUrl $tree }
+                $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
+                if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
+                Invoke-Logged $cloneLabel { git clone @progress --filter=tree:0 --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -730,11 +825,11 @@ function Stage-Repository {
             if (-not $cloned) {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
-                Log "direct clone failed; trying deferred checkout"
-                Invoke-Native { git clone --filter=tree:0 --no-checkout --branch $Branch $RepoUrl $tree }
+                Write-Warn "direct clone failed; trying deferred checkout"
+                Invoke-Logged "Cloning history" { git clone @progress --filter=tree:0 --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) {
                     foreach ($attempt in 1..2) {
-                        Invoke-Native { git -C $tree reset --hard HEAD }
+                        Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }
                         if (-not $LASTEXITCODE) { $cloned = $true; break }
                         if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
                     }
@@ -742,6 +837,7 @@ function Stage-Repository {
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published" }
             Move-Item -LiteralPath $tree -Destination $InstallDir
+            Write-Ok "Hermes Agent cloned"
         } finally {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -752,14 +848,15 @@ function Stage-Repository {
         # rerun "update" onto a different line.
         Invoke-Native { git -C $InstallDir merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
         if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" }
-        Invoke-Native { git -C $InstallDir checkout $Commit }; if ($LASTEXITCODE) { Fail "could not pin commit $Commit" }
+        Invoke-Logged "Pinning $Commit" { git -C $InstallDir checkout $Commit }
+        if ($LASTEXITCODE) { Fail "could not pin commit $Commit" }
     }
 }
 
 function Stage-Venv {
     # Keep the installer stage protocol; PM alone creates dependency environments.
     Get-BootstrapPython | Out-Null
-    Log "bootstrap Python ready; Preparing the dependency environment"
+    Write-Ok "bootstrap Python ready; PM prepares the dependency environment"
 }
 
 # Delegate the whole python+venv+tools install to pm: stage the pinned uv,
@@ -783,7 +880,7 @@ function Get-BootstrapPython {
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
     $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
     if ($LASTEXITCODE -or -not $bootPy) {
-        Invoke-Native { & $uv python install --no-bin --no-registry $pyRequest } | Out-Host
+        Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
         $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
@@ -794,15 +891,15 @@ function Get-BootstrapPython {
 
 function Invoke-BootstrapPm {
     $bootPy = Get-BootstrapPython
-    Log "installing python + venv + tools (hash-verified via uv.lock)"
     Push-Location $InstallDir
     try {
         # Finish bootstrap uv before PM replaces or cleans its store entry.
-        Invoke-Native { & $bootPy -m pm.cli install }
+        Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli install }
         if ($LASTEXITCODE) { Fail "dependency install failed" }
     } finally {
         Pop-Location
     }
+    Write-Ok "dependencies installed"
 }
 
 function Stage-PythonDeps {
@@ -821,13 +918,13 @@ function Invoke-SourceCompletion([bool]$Desktop) {
     if ($Desktop) { $completionArgs += '--desktop' }
     Push-Location $InstallDir
     try {
-        Invoke-Native { & $bootPy @completionArgs }
+        Invoke-Logged "Building the hermes command and apps" { & $bootPy @completionArgs }
         $code = $LASTEXITCODE
     } finally {
         Pop-Location
     }
     if ($code) { Fail "app products or command publication failed (exit $code)" }
-    Log "app products and hermes command ready"
+    Write-Ok "app products and hermes command ready"
 }
 
 function Publish-UserCommand {
@@ -839,14 +936,14 @@ function Publish-UserCommand {
     $bootPy = Get-BootstrapPython
     Push-Location $InstallDir
     try {
-        Invoke-Native { & $bootPy -I -X utf8 hermes_cli/_launchers.py $binDir }
+        Invoke-Logged "Publishing the hermes command" { & $bootPy -I -X utf8 hermes_cli/_launchers.py $binDir }
         $code = $LASTEXITCODE
     } finally {
         Pop-Location
     }
     if ($code) { Fail "launcher staging failed" }
     Set-LauncherUserPath $binDir
-    Log "hermes command installed at $binDir"
+    Write-Ok "hermes command installed at $binDir"
 }
 
 function Test-DesktopProductPresent {
@@ -872,7 +969,7 @@ function Set-LauncherUserPath([string]$binDir) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($userPath -notlike "*$binDir*") {
         [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
-        Log "added $binDir to your user PATH (new shells pick it up)"
+        Write-Ok "added $binDir to your user PATH (new shells pick it up)"
     }
 }
 
@@ -888,7 +985,7 @@ function Stage-Config {
     $cfg = Join-Path $HermesHome "config.yaml"
     $cfgExample = Join-Path $InstallDir "cli-config.yaml.example"
     if (-not (Test-Path $cfg) -and (Test-Path $cfgExample)) { Copy-Item $cfgExample $cfg }
-    Log "config prepared in $HermesHome"
+    Write-Ok "config prepared in $HermesHome"
 }
 
 function Invoke-InstalledHermes([string[]]$CommandArgs) {
@@ -944,7 +1041,7 @@ function Confirm-DesktopArtifact {
         if (-not $desktopExe) {
             Fail "desktop build produced no Hermes.exe under $desktopDir\release\*-unpacked"
         }
-        Log "Desktop ready: $desktopExe"
+        Write-Ok "Desktop ready: $desktopExe"
 
         # Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked
         # app directory: Chromium's GPU/renderer sandboxes CHECK-fail with
@@ -957,10 +1054,10 @@ function Confirm-DesktopArtifact {
             if ($LASTEXITCODE -eq 0) {
                 Log "Granted AppContainer read access on $appDir"
             } else {
-                Write-Host "[hermes] icacls AppContainer grant returned exit $LASTEXITCODE for $appDir" -ForegroundColor Yellow
+                Write-Warn "icacls AppContainer grant returned exit $LASTEXITCODE for $appDir"
             }
         } catch {
-            Write-Host "[hermes] Could not grant AppContainer ACL: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Warn "Could not grant AppContainer ACL: $($_.Exception.Message)"
         }
     } finally {
         Pop-Location
@@ -982,7 +1079,7 @@ function Stage-Complete {
             completedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
         }
         $marker | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $InstallDir ".hermes-bootstrap-complete") -Encoding UTF8
-        Log "bootstrap complete marker written (pinned $commit)"
+        Write-Ok "Hermes Agent install complete (pinned $commit). Run: hermes"
     }
 }
 
@@ -1025,9 +1122,9 @@ function New-DesktopShortcuts {
                 $sc.IconLocation = $iconLocation
                 $sc.Description = 'Hermes Agent'
                 $sc.Save()
-                Write-Host "[hermes] Shortcut created: $lnkPath" -ForegroundColor Green
+                Write-Ok "Shortcut created: $lnkPath"
             } catch {
-                Write-Host "[hermes] Could not create shortcut $lnkPath : $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Warn "Could not create shortcut $lnkPath : $($_.Exception.Message)"
             }
         }
 
@@ -1043,7 +1140,7 @@ function New-DesktopShortcuts {
             # ie4uinit may be absent/renamed on some SKUs -- ignore.
         }
     } catch {
-        Write-Host "[hermes] Skipping shortcut creation: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
     }
 }
 
@@ -1077,6 +1174,9 @@ Initialize-ResolvedPaths
 # Keep uv from discovering uv.toml / pyproject.toml config from whatever
 # directory or user profile the installer runs under (mirrors install.sh).
 $env:UV_NO_CONFIG = "1"
+# Children that collapse their own output (windows-build-deps.ps1 under pm,
+# when its stdout is still the console) stream too once -Verbose asked for it.
+if ($VerbosePreference -ne 'SilentlyContinue') { $env:HERMES_INSTALL_VERBOSE = "1" }
 
 if ($ProtocolVersion) { Write-Output 1; exit 0 }
 
@@ -1118,7 +1218,7 @@ if ($Stage) {
         if ($Json) { Emit-Frame $true $Stage $false }
         exit 0
     } catch {
-        Write-Host "[hermes] $_" -ForegroundColor Red
+        Write-Err "$_"
         if ($Json) { Emit-Frame $false $Stage $false "$_" }
         exit 1
     }
@@ -1127,11 +1227,12 @@ if ($Stage) {
 # No -Stage: run the whole ladder — the same authoritative list the
 # manifest prints, so -IncludeDesktop inserts desktop here too.
 try {
+    Write-Banner
     foreach ($s in $Stages) {
         Invoke-StageByName $s.name
     }
 } catch {
-    Write-Host "[hermes] $_" -ForegroundColor Red
+    Write-Err "$_"
     if ($script:RunAsFile) { exit 1 }
     # Under iex: report failure without closing the user's window.
     $global:LASTEXITCODE = 1
