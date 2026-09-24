@@ -764,11 +764,14 @@ function Get-BootstrapPython {
     $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
     $pyPin = $lock.packages.python
     $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyVersion 2>$null }) -join "`n"
+    # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
+    $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
+    $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
+    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
     if ($LASTEXITCODE -or -not $bootPy) {
-        Invoke-Native { & $uv python install --no-bin --no-registry $pyVersion } | Out-Host
+        Invoke-Native { & $uv python install --no-bin --no-registry $pyRequest } | Out-Host
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyVersion }) -join "`n"
+        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     return $bootPy.Trim()

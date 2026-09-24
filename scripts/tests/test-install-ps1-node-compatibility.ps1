@@ -51,7 +51,8 @@ exit /b 0
     # cmd's `echo %* >> file` keeps the space before `>>` in the recorded line.
     $recorded = @(Get-Content -LiteralPath $argsFile | ForEach-Object { $_.Trim() })
     Assert-True ($recorded.Count -eq 1) 'uv locates the available bootstrap Python without reinstalling it'
-    Assert-True ($recorded[0] -eq 'python find --managed-python --no-project 3.13') 'Python minor comes from the lockfile; lookup ignores ambient project discovery'
+    $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
+    Assert-True ($recorded[0] -eq "python find --managed-python --no-project cpython-3.13-windows-$pyArch-none") 'Python minor comes from the lockfile, pinned to the machine architecture; lookup ignores ambient project discovery'
     Assert-True ((Get-Content -LiteralPath $pythonArgsFile -Raw).Trim() -eq '-m pm.cli install') 'Python launches PM without a uv parent'
 
     # The installer owns no node stage: tool and frontend provisioning belongs
