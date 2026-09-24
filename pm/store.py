@@ -12,6 +12,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import IO
 
 from pm.filesystem import is_junction
 
@@ -157,8 +158,10 @@ def _tar_filter(member, dest: str):
         return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
     return tarfile.data_filter(member, dest)
 
-def extract_tar(archive: Path, dest: Path, *, git_msys: bool = False) -> None:
-    """Extract a tarball with one containment policy for PM's tar consumers.
+def extract_tar(archive: Path | IO[bytes], dest: Path, *, git_msys: bool = False) -> None:
+    """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
+    with the one containment policy every PM tar consumer shares. Unsafe
+    members raise tarfile.FilterError.
 
     MSYS Git ships dev/fd links and etc/mtab into /proc; those aren't usable
     on Windows. Skip only those known links, never a filter error or failed file write.
@@ -167,7 +170,8 @@ def extract_tar(archive: Path, dest: Path, *, git_msys: bool = False) -> None:
 
     dest.mkdir(parents=True, exist_ok=True)
     real_dest = os.path.realpath(dest)
-    with tarfile.open(archive) as tf:
+    opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
+    with opened as tf:
         if git_msys:
             members = (m for m in tf if not (m.issym() and (
                 (m.name.lstrip("./").startswith("dev/") and m.linkname.startswith("/proc/"))
