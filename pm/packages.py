@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -567,20 +568,24 @@ class Npm(BinaryPackage):
         if not bundled_cli.is_file():
             raise InstallError(self.name, "node's entry is missing its bundled npm-cli.js")
 
-        env = npm_env(archive.parent / ".npm-cache")
-
         staged.mkdir(parents=True, exist_ok=True)
-        proc = subprocess.run(
-            [
-                str(node_bin), str(bundled_cli), "install", "--global",
-                "--prefix", str(staged), "--offline", "--ignore-scripts",
-                "--no-audit", "--no-fund", str(archive),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=900,
-            env=env,
-        )
+        # npm caches the tarball it installs. The archive's directory is the
+        # store's download entry, which must hold only the archive: a cache
+        # there turns its removal into a tree delete that fails on Windows
+        # while Defender still holds the fresh copy (WinError 145). Cleanup
+        # of this throwaway cache must never fail the install.
+        with tempfile.TemporaryDirectory(prefix="hermes-npm-cache-", ignore_cleanup_errors=True) as cache:
+            proc = subprocess.run(
+                [
+                    str(node_bin), str(bundled_cli), "install", "--global",
+                    "--prefix", str(staged), "--offline", "--ignore-scripts",
+                    "--no-audit", "--no-fund", str(archive),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=900,
+                env=npm_env(Path(cache)),
+            )
         if proc.returncode != 0:
             raise InstallError(
                 self.name, f"self-install exited {proc.returncode}: {proc.stderr[-400:]}"
