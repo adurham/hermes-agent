@@ -107,8 +107,10 @@ def store_root(project_root: Path) -> Path:
             if not store.is_relative_to(root.parent):
                 raise RuntimeError("payload store escapes its root")
             return store
+    from hermes_cli.steward import install_stamp_path
+
     for directory in (root, *root.parents):
-        stamp = directory / "install-stamp.json"
+        stamp = install_stamp_path(directory)
         if stamp.is_file():
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8-sig"))
