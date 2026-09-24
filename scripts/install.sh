@@ -498,6 +498,41 @@ desktop_product_present() {
         || [ -d "$release/mac-arm64" ] || [ -d "$release/win-unpacked" ]
 }
 
+append_shell_path() {
+    local rc="$1" line="$2" pattern="$3"
+    # Existing user PATH setup wins; never append another line on a repair run.
+    if [ -f "$rc" ] && grep -E "$pattern" "$rc" >/dev/null 2>&1; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$rc")"
+    printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc"
+    log "added ~/.local/bin to PATH in $rc"
+}
+
+wire_shell_path() {
+    # The launcher is published by source_completion; shell rc files belong to
+    # the installer, not to PM (updates must not modify a user's shell setup).
+    # Never use the installer's inherited PATH as a proxy for a *new* shell.
+    local login_shell="${SHELL:-/bin/bash}"
+    case "${login_shell##*/}" in
+        zsh)
+            append_shell_path "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.zprofile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            ;;
+        fish)
+            append_shell_path "$HOME/.config/fish/config.fish" 'fish_add_path "$HOME/.local/bin"' '^[[:space:]]*fish_add_path.*\.local/bin'
+            ;;
+        *)
+            append_shell_path "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            # Bash prefers .bash_profile over .profile if both exist.
+            if [ -f "$HOME/.bash_profile" ]; then
+                append_shell_path "$HOME/.bash_profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            fi
+            ;;
+    esac
+}
+
 stage_products() {
     # The whole tail in one place, by calling the completion an update calls:
     # publish the commands, build the products (tui/web, plus the desktop app),
@@ -513,6 +548,7 @@ stage_products() {
     fi
     (cd "$INSTALL_DIR" && "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
         || fail "app products or command publication failed"
+    wire_shell_path
     log "app products and hermes command ready"
 }
 
