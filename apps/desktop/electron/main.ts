@@ -212,6 +212,7 @@ import {
   type UninstallSummaryDetails
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { preReadyDockLaunchSteps } from './dock-launch-order'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps } from './external-open'
@@ -17980,6 +17981,16 @@ function registerDeepLinkProtocol() {
   }
 }
 
+// macOS: register the deep link before the lock. Launch Services relaunches
+// the app when the default protocol client changes; if the lock is already
+// held, that relaunch flashes a second Dock icon and then app.exit(0)s.
+// Win/Linux have no Dock and still register on ready.
+const preReadyDockSteps = preReadyDockLaunchSteps(process.platform)
+
+if (preReadyDockSteps.includes('register-deep-link')) {
+  registerDeepLinkProtocol()
+}
+
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
@@ -18068,7 +18079,11 @@ app.whenReady().then(() => {
   registerMediaProtocol()
   installEmbedReferer()
   installRemoteHeaderRules()
-  registerDeepLinkProtocol()
+
+  if (!preReadyDockSteps.includes('register-deep-link')) {
+    registerDeepLinkProtocol()
+  }
+
   installPreviewGuestPreload()
 
   ensureWslWindowsFonts()
