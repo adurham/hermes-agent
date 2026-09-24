@@ -18,6 +18,16 @@ except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
+# A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
+# fails at the next import, whichever it is — put the old tree back before importing anything else
+# from the checkout, then rerun the command (this module may itself be one of the new files).
+# ``_early_recovery`` is stdlib-only and imported unguarded on purpose: same package
+# dir, so if IT can't import nothing in hermes_cli can.
+from hermes_cli import _early_recovery as _early_recovery_mod
+
+if _early_recovery_mod.restore_interrupted_pull():
+    _early_recovery_mod.relaunch_after_restore()
+
 # Windows: neutralize CPython's ``platform._syscmd_ver`` before anything else
 # imports — it shells out ``cmd /c ver`` and flashes a console when this
 # process is windowless (pythonw gateway, kanban workers). No-op on POSIX.

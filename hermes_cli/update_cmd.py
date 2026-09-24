@@ -26,6 +26,7 @@ from hermes_cli.update_channel import adopt_retired_channel
 from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
+from hermes_cli._early_recovery import interrupted_pull_marker
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -956,18 +957,35 @@ def _pull_updates(
     # Rescue refs must retain the immediate pre-pull tip, even when syntax
     # rollback needs to cross an earlier upstream sync.
     pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    # Git moves the tree file by file and HEAD last: if this process dies in between, the next launch
+    # of any entry point finds this marker and puts the old tree back (_early_recovery). The target is
+    # the resolved commit, so a later `git fetch` cannot widen what that restore considers.
+    pull_marker = interrupted_pull_marker(_m().PROJECT_ROOT)
+    # A release update moves the tree to its tag, not the branch tip: the marker names what git writes.
+    merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
+    target_sha = (_git_run(git_cmd, ["rev-parse", f"{merge_ref}^{{commit}}"]).stdout or "").strip()
+    with _best_effort('Could not write the interrupted-pull marker: %s'):
+        pull_marker.write_text(
+            f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
+            encoding="utf-8")
     try:
-        # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
-        # SECOND network fetch; identical in effect given the fresh tracking ref.
-        merge_ref = target_ref if target_ref is not None else f"origin/{branch}"
-        if merge_ref != f"origin/{branch}":
-            # Keep detached local commits reachable, too. Named branches are
-            # untouched by checkout --detach; an autostash protects dirty files.
-            if pre_pull_sha and not _git_run(git_cmd, ["branch", "--show-current"]).stdout.strip():
-                _git_run(git_cmd, ["update-ref", f"refs/hermes/pre-release/{pre_pull_sha}", pre_pull_sha], check=True)
-            _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
-        elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
-            _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+        try:
+            # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
+            # SECOND network fetch; identical in effect given the fresh tracking ref.
+            if merge_ref != f"origin/{branch}":
+                # Keep detached local commits reachable, too. Named branches are
+                # untouched by checkout --detach; an autostash protects dirty files.
+                if pre_pull_sha and not _git_run(git_cmd, ["branch", "--show-current"]).stdout.strip():
+                    _git_run(git_cmd, ["update-ref", f"refs/hermes/pre-release/{pre_pull_sha}", pre_pull_sha], check=True)
+                _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
+            elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
+                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+        except KeyboardInterrupt:
+            raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
+        except BaseException:
+            pull_marker.unlink(missing_ok=True)  # git exited on its own (sys.exit on conflict/reset failure)
+            raise
+        pull_marker.unlink(missing_ok=True)  # git is done: the tree is whole again
         if sync_upstream:
             # Do not let a second mutation hide a failed origin merge or move an
             # unexpected branch. Keep local edits parked through the final check.
