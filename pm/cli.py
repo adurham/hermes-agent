@@ -60,13 +60,35 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / (1024 * 1024):.1f} MiB"
 
 
+def _enable_vt(stream) -> bool:
+    """A Windows console prints ESC as a glyph (`←[2K`) until its handle opts
+    in to VT processing, and PowerShell hands children a console with VT off.
+    NUL also reports isatty() but is no console, so it fails here too."""
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    try:
+        handle = msvcrt.get_osfhandle(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    mode = wintypes.DWORD()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return False
+    vt = 0x0004  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    return bool(mode.value & vt or kernel32.SetConsoleMode(handle, mode.value | vt))
+
+
 def _progress_stream():
     """Stream for in-place progress, or None off a terminal. Prefer stdout;
     fall back to stderr because activate.ps1 pipes stdout through Out-Host
     while stderr stays on the console."""
     for stream in (sys.stdout, sys.stderr):
         try:
-            if stream.isatty():
+            if stream.isatty() and _enable_vt(stream):
                 return stream
         except (AttributeError, ValueError):
             continue
