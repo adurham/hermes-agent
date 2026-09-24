@@ -3519,6 +3519,12 @@ export const esOverrides = {
       switchTo: (name: string, gateway: string) => `Cambiar a ${name} en ${gateway}`,
       deleteOn: (gateway: string) => ` en ${gateway}`
     },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 sesión sin leer' : `${count} sesiones sin leer`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 sesión espera tu respuesta' : `${count} sesiones esperan tu respuesta`,
+      working: (count: number) => (count === 1 ? '1 sesión en ejecución' : `${count} sesiones en ejecución`)
+    },
     remoteOverride: {
       menuItem: 'Conectar a un host remoto…',
       badge: (host: string) => `Se ejecuta en ${host}`,
