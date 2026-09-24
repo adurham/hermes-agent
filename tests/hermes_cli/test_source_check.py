@@ -242,8 +242,11 @@ def test_dynamic_source_channel_preserves_branch_precedence(installation, select
     assert requests == ([] if selection == "explicit" else [channel_path]) + [branch_path]
 
 
+# An unpublished ``main`` record is not a channel failure: main IS the source
+# branch, so the check follows it via git (covered by
+# test_source_channel_integration.py::test_unpublished_main_record_keeps_following_the_git_branch).
 @pytest.mark.parametrize("name,failure", [
-    ("main", "missing"), ("stable", "missing"), ("canary", "missing"),
+    ("stable", "missing"), ("canary", "missing"),
     (None, "missing"), (None, "malformed"), (None, "foreign"), (None, "unpublished"),
 ])
 def test_channel_failure_never_probes_or_heals_a_branch(installation, name, failure):
