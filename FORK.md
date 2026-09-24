@@ -17632,3 +17632,300 @@ Two conflicts, both resolved as union:
 payment class), `py_compile` clean, zero conflict markers, and the mandatory
 ancestry checks pass (`v2026.9.14` is an ancestor of `main`;
 `git tag --points-at $(git merge-base main upstream/main)` = `v2026.9.14`).
+
+---
+
+### Upstream sync — 2026-09-24 (v2026.9.14 → v2026.9.21, 5173 commits, 141 conflict files)
+
+Merged tag `v2026.9.21` into `main` via `sync/upstream-2026-09-21` (merge
+commit `c046c29dca`; second parent `d8f6f2b2b6`-class tag commit
+"chore(release): v0.21.4 (v2026.9.21)"). Range `v2026.9.14..v2026.9.21`:
+5173 upstream commits — 0.72x the previous sync's 7136, and mostly a
+patch rollup (~1800 PRs) rather than a structural release. 141 conflict
+files at merge time.
+
+**Resolution approach.** Same two-tier shape as 2026-09-21: the merge was
+dispatched to 8 parallel subagents, one per disjoint group (`agent/` 19
+files, `hermes_cli/` 17, `tools/`+schema 10, `gateway/` 5, `tests/` 15,
+`apps/desktop/src` 14, `website/` 8, and `cli.py` alone), each pre-loaded
+with the per-file pitfalls from this file's own history. Two workers ran
+out of budget (`cli.py`, `website/`); the parent finished both by hand.
+
+**Mechanical classes cleared without hand-merging:**
+- **~50 generated skill-doc pages** (`website/docs/user-guide/skills/**`,
+  both catalogs): these are BUILD ARTIFACTS owned by
+  `website/scripts/generate-skill-docs.py`, whose fork-side branding line
+  (`adurham/hermes-agent` in the repo-link rewrite) was NOT conflicted.
+  Took upstream's side for every page + the 4 upstream deletions, then
+  re-ran the generator to restore the fork's URLs. Do NOT hand-merge these
+  in a future sync — resolve to upstream, regenerate.
+- **`package-lock.json`**: took upstream wholesale, then re-pinned the
+  `apps/desktop` version entry to the fork's release so lockfile and
+  package.json agree.
+- **`apps/desktop/package.json`**: real union — kept the fork's
+  version/identity/`afterPack`/`resedit`, adopted upstream's three new
+  deps (`dbus-native`, `https-proxy-agent`, `proxy-from-env`).
+
+**Desktop exe-stamping: kept the fork's resedit design against upstream's
+afterExtract move (deliberate divergence).** Upstream v2026.9.21 moved the
+stamp hook `afterPack` → `afterExtract` because rcedit cannot commit
+resource changes to the ASAR-integrity-rewritten PE (#105629). That
+constraint is specific to rcedit's in-place write path. The fork replaced
+rcedit with resedit (`9d0d09564b`, deprecated-dep removal), which rebuilds
+the PE from the parsed image instead, so the stamp survives the integrity
+rewrite and can stay on `afterPack` — where it ALSO covers
+`hermes desktop`, the installer's `--update` rebuild (`hermes desktop
+--build-only`), and a dev's manual `npm run pack`, none of which the
+afterExtract-only path reaches. Took: fork's `after-pack.mjs` +
+`set-exe-identity.mjs`, dropped upstream's `after-extract.mjs`/`.test.mjs`
+pair and the `rcedit` devDependency, and documented the upstream
+constraint in both `set-exe-identity.mjs`'s header and `install.ps1` so a
+future sync does not re-litigate it. If this script is ever switched back
+to rcedit, the hook MUST move to afterExtract in the same change.
+
+**Merge defects caught and fixed (the recurring classes, again):**
+
+1. **Upstream's CLI decomposition deleted a 1164-line block from `cli.py`,
+   but the fork's stale inline copies of those 24 methods survived and
+   SHADOWED the new mixins.** The class body wins over the MRO, so the
+   extracted mixin bodies were dead code and the fork's pre-decomposition
+   copies were live. Most were byte-identical or trivially stale, but one
+   was an outright **runtime TypeError**: the live caller
+   (`cli_tui_mixin.py`, `_tui_build_layout`) passes `connection_widget=`,
+   which the fork's older inline `_build_tui_layout_children` does not
+   accept. Resolution: adopt upstream's deletion wholesale, then PORT the
+   fork's genuine deltas into the mixins that now own them —
+   `reasoning_picker_widget`/`todo_board_widget` params,
+   `_fire_attention_signals` (kept in `cli.py` as the one fork-only method
+   with no mixin home), the delegation-id `/stop <id>` suffix in
+   `_on_tool_complete`, and the exit-ordering fix in `_tui_stdin_usable`.
+   **Lesson for the next sync:** when upstream deletes a block that a
+   mixin also defines, the fork's inline copy is NOT merely redundant — it
+   is the live one. Diff every deleted method against its mixin twin before
+   accepting the deletion, and port deltas rather than dropping them.
+
+2. **Six names the merge dropped from `cli.py`'s import block** while
+   keeping fork code that references them: `json`, `textwrap`, `Mapping`
+   (typing), `Console` (rich), `fast_safe_load`/`base_url_host_matches`/
+   `base_url_hostname` (the whole `from utils import ...` line), and
+   `get_fallback_chain`/`new_session_id`. `py_compile` passes on all of
+   them — the breakage is a module-level `NameError` at import. Caught with
+   an AST undefined-global scan (`/tmp/undef.py` pattern: collect every
+   `Name` load not bound by def/class/import/assign/args/builtins), NOT by
+   compiling. **Run an import smoke test — not just `py_compile` — on every
+   touched module after a sync.**
+
+3. **The fork's `delegate_task` subagent-cost counters were silently
+   dropped** when upstream extracted the rollup into
+   `tools/delegate_tool_results.py::_rollup_children_cost`. Upstream's new
+   helper folded only `session_estimated_cost_usd`; the fork's four
+   counters (`session_subagent_cost_usd`, `_input_tokens`,
+   `_output_tokens`, `_count`) never crossed. All four are read via
+   `getattr(..., 0.0)` defaults, so nothing crashed — `/usage` and the
+   on-exit summary would just have shown zero subagent spend forever.
+   Restored as `_rollup_children_cost`'s second half plus a new
+   `_rollup_subagent_tokens`, wired into `_finalize_child_results` (the
+   `tokens` dict shape verified against `delegate_tool_child_run.py`).
+
+4. **`hermes_cli/main.py` ended up with TWO `_looks_like_hermes_invocation`
+   definitions** — upstream's `(argv0: str)` at L452 and the fork's
+   pytest-guard `()` at L491, added side-by-side. The later definition
+   silently shadowed the earlier, so the fork's argv0 preflight raised
+   `TypeError` at import. Merged into one function with a defaulted
+   `argv0` that applies both the pytest guard and the entry-point check.
+
+5. **The fork's `_STREAM_PAD`-symmetric streaming fix was lost in the
+   cli_render extraction.** `_terminal_width_for_streaming` and
+   `_render_final_assistant_content` were extracted to
+   `hermes_cli/cli_render.py` carrying upstream's single-subtraction math;
+   the fork's double-`_STREAM_PAD` version (the streaming box's matching
+   right margin) existed only in the stale `cli.py` copy. Ported into
+   `cli_render.py`. Covered by `tests/hermes_cli/test_stream_symmetric_wrap.py`.
+
+6. **The fork's exit-ordering fix (summary BEFORE cleanup) had to follow
+   the exit paths into their new homes.** Upstream's decomposition moved
+   the `-q` path to `hermes_cli/cli_single_query.py` and the interactive
+   shutdown to `hermes_cli/cli_tui_runtime_mixin.py`, both carrying
+   upstream's original (wrong) order — `_run_cleanup()` before
+   `_print_exit_summary()`. Restored the fork's order at all three sites
+   and repointed
+   `tests/hermes_cli/test_exit_summary_before_cleanup_ordering.py` to scan
+   the new homes (it hardcoded `cli.py`, so it would have silently stopped
+   checking two of three paths). Also restored the `_fold_curator_cost_before_exit`/
+   `_run_memory_confirm_before_exit` imports the new modules needed.
+
+7. **The fork's four `_fire_attention_signals` calls were lost with the
+   deleted block.** At fork HEAD both existed: the inline `cli.py`
+   callbacks fired `_fire_attention_signals` (approvals.* config + macOS
+   osascript notification) while the mixins fired upstream's `_ring_bell`
+   (display.bell_on_prompt + OSC 9/777). They are complementary, not
+   duplicates. The merge kept only the mixin copies, silently dropping the
+   macOS native notification on approval/sudo/clarify prompts. Ported all
+   four calls back into `hermes_cli/cli_modal_mixin.py`'s live callbacks.
+
+8. **`--link` was a dead CLI knob.** `hermes_cli/subcommands/profile.py`
+   registers `--link`, `create_profile()` supports it, but
+   `hermes_cli/profile_cmd.py` never forwarded it — so `hermes profile
+   create --link` silently made a plain copy. PRE-EXISTING at fork HEAD
+   (both sides), not a merge regression; fixed since it was one line and
+   the feature was otherwise unreachable.
+
+9. **A stale fork test asserted the opposite of upstream's deliberate
+   design.** `test_clone_all_excludes_history_artifacts` asserted
+   `sessions/` must be ABSENT after `--clone-all`; upstream's own
+   `48465c3933` ("--clone-all no longer copies cron jobs") deliberately
+   re-creates `sessions/` and `cron/` as empty skeletons after the
+   content-excluding copy so the clone can run. The test had been failing
+   at fork HEAD since 2026-09-09 (it predates that commit) and was simply
+   never noticed. Rewrote it to assert the real contract — dirs exist,
+   carry no source history — and anti-tautology-checked it by removing
+   `sessions` from the exclude set and confirming it fails.
+
+**Absorbed `origin/main` drift (the work laptop's 4 commits).** `ab50353aff`
++ `14c3a067fa` (docs-URL test de-frozen to a relation), `74d4688b2b`
+(tool-search: config-less `is_deferrable_tool_name` must not apply the
+curated default defer set), `e6dc010207` (todo: restore the emoji status
+markers the v2026.9.14 merge reverted to ASCII). Merged cleanly — but note
+`tools/tool_search.py` is one of the files upstream rewrote most heavily in
+this tag (281 lines changed), so all three fixes were re-verified against
+the merged tree, not just their merge status: `tests/tools/test_tool_search.py`,
+`test_todo_tool.py`, `test_todo_nested.py`, and
+`tests/agent/test_phantom_tool_references.py` = 119 passed.
+
+**Verification.** Zero conflict markers repo-wide (swept every tracked text
+file, not just the UU set). `import` smoke test on 71 facade/sibling modules
+(2 failures found and fixed — items 2 and 4 above). AST undefined-global scan
+on every hand-edited file. Duplicate-top-level-definition scan across all 997
+changed Python files. Fork-only suites: banner, providers, anthropic-native
+web-search, aux-main-first, cc-aliases, prompt-builder, turn-context, cc-proxy
+= 121 passed. Exit-ordering, stream-symmetric-wrap, and attention-signal
+suites = 27 passed. `test_profiles.py` = 110 passed. The mandatory ancestry
+checks pass: `v2026.9.21` is an ancestor of `HEAD`, and
+`git tag --points-at $(git merge-base HEAD upstream/main)` = `v2026.9.21`.
+
+**Post-merge steps run:** `website/scripts/generate-skill-docs.py` (regenerated
+209 per-skill pages + both catalogs + sidebar, restoring the fork's URLs) and
+`scripts/sync-fork-branding.py` (39 files; fork repo URLs restored, and the
+fork-detection constants `OFFICIAL_REPO_URL`/`OFFICIAL_REPO_URLS` verified
+still pointing at NousResearch — repointing those would make `hermes update`
+think its own fork IS upstream and disable the protection).
+
+**Carried forward / not fixed here:** `apps/desktop/scripts/*.mjs` and the
+desktop TS tree were resolved by a subagent without `tsc`/vitest (no npm
+install in this clone) — TS/TSX conflicts were verified by re-reading and by
+checking every named import against its module's real exports, but a
+`tsc --noEmit` + vitest pass on the desktop tree is still owed. Also owed: a
+broader pytest sweep beyond `tests/agent`, `tests/tools`, `tests/hermes_cli`.
+
+---
+
+### CI coverage restored on the fork + hlxc as the out-of-CI runner — 2026-09-24
+
+**Problem.** The fork had **no Python CI at all**, and no JS CI either. Upstream's
+`tests` / `tests-os` / `js-tests` jobs are gated `github.repository ==
+'NousResearch/hermes-agent'` because their runners (`ubuntu-latest-96-core`,
+`windows-latest-32-core`, `ubuntu-latest-32-core`) are not provisioned for a
+personal fork — an unprovisioned large-runner job queues forever and holds the
+`ci-${{ github.ref }}` concurrency group (the 2026-09-07 fix above, which is
+correct and stays). The side effect was never noticed: the gate skips the whole
+lane, so every suite had to be run **by hand on the user's Mac**, draining
+battery, and the `macos_only` / `windows_only` marked tests — which are skipped
+on the Linux lane *by design* — ran nowhere at all.
+
+**Fix, part 1: fork-side CI jobs.** Three new jobs in `ci.yaml`, each gated to
+the fork so upstream is untouched and never spins these runners:
+
+- `tests-fork` — the identical suite (`scripts/run_tests.sh`, same hermetic
+  env, same `uv.lock`, same extras) on standard `ubuntu-latest`, sharded 6 ways
+  with the runner's **own** `--slice I/N`. The shard balancer is LPT-fed from
+  the restored `test_durations.json`. Verified before shipping: the 6 shards are
+  a clean partition of all **4916** test files, 0 overlap, **819±1 files /
+  ~3549s** of estimated work each. `timeout-minutes: 75` carries the ~59 min
+  of per-shard work with headroom.
+- `tests-os-macos-fork` / `tests-os-windows-fork` — `macos_only` / `windows_only`
+  on standard `macos-latest` / `windows-latest`. Deliberately **two separate
+  jobs, not one matrix**: upstream's matrix has one unprovisioned leg that holds
+  the whole job open; separate jobs can't couple that way. File selection reuses
+  `scripts/ci/list_os_marked_tests.py` (so collection never imports unrelated
+  modules) and `-m` stays authoritative for which tests run; the exit-5
+  zero-tests guard is preserved, because a green job that ran nothing is worse
+  than a red one.
+- `js-tests-fork` — `run-workspace-checks.mjs` on standard `ubuntu-latest`.
+  That script is parallel-by-check over ~612s of payload, so the 32-core runner
+  upstream uses is about amortising setup, not throughput.
+
+**Also fixed: a blocking lint was red on `origin/main`, skipping the whole
+suite.** `Windows footguns` fails on two bare `os.geteuid()` calls in
+`hermes_cli/gateway.py` (the systemctl helper's guard, and the systemd-refresh
+early return added with this sync). Six sibling `os.geteuid()` calls in the same
+file already carry `# windows-footgun: ok`; these two were the outliers. Because
+that job is blocking, its failure skipped `tests`, `js-tests` and `tests-os` on
+every push — CI was red AND not testing anything. Both now carry the exemption
+and `scripts/check-windows-footguns.py --all` is green over 1723 files.
+
+**Fix, part 2: `hlxc` (hermes-gw-01) as the out-of-CI runner.** CI covers the
+hosted matrix; this box covers what CI structurally cannot — long/unsharded
+runs, and anything needing a specific local environment. `scripts/hlxc-test.sh`
+(installed as `/usr/local/bin/hlxc-test`) runs the suite from a **separate
+checkout at `/srv/hermes-ci/repo`** and hard-refuses if that path ever resolves
+to `/opt/hermes-agent` — which is the LIVE install serving three running
+services (`hermes-gateway`, `hermes-gateway-dashboard`, `hermes-serve`). A test
+run must never contend with or mutate production. Verified on the box: 6 cores /
+8 GB, Python 3.11.15, deps synced from `uv.lock` with CI's extras, `tests/ci/`
+=> 135 passed in 6.0s, and all three live services stayed `active` throughout a
+`tests/hermes_cli/` run.
+
+**Still owed.** The fork's CI minutes are free (public repo), so the sharded
+lane costs nothing, but `tests-fork`'s first real run will calibrate whether
+`HERMES_TEST_WORKERS: 4` is the right pin and whether 6 shards is the right
+count. The pre-existing failure backlog (57 failures present *before* this sync
+on the same files) is unrelated to CI and still stands.
+
+---
+
+### Test-infrastructure fixes found by actually running the suite on hlxc — 2026-09-24
+
+Running the full suite on the homelab box (hermes-gw-01) for the first time
+surfaced two real defects in the fork's test runner, neither related to the
+v2026.9.21 merge. Both were invisible on CI and on the Mac because they need a
+SLOW machine plus a file with standing failures.
+
+**1. The per-file timeout scaler was largely inert (728 stale cache keys).**
+`scripts/run_tests_parallel.py::_effective_file_timeout` grants a slow file
+headroom above the flat 300s cap (3x its last healthy duration), keyed on the
+file's PATH. The 2026-09 tests/ reorg (`tests/cli` → `tests/hermes_cli`,
+`tests/run_agent` → `tests/agent`, a batch of top-level `tests/test_*.py` into
+topical dirs) left **728 of 4889** entries pointing at paths that no longer
+exist — 15% of the cache, and every genuinely slow file among them. Fixed by
+`scripts/ci/fix_duration_cache_paths.py` (dry-run by default; remaps an orphaned
+key onto its current path by unique basename, preserving the duration; 515
+remapped, 11 ambiguous and 202 unmatched left alone). The cache is gitignored
+(CI-cache-backed), so the tool is the fix, not a data commit.
+
+**2. A file with standing failures could never be measured — a permanent
+timeout loop.** `_clean_pass_durations` excluded EVERY file whose run failed, so
+a large file with a handful of long-standing failures never entered the cache.
+The scaler then never saw it, it stayed on the flat cap, and once its real
+runtime exceeded that it was SIGKILL'd before collection on every run, recording
+nothing again. Live case: `tests/tui_gateway/test_tui_gateway_server.py` — 302s
+against a 300s cap, 6 standing failures, reported by the runner as "1 file where
+no tests ran" with `durations[...] -> None` no matter how often it ran. The
+original exclusion was right about the risk it guarded (a TIMEOUT-KILLED attempt
+cached at ~300s would let the scaler compound 300 → 900 → …) but over-broad: an
+assertion failure that exited normally is a valid measurement. Now only timeout
+kills (recognised by `_TIMEOUT_KILL_MARKER`, a named constant shared by the run
+loop and the filter instead of a duplicated literal) and flaky retries are
+excluded.
+
+**Not a repo bug, worth knowing:** CI did NOT hit either problem — its 4-worker
+shards run that file faster than hlxc's 6-worker box does (302s vs CI's
+sub-cap runtime). So for full-suite runs on the box, raise
+`HERMES_TEST_FILE_TIMEOUT` (480 works); the cache fix makes that a one-time
+thing rather than a permanent workaround.
+
+**Verification method that made this trustworthy:** a two-tree triage
+(`/usr/local/bin/hlxc-triage`) runs a fixed file list against BOTH the pre-merge
+commit (`f0cad06871`) and the sync branch ON THE SAME MACHINE, so "merge-caused"
+is decided by one machine's failure signature rather than by comparing a Mac run
+against a Linux run. Comparing different hosts is how you misattribute a
+platform difference to a merge.

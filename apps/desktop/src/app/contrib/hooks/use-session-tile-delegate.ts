@@ -431,6 +431,9 @@ export function useSessionTileDelegate({
             ...(typeof info?.model === 'string' ? { model: info.model } : {}),
             ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
             ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.reasoning_effort_wire === 'string'
+              ? { reasoningEffortWire: info.reasoning_effort_wire }
+              : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
             messages: state.messages.length > 0 ? state.messages : seededMessages
           }),

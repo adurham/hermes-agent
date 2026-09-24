@@ -463,3 +463,38 @@ class TestAnthropicOAuthClassifierAlias:
         assert kwargs["tools"][0]["name"] == "session_search"
         assert "session_search" in kwargs["tools"][0]["description"]
 
+
+
+class TestBridgeToolNameSetStaysInSync:
+    """The transport mirrors the bridge-tool name set as a local literal.
+
+    It cannot import ``tools.tool_search.BRIDGE_TOOL_NAMES`` at call time: that module imports
+    ``tools.connectors``, which calls ``registry.register(...)`` on import, and under a test that
+    patches ``tools.registry.registry`` with a stand-in the registration raises — which would
+    silently disable bridge-name resolution and leave ``mcp__tool_call`` stuck in replay history
+    (the exact production corruption this file exists to prevent). The literal is therefore the
+    contract, and this test catches drift in either direction.
+    """
+
+    def test_transport_literal_matches_the_bridge_module(self):
+        from agent.transports.anthropic import _BRIDGE_TOOL_NAMES
+        from tools.tool_search import BRIDGE_TOOL_NAMES
+
+        assert _BRIDGE_TOOL_NAMES == set(BRIDGE_TOOL_NAMES), (
+            "agent/transports/anthropic.py::_BRIDGE_TOOL_NAMES drifted from "
+            "tools/tool_search.py::BRIDGE_TOOL_NAMES — update the literal."
+        )
+
+    def test_bridge_names_reverse_without_any_registry(self):
+        """Resolution must not depend on the live registry being intact."""
+        from unittest.mock import patch
+
+        from agent.transports.anthropic import _BRIDGE_TOOL_NAMES, _unprefix_oauth_tool_name
+
+        class _ExplodingRegistry:
+            def get_entry(self, name):  # pragma: no cover - must never be consulted for these
+                raise AssertionError("registry consulted for a bridge tool name")
+
+        with patch("tools.registry.registry", _ExplodingRegistry()):
+            for bare in sorted(_BRIDGE_TOOL_NAMES):
+                assert _unprefix_oauth_tool_name(f"mcp__{bare}") == bare

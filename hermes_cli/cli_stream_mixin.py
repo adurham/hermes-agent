@@ -48,11 +48,17 @@ class CLIStreamMixin:
 
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
-        if not text:
-            self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
-        self._tool_start_time = 0.0  # clear tool timer when switching to thinking
-        self._invalidate()
+        if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
+            return
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        def show():
+            if not text:
+                self._flush_reasoning_preview(force=True)
+            self._spinner_text = text or ""
+            self._tool_start_time = 0.0  # clear tool timer when switching to thinking
+            self._invalidate()
+        render_notification(show, platform="cli", diagnostic=isinstance(text, DiagnosticText),
+                            user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
@@ -63,12 +69,18 @@ class CLIStreamMixin:
         """
         try:
             text = getattr(notice, "text", "") or ""
+            if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
+                return
             if not text:
                 return
             level = getattr(notice, "level", "info") or "info"
-            if not hasattr(self, "_pending_credit_notices"):
-                self._pending_credit_notices = []
-            self._pending_credit_notices.append((level, text))
+            from gateway.warning_notifications import is_diagnostic_notice, render_notification
+            def queue_notice():
+                if not hasattr(self, "_pending_credit_notices"):
+                    self._pending_credit_notices = []
+                self._pending_credit_notices.append((level, text))
+            render_notification(queue_notice, platform="cli", diagnostic=is_diagnostic_notice(notice),
+                                user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
         except Exception:
             pass
 
@@ -212,7 +224,9 @@ class CLIStreamMixin:
         from cli import ChatConsole, _accent_hex
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
-            ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
+            from gateway.warning_notifications import render_notification
+            render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
+                                platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
@@ -569,6 +583,7 @@ class CLIStreamMixin:
         local path is included so the agent can re-examine via ``vision_analyze``."""
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
+        from gateway.warning_notifications import render_notification
         from tools.vision_tools import vision_analyze_tool
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
@@ -599,14 +614,16 @@ class CLIStreamMixin:
                         f"You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]")
                     if announce:
-                        _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}")
+                        render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}"),
+                                            platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
             except Exception as e:
                 enriched_parts.append(
                     f"[The user attached an image but analysis failed ({e}). "
                     f"You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]")
                 if announce:
-                    _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
+                    render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}"),
+                                        platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
         # Vision descriptions first, then the user's original text
         user_text = text if isinstance(text, str) and text else ""
@@ -770,8 +787,17 @@ class CLIStreamMixin:
             if isinstance(parsed, dict) and parsed.get("status") == "dispatched" and parsed.get("mode") == "background":
                 n = parsed.get("count") or 1
                 noun, tail = ("task", "it finishes") if n == 1 else (f"{n} tasks", "they finish")
+                # FORK: name the delegation id so the user can pull back a mis-dispatched
+                # batch with `/stop <id>` without killing every other background process.
+                did = parsed.get("delegation_id") or ""
+                did_suffix = f" [{did}]" if did else ""
                 try:
-                    _cprint(f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m")
+                    _cprint(
+                        f"\033[2m\u21a9 Background {noun} running{did_suffix} — I'll resume when {tail}. "
+                        f"Keep chatting. (/stop {did} to cancel)\033[0m"
+                        if did else
+                        f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m"
+                    )
                 except Exception:
                     pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)

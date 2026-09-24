@@ -22,8 +22,6 @@ on:
 permissions:
   contents: read
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
-  actions: read # needed by osv-scanner (SARIF upload)
-  security-events: write # needed by osv-scanner (SARIF upload)
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -79,6 +77,100 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
 
+  # ─────────────────────────────────────────────────────────────────────
+  # FORK-ONLY Python tests. Upstream's `tests` job above is gated to
+  # NousResearch because its 96-core runner isn't provisioned for a personal
+  # fork — which left the fork with NO Python CI, so the suite could only be
+  # run by hand on a laptop. This job runs the identical suite
+  # (scripts/run_tests.sh, same hermetic env, same uv.lock) on standard
+  # ubuntu-latest runners, sharded with the runner's own --slice I/N
+  # (LPT-balanced against the restored test_durations.json).
+  #
+  # Upstream is unaffected: the job is gated to the fork, so NousResearch
+  # never spins these runners.
+  # ─────────────────────────────────────────────────────────────────────
+  tests-fork:
+    name: Python tests (fork shard ${{ matrix.shard }})
+    needs: detect
+    if: github.repository == 'adurham/hermes-agent' && needs.detect.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Restore per-file duration cache
+        # The slice balancer reads test_durations.json to LPT-distribute files
+        # across shards; without a restore every file looks like the 2.0s
+        # default and the shards come out unbalanced.
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations-never-exact
+          restore-keys: |
+            test-durations-
+
+      - name: Run tests (shard ${{ matrix.shard }})
+        # Same runner the upstream job uses; --slice does the sharding.
+        run: |
+          source .venv/bin/activate
+          scripts/run_tests.sh --slice "${{ matrix.shard }}"
+        env:
+          # ubuntu-latest is 4 cores; the runner's pool is sized from
+          # cpu_count when this is unset, but pin it so the value is
+          # explicit and stable if GitHub changes the runner shape.
+          HERMES_TEST_WORKERS: 4
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Save per-file duration cache (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('test_durations.json') != ''
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations-${{ github.run_id }}-${{ strategy.job-index }}
+
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
   # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
@@ -97,6 +189,153 @@ jobs:
       # changed; unit-level windows_only tests always run.
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
 
+  # ─────────────────────────────────────────────────────────────────────
+  # FORK-ONLY OS-marked tests. The upstream lane above is gated off on forks
+  # because one of its matrix legs needs windows-latest-32-core. That left
+  # the fork with NO coverage for macos_only / windows_only tests — which are
+  # exactly the marks that get skipped on the Linux lane by design, so they
+  # ran nowhere. Here they run on standard macos-latest / windows-latest
+  # runners, in two separate jobs (not one matrix) so a Windows leg can't
+  # hold the macOS leg's job open.
+  #
+  # Selection is identical to upstream's: scripts/ci/list_os_marked_tests.py
+  # chooses the FILES (so collection never imports unrelated modules) and
+  # -m stays authoritative for WHICH tests run.
+  # ─────────────────────────────────────────────────────────────────────
+  tests-os-macos-fork:
+    name: OS-specific tests (macOS)
+    needs: detect
+    if: github.repository == 'adurham/hermes-agent' && needs.detect.outputs.python == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Run macos_only tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          LIST="${RUNNER_TEMP:-.}/selected-tests.txt"
+          if ! uv run --no-sync python scripts/ci/list_os_marked_tests.py \
+                 macos_only > "$LIST"; then
+            echo "::error::could not enumerate macos_only test files"
+            exit 1
+          fi
+          if [ ! -s "$LIST" ]; then
+            echo "::error::empty macos_only file list"
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          set -- $(cat "$LIST")
+          echo "selected $# file(s) for macos_only:"
+          cat "$LIST"
+          status=0
+          uv run --no-sync python -m pytest \
+            "$@" \
+            -m "macos_only and not integration" \
+            -v --tb=short || status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::No tests matched -m macos_only. Either the marker"
+            echo "was renamed/dropped or selection is broken — this job must"
+            echo "never pass without running its OS's tests."
+            exit 1
+          fi
+          exit "$status"
+
+  tests-os-windows-fork:
+    name: OS-specific tests (Windows)
+    needs: detect
+    if: github.repository == 'adurham/hermes-agent' && needs.detect.outputs.python == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Run windows_only tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          LIST="${RUNNER_TEMP:-.}/selected-tests.txt"
+          if ! uv run --no-sync python scripts/ci/list_os_marked_tests.py \
+                 windows_only > "$LIST"; then
+            echo "::error::could not enumerate windows_only test files"
+            exit 1
+          fi
+          if [ ! -s "$LIST" ]; then
+            echo "::error::empty windows_only file list"
+            exit 1
+          fi
+          # shellcheck disable=SC2046
+          set -- $(cat "$LIST")
+          echo "selected $# file(s) for windows_only:"
+          cat "$LIST"
+          # Desktop-update hand-off integration tests spawn the real
+          # windows.ps1; same gate as upstream's lane.
+          EXTRA_ARGS=()
+          if [ "${{ needs.detect.outputs.desktop_updater }}" != "true" ]; then
+            echo "desktop_updater lane off: skipping tests/scripts/desktop_update/test_desktop_update_windows_*.py"
+            EXTRA_ARGS+=(--ignore-glob='*test_desktop_update_windows_*.py')
+          fi
+          status=0
+          uv run --no-sync python -m pytest \
+            "$@" \
+            ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+            -m "windows_only and not integration" \
+            -v --tb=short || status=$?
+          if [ "$status" -eq 5 ]; then
+            echo "::error::No tests matched -m windows_only. Either the marker"
+            echo "was renamed/dropped or selection is broken — this job must"
+            echo "never pass without running its OS's tests."
+            exit 1
+          fi
+          exit "$status"
+
   lint:
     name: Python lints
     needs: detect
@@ -111,6 +350,60 @@ jobs:
     # js-tests.yml runs on ubuntu-latest-32-core, not provisioned on forks.
     if: github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
+
+  # ─────────────────────────────────────────────────────────────────────
+  # FORK-ONLY JS/TS checks. Same gating story as the Python lane: the
+  # upstream job needs ubuntu-latest-32-core, so on the fork JS checks ran
+  # nowhere and the desktop/TUI/web suites were only ever run by hand.
+  #
+  # run-workspace-checks.mjs is itself parallel-by-check and the payload is
+  # ~612s, so a standard ubuntu-latest runner is the right size — the 32-core
+  # runner upstream uses is about setup amortisation, not raw throughput.
+  # ─────────────────────────────────────────────────────────────────────
+  js-tests-fork:
+    name: JS & TS checks (fork)
+    needs: detect
+    if: github.repository == 'adurham/hermes-agent' && needs.detect.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+
+      - name: grab npm 12
+        run: |
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            tests-js/node_modules
+            web/node_modules
+          key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
+
+      - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          command: npm ci
+
+      - name: Run all workspace checks
+        run: node .github/scripts/run-workspace-checks.mjs
 
   installer-tests:
     name: Installer tests
@@ -226,10 +519,6 @@ jobs:
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
       supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
 
-  osv-scanner:
-    name: OSV scan
-    uses: ./.github/workflows/osv-scanner.yml
-
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
@@ -261,7 +550,10 @@ jobs:
       - profile-artifact-check
       - supply-chain
       - review-labels
-      - osv-scanner
+      # OSV runs weekly against main (osv-scanner.yml schedule), not per PR:
+      # every PR was reporting the same repo-wide baseline of pinned-dep CVEs
+      # in its review comment, and the SARIF upload tripped GitHub's
+      # per-installation API rate limit during merge trains.
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this
