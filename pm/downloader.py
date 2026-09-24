@@ -341,7 +341,7 @@ class Download:
                     if len(failures) == 1:
                         raise
                     raise DownloadError("\n".join(str(error) for error in failures)) from exc
-                logging.getLogger(__name__).warning("%s; trying pinned mirror %s", exc, urls[index + 1])
+                logging.getLogger(__name__).debug("%s; trying pinned mirror %s", exc, urls[index + 1])
 
     def _transfer(self, source: Source, tick) -> int:
         from pm.download_state import partial_lock
