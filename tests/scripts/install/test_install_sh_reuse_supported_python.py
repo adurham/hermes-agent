@@ -21,6 +21,26 @@ INSTALL_SH = ROOT / "scripts/install.sh"
 pytestmark = pytest.mark.platforms("posix")
 
 
+@pytest.mark.parametrize("option", ["--branch", "--commit", "--dir", "--hermes-home", "--stage"])
+@pytest.mark.parametrize("suffix", [[], ["--manifest"], [""]])
+def test_missing_value_fails_before_any_install_work(option: str, suffix: list[str]) -> None:
+    result = subprocess.run(["bash", str(INSTALL_SH), option, *suffix],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 2
+    assert result.stderr.strip() == f"{option} needs a value"
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("flag", ["--skip-browser", "--no-playwright"])
+def test_removed_browser_skip_never_becomes_noninteractive(flag: str) -> None:
+    result = subprocess.run(["bash", str(INSTALL_SH), flag, "--manifest"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1
+    assert "no longer skips the browser install" in result.stderr
+    assert "--non-interactive" in result.stderr
+    assert not result.stdout
+
+
 def _environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     core = tmp_path / "checkout"
     (core / "pm").mkdir(parents=True)

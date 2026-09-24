@@ -31,12 +31,21 @@ INCLUDE_DESKTOP=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --branch|-Branch) BRANCH="${2:?--branch needs a value}"; shift 2 ;;
-        --commit|-Commit) INSTALL_COMMIT="$2"; shift 2 ;;
-        --dir) INSTALL_DIR="$2"; shift 2 ;;
-        --hermes-home|-HermesHome) HERMES_HOME="$2"; shift 2 ;;
+        --branch|-Branch|--commit|-Commit|--dir|--hermes-home|-HermesHome|--stage|-Stage)
+            option="$1"
+            if [ $# -lt 2 ] || [ -z "$2" ] || [[ "$2" == -* ]]; then
+                printf '%s needs a value\n' "$option" >&2
+                exit 2
+            fi
+            case "$option" in
+                --branch|-Branch) BRANCH="$2" ;;
+                --commit|-Commit) INSTALL_COMMIT="$2" ;;
+                --dir) INSTALL_DIR="$2" ;;
+                --hermes-home|-HermesHome) HERMES_HOME="$2" ;;
+                --stage|-Stage) STAGE="$2" ;;
+            esac
+            shift 2 ;;
         --manifest|-Manifest) WANT_MANIFEST=true; shift ;;
-        --stage|-Stage) STAGE="$2"; shift 2 ;;
         --json|-Json) JSON=true; shift ;;
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
