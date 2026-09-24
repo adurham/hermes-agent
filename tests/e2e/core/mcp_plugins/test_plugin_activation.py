@@ -34,6 +34,7 @@ import pytest
 
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    _select_test_dependencies,
     apply_known,
     build_home,
     calls_received,
@@ -250,6 +251,8 @@ def name_collision(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     root = tmp_path_factory.mktemp("name_collision")
     with provider(script((tool_name("srv", "ro_probe"), {"nonce": "dup"}))) as srv:
         eh = build_home(root, srv.base_url, extra={"plugins": {"enabled": ["foo"]}})
+        _select_test_dependencies(eh)
+        eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
         live = write_portable_plugin(eh, "foo", {"srv": portable_stdio(
             root / "live.jsonl", eh.tag, MCPE2E_CANARY="CANARY-LIVE")}, name="foo", version="2.0.0")
         backup = write_portable_plugin(eh, "foo.bak-x", {"srv": portable_stdio(
