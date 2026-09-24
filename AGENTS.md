@@ -423,34 +423,23 @@ is on another OS to pass, it belongs on that OS.** A test that walks several pla
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
 One marker per test, with any number of spec strings (any-of semantics) plus
-optional arch filters — never stack several `platforms()` decorators on one
-test (the conftest rejects that at collection):
+optional arch filters. To gate on several OSes, pass several specs to ONE
+marker — never stack several `platforms()` decorators on one test (the
+conftest rejects that at collection):
 
 ```python
-@pytest.mark.platforms("windows")                # only on native Windows
-@pytest.mark.platforms("linux", "macos")         # either of the two
-@pytest.mark.platforms("not macos")              # anywhere except macOS
-@pytest.mark.platforms("windows", arch="arm64")  # native Windows on arm64
-@pytest.mark.platforms("posix")                  # linux or macOS
+@pytest.mark.platforms("linux", "macos")  # ONE marker, two specs: runs on either
+def test_posix_signal_path(): ...
 ```
+
+Other single-marker forms (each is a complete marker on its own):
+`platforms("windows")` (native Windows only), `platforms("not macos")`
+(anywhere except macOS), `platforms("windows", arch="arm64")` (native Windows
+on arm64), `platforms("posix")` (Linux or macOS).
 
 Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
 The historic `linux_only` / `macos_only` / `windows_only` markers have been
 fully replaced — `platforms` is the only host-gating marker in the tree.
-
-Things that are host-independent can stay unmarked:
-
-- **Pure functions that take a platform as data** —
-  `hidden_windows_child_options(opts, is_windows=True)` is input→output, not a
-  fake host. (Contrast: setting a module-level `IS_WINDOWS` flag and then
-  calling `windows_detach_flags()` *is* a fake.)
-- **Declaration/packaging invariants** — "pyproject declares `tzdata` with a
-  `sys_platform == 'win32'` marker" asserts about a file, not about runtime.
-
-The line: **if the test needs the interpreter to believe it is on another OS
-in order to pass, it belongs on that OS.**
-When one test body walks several platforms in sequence, split it.
-Keep the host-native arm on the Linux lane and move the other arm into its own marked test.
 
 **Live Windows process-topology E2E: the `wine2e` lane.** For claims about
 real Windows process behavior that mocks cannot reproduce (venv-holder
