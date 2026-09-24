@@ -100,6 +100,12 @@ test('test-only source probe pins staged main without changing other Python invo
   expect(sourceBranchProbe.branchProbeArgs(['--run-module', 'hermes_cli.config', ...managed.slice(2)], root, '/real/git')).toEqual(['--run-module', 'hermes_cli.config', ...managed.slice(2)])
   expect(sourceBranchProbe.branchProbeArgs([...probe, '--branch', 'topic'], root, '/real/git')).toEqual([...probe, '--branch', 'topic'])
   expect(sourceBranchProbe.branchProbeArgs(probe, root, '')).toBe(probe)
+  const cmd = ['/d', '/v:off', '/s', '/c', `""C:\\fixture\\hermes.cmd" "--run-module" "hermes_cli.source_check" "--install-root" "${root}" "--home" "/profile with spaces" "--git" "/shim/git" "--force""`]
+  const rewritten = sourceBranchProbe.branchProbeArgs(cmd, root, '/real/git')
+  expect(rewritten.slice(0, 4)).toEqual(cmd.slice(0, 4))
+  expect(rewritten[4]).toContain('"--git" "/real/git" "--force" "--branch" "main"')
+  expect(sourceBranchProbe.branchProbeArgs(cmd, '/other/install', '/real/git')).toBe(cmd)
+  expect(sourceBranchProbe.branchProbeArgs(cmd, root, '/real&git')).toBe(cmd)
 })
 
 test.skipIf(process.platform === 'win32')('probe Git reaches the staged main even with global Git config isolated', () => {

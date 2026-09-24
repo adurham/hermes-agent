@@ -46,6 +46,22 @@ function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv,
 
 function branchProbeArgs(args, root, realGit) {
   if (!root || !realGit || !Array.isArray(args)) return args
+  // PM .cmd launchers are passed to cmd.exe as one screened command string.
+  // Limit the test-only rewrite to that exact shape; keep every other cmd call intact.
+  if (args.length === 5 && args.slice(0, 4).join(' ') === '/d /v:off /s /c') {
+    const command = args[4]
+    if (
+      typeof command !== 'string' ||
+      /["%&|<>^\r\n]/.test(realGit) ||
+      !/^""[^"\r\n]+\.cmd" "--run-module" "hermes_cli\.source_check" /i.test(command) ||
+      !command.includes(`"--install-root" "${root}"`) ||
+      command.includes('"--branch"') ||
+      !command.endsWith('"') ||
+      [...command.matchAll(/"--git" "[^"\r\n]+"/g)].length !== 1
+    ) return args
+    const selected = command.slice(0, -1).replace(/"--git" "[^"\r\n]+"/, `"--git" "${realGit}"`) + ' "--branch" "main""'
+    return [...args.slice(0, 4), selected]
+  }
   const legacy = args[0] === '-c' && args[1]?.includes('runpy.run_path(str(p))')
     && args[1]?.includes('hermes_cli/source_check.py')
   const managed = args[0] === '--run-module' && args[1] === 'hermes_cli.source_check'

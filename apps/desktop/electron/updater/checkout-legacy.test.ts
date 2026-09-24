@@ -92,3 +92,37 @@ it.skipIf(process.platform === 'win32')('uses the install-scoped PM launcher rat
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
+
+it.skipIf(process.platform !== 'win32')(
+  'runs a PM .cmd source check with quoted paths and refuses a missing launcher',
+  async (): Promise<void> => {
+    const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'pm source check '))
+    const home: string = path.join(root, 'profile with spaces')
+    const launcher: string = path.join(root, '.hermes', 'bin', 'hermes.cmd')
+    fs.mkdirSync(path.dirname(launcher), { recursive: true })
+    fs.mkdirSync(path.join(root, 'pm'))
+    fs.mkdirSync(home)
+    fs.writeFileSync(
+      launcher,
+      '@echo off\r\nif not "%~1"=="--run-module" exit /b 5\r\nif not "%~2"=="hermes_cli.source_check" exit /b 6\r\necho {"supported":true,"channel":"stable","behind":-1}\r\n'
+    )
+
+    try {
+      const probe = {
+        python: 'nonexistent-system-python',
+        git: 'git',
+        updateRoot: root,
+        hermesHome: home,
+        channel: 'stable' as const
+      }
+      await expect(readSourceUpdate(probe)).resolves.toMatchObject({ supported: true, channel: 'stable', behind: null })
+      await expect(readSourceUpdate({ ...probe, branch: 'main&echo INJECTED' })).rejects.toThrow(
+        'unsafe Windows command argument'
+      )
+      fs.rmSync(launcher)
+      await expect(readSourceUpdate(probe)).rejects.toThrow('installation launcher is missing')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
