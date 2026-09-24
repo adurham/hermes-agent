@@ -73,23 +73,21 @@ fn is_valid_commit(s: &str) -> bool {
 /// Resolver cache plan for a pin that already has a local path computed.
 ///
 /// Immutable commit pins reuse cache forever. Mutable branch/tag pins always
-/// refresh, and only fall back to a stale cache when the refresh fails.
+/// refresh and never fall back to a stale cache: the repository stage checks
+/// out the live branch, so an old script would drive a tree it predates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CachePlan {
     /// On-disk hit for an immutable pin — skip the network.
     Reuse,
-    /// Download (or re-download). `stale_ok` means a failed refresh may return
-    /// the existing cache file (mutable pins with a prior download).
-    Fetch { stale_ok: bool },
+    /// Download (or re-download); a failure is fatal.
+    Fetch,
 }
 
 pub(crate) fn cache_plan(immutable: bool, cached_exists: bool) -> CachePlan {
     if immutable && cached_exists {
         CachePlan::Reuse
     } else {
-        CachePlan::Fetch {
-            stale_ok: !immutable && cached_exists,
-        }
+        CachePlan::Fetch
     }
 }
 
@@ -161,7 +159,7 @@ pub async fn resolve(
                 branch: pin.branch.clone(),
             });
         }
-        CachePlan::Fetch { stale_ok } => {
+        CachePlan::Fetch => {
             emit_log(&format!(
                 "[bootstrap] downloading {} for {} {} from GitHub",
                 kind.filename(),
@@ -173,34 +171,14 @@ pub async fn resolve(
                 truncate_ref(&commit_or_ref)
             ));
 
-            match download(kind, &commit_or_ref, &cached).await {
-                Ok(()) => {
-                    emit_log(&format!("[bootstrap] cached to {}", cached.display()));
-                    Ok(ResolvedScript {
-                        path: cached,
-                        source: ScriptSource::Downloaded,
-                        commit: pin.commit.clone(),
-                        branch: pin.branch.clone(),
-                    })
-                }
-                Err(err) if stale_ok => {
-                    emit_log(&format!(
-                        "[bootstrap] WARNING: refresh failed for mutable ref {}; using stale cached {} at {}: {err:#}",
-                        truncate_ref(&commit_or_ref),
-                        kind.filename(),
-                        cached.display()
-                    ));
-                    // Stale cache can predate the BOM fix too — upgrade it.
-                    upgrade_cached_script(kind, &cached, emit_log);
-                    Ok(ResolvedScript {
-                        path: cached,
-                        source: ScriptSource::Cached,
-                        commit: pin.commit.clone(),
-                        branch: pin.branch.clone(),
-                    })
-                }
-                Err(err) => Err(err),
-            }
+            download(kind, &commit_or_ref, &cached).await?;
+            emit_log(&format!("[bootstrap] cached to {}", cached.display()));
+            Ok(ResolvedScript {
+                path: cached,
+                source: ScriptSource::Downloaded,
+                commit: pin.commit.clone(),
+                branch: pin.branch.clone(),
+            })
         }
     }
 }
@@ -444,25 +422,13 @@ mod tests {
     }
 
     #[test]
-    fn existing_branch_cache_plans_refresh_with_stale_fallback() {
-        // Resolver-level: a prior install-main.ps1 must not short-circuit
-        // Retry — mutable pins refresh, and only fall back if download fails.
-        assert_eq!(
-            cache_plan(/*immutable=*/ false, /*cached_exists=*/ true),
-            CachePlan::Fetch { stale_ok: true }
-        );
-        assert_eq!(
-            cache_plan(/*immutable=*/ true, /*cached_exists=*/ true),
-            CachePlan::Reuse
-        );
-        assert_eq!(
-            cache_plan(/*immutable=*/ false, /*cached_exists=*/ false),
-            CachePlan::Fetch { stale_ok: false }
-        );
-        assert_eq!(
-            cache_plan(/*immutable=*/ true, /*cached_exists=*/ false),
-            CachePlan::Fetch { stale_ok: false }
-        );
+    fn mutable_pins_always_refresh_without_stale_fallback() {
+        // A cached install-main.ps1 predates the live branch the repository
+        // stage checks out; running it against that tree broke installs.
+        assert_eq!(cache_plan(/*immutable=*/ false, /*cached_exists=*/ true), CachePlan::Fetch);
+        assert_eq!(cache_plan(/*immutable=*/ true, /*cached_exists=*/ true), CachePlan::Reuse);
+        assert_eq!(cache_plan(/*immutable=*/ false, /*cached_exists=*/ false), CachePlan::Fetch);
+        assert_eq!(cache_plan(/*immutable=*/ true, /*cached_exists=*/ false), CachePlan::Fetch);
     }
 
     #[test]
