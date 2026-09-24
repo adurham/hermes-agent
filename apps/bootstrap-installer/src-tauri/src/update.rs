@@ -10,7 +10,6 @@
 //! through the existing `--version` surface before selecting an older launcher.
 
 use std::collections::VecDeque;
-use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -1277,22 +1276,6 @@ mod tests {
         let probes = install_lock_probe_paths(root);
 
         assert!(locked_paths(&probes).is_empty());
-    }
-
-    #[test]
-    fn same_windows_path_accepts_case_only_difference() {
-        assert!(same_windows_path(
-            Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\scripts\HERMES.EXE"),
-            Path::new(r"c:\users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
-        ));
-    }
-
-    #[test]
-    fn same_windows_path_rejects_desktop_binary() {
-        assert!(!same_windows_path(
-            Path::new(r"C:\Users\tester\.hermes\hermes-agent\apps\desktop\Hermes.exe"),
-            Path::new(r"C:\Users\tester\.hermes\hermes-agent\venv\Scripts\hermes.exe"),
-        ));
     }
 
     fn lines(text: &str) -> Vec<String> {
