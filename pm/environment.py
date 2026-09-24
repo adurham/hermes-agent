@@ -344,7 +344,11 @@ class PythonEnvironment:
         if no_default_groups:
             command.append("--no-default-groups")
         if all_extras:
+            from pm.features import opt_in_extras
+
             command.append("--all-extras")
+            for extra in opt_in_extras(source):
+                command += ["--no-extra", extra]
         if no_install_project:
             # --all-packages has no single selected project in uv, so
             # --no-install-project alone does not exclude the root. Name it

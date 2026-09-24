@@ -31,8 +31,9 @@ The bundled payload contains:
 - Generated CLI launchers from the archived project's script declarations.
 
 `pm/lock.json` owns managed-tool pins. `pyproject.toml` and `uv.lock` own Python
-requirements. Native staging uses `--all-extras`, subject to platform markers.
-This is broader than the source installer's extra named `all`.
+requirements. Native staging uses `--all-extras`, subject to platform markers,
+minus the extras `[tool.hermes] opt-in-extras` names (installed only when the
+user selects them). This is broader than the source installer's extra named `all`.
 
 The backend runs from app resources. Launchers execute the store interpreter
 with the source and dependency paths; they do not boot through a relocated

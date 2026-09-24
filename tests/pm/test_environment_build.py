@@ -190,6 +190,24 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
     assert not Path(env["HERMES_HOME"]).exists()
 
 
+def test_all_extras_build_leaves_out_opt_in_extras(installable_project, tmp_path):
+    source, uv, env = installable_project
+    manifest = source / "pyproject.toml"
+    manifest.write_text(manifest.read_text() + '\n[tool.hermes]\nopt-in-extras=["other"]\n', encoding="utf-8")
+    from pm import build_environment
+
+    probe = ("import json, importlib.util; print(json.dumps([importlib.util.find_spec(n) is not None "
+             "for n in ('chosen_dep', 'other_dep')]))")
+    bundle = build_environment(explicit=True, source=source, python=Path(sys.executable),
+                               out=tmp_path / "bundle env", cache=tmp_path / "cache", env=env,
+                               no_install_project=True, offline=True, all_extras=True)
+    assert json.loads(_run([str(bundle), "-I", "-c", probe], cwd=tmp_path, env=env)) == [True, False]
+    chosen = build_environment(explicit=True, source=source, python=Path(sys.executable),
+                               out=tmp_path / "chosen env", cache=tmp_path / "cache", env=env,
+                               no_install_project=True, offline=True, extras=["other"])
+    assert json.loads(_run([str(chosen), "-I", "-c", probe], cwd=tmp_path, env=env)) == [False, True]
+
+
 
 @pytest.mark.parametrize("lazy", [False, True])
 def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_worker, tmp_path, monkeypatch, lazy):
