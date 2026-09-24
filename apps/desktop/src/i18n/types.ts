@@ -952,8 +952,6 @@ export interface Translations {
         title: string
         intro: string
         restartHint: string
-        on: string
-        off: string
         scaleTitle: string
         scaleDesc: string
         roamTitle: string

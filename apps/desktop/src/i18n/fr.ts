@@ -1208,8 +1208,6 @@ export const fr = defineLocale({
           "Adoptez une mascotte petdex animée qui flotte au-dessus de l'application et réagit aux actions de Hermes — court pendant l'exécution des outils, fête les réussites, boude les erreurs.",
         restartHint:
           "Les animaux de compagnie nécessitent un redémarrage rapide — l'application en cours a démarré avant l'ajout de cette fonctionnalité. Fermez et rouvrez Hermes, puis revenez ici.",
-        on: 'Activé',
-        off: 'Désactivé',
         scaleTitle: 'Taille',
         scaleDesc: "Redimensionnez la mascotte flottante. S'applique partout instantanément.",
         roamTitle: 'Errer',
