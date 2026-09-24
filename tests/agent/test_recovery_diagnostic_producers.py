@@ -29,6 +29,11 @@ class Agent(StatusOutputMixin):
     def _compress_context(self, messages, *a, **k):
         return self.compressed, "system"
 
+    def _try_shrink_image_parts_in_messages(self, api_messages, **kwargs):
+        # 413 payload-too-large recovery tries the image-shrink path FIRST (FORK);
+        # these fixtures are text-only, so there is never an image part to shrink.
+        return False
+
     def _persist_session(self, *args):
         self.persisted.append(args)
 
