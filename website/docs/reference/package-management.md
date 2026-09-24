@@ -499,14 +499,14 @@ hermes pm install chromium
 |---|---|
 | `pm install [names...]` | Install named packages. With no names, provision required tools plus Python, put those tools on PATH, and then sync the `all` extra. |
 | `pm install --tools-only` | Install that tool closure and put it on PATH, then stop. The venv sync does not run. |
-| `pm env [names...]` | Print the composed environment of installed packages as JSON. It does not install missing packages. |
+| `pm env [names...]` | Print installed packages' PM-contributed environment values as JSON. It does not install missing packages, though a cold Hermes launch may prepare its own Python runtime first. |
 | `pm doctor` | Check installed tool identities, files, and digests against the lock. |
 | `pm repair` | Rebuild the recorded Python dependency set in a new generation, validate it, then select it. Does not update pins, features, or plugin configuration. |
 | `pm status` | Print the latest sync/update receipt as JSON, or report that no receipt exists. |
 | `pm gc` | Remove unreferenced tool-store entries, eligible download partials, and unused lease-managed Python generations. |
 
-`pm env` can include inherited environment values. Do not publish its output
-without removing credentials.
+`pm env` excludes inherited process variables, including credentials. Its
+output can still reveal local installation paths; review it before sharing.
 
 ### Maintainer commands
 
