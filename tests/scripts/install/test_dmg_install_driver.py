@@ -1,4 +1,4 @@
-"""The DMG driver must wait for the source launcher and packaged Desktop."""
+"""The DMG driver must wait for bootstrap completion, not merely a packaged Desktop."""
 
 import os
 from pathlib import Path
@@ -17,6 +17,7 @@ DRIVER = Path(__file__).resolve().parents[2] / "install/e2e-assets/drive-dmg-ins
     ("checkout", False),
     ("launcher", False),
     ("app", False),
+    ("completion", False),
 ])
 def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expected):
     root = tmp_path / "installed source"
@@ -33,6 +34,8 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
         launcher.chmod(0o755)
     if missing != "app":
         (root / "apps/desktop/release/mac-arm64/Hermes.app").mkdir(parents=True)
+    if missing != "completion":
+        (root / ".hermes-bootstrap-complete").write_text("completed", encoding="utf-8")
     # The legacy file must not mask a missing PM publication.
     legacy = root / "venv/bin/hermes"
     legacy.parent.mkdir(parents=True)

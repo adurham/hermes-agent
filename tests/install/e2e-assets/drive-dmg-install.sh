@@ -99,8 +99,9 @@ click_install() {
 
 # Use the same source-launcher selection as the later read-only checkpoint:
 # PM installs publish .hermes/bin/hermes; older releases use venv/bin/hermes.
-# The desktop app build is near the end, so success requires all three or
-# the EXIT trap kills the installer mid-build.
+# The first packaged app can land before the products stage finishes (and can
+# be rebuilt again). Wait for the bootstrap's terminal marker, published only
+# after every stage succeeds, before the EXIT trap stops the installer.
 # shellcheck source=source-driver.sh
 source "$(dirname "${BASH_SOURCE[0]}")/source-driver.sh"
 installed_app() {
@@ -114,7 +115,10 @@ installed_app() {
   return 1
 }
 install_complete() {
-  [ -d "$INSTALL_DIR/.git" ] && source_hermes "$INSTALL_DIR" >/dev/null 2>&1 && installed_app
+  [ -f "$INSTALL_DIR/.hermes-bootstrap-complete" ] \
+    && [ -d "$INSTALL_DIR/.git" ] \
+    && source_hermes "$INSTALL_DIR" >/dev/null 2>&1 \
+    && installed_app
 }
 # The bootstrap parks on an error screen instead of exiting when a stage
 # fails (e.g. a transient 429 downloading install.sh), with a Retry button
