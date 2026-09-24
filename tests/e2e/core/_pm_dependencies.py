@@ -25,13 +25,16 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
     if not (source / "facts.json").is_file():
         return None  # A system/Nix test interpreter has no selected PM tool store.
     facts = Facts(source / "facts.json", strict=True)
-    records = {name: facts.get(name) for name in ("uv", "python")}
+    # node runs the TUI behind the dashboard's /api/pty; carry it when the
+    # runner's store has it, or PM in the sandbox reports it not installed.
+    names = ("uv", "python") + (("node",) if facts.get("node") else ())
+    records = {name: facts.get(name) for name in names}
     python = records["python"]
     if not python or (source / python["entry"]).resolve() != Path(sys.base_prefix).resolve():
         raise AssertionError(f"test interpreter is not from the selected PM store: {source}")
     target = current_target()
     lock = Lockfile(lockfile_path())
-    verified_tools(("uv", "python"), source_store=source, target=target, lock=lock)
+    verified_tools(names, source_store=source, target=target, lock=lock)
 
     # The source may live under the real ~/.hermes. Per-test guards must never
     # read it, nor follow a sandbox tool symlink back into it. Copy the verified
@@ -44,7 +47,7 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
         (prepared / "facts.json").write_text(
             json.dumps({"schema": 1, "packages": records}), encoding="utf-8"
         )
-        verified_tools(("uv", "python"), source_store=prepared, target=target, lock=lock)
+        verified_tools(names, source_store=prepared, target=target, lock=lock)
     except BaseException:
         shutil.rmtree(prepared, ignore_errors=True)
         raise
