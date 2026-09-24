@@ -181,6 +181,12 @@ jobs:
         run: |
           scripts/run_tests.sh --include-integration tests/e2e
         env:
+          # An e2e file is a process tree, not one CPU-bound pytest worker. With
+          # 32 files at once the hosted run starved live children before their
+          # ready frames (empty stderr, still alive) and hit 60–120s deadlines
+          # across unrelated SQLite, tenancy, provider and terminal suites.
+          # Bound the trees, not the child readiness/turn timeouts.
+          HERMES_TEST_WORKERS: "4"
           # Multi-process episodes (torture chamber, compaction kill -9,
           # gateway liveness, delivery exactly-once through a real gateway,
           # the cron virtual-clock soak) legitimately run past the 300 s default.
