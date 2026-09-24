@@ -90,12 +90,16 @@ async function assertStagedBranch(page, expectedSha, log) {
     await page.waitForTimeout(1_000)
   }
   // Historical Desktop status has no updateAvailable field: its About/overlay
-  // offers the button when behind > 0. Never accept an explicit false from a
-  // newer checker, a dirty source tree, or merely a matching remote tip.
+  // offers the button when behind > 0. A newer checker states updateAvailable
+  // and leaves behind null when it cannot count (GitHub compare does not know a
+  // staged commit). Never accept an explicit false, a dirty source tree, or
+  // merely a matching remote tip.
+  const offered = status.updateAvailable === undefined
+    ? Number.isInteger(status.behind) && status.behind > 0
+    : status.updateAvailable === true
   if (status.supported !== true || status.error || status.dirty === true ||
       status.branch !== 'main' || status.targetSha !== expectedSha ||
-      !Number.isInteger(status.behind) || status.behind <= 0 ||
-      status.currentSha === expectedSha || status.updateAvailable === false) {
+      status.currentSha === expectedSha || !offered) {
     throw new Error('Desktop source check did not offer staged Git main; refusing to click an unrelated update')
   }
 }

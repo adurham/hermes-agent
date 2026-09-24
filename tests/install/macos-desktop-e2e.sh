@@ -271,6 +271,8 @@ run_playwright_update() {
   # $1: spec file to launch from.
   local spec="$1"
   local rc=0
+  accept_installer_marker "$INSTALL_DIR" \
+    || fail "installed source has changes other than the generated install marker"
   (cd "$WORK_ROOT" && "$HERMES_E2E_NODE" "$ASSETS/launch-from-spec.mjs" \
     --spec "$spec" \
     --old-sha "$OLD_SHA" --chat-out "$LOG_DIR/update-window" --mock-url "$HERMES_E2E_MOCK_URL" \

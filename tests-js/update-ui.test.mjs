@@ -74,7 +74,8 @@ test('checks the live Desktop bridge against the staged target before opening Ab
   const f = fixture({ statusOverride: { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: 1, dirty: false } })
   await updateUi.assertStagedBranch(f.page, sha, f.log)
   expect(f.log).toHaveBeenCalledWith(expect.stringContaining('"targetSha"'))
-  const current = fixture({ statusOverride: { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: 1, updateAvailable: true } })
+  // The current checker's hosted shape: it cannot count staged commits via GitHub compare.
+  const current = fixture({ statusOverride: { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: null, commits: [], updateAvailable: true } })
   await updateUi.assertStagedBranch(current.page, sha, current.log)
   const racing = fixture()
   let checks = 0
@@ -90,6 +91,7 @@ test('checks the live Desktop bridge against the staged target before opening Ab
     { supported: true, branch: 'main', targetSha: sha, behind: 0 },
     { supported: true, branch: 'main', currentSha: sha, targetSha: sha, behind: 1 },
     { supported: true, branch: 'main', targetSha: sha, behind: 1, updateAvailable: false },
+    { supported: true, branch: 'main', currentSha: 'b'.repeat(40), targetSha: sha, behind: null },
   ]) {
     const refused = fixture({ statusOverride })
     await expect(updateUi.assertStagedBranch(refused.page, sha, refused.log)).rejects.toThrow(/refusing to click/)
