@@ -748,7 +748,7 @@ function Stage-Repository {
 function Stage-Venv {
     # Keep the installer stage protocol; PM alone creates dependency environments.
     Get-BootstrapPython | Out-Null
-    Log "bootstrap Python ready; PM prepares the dependency environment"
+    Log "bootstrap Python ready; Preparing the dependency environment"
 }
 
 # Delegate the whole python+venv+tools install to pm: stage the pinned uv,
@@ -779,12 +779,12 @@ function Get-BootstrapPython {
 
 function Invoke-BootstrapPm {
     $bootPy = Get-BootstrapPython
-    Log "delegating python + venv + tools to pm (hash-verified via uv.lock)"
+    Log "installing python + venv + tools (hash-verified via uv.lock)"
     Push-Location $InstallDir
     try {
         # Finish bootstrap uv before PM replaces or cleans its store entry.
         Invoke-Native { & $bootPy -m pm.cli install }
-        if ($LASTEXITCODE) { Fail "pm install failed" }
+        if ($LASTEXITCODE) { Fail "dependency install failed" }
     } finally {
         Pop-Location
     }
