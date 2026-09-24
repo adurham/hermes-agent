@@ -869,6 +869,35 @@ def _refresh_cua_driver_after_update() -> None:
         pm.ensure("cua-driver", explicit=True)
 
 
+def _install_default_tools_after_update() -> None:
+    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+
+    A source update re-syncs only the venv, so a tool that became a default after
+    this install was created would never arrive and browser tools would stay
+    missing. The installers' PM stage runs the same selection. Declined packages
+    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+    """
+    import pm
+    from pm.defaults import default_packages
+    from pm.install import lazy_installs_allowed, sealed
+    from pm.lock import Lockfile
+    from pm.paths import lockfile_path
+
+    # Sealed payloads ship their tools; the lazy-install policy (config or the
+    # Docker/test bridge) means the user asked Hermes not to fetch on its own.
+    if sealed() or not lazy_installs_allowed():
+        return
+    for name in default_packages(Lockfile(lockfile_path()).names()):
+        if pm.installed_package(name) is not None:
+            continue
+        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        try:
+            pm.ensure(name, explicit=True)
+        except (pm.InstallError, OSError) as exc:
+            print(f"  ⚠ {name} was not installed: {exc}")
+            print(f"    Retry with: hermes pm install {name}")
+
+
 def _print_checkpoint_footprint_notice() -> None:
     """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
     from tools.checkpoint_maintenance import checkpoint_footprint_notice
@@ -908,6 +937,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('CLI launcher exposure failed: %s', lambda: _launchers.expose_cli(_m().PROJECT_ROOT)),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
+        ('Default PM tool install failed: %s', _install_default_tools_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
