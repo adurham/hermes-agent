@@ -428,6 +428,19 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
         return []
 
     me = os.getpid()
+    # On POSIX, never stop a Desktop that is one of OUR ancestors. A
+    # historical Desktop (v2026.7.1 Linux in-app update) runs `hermes update`
+    # as a child with piped stdout/stderr and owns the post-update rebuild and
+    # relaunch. Killing it breaks those pipes (EPIPE fails the update) and
+    # leaves nobody to relaunch. It also outlives the swap safely because it
+    # relaunches itself afterwards. Windows keeps stopping it: there, the exe
+    # lock would make the rename fail anyway.
+    spared: set[int] = set()
+    if sys.platform != "win32":
+        try:
+            spared = {parent.pid for parent in psutil.Process(me).parents()}
+        except Exception:
+            spared = set()
     victims = []
     try:
         proc_iter = psutil.process_iter(["pid", "exe"])
@@ -438,7 +451,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
             info = proc.info
             pid = info.get("pid")
             exe = info.get("exe")
-            if not exe or pid is None or pid == me:
+            if not exe or pid is None or pid == me or pid in spared:
                 continue
             exe_path = Path(exe).resolve()
         except Exception:
