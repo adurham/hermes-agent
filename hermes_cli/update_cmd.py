@@ -27,6 +27,7 @@ from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
 from hermes_cli._early_recovery import interrupted_pull_marker
+from hermes_cli import update_cmd_check as _check
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -589,205 +590,40 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         record_refusal_receipt(refusal)
         sys.exit(2)
 
-    git_dir = _m().PROJECT_ROOT / ".git"
-    if not git_dir.exists():
+    root = _m().PROJECT_ROOT
+    if not (root / ".git").exists():
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
-    git_cmd = ["git"]
-    if sys.platform == "win32":
-        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-
-    # A crashed/interrupted fetch can leave .git/shallow.lock (or another git
-    # lock file) behind; every later fetch then fails with "File exists" and
-    # the check reports a hard failure (or, in the banner path, silently
-    # compares stale refs). Self-heal abandoned locks before fetching.
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
-
-    cleared = clear_stale_git_locks(_m().PROJECT_ROOT)
-    for lock_path in cleared:
-        print(f"  (removed stale git lock: {lock_path})")
-    # Aborted fetches on flaky lines also strand tmp_pack_* debris in
-    # .git/objects/pack — unchecked it reached 6 GB and corrupted the pack
-    # dir outright (#93732). Same age+process safety contract as the locks.
-    swept = clear_stale_tmp_packs(_m().PROJECT_ROOT)
-    if swept:
-        print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    git_cmd = _base_git_cmd()
+    _check.clear_git_debris(root)
 
     selected_channel = _source_update_channel(channel=channel, branch_explicit=branch_explicit)
     if not branch_explicit:
-        from hermes_cli.source_releases import resolve_source_target
-
-        print(f"→ Update channel: {selected_channel}")
-        try:
-            target = resolve_source_target(selected_channel, git_cmd, _m().PROJECT_ROOT)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
-            sys.exit(1)
-        if target.commit:
-            if target.retired:
-                print(f"→ {selected_channel} retired; source destination: {target.channel}")
-            if _capture_head_sha(git_cmd, _m().PROJECT_ROOT) == target.commit:
-                print(f"✓ Up to date with the latest release ({target.label}).")
-            else:
-                print(f"→ Selected release available: {target.label}")
-                print("  Run `hermes update` to install it.")
+        branch = _check.channel_compare_branch(selected_channel, git_cmd, root)
+        if branch is None:
             return
-        branch = target.branch
 
-    # Fetch only the branch we compare against; prefer upstream as the canonical
-    # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
-    # thousands of auto-generated branches, so scope the fetch to <branch>.
-    # Note: upstream/<branch> may not exist for non-main branches (a fork's
-    # bb/gui has no upstream counterpart), so when the caller picks a
-    # non-default branch we skip the upstream probe and use origin directly.
-    # Installer checkouts are shallow (`git clone --depth 1`). A plain
-    # `git fetch` would unshallow the repo (dragging in the whole history —
-    # the exact cost the shallow clone avoided) and the rev-list count below
-    # would then report a huge bogus "behind" number. Detect shallow up front:
-    # fetch with --depth 1 to preserve the boundary and report presence-only.
-    is_shallow = (
-        subprocess.run(
-            git_cmd + ["rev-parse", "--is-shallow-repository"],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-        ).stdout.strip()
-        == "true"
+    # Installer checkouts are shallow (`git clone --depth 1`). A plain fetch would unshallow
+    # the repo (the exact cost the shallow clone avoided) and rev-list would then report a
+    # huge bogus "behind" count, so fetch with --depth 1 and report presence-only.
+    is_shallow = _check.is_shallow_repository(git_cmd, root)
+    fetch_result, compare_branch = _check.fetch_compare_branch(
+        git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
     )
-    depth_args = ["--depth", "1"] if is_shallow else []
-
-    if branch == "main":
-        # Probe locally (~6 ms) whether an 'upstream' remote exists at all
-        # before spending a network fetch on it. Non-fork installs have no
-        # 'upstream' remote, and the old flow burned a failed network attempt
-        # (~0.3-1 s) on every --check before falling back to origin.
-        has_upstream_remote = (
-            subprocess.run(
-                git_cmd + ["remote", "get-url", "upstream"],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-            ).returncode
-            == 0
-        )
-        fetch_result = None
-        if has_upstream_remote:
-            print("→ Fetching from upstream...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["upstream", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                **_no_prompt_git_kwargs(),
-            )
-        if fetch_result is not None and fetch_result.returncode == 0:
-            upstream_exists = True
-            compare_branch = f"upstream/{branch}"
-        else:
-            # No upstream remote, or the upstream fetch failed — use origin.
-            print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["origin", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                **_no_prompt_git_kwargs(),
-            )
-            upstream_exists = False
-            compare_branch = f"origin/{branch}"
-    else:
-        # Non-default branch: compare against origin/<branch> directly.
-        print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch"] + depth_args + ["origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            **_no_prompt_git_kwargs(),
-        )
-        upstream_exists = False
-        compare_branch = f"origin/{branch}"
-
     if fetch_result.returncode != 0:
         _print_fetch_failure(fetch_result.stderr)
         sys.exit(1)
-
     if is_shallow:
-        # The depth-1 fetch above leaves the previous tip behind as a ``.git/shallow`` graft
-        # (git never removes old grafts); prune the stale ones so the file stops growing and
-        # merge-base / the orphan-divergence heuristic keep working (#105951).
-        from hermes_cli.gitlock import repair_broken_shallow_boundaries, prune_stale_shallow_grafts
-        repaired = repair_broken_shallow_boundaries(_m().PROJECT_ROOT)
-        if repaired:
-            print(f"  (restored {repaired} broken shallow boundary(ies))")
-        pruned = prune_stale_shallow_grafts(_m().PROJECT_ROOT)
-        if pruned:
-            print(f"  (pruned {pruned} stale shallow graft(s) left by past depth-1 checks)")
+        _check.repair_shallow_grafts(root)
 
-    # Verify the compare ref actually exists before asking rev-list about it.
-    # Without this, `git rev-list HEAD..origin/<bogus> --count` exits 128 and
-    # (with check=True) raises CalledProcessError, surfacing a Python
-    # traceback. Friendlier to detect-and-report.
-    verify_result = subprocess.run(
-        git_cmd + ["rev-parse", "--verify", "--quiet", compare_branch],
-        cwd=_m().PROJECT_ROOT,
-        capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-    )
-    if verify_result.returncode != 0:
+    if not _check.compare_ref_exists(git_cmd, root, compare_branch):
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
-
     if is_shallow:
-        # No history to count across the shallow boundary. Compare tip SHAs
-        # (mirrors the banner's _check_via_local_git), then try to recover the
-        # exact count via the GitHub compare API — the remote graph is complete
-        # even when the local one is truncated.
-        head_sha = subprocess.run(
-            git_cmd + ["rev-parse", "HEAD"],
-            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        ).stdout.strip()
-        target_sha = subprocess.run(
-            git_cmd + ["rev-parse", compare_branch],
-            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        ).stdout.strip()
-        if head_sha and target_sha and head_sha == target_sha:
-            print("✓ Already up to date.")
-        else:
-            from hermes_cli.source_check import _github_compare_behind
-            from hermes_cli.config import recommended_update_command
-
-            counted = _github_compare_behind(head_sha, target_sha)
-            if counted == 0:
-                # Local commits on top of the remote tip — not behind.
-                print("✓ Already up to date.")
-                return
-            if counted is not None:
-                commits_word = "commit" if counted == 1 else "commits"
-                print(f"⚕ Update available: {counted} {commits_word} behind {compare_branch}.")
-            else:
-                print(f"⚕ Update available (behind {compare_branch}).")
-            print(f"  Run '{recommended_update_command()}' to install.")
-        return
-
-    rev_result = subprocess.run(
-        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
-        cwd=_m().PROJECT_ROOT,
-        capture_output=True,
-        text=True, encoding="utf-8", errors="replace",
-        check=True,
-    )
-    behind = int(rev_result.stdout.strip())
-
-    if behind == 0:
-        print("✓ Already up to date.")
+        _check.report_shallow_verdict(git_cmd, root, compare_branch)
     else:
-        commits_word = "commit" if behind == 1 else "commits"
-        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
-        from hermes_cli.config import recommended_update_command
-
-        print(f"  Run '{recommended_update_command()}' to install.")
+        _check.report_rev_list_verdict(git_cmd, root, compare_branch)
 
 
 def _base_git_cmd() -> list[str]:
