@@ -438,7 +438,7 @@ jobs:
       matrix:
         target:
           - label: win32-x64
-            runner: windows-2025
+            runner: windows-latest-32-core
     env: &win32-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
@@ -736,7 +736,7 @@ jobs:
       matrix:
         target:
           - label: win32-arm64
-            runner: windows-11-arm
+            runner: windows-latest-32-arm-core
     env: *win32-env
     steps: *win32-steps
 
@@ -1434,7 +1434,7 @@ jobs:
       && needs.build-win32-x64.result == 'success' && needs.build-win32-arm64.result == 'success'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
-    runs-on: windows-2025
+    runs-on: windows-latest-32-core
     environment: release-signing
     cache-mode: read
     timeout-minutes: 45
@@ -1615,8 +1615,18 @@ jobs:
   publish-channel:
     name: Publish the complete native-smoked channel build
     needs:
-      [validate, build-darwin-arm64, build-darwin-x64, build-win32-arm64, build-win32-x64,
-       assemble-win32-bundle, smoke-darwin-arm64, smoke-darwin-x64, smoke-win32-arm64, smoke-win32-x64]
+      [
+        validate,
+        build-darwin-arm64,
+        build-darwin-x64,
+        build-win32-arm64,
+        build-win32-x64,
+        assemble-win32-bundle,
+        smoke-darwin-arm64,
+        smoke-darwin-x64,
+        smoke-win32-arm64,
+        smoke-win32-x64
+      ]
     if: >-
       !cancelled() && needs.validate.outputs.channel-build != '' && needs.validate.result == 'success'
       && needs.validate.outputs.darwin-arm64 == 'true' && needs.validate.outputs.darwin-x64 == 'true'
@@ -2375,7 +2385,7 @@ jobs:
     name: Submit the verified Store package
     needs: [validate, stable-publish]
     if: inputs.release-phase == 'publish'
-    runs-on: windows-2025
+    runs-on: windows-latest-32-core
     environment: release-signing
     timeout-minutes: 60
     env:

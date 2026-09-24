@@ -59,7 +59,7 @@ on:
         type: string
         default: auto
       update-ref:
-        description: 'What to update TO: HEAD (the commit under test), or NEXT -- a synthetic child of install-ref that the driver mints, so a leg that installs HEAD still has an update to take (HEAD''s own updater).'
+        description: "What to update TO: HEAD (the commit under test), or NEXT -- a synthetic child of install-ref that the driver mints, so a leg that installs HEAD still has an update to take (HEAD's own updater)."
         required: false
         type: string
         default: HEAD
@@ -69,7 +69,7 @@ on:
         type: boolean
         default: true
       leg-id:
-        description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
+        description: "Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg's logs + player artifacts so the report job can link a row to its zip."
         required: true
         type: string
       setup-exe-url:
@@ -100,7 +100,7 @@ jobs:
   bundled-e2e:
     name: packaged bundle (open-app-update)
     if: inputs.install-method == 'packaged-app' && inputs.update-method == 'open-app-update'
-    runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-11-arm' || 'windows-2025' }}
+    runs-on: ${{ inputs.bundle-arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -170,7 +170,7 @@ jobs:
         || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
-    runs-on: windows-latest
+    runs-on: windows-latest-32-core
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:
