@@ -187,7 +187,8 @@ def admitted(names, *, channel=False):
     return {name: {"result": "success", "outputs": dict(outputs)} for name in names}
 
 
-def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if=True, github=None, env=None):
+def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if=True, github=None, env=None,
+             steps=None):
     """Evaluate the workflow expression subset, including Actions' implicit success.
 
     This is not a scheduler simulation; native Actions still owns cancellation
@@ -205,12 +206,12 @@ def evaluate(expression, inputs, needs, *, cancelled=False, failed=False, job_if
 
     def value(match):
         bits = match[0].split('.')
-        result = {'inputs': inputs, 'needs': needs, 'github': github or {}, 'env': env or {}}
+        result = {'inputs': inputs, 'needs': needs, 'github': github or {}, 'env': env or {}, 'steps': steps or {}}
         for bit in bits:
             result = result.get(bit, '') if isinstance(result, dict) else ''
         return repr(result)
 
-    expression = re.sub(r'\b(?:inputs|needs|github|env)(?:\.[\w-]+)+', value, expression)
+    expression = re.sub(r'\b(?:inputs|needs|github|env|steps)(?:\.[\w-]+)+', value, expression)
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression)
     expression = re.sub(r'\btrue\b', 'True', expression)

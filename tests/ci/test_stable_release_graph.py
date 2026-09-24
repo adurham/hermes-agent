@@ -5,6 +5,8 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from tests.ci.desktop_release_roles import gate
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -78,8 +80,10 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert required <= ancestors(jobs, "publish-bundles")
     assert {"publish-docker", "publish-bundles", "publication"} <= ancestors(jobs, "complete")
     assert "promote-docker" not in jobs and "promote-bundles" not in jobs
+    # The gates must run to judge a failed or skipped prerequisite, not skip with it.
     for name in ("acceptance", "publication", "complete"):
-        assert jobs[name]["if"] == "always()"
+        failed = {need: {"result": "failure"} for need in ancestors(jobs, name)}
+        assert gate(jobs[name]["if"], {}, failed), name
 
 
 def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
@@ -126,7 +130,7 @@ def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
     jobs = workflow("ci.yaml")["jobs"]
     checks = {name for name, job in jobs.items() if "uses" in job}
     assert checks <= set(jobs["all-checks-pass"]["needs"])
-    assert jobs["e2e-desktop"]["if"] == "false"
+    assert not gate(jobs["e2e-desktop"]["if"], {}, {})
     assert "workflow_call" in workflow("ci.yaml")["on"]
 
 
@@ -258,7 +262,17 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     reconcile = publication["jobs"]["reconcile"]
     assert reconcile["environment"] == "release-signing"
     assert publication["permissions"] == {"contents": "write", "actions": "write"}
-    assert "conclusion != 'success'" in reconcile["if"]
+    # Reconcile after a dispatched run of this repository that did not succeed;
+    # a manual dispatch of the reconciler always runs.
+    def run_of(**overrides):
+        workflow_run = {"conclusion": "failure", "event": "workflow_dispatch",
+                        "head_repository": {"full_name": "o/r"}, **overrides}
+        return {"event_name": "workflow_run", "repository": "o/r", "event": {"workflow_run": workflow_run}}
+
+    assert gate(reconcile["if"], {}, {}, github=run_of())
+    assert gate(reconcile["if"], {}, {}, github={"event_name": "workflow_dispatch"})
+    for refused in ({"conclusion": "success"}, {"event": "push"}, {"head_repository": {"full_name": "fork/r"}}):
+        assert not gate(reconcile["if"], {}, {}, github=run_of(**refused)), refused
     checkout = reconcile["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.repository.default_branch }}"
     assert checkout["with"]["persist-credentials"] == "false"
