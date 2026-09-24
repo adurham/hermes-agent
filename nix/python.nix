@@ -74,13 +74,6 @@ let
           cffi = [ ];
         };
       });
-      # [kittentts] locks misaki as a git source. uv.lock records no build
-      # backend for it, so supply the hatchling its pyproject declares.
-      misaki = prev.misaki.overrideAttrs (old: {
-        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ final.resolveBuildSystem {
-          hatchling = [ ];
-        };
-      });
     };
 
   pythonPackageOverrides =
