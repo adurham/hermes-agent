@@ -17880,3 +17880,52 @@ lane costs nothing, but `tests-fork`'s first real run will calibrate whether
 `HERMES_TEST_WORKERS: 4` is the right pin and whether 6 shards is the right
 count. The pre-existing failure backlog (57 failures present *before* this sync
 on the same files) is unrelated to CI and still stands.
+
+---
+
+### Test-infrastructure fixes found by actually running the suite on hlxc — 2026-09-24
+
+Running the full suite on the homelab box (hermes-gw-01) for the first time
+surfaced two real defects in the fork's test runner, neither related to the
+v2026.9.21 merge. Both were invisible on CI and on the Mac because they need a
+SLOW machine plus a file with standing failures.
+
+**1. The per-file timeout scaler was largely inert (728 stale cache keys).**
+`scripts/run_tests_parallel.py::_effective_file_timeout` grants a slow file
+headroom above the flat 300s cap (3x its last healthy duration), keyed on the
+file's PATH. The 2026-09 tests/ reorg (`tests/cli` → `tests/hermes_cli`,
+`tests/run_agent` → `tests/agent`, a batch of top-level `tests/test_*.py` into
+topical dirs) left **728 of 4889** entries pointing at paths that no longer
+exist — 15% of the cache, and every genuinely slow file among them. Fixed by
+`scripts/ci/fix_duration_cache_paths.py` (dry-run by default; remaps an orphaned
+key onto its current path by unique basename, preserving the duration; 515
+remapped, 11 ambiguous and 202 unmatched left alone). The cache is gitignored
+(CI-cache-backed), so the tool is the fix, not a data commit.
+
+**2. A file with standing failures could never be measured — a permanent
+timeout loop.** `_clean_pass_durations` excluded EVERY file whose run failed, so
+a large file with a handful of long-standing failures never entered the cache.
+The scaler then never saw it, it stayed on the flat cap, and once its real
+runtime exceeded that it was SIGKILL'd before collection on every run, recording
+nothing again. Live case: `tests/tui_gateway/test_tui_gateway_server.py` — 302s
+against a 300s cap, 6 standing failures, reported by the runner as "1 file where
+no tests ran" with `durations[...] -> None` no matter how often it ran. The
+original exclusion was right about the risk it guarded (a TIMEOUT-KILLED attempt
+cached at ~300s would let the scaler compound 300 → 900 → …) but over-broad: an
+assertion failure that exited normally is a valid measurement. Now only timeout
+kills (recognised by `_TIMEOUT_KILL_MARKER`, a named constant shared by the run
+loop and the filter instead of a duplicated literal) and flaky retries are
+excluded.
+
+**Not a repo bug, worth knowing:** CI did NOT hit either problem — its 4-worker
+shards run that file faster than hlxc's 6-worker box does (302s vs CI's
+sub-cap runtime). So for full-suite runs on the box, raise
+`HERMES_TEST_FILE_TIMEOUT` (480 works); the cache fix makes that a one-time
+thing rather than a permanent workaround.
+
+**Verification method that made this trustworthy:** a two-tree triage
+(`/usr/local/bin/hlxc-triage`) runs a fixed file list against BOTH the pre-merge
+commit (`f0cad06871`) and the sync branch ON THE SAME MACHINE, so "merge-caused"
+is decided by one machine's failure signature rather than by comparing a Mac run
+against a Linux run. Comparing different hosts is how you misattribute a
+platform difference to a merge.
