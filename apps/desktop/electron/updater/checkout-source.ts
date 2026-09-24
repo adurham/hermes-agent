@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { promisify } from 'node:util'
 
 import { buildDesktopBackendEnv } from '../backend-env'
+import { resolveInstallationLauncher } from '../updater-process'
 import { hiddenWindowsChildOptions } from '../windows-child-options'
 
 import type { UpdaterStatusWire } from './index'
@@ -40,17 +43,30 @@ export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string):
 
 /** Python owns config identity and publication checks; this bridge only transports them. */
 export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate | null> {
-  if (!probe.python) {
+  // The install launcher boots PM's committed Python and dependency generation.
+  // A PATH Python can import this checkout yet lack its selected dependencies.
+  // Windows command launchers have a separate shell transport; retain their
+  // existing path until that transport is migrated.
+  const managed = process.platform !== 'win32' && existsSync(path.join(probe.updateRoot, 'pm'))
+  const launcher = managed ? resolveInstallationLauncher(probe.updateRoot, false, probe.hermesHome) : null
+  if (managed && !launcher) {
+    throw new Error('The source installation launcher is missing; repair this installation before checking updates.')
+  }
+  if (!managed && !probe.python) {
     throw new Error('No Python interpreter is available to check the source update channel.')
   }
 
   const result: { stdout: string; stderr: string } = await execute(
-    probe.python,
+    (managed ? launcher : probe.python)!,
     [
-      '-c',
-      // Inspect the target checkout's callable, not stderr strings or an editable
-      // install elsewhere on sys.path. Exceptions inside a present probe propagate.
-      'from pathlib import Path; import runpy; p = Path("hermes_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")',
+      ...(managed
+        ? ['--run-module', 'hermes_cli.source_check']
+        : [
+            '-c',
+            // Inspect the target checkout's callable, not stderr strings or an editable
+            // install elsewhere on sys.path. Exceptions inside a present probe propagate.
+            'from pathlib import Path; import runpy; p = Path("hermes_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")'
+          ]),
       '--install-root',
       probe.updateRoot,
       '--home',
