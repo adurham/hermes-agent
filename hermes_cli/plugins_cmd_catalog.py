@@ -469,7 +469,8 @@ def repin_catalog_plugin(
                 selection_changed = True
         if selection_changed:
             _admit_and_save_plugin_sets(
-                enabled, disabled, action=f"Rename plugin '{target.name}' to '{installed_name}'")
+                enabled, disabled, action=f"Rename plugin '{target.name}' to '{installed_name}'",
+                plugin=installed_name)
         _remove_plugin_core(target)
         warnings.append(f"Plugin renamed itself from '{target.name}' to '{installed_name}'; the old directory was removed.")
     return RepinResult(entry.sha, True, installed_name, warnings)
