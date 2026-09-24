@@ -960,6 +960,18 @@ def _run_post_update_maintenance(
     with _best_effort('Post-update state.db integrity check failed: %s'):
         _verify_and_restore_state_dbs_post_update()
 
+    # Pre-PM installers cloned --depth 1, which hides the release tag identity is
+    # derived from. Fetch the commit graph before the completion line and the
+    # install stamp read that identity.
+    try:
+        from hermes_cli.gitlock import fetch_full_commit_graph
+        from hermes_cli.update_cmd import _no_prompt_git_kwargs
+        if fetch_full_commit_graph(Path(_m().PROJECT_ROOT), **_no_prompt_git_kwargs()):
+            print("  ✓ Fetched release history (commits only) for version identity")
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
+        print(f"  ⚠ Could not fetch release history ({detail[0]}); the version shows as git.<sha> until the next update")
+
     # Seed the model-catalog cache from the checkout instead of a bot-gated, flaky fetch.
     with _best_effort('Model catalog seed during update failed: %s'):
         from hermes_cli.model_catalog import seed_cache_from_checkout

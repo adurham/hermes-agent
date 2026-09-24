@@ -66,8 +66,8 @@ def test_publishing_checkout_identity_moves_an_installer_receipt_to_head(tmp_pat
     # write_source_stamp is the one seam: the completion handoff, the PM updater's finish and
     # boot-time adoption all publish identity through it, and the receipt must follow every one.
     root = _repo(tmp_path)
-    release = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
-    branch = subprocess.run(["git", "branch", "--show-current"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    release = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
+    branch = subprocess.run(["git", "branch", "--show-current"], cwd=root, capture_output=True, text=True, encoding="utf-8", check=True).stdout.strip()
     # What install.sh / install.ps1's complete stage leaves behind at the installed release.
     (root / ".hermes-bootstrap-complete").write_text(json.dumps({
         "schemaVersion": 1, "pinnedCommit": release, "pinnedBranch": branch, "completedAt": "2026-06-19T00:00:00.000Z",
@@ -86,3 +86,25 @@ def test_publishing_checkout_identity_never_invents_an_installer_receipt(tmp_pat
 
     assert write_source_stamp(root) is not None
     assert not (root / ".hermes-bootstrap-complete").exists()
+
+
+def test_shallow_checkout_publishes_its_release_after_fetching_the_commit_graph(tmp_path):
+    # Pre-PM installers cloned --depth 1; the completion fetches commits (not trees) so
+    # the stamp can still name the release the checkout is built on.
+    from hermes_cli.gitlock import fetch_full_commit_graph
+
+    server = _repo(tmp_path)
+    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=server, check=True)
+    for message in ("one", "two", "three"):
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", message], cwd=server, check=True,
+                       capture_output=True, env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                                                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"})
+    checkout = tmp_path / "checkout"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", server.as_uri(), str(checkout)], check=True, capture_output=True)
+
+    assert fetch_full_commit_graph(checkout)
+    stamp = write_source_stamp(checkout)
+
+    assert stamp is not None
+    assert (stamp["baseVersion"], stamp["distance"]) == ("0.21.4", 3)
+    assert not fetch_full_commit_graph(checkout)

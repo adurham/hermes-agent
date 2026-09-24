@@ -35,7 +35,7 @@ def fake_root(tmp_path, monkeypatch):
 def _git(root: Path, *args: str) -> str:
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"}
-    return subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
 
 
 class TestReadProjectVersion:
