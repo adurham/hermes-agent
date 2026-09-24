@@ -525,7 +525,7 @@ The image uses Debian 13.4 and includes:
 - The curated extras `all`, `messaging`, `otlp`, `anthropic`, `bedrock`,
   `azure-identity`, and `matrix`. This is not `--all-extras`.
 - Node.js 26 and npm from the digest-pinned Node source image.
-- PM-pinned uv, Chromium, Chromium headless shell, FFmpeg, and ripgrep in `/opt/hermes/tools`.
+- PM-pinned uv, full Chromium, FFmpeg, and ripgrep in `/opt/hermes/tools`.
 - System Git, OpenSSH, Docker CLI, and Chromium shared libraries.
 - Prebuilt TUI/dashboard assets and baked Photon sidecar dependencies.
 - s6-overlay for supervision and zombie-process cleanup.
@@ -533,6 +533,12 @@ The image uses Debian 13.4 and includes:
 Chromium is staged through PM, not `npx playwright install`. The build records
 its resolved executable in `/etc/hermes/agent-browser-executable-path`.
 `PLAYWRIGHT_BROWSERS_PATH` names `/opt/hermes/tools`, outside the data mount.
+
+Every image, including the unsuffixed (non-`-desktop`) tags, carries the full
+Chromium build rather than Playwright's lighter headless shell: one pinned,
+checksummed browser serves both headless browsing and headed Bot Screen
+sessions. The cost is image size — the full build is larger than the headless
+shell earlier images shipped.
 
 Opt-in backend SDKs (Edge TTS, Firecrawl, Exa, platform adapters, plugin
 dependencies) install on first use into PM dependency generations under
