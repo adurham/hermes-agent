@@ -239,7 +239,7 @@ export function ConnectionsRegistrySection() {
 
   const remote = useRemoteSetup({
     host: 'registry',
-    enabled: editor?.kind === 'remote',
+    enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
     onNotice: notify
   })
 
@@ -278,7 +278,7 @@ export function ConnectionsRegistrySection() {
     setDupeError(null)
     remote.reset({
       url: saved?.url || '',
-      authMode: saved?.authMode || 'token',
+      authMode: next?.kind === 'cloud' ? 'oauth' : saved?.authMode || 'token',
       tokenSet: saved?.tokenSet ?? false,
       tokenPreview: saved?.tokenPreview ?? null
     })
@@ -323,9 +323,9 @@ export function ConnectionsRegistrySection() {
 
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
           payload.url = remote.payload.remoteUrl
-          payload.authMode = remote.credentials.authMode
+          payload.authMode = editor.kind === 'cloud' ? 'oauth' : remote.credentials.authMode
 
-          if (remote.payload.remoteToken) {
+          if (editor.kind === 'remote' && remote.payload.remoteToken) {
             payload.token = remote.payload.remoteToken
           }
 
@@ -678,6 +678,12 @@ export function ConnectionsRegistrySection() {
                 key={kind}
                 onClick={() => {
                   setDupeError(null)
+
+                  // Cloud uses browser sign-in even after a token-auth remote edit.
+                  if (kind === 'cloud') {
+                    remote.setAuthMode('oauth')
+                  }
+
                   setEditor({ ...editor, kind })
                 }}
                 size="sm"
@@ -711,6 +717,37 @@ export function ConnectionsRegistrySection() {
               onUrlChange={() => setDupeError(null)}
               setup={remote}
               urlOnly={editor.kind === 'cloud'}
+            />
+          )}
+
+          {editor.kind === 'cloud' && (
+            <ListRow
+              action={
+                remote.credentials.oauthConnected ? (
+                  <Pill tone="primary">{t.settings.gateway.signedIn}</Pill>
+                ) : (
+                  <Button
+                    disabled={saving || remote.signingIn || !remote.payload.remoteUrl}
+                    onClick={() => void remote.signIn()}
+                    size="sm"
+                  >
+                    {remote.signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {remote.isPassword
+                      ? t.settings.gateway.signIn
+                      : t.settings.gateway.signInWith(remote.providerLabel)}
+                  </Button>
+                )
+              }
+              description={
+                remote.credentials.oauthConnected
+                  ? remote.isPassword
+                    ? t.settings.gateway.authSignedInPassword
+                    : t.settings.gateway.authSignedInOauth
+                  : remote.isPassword
+                    ? t.settings.gateway.authNeedsPassword
+                    : t.settings.gateway.authNeedsOauth(remote.providerLabel)
+              }
+              title={t.settings.gateway.authTitle}
             />
           )}
 

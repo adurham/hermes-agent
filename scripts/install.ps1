@@ -605,12 +605,22 @@ function Stage-Repository {
             # files only the new tree has (pm/), so an install left on the old
             # tree cannot finish -- match the remote the way `hermes update`
             # does, after parking the old tip. Mirrors scripts/install.sh.
-            $prior = (Invoke-Native { git -C $InstallDir rev-parse --short HEAD 2>$null })
-            if (-not $prior) { $prior = 'unknown' }
-            $rescue = "refs/hermes-install-backup/$stamp-$prior"
-            Invoke-Native { git -C $InstallDir update-ref $rescue HEAD 2>$null }
-            if ($LASTEXITCODE) { Log "could not back up the previous HEAD" }
-            else { Log "previous HEAD backed up to $rescue" }
+            # Keep commits absent from origin in the updater's rescue namespace.
+            $droppedText = (Invoke-Native { git -C $InstallDir rev-list --count "origin/$Branch..HEAD" 2>$null })
+            if ($LASTEXITCODE) { Fail "cannot count commits before reset" }
+            [long]$dropped = 0
+            if (-not [long]::TryParse("$droppedText".Trim(), [ref]$dropped)) { Fail "cannot count commits before reset" }
+            if ($dropped -gt 0) {
+                Invoke-Native { git -C $InstallDir merge-base HEAD "origin/$Branch" 2>$null } | Out-Null
+                $rescueKind = if ($LASTEXITCODE -eq 0) { 'diverged' } else { 'orphan' }
+                $prior = (Invoke-Native { git -C $InstallDir rev-parse --short=12 HEAD 2>$null })
+                if ($LASTEXITCODE -or -not $prior) { Fail "cannot identify commits before reset" }
+                $rescue = "refs/hermes-update-backups/$rescueKind-$Branch-$stamp-$prior"
+                Invoke-Native { git -C $InstallDir update-ref $rescue HEAD 2>$null }
+                if ($LASTEXITCODE) { Fail "cannot back up $dropped local commit(s); refusing to reset" }
+                Log "$dropped commit(s) not on origin/$Branch backed up to $rescue"
+                Log "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescue"
+            }
             Invoke-Native { git -C $InstallDir reset --hard "origin/$Branch" }; if ($LASTEXITCODE) { Fail "git reset failed" }
             Log "not fast-forwardable; reset to origin/$Branch"
         }

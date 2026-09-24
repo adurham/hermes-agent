@@ -334,7 +334,7 @@ stage_repository() {
             git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
         fi
         git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
-        local stamp prior rescue
+        local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work
@@ -359,11 +359,23 @@ stage_repository() {
             # files only the new tree has (pm/), so an install left on the old
             # tree cannot finish -- match the remote the way `hermes update`
             # does, after parking the old tip.
-            prior="$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-            rescue="refs/hermes-install-backup/$stamp-$prior"
-            git -C "$INSTALL_DIR" update-ref "$rescue" HEAD 2>/dev/null \
-                && log "previous HEAD backed up to $rescue" \
-                || log "could not back up the previous HEAD"
+            # Only commits absent from origin need a rescue ref. Keep the same
+            # namespace as `hermes update` so its pruning and recovery work.
+            local dropped rescue_kind rescue_ref prior
+            dropped="$(git -C "$INSTALL_DIR" rev-list --count "origin/$BRANCH..HEAD")" \
+                || fail "cannot count commits before reset"
+            if [ "$dropped" -gt 0 ]; then
+                rescue_kind="diverged"
+                git -C "$INSTALL_DIR" merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 \
+                    || rescue_kind="orphan"
+                prior="$(git -C "$INSTALL_DIR" rev-parse --short=12 HEAD)" \
+                    || fail "cannot identify commits before reset"
+                rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$stamp-$prior"
+                git -C "$INSTALL_DIR" update-ref "$rescue_ref" HEAD \
+                    || fail "cannot back up $dropped local commit(s); refusing to reset"
+                log "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
+                log "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
+            fi
             git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" || fail "git reset failed"
             log "not fast-forwardable; reset to origin/$BRANCH"
         fi

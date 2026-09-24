@@ -106,7 +106,12 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
+import { composerHost } from './composer'
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { sessionsHost } from './sessions'
+import { desktopSettings } from './settings'
+
+export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -692,6 +697,9 @@ export const host = {
     viewport: readonlyAtom<ViewportRect>($viewport)
   },
 
+  /** Read, update, and observe the allowlisted Desktop appearance preferences. */
+  settings: desktopSettings,
+
   /** Toast into the app's notification stack. */
   notify,
   notifyError,
@@ -910,6 +918,9 @@ export const host = {
    *  against older behavior unchanged. */
   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
+
+  /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
+  sessions: sessionsHost,
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
@@ -1553,7 +1564,9 @@ export const host = {
    *  components that take a `HermesGateway` prop directly (e.g. `ConnectorsTab`),
    *  which need the instance, not just a JSON-RPC door. Re-read per use — the
    *  active instance changes on a profile swap. */
-  getGateway: (): HermesGateway | null => $gateway.get()
+  getGateway: (): HermesGateway | null => $gateway.get(),
+
+  composer: composerHost
 }
 
 // -- react bridge -------------------------------------------------------------
@@ -1864,6 +1877,10 @@ export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left'
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+/** Row-decoration slots: register a `data` contribution with a `render` for
+ *  `SESSION_ROW_AREAS.leading` / `.trailing` to decorate sidebar session rows
+ *  (the props carry the row's stored session id). */
+export { SESSION_ROW_AREAS, type SessionRowSlotContribution, type SessionRowSlotProps } from '@/lib/session-row-slots'
 /** A sibling WebSocket beside the route's `/api/ws` (voice PCM, Bot Screen RFB):
  *  same origin, same auth resolution as chat. */
 export { resolveSiblingWsUrl, type SiblingWsRoute } from '@/lib/sibling-ws-url'

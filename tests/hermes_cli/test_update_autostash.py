@@ -41,7 +41,7 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
             refs = original(['git', 'for-each-ref', '--format=%(objectname)',
                              'refs/hermes-update-backups/'], cwd=t.clone,
                             check=True, capture_output=True, text=True).stdout.split()
-            assert refs == ([before] if history == 'orphan' and failure not in {'ref', 'head'} else [])
+            assert refs == ([before] if failure not in {'ref', 'head'} else [])
             resets.append(command)
         if ((failure == 'ref' and 'update-ref' in command and '-d' not in command)
                 or (failure == 'reset' and 'reset' in command and '--hard' in command)):
@@ -73,8 +73,12 @@ def test_update_preserves_local_work_and_rescues_orphan_before_reset(
         assert 'backup write failed' in output and 'backed up current HEAD' not in output
     if failure == 'reset':
         assert 'preserved in stash' in output
-    if history == 'orphan' and failure not in {'ref', 'head'}:
+    if failure not in {'ref', 'head'}:
         assert f'expires after {update_cmd._ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days' in output
+        kind = 'orphan' if history == 'orphan' else 'diverged'
+        assert f'refs/hermes-update-backups/{kind}-main-' in output
+        if kind == 'diverged':
+            assert 'commit(s) not on origin/main leave the branch' in output
 
 
 @pytest.mark.parametrize('mode', ['count', 'age', 'unparseable'])
