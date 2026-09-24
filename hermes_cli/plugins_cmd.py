@@ -440,20 +440,31 @@ def _plugin_selection_version() -> str:
 
 
 def _admit_and_save_plugin_sets(
-    enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable", expected_config=None
+    enabled: set, disabled: set, *, extra_dirs=(), console=None, action: str = "enable", expected_config=None,
+    plugin: Optional[str] = None,
 ) -> None:
     """ONE admission authority for proposed enabled/disabled sets (C13):
     the candidate union is resolved against the ACTIVE environment and
     the config commits inside the same worker-owned PM transaction — a refusal or a config-write failure
     publishes nothing: previous config bytes AND previous environment
     stay exactly in place. Raises :class:`AdmissionRefused` (UI callers
-    catch and surface it — admission never auto-disables to fit)."""
-    from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
+    catch and surface it — admission never auto-disables to fit); a resolver
+    conflict raises its :class:`DependencyConflict` subclass naming *plugin*."""
+    from rich.markup import escape
+
+    from hermes_cli.plugins_admission import AdmissionRefused, DependencyConflict, admit_plugin_set_change
 
     try:
         admit_plugin_set_change(
-            enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs, expected_config=expected_config
+            enabled, disabled, active_plugins_dir=_plugins_dir(), extra_dirs=extra_dirs, expected_config=expected_config,
+            plugin=plugin,
         )
+    except DependencyConflict as exc:
+        # `hermes pm install` cannot fix a conflict, so the retry hint below would mislead here.
+        if console is not None:
+            console.print(f"[red]✗[/red] {escape(str(exc))}")
+            console.print("[dim]config.yaml and the active environment are unchanged.[/dim]")
+        raise
     except AdmissionRefused as exc:
         if console is not None:
             console.print(f"[red]✗[/red] {action} refused: {exc}")
@@ -462,6 +473,7 @@ def _admit_and_save_plugin_sets(
                 "Run `hermes pm install` to resolve dependencies, then retry.[/dim]"
             )
         raise
+
 
 
 _BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
@@ -560,7 +572,7 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
     (enabled if enable else disabled).add(name)
     _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                               expected_config=expected_config)
+                               expected_config=expected_config, plugin=name if enable else None)
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:
