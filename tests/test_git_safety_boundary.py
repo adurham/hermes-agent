@@ -25,12 +25,23 @@ def test_guard_blocks_native_and_shell_git_mutations_without_touching_checkout(t
     monkeypatch.setattr(conftest, "_LIVE_GUARD_PROTECTED_GIT_ROOTS", (protected,))
     head = git(protected, "rev-parse", "HEAD")
     (protected / "sentinel").write_bytes(b"uncommitted user data")
-    for command in (["git", "-C", str(protected), "reset", "--hard", "HEAD~1"],
-                    ["sh", "-c", f"git -C {shlex.quote(str(protected))} checkout -- sentinel"]):
+    for command in (
+        ["git", "-C", str(protected), "reset", "--hard", "HEAD~1"],
+        ["sh", "-c", f"git -C {shlex.quote(str(protected))} checkout -- sentinel"],
+        *(["git", "-C", str(protected), *args] for args in (
+            ("commit", "-am", "overwrite"), ("add", "-A"), ("rm", "-r", "."),
+            ("config", "url.https://example.invalid/.insteadOf", "git@example.invalid:"),
+            ("update-ref", "refs/heads/main", head), ("branch", "-f", "main", head),
+            ("worktree", "add", str(tmp_path / "new-worktree")), ("tag", "unsafe-tag"),
+        )),
+    ):
         with pytest.raises(RuntimeError, match="live-system guard"):
             subprocess.run(command, check=True)
         assert git(protected, "rev-parse", "HEAD") == head
         assert (protected / "sentinel").read_bytes() == b"uncommitted user data"
+    assert not (tmp_path / "new-worktree").exists()
+    assert git(protected, "tag", "--list", "unsafe-tag") == ""
+    assert "url.https://example.invalid/.insteadof" not in git(protected, "config", "--local", "--list")
     old = git(ordinary, "rev-parse", "HEAD~1")
     git(ordinary, "reset", "--hard", old)
     assert git(ordinary, "rev-parse", "HEAD") == old
