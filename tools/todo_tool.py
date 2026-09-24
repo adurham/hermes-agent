@@ -19,7 +19,13 @@ _TRUNCATION_MARKER = "… [truncated]"
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
-_STATUS_MARKERS = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]", "cancelled": "[~]"}
+# Fork-local (91e3a62b9e): unambiguous emoji status markers, not upstream's ASCII
+# brackets. The injected text is read by the MODEL, where "[x]"/"[>]"/"[ ]" are
+# ambiguous at a glance; the emoji are not. agent/display.py deliberately keeps
+# ASCII "[ ]" for *pending* only — see the docstring there: U+2B1C renders as a
+# solid white block on dark terminals. That divergence is intentional and
+# terminal-specific; this table targets the model's context, so all four are emoji.
+_STATUS_MARKERS = {"completed": "✅", "in_progress": "🔄", "pending": "⬜", "cancelled": "❌"}
 _ACTIVE_STATUSES = {"pending", "in_progress"}
 
 
