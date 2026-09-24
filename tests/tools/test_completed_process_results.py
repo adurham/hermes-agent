@@ -40,6 +40,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     command = shlex.join(path.as_posix() for path in (Path(sys.executable), child, release))
     observed = []
     seen_tool = set()
+    seen_follow_up_positions = set()
     follow_ups = []
 
     class Provider(http.server.BaseHTTPRequestHandler):
@@ -52,8 +53,13 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
                 self.send_error(404)
                 return
             tool_results = [m for m in request["messages"] if m["role"] == "tool"]
-            follow_ups.extend(m["content"] for m in request["messages"]
-                              if m["role"] == "user" and "Background process" in str(m.get("content") or ""))
+            # Each request replays earlier messages. A second delivery of identical
+            # text at a NEW history position is still a duplicate notification.
+            for index, m in enumerate(request["messages"]):
+                if (m["role"] == "user" and "Background process" in str(m.get("content") or "")
+                        and index not in seen_follow_up_positions):
+                    seen_follow_up_positions.add(index)
+                    follow_ups.append(m["content"])
             has_terminal = any(t.get("function", {}).get("name") == "terminal"
                                for t in request.get("tools", []))
             message = {"role": "assistant", "content": "Coordinator finished."}
@@ -126,12 +132,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     assert len(observed) == 1, (observed, producer.stdout, producer.stderr)
     process_id = observed[0]["session_id"]
     assert observed[0].get("notify_on_complete") is True, observed
-    # The owned notify_on_complete completion resumes in-process as a follow-up turn
-    # (nested quiet-notify resume), carrying the child's real output to the model.
+    # A terminal completion is an [IMPORTANT: Background process ...] event,
+    # not an [ASYNC DELEGATION ...] event. The same history entry can appear in
+    # several provider requests without being delivered a second time.
     assert len(follow_ups) == 1, follow_ups
-    assert process_id in follow_ups[0]
+    assert follow_ups[0].startswith(f"[IMPORTANT: Background process {process_id} exited (exit code 7).")
     assert "SYNTHETIC_REVIEW_COMPLETE" in follow_ups[0]
-    assert "exit code 7" in follow_ups[0]
 
     consumer = textwrap.dedent('''
         import json, sys
