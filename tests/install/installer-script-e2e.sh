@@ -43,6 +43,9 @@
 #   --update-ref     what to update TO. Default: HEAD. Pass the next release
 #                    tag for a stable-to-stable leg; only label the leg
 #                    stable-to-stable when BOTH refs are release tags.
+#                    NEXT mints a synthetic child of --install-ref (the
+#                    HEAD -> NEXT leg: install HEAD, update with HEAD's
+#                    own updater).
 #
 # Requires a clean full-history checkout with release tags fetched.
 
@@ -141,25 +144,24 @@ if [ -z "$INSTALL_REF" ]; then
   [ -n "$INSTALL_REF" ] || fail "no release tags in the checkout to use as OLD"
 fi
 OLD_SHA="$(git -C "$REPO_ROOT" rev-parse "${INSTALL_REF}^{commit}")"
-HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
 # The update target defaults to HEAD; --update-ref selects any other ref so
 # a stable-to-stable leg can target the next release tag instead of the tip.
 # Only call this leg stable-to-stable when BOTH refs are release tags.
-TARGET_LABEL="HEAD"
-TARGET_SHA="$HEAD_SHA"
-if [ -n "$UPDATE_REF" ]; then
-  TARGET_SHA="$(git -C "$REPO_ROOT" rev-parse "${UPDATE_REF}^{commit}")"
-  TARGET_LABEL="$UPDATE_REF"
-fi
+# NEXT (the HEAD -> NEXT leg) is minted before the clone so it rides along.
+TARGET_LABEL="${UPDATE_REF:-HEAD}"
+TARGET_SHA="$(resolve_update_ref "$REPO_ROOT" "$OLD_SHA" "$TARGET_LABEL")" \
+  || fail "cannot resolve update ref '$TARGET_LABEL'"
 [ "$OLD_SHA" != "$TARGET_SHA" ] || fail "OLD ($INSTALL_REF) IS the update target ($TARGET_LABEL); no update would be available"
 
 git clone --bare --quiet "$REPO_ROOT" "$SERVE_REPO"
+git -C "$SERVE_REPO" cat-file -e "$TARGET_SHA^{commit}" \
+  || fail "update target $TARGET_SHA ($TARGET_LABEL) did not reach serve.git"
 git -C "$SERVE_REPO" update-ref refs/heads/main "$OLD_SHA"
 git -C "$SERVE_REPO" symbolic-ref HEAD refs/heads/main
 # The installer may pin a commit that is reachable but not at a ref tip.
 git -C "$SERVE_REPO" config uploadpack.allowAnySHA1InWant true
-ok "serve.git main = $OLD_SHA ($INSTALL_REF), update target $HEAD_SHA"
+ok "serve.git main = $OLD_SHA ($INSTALL_REF), update target $TARGET_SHA ($TARGET_LABEL)"
 
 
 

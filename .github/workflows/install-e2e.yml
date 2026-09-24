@@ -289,6 +289,7 @@ jobs:
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
+      update-ref: ${{ matrix.update_ref }}
       tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
 
@@ -304,6 +305,7 @@ jobs:
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
+      update-ref: ${{ matrix.update_ref }}
       tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
 
@@ -321,6 +323,7 @@ jobs:
       install-method: ${{ matrix.install_method }}
       update-method: ${{ matrix.update_method }}
       install-ref: ${{ matrix.install_ref }}
+      update-ref: ${{ matrix.update_ref }}
       tag-has-desktop: ${{ matrix.tag_has_desktop }}
       leg-id: ${{ matrix.leg_id }}
 

@@ -100,7 +100,8 @@ param(
     [string]$InstallRef = "auto",
     # Update target ref (default HEAD). A stable-to-stable leg passes the
     # next release tag here; only label the leg stable-to-stable when BOTH
-    # refs are release tags.
+    # refs are release tags. NEXT mints a synthetic child of -InstallRef
+    # (the HEAD -> NEXT leg: install HEAD, update with HEAD's own updater).
     [string]$UpdateRef = "HEAD",
 
     # Repo checkout whose HEAD is the update target.
@@ -248,12 +249,29 @@ function Set-GitRedirect {
     # if we didn't do this, we'd need the  .skip_upstream_prompt file to prevent a hang in headless,"add the
     # official repo as upstream?" prompt would hang a headless run. But we don't anymore :D
 
-    $realGit = (Get-Command git.exe -ErrorAction Stop).Source
+    # The dispatch-time capture, not PATH: a fresh-machine leg has already
+    # stripped git from PATH by the time stage re-arms the redirect.
+    $realGit = $script:RealGitExe
         # Export the real git so later checks can observe the TRANSPORT url. Once
         # the shim below is on PATH, `git` reports the official origin for
         # `remote get-url origin` (so fork detection sees it); any check that must
         # see the file:// redirect instead has to bypass the shim via this path.
         $env:HERMES_E2E_REAL_GIT = $realGit
+
+    if ($script:FreshMachine) {
+        # A fresh Windows box has no git. install.ps1's Get-PinnedGit returns
+        # ANY git on PATH (the dev shortcut), so the runner's git -- or the
+        # shim below -- would skip pinned-git staging entirely. Take every
+        # git.exe directory off PATH and install no shim: the product must
+        # provision its own. The shim's one job (fork detection seeing the
+        # official origin) is covered by .skip_upstream_prompt, same as
+        # routes whose detached updater bypasses the shim.
+        $kept = @($env:PATH -split ';' | Where-Object { $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'git.exe')) })
+        $env:PATH = $kept -join ';'
+        Assert-True (-not (Get-Command git -ErrorAction SilentlyContinue)) "fresh machine: no git resolvable on PATH"
+        Write-Host "  fresh machine: git removed from PATH, no remote get-url shim"
+        return
+    }
         $shimDir = Join-Path $WorkRoot "shim"
     New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
     $shimPath = Join-Path $shimDir "git.bat"
@@ -640,6 +658,34 @@ function Stop-HermesAppProcesses([string]$Label) {
 # ----------------------------------------------------------------------------
 # Phase: stage -- serve.git with `main` at OLD (advanced to HEAD by update-gui)
 # ----------------------------------------------------------------------------
+# Mirror of resolve_update_ref's NEXT arm in e2e-assets/installer-common.sh:
+# a synthetic child of $Parent whose tree adds one marker file (a real diff,
+# not an empty fast-forward), written to the object store only -- no ref, no
+# worktree change. A local `clone --bare` copies objects/ wholesale, which is
+# how it reaches serve.git. A throwaway index stands in for mktree so no
+# NUL-delimited stdin has to cross PowerShell's native pipe.
+function New-NextCommit([string]$Repo, [string]$Parent) {
+    $marker = Join-Path $WorkRoot "next-marker.txt"
+    Set-Content -LiteralPath $marker -Encoding ASCII -Value "synthetic next commit for the HEAD -> NEXT install E2E leg"
+    $blob = Invoke-Git @("-C", $Repo, "hash-object", "-w", "--no-filters", $marker)
+    $saved = @{}
+    $vars = @{
+        GIT_INDEX_FILE = (Join-Path $WorkRoot "next.index")
+        GIT_AUTHOR_NAME = "Hermes E2E"; GIT_AUTHOR_EMAIL = "e2e@hermes.invalid"
+        GIT_COMMITTER_NAME = "Hermes E2E"; GIT_COMMITTER_EMAIL = "e2e@hermes.invalid"
+    }
+    foreach ($k in $vars.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $vars[$k]) }
+    try {
+        Invoke-Git @("-C", $Repo, "read-tree", $Parent) | Out-Null
+        Invoke-Git @("-C", $Repo, "update-index", "--add", "--cacheinfo", "100644,$blob,.hermes-e2e-next") | Out-Null
+        $tree = Invoke-Git @("-C", $Repo, "write-tree")
+        return Invoke-Git @("-C", $Repo, "commit-tree", $tree, "-p", $Parent, "-m", "e2e: synthetic next commit")
+    } finally {
+        foreach ($k in $vars.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+        Remove-Item -LiteralPath $vars.GIT_INDEX_FILE -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-PhaseStage {
     Write-Step "STAGE: bare serve repo, main -> OLD (install base)"
 
@@ -651,10 +697,6 @@ function Invoke-PhaseStage {
     # The purge above deleted the redirect gitconfig; re-arm it so the
     # bare-clone below (and everything after) sees the redirect file.
     Set-GitRedirect
-
-    $current = Invoke-Git @("-C", $RepoRoot, "rev-parse", "${UpdateRef}^{commit}")
-    $targetLabel = if ($UpdateRef -eq "HEAD") { "HEAD" } else { $UpdateRef }
-    Write-Host "  HEAD (update target): $current"
 
     # OLD: explicit -InstallRef, or the newest release tag -- the version a
     # user who installed on release day is on.
@@ -668,7 +710,13 @@ function Invoke-PhaseStage {
     }
     $old = Invoke-Git @("-C", $RepoRoot, "rev-parse", "$oldRef^{commit}")
     Write-Host "  OLD  ($oldRef): $old"
-    Assert-True ($old -ne $current) "OLD differs from HEAD (an update is genuinely available)"
+    # NEXT is minted before the clone so it rides along into serve.git.
+    $targetLabel = $UpdateRef
+    $current = if ($UpdateRef -eq "NEXT") { New-NextCommit $RepoRoot $old } else {
+        Invoke-Git @("-C", $RepoRoot, "rev-parse", "${UpdateRef}^{commit}")
+    }
+    Write-Host "  update target ($targetLabel): $current"
+    Assert-True ($old -ne $current) "OLD differs from $targetLabel (an update is genuinely available)"
 
     # Bare-clone the checkout: this is the repo the installer and updater
     # actually talk to. Local-path clone hardlinks objects, so it's fast
@@ -677,6 +725,7 @@ function Invoke-PhaseStage {
     # serves, so staging OLD means parking `main` there; the update phase
     # advances it to HEAD.
     Invoke-Git @("clone", "--bare", "--quiet", $RepoRoot, $ServeRepo) | Out-Null
+    Invoke-Git @("-C", $ServeRepo, "cat-file", "-e", "$current^{commit}") | Out-Null
     Invoke-Git @("-C", $ServeRepo, "update-ref", "refs/heads/main", $old) | Out-Null
     Invoke-Git @("-C", $ServeRepo, "symbolic-ref", "HEAD", "refs/heads/main") | Out-Null
 
@@ -1351,12 +1400,12 @@ function Invoke-PhaseUpdate {
             if (Test-Path -LiteralPath $bootLog) {
                 Move-Item -LiteralPath $bootLog -Destination "$bootLog.install-phase" -Force
             }
-            Invoke-PhaseInstallGui -Mode "update" -ExpectedSha $state.current -ExpectedLabel "HEAD"
+            Invoke-PhaseInstallGui -Mode "update" -ExpectedSha $state.current -ExpectedLabel $state.target_label
             Assert-DesktopArtifact "HEAD"
         }
     }
 
-    Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on HEAD"
+    Assert-True ((Get-InstalledHead) -eq $state.current) "checkout landed on $($state.target_label)"
     Test-HermesRuns "post-update"
     Assert-UserShims
     Invoke-PreserveVerify
@@ -1420,6 +1469,9 @@ Write-Host "  repo:     $RepoRoot"
 Write-Host "  workroot: $WorkRoot"
 
 $script:RealGitExe = (Get-Command git.exe -ErrorAction Stop).Source
+# The HEAD start is the fresh-machine leg: HEAD's installer on a box with
+# nothing on it, git included (see Set-GitRedirect).
+$script:FreshMachine = ($InstallRef -eq "HEAD")
 
 Set-GitRedirect
 

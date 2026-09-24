@@ -58,6 +58,11 @@ on:
         required: false
         type: string
         default: auto
+      update-ref:
+        description: 'What to update TO: HEAD (the commit under test), or NEXT -- a synthetic child of install-ref that the driver mints, so a leg that installs HEAD still has an update to take (HEAD''s own updater).'
+        required: false
+        type: string
+        default: HEAD
       tag-has-desktop:
         description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
         required: false
@@ -230,13 +235,13 @@ jobs:
 
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase stage -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -UpdateRef "${{ inputs.update-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
 
       - name: Install ${{ inputs.install-ref }} (${{ inputs.install-method }})
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase install -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}
 
-      - name: Update ${{ inputs.install-ref }} -> HEAD (${{ inputs.update-method }})
+      - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
         id: update
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install\windows-e2e.ps1 -Phase update -InstallMethod "${{ inputs.install-method }}" -Route "${{ inputs.update-method }}" -InstallRef "${{ inputs.install-ref }}" -SetupExeUrl ${{ inputs.setup-exe-url }}

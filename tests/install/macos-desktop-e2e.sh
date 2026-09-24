@@ -32,7 +32,8 @@
 #     [--install-ref REF] [--dmg-url URL]
 #     [--update-ref REF]   update target, default HEAD; pass the next
 #                          release tag for a stable-to-stable leg (label the
-#                          leg stable-to-stable only when both refs are tags)
+#                          leg stable-to-stable only when both refs are tags);
+#                          NEXT mints a synthetic child of --install-ref
 #
 # Requires a clean full-history checkout with release tags fetched, on a
 # macOS host with a window server (the GitHub macos runners qualify).
@@ -142,15 +143,15 @@ phase_stage() {
   # The update target defaults to HEAD; --update-ref selects any other ref
   # so a stable-to-stable leg can target the next release tag instead of
   # the tip. Only call this leg stable-to-stable when BOTH refs are tags.
-  target_label="HEAD"
-  target_sha="$head_sha"
-  if [ -n "${UPDATE_REF:-}" ]; then
-    target_sha="$(git -C "$REPO_ROOT" rev-parse "${UPDATE_REF}^{commit}")"
-    target_label="$UPDATE_REF"
-  fi
+  # NEXT (the HEAD -> NEXT leg) is minted before the clone so it rides along.
+  target_label="${UPDATE_REF:-HEAD}"
+  target_sha="$(resolve_update_ref "$REPO_ROOT" "$old_sha" "$target_label")" \
+    || fail "cannot resolve update ref '$target_label'"
   [ "$old_sha" != "$target_sha" ] || fail "OLD ($old_ref) IS the update target ($target_label); no update would be available"
 
   git clone --bare --quiet "$REPO_ROOT" "$SERVE_REPO"
+  git -C "$SERVE_REPO" cat-file -e "$target_sha^{commit}" \
+    || fail "update target $target_sha ($target_label) did not reach serve.git"
   git -C "$SERVE_REPO" update-ref refs/heads/main "$old_sha"
   git -C "$SERVE_REPO" symbolic-ref HEAD refs/heads/main
   git -C "$SERVE_REPO" config uploadpack.allowAnySHA1InWant true

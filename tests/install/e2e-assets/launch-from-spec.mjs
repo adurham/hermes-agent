@@ -239,7 +239,10 @@ async function main() {
   /** @returns {string} */
   const headSha = () => {
     try {
-      return execFileSync('git', ['-C', /** @type {string} */ (repoDir), 'rev-parse', 'HEAD'], {
+      // The driver's real git: a fresh-machine leg takes every git off PATH
+      // so the product must provision its own, and an observer that cannot
+      // spawn git would read '' forever instead of failing.
+      return execFileSync(process.env.HERMES_E2E_REAL_GIT || 'git', ['-C', /** @type {string} */ (repoDir), 'rev-parse', 'HEAD'], {
         encoding: 'utf8',
       }).trim();
     } catch {
