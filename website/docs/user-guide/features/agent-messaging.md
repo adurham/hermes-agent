@@ -107,6 +107,6 @@ Approving does **not** deliver the message directly — it returns the row to th
 
 ## What this is not
 
-This is a fork-only feature, not part of the real [Agent2Agent (A2A) protocol](/user-guide/messaging/a2a) implementation, which remains the genuinely network-facing, spec-compliant way to talk to remote, independently-operated Hermes instances or other A2A-compliant agents. Local agent messaging only reaches participants already running on your own machine, in your own profile. The tool-facing surface is deliberately kept identical to what a future real A2A transport would need, so one could be added later as a drop-in without changing anything you call today.
+This is a fork-only feature, not part of the real [Agent2Agent (A2A) protocol](../messaging/a2a.md) implementation, which remains the genuinely network-facing, spec-compliant way to talk to remote, independently-operated Hermes instances or other A2A-compliant agents. Local agent messaging only reaches participants already running on your own machine, in your own profile. The tool-facing surface is deliberately kept identical to what a future real A2A transport would need, so one could be added later as a drop-in without changing anything you call today.
 
 Also out of scope for v1: sibling-to-sibling subagent messaging (two subagents in the same `delegate_task` batch cannot message each other directly — only their shared parent), cross-process addressing of a specific subagent by id (message the owning session instead), and cross-machine relay.

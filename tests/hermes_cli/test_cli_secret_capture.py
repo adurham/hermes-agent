@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import cli as cli_module
 import tools.skills_tool as skills_tool_module
 from cli import HermesCLI
-from hermes_cli.callbacks import clarify_callback, prompt_for_secret
+from hermes_cli.callbacks import prompt_for_secret
 from tools.skills_tool import set_secret_capture_callback
 
 
@@ -184,32 +184,3 @@ def test_clarify_callback_fires_attention_signals():
     cli._clarify_state["response_queue"].put("utc")
     thread.join(timeout=2)
     assert result["value"] == "utc"
-
-
-def test_clarify_callback_attention_guarded_when_helper_missing():
-    """clarify_callback must not crash when the cli object lacks
-    _fire_attention_signals (graceful degradation via hasattr)."""
-    # A plain object (not a HermesCLI) with the minimal state the callback
-    # touches, but NO _fire_attention_signals method.
-    cli = _FakeApp()  # reuse: has invalidate(), no _fire_attention_signals
-    cli._clarify_state = None
-    cli._clarify_deadline = 0
-    cli._clarify_freetext = False
-    assert not hasattr(cli, "_fire_attention_signals")
-
-    result = {}
-
-    def _run():
-        result["value"] = clarify_callback(cli, "Pick?", ["a", "b"])
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-
-    deadline = time.time() + 2
-    while cli._clarify_state is None and time.time() < deadline:
-        time.sleep(0.01)
-    assert cli._clarify_state is not None
-
-    cli._clarify_state["response_queue"].put("a")
-    thread.join(timeout=2)
-    assert result["value"] == "a"

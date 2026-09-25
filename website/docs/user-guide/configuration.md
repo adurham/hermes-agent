@@ -949,7 +949,7 @@ Leaving the list empty, or omitting the key, is a no-op.
 
 ## Local Agent Messaging
 
-Controls the inbound policy for [cross-process local agent messaging](/user-guide/features/agent-messaging) — what this session does with a message another local Hermes session sends it, once you've enabled the opt-in `cross_session` toolset.
+Controls the inbound policy for [cross-process local agent messaging](./features/agent-messaging.md) — what this session does with a message another local Hermes session sends it, once you've enabled the opt-in `cross_session` toolset.
 
 ```yaml
 cross_session:
