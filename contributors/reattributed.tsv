@@ -130,3 +130,4 @@ a9972dc3f9156df789f82a9835c4fb2063203b23	2026-09-25T11:37:28-05:00	fix: profile 
 ecaa1f001aa5f3793d4ed781686621c023773fac	2026-09-25T14:10:31-05:00	test: disentangle the cherry-picked customCSS suites
 179124cdff5da31c4b300ba3c28ac211f5fb36be	2026-09-25T14:10:35-05:00	fix(gateway): carry customCSS in the change-watcher's resolve_skin
 c15ebb143574ce8f6136b2519ca57cd684aeb3c5	2026-09-25T17:31:42-05:00	fix(desktop): drop stray blank lines inside theme import groups
+3e11956c1521781ee6b0bc44cec5e20e682be2f3	2026-09-25T10:03:17-05:00	fix(desktop): mark the File Browser setting session-only in Simple mode
