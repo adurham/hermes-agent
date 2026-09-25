@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
@@ -343,6 +344,13 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+        # Record the pgid at spawn, exactly as _run_bash does: rg is short-lived and
+        # exits between the poll() below and the kill, after which os.getpgid(pid)
+        # raises ESRCH (macOS answers ESRCH for a zombie). _kill_process_group_posix
+        # already falls back to this attribute for precisely that window — without
+        # it the fallback re-raises and the drain's exception escapes as a tool error.
+        with contextlib.suppress(ProcessLookupError):
+            proc._hermes_pgid = os.getpgid(proc.pid)
 
         # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
         # caller past the deadline or past a /stop; the waiter below owns both.

@@ -222,7 +222,11 @@ def _cli_config_defaults():
         },
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
-        "clarify": {"timeout": 120},  # FORK: seconds the clarify tool waits before unblocking
+        # FORK: no legacy top-level "clarify" default here. resolve_clarify_timeout
+        # (tools/clarify_gateway.py) reads the legacy key FIRST, so seeding it would
+        # shadow the user's agent.clarify_timeout and cap every CLI modal at 120s.
+        # A stale copy of this key at the second default site was the documented
+        # bug in FORK.md (2026-09-06); this site is the one that survived it.
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
         "delegation": {"max_iterations": 45, "model": "", "provider": "", "base_url": "", "api_key": ""},
         "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown
