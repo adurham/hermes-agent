@@ -425,6 +425,83 @@ def test_update_sync_survives_unreadable_secondary_profile(admission_env):
     assert venv_is_current(project_root=core) is True
 
 
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_env):
+    """requires_hermes is judged against our version identity, which can lag (an untagged
+    source checkout reads as an older release). Such a plugin sits out: config untouched,
+    boot's currency check neither raises nor loops, and it rejoins once the verdict flips."""
+    from pm.environments import runtime_facts_path
+    from pm.install import sync_venv, venv_is_current
+    from pm.lock import Facts
+
+    tmp_path, home = admission_env
+    core = tmp_path / "core"
+    for name in ("fits", "needs-newer"):
+        plugin = home / "plugins" / name
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            f'[project]\nname="{name}"\nversion="1"\nrequires-python=">=3.11"\n'
+            'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+        )
+    manifest = home / "plugins" / "needs-newer" / "plugin.yaml"
+    manifest.write_text("name: needs-newer\nrequires_hermes: '>=999'\n", encoding="utf-8")
+    _write_enabled(home, ["fits", "needs-newer"])
+    before = (home / "config.yaml").read_bytes()
+
+    assert venv_is_current(project_root=core) is False  # boot probes it before any sync
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    assert (home / "config.yaml").read_bytes() == before
+    assert "Left plugin 'needs-newer'" in json.dumps(_latest_receipt(home).get("warnings"))
+    workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
+    assert "needs-newer" not in (workspace / "pyproject.toml").read_text()
+    assert venv_is_current(project_root=core) is True
+
+    manifest.write_text("name: needs-newer\nrequires_hermes: '>=0'\n", encoding="utf-8")
+    assert venv_is_current(project_root=core) is False
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
+    assert "needs-newer" in (workspace / "pyproject.toml").read_text()
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_update_sync_disables_only_on_evidence_about_the_plugin(admission_env, monkeypatch):
+    """A plugin whose own build fails is disabled; one whose dependency cannot be fetched
+    says nothing about the plugin, so it stays enabled and the next sync retries it."""
+    from pm.install import sync_venv, venv_is_current
+
+    tmp_path, home = admission_env
+    monkeypatch.setenv("UV_HTTP_RETRIES", "0")
+    broken = tmp_path / "broken-lib"
+    broken.mkdir()
+    (broken / "pyproject.toml").write_text(
+        '[project]\nname="broken-lib"\ndynamic=["version"]\n'
+        '[build-system]\nrequires=[]\nbuild-backend="backend"\nbackend-path=["."]\n', encoding="utf-8")
+    (broken / "backend.py").write_text(
+        "def get_requires_for_build_wheel(config=None): return []\n"
+        "def prepare_metadata_for_build_wheel(directory, config=None): raise SystemExit('no build')\n"
+        "def build_wheel(directory, config=None, metadata=None): raise SystemExit('no build')\n", encoding="utf-8")
+    # Plugin requirements are index-only; local and remote inputs come through tool.uv.sources.
+    for name, dependency, source in (("wont-build", "broken-lib", f'{{ path = "{broken.as_posix()}" }}'),
+                                     ("offline-dep", "gone", '{ url = "https://127.0.0.1:9/gone-1.0-py3-none-any.whl" }')):
+        plugin = home / "plugins" / name
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            f'[project]\nname="{name}"\nversion="1"\nrequires-python=">=3.11"\n'
+            f'dependencies=["{dependency}"]\n[tool.uv]\npackage=false\n'
+            f'[tool.uv.sources]\n{dependency} = {source}\n', encoding="utf-8",
+        )
+    _write_enabled(home, ["wont-build", "offline-dep"])
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["plugins"]["disabled"] == ["wont-build"]
+    assert "offline-dep" in cfg["plugins"]["enabled"]
+    assert "Left plugin 'offline-dep'" in json.dumps(_latest_receipt(home).get("warnings"))
+    assert venv_is_current(project_root=tmp_path / "core") is False  # the next sync retries it
+
+
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.environments.local import build_subprocess_env

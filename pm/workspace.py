@@ -204,12 +204,22 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
 
 
 def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> list[Path]:
-    """Keep every selected member or refuse an incompatible selection."""
+    """Keep every selected member or refuse an incompatible selection.
+
+    A member whose requires_hermes rejects the running version sits out instead: the
+    verdict is only as good as our version identity (an untagged source checkout reads
+    as an older release), the loader skips that plugin anyway, and the member rejoins
+    as soon as the verdict flips. Enabling one is still refused at admission.
+    """
+    from hermes_cli.plugins_manifest import requires_hermes_error
+
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
     members = []
     for path in selected:
         declaration = read_python_declaration(path)
+        if requires_hermes_error(declaration.manifest):
+            continue
         reason = manifest_version_error(declaration.manifest, path.name)
         if reason:
             raise InstallError("venv", reason)

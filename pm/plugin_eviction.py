@@ -5,9 +5,14 @@ choose again. An update has nobody to ask and must never fail because of a plugi
 core moved (a newer Python, a bumped pin, a newer manifest contract) under a plugin
 that was admitted against the old core. Such a plugin is disabled in every home that
 enables it, the reason reaches the operator and the receipt, and the update continues
-with the rest. A secondary profile whose config cannot be read is left out of the union
-the same way (there is nothing to edit in it) until its config is fixed. Only a core that
-cannot build on its own still fails.
+with the rest. Only a core that cannot build on its own still fails.
+
+Disabling needs evidence about the plugin itself: its requires-python against the pinned
+interpreter, its manifest contract, a resolver proof, or its build failing. Anything that
+might be about us or the moment instead (requires_hermes against a version identity that
+can lag, a fetch or tooling failure) only sits the plugin out of this build: config is
+untouched and it rejoins by itself. A secondary profile whose config cannot be read sits
+out the same way until its config is fixed.
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pm.environment import BuildFailure, ResolutionConflict
 from pm.environments import install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, read_bytes_or_none
 from pm.package import InstallError
@@ -38,25 +44,36 @@ def _interpreter_version() -> str:
     return probe.stdout.strip()
 
 
-def static_reasons(entries: list[Entry], python_version: str) -> dict[Path, str]:
-    """Plugins that cannot join this core without running a resolver, keyed by resolved dir."""
+def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Path, str], dict[Path, str]]:
+    """``(disable, sit out)`` reasons found without a resolver, keyed by resolved dir."""
+    from hermes_cli.plugins_manifest import requires_hermes_error
     from pm.plugin_declarations import manifest_version_error, read_python_declaration
 
     reasons: dict[Path, str] = {}
+    waiting: dict[Path, str] = {}
     for _plugins_dir, _name, plugin_dir in entries:
         key = plugin_dir.resolve()
-        if key in reasons:
+        if key in reasons or key in waiting:
             continue
         try:
             declaration = read_python_declaration(plugin_dir)
-            manifest = manifest_version_error(declaration.manifest, plugin_dir.name)
-            reason = (manifest.removeprefix(f"Plugin '{plugin_dir.name}' ") if manifest
-                      else declaration.python_error(python_version))
-        except (OSError, ValueError, TypeError) as exc:
-            reason = f"its dependency declaration cannot be read: {exc}"
+        except OSError as exc:
+            waiting[key] = f"its dependency declaration could not be read: {exc}"
+            continue
+        except (ValueError, TypeError) as exc:
+            reasons[key] = f"its dependency declaration is invalid: {exc}"
+            continue
+        # Mirrors enabled_member_dirs, so the recorded stamp is the one boot expects.
+        hermes = requires_hermes_error(declaration.manifest)
+        if hermes:
+            waiting[key] = hermes
+            continue
+        manifest = manifest_version_error(declaration.manifest, plugin_dir.name)
+        reason = (manifest.removeprefix(f"Plugin '{plugin_dir.name}' ") if manifest
+                  else declaration.python_error(python_version))
         if reason:
             reasons[key] = reason
-    return reasons
+    return reasons, waiting
 
 
 class PluginEviction:
@@ -129,11 +146,12 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         except ValueError as exc:
             notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
-    reasons = static_reasons(entries, _interpreter_version())
+    reasons, waiting = static_verdicts(entries, _interpreter_version())
 
     def members() -> list[Path]:
         return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
-                                  if plugin_dir.resolve() not in reasons and _is_member_candidate(plugin_dir)))
+                                  if plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
+                                  and _is_member_candidate(plugin_dir)))
 
     def commit() -> None:
         enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": members()},
@@ -160,13 +178,21 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         for member in kept:
             try:
                 package.apply(enabled, explicit=explicit, plugin_dirs=[*fitting, member], skip_invalid_secondary=True)
-            except InstallError as exc:
+            except (ResolutionConflict, BuildFailure) as exc:
                 reasons[member.resolve()] = f"the dependency environment no longer builds with it: {exc.cause[-400:]}"
+            except InstallError as exc:
+                # A fetch or tooling failure says nothing about the plugin: retry next sync.
+                waiting[member.resolve()] = f"its dependencies could not be prepared: {exc.cause[-400:]}"
             else:
                 fitting.append(member)
         commit()
-    notices += [f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[plugin_dir.resolve()]}"
-                for plugins_dir, name, plugin_dir in entries if plugin_dir.resolve() in reasons]
+    for plugins_dir, name, plugin_dir in entries:
+        key = plugin_dir.resolve()
+        if key in reasons:
+            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}")
+        elif key in waiting:
+            notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
+                           "it stays enabled and rejoins once that clears")
     for message in notices:
         print(f"⚠ {message}", file=sys.stderr, flush=True)
         receipt.record_warning(message)
