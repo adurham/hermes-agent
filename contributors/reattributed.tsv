@@ -117,3 +117,4 @@ b07d307bae64313e4aecaeb1c73dc95e03be204f	2026-09-25T10:08:28-05:00	fix(tui): bin
 701a7559d398b72852772f36eaee0526ae69e008	2026-09-25T11:39:42-05:00	test(desktop): pin the detached Windows launch and clean Ctrl-C exit
 3f2c24d41face1613ca697a188389f8f62de0a95	2026-09-25T17:26:18-05:00	test(desktop): neutralize the Linux desktop-entry install in the Ctrl-C exit test
 6c32a31d30ab61685f405448748c417e2b1e1018	2026-09-25T18:08:28-05:00	test(desktop): neutralize the unshare sandbox probe in the Ctrl-C exit test
+e2b1c6679192263e863dc19bd8e4b95f94eadc36	2026-09-25T18:56:53-05:00	test(desktop): neutralize the Linux password-store D-Bus probe in the Ctrl-C exit test
