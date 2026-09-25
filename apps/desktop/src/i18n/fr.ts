@@ -2802,7 +2802,8 @@ export const frOverrides = {
       toggleFailed: name => `Impossible de modifier l'état de ${name}`,
       toolsetOn: (name: string, profile: string) => `Outils agent de ${name} activés pour ${profile}`,
       toolsetOff: (name: string, profile: string) => `Outils agent de ${name} désactivés pour ${profile}`,
-      toolsetToggleFailed: (name: string) => `Impossible de modifier les outils agent de ${name}`,
+      toolsetToggleFailed: (name: string) =>
+        `Impossible de modifier les outils agent de ${name} ; le panneau Desktop reste inchangé`,
       legacyBackend: 'Ce backend est trop ancien pour gérer les plugins depuis cet écran ; mettez Hermes à jour.',
       portableBadge: 'portable',
       serverStates: {
