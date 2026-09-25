@@ -257,14 +257,15 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
             # under the launching process's own claim (its pid is our ancestor) we ARE that
             # tail and owe nothing — without this, a pending marker recurses forever.
             if not lock.acquired and read_live_update() is not None:
-                from pm.environments import committed_venv
-
-                if committed_venv(root) is not None:
+                if current:
                     return None
-                # A process the update spawns before PM commits (a restarted gateway) has no
-                # environment to run on. Commit one — never the tail, which is the updater's —
-                # then relaunch below; the relaunched process sees the commit and returns above.
+                # A process the update spawns before its dependencies are current (a restarted
+                # gateway) would boot on a tree built for another interpreter. Sync — never the
+                # tail, which is the updater's — then relaunch below into a current install.
                 _sync_source_dependencies(root, arm=False)
+                if not pm.venv_is_current(project_root=root):
+                    # Relaunching would land back here and sync again, forever.
+                    raise RuntimeError("dependency sync left this install out of date")
             else:
                 _finish_source_update(root, current=current, pending=pending)
         finally:

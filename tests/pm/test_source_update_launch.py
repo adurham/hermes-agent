@@ -270,8 +270,8 @@ def test_launch_without_marker_publishes_then_skips_and_rebuilds_on_lock_change(
 
 @pytest.mark.platforms("posix")
 def test_process_spawned_by_the_update_commits_dependencies_but_not_the_tail(source_launch, tmp_path):
-    """A process an update spawns before PM commits (its restarted gateway) must not boot on the
-    pre-PM venv: that tree was built for the old interpreter and loses its compiled modules."""
+    """A process an update spawns before its dependencies are current (its restarted gateway)
+    must not boot on a tree built for another interpreter; it syncs, but leaves the tail alone."""
     import time
     from hermes_cli.update_lock import update_marker_path
     from pm.environments import committed_venv
