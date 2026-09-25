@@ -29,6 +29,7 @@ import {
 } from '@/store/layout'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $workingSessionIds } from '@/store/session-states'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -254,6 +255,15 @@ export function SidebarSessionsSection({
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
+  // Stored session ids with a turn currently running, read at the section (the
+  // component that actually renders the collapsed-group cue) rather than at
+  // ChatSidebar: `$workingSessionIds` only emits on busy edges (stableArray),
+  // so this repaints this section per status edge and nothing above it — the
+  // whole-sidebar repaint the sidebar-level subscription used to cause stays
+  // gone. Rolls up into the header dot of any COLLAPSED workspace group whose
+  // sessions intersect the set (see SidebarWorkspaceGroup/WorkspaceHeader).
+  const workingSessionIds = useStore($workingSessionIds)
+  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
@@ -512,6 +522,7 @@ export function SidebarSessionsSection({
             removedSessionIds={removedSessionIds}
             renderRows={renderRowsDated}
             repoWorktrees={projectRepoWorktrees}
+            workingSessionIdSet={workingSessionIdSet}
           />
         ) : (
           emptyState
@@ -585,6 +596,7 @@ export function SidebarSessionsSection({
         onNewSession={onNewSessionInWorkspace}
         onNewSessionSplit={onNewSessionSplit}
         renderRows={renderRows}
+        workingSessionIdSet={workingSessionIdSet}
       />
     ))
   } else if (flatVirtualized) {

@@ -250,16 +250,17 @@ def test_relaunch_fixup_runs_even_when_stamp_skips_rebuild(tmp_path, monkeypatch
 
     launch_ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+    with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic") as mock_install, \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup") as mock_fixup, \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup") as mock_fixup, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
     mock_install.assert_not_called()  # confirms no rebuild happened
     mock_fixup.assert_called_once()
+    assert mock_fixup.call_args.args == (root / "apps" / "desktop",)
 
 
 def test_relaunch_fixup_runs_on_skip_build_flag(tmp_path, monkeypatch):
@@ -271,12 +272,13 @@ def test_relaunch_fixup_runs_on_skip_build_flag(tmp_path, monkeypatch):
     launch_ok = subprocess.CompletedProcess([], 0)
 
     with patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup") as mock_fixup, \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup") as mock_fixup, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
 
     assert exc.value.code == 0
     mock_fixup.assert_called_once()
+    assert mock_fixup.call_args.args == (root / "apps" / "desktop",)
 
 
 def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
@@ -287,15 +289,15 @@ def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     _make_packaged_executable(root, monkeypatch)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
-    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([], 0)
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
-         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
-         patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
-         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._write_desktop_build_stamp") as mock_stamp, \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(force_build=True))
 

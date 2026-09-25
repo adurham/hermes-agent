@@ -1720,6 +1720,20 @@ def cmd_gui(args: argparse.Namespace):
         build_label = "source build" if source_mode else "packaged app"
         desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
 
+    if not source_mode and packaged_executable is not None:
+        # Locally-built apps are ad-hoc signed; make them relaunchable after an
+        # in-place self-update (otherwise macOS reports "Hermes is damaged").
+        # Runs regardless of whether a rebuild just happened above: the
+        # content-hash stamp intentionally skips rebuilding (and would
+        # otherwise skip this fixup too) when nothing in the source tree
+        # changed, but a fix to the fixup itself (or its inputs, like
+        # entitlements.mac.plist) needs to reach an already-packaged bundle
+        # without waiting for an unrelated future rebuild to trigger it.
+        # Cheap and idempotent — re-signing an already-correctly-signed
+        # bundle is a no-op in effect. No-op on non-macOS and on
+        # real-identity builds (checked inside the fixup itself).
+        _desktop_macos_relaunchable_fixup(desktop_dir)
+
     # Best-effort and idempotent; a failure must never stop the app from launching.
     # An app-grid launch (DESKTOP_STARTUP_ID) must not write its own entry while the
     # shell still has the app in STARTING, so it defers the write until Electron
