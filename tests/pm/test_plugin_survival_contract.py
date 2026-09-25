@@ -469,10 +469,21 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
-def test_update_sync_disables_only_on_evidence_about_the_plugin(admission_env, monkeypatch):
-    """A plugin whose own build fails is disabled; one whose dependency cannot be fetched
-    says nothing about the plugin, so it stays enabled and the next sync retries it."""
+def test_update_sync_retries_a_fetch_failure_once_before_disabling(admission_env, monkeypatch):
+    """Build evidence disables a plugin at once. A fetch failure could be the moment, so it
+    gets one more try first. Either way the recorded state is the one boot expects."""
     from pm.install import sync_venv, venv_is_current
+    from pm.packages import Venv
+
+    trials: list[str] = []
+    real_apply = Venv.apply
+
+    def counting_apply(self, extras, *, plugin_dirs=None, **kwargs):
+        if plugin_dirs:
+            trials.append(Path(plugin_dirs[-1]).name)
+        return real_apply(self, extras, plugin_dirs=plugin_dirs, **kwargs)
+
+    monkeypatch.setattr(Venv, "apply", counting_apply)
 
     tmp_path, home = admission_env
     monkeypatch.setenv("UV_HTTP_RETRIES", "0")
@@ -500,10 +511,11 @@ def test_update_sync_disables_only_on_evidence_about_the_plugin(admission_env, m
     sync_venv(explicit=True, evict_incompatible_plugins=True)
 
     cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
-    assert cfg["plugins"]["disabled"] == ["wont-build"]
-    assert "offline-dep" in cfg["plugins"]["enabled"]
-    assert "Left plugin 'offline-dep'" in json.dumps(_latest_receipt(home).get("warnings"))
-    assert venv_is_current(project_root=tmp_path / "core") is False  # the next sync retries it
+    assert cfg["plugins"]["disabled"] == ["wont-build", "offline-dep"]
+    # After the full selection's own attempt: build evidence once, the fetch failure twice.
+    assert trials[1:] == ["wont-build", "offline-dep", "offline-dep"]
+    assert "could not be prepared, twice" in json.dumps(_latest_receipt(home).get("warnings"))
+    assert venv_is_current(project_root=tmp_path / "core") is True
 
 
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):

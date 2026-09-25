@@ -8,11 +8,12 @@ enables it, the reason reaches the operator and the receipt, and the update cont
 with the rest. Only a core that cannot build on its own still fails.
 
 Disabling needs evidence about the plugin itself: its requires-python against the pinned
-interpreter, its manifest contract, a resolver proof, or its build failing. Anything that
-might be about us or the moment instead (requires_hermes against a version identity that
-can lag, a fetch or tooling failure) only sits the plugin out of this build: config is
-untouched and it rejoins by itself. A secondary profile whose config cannot be read sits
-out the same way until its config is fixed.
+interpreter, its manifest contract, a resolver proof, or its build failing. A fetch or
+tooling failure could be the moment, so the plugin gets one retry before it is disabled.
+requires_hermes is judged against a version identity that can lag (a checkout without its
+release tags), so a misfit there only sits out: config is untouched, boot skips it the same
+way, and it rejoins when the verdict flips. A secondary profile whose config cannot be read
+sits out until its config is fixed.
 """
 from __future__ import annotations
 
@@ -57,10 +58,7 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
             continue
         try:
             declaration = read_python_declaration(plugin_dir)
-        except OSError as exc:
-            waiting[key] = f"its dependency declaration could not be read: {exc}"
-            continue
-        except (ValueError, TypeError) as exc:
+        except (OSError, ValueError, TypeError) as exc:
             reasons[key] = f"its dependency declaration is invalid: {exc}"
             continue
         # Mirrors enabled_member_dirs, so the recorded stamp is the one boot expects.
@@ -127,6 +125,21 @@ class PluginEviction:
             durable_write_bytes(path, proposed)
 
 
+def _trial(package, enabled, explicit: bool, plugin_dirs: list[Path]) -> str | None:
+    """Why the last of *plugin_dirs* cannot join the build, or None when it builds."""
+    cause = ""
+    # A fetch or tooling failure can be the moment rather than the plugin: one more try.
+    for _attempt in range(2):
+        try:
+            package.apply(enabled, explicit=explicit, plugin_dirs=plugin_dirs, skip_invalid_secondary=True)
+            return None
+        except (ResolutionConflict, BuildFailure) as exc:
+            return f"the dependency environment no longer builds with it: {exc.cause[-400:]}"
+        except InstallError as exc:
+            cause = exc.cause
+    return f"its dependencies could not be prepared, twice: {cause[-400:]}"
+
+
 def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explicit: bool) -> None:
     """Build the discovered selection, disabling whatever plugin keeps it from building.
 
@@ -176,13 +189,9 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
             raise failure from None
         fitting: list[Path] = []
         for member in kept:
-            try:
-                package.apply(enabled, explicit=explicit, plugin_dirs=[*fitting, member], skip_invalid_secondary=True)
-            except (ResolutionConflict, BuildFailure) as exc:
-                reasons[member.resolve()] = f"the dependency environment no longer builds with it: {exc.cause[-400:]}"
-            except InstallError as exc:
-                # A fetch or tooling failure says nothing about the plugin: retry next sync.
-                waiting[member.resolve()] = f"its dependencies could not be prepared: {exc.cause[-400:]}"
+            reason = _trial(package, enabled, explicit, [*fitting, member])
+            if reason:
+                reasons[member.resolve()] = reason
             else:
                 fitting.append(member)
         commit()
@@ -192,7 +201,7 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
             notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}")
         elif key in waiting:
             notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
-                           "it stays enabled and rejoins once that clears")
+                           "it stays enabled and rejoins once Hermes reports a version it accepts")
     for message in notices:
         print(f"⚠ {message}", file=sys.stderr, flush=True)
         receipt.record_warning(message)
