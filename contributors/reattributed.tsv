@@ -148,3 +148,4 @@ cc9b8eb3ab191863357ed0cad439df4ba3ef5ec0	2026-09-24T21:15:57-05:00	fix(desktop):
 ed9a63bda414b21770a751bfa85380bc636bf88d	2026-09-24T23:44:26-05:00	fix(desktop): skip the installed runtime when ignore-existing is set
 9d096629930536eb612f8b29ae0548295175f8bb	2026-09-24T23:44:27-05:00	docs(desktop): describe what --ignore-existing skips
 890db533961dd0d2d228f127dc5fb246aec97a76	2026-09-24T23:12:46-05:00	fix(agent): clamp displayed context usage to the model window
+c2182f60c1f1fe35dd956dcaff517fb7bdc9e8de	2026-09-25T11:35:45-05:00	fix(cron): show run history for script-only jobs via per-fire output docs
