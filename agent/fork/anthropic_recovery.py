@@ -9,13 +9,10 @@ Two related fork-specific paths:
    (``pg_dump`` via lockbox, S3 presigns, etc.).  Only touches
    historical messages; the most recent user message is left intact.
 
-2. Claude Code alias arg translation (``translate_cc_args_after_repair``):
-   The Anthropic OAuth path advertises CC canonical tool names (``Bash``,
-   ``Read``, ``Edit``, ``Write``, ``Grep``) on the wire so the plan-budget
-   billing classifier accepts the request.  ``_repair_tool_call``'s
-   CC-alias fast-path renames CC names to hermes names BEFORE dispatch,
-   so this helper translates the ARGS too (``file_path`` → ``path``,
-   ``run_in_background`` → ``background``, etc.).
+2. Retired: ``translate_cc_args_after_repair`` (removed 2026-09-25 with the CC
+   alias layer — ``_repair_tool_call``'s CC fast-path and the CC canonical
+   name advertising no longer exist, so there are no CC-named args to
+   translate).
 
 Retired: ``is_anthropic_refusal`` (removed 2026-09-22).  It detected
 ``stop_reason == "refusal"`` on the anthropic_messages path to enter the

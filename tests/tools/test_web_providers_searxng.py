@@ -194,7 +194,7 @@ class TestCheckWebApiKey:
         )
         assert web_tools.check_web_api_key() is True
 
-    def test_no_credentials_fails(self, monkeypatch, tmp_path):
+    def test_no_credentials_fails(self, monkeypatch):
         from tools import web_tools
         from agent import web_search_registry
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
@@ -204,12 +204,6 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("SEARXNG_URL", raising=False)
-        # check_web_api_key() also falls through to a Claude Code OAuth
-        # token / ~/.claude/.credentials.json probe; scrub both so a host
-        # login can't make this assertion flake.
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)

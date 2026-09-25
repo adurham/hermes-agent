@@ -3561,15 +3561,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     def _handle_toolsearch_command(self, cmd: str):
         """Handle /toolsearch — toggle lazy MCP tool loading.
 
-        Two modes available:
-          client_side (default) — Hermes-side hermes_load_tools tool.
-            Each discovery is one normal API round-trip, billed once.
-            No prompt-token multiplier.
-          server_side — Anthropic's tool_search_tool_<variant>_20251119
-            server tool. Each server-tool iteration re-bills the full
-            prompt within one API call; observed multipliers of 2x-4x.
-            Useful only for OAuth/Claude-subscription users whose
-            billing classifier scores wire bytes.
+        Client-side only: discovery goes through the Hermes-side
+        hermes_load_tools tool — each discovery is one normal API
+        round-trip, billed once, no prompt-token multiplier.  (The legacy
+        server_side mode was retired 2026-09-25 with the rest of the
+        fork's Anthropic server-tool cluster.)
 
         Reads/writes ``tool_search.enabled`` and ``tool_search.mode`` in
         config.yaml. The agent reads this fresh on every API call, so
@@ -3581,7 +3577,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             /toolsearch on                    Enable (uses current mode)
             /toolsearch off                   Disable
             /toolsearch client_side           Enable + set mode=client_side
-            /toolsearch server_side           Enable + set mode=server_side
             /toolsearch mode client_side      Set mode without changing enabled
         """
         parts = cmd.strip().split()
@@ -3598,25 +3593,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
         def _show_status():
             enabled = bool(ts_cfg.get("enabled"))
-            mode = (ts_cfg.get("mode") or "client_side").strip().lower()
-            variant = ts_cfg.get("variant", "regex")
             defer_mcp = bool(ts_cfg.get("defer_mcp_tools", True))
             state = "ON" if enabled else "OFF"
-            _cprint(f"  {_ACCENT}Tool search: {state} (mode={mode}){_RST}")
-            _cprint(f"  {_DIM}variant={variant}, defer_mcp_tools={defer_mcp}{_RST}")
-            if mode == "client_side":
-                _cprint(
-                    f"  {_DIM}Discovery via Hermes-side hermes_load_tools tool. "
-                    f"Each schema-load is one normal round-trip; no multiplier.{_RST}"
-                )
-            else:
-                _cprint(
-                    f"  {_DIM}Discovery via Anthropic tool_search_tool_{variant}"
-                    f"_20251119. Re-bills full prompt per server-tool iteration "
-                    f"(2x-4x multipliers observed).{_RST}"
-                )
+            _cprint(f"  {_ACCENT}Tool search: {state}{_RST}")
+            _cprint(f"  {_DIM}defer_mcp_tools={defer_mcp}{_RST}")
             _cprint(
-                f"  {_DIM}Usage: /toolsearch [on|off|client_side|server_side|status|mode <m>]{_RST}"
+                f"  {_DIM}Discovery via Hermes-side hermes_load_tools tool. "
+                f"Each schema-load is one normal round-trip; no multiplier.{_RST}"
+            )
+            _cprint(
+                f"  {_DIM}Usage: /toolsearch [on|off|client_side|status|mode <m>]{_RST}"
             )
 
         if not argv or argv[0].lower() in ("status", "show"):
@@ -3628,10 +3614,16 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         # /toolsearch mode <client_side|server_side>
         if first == "mode":
             if len(argv) < 2:
-                _cprint(f"  {_DIM}Usage: /toolsearch mode [client_side|server_side]{_RST}")
+                _cprint(f"  {_DIM}Usage: /toolsearch mode [client_side]{_RST}")
                 return
             new_mode = argv[1].lower()
-            if new_mode not in ("client_side", "server_side"):
+            if new_mode == "server_side":
+                _cprint(
+                    f"  {_DIM}server_side was retired 2026-09-25 (fork Anthropic "
+                    f"server-tool removal); tool_search is client_side-only.{_RST}"
+                )
+                return
+            if new_mode != "client_side":
                 _cprint(f"  {_DIM}(._.) Unknown mode: {new_mode}{_RST}")
                 return
             if save_config_value("tool_search.mode", new_mode):
@@ -3648,10 +3640,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             _cprint(f"  {_DIM}Takes effect on the next message — no restart needed.{_RST}")
             return
         if first in ("server_side", "server-side"):
-            save_config_value("tool_search.enabled", True)
-            save_config_value("tool_search.mode", "server_side")
-            _cprint(f"  {_ACCENT}✓ Tool search: ON, mode=server_side (saved){_RST}")
-            _cprint(f"  {_DIM}WARNING: server_side has known 2x-4x prompt multipliers on stacked tool_search calls.{_RST}")
+            _cprint(
+                f"  {_DIM}server_side was retired 2026-09-25 (fork Anthropic "
+                f"server-tool removal); use /toolsearch client_side.{_RST}"
+            )
             return
 
         if first in ("on", "true", "enable", "enabled", "yes", "1"):
@@ -3660,7 +3652,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             new_value = False
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {first}{_RST}")
-            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|client_side|server_side|status|mode <m>]{_RST}")
+            _cprint(f"  {_DIM}Usage: /toolsearch [on|off|client_side|status|mode <m>]{_RST}")
             return
 
         if save_config_value("tool_search.enabled", new_value):

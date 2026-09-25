@@ -95,12 +95,6 @@ class AnthropicTransport(ProviderTransport):
         from agent.anthropic_message_convert import _sanitize_replay_block, _to_plain_data
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         text_parts, reasoning_parts, reasoning_details, tool_calls = [], [], [], []
-        # FORK (native web search / server-side tools): server_tool_use, web_search_tool_result and
-        # tool_search_tool_*_tool_result blocks are executed Anthropic-side, not locally. Keep them
-        # so they survive into the next turn's history (Anthropic requires the tool_result blocks to
-        # be present when re-submitting prior assistant turns referencing them) and so the UI can
-        # render a search-citation panel.
-        server_tool_blocks: list[dict] = []
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
         # interleaves with tool_use the parallel lists lose that order and replay -> HTTP 400.
         ordered_blocks = []
@@ -132,27 +126,11 @@ class AnthropicTransport(ProviderTransport):
                     if isinstance(clean_block, dict) and clean_block.get("type") == "tool_use":
                         clean_block["name"] = name
                 tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
-            elif block.type in ("server_tool_use", "web_search_tool_result") or block.type.startswith("tool_search_tool_"):
-                # FORK: tool_search_tool_<variant>_tool_result carries the discovered tool_reference
-                # array; Anthropic auto-expands those across history only while we round-trip the
-                # block back in messages. The type is variant-specific, so match by prefix.
-                if isinstance(block_dict, dict):
-                    server_tool_blocks.append(block_dict)
 
-        # FORK: canonicalize tool_search_tool_*_tool_result types to the bare
-        # ``tool_search_tool_result`` form before persisting — Anthropic's INPUT validator only
-        # accepts the canonical type, while the wire OUTPUT uses variant-suffixed ones.
-        from agent.anthropic_adapter import _canonicalize_tool_search_result_types
-        if server_tool_blocks:
-            _canonicalize_tool_search_result_types(server_tool_blocks)
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
-        if server_tool_blocks:
-            provider_data["server_tool_blocks"] = server_tool_blocks
         # Ordered channel only for the shape the parallel lists reconstruct wrongly.
         signed = any(b.get("type") in _THINKING_TYPES and (b.get("signature") or b.get("data")) for b in ordered_blocks)
         if signed and any(b.get("type") == "tool_use" for b in ordered_blocks):
-            if ordered_blocks:
-                _canonicalize_tool_search_result_types(ordered_blocks)
             provider_data["anthropic_content_blocks"] = ordered_blocks
         # Structured stop_details (Anthropic SDK 0.88+, propagated through
         # streaming in 0.98+).  Today only refusal stops carry detail

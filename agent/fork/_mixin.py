@@ -12,7 +12,7 @@ The real implementations live in the sibling modules:
   ``agent.fork.memory_recall``       — memory-recall reminder (warm tier)
   ``agent.fork.consult_nudge``       — second-opinion (consult tool) reminder
   ``agent.fork.rate_limit_tracker``  — rate-limit observability
-  ``agent.fork.anthropic_recovery``  — refusal retry + CC alias translation
+  ``agent.fork.anthropic_recovery``  — refusal retry (content-filter scrub; CC alias translation retired 2026-09-25 with the CC alias layer)
   ``agent.fork.tool_search_lazy``    — lazy MCP tool gating
   ``agent.fork.diagnostics``         — tools-signature hash (xAI hint retired to upstream)
 

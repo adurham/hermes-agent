@@ -131,16 +131,6 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
     compressor.threshold_tokens = 100
     compressor.context_length = 1_000
     compressor.last_prompt_tokens = -1
-    # A bare MagicMock auto-vivifies ANY attribute access as a truthy
-    # MagicMock, including this one -- unlike a real ContextCompressor,
-    # where it's an int defaulting to 0. The post-tool-call compression
-    # check reads it via getattr(_compressor, "last_server_tool_requests", 0)
-    # to detect Anthropic server-tool (web_search/web_fetch) prompt-token
-    # inflation (#session 20260723_211736_99ee22); left un-set here the
-    # mock's auto-attr makes that check always true, routing the real-token
-    # estimate through the rough-estimate fallback instead of
-    # last_prompt_tokens and producing a spurious extra compaction.
-    compressor.last_server_tool_requests = 0
     compressor._verify_compaction_cleared_threshold = False
     compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.side_effect = lambda tokens: tokens >= 100
