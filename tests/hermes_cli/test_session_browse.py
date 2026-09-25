@@ -202,7 +202,7 @@ class TestTerminalTooSmallFallback:
 
     def test_narrow_window_falls_back_to_numbered_list(self):
         """40-col cutoff: 39 cols should skip curses entirely."""
-        from hermes_cli.main import _session_browse_picker
+        from hermes_cli.sessions_cmd_browse import _session_browse_picker
         import os as _os
 
         sessions = _make_sessions(3)
@@ -216,7 +216,7 @@ class TestTerminalTooSmallFallback:
 
     def test_short_window_falls_back_to_numbered_list(self):
         """5-row cutoff: 4 rows should skip curses entirely."""
-        from hermes_cli.main import _session_browse_picker
+        from hermes_cli.sessions_cmd_browse import _session_browse_picker
         import os as _os
 
         sessions = _make_sessions(3)
@@ -230,7 +230,7 @@ class TestTerminalTooSmallFallback:
 
     def test_exact_threshold_uses_curses(self):
         """40 cols × 5 rows is the minimum that still uses curses."""
-        from hermes_cli.main import _session_browse_picker
+        from hermes_cli.sessions_cmd_browse import _session_browse_picker
         import os as _os
 
         sessions = _make_sessions(3)
@@ -256,7 +256,7 @@ class TestTerminalTooSmallFallback:
         The pre-check should let the curses block try anyway; its existing
         exception handler will route to the numbered fallback if curses
         fails (which it will, no tty)."""
-        from hermes_cli.main import _session_browse_picker
+        from hermes_cli.sessions_cmd_browse import _session_browse_picker
 
         sessions = _make_sessions(3)
 
@@ -278,7 +278,7 @@ class TestTerminalTooSmallFallback:
     def test_fallback_message_not_shown(self, capsys):
         """Explicit: the dead-end "Terminal too small" string must not
         appear in any user-visible output path."""
-        from hermes_cli.main import _session_browse_picker
+        from hermes_cli.sessions_cmd_browse import _session_browse_picker
         import os as _os
 
         sessions = _make_sessions(3)
