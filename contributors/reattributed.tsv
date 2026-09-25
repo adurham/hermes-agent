@@ -87,3 +87,4 @@ a00fdda6c5dbea7c335894e47fba105cf99cec06	2026-09-25T17:19:28-05:00	fix(desktop):
 6231398b21a1f3cd8878ed2fecf6283a6f72f6ca	2026-09-25T12:28:34-05:00	fix(desktop): never remember or restore a delegate subagent session
 e2ee9a6978119cafa7b1eb59fc8833d374fe4ccc	2026-09-25T12:24:29-05:00	fix(desktop): reveal manual model-name input when /v1/models discovery is empty
 81b0ee63234c8e974bd38150f18e7cf5b82983b7	2026-09-25T15:42:12-05:00	test(desktop): resolve runtime timer salvage against current main
+1f30bdbaff7926491188231686886173e51910be	2026-09-25T17:25:41-05:00	fix(desktop): add runtimeStartedAt to onboarding fixture and sort test import
