@@ -125,7 +125,7 @@ class TestAnthropicTransport:
         agent._anthropic_client = MagicMock()
         agent._anthropic_api_key = "k"
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
-        agent._anthropic_client.messages.stream = MagicMock(return_value=_stream_cm(_snapshot()))
+        agent._anthropic_client.beta.messages.stream = MagicMock(return_value=_stream_cm(_snapshot()))
         main = agent._interruptible_streaming_api_call({"model": "claude"})
         assert transport.normalize_response(main).provider_data["stop_details"] == details
 

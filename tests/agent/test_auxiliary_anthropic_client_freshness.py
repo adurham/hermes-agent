@@ -46,7 +46,7 @@ def test_stale_token_detected_and_evicted_before_request():
     aux._client_cache[cache_key] = (stale_client, "claude-sonnet-5", None)
 
     with patch.object(aux, "_select_pool_entry", return_value=(False, None)), \
-         patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="new-token"):
+         patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="new-token"):
         is_stale = aux._anthropic_cached_client_is_stale(cache_key, stale_client)
 
     assert is_stale is True
@@ -60,7 +60,7 @@ def test_matching_token_is_not_flagged_stale():
     fresh_client = _fake_cached_client("same-token")
 
     with patch.object(aux, "_select_pool_entry", return_value=(False, None)), \
-         patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="same-token"):
+         patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="same-token"):
         is_stale = aux._anthropic_cached_client_is_stale(cache_key, fresh_client)
 
     assert is_stale is False
@@ -74,7 +74,7 @@ def test_freshness_check_is_throttled_per_cache_key():
     client = _fake_cached_client("token-a")
 
     with patch.object(aux, "_select_pool_entry", return_value=(False, None)), \
-         patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="token-b") as mock_resolve:
+         patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="token-b") as mock_resolve:
         first = aux._anthropic_cached_client_is_stale(cache_key, client)
         second = aux._anthropic_cached_client_is_stale(cache_key, client)
 
@@ -94,7 +94,7 @@ def test_pool_backed_credentials_are_never_flagged_stale():
     fake_entry = MagicMock()
 
     with patch.object(aux, "_select_pool_entry", return_value=(True, fake_entry)) as mock_select, \
-         patch("agent.anthropic_adapter.resolve_anthropic_token") as mock_resolve:
+         patch("agent.anthropic_credentials.resolve_anthropic_token") as mock_resolve:
         is_stale = aux._anthropic_cached_client_is_stale(cache_key, client)
 
     assert is_stale is False
@@ -126,7 +126,7 @@ def test_get_cached_client_evicts_and_rebuilds_stale_anthropic_client():
     aux._client_cache[cache_key] = (stale_client, "claude-sonnet-5", None)
 
     with patch.object(aux, "_select_pool_entry", return_value=(False, None)), \
-         patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="new-token"), \
+         patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="new-token"), \
          patch("agent.auxiliary_client.resolve_provider_client", return_value=(fresh_client, "claude-sonnet-5")):
         client, model = aux._get_cached_client("anthropic")
 
