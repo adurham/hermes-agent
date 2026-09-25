@@ -136,3 +136,4 @@ b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop):
 6e901fca7891f062a1cc876ea0925647aefe8d2b	2026-09-25T17:09:48-05:00	fix(desktop): sort imports in use-gateway-boot-initial-connect test
 5838f1372599530688b4f44aba8f419fb81bae64	2026-09-25T16:09:23-05:00	test(pm): route build-deps PowerShell checks through the cold-runner helper
 7ca2f5665fe34fd0439203cdd93800590574d61b	2026-09-25T10:07:18-05:00	fix(desktop): keep the Kanban panel and toolset in agreement on a failed write
+2497c3c539c37f0cf2140b856d36d45485fb3426	2026-09-25T18:54:12-05:00	fix(desktop): pass provider_primary through /api/env so a card keeps its own key
