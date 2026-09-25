@@ -142,3 +142,4 @@ a052836559683da8f98b538b3aee795aede42fde	2026-09-24T23:51:37-05:00	fix(mcp): con
 b148d976023afc6972fc77cce6b9595b86e022e6	2026-09-24T23:51:37-05:00	fix(mcp): point `hermes mcp add` and `configure` at /reload-mcp
 4503c2458beec8aacd0516c7d9496dec4fec122a	2026-09-24T23:10:29-05:00	fix(tui_gateway): honor prefill_messages_file on the Desktop agent path
 a79311ba9581886e3fe58243018099a0694e5740	2026-09-25T00:10:48-05:00	test(tui_gateway): drop PyYAML import from prefill regression test
+15e26c76f35d28afc77bf924088cbb6b5c2781e9	2026-09-24T23:10:15-05:00	fix(dashboard): list --port 0 serve backends in --status
