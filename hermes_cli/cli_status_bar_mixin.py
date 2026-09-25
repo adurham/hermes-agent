@@ -38,6 +38,20 @@ def _finite(v):
     return None if v is None or v != v or v < 0 or v > 1e6 else v
 
 
+def _status_bar_glyph() -> str:
+    """Leading status-bar glyph — skin-overridable (FORK-kept behavior, de-fork C5).
+
+    Default ``⚕`` (caduceus, Hermes branding); skins set ``branding.status_glyph`` to
+    swap (e.g. Tanium fork uses ``Ⓣ``). Resolved per render (the active skin can change
+    at runtime) with the fork's exact fail-open fallback.
+    """
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_branding("status_glyph", "⚕")
+    except Exception:
+        return "⚕"
+
+
 class CLIStatusBarMixin:
     """Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
     interactive CLI."""
@@ -204,12 +218,51 @@ class CLIStatusBarMixin:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # FORK: failover marker. The DATA above is already correct — model_name is read live
+        # off the agent precisely so a silent switch isn't stale — but without a marker a
+        # failover was indistinguishable from a normal run. ``⚠`` is the bar's established
+        # degraded marker (see the "⚠ YOLO" badge). Folded into ``model_short`` itself
+        # (rendered at every width breakpoint from that one field) and applied AFTER the
+        # 26-char truncation so the model name keeps its full budget. The structured fields
+        # below are exposed too, so a renderer that wants to style the degraded case (or
+        # name the primary) doesn't have to string-match a glyph.
+        _fallback_state = {"fallback_active": False, "primary_model": None,
+                           "primary_provider": None, "provider": None}
+        try:
+            from agent.failover_state import resolve_effective_model
+
+            _fallback_state = resolve_effective_model(agent)
+            if _fallback_state["fallback_active"]:
+                from agent.failover_state import FALLBACK_GLYPH
+
+                model_short = f"{FALLBACK_GLYPH} {model_short}"
+        except Exception:
+            pass
+
         prompt_start = getattr(self, "_prompt_start_time", None)
         turn_live = prompt_start is not None
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+
+        # FORK: effort label for the status bar — pulled from the same source the /reasoning
+        # command reads/writes so the bar always reflects the active level. None when
+        # reasoning_config is unset (defaults apply).
+        rc = getattr(self, "reasoning_config", None)
+        if rc is None:
+            effort_label = None
+        elif rc.get("enabled") is False:
+            effort_label = "off"
+        else:
+            effort_label = rc.get("effort") or None
+
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            # Structured failover state alongside the glyph baked into model_short (FORK).
+            "provider": _fallback_state["provider"],
+            "fallback_active": _fallback_state["fallback_active"],
+            "primary_model": _fallback_state["primary_model"],
+            "primary_provider": _fallback_state["primary_provider"],
+            "effort": effort_label,
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -227,6 +280,8 @@ class CLIStatusBarMixin:
             "battery_label": "",
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
+            # FORK: queued /steer note pending delivery on the next tool result.
+            "steer_pending": False,
             "git_branch": "",
             "goal_active": False,
             "goal_turns_used": 0,
@@ -275,8 +330,13 @@ class CLIStatusBarMixin:
             snapshot["active_background_processes"] = process_registry.count_running()
         except Exception:
             pass
+        # FORK: live background/async subagents (delegate_task batches + background single
+        # delegations). active_task_count() expands a batch to its actual child count (a
+        # 3-task fan-out contributes 3, not 1) so the ⛓ badge reflects how many subagents
+        # are truly working, not how many pool slots are occupied — the mixin's older
+        # active_count() (units) undercounted batches. Cheap in-memory read under a lock.
         try:
-            from tools.async_delegation import active_count as _async_active_count
+            from tools.async_delegation import active_task_count as _async_active_count
             snapshot["active_background_subagents"] = _async_active_count()
         except Exception:
             pass
@@ -296,14 +356,37 @@ class CLIStatusBarMixin:
         if not agent:
             return snapshot
 
+        # FORK: queued /steer note — a note injected mid-turn that will land on the next
+        # tool result. This can otherwise get lost scrolling past in the confirmation line
+        # printed at queue-time, so surface it persistently in the bar (mirrors the YOLO
+        # badge convention) until it's drained.
+        try:
+            _steer_lock = getattr(agent, "_pending_steer_lock", None)
+            if _steer_lock is not None:
+                with _steer_lock:
+                    snapshot["steer_pending"] = bool(getattr(agent, "_pending_steer", None))
+            else:
+                snapshot["steer_pending"] = bool(getattr(agent, "_pending_steer", None))
+        except Exception:
+            pass
+
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
-            # last_prompt_tokens parks at the -1 sentinel right after a compression until the
-            # next real API call; clamp so the bar never renders "-1/200K".
-            context_tokens = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
+            # FORK: show the last REAL provider prompt count, not last_prompt_tokens — the
+            # latter is ratcheted up to the rough preflight estimate by turn_context.py so
+            # preflight compression can fire, which made the bar spike to the (over)estimate
+            # mid-turn then snap back to the real number (the phantom "Δ+57K new" balloon).
+            # display_prompt_tokens() returns the honest count and clamps the
+            # post-compression -1 sentinel to 0 for the one transitional turn.
+            if hasattr(compressor, "display_prompt_tokens"):
+                context_tokens = compressor.display_prompt_tokens()
+            else:
+                context_tokens = getattr(compressor, "last_prompt_tokens", 0) or 0
+            if context_tokens < 0:
+                context_tokens = 0
             from agent.context_breakdown import context_display_source
             snapshot["context_estimated"] = context_display_source(compressor) != "provider_usage"
             # Display-only anchoring: on reasoning models a long tool loop replays the turn's
@@ -335,9 +418,57 @@ class CLIStatusBarMixin:
             snapshot["context_pinned"] = is_context_pinned(
                 context_length, getattr(compressor, "_config_context_length", None))
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
+            # FORK: per-turn breakdown so consumers can show ``cached / new`` instead of
+            # just the sum. A cache flush (tools[] mutation, session resume, etc.) doubles
+            # ``context_tokens`` without any new content; surfacing the split prevents
+            # misreading that as a real balloon.
+            snapshot["context_input_tokens"] = getattr(compressor, "last_input_tokens", 0) or 0
+            snapshot["context_cache_read_tokens"] = getattr(compressor, "last_cache_read_tokens", 0) or 0
+            snapshot["context_cache_write_tokens"] = getattr(compressor, "last_cache_write_tokens", 0) or 0
             if context_length:
                 pct = round((context_tokens / context_length) * 100)
                 snapshot["context_percent"] = max(0, min(100, pct))
+
+            # FORK: per-turn context delta + cause classification. The user observes the
+            # context counter jumping 20K+ on a follow-up; this surfaces *why*. From real
+            # session logs there are two mechanisms:
+            #   1. New content this turn — a fat tool result (big file read, web_extract,
+            #      verbose stdout). Shows up as cache_write (freshly-written tokens) on top
+            #      of a flat cached prefix.
+            #   2. Post-idle cache refresh — the prompt cache expired during the gap, so the
+            #      same prefix re-accounts as full-price input instead of cache_read. Total
+            #      is correct; only the cached/new split changed. cache_write stays small
+            #      while input balloons.
+            # Heuristic: if the jump is mostly cache_write -> "new"; if it's mostly fresh
+            # input with little cache_write -> "cache" (refresh).
+            base = getattr(self, "_turn_start_context_tokens", None)
+            # Defense in depth: base should never be stored as 0 (see the capture site in
+            # the turn-start handler), but guard here too so a 0 baseline can never
+            # masquerade as "context_tokens - 0" — i.e. the entire current context reported
+            # as this turn's delta.
+            if base is not None and base > 0 and context_tokens:
+                delta = context_tokens - base
+                snapshot["context_delta"] = delta
+                # Classify cause for any positive growth, however small — the segment is
+                # always shown alongside the other always-on status bar pieces (session
+                # token counters, spinner_token_flow's live ``↓ Nk tok`` counter), not
+                # gated behind an arbitrary "meaningful" floor.
+                if delta > 0:
+                    cw = snapshot.get("context_cache_write_tokens", 0) or 0
+                    inp = snapshot.get("context_input_tokens", 0) or 0
+                    # Cause = the dominant contributor to the *current* prompt:
+                    #   - cache refresh: the prefix wasn't cached this turn, so it was
+                    #     re-charged as fresh ``input``. Tell-tale is a large input share of
+                    #     the total (cache_read collapsed). Real logs show ~55% input/total
+                    #     on a cold-cache turn vs. ~0% (input==2) on a warm one.
+                    #   - new content: prefix stayed cached (input tiny), and the growth
+                    #     shows up as freshly-written ``cache_write``.
+                    if inp >= context_tokens * 0.40:
+                        snapshot["context_delta_cause"] = "cache"
+                    elif cw >= delta * 0.5:
+                        snapshot["context_delta_cause"] = "new"
+                    else:
+                        snapshot["context_delta_cause"] = "new"
 
         # Cache-hit ratio since the last baseline reset (model switch and compression both
         # invalidate the prompt cache). hit = cache_read / prompt_tokens, where
@@ -377,25 +508,35 @@ class CLIStatusBarMixin:
         snapshot["cache_hit_pct"] = pct
         snapshot["cache_hit_label"] = f"{pct:.0f}%" if pct is not None else ""
 
-        # Rolling avg latency / velocity over the deques kept by agent/conversation_loop.py
-        # (hidden on Codex app-server, which reports no latency).
-        avg_lat = avg_vel = None
+        # Rolling avg latency / velocity / TTFT over the deques kept by agent/conversation_loop.py
+        # (hidden on Codex app-server, which reports no latency). FORK: ``_api_latency_history``
+        # is DECODE-ONLY (full duration minus TTFT), so avg_velocity here is true decode
+        # throughput; full-wall latency lives in ``_api_full_latency_history`` and drives
+        # avg_latency; ``_api_ttft_history`` drives the ⚡ TTFT label.
+        avg_lat = avg_vel = avg_ttft = None
         try:
             lhist = list(getattr(agent, "_api_latency_history", []) or [])
             ohist = list(getattr(agent, "_api_output_history", []) or [])
+            flhist = list(getattr(agent, "_api_full_latency_history", []) or [])
+            thist = list(getattr(agent, "_api_ttft_history", []) or [])
             n = min(len(lhist), len(ohist))  # appended together; keep aligned
             if n:
                 lhist, ohist = lhist[-n:], ohist[-n:]
+                # Mean for latency (full wall); sum/sum for velocity (true throughput,
+                # not mean of ratios).
+                avg_lat = _finite(sum(flhist) / len(flhist) if flhist else None)
+                total_out = sum(ohist)
                 total_lat = sum(lhist)
-                # Mean for latency; sum/sum for velocity (true throughput, not mean of ratios).
-                avg_lat = _finite(total_lat / n)
-                avg_vel = _finite(sum(ohist) / total_lat if total_lat > 0 else None)
+                avg_vel = _finite(total_out / total_lat if total_lat > 0 else None)
+                avg_ttft = _finite(sum(thist) / len(thist) if thist else None)
         except Exception:
-            avg_lat = avg_vel = None
+            avg_lat = avg_vel = avg_ttft = None
         snapshot["avg_latency"] = float(avg_lat) if avg_lat is not None else None
         snapshot["avg_latency_label"] = f"{avg_lat:.1f}s" if avg_lat is not None else ""
         snapshot["avg_velocity"] = float(avg_vel) if avg_vel is not None else None
         snapshot["avg_velocity_label"] = f"{avg_vel:.0f} t/s" if avg_vel is not None else ""
+        snapshot["avg_ttft"] = float(avg_ttft) if avg_ttft is not None else None
+        snapshot["avg_ttft_label"] = f"{avg_ttft:.1f}s" if avg_ttft is not None else ""
         return snapshot
 
     def _get_status_bar_session_title(self) -> str:
@@ -423,13 +564,29 @@ class CLIStatusBarMixin:
 
     @staticmethod
     def _status_bar_display_width(text: str) -> int:
-        """Terminal cell width (some glyphs render wider than one codepoint); keeps the bar
-        from wrapping onto a second line and leaving duplicate rows."""
-        try:
-            from prompt_toolkit.utils import get_cwidth
-            return get_cwidth(text or "")
-        except Exception:
-            return len(text or "")
+        """Return terminal cell width for status-bar text.
+
+        len() is not enough for prompt_toolkit layout decisions because some
+        glyphs can render wider than one Python codepoint. Keeping the status
+        bar within the real display width prevents it from wrapping onto a
+        second line and leaving behind duplicate rows.
+
+        Delegates to ``agent.display.display_cwidth()`` rather than calling
+        ``get_cwidth`` directly: several registered tool emoji (e.g.
+        process's "⚙️") are an emoji base codepoint + VARIATION SELECTOR-16,
+        which plain ``get_cwidth`` undercounts by 1 cell. Fed into this
+        status bar's wrap-height math (``_spinner_widget_height``), that
+        1-cell undercount lands the reserved ``Window`` height 1 row short
+        exactly at a wrap boundary — the wrapped continuation then overlaps
+        the row below instead of getting its own, producing the recurring
+        "garbled/duplicated digit" live-timer corruption (e.g.
+        ``process(action="wait")``'s duration rendering as "4m170s" instead
+        of "4m17s"). See ``display_cwidth``'s docstring for the full
+        analysis of why this specific glyph shape was missed by the two
+        earlier ``len()`` vs ``get_cwidth()`` fixes in this same file.
+        """
+        from agent.display import display_cwidth
+        return display_cwidth(text)
 
     @classmethod
     def _trim_status_bar_text(cls, text: str, max_width: int) -> str:
@@ -563,13 +720,25 @@ class CLIStatusBarMixin:
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
             elapsed = time.monotonic() - t0
-            # Fixed-width timers (01m05s / " 5.2s") avoid status-line wrap jitter on repaint.
             if elapsed >= 60:
-                elapsed_str = f"{int(elapsed // 60):02d}m{int(elapsed % 60):02d}s"
+                _m, _s = int(elapsed // 60), int(elapsed % 60)
+                # Fixed-width timer to avoid status-line wrap jitter while
+                # scrolling/repainting (e.g. 1m05s, 12m09s).
+                # Minutes are NOT zero-padded — "02m" looks wrong (#user-feedback).
+                # Left-pad to the same 6-char width as the <60s branch below
+                # so the exact 60s rollover (e.g. "59.9s" -> "1m00s") doesn't
+                # itself cause a one-character width jitter — the single-digit
+                # minute case ("1m05s", 5 chars) was falling one char short.
+                elapsed_str = f"{_m}m{_s:02d}s".rjust(6)
             else:
+                # Keep width stable before the 60s rollover as well.
                 elapsed_str = f"{elapsed:5.1f}s"
-            return f"  {txt}  ({elapsed_str} · {flow})" if flow else f"  {txt}  ({elapsed_str})"
-        return f"  {txt}  ({flow})" if flow else f"  {txt}"
+            if flow:
+                return f"  {txt}  ({elapsed_str} · {flow})"
+            return f"  {txt}  ({elapsed_str})"
+        if flow:
+            return f"  {txt}  ({flow})"
+        return f"  {txt}"
 
     def _spinner_token_flow(self) -> str:
         """Cumulative output tokens for the running turn, for the spinner."""
@@ -1014,10 +1183,15 @@ class CLIStatusBarMixin:
         ``(style, text)`` fragments. Shared by the plain-text and prompt_toolkit renderers so
         the two can never drift; ``styled`` selects the graphical context bar."""
         from cli import format_token_count_compact
+        # FORK: leading glyph — skin-overridable branding ("⚕" default), resolved per render.
+        _glyph = _status_bar_glyph()
         model_short = snapshot["model_short"]
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
         focus_label = snapshot.get("focus_label") or ""
+        # FORK: /reasoning effort label (same source the /reasoning command reads/writes).
+        effort_label = snapshot.get("effort") or ""
+        steer_pending = bool(snapshot.get("steer_pending"))
 
         def _ok(name: str) -> bool:
             return field_set is None or name in field_set
@@ -1033,12 +1207,21 @@ class CLIStatusBarMixin:
             if count:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
+        narrow, wide = width < 52, width >= 76
         if _ok("model"):
             if styled:
-                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
+                model_seg = [(_SB, f" {_glyph} "), (_STRONG, model_short)]
+                # FORK: the styled renderer showed the effort label right after the model
+                # fragment, joined with " · " even in the wide tier (its exact separator).
+                if not narrow and effort_label:
+                    model_seg.append((_DIM, f" · {effort_label}"))
+                segs.append(model_seg)
             else:
-                segs.append([("", f"☤ {model_short}")])
-        narrow, wide = width < 52, width >= 76
+                segs.append([("", f"{_glyph} {model_short}")])
+        elif styled and not narrow and effort_label:
+            # Model filtered out of the field set but effort still set: the fork appended
+            # it bare as the first fragment (no separator before it).
+            segs.append([(_DIM, effort_label)])
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
             add("duration", _DIM, duration_label)
@@ -1072,7 +1255,17 @@ class CLIStatusBarMixin:
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
+                # FORK: time-to-first-token readout (⚡ N.Ns TTFT), same deques as latency/tps.
+                ttft_label = snapshot.get("avg_ttft_label") or ""
+                if ttft_label:
+                    add("ttft", _DIM, f"⚡ {ttft_label} TTFT")
             add_count("compressions", "compressions", "🗜️", self._compression_count_style)
+            if wide:
+                # FORK: per-turn context delta (Δ+Nk new / Δ+Nk cache) — wide tier only,
+                # exactly where the fork rendered it in both renderers.
+                delta_label = self._format_context_delta(snapshot)
+                if delta_label:
+                    segs.append([(_DIM, delta_label)])
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")
             add_count("bg_subagents", "active_background_subagents", "⛓")
@@ -1090,6 +1283,9 @@ class CLIStatusBarMixin:
                     add(name, _DIM, label)
         if focus_label:
             add("focus", _STRONG, focus_label)
+        # FORK: queued-steer badge — persistent until the note lands on the next tool result.
+        if steer_pending:
+            segs.append([("class:status-bar-steer", "⏩ steer")])
         if yolo_active:
             add("yolo", "class:status-bar-yolo", "⚠ YOLO")
         if wide:
@@ -1101,6 +1297,7 @@ class CLIStatusBarMixin:
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Compact one-line session status string for the TUI footer."""
+        _glyph = _status_bar_glyph()
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -1112,7 +1309,7 @@ class CLIStatusBarMixin:
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
-            parts = ["".join(t for _, t in seg) for seg in segs] or [f"☤ {model_short}"]
+            parts = ["".join(t for _, t in seg) for seg in segs] or [f"{_glyph} {model_short}"]
             # Narrow bars always join the battery with │; wider tiers use the tier separator.
             if battery_label:
                 parts.insert(0, battery_label)
@@ -1122,7 +1319,7 @@ class CLIStatusBarMixin:
                 text = (" · " if width < 76 else " │ ").join(parts)
             return self._right_align_status_title(text, session_title, width)
         except Exception:
-            return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"{_glyph} {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if (
@@ -1145,7 +1342,7 @@ class CLIStatusBarMixin:
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=True)
             sep = " · " if width < 76 else " │ "
             frags: list = []
-            for seg in segs or [[(_SB, " ☤ "), (_STRONG, snapshot["model_short"])]]:
+            for seg in segs or [[(_SB, f" {_status_bar_glyph()} "), (_STRONG, snapshot["model_short"])]]:
                 if frags:
                     frags.append((_DIM, sep))
                 frags.extend(seg)
@@ -1158,7 +1355,7 @@ class CLIStatusBarMixin:
             if stash_indicator and _ok("stash"):
                 frags.extend([(_DIM, " · "), (_STRONG, stash_indicator)])
             frags.append((_SB, " "))  # one-cell right margin
-            # Battery is the first element when enabled: prepend ahead of the ☤ marker.
+            # Battery is the first element when enabled: prepend ahead of the glyph marker.
             battery_label = snapshot.get("battery_label") or ""
             if battery_label and _ok("battery"):
                 battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
