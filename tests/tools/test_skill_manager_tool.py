@@ -716,10 +716,23 @@ class TestSecurityScanGate:
 @contextmanager
 def _two_roots(local_dir: Path, external_dir: Path):
     """Patch the skill manager so local SKILLS_DIR = local_dir and
-    get_all_skills_dirs() returns [local_dir, external_dir] in order."""
+    get_all_skills_dirs() returns [local_dir, external_dir] in order.
+
+    Also pin the external-dir lookups the *ownership guard* consults:
+    _background_review_write_guard calls
+    agent.skill_utils.is_external_skill_path, which reads
+    get_external_skills_dirs() (``skills.external_dirs`` from config) and
+    get_project_skills_dirs() — NOT get_all_skills_dirs(). Without these the
+    skill is not seen as external at all and the call falls through to the
+    curator-ownership refusal, making these tests assert the wrong message.
+    """
     with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
          patch("agent.skill_utils.get_all_skills_dirs",
-               return_value=[local_dir, external_dir]):
+               return_value=[local_dir, external_dir]), \
+         patch("agent.skill_utils.get_external_skills_dirs",
+               return_value=[external_dir]), \
+         patch("agent.skill_utils.get_project_skills_dirs",
+               return_value=[]):
         yield
 
 
@@ -952,7 +965,8 @@ class TestBackgroundReviewExternalGuard:
             result = _write_file("ext-skill", "references/note.md", "# Note\n")
 
         assert result["success"] is False, result
-        assert "external skills directory" in result["error"]
+        assert "skills.external_dirs" in result["error"], result["error"]
+        assert "read-only to autonomous curation" in result["error"]
         assert "ext-skill" in result["error"]
         # File must NOT have been written
         assert not (skill_dir / "references" / "note.md").exists()
@@ -968,7 +982,8 @@ class TestBackgroundReviewExternalGuard:
             result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
 
         assert result["success"] is False, result
-        assert "external skills directory" in result["error"]
+        assert "skills.external_dirs" in result["error"], result["error"]
+        assert "read-only to autonomous curation" in result["error"]
         # SKILL.md must be untouched
         assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
         assert "NEW_MARKER" not in (skill_dir / "SKILL.md").read_text()
@@ -990,7 +1005,8 @@ class TestBackgroundReviewExternalGuard:
             result = _edit_skill("ext-skill", new_content)
 
         assert result["success"] is False, result
-        assert "external skills directory" in result["error"]
+        assert "skills.external_dirs" in result["error"], result["error"]
+        assert "read-only to autonomous curation" in result["error"]
         # SKILL.md must be unchanged
         assert (skill_dir / "SKILL.md").read_text() == original
 
@@ -1007,7 +1023,8 @@ class TestBackgroundReviewExternalGuard:
             result = _remove_file("ext-skill", "references/keep.md")
 
         assert result["success"] is False, result
-        assert "external skills directory" in result["error"]
+        assert "skills.external_dirs" in result["error"], result["error"]
+        assert "read-only to autonomous curation" in result["error"]
         # File must still exist
         assert (skill_dir / "references" / "keep.md").exists()
 
