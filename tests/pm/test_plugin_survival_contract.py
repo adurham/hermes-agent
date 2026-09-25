@@ -426,7 +426,7 @@ def test_update_sync_survives_unreadable_secondary_profile(admission_env):
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
-def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_env):
+def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_env, monkeypatch):
     """requires_hermes is judged against our version identity, which can lag (an untagged
     source checkout reads as an older release). Such a plugin sits out: config untouched,
     boot's currency check neither raises nor loops, and it rejoins once the verdict flips."""
@@ -434,8 +434,12 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
 
+    import hermes_cli.plugins_manifest as plugins_manifest
+
     tmp_path, home = admission_env
     core = tmp_path / "core"
+    # A tagless checkout (CI's) has no parseable version, which makes requires_hermes permissive.
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
     for name in ("fits", "needs-newer"):
         plugin = home / "plugins" / name
         plugin.mkdir(parents=True)

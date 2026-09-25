@@ -211,12 +211,13 @@ def enabled_member_dirs(*, proposed_home=None, enabled=None, disabled=None) -> l
     as an older release), the loader skips that plugin anyway, and the member rejoins
     as soon as the verdict flips. Enabling one is still refused at admission.
     """
-    from hermes_cli.plugins_manifest import requires_hermes_error
-
     selected = enabled_plugin_dirs(proposed_home=proposed_home, enabled=enabled, disabled=disabled,
                                    skip_invalid_secondary=proposed_home is None)
     members = []
     for path in selected:
+        # Per plugin: with none selected, PM must not import the application's manifest module.
+        from hermes_cli.plugins_manifest import requires_hermes_error
+
         declaration = read_python_declaration(path)
         if requires_hermes_error(declaration.manifest):
             continue
