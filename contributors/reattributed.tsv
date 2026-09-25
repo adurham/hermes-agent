@@ -74,3 +74,4 @@ ffa40b07f0203543778ad3a00c3b0ecb9a27a370	2026-09-25T13:58:22-05:00	fix(desktop):
 43c1eee1fa6f58a79f54b0770ffe8e479b9fce3a	2026-09-25T12:31:55-05:00	fix(web): bound the /api/model/info context-length probe
 2dcb8d756207e546f8cc2c8d55a4eb49cfb14e2e	2026-09-25T12:31:55-05:00	fix(desktop): degrade model settings when /api/model/info hangs
 faf9231bc29d426dac070aa41f24400337d52a8f	2026-09-25T12:17:35-05:00	fix(desktop): keep submenus pinned to their trigger during scroll
+6d70abc87134a6f1243b90512530e201f08b02c2	2026-09-25T13:05:39-05:00	fix(desktop): label the Anthropic OAuth/Pro card 'Anthropic Account'
