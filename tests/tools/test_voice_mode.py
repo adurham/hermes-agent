@@ -87,6 +87,29 @@ class _FakeTime:
 
 
 @pytest.fixture
+def short_socket_dir(tmp_path):
+    """A directory short enough to bind AF_UNIX sockets on every platform.
+
+    macOS caps ``sun_path`` at 104 bytes (Linux 108) and pytest's ``tmp_path``
+    lives under ``/private/var/folders/...`` on darwin, so a socket at
+    ``<tmp_path>/pulse/native`` overflows the limit and ``bind()`` raises
+    ``OSError: AF_UNIX path too long`` — inside the test, before the code under
+    test runs. Hand out a short path from the session temp root instead.
+
+    (Upstream's CI runs Linux, where /tmp keeps this under the limit; the test
+    body is otherwise identical at v2026.9.24.)
+    """
+    import shutil
+    import tempfile
+
+    base = Path(tempfile.mkdtemp(prefix="vs", dir="/tmp"))
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.fixture
 def fake_clock(monkeypatch):
     """Give voice_mode a hand-driven clock.
 
@@ -109,10 +132,10 @@ def fake_clock(monkeypatch):
 # ============================================================================
 
 class TestPulseSocketReachable:
-    def test_stale_socket_file_not_reachable(self, monkeypatch, tmp_path):
+    def test_stale_socket_file_not_reachable(self, monkeypatch, short_socket_dir):
         """A socket file with no listener should not count as reachable."""
         import socket as _socket
-        sock_path = tmp_path / "pulse" / "native"
+        sock_path = short_socket_dir / "pulse" / "native"
         sock_path.parent.mkdir(parents=True)
         # Create + bind, then close so the path is a stale socket file.
         s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
@@ -120,14 +143,14 @@ class TestPulseSocketReachable:
         s.close()
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(short_socket_dir))
         from tools.voice_mode import _pulse_socket_reachable
         assert _pulse_socket_reachable() is False
 
-    def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch, tmp_path):
+    def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch, short_socket_dir):
         """A live PulseAudio-style socket under XDG_RUNTIME_DIR is reachable (#35622)."""
         import socket as _socket
-        sock_path = tmp_path / "pulse" / "native"
+        sock_path = short_socket_dir / "pulse" / "native"
         sock_path.parent.mkdir(parents=True)
         server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         server.bind(str(sock_path))
@@ -135,7 +158,7 @@ class TestPulseSocketReachable:
         try:
             monkeypatch.delenv("PULSE_SERVER", raising=False)
             monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
-            monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(short_socket_dir))
             from tools.voice_mode import _pulse_socket_reachable
             assert _pulse_socket_reachable() is True
         finally:
