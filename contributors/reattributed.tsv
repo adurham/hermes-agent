@@ -82,3 +82,4 @@ c60299e614c202c16aaf37de2b3616fdeb2b603d	2026-09-25T11:40:03-05:00	fix(desktop):
 4653130b8d1de90a96dd56bf59906e9d3ac075ca	2026-09-25T12:10:41-05:00	fix(desktop): key the backend-update re-check on profile as well as baseUrl
 133828064816eac6af1c60104d46ce59bcf1f316	2026-09-25T17:06:24-05:00	fix(desktop): include the profile in the backend-update connection key
 20cf14fd6bfa248388c83a3c6c1b665e032be707	2026-09-25T17:06:09-05:00	fix(desktop): drop duplicate link-title-window import and sort local-read-path import
+6dc19ad3c7ad0708c670ebe64f6d97f539b96590	2026-09-24T19:48:12-05:00	test(desktop): keep rebased checks green
