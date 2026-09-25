@@ -91,7 +91,8 @@ def test_handoff_children_cannot_read_the_handoff_console(tmp_path: Path) -> Non
         check=False,
     )
 
-    report = output.read_text(encoding="utf-8", errors="replace") if output.exists() else ""
+    # Windows PowerShell 5.1 `*>` writes UTF-16LE with a BOM.
+    report = output.read_text(encoding="utf-16", errors="replace") if output.exists() else ""
     assert result.returncode == 0, report
     assert "WORKING-DIRECTORY SELF-TEST: PASS" in report
 
