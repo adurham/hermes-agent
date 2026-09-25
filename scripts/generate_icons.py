@@ -562,9 +562,11 @@ def icon_manifest(art: IconArt) -> str:
     light, dark = art.colors or ("#ffffff", DARK_HEX)
 
     def layer(name: str) -> dict:
+        # No fixed "image-name": actool treats it as the image for every
+        # appearance and drops the specializations, so the dark variant would
+        # never reach Assets.car (black girl on the dark fill).
         return {
             "name": name,
-            "image-name": f"{name}-light.png",
             "image-name-specializations": [
                 {"value": f"{name}-light.png"},
                 {"appearance": "dark", "value": f"{name}-dark.png"},

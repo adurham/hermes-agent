@@ -28,7 +28,6 @@
       "layers": [
         {
           "name": "border",
-          "image-name": "border-light.png",
           "image-name-specializations": [
             {
               "value": "border-light.png"
@@ -43,7 +42,6 @@
         },
         {
           "name": "art",
-          "image-name": "art-light.png",
           "image-name-specializations": [
             {
               "value": "art-light.png"
