@@ -605,17 +605,6 @@ _WEB_CHECK_SKIP = frozenset({"xai"})
 def check_web_api_key() -> bool:
     """``check_fn`` gate for web_search / web_extract: is any web backend available?
 
-    Anthropic native web_search (server-side) is also a valid backend — it requires no
-    third-party key, only that we're running against a first-party Anthropic (Claude)
-    endpoint. Detection is loose: any of the standard Anthropic credential paths counts.
-    This function only gates whether the client `web_search` schema is exposed to the model
-    at all; the actual native-vs-client swap happens in the adapter at request-build time —
-    agent/fork/anthropic_native_web_search.apply_native_web_search() (called from
-    anthropic_adapter.build_anthropic_kwargs) replaces the client tool entry with
-    Anthropic's native web_search_20250305 server tool when the endpoint is first-party
-    Anthropic. On non-Claude providers the client tool stays and dispatches to the
-    configured backend as before.
-
     A plugin-registered provider reporting ``is_available()`` must light the tools up even with no
     built-in credentials; resolution funnels through :func:`_is_backend_available`.
 
@@ -656,24 +645,10 @@ def check_web_api_key() -> bool:
                 continue
             if _provider_is_ready(provider):
                 return True
-        # NOTE: upstream's stricter readiness predicate is kept, but as a fall-THROUGH rather
-        # than its unconditional `return False`: the fork's Anthropic-native web-search path
-        # below is a legitimate second source of availability, and returning False here would
-        # make it dead code.
+        return False
     except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
         logger.debug("web provider registry availability check failed: %s", exc)
-    # Fall back to "Anthropic native available?" — credentials present
-    # via env or Claude Code OAuth credentials file. Cheap probes only;
-    # don't make network calls in a check_fn.
-    if _has_env("ANTHROPIC_API_KEY") or _has_env("CLAUDE_CODE_OAUTH_TOKEN"):
-        return True
-    try:
-        from pathlib import Path as _P
-        if (_P.home() / ".claude" / ".credentials.json").exists():
-            return True
-    except Exception:
-        pass
-    return False
+        return False
 
 
 # ─── Registry ─────────────────────────────────────────────────────────────────

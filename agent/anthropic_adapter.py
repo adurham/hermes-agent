@@ -1402,8 +1402,6 @@ _INPUT_BLOCK_FIELDS_FALLBACK: Dict[str, frozenset] = {
     "thinking": frozenset({"type", "thinking", "signature"}),
     "redacted_thinking": frozenset({"type", "data"}),
     "tool_use": frozenset({"type", "id", "name", "input", "cache_control", "caller"}),
-    "server_tool_use": frozenset({"type", "id", "name", "input", "cache_control", "caller"}),
-    "web_search_tool_result": frozenset({"type", "tool_use_id", "content", "cache_control", "caller"}),
     "image": frozenset({"type", "source", "cache_control"}),
     "document": frozenset({"type", "source", "title", "context", "citations", "cache_control"}),
 }
@@ -1424,8 +1422,6 @@ def _build_input_block_fields() -> Dict[str, frozenset]:
         ("thinking", "BetaThinkingBlockParam"),
         ("redacted_thinking", "BetaRedactedThinkingBlockParam"),
         ("tool_use", "BetaToolUseBlockParam"),
-        ("server_tool_use", "BetaServerToolUseBlockParam"),
-        ("web_search_tool_result", "BetaWebSearchToolResultBlockParam"),
         ("image", "BetaImageBlockParam"),
         ("document", "BetaBase64PDFBlockParam"),
     )
@@ -1462,8 +1458,8 @@ def _sanitize_block_for_anthropic_input(block: Dict[str, Any]) -> Dict[str, Any]
     btype = block.get("type")
     allowed = _INPUT_BLOCK_FIELDS.get(btype) if isinstance(btype, str) else None
     if allowed is None:
-        # Unknown type — let it through; downstream normalizers (e.g.
-        # _normalize_tool_search_result_for_input) handle their own.
+        # Unknown type — let it through; a block type added by Anthropic
+        # is never silently stripped before this map learns about it.
         return block
     sanitized = {k: v for k, v in block.items() if k in allowed}
     # Strip citations from text blocks. Citations with encrypted_index reference
@@ -1488,603 +1484,6 @@ def _convert_content_to_anthropic(content: Any) -> Any:
         if block is not None:
             converted.append(block)
     return converted
-
-
-def _normalize_tool_reference_for_input(ref: Any) -> Dict[str, Any]:
-    """Allowlist a tool_reference block to its accepted input fields.
-
-    Per BetaToolReferenceBlockParam: ``type``, ``tool_name``, optional
-    ``cache_control``. Anything else is response-only.
-    """
-    if not isinstance(ref, dict):
-        return {"type": "tool_reference", "tool_name": str(ref)}
-    out: Dict[str, Any] = {
-        "type": "tool_reference",
-        "tool_name": ref.get("tool_name"),
-    }
-    if isinstance(ref.get("cache_control"), dict):
-        out["cache_control"] = dict(ref["cache_control"])
-    return out
-
-
-def _normalize_tool_search_result_inner(item: Any) -> Any:
-    """Allowlist the inner content of a tool_search_tool_result.
-
-    Two accepted variants per the SDK:
-      - ``tool_search_tool_search_result``: ``type`` + ``tool_references``
-      - ``tool_search_tool_result_error``: ``type`` + ``error_code``
-    Both carry response-only fields (``text`` etc.) that Anthropic rejects
-    on input.
-    """
-    if not isinstance(item, dict):
-        return item
-    item_type = item.get("type")
-    if item_type == "tool_search_tool_search_result":
-        refs = item.get("tool_references") or []
-        return {
-            "type": "tool_search_tool_search_result",
-            "tool_references": [
-                _normalize_tool_reference_for_input(r) for r in refs
-            ],
-        }
-    if item_type == "tool_search_tool_result_error":
-        return {
-            "type": "tool_search_tool_result_error",
-            "error_code": item.get("error_code"),
-        }
-    return item
-
-
-def _relocate_orphaned_tool_search_results(messages: List[Dict[str, Any]]) -> None:
-    """Move ``tool_search_tool_<variant>_tool_result`` blocks to the
-    assistant message containing their paired ``server_tool_use``,
-    matched by tool_use_id.
-
-    Anthropic delivers the search result block in a *later* response than
-    the one that emitted the tool_use (the search runs server-side after
-    the initial response returns to the client). The SDK captures the
-    result on whichever turn's response it arrived in — so by default it
-    lands on a different assistant message than its server_tool_use. But
-    Anthropic's input validator rejects that with:
-      ``tool_search_tool_<variant> tool use with id ... was found
-      without a corresponding tool_search_tool_<variant>_tool_result block``.
-
-    This pass walks the assembled message list and relocates any orphaned
-    result block to immediately after its matching server_tool_use in the
-    assistant message that owns it. Mutates ``messages`` in place.
-
-    Verified against a HERMES_DUMP_REQUESTS capture where the result on
-    turn 3 referenced a server_tool_use from turn 1 — the API rejected it
-    until pairing was restored within the same message.
-    """
-    # tool_use_id -> message index that contains its server_tool_use
-    tool_use_sources: Dict[str, int] = {}
-    for mi, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "server_tool_use":
-                tu_id = block.get("id")
-                if isinstance(tu_id, str):
-                    tool_use_sources[tu_id] = mi
-
-    # Find tool_search results that live in a different message than their
-    # paired server_tool_use.
-    relocations: List[Tuple[str, int, int, Dict[str, Any]]] = []
-    for mi, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        for ci, block in enumerate(content):
-            if not isinstance(block, dict):
-                continue
-            t = block.get("type")
-            if not (
-                isinstance(t, str)
-                and t.startswith("tool_search_tool_")
-                and t.endswith("_tool_result")
-            ):
-                continue
-            tu_id = block.get("tool_use_id")
-            if not isinstance(tu_id, str):
-                continue
-            target_mi = tool_use_sources.get(tu_id)
-            if target_mi is not None and target_mi != mi:
-                relocations.append((tu_id, mi, ci, block))
-
-    if not relocations:
-        return
-
-    # Remove orphans from their source messages (reverse-order per source so
-    # earlier indices stay valid after deletes).
-    by_source: Dict[int, List[int]] = {}
-    for _, src_mi, src_ci, _ in relocations:
-        by_source.setdefault(src_mi, []).append(src_ci)
-    for src_mi, indices in by_source.items():
-        src_content = messages[src_mi].get("content")
-        if not isinstance(src_content, list):
-            continue
-        for ci in sorted(indices, reverse=True):
-            del src_content[ci]
-
-    # Insert each orphan immediately after its matching server_tool_use in
-    # the target message. Search fresh each time so successive inserts in
-    # the same target see the up-to-date content list.
-    for tu_id, _, _, block in relocations:
-        target_mi = tool_use_sources[tu_id]
-        target_content = messages[target_mi].get("content")
-        if not isinstance(target_content, list):
-            continue
-        for ci, b in enumerate(target_content):
-            if (
-                isinstance(b, dict)
-                and b.get("type") == "server_tool_use"
-                and b.get("id") == tu_id
-            ):
-                target_content.insert(ci + 1, block)
-                break
-
-
-def drop_orphan_server_tool_uses_in_storage(
-    messages: List[Dict[str, Any]],
-) -> int:
-    """Drop any ``server_tool_use`` block whose paired
-    ``tool_search_tool_*_tool_result`` doesn't exist anywhere in the
-    message list.
-
-    Why: relocation handles "result split across messages" — the normal
-    Anthropic delivery pattern. But a stream interruption (timeout,
-    cancel, 5xx mid-response) can land the ``server_tool_use`` on disk
-    without the result EVER arriving. Every subsequent API call then
-    400s with:
-      ``tool_search_tool_<variant> tool use with id ... was found
-      without a corresponding tool_search_tool_<variant>_tool_result``.
-    The session is permanently wedged until the orphan is removed.
-
-    Verified against ``session_20260509_145003_c5e465`` where one
-    server_tool_use had no result anywhere — dropping it unwedges the
-    session with no loss of usable data (the unfinished tool search
-    yielded nothing the model could act on anyway).
-
-    Returns the number of orphan use blocks removed.
-    """
-    result_ids: set[str] = set()
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("anthropic_content_blocks")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            t = block.get("type")
-            if not isinstance(t, str):
-                continue
-            if (
-                t == "tool_search_tool_result"
-                or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
-                # Native web_search halves too: without this, a ``server_tool_use``
-                # legitimately paired with a ``web_search_tool_result`` is misread as
-                # orphaned and dropped, stranding the result (same rationale as
-                # agent/fork/anthropic_server_tool_passes.py::_drop_unpaired_server_tool_use).
-                or t == "web_search_tool_result"
-            ):
-                tu_id = block.get("tool_use_id")
-                if isinstance(tu_id, str):
-                    result_ids.add(tu_id)
-
-    dropped = 0
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("anthropic_content_blocks")
-        if not isinstance(content, list):
-            continue
-        keep = []
-        for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "server_tool_use"
-                and isinstance(block.get("id"), str)
-                and block["id"] not in result_ids
-            ):
-                dropped += 1
-                continue
-            keep.append(block)
-        if dropped:
-            msg["anthropic_content_blocks"] = keep
-
-    # Also strip web_search_tool_result / server_tool_use pairs that are
-    # unpaired within a message.  These come from web_search_20250305 server-
-    # side tool calls; after compression the server_tool_use can be dropped
-    # from the tail while the web_search_tool_result stays, causing a 400.
-    # We handle them per-message: collect use IDs present in the message's
-    # anthropic_content_blocks, then strip any web_search_tool_result whose
-    # tool_use_id has no matching server_tool_use in the same message.
-    # server_tool_blocks is cleared entirely when either half is missing.
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        acb = msg.get("anthropic_content_blocks")
-        if not isinstance(acb, list):
-            continue
-        use_ids_in_msg = {
-            # Scope to web_search uses: this pass exists for the web_search pair
-            # (the tool_search pass above handles its own kinds, globally). Counting
-            # ALL server_tool_use ids here makes a perfect tool_search pair look
-            # "unpaired" (its result id is not in the web_search-only result set)
-            # and deletes the use, stranding the result — mirror of the sibling
-            # agent/fork/anthropic_server_tool_passes.py::_strip_web_search_orphans.
-            b["id"] for b in acb
-            if isinstance(b, dict) and b.get("type") == "server_tool_use"
-            and b.get("name") == "web_search" and b.get("id")
-        }
-        result_ids_in_msg = {
-            b.get("tool_use_id") for b in acb
-            if isinstance(b, dict) and b.get("type") == "web_search_tool_result"
-        }
-        if not (use_ids_in_msg or result_ids_in_msg):
-            continue
-        unpaired_results = result_ids_in_msg - use_ids_in_msg
-        unpaired_uses = use_ids_in_msg - result_ids_in_msg
-        if unpaired_results or unpaired_uses:
-            bad_ids = unpaired_results | unpaired_uses
-            msg["anthropic_content_blocks"] = [
-                b for b in acb
-                if not (
-                    isinstance(b, dict)
-                    and b.get("type") in ("server_tool_use", "web_search_tool_result")
-                    and (b.get("id") or b.get("tool_use_id")) in bad_ids
-                )
-            ]
-            msg.pop("server_tool_blocks", None)
-            dropped += len(bad_ids)
-
-    return dropped
-
-
-def relocate_orphaned_tool_search_results_in_storage(
-    messages: List[Dict[str, Any]],
-) -> int:
-    """Capture-time variant of ``_relocate_orphaned_tool_search_results``
-    that operates on the **session-storage shape**: assistant messages
-    carry their verbatim Anthropic blocks under
-    ``msg["anthropic_content_blocks"]`` (set by
-    ``transports/anthropic.py`` when capturing each response), not under
-    ``msg["content"]``.
-
-    Why we need a separate pass at capture time
-    --------------------------------------------
-    Anthropic delivers a ``tool_search_tool_<variant>_tool_result`` block
-    in a *later* assistant turn than the one that emitted the matching
-    ``server_tool_use(id=X)``. The request-build relocation
-    (``_relocate_orphaned_tool_search_results``) fixes this on outbound,
-    but the on-disk session JSON keeps the split. If compaction
-    summarises one of the two messages and the API call rebuilds, you
-    get a 400:
-      ``tool_search_tool_<variant> tool use with id ... was found
-      without a corresponding tool_search_tool_<variant>_tool_result``.
-
-    Calling this at persistence time co-locates the pair on disk so
-    compaction can never split them — the compactor's existing
-    ``_align_boundary_*`` logic treats the merged message as a single
-    unit, and ``_sanitize_tool_pairs`` doesn't need any awareness of
-    server-side block types.
-
-    Returns the number of result blocks relocated. Mutates ``messages``
-    in place.
-    """
-    tool_use_sources: Dict[str, int] = {}
-    for mi, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("anthropic_content_blocks")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "server_tool_use":
-                tu_id = block.get("id")
-                if isinstance(tu_id, str):
-                    tool_use_sources[tu_id] = mi
-
-    relocations: List[Tuple[str, int, int, Dict[str, Any]]] = []
-    for mi, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        content = msg.get("anthropic_content_blocks")
-        if not isinstance(content, list):
-            continue
-        for ci, block in enumerate(content):
-            if not isinstance(block, dict):
-                continue
-            t = block.get("type")
-            if not isinstance(t, str):
-                continue
-            # Match both the bare canonical and any variant-suffixed form
-            # (some persisted sessions still carry pre-canonicalisation
-            # types like ``tool_search_tool_regex_tool_result``).
-            if not (
-                t == "tool_search_tool_result"
-                or (t.startswith("tool_search_tool_") and t.endswith("_tool_result"))
-            ):
-                continue
-            tu_id = block.get("tool_use_id")
-            if not isinstance(tu_id, str):
-                continue
-            target_mi = tool_use_sources.get(tu_id)
-            if target_mi is not None and target_mi != mi:
-                relocations.append((tu_id, mi, ci, block))
-
-    if not relocations:
-        return 0
-
-    # Remove orphans from their source messages, deepest index first so
-    # earlier indices stay valid.
-    by_source: Dict[int, List[int]] = {}
-    for _, src_mi, src_ci, _ in relocations:
-        by_source.setdefault(src_mi, []).append(src_ci)
-    for src_mi, indices in by_source.items():
-        src_content = messages[src_mi].get("anthropic_content_blocks")
-        if not isinstance(src_content, list):
-            continue
-        for ci in sorted(indices, reverse=True):
-            del src_content[ci]
-
-    for tu_id, _, _, block in relocations:
-        target_mi = tool_use_sources[tu_id]
-        target_content = messages[target_mi].get("anthropic_content_blocks")
-        if not isinstance(target_content, list):
-            continue
-        for ci, b in enumerate(target_content):
-            if (
-                isinstance(b, dict)
-                and b.get("type") == "server_tool_use"
-                and b.get("id") == tu_id
-            ):
-                target_content.insert(ci + 1, block)
-                break
-
-    return len(relocations)
-
-
-def _move_client_tool_use_blocks_to_end(messages: List[Dict[str, Any]]) -> None:
-    """Reorder assistant content so client ``tool_use`` blocks come AFTER
-    any server-side blocks (``server_tool_use`` / ``*_tool_result``) within
-    the same message.
-
-    Why this exists:
-
-    Anthropic's input validator requires that the next user message's
-    ``tool_result`` for a client ``tool_use`` be "immediately after" it
-    in the message list — and "immediately after" means the very next
-    message, with no intervening server-side blocks pushing the
-    client tool_use earlier in its own content array. When the model
-    emits a client tool_use BEFORE deciding to invoke server-side
-    tool_search, the captured response carries the order
-    ``[tool_use, server_tool_use, *_tool_result]``. Replaying that
-    verbatim trips the validator with HTTP 400:
-
-      "messages.N: ``tool_use`` ids were found without ``tool_result``
-       blocks immediately after: <client tool_use id>"
-
-    Even though the client tool_use IS followed (in the next message)
-    by its tool_result. The validator considers the trailing
-    server-side blocks an obstruction.
-
-    Fix: move all client ``tool_use`` blocks to the end of their
-    assistant message, preserving the relative order of server-side
-    blocks, thinking blocks, and text. The client tool_use blocks
-    themselves keep their relative order among each other.
-
-    Thinking-signature safety:
-
-    Anthropic signs thinking blocks against their position in the
-    response. ``context_management.clear_thinking_20251015`` enforces
-    that each block stays in place across turns. Moving a client
-    ``tool_use`` past server-side blocks doesn't relocate any thinking
-    block — they stay where the model emitted them. We only refuse to
-    reorder when a thinking block sits BETWEEN a client tool_use and
-    a trailing server-side block (because moving the tool_use past
-    the thinking would change the content stream the thinking signed
-    against). Those messages pass through unchanged and may still
-    400; loudly logging so we can diagnose if we ever see one.
-
-    Mutates ``messages`` in place. Idempotent — once the client
-    tool_use is at the end, repeated passes are no-ops.
-    """
-    for mi, m in enumerate(messages):
-        if m.get("role") != "assistant":
-            continue
-        content = m.get("content")
-        if not isinstance(content, list) or len(content) < 2:
-            continue
-
-        # Find client tool_use indices (not server_tool_use).
-        client_tu_indices = [
-            i for i, b in enumerate(content)
-            if isinstance(b, dict) and b.get("type") == "tool_use"
-        ]
-        if not client_tu_indices:
-            continue
-
-        # If every client tool_use is already at the tail, nothing to do.
-        last_idx = len(content) - 1
-        if all(i >= last_idx - len(client_tu_indices) + 1 for i in client_tu_indices):
-            # All client tool_use blocks are already in the final
-            # contiguous tail — verify it's actually a clean tail
-            # (no non-tool_use blocks intermixed at the end).
-            tail = content[last_idx - len(client_tu_indices) + 1:]
-            if all(
-                isinstance(b, dict) and b.get("type") == "tool_use"
-                for b in tail
-            ):
-                continue
-
-        # Detect the unsafe pattern: a thinking block between a client
-        # tool_use and a later server-side block. Don't reorder — log
-        # and skip.
-        SERVER_BLOCK_TYPES = {"server_tool_use"}
-        first_tu_idx = client_tu_indices[0]
-        has_trailing_server = any(
-            isinstance(content[i], dict)
-            and (
-                content[i].get("type") in SERVER_BLOCK_TYPES
-                or (
-                    isinstance(content[i].get("type"), str)
-                    and content[i]["type"].endswith("_tool_result")
-                    and content[i]["type"].startswith("tool_search_tool_")
-                )
-                or content[i].get("type") == "tool_search_tool_result"
-            )
-            for i in range(first_tu_idx + 1, len(content))
-        )
-        if not has_trailing_server:
-            continue  # Reorder unnecessary — no server-side block follows.
-
-        intervening_thinking = any(
-            isinstance(content[i], dict)
-            and content[i].get("type") in ("thinking", "redacted_thinking")
-            for i in range(first_tu_idx + 1, len(content))
-        )
-        if intervening_thinking:
-            logger.warning(
-                "anthropic adapter: assistant msg[%d] has client tool_use "
-                "followed by both a thinking block and a server-side block; "
-                "cannot reorder without invalidating thinking signature. "
-                "Anthropic may reject this request with a 400 about "
-                "tool_use ids without tool_result.",
-                mi,
-            )
-            continue
-
-        # Safe to reorder. Pull all client tool_use blocks out, then
-        # append them at the end in original order.
-        client_tu_blocks = [content[i] for i in client_tu_indices]
-        # Build a new content list dropping the client tool_use slots.
-        client_tu_set = set(client_tu_indices)
-        rebuilt = [b for i, b in enumerate(content) if i not in client_tu_set]
-        rebuilt.extend(client_tu_blocks)
-        m["content"] = rebuilt
-
-
-def _canonicalize_tool_search_result_types(content: Any) -> None:
-    """Rewrite variant-suffixed ``tool_search_tool_<variant>_tool_result``
-    block types to the bare canonical form ``tool_search_tool_result``.
-
-    Why this exists:
-
-    Anthropic's wire payload delivers tool-search result blocks with a
-    variant-suffixed type (e.g. ``tool_search_tool_regex_tool_result``)
-    that mirrors the paired ``server_tool_use.name``
-    (``tool_search_tool_regex``). The Python SDK's
-    ``BetaToolSearchToolResultBlock`` model declares
-    ``type: Literal["tool_search_tool_result"]`` — the bare canonical
-    form — and Pydantic silently coerces the wire value to that literal
-    when parsing.
-
-    Empirically (verified live against api.anthropic.com on 2026-05-07,
-    request_id ``req_011Cap2RUgsJp1CVsGAR6LTa``), Anthropic's INPUT
-    validator's accept list contains ``tool_search_tool_result`` —
-    the bare canonical — and rejects any variant-suffixed form with:
-
-      "Input tag '<variant>_tool_result' found using 'type' does not
-       match any of the expected tags: ..., 'tool_search_tool_result',
-       'tool_use', ..."
-
-    A prior workaround in this file (``_normalize_tool_search_result_for_input``,
-    docstring still in place for historical reference but its behavior
-    is fixed here) claimed the opposite — that the variant suffix was
-    REQUIRED and that re-emitting the canonical bare form failed the
-    pairing check. That claim was either out of date or misdiagnosed;
-    the validator's own error message today is unambiguous about which
-    tag is accepted.
-
-    So: any block whose type starts with ``tool_search_tool_`` and ends
-    with ``_tool_result`` gets its type collapsed to the bare canonical
-    form. Mutates ``content`` in place. Idempotent — the bare canonical
-    is its own fixed point.
-
-    Accepts either a single content array (``List[Dict]``) or a full
-    message list (``List[Dict]`` where each dict has ``role``/
-    ``content``); the latter case dispatches per-message.
-    """
-    if not isinstance(content, list):
-        return
-
-    # Detect message-list shape (each entry has role + content) vs raw
-    # block list. Per-message dispatch keeps both call sites simple.
-    if content and all(
-        isinstance(m, dict) and "role" in m and "content" in m
-        for m in content
-    ):
-        for m in content:
-            mc = m.get("content")
-            if isinstance(mc, list):
-                _canonicalize_tool_search_result_types(mc)
-        return
-
-    # Single content array — collapse any variant-suffixed type.
-    for b in content:
-        if not isinstance(b, dict):
-            continue
-        t = b.get("type")
-        if not isinstance(t, str):
-            continue
-        if t == "tool_search_tool_result":
-            continue  # already canonical
-        if t.startswith("tool_search_tool_") and t.endswith("_tool_result"):
-            b["type"] = "tool_search_tool_result"
-
-
-def _normalize_tool_search_result_for_input(sb: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip response-only fields from a tool_search result block and emit
-    the bare canonical ``tool_search_tool_result`` type.
-
-    Anthropic's INPUT validator (verified live 2026-05-07,
-    request_id ``req_011Cap2RUgsJp1CVsGAR6LTa``) accepts only the bare
-    ``tool_search_tool_result`` type. Variant-suffixed types
-    (``tool_search_tool_regex_tool_result``, etc.) — which appear on
-    the wire OUTPUT — fail the input tag check. The SDK's
-    ``BetaToolSearchToolResultBlockParam`` declares the same bare
-    canonical form, which is the right contract.
-
-    A prior version of this function preserved whatever ``type`` came
-    back on the response under the assumption that the variant suffix
-    was required for pairing. That was wrong. The response Pydantic
-    coerces the wire variant to the bare canonical anyway, so for
-    fresh responses ``sb["type"]`` is already correct. Old persisted
-    sessions and any path that bypasses the SDK Pydantic layer can
-    still carry a variant suffix; this function is the choke point
-    that normalizes them.
-
-    Strip response-only fields (``text``, ``citations``, etc.) that
-    fail input validation with "Extra inputs are not permitted".
-    Recursively allowlist inner content the same way.
-    """
-    inner = sb.get("content")
-    if isinstance(inner, list):
-        normalized_inner: Any = [
-            _normalize_tool_search_result_inner(x) for x in inner
-        ]
-    else:
-        normalized_inner = _normalize_tool_search_result_inner(inner)
-    out: Dict[str, Any] = {
-        # Always the bare canonical — ignore whatever variant suffix
-        # may have leaked in from a persisted session or a non-SDK
-        # construction path.
-        "type": "tool_search_tool_result",
-        "tool_use_id": sb.get("tool_use_id"),
-        "content": normalized_inner,
-    }
-    if isinstance(sb.get("cache_control"), dict):
-        out["cache_control"] = dict(sb["cache_control"])
-    return out
 
 
 def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
@@ -2924,40 +2323,24 @@ def _scrub_blank_text_blocks(result: List[Dict[str, Any]]) -> None:
         msg["content"] = new_content
 
 
-_TOOL_SEARCH_TOOL_TYPES = {
-    "regex": "tool_search_tool_regex_20251119",
-    "bm25":  "tool_search_tool_bm25_20251119",
-}
-
-
 def _apply_tool_search(
     anthropic_tools: List[Dict[str, Any]],
     tool_search_config: Optional[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Apply the tool_search deferral policy to the converted tools array.
+    """Apply the client-side tool_search deferral policy to the converted tools array.
 
-    Two modes — selected by ``tool_search_config["mode"]`` (default
-    ``"client_side"``):
+    Stubs are regular tools (no ``defer_loading`` flag), and the model discovers
+    tools via the client-side ``hermes_load_tools`` tool registered in
+    ``tools/hermes_load_tools.py`` and dispatched out of the agent loop.  Each
+    load step is a normal client-side round-trip — billed once per call, no
+    multiplier.  Names in ``promoted_tools`` skip the stub and ship their full
+    schema.
 
-    ``"server_side"`` (legacy)
-        Stubs carry ``defer_loading: True``, the Anthropic
-        ``tool_search_tool_<variant>_20251119`` server tool is prepended to
-        the array, and the model discovers tools via that server tool.
-        Anthropic re-bills the FULL prompt context for each server-tool
-        iteration within an API call.  See agent.log forensics from the
-        2026-05-13 case 00271597 session for 2x/3x/4x prompt-token
-        multiplier evidence.
+    (The legacy ``server_side`` mode — Anthropic's ``tool_search_tool_<variant>``
+    server tool with ``defer_loading`` stubs — was retired 2026-09-25 with the
+    rest of the fork's Anthropic server-tool cluster.)
 
-    ``"client_side"``
-        Stubs are regular tools (no ``defer_loading`` flag), no server tool
-        is prepended, and the model discovers tools via the client-side
-        ``hermes_load_tools`` tool registered in ``tools/hermes_load_tools.py``
-        and dispatched out of the agent loop in ``run_agent.py``.  Each
-        load step is a normal client-side round-trip — billed once per
-        call, no multiplier.  Names in ``promoted_tools`` skip the stub
-        and ship their full schema.
-
-    Deferral policy (additive, evaluated in order, identical across modes):
+    Deferral policy (additive, evaluated in order):
       1. ``additional_deferred`` — exact tool names always deferred.
       2. ``additional_eager`` — exact tool names always eager (overrides 1).
       3. ``defer_mcp_tools`` — when True, any tool whose name starts with
@@ -2965,18 +2348,13 @@ def _apply_tool_search(
          passed via ``tool_search_config["mcp_server_prefixes"]``.
 
     Returns the transformed list.  Returns the input unchanged when
-    tool_search is disabled, when there are no tools, or when all/none of
-    the tools would be deferred (server_side: Anthropic 400s on "all
-    deferred"; both modes: a stub array with no full tools is unhelpful).
+    tool_search is disabled, when there are no tools, or when all/none of the
+    tools would be deferred (a stub array with no full tools is unhelpful).
     """
     if not tool_search_config or not tool_search_config.get("enabled"):
         return anthropic_tools
     if not anthropic_tools:
         return anthropic_tools
-
-    mode = (tool_search_config.get("mode") or "client_side").strip().lower()
-    if mode not in {"server_side", "client_side"}:
-        mode = "client_side"
 
     eager_names = set(tool_search_config.get("additional_eager") or [])
     deferred_names = set(tool_search_config.get("additional_deferred") or [])
@@ -3001,28 +2379,15 @@ def _apply_tool_search(
     # name-only entries, so we send minimal placeholders (empty
     # description, ``{"type":"object"}``).  Each stub stays under ~120
     # bytes on the wire vs 1-5KB for a real schema.
-    #
-    # The ``defer_loading: True`` flag is server_side-specific — it tells
-    # Anthropic's tool_search machinery the entry is a stub that should be
-    # hydrated server-side on tool_search hits.  In client_side mode the
-    # flag is omitted; the entry is just a tool with a terse description
-    # whose schema gets filled in on the next request when the model
-    # promotes it via hermes_load_tools.
     def _make_stub(name: str, original: Dict[str, Any]) -> Dict[str, Any]:
         stub: Dict[str, Any] = {
             "name": name,
             "description": (
-                ""
-                if mode == "server_side"
-                else (
-                    "Stubbed MCP tool — call hermes_load_tools with this "
-                    "name to load the full schema."
-                )
+                "Stubbed MCP tool — call hermes_load_tools with this "
+                "name to load the full schema."
             ),
             "input_schema": {"type": "object"},
         }
-        if mode == "server_side":
-            stub["defer_loading"] = True
         # Preserve cache_control if the caller had set it; it affects
         # prompt-caching boundary placement and is cheap.
         if "cache_control" in original:
@@ -3043,21 +2408,11 @@ def _apply_tool_search(
 
     # Anthropic returns 400 when every tool is deferred (no eager tool to
     # ground the deferral). Skip injection in that case.  Also skip when
-    # nothing is deferred (no benefit, just adds one extra entry in
-    # server_side mode and a no-op in client_side mode).
+    # nothing is deferred (no benefit).
     if deferred_count == 0 or eager_count == 0:
         return anthropic_tools
 
-    if mode == "client_side":
-        # No server tool to prepend — hermes_load_tools is a regular
-        # client-side tool already registered in the tools array.
-        return transformed
-
-    # server_side mode — prepend the Anthropic server tool.
-    variant = (tool_search_config.get("variant") or "regex").lower()
-    ts_type = _TOOL_SEARCH_TOOL_TYPES.get(variant, _TOOL_SEARCH_TOOL_TYPES["regex"])
-    ts_name = "tool_search_tool_bm25" if variant == "bm25" else "tool_search_tool_regex"
-    return [{"type": ts_type, "name": ts_name}] + transformed
+    return transformed
 
 
 def _normalize_to_mcp_wire(name: str) -> str:
@@ -3221,13 +2576,6 @@ def build_anthropic_kwargs(
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
         #
-        # ``web_search`` is swapped for Anthropic's native server-side
-        # web_search_20250305 tool further down (apply_native_web_search, which
-        # matches on the literal name "web_search"); mcp__-prefixing it here
-        # would make that swap miss and break native search. Tool-search server
-        # types are likewise special. Keep these out of the normalization.
-        _oauth_skip_names: set = {"web_search"}
-
         # Upstream (2026-09 sync) aliases two tools whose schema/name the billing
         # classifier fingerprints on their own (session_search, memory): each is aliased
         # (when the alias isn't already claimed) and then mcp__-normalized.
@@ -3236,8 +2584,6 @@ def build_anthropic_kwargs(
         }
 
         def _to_oauth_wire_name(name: str) -> str:
-            if name in _oauth_skip_names:
-                return name
             aliased = _OAUTH_TOOL_NAME_ALIASES.get(name)
             if aliased and _MCP_TOOL_PREFIX + aliased not in _claimed_wire_names:
                 name = aliased
@@ -3318,14 +2664,6 @@ def build_anthropic_kwargs(
         kwargs["system"] = system
 
     if anthropic_tools:
-        # FORK: provider-aware web search. On first-party Anthropic (Claude),
-        # swap the client `web_search` tool for Anthropic's native server-side
-        # web_search_20250305 tool so the model searches inline. Non-Claude
-        # endpoints keep the client tool. No-op when disabled / no web_search
-        # present / not first-party. See agent/fork/anthropic_native_web_search.py
-        # and FORK.md.
-        from agent.fork.anthropic_native_web_search import apply_native_web_search
-        anthropic_tools = apply_native_web_search(anthropic_tools, base_url)
         anthropic_tools = _apply_tool_search(anthropic_tools, tool_search_config)
         if cache_tools:
             from agent.prompt_caching import apply_anthropic_tools_cache_control
@@ -3507,9 +2845,7 @@ def build_anthropic_kwargs(
         and _model_supports_1m_context(model)
     ):
         # Cheap byte-based prompt estimate — char/4 is the standard
-        # rough conversion. Tools count too: Anthropic loads them
-        # eagerly unless defer_loading=True, so for the gate we count
-        # only the eager portion.
+        # rough conversion. Tools count too.
         _est_chars = 0
         sys_obj = kwargs.get("system")
         if sys_obj is not None:
@@ -3526,8 +2862,6 @@ def build_anthropic_kwargs(
         _tools_for_estimate = kwargs.get("tools")
         if isinstance(_tools_for_estimate, list):
             for _t in _tools_for_estimate:
-                if isinstance(_t, dict) and _t.get("defer_loading"):
-                    continue  # deferred tools don't count toward prefill
                 try:
                     _est_chars += len(json.dumps(_t))
                 except Exception:

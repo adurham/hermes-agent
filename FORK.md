@@ -3,6 +3,67 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only retirement — 2026-09-25 (Slice C: Anthropic server-tool cluster removed)
+
+**Owner-approved removal**, in the same words that scoped slices A/B: *"the CC wire-shape and
+claude-code web backend, the 'Anthropic server-tool passes' — those should all be deprecated and
+removed; we can always add them back if we need them but they likely would get added into the
+claude plugin."* Slice C is the server-tool cluster; Slice A (claude-code web backend, commit
+`ecb91a03ab`) and Slice B (CC wire-shape, commits `baee2825c6` + `06b24bbbeb`) landed earlier the
+same day. Restore point for all three: tag `pre-cc-removal-20260925` → `822cbb45f6`.
+
+**Removed (modules):** `agent/fork/anthropic_server_tool_passes.py` (all 7 passes + the
+verbatim-replay `strip_replay_citations` divergence), `agent/fork/anthropic_native_web_search.py`
+(the `web_search_20250305` swap), plus their fork-only tests
+(`tests/agent/fork/test_anthropic_server_tool_passes.py`,
+`tests/agent/fork/test_native_web_search_pipeline_e2e.py`,
+`tests/agent/test_anthropic_native_web_search.py`,
+`tests/agent/test_anthropic_tool_search_roundtrip.py`).
+
+**Removed (server-tool plumbing):** in `agent/anthropic_adapter.py` — the server-side
+`tool_search` machinery (`_TOOL_SEARCH_TOOL_TYPES`, the `server_side` branch of
+`_apply_tool_search`, the `defer_loading` stubs, the `web_search` OAuth-wire skip) and the
+tool_search block normalizers (`_normalize_tool_reference_for_input`,
+`_normalize_tool_search_result_inner`/`_for_input`, `_relocate_orphaned_tool_search_results`,
+`_move_client_tool_use_blocks_to_end`, `_canonicalize_tool_search_result_types`,
+`drop_orphan_server_tool_uses_in_storage`, `relocate_orphaned_tool_search_results_in_storage`),
+plus the `server_tool_use` / `web_search_tool_result` entries in the input-field allowlist; in
+`agent/anthropic_message_convert.py` the three seams (citation strip in `_replay_text`,
+`preserve_server_tool_blocks` in `_convert_assistant_message`, `apply_server_tool_passes` at the
+end of `convert_messages_to_anthropic`) — the module is back to upstream verbatim; in
+`agent/transports/anthropic.py` the `server_tool_blocks` capture/canonicalize path; in
+`agent/transports/types.py` the `server_tool_blocks` property; in
+`agent/session_persistence.py` the capture-time pair fix-up; in
+`agent/chat_completion_helpers.py` the `server_tool_blocks` preserve; in
+`agent/context_compressor.py` the `last_server_tool_requests` guard family; in
+`agent/usage_pricing.py` the `server_tool_*_requests` fields/property; in
+`tools/web_tools.py` the Anthropic-native availability fallback in `check_web_api_key`; in
+`agent/fork/tool_search_lazy.py` + `cli.py` + `hermes_cli/commands.py` the `server_side` mode.
+
+**Kept deliberately:** the **client-side** `tool_search` mode (`hermes_load_tools` +
+`_apply_tool_search`'s client-side deferral policy, `tool_search_lazy.build_tool_search_config`)
+— a separate, stay-listed fork feature; and `agent/fork/anthropic_recovery.py`'s refusal-retry
+scrub rung + `tools/content_filter_scrub.py` — a live content-filter recovery path that is NOT
+part of this cluster.
+
+**Why removal can't regress a live path:** the merge-dropped gates. On the 2026-09-24 sync the
+fork's `conversation_loop.py` / `turn_usage.py` server-tool gates were silently dropped (the
+`usage_dict` no longer carries `server_tool_requests`, and the `capture_usage_anchor` gate is
+gone), so `last_server_tool_requests` was already fed by nothing — the guards removed here were
+dead code. (Separately noted: the MoA pre-fold feed to the compressor, the other half of the
+2026-09-10 fix, is also no longer present — see that dated entry; not re-landed here since the
+inflating mechanism itself is gone.)
+
+**Old-session safety (verified before cutting):** upstream's replay path is a whitelist that
+DROPS unknown block types (`_sanitize_replay_block`), so stored `server_tool_use` /
+`web_search_tool_result` / `server_tool_blocks` rows degrade to nothing rather than 400ing.
+Storage audit at cut time: 281 rows with `server_tool_use`, 166 with `web_search_tool_result`,
+93 with `server_tool_blocks`, 1239 with citations.
+
+**Re-home note:** these features are the natural first tenants of a forked claude-subscription
+plugin if the Claude-subscription path gets revived (the OAuth path is currently dead —
+`invalid_grant`).
+
 ### Fork-only fix — 2026-09-24 (desktop package.json version was 2 releases behind; the lock kept the pre-rename rcedit entry)
 
 **Two separate staleness bugs behind one dirty file, found while answering "are we
@@ -9830,13 +9891,13 @@ will never touch them.
 | `agent/fork/memory_session_pin.py` | Session-pin — keeps selected warm-tier facts visible in the system prompt for the rest of the current session (gone on restart). Exposes `memory(action='pin'/'unpin'/'pinned', fact_id=N)`. Config: `agent.memory.session_pin_max_count`/`max_chars`. |
 | `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
 | `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation + `is_anthropic_refusal` detection predicate (T2.3) |
-| `agent/fork/anthropic_server_tool_passes.py` | The fork's Anthropic **server-tool** passes for native web search / tool_search (pairing, ordering, orphan and type-canonicalization rules), plus the deliberate verbatim-replay citation strip. Replaced `agent/fork/anthropic_messages.py` (the fork's ~540-line vendored `convert_messages_to_anthropic`) in the 2026-09-14 sync: upstream's `agent/anthropic_message_convert.py` converged on and overtook the fork converter, so the fork now layers ONLY these passes on top of upstream's implementation. See "Converter consolidation" below. |
+| `agent/fork/anthropic_server_tool_passes.py` | The fork's Anthropic **server-tool** passes for native web search / tool_search (pairing, ordering, orphan and type-canonicalization rules), plus the deliberate verbatim-replay citation strip. Replaced `agent/fork/anthropic_messages.py` (the fork's ~540-line vendored `convert_messages_to_anthropic`) in the 2026-09-14 sync: upstream's `agent/anthropic_message_convert.py` converged on and overtook the fork converter, so the fork now layers ONLY these passes on top of upstream's implementation. See "Converter consolidation" below. **RETIRED 2026-09-25** (Slice C, owner-approved server-tool cluster removal — see "Fork-only retirement — 2026-09-25 (Slice C)" below). |
 | `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
 | `agent/fork/diagnostics.py` | Per-turn usage history + tools-signature hash + xAI 403 entitlement hint |
 | `agent/fork/consult_nudge.py` | Second-opinion (consult tool) reminder — nudges the agent to call `consult(question, context)` for a review from a configurable reference model after N risky tool calls; reuses `skill_recall`'s risky-tool set. Config: `consult.nudge_interval`. |
 | `agent/hot_tier_audit.py` | Hot-tier audit — heuristic stale-path detection + opt-in LLM keep/demote/stale/dead classification. On a real curator pass, reads `MEMORY.md`/`USER.md`; heuristic-only mode (default) flags/demotes entries whose extracted filesystem paths no longer exist on disk. `curator.consolidate: true` upgrades to an LLM classification pass (reuses the skill curator's aux-model binding) whose `demote` verdicts move to warm tier and `stale`/`dead` verdicts hard-delete only when `curator.prune_builtins` is also on; an LLM failure or a sanity-cap trip aborts with zero mutation rather than falling back to the heuristic. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
-|| `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. |
+|| `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. **RETIRED 2026-09-25** (Slice C, owner-approved server-tool cluster removal — see "Fork-only retirement — 2026-09-25 (Slice C)" below). |
 || `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. |
 || `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. **REMOVED 2026-09-23** (deliberate product decision, commit `658d2248f3` — account-ban risk + already non-functional; see "Fork-only retirements — 2026-09-23" below). Do NOT re-carry on the next sync. |
 || `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. **REMOVED 2026-09-23** (same decision/commit as `gemini_cloudcode_adapter.py` above). Do NOT re-carry on the next sync. |
@@ -11966,13 +12027,13 @@ equivalent as of v2026.9.24:**
 
 | Area | What it is |
 |---|---|
-| `agent/fork/*` (13 modules + harness) | skill-recall, memory-recall, session-pin, rate-limit tracker, refusal-recovery, server-tool passes, stream-recovery, lazy MCP tool stubs, diagnostics, consult-nudge, native web search, mixin |
-| `agent/cc_aliases.py`, `agent/cc_canonical/`, `agent/exo_canonical_serializer.py`, `agent/failover_state.py` | CC wire-shape parity (billing identity), exo byte contract, failover state |
+| `agent/fork/*` (11 modules + harness) | skill-recall, memory-recall, session-pin, rate-limit tracker, refusal-recovery, stream-recovery, lazy MCP tool stubs, diagnostics, consult-nudge, mixin (server-tool passes + native web search RETIRED 2026-09-25) |
+| `agent/exo_canonical_serializer.py`, `agent/failover_state.py` | exo byte contract, failover state (CC wire-shape parity RETIRED 2026-09-25) |
 | `agent/hot_tier_audit.py` | hot-memory staleness audit |
 | memory subsystem | `tools/memory_warm.py`, `tools/memory_extraction/*`, `tools/memory_auto_feedback/*`, `hermes_cli/memory_confirm.py` |
 | delegation / personas | `tools/delegation_router.py`, `tools/delegate_tool.py` deltas, `hermes_cli/model_tiers.py`, `hermes_cli/personas.py`, `hermes_cli/persona_library.py`, `hermes_cli/ruflo_agents.py`, `tools/personas_sync.py`, `personas/delegation/*`, `hermes_cli/delegation_stats.py` |
 | agent messaging / cross-session | `tools/agent_messaging_*` (contract, tools, Transport A), `tools/cross_session_*`, `gateway/agent_messaging_bridge.py`, `hermes_cli/agents_inbox.py`, `hermes_cli/subcommands/agents.py` |
-| web plugins | `plugins/web/claude_code/`, `plugins/web/trafilatura/`, `plugins/model-providers/exo/`, `tools/web_tools.py` chain |
+| web plugins | `plugins/web/trafilatura/`, `plugins/model-providers/exo/`, `tools/web_tools.py` chain (`plugins/web/claude_code/` RETIRED 2026-09-25) |
 | tooling / CLI | `tools/consult_tool.py`, `tools/hermes_load_tools.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py`, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` |
 | desktop | pet zone/voice (`store/pet-voice.ts`), `lib/model-fallback-label.ts`, `session-row-state.ts` drag handle, `sync-version.mjs`, version-sync prebuild |
 | scripts / CI | `scripts/setup-merge-drivers.sh`, `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_hard_eval.py`, `hermes_token_check.py`, `refresh_cc_canonical.sh`, `check-unspecced-sdk-mocks.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` |

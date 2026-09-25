@@ -19,6 +19,13 @@ from typing import Optional
 def build_tool_search_config(agent) -> Optional[Dict[str, Any]]:
     """Build the tool_search_config dict for Anthropic adapter, or None.
 
+    Client-side only: Hermes ships name-only stubs for deferred tools and
+    inflates them to full schemas on demand via ``hermes_load_tools`` — each
+    schema-load is one normal round-trip, no prompt multiplier.  (The legacy
+    ``server_side`` mode — Anthropic's ``tool_search_tool_<variant>`` server
+    tool — was retired 2026-09-25 with the rest of the fork's Anthropic
+    server-tool cluster.)
+
     Reads ``tool_search`` from config.yaml on every call so /toolsearch
     toggles take effect without process restart. Returns None when the
     feature is disabled, when there are no MCP servers configured (no
@@ -36,25 +43,6 @@ def build_tool_search_config(agent) -> Optional[Dict[str, Any]]:
     ts_cfg = cfg.get("tool_search") if isinstance(cfg, dict) else None
     if not isinstance(ts_cfg, dict) or not ts_cfg.get("enabled"):
         return None
-
-    # Mode selects how lazy loading is performed.
-    #   "server_side" — Anthropic's tool_search_tool_* server tool (legacy).
-    #     Inlines schemas server-side, which charges the full prompt PER
-    #     server iteration within one API call. Two stacked tool_search
-    #     calls = 3x prompt billing. See agent.log forensics from
-    #     2026-05-13 (case 00271597 session).
-    #   "client_side" — Hermes-side hermes_load_tools tool. Each schema-
-    #     load is one normal round-trip; no multiplier. Default for new
-    #     installs.
-    # Back-compat: an existing config with `enabled: true` and no `mode`
-    # key gets "client_side" automatically — the better behavior for any
-    # API-key user. The OAuth wire-bytes argument that motivated the
-    # original server_side default (per _apply_tool_search comments) only
-    # benefits OAuth/Claude-subscription users; regular API users always
-    # paid the multiplier cost without getting that benefit.
-    mode = (ts_cfg.get("mode") or "client_side").strip().lower()
-    if mode not in {"client_side", "server_side"}:
-        mode = "client_side"
 
     # Build MCP server prefixes from the configured mcp_servers map.
     # Each prefix matches the sanitized server name + "_" — matching the
@@ -75,8 +63,6 @@ def build_tool_search_config(agent) -> Optional[Dict[str, Any]]:
 
     return {
         "enabled": True,
-        "mode": mode,
-        "variant": ts_cfg.get("variant", "regex"),
         "defer_mcp_tools": ts_cfg.get("defer_mcp_tools", True),
         "additional_eager": list(ts_cfg.get("additional_eager") or []),
         "additional_deferred": list(ts_cfg.get("additional_deferred") or []),

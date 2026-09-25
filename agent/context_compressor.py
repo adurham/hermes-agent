@@ -2747,13 +2747,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.last_prompt_tokens = self.last_completion_tokens = 0
         # Fork: extra provider usage dimensions surfaced in cost/context auditing.
         self.last_input_tokens = self.last_cache_read_tokens = self.last_cache_write_tokens = 0
-        # Anthropic server-tool calls (web_search / web_fetch) each run a separate internal
-        # inference pass, and the provider folds every pass's usage into one cumulative
-        # prompt_tokens figure with no other marker. A turn with N passes can report
-        # ~(N+1)x the real next-request context size. Tracked so callers can distrust
-        # last_prompt_tokens as a context-size proxy for THIS reading
-        # (root-caused 2026-07-24, session 20260723_211736_99ee22).
-        self.last_server_tool_requests = 0
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
         self._session_db: Any = None
@@ -2779,7 +2772,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         """
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
-        self.last_server_tool_requests = usage.get("server_tool_requests", 0)
         if "input_tokens" in usage:
             self.last_input_tokens = usage.get("input_tokens", 0)
         if "cache_read_tokens" in usage:
@@ -2794,31 +2786,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _apply_real_prompt_verdict(self) -> None:
         """Pair the real prompt count with its rough estimate and judge the armed compaction verdict."""
         if self.last_prompt_tokens > 0:
-            # Fork: a reading inflated by folded server-tool passes (see last_server_tool_requests)
-            # is not a valid context-size sample — it can read far above the threshold while the
-            # actual next-request context barely grew. Trusting it would wipe last_real_prompt_tokens
-            # (the display / preflight-deferral baseline) with a phantom balloon. Leave it at its last
-            # trustworthy value and wait for a clean reading.
-            if not self.last_server_tool_requests:
-                self.last_real_prompt_tokens = self.last_prompt_tokens
-                self._provider_omits_usage = False
-                if self.last_prompt_tokens < self.threshold_tokens:
-                    # Any real reading below the trigger proves the prompt fits: clear the latch.
-                    # The fallback streak survives.
-                    self._record_ineffective_compression_verdict(0)
-            elif self.last_real_prompt_tokens <= 0:
-                # Fork: no trustworthy baseline exists yet (fresh session, or one that has genuinely
-                # never had a non-inflated reading). Anthropic's native web_search
-                # (agent/fork/anthropic_native_web_search.py) is swapped in on every Claude turn, and a
-                # model that searches on its very first response would otherwise starve the display
-                # baseline forever — display_prompt_tokens() returns 0 whenever
-                # last_real_prompt_tokens <= 0, so the status-bar context counter (X/1M) got
-                # permanently stuck at "0/1M" for the whole session (#89441). Seed the DISPLAY baseline
-                # only: an inflated first reading is still far more honest than showing 0 while the real
-                # context is in the hundreds of thousands. Deliberately does NOT clear the
-                # ineffective-compaction verdict — that drives compression *decisions* and must never be
-                # judged against an inflated reading. Never fires again once a real baseline exists.
-                self.last_real_prompt_tokens = self.last_prompt_tokens
+            self.last_real_prompt_tokens = self.last_prompt_tokens
+            self._provider_omits_usage = False
+            if self.last_prompt_tokens < self.threshold_tokens:
+                # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
+                self._record_ineffective_compression_verdict(0)
             # Anti-thrash verdict lives HERE: effectiveness is "prompt under threshold" per the provider's real count,
             # not "messages shrank"; should_compress() runs twice per turn with mixed measures and would reset it.
             # Anti-thrashing verdict, judged HERE because this is the only place that sees the provider's
@@ -2832,20 +2804,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # and the rough one can dip below the threshold and reset the strike every turn, re-opening the
             # loop. Keying on real usage compares like with like and fires exactly once per compaction.
             if self._verify_compaction_cleared_threshold:
-                if self.last_server_tool_requests:
-                    # Fork: this reading is inflated by N server-tool inference passes folded into one
-                    # prompt_tokens figure — it says nothing about whether compaction cleared the
-                    # threshold. Judging it "ineffective" here would let server-tool traffic falsely
-                    # drive repeat compaction. Skip the verdict; it stays inconclusive until a clean
-                    # (non-server-tool) reading arrives.
-                    if not self.quiet_mode:
-                        logger.debug(
-                            "Skipping compaction-effectiveness verdict: reading inflated by %d "
-                            "server-tool pass(es) (%d tokens, threshold %d).",
-                            self.last_server_tool_requests,
-                            self.last_prompt_tokens, self.threshold_tokens,
-                        )
-                elif self.last_prompt_tokens >= self.threshold_tokens:
+                if self.last_prompt_tokens >= self.threshold_tokens:
                     self._record_ineffective_compression_verdict(self._ineffective_compression_count + 1)
                     if not self.quiet_mode:
                         logger.warning(

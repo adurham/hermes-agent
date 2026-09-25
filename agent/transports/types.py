@@ -79,43 +79,12 @@ class NormalizedResponse:
 
     reasoning_content = property(lambda self: self._pd("reasoning_content"))
     reasoning_details = property(lambda self: self._pd("reasoning_details"))
-    # anthropic_content_blocks: see the fuller @property definition below (with
-    # rationale docstring) — this class previously had a duplicate simple-lambda
-    # definition here that shadowed nothing at runtime (later def wins) but was
-    # dead code; removed to avoid a redefinition warning.
+    # Order-preserving Anthropic blocks, present only when a turn interleaves signed
+    # thinking with tool_use (replay order invalidates signatures otherwise).
+    anthropic_content_blocks = property(lambda self: self._pd("anthropic_content_blocks"))
     bedrock_content_blocks = property(lambda self: self._pd("bedrock_content_blocks"))  # order-preserving Converse blocks
     codex_reasoning_items = property(lambda self: self._pd("codex_reasoning_items"))
     codex_message_items = property(lambda self: self._pd("codex_message_items"))
-
-    @property
-    def server_tool_blocks(self):
-        """Anthropic server-side tool blocks (web_search_tool_result, etc.).
-
-        Server tools execute on Anthropic's infrastructure, not locally.
-        Their content blocks must be preserved into history so the model
-        can reference them on subsequent turns and so the UI can show
-        what was searched. Populated by AnthropicTransport.normalize_response.
-        """
-        pd = self.provider_data or {}
-        return pd.get("server_tool_blocks")
-
-    @property
-    def anthropic_content_blocks(self):
-        """Verbatim assistant content blocks for Anthropic-protocol replay.
-
-        Anthropic signs thinking blocks against their original positions
-        in the response, and ``context_management.clear_thinking_20251015``
-        validates each block stays in place across turns. Decomposing the
-        response into ``reasoning_details`` + ``content`` + ``tool_calls``
-        and reassembling in fixed ``[thinking, server_tools, text,
-        tool_use]`` order reorders interleaved thinking blocks (emitted
-        under ``interleaved-thinking-2025-05-14``) and invalidates
-        signatures.  Storing the full original block array lets
-        ``convert_messages_to_anthropic`` replay every block in its
-        original position. Populated by ``AnthropicTransport.normalize_response``.
-        """
-        pd = self.provider_data or {}
-        return pd.get("anthropic_content_blocks")
 
 
 def build_tool_call(id: str | None, name: str, arguments: Any, **provider_fields: Any) -> ToolCall:

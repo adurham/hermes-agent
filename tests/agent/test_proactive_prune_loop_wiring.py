@@ -83,11 +83,6 @@ def _quiet_compressor() -> MagicMock:
     compressor.threshold_tokens = 500_000
     compressor.context_length = 1_000_000
     compressor.last_prompt_tokens = 120_000
-    # Fork: the loop trusts last_prompt_tokens only when the last call made no
-    # Anthropic server-tool passes (see FORK.md, server_tool_requests). A bare
-    # MagicMock auto-attr is truthy and would route to the rough estimate.
-    compressor.last_server_tool_requests = 0
-    # Upstream: preflight deferral also keys off this flag.
     compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.return_value = False
     compressor.should_compress_info.return_value = (False, None)

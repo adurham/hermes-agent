@@ -1721,15 +1721,6 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
                     set_usage_anchor(agent, None)
 
-    # Anthropic server-side tools (web_search_20250305, etc.) — preserve
-    # the server_tool_use + web_search_tool_result content blocks so they
-    # are re-emitted verbatim on the next turn. Anthropic's API will
-    # reject re-submitted assistant messages if the server_tool_use
-    # block exists without its paired tool_result.
-    server_tool_blocks = getattr(assistant_message, "server_tool_blocks", None)
-    if server_tool_blocks:
-        msg["server_tool_blocks"] = server_tool_blocks
-
     # Anthropic-native: the full assistant content array, captured in
     # original block order with all per-block fields (signature, data,
     # cache_control absence) preserved.  Required for thinking-block

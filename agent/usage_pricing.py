@@ -79,18 +79,6 @@ class CanonicalUsage:
     cache_write_1h_tokens: int = 0
     reasoning_tokens: int = 0
     request_count: int = 1
-    # Anthropic-native server-side tool invocations folded into THIS usage
-    # figure (response.usage.server_tool_use.{web_search,web_fetch}_requests).
-    # Each one is a SEPARATE internal inference pass over the (by then warm)
-    # prompt prefix — Anthropic sums every pass's cache_read/cache_creation
-    # into one cumulative usage object with no other marker that more than
-    # one pass occurred. Surfacing the count here lets the per-call log line
-    # explain an otherwise-inexplicable ~2x (or more) token/cost jump instead
-    # of it looking like a context-tracking malfunction. See
-    # agent/fork/anthropic_native_web_search.py and the 2026-07-24
-    # investigation (session 20260723_211736_99ee22, warm memory fact 1486).
-    server_tool_web_search_requests: int = 0
-    server_tool_web_fetch_requests: int = 0
     raw_usage: Optional[dict[str, Any]] = None
 
     @property
@@ -100,11 +88,6 @@ class CanonicalUsage:
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
-
-    @property
-    def server_tool_requests(self) -> int:
-        """Total server-side tool invocations folded into this usage figure."""
-        return self.server_tool_web_search_requests + self.server_tool_web_fetch_requests
 
     def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
         """Sum two usage buckets. ``raw_usage`` (single-response detail) is
@@ -635,24 +618,12 @@ def normalize_usage(
 
     cache_write_5m_tokens = 0
     cache_write_1h_tokens = 0
-    server_tool_web_search_requests = 0
-    server_tool_web_fetch_requests = 0
     if mode == "anthropic_messages" or provider_name == "anthropic":
         # FORK: Anthropic responses carry a per-TTL breakdown under ``cache_creation``:
         # { ephemeral_5m_input_tokens, ephemeral_1h_input_tokens }. Needed to bill 5m vs 1h
         # cache writes at their different rates (PricingEntry.cache_write_{5m,1h}_cost_per_million).
         cache_write_5m_tokens = _usage_field(u, "cache_creation", "ephemeral_5m_input_tokens")
         cache_write_1h_tokens = _usage_field(u, "cache_creation", "ephemeral_1h_input_tokens")
-        # FORK: response.usage.server_tool_use.{web_search,web_fetch}_requests — each one is a
-        # SEPARATE Anthropic-side inference pass (the native web_search_20250305 / web_fetch
-        # server tools re-sample after the tool result returns). Anthropic folds every pass's
-        # cache_read/cache_creation into this ONE cumulative usage object with no other marker,
-        # so a turn with N server-tool calls can show roughly (N+1)x the tokens/cost of a plain
-        # turn while looking identical to a single-pass call. Surfacing the request count lets
-        # callers explain that inflation instead of it looking like a tracking bug. See
-        # agent/fork/anthropic_native_web_search.py and the 2026-07-24 investigation.
-        server_tool_web_search_requests = _usage_field(u, "server_tool_use", "web_search_requests")
-        server_tool_web_fetch_requests = _usage_field(u, "server_tool_use", "web_fetch_requests")
         shape = _ANTHROPIC_USAGE_SHAPE
     elif mode == "codex_responses":
         shape = _CODEX_USAGE_SHAPE
@@ -692,10 +663,8 @@ def normalize_usage(
     return CanonicalUsage(
         input_tokens=input_tokens, output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens, reasoning_tokens=reasoning_tokens,
-        # FORK: per-TTL cache-write split + Anthropic server-tool request counts.
+        # FORK: per-TTL cache-write split.
         cache_write_5m_tokens=cache_write_5m_tokens, cache_write_1h_tokens=cache_write_1h_tokens,
-        server_tool_web_search_requests=server_tool_web_search_requests,
-        server_tool_web_fetch_requests=server_tool_web_fetch_requests,
         # Upstream: the raw provider usage object, kept verbatim for downstream detail.
         raw_usage=dict(u) if isinstance(u, dict) else (u.model_dump() if callable(getattr(u, 'model_dump', None)) else None),
     )

@@ -290,13 +290,7 @@ def _replay_text(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # model-visible noise next to real blocks.
     if _is_blank_text_block(b):
         return None
-    block = _carry_cache_control(_text_block_with_citations(b["text"], b.get("citations")), b)
-    # FORK: strip citations on this (verbatim-replay) path only. A native-web-search citation
-    # can outlive the web_search_tool_result it references once the fork's server-tool orphan
-    # pass removes a split pair. See agent/fork/anthropic_server_tool_passes.strip_replay_citations
-    # for the full rationale and the honest caveat.
-    from agent.fork.anthropic_server_tool_passes import strip_replay_citations
-    return strip_replay_citations(block)
+    return _carry_cache_control(_text_block_with_citations(b["text"], b.get("citations")), b)
 
 
 def _replay_thinking(b: Dict[str, Any]) -> Dict[str, Any]:
@@ -327,30 +321,12 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Whitelist a stored Anthropic block so it is valid as REQUEST input. SDK response blocks carry
     output-only fields the INPUT schema forbids ("Extra inputs are not permitted": ``parsed_output``,
     ``caller``, ``citations=None``), and ``_to_plain_data`` captured them verbatim. Whitelist per
-    type (not blacklist) so future SDK fields can't reintroduce the bug.
-
-    FORK: any type outside ``_REPLAY_SANITIZERS`` (``server_tool_use``, ``web_search_tool_result``,
-    ``tool_search_tool_*``, future SDK server-tool blocks, …) falls through to
-    ``anthropic_adapter._sanitize_block_for_anthropic_input`` — the SAME generic, SDK-derived
-    allowlist used for tool_result inner blocks — which fails OPEN (passes an unrecognized type
-    through, stripped of unknown fields, rather than dropping it). Returning None here for those
-    types used to silently erase server-side tool evidence (server_tool_use / web_search_tool_result)
-    from the persisted ``anthropic_content_blocks`` column with no trace — the exact thing that made
-    a real invisible-cost-multiplier bug (native web_search causing a second Anthropic-side inference
-    pass, root-caused 2026-07-24, session 20260723_211736_99ee22, warm memory fact 1486) look "not
-    backed by any evidence" when the DB was queried for it. Lazy import: anthropic_adapter imports
-    THIS module, so importing it back at module scope would cycle.
-
-    Returns a clean block or None (only for the explicit-sanitizer types that can legitimately
-    vanish on replay, e.g. blank text / dataless redacted_thinking / image with no source).
-    """
+    type (not blacklist) so future SDK fields can't reintroduce the bug; unknown types are dropped.
+    Returns a clean block or None."""
     if not isinstance(b, dict):
         return None
     sanitizer = _REPLAY_SANITIZERS.get(b.get("type"))
-    if sanitizer:
-        return sanitizer(b)
-    from agent.anthropic_adapter import _sanitize_block_for_anthropic_input
-    return _sanitize_block_for_anthropic_input(b)
+    return sanitizer(b) if sanitizer else None
 
 
 def _apply_assistant_cache_control_to_last_cacheable_block(blocks: List[Dict[str, Any]], cache_control: Any) -> None:
@@ -420,10 +396,6 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
         if replayed:
             return {"role": "assistant", "content": replayed}
     blocks = _extract_preserved_thinking_blocks(m)
-    # FORK: Anthropic server-side tool blocks (native web_search / tool_search) the transport
-    # stashed on the message must be re-emitted before this turn's text and tool_use blocks.
-    from agent.fork.anthropic_server_tool_passes import preserve_server_tool_blocks
-    blocks.extend(preserve_server_tool_blocks(m))
     # Blank text blocks are dropped; a cache marker riding on one is relocated onto the last
     # surviving cacheable block (prompt_caching sets cache_control on content[-1], which may be
     # exactly the blank block).
@@ -759,11 +731,6 @@ def convert_messages_to_anthropic(
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
     _manage_thinking_signatures(result, base_url, model)
-    # FORK: Anthropic server-tool passes (native web_search / tool_search pairing, ordering and
-    # orphan rules). Positioned exactly where they ran in the fork's retired converter — after the
-    # thinking-signature ladder, before screenshot eviction and the blank-block scrub.
-    from agent.fork.anthropic_server_tool_passes import apply_server_tool_passes
-    apply_server_tool_passes(result)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
     return system, result

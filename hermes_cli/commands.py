@@ -201,7 +201,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("interleaved", "Toggle one-tool-per-turn for fresh  thinking blocks per tool",
                "Configuration", args_hint="[on|off]",
                subcommands=("on", "off")),
-    CommandDef("toolsearch", "Toggle Anthropic server-side tool_search (lazy-loads MCP tools)",
+    CommandDef("toolsearch", "Toggle lazy MCP tool loading (client-side tool_search)",
                "Configuration", args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
     CommandDef("fast", "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)", "Configuration",

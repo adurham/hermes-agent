@@ -87,7 +87,9 @@ def test_build_api_kwargs_threads_cache_tools_and_ttl():
         "tools[] cache breakpoint is actually used."
     )
     assert captured.get("cache_ttl") == "1h"
-    assert captured.get("session_id") == "sess-123"
+    # session_id threading was retired with Slice B (fork-only CC wire-shape
+    # removal): upstream's builder never passed it and the fork's session_id
+    # plumbing went with the rest of that cluster.
 
 
 def test_build_api_kwargs_cache_tools_off_when_no_native_layout():
