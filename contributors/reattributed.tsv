@@ -64,3 +64,4 @@ ec5c9c738acc0b3ed5770c25497ec335cbfe8d33	2026-09-25T11:28:21-05:00	fix(processes
 3bbe5c593a3d10ced10fad09489b0123890abc11	2026-09-25T11:42:31-05:00	fix(tui): propagate the live agent's provider into the slash worker (#57283)
 954d94c3b008117a067d978dcedbdee0a09ce740	2026-09-25T12:27:19-05:00	fix(cli): name Windows Smart App Control when it blocks the dashboard runtime
 f8123d2401ec505e6a220ec51d3b454a404c0b9b	2026-09-25T11:25:15-05:00	test(desktop): hold the composer's PageUp/PageDown default-prevent in the mirror harness
+d99bb06862c06d21eb0aa20a2df3c19d6ff94d65	2026-09-25T12:19:08-05:00	fix(nix/desktop): compile node-pty against electron.headers
