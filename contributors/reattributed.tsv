@@ -34,3 +34,4 @@ de16db2b6b36590206ec51ee88399917e1417065	2026-09-24T19:27:18-05:00	fix(desktop):
 4b2429624af53507adfb6918e15b73ee9880d5f1	2026-09-24T23:42:33-05:00	fix(desktop): verify close/stop after the backend teardown, not before it
 d7f06c964b2eec4fb4bba1c0ce2575be53efe7a6	2026-09-24T19:33:21-05:00	style(desktop): format no-console-git and pad new spawn statements
 22a7acd810b9d7a97d81e0368954d4177d3deb2b	2026-09-24T23:17:40-05:00	fix(desktop): latch SSH auth failures so the boot overlay stays clickable
+7b761da2de4979e424510ca7022bf9527aa65b68	2026-09-25T00:10:48-05:00	style(desktop): sort backend-start-failure named imports
