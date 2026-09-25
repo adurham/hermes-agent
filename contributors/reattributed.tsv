@@ -61,3 +61,4 @@ ec5c9c738acc0b3ed5770c25497ec335cbfe8d33	2026-09-25T11:28:21-05:00	fix(processes
 70f7fa05caf880ba3ae2bac4e13655cfde1dfca5	2026-09-24T23:13:53-05:00	fix(providers): keep llamacpp as the model table's managed-runtime id
 4c286ae7a0dcb86e70a7ad8c23c0f05c89e33ec3	2026-09-25T14:02:49-05:00	test(desktop): load @hermes/shared once in the connection-registry contract test
 541e4dc0ba6d50e3e4554611c3e6b2c0865187c4	2026-09-25T12:36:17-05:00	fix(agent): protect the runtime's own interpreter from agent deletes
+3bbe5c593a3d10ced10fad09489b0123890abc11	2026-09-25T11:42:31-05:00	fix(tui): propagate the live agent's provider into the slash worker (#57283)
