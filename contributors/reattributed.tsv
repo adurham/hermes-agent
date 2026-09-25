@@ -154,3 +154,4 @@ c2182f60c1f1fe35dd956dcaff517fb7bdc9e8de	2026-09-25T11:35:45-05:00	fix(cron): sh
 627bf49baae142093c7b61aa9ff4d1749fce667b	2026-09-24T23:46:48-05:00	fix(process): kill a re-adopted PID whose start time is unreadable
 aac12dfda54d5298b02cb97a6a186989a21e39fa	2026-09-24T19:01:08-05:00	fix(desktop): stop the queue-drain exhaustion banner from replaying after restart (#98015)
 3d9040c188522810a4f92e4989874793b04eb515	2026-09-24T19:59:05-05:00	fix(desktop): fold i18n queueDropped keys + dedupe isSessionOwnerRoute into their fixes
+80f9c698b985846648d8ae9338137002195cca60	2026-09-24T21:52:55-05:00	chore: map contributor emails
