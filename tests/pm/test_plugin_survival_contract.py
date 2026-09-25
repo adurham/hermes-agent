@@ -332,6 +332,66 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
     assert "profile-dep" in (Path(restored["resolved_lock"]).parent / "pyproject.toml").read_text()
 
 
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
+    """An update never fails because of a plugin: a member whose requires-python excludes the
+    interpreter core now runs on is disabled in every home that enables it (plugins.enabled in
+    one, memory.provider in another), the rest build, and the next boot sees a current venv."""
+    from pm.environments import runtime_facts_path, selected_venv
+    from pm.install import sync_venv, venv_is_current
+    from pm.lock import Facts
+    from pm.package import InstallError
+
+    tmp_path, home = admission_env
+    core = tmp_path / "core"
+    for name, requires in (("fits", ">=3.11"), ("too-old", f"<{sys.version_info[0]}.{sys.version_info[1]}")):
+        plugin = home / "plugins" / name
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            f'[project]\nname="{name}"\nversion="1"\nrequires-python="{requires}"\n'
+            'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+        )
+    (home / "config.yaml").write_text("# operator note\nplugins:\n  enabled: [fits, too-old]\n", encoding="utf-8")
+    profile = home / "profiles" / "work"
+    _write_enabled(profile, [], provider="too-old")
+    (profile / "plugins" / "too-old").mkdir(parents=True)
+    (profile / "plugins" / "too-old" / "pyproject.toml").write_bytes(
+        (home / "plugins" / "too-old" / "pyproject.toml").read_bytes().replace(b'name="too-old"', b'name="too-old-work"'))
+
+    with pytest.raises(InstallError, match="Python requirement"):
+        sync_venv(explicit=True)  # admission semantics stay: an ordinary sync refuses
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
+    assert selected_venv(core).is_dir()
+    assert "fits" in (workspace / "pyproject.toml").read_text()
+    assert "too-old" not in (workspace / "pyproject.toml").read_text()
+    text = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "# operator note" in text
+    assert "too-old" in yaml.safe_load(text)["plugins"]["disabled"]
+    assert yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["memory"]["provider"] == ""
+    assert "too-old" in json.dumps(_latest_receipt(home).get("warnings"))
+    assert venv_is_current(project_root=core) is True
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
+    """Core moved under two admitted plugins that no longer co-resolve: the update keeps the
+    first in config order, disables the one that breaks the build, and completes."""
+    from pm.install import sync_venv, venv_is_current
+
+    tmp_path, home = admission_env
+    _local_conflict_members(home)
+    _write_enabled(home, ["plug-a", "plug-b"])
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["plugins"]["disabled"] == ["plug-b"]
+    assert venv_is_current(project_root=tmp_path / "core") is True
+
+
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.environments.local import build_subprocess_env
