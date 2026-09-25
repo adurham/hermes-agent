@@ -102,3 +102,4 @@ ab0e060bd77c73bd944dea4aea4c5e1aebfdeb01	2026-09-25T18:08:03-05:00	fix(desktop):
 5dcfd72a968e17cc4dc262c46d918a6841a21722	2026-09-25T17:33:01-05:00	test(desktop): opt voice conversation sibling tests into read-aloud TTS
 29aa6dcca04bed3576f5023588005c775687a03f	2026-09-25T12:26:40-05:00	fix(desktop): render reasoning effort as a badge chip, not part of the model name
 f8dddd71510f72eabe1732506dac53a78fdee3fd	2026-09-25T18:16:52-05:00	test(desktop): match the leaf name span now that badge chips wrap the row label
+f84db42a32b28a00a2ef1e11e5471a27d22cc37f	2026-09-25T11:06:00-05:00	fix(cron): deduplicate cross-profile jobs in GET /api/cron/jobs
