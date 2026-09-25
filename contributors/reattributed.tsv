@@ -185,3 +185,4 @@ f41c6517ea1e9a74a5e3a7ae37f4f5a04295051c	2026-09-26T16:59:12-05:00	fix(tui): pai
 b90b7ae7ed19223cd647ea175d4f4207d25e0f82	2026-09-24T23:48:13-05:00	fix(delegate): title subagent sessions after their goal without a model call
 a30bd337e5fb3c411649088c954e37061297b85b	2026-09-24T23:48:13-05:00	fix(tui-gateway): report recently failed async delegations in subagent.list
 4153869e6ed28715a265d995fce9516cb85ac768	2026-09-25T00:10:54-05:00	fix(tui-gateway): tolerate stores without db_path in session.list subagent scope
+c488b42a82bcb9e8c920e5b7fc2df21c6b47516a	2026-09-25T01:21:15-05:00	fix(desktop): show recently failed delegations in the Agents panel and status bar
