@@ -176,3 +176,4 @@ ce750ff151835ffb66b353b668f6385f576f45f5	2026-09-25T18:05:09-05:00	fix(title): s
 496367f011a7851de66fdd759568ce294dc37d7d	2026-09-25T11:46:05-05:00	test(desktop): fail the pack when the bundled readiness parser goes stale
 7bc6de5032e9bc4d11279106a6d3fab2c7eee65b	2026-09-25T17:03:41-05:00	test(serve): expect the dual ready-token announcement in the discovery-after-bind suite
 70c588404bebb53c038c8d9a09739a64ec2d6b70	2026-09-25T17:03:41-05:00	test(desktop): seed the readiness parser fixture in the Linux after-pack toolchain suite
+e0a5c07109a9d53c141b4298e9090266938ae66e	2026-09-24T19:55:51-05:00	fix(tui): preserve failures in answer-only mode
