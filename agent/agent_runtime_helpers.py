@@ -2486,26 +2486,9 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     """Repair a mismatched tool name (case, separators, CamelCase, ``_tool`` suffixes twice so
     ``TodoTool_tool`` reduces fully, then fuzzy match) before aborting. Returns the repaired
     name if in valid_tool_names, else None."""
-    # FORK: CC alias hits are well-known and silent — see agent/cc_aliases.py
-    agent._last_repair_silent = False
     from difflib import get_close_matches
     if not tool_name:
         return None
-    # FORK: CC canonical alias fast-path. The Anthropic OAuth path swaps hermes tool entries for
-    # canonical CC schemas (Bash, Read, Edit, Write, Grep) on the outbound side via
-    # cc_aliases.replace_with_cc_canonical so the billing classifier accepts the request; the model
-    # then emits tool_use blocks with the CC names. cc_aliases.adapt_tool_use translates them back at
-    # dispatch, but validation against valid_tool_names runs BEFORE dispatch — without this the model
-    # burns a round-trip self-correcting. Match exactly (CC names are case-sensitive) and
-    # short-circuit before any normalization, incl. the VolcEngine XML trim below.
-    try:
-        from agent.cc_aliases import CC_TO_HERMES
-        hermes_name = CC_TO_HERMES.get(tool_name)
-        if hermes_name and hermes_name in agent.valid_tool_names:
-            agent._last_repair_silent = True
-            return hermes_name
-    except Exception:
-        pass
 
     # VolcEngine api/plan leaks XML attribute fragments into tool_use.name (`terminal"
     # parameter="command" ...`); trim at the first quote/angle bracket. Do NOT split on whitespace:

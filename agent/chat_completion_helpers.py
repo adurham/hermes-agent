@@ -1363,7 +1363,6 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         # getattr-guarded like its neighbors, so plugin engines / test doubles without the fork's
         # deferral builder simply skip deferral.
         tool_search_config=getattr(agent, "_build_tool_search_config", lambda: None)(),
-        session_id=getattr(agent, "session_id", None),
         cache_tools=bool(getattr(agent, "_use_native_cache_layout", False)),
         cache_ttl=getattr(agent, "_cache_ttl", "5m"))
     # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook

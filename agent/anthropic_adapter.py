@@ -7,21 +7,18 @@ credentials}.py``; import them from there.
 FORK: targets ``client.beta.messages.{create,stream}`` (anthropic SDK 0.100+) — the beta
 namespace exposes typed kwargs for ``thinking``, ``output_config``, ``context_management``,
 ``betas``, ``speed`` and ``metadata``. Wire shape mirrors Claude Code 2.1.119 (mitmdump
-capture 2026-05-06): same betas, same body field set, same metadata.user_id identity blob.
+capture 2026-05-06): same betas, same body field set.
 """
 
 import copy
-import hashlib
 import json
 import logging
 import math
 import os
 import re
 import shutil
-import socket
 import subprocess
 import time
-import uuid
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
@@ -208,60 +205,6 @@ def _install_sse_event_observer(sdk) -> None:
     )
 
 logger = logging.getLogger(__name__)
-
-
-def _stable_device_id() -> str:
-    """Stable per-machine identifier for Anthropic's metadata.user_id field.
-
-    sha256 of the hostname — cheap, no FS access, stable across sessions.
-    Mirrors Claude Code's wire shape (a 64-char hex string) so OAuth
-    request fingerprints look identical to CC's.
-    """
-    return hashlib.sha256(socket.gethostname().encode("utf-8")).hexdigest()
-
-
-def _stable_account_uuid() -> str:
-    """Stable per-install UUID stored in ``~/.hermes/account_uuid.txt``.
-
-    Lazy-created on first read.  Mirrors Claude Code's account_uuid field
-    (a UUID4 string) for the metadata.user_id blob.  Surviving across
-    upgrades is the goal — keep the file outside any cleanup paths.
-    """
-    path = Path(get_hermes_home()) / "account_uuid.txt"
-    try:
-        if path.exists():
-            cached = path.read_text(encoding="utf-8").strip()
-            if cached:
-                return cached
-        new_id = str(uuid.uuid4())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new_id, encoding="utf-8")
-        return new_id
-    except Exception:
-        # Filesystem hiccup — fall back to a deterministic hash so we
-        # still emit *something* stable for this run.
-        return str(uuid.UUID(bytes=hashlib.sha256(
-            socket.gethostname().encode("utf-8")
-        ).digest()[:16]))
-
-
-def _build_anthropic_metadata(session_id: str | None) -> Dict[str, str]:
-    """Construct the metadata.user_id JSON blob for /v1/messages.
-
-    Matches Claude Code 2.1.119's wire format:
-        {"device_id": "<sha256 hostname>",
-         "account_uuid": "<stable UUID>",
-         "session_id": "<this conversation>"}
-    The whole dict is serialized to a JSON string and placed in
-    ``metadata.user_id`` per Anthropic's API shape.
-    """
-    blob = {
-        "device_id": _stable_device_id(),
-        "account_uuid": _stable_account_uuid(),
-    }
-    if session_id:
-        blob["session_id"] = session_id
-    return {"user_id": json.dumps(blob, separators=(",", ":"))}
 
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
@@ -985,19 +928,6 @@ def build_anthropic_client(
     elif style == "oauth":
         headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
         headers["x-app"] = "cli"
-        # FORK: strip the SDK's x-stainless-* fingerprint headers. Claude Code's native (Bun/JS)
-        # client does not send them; leaving them on tags the request as third-party Python
-        # automation, which correlates with multi-minute queued/prefilling stalls Claude Code
-        # never sees at the same model/betas/OAuth scope. ``Omit()`` is the SDK drop sentinel.
-        with suppress(ImportError):
-            from anthropic._types import Omit as _Omit
-            headers.update({
-                name: _Omit() for name in (
-                    "x-stainless-lang", "x-stainless-package-version", "x-stainless-os",
-                    "x-stainless-arch", "x-stainless-runtime", "x-stainless-runtime-version",
-                    "x-stainless-retry-count", "x-stainless-read-timeout", "x-stainless-timeout",
-                )
-            })
     if _is_opencode_endpoint(base_url):
         # OpenCode identifies clients by request headers (like OpenRouter). The OpenAI-wire paths
         # get these from profile.default_headers, but this route never sees the profile.
@@ -3155,7 +3085,6 @@ def build_anthropic_kwargs(
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
     tool_search_config: Optional[Dict[str, Any]] = None,
-    session_id: str | None = None,
     cache_tools: bool = False,
     cache_ttl: str = "5m",
 ) -> Dict[str, Any]:
@@ -3199,7 +3128,7 @@ def build_anthropic_kwargs(
 
     Output kwargs assume ``client.beta.messages.{create,stream}``: typed
     fields ``thinking``, ``output_config``, ``context_management``, ``betas``,
-    ``speed``, ``metadata`` all land on the wire as top-level body fields.
+    ``speed`` all land on the wire as top-level body fields.
     """
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
@@ -3217,30 +3146,6 @@ def build_anthropic_kwargs(
     available_tool_names = {
         t.get("name") for t in anthropic_tools if isinstance(t, dict) and t.get("name")
     }
-    # On the OAuth path, tool names get aliased to Claude Code canonical
-    # names (terminal→Bash, read_file→Read, …) further down at the
-    # ``replace_with_cc_canonical`` call. Any tool_use blocks already in
-    # the message history from prior OAuth turns therefore carry the CC
-    # canonical names, NOT the hermes-side names. Without expanding the
-    # allowlist here, ``_strip_unknown_tool_blocks`` treats every
-    # historical ``Bash`` / ``Read`` / etc. tool_use as stale and
-    # rewrites it to a "[Previous tool call: Bash(...) — tool no longer
-    # available in this turn.]" breadcrumb, even though the same call
-    # will be live again this turn after aliasing.
-    if is_oauth:
-        try:
-            from agent import cc_aliases as _cc
-            if _cc.is_enabled():
-                for hermes_name in list(available_tool_names):
-                    cc_name = _cc.HERMES_TO_CC.get(hermes_name)
-                    if cc_name:
-                        available_tool_names.add(cc_name)
-        except Exception:
-            logger.debug(
-                "anthropic_adapter: failed to expand available_tool_names "
-                "with CC aliases — falling back to hermes-only set",
-                exc_info=True,
-            )
     anthropic_messages = _strip_unknown_tool_blocks(
         anthropic_messages, available_tool_names
     )
@@ -3316,49 +3221,23 @@ def build_anthropic_kwargs(
         #    classifier. normalize_response reverses both forms via registry
         #    lookup so the dispatcher still sees the original name. GH-25255.
         #
-        #    FORK NOTE (2026-06-22 sync): merged with the fork's CC-alias
-        #    billing mimicry rather than replacing it. The fork renames the 5
-        #    Hermes builtins to real Claude Code canonical names downstream
-        #    (terminal→Bash, read_file→Read, patch→Edit, write_file→Write,
-        #    search_files→Grep) so the request's tool surface looks like genuine
-        #    Claude Code to Anthropic's plan-billing classifier. Those names —
-        #    and any tool_use history already carrying them — must NOT be
-        #    mcp__-prefixed, or the CC-canonical surface (and the billing
-        #    mimicry) breaks. So we skip CC-aliased builtins + CC-canonical
-        #    names here and let ``replace_with_cc_canonical`` handle them below;
-        #    upstream's mcp__ normalization then applies ONLY to genuine
-        #    MCP-server / other tools (slack_*, mcp_*, …). This preserves BOTH
-        #    billing signals. normalize_response reverses mcp__ via registry
-        #    lookup so dispatch still resolves originals. GH-25255.
         # ``web_search`` is swapped for Anthropic's native server-side
         # web_search_20250305 tool further down (apply_native_web_search, which
         # matches on the literal name "web_search"); mcp__-prefixing it here
         # would make that swap miss and break native search. Tool-search server
         # types are likewise special. Keep these out of the normalization.
-        _cc_skip_names: set = {"web_search"}
-        if is_oauth:
-            try:
-                from agent import cc_aliases as _cc_for_skip
-                if _cc_for_skip.is_enabled():
-                    # Hermes builtins that will be CC-aliased (terminal, …) and
-                    # their CC-canonical targets (Bash, …) — leave both untouched.
-                    _cc_skip_names |= set(_cc_for_skip.HERMES_TO_CC.keys()) | set(
-                        _cc_for_skip.HERMES_TO_CC.values()
-                    )
-            except Exception:
-                pass
+        _oauth_skip_names: set = {"web_search"}
 
-        # Upstream (2026-09 sync) additionally aliases two tools whose schema/name the billing
-        # classifier fingerprints on their own (session_search, memory). Composed with the fork's
-        # CC-canonical renaming: CC-aliased builtins are skipped, everything else gets aliased
+        # Upstream (2026-09 sync) aliases two tools whose schema/name the billing
+        # classifier fingerprints on their own (session_search, memory): each is aliased
         # (when the alias isn't already claimed) and then mcp__-normalized.
         _claimed_wire_names = {
             _normalize_to_mcp_wire(t["name"]) for t in (anthropic_tools or []) if isinstance(t, dict) and t.get("name")
         }
 
         def _to_oauth_wire_name(name: str) -> str:
-            if name in _cc_skip_names:
-                return name  # CC-aliased builtin / CC-canonical — handled by CC-alias step
+            if name in _oauth_skip_names:
+                return name
             aliased = _OAUTH_TOOL_NAME_ALIASES.get(name)
             if aliased and _MCP_TOOL_PREFIX + aliased not in _claimed_wire_names:
                 name = aliased
@@ -3428,48 +3307,6 @@ def build_anthropic_kwargs(
                     anthropic_messages, preamble
                 )
 
-    # OAuth path: prepend the canonical Claude Code billing-header
-    # block to ``system``. Real CC ships a system block whose text is
-    # exactly:
-    #
-    #   x-anthropic-billing-header: cc_version=<ver>; cc_entrypoint=sdk-cli; cch=<hash>;
-    #
-    # Anthropic's billing classifier reads this block to identify the
-    # client. Without it, even a request with canonical CC tool names
-    # and CC-shaped schemas still routes to extra-usage billing —
-    # producing the "out of extra usage" 400 on personal Max plans.
-    # WITH it (and matching CC tool surface via ``cc_aliases``), the
-    # classifier accepts ~50K-byte requests as plan-budget traffic.
-    #
-    # Captured from a live `claude` session via mitmdump (CC 2.1.259,
-    # 2026-09-03). cc_version is intentionally hardcoded rather than
-    # read from _detect_claude_code_version() because the classifier
-    # may validate the cch checksum against the (cc_version, …) pair —
-    # using a different cc_version with a stale cch could fail
-    # validation. cch and cc_prompt_id rotate per prompt in real CC
-    # (two same-build captures yielded different values for both);
-    # the captured pair is kept verbatim and self-consistent, since cch
-    # is presumed to bind to the cc_prompt_id it was captured with.
-    # Anthropic now ALSO enforces a per-model minimum cc_version gate
-    # that reads THIS header, not the user-agent: observed 2026-09-02,
-    # fable-class models require >=2.1.251 and 400 with "Claude Code
-    # 2.1.138 does not support this model" while the dynamically
-    # detected UA already said 2.1.259. Refresh the captured line in
-    # lockstep via scripts/refresh_cc_canonical.sh whenever CC ships
-    # a version change or the classifier starts rejecting again.
-    if is_oauth and isinstance(system, list):
-        _BILLING_HEADER_TEXT = (
-            "x-anthropic-billing-header: cc_version=2.1.259.910; "
-            "cc_entrypoint=sdk-cli; cch=1d247; "
-            "cc_prompt_id=4c664b24-af7a-4d59-9d69-91cb0017fe8b;"
-        )
-        # Insert at index 0 unless one's already there (idempotent
-        # against double-application, which would happen e.g. on a
-        # retry path).
-        if not system or "x-anthropic-billing-header:" not in str(
-            system[0].get("text", "") if isinstance(system[0], dict) else system[0]
-        ):
-            system = [{"type": "text", "text": _BILLING_HEADER_TEXT}] + system
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -3481,19 +3318,6 @@ def build_anthropic_kwargs(
         kwargs["system"] = system
 
     if anthropic_tools:
-        # CC-name aliasing on the OAuth path. Real Claude Code's eager
-        # tool surface (Bash/Read/Edit/Write/Grep/...) is what
-        # Anthropic's billing classifier on personal Max accounts
-        # accepts as plan-budget — combined with the
-        # x-anthropic-billing-header system block prepended above,
-        # this makes the request indistinguishable from real CC.
-        # Inbound tool_use dispatch routes CC names back to hermes
-        # handlers via ``cc_aliases.adapt_tool_use`` called from
-        # ``model_tools.handle_function_call``.
-        if is_oauth:
-            from agent import cc_aliases as _cc
-            if _cc.is_enabled():
-                anthropic_tools = _cc.replace_with_cc_canonical(anthropic_tools)
         # FORK: provider-aware web search. On first-party Anthropic (Claude),
         # swap the client `web_search` tool for Anthropic's native server-side
         # web_search_20250305 tool so the model searches inline. Non-Claude
@@ -3525,23 +3349,9 @@ def build_anthropic_kwargs(
             # through the same mapping or it names a tool that no longer
             # exists on the wire (Anthropic 400s, or worse, silently targets
             # the wrong tool if a stale non-prefixed name happens to
-            # collide). CC-aliased builtins (read_file -> Read, etc.) are a
-            # separate final rename done by replace_with_cc_canonical, not
-            # _to_oauth_wire_name (which deliberately passes them through
-            # unchanged for the tools[] step) — resolve that mapping here too
-            # so tool_choice lands on the SAME final name as its tools[]
-            # entry. Mirrors upstream's to_wire(tool_choice) composition in
-            # build_anthropic_kwargs.
-            wire_name = tool_choice
-            if is_oauth:
-                cc_wire_name = None
-                try:
-                    from agent import cc_aliases as _cc_for_choice
-                    if _cc_for_choice.is_enabled():
-                        cc_wire_name = _cc_for_choice.HERMES_TO_CC.get(tool_choice)
-                except Exception:
-                    cc_wire_name = None
-                wire_name = cc_wire_name if cc_wire_name else _to_oauth_wire_name(tool_choice)
+            # collide). Mirrors upstream's to_wire(tool_choice) composition
+            # in build_anthropic_kwargs.
+            wire_name = _to_oauth_wire_name(tool_choice) if is_oauth else tool_choice
             kwargs["tool_choice"] = {"type": "tool", "name": wire_name}
 
     # Map reasoning_config to Anthropic's thinking parameter.
@@ -3740,14 +3550,6 @@ def build_anthropic_kwargs(
             if len(stripped) != len(prior):
                 kwargs["betas"] = stripped
 
-    # ── Identity metadata (mirrors Claude Code's wire shape) ─────────
-    # Anthropic's metadata.user_id is a per-end-user identifier used for
-    # analytics + abuse routing.  Claude Code packs a JSON blob with
-    # device_id (sha256 hostname), account_uuid (stable UUID), and
-    # session_id.  Native Anthropic only — third-party gateways may
-    # validate or reject unrecognized metadata shapes.
-    if not _is_third_party_anthropic_endpoint(base_url):
-        kwargs["metadata"] = _build_anthropic_metadata(session_id)
 
     return kwargs
 

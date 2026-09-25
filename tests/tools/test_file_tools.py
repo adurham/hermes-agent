@@ -433,19 +433,10 @@ class TestPatchSchemaShape:
 class TestCCArgSlipThroughGuards:
     """Defensive guards in the file-tool handlers.
 
-    The Anthropic OAuth path advertises Claude Code canonical tool names
-    (Bash/Read/Edit/Write/Grep) on the wire and translates them back at
-    dispatch via agent/cc_aliases.adapt_tool_use.  Args translation is
-    expected to happen in two places:
-
-      1.  agent/cc_aliases.adapt_tool_use (called by model_tools.handle_function_call)
-      2.  run_agent.AIAgent._repair_tool_call site (CC alias fast-path),
-          which renames the tool AND translates args after a name-repair.
-
-    If both miss — e.g. an adapter raises or a future code path forgets to
-    call ``adapt_tool_use`` — these guards catch the CC-shaped ``file_path``
-    arg and return an actionable error instead of the historical confusing
-    failures:
+    Models trained on Claude Code sometimes emit that schema's argument
+    names (``file_path`` where hermes expects ``path``). These guards catch
+    a slipped-through CC-shaped ``file_path`` arg and return an actionable
+    error instead of the historical confusing failures:
 
       *   read_file:  "File not found: " with empty path (suggests random
           ~/ entries).  Wasted context, the model retries blindly.
