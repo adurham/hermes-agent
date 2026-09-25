@@ -44,6 +44,47 @@ drift, and this removes it.
 
 ---
 
+### Fork-only fix — 2026-09-24 (the update autostash could sweep the LIVE checkout mid-test-run — guard added)
+
+**Commit:** `c07f47101a` (`hermes_cli/update_cmd_stash.py`,
+`tests/hermes_cli/test_checkout_mutation_guards.py`).
+
+**Symptom:** during 2026-09-24 full-suite runs, uncommitted work in this checkout
+kept vanishing — `git status` would drop files, accompanied by
+`hermes-update-autostash-*` stash entries and bare `reset: moving to HEAD` reflog
+lines. Several concurrent edits (waves 1 and 4) were swept, one of them mid-task.
+
+**Root cause:** an in-process test drives `cmd_update` / `_cmd_update_impl`
+without sandboxing `PROJECT_ROOT`, so `_prepare_checkout_for_update` reached the
+REAL checkout's `_stash_local_changes_if_needed`: **any uncommitted work in the
+developer's tree was stashed into a `hermes-update-autostash-*` entry and the tree
+reset mid-suite.** It only fires on a *dirty* tree, which is why CI (clean
+checkouts) never saw it. Proven three ways: a git-argv trace showing a bare
+`stash push` with no `-C` parented directly to the pytest process; a controlled
+A/B where the same test file swept the tree when dirty and no-op'd when clean;
+and the fix's own A/B (same run, tree untouched).
+
+**Fix:** `_pytest_owns_live_checkout(cwd)` in `update_cmd_stash.py` —
+`"PYTEST_CURRENT_TEST" in os.environ and cwd == <this checkout>`. Guarded at
+three points: `_stash_local_changes_if_needed` (returns `None` before any git
+call), `_reset_hard`, and the `_reject_unsafe_stash_restore` reset. This is the
+same predicate and doctrine as the existing guards on the marker-write and
+launch-recovery paths (`_early_recovery._pytest_owns_live_checkout`,
+`main_install_repair._pytest_owns_live_checkout`): BOTH conditions (under pytest
+AND the target is this checkout), so every `tmp_path`/subprocess-sandboxed caller
+keeps exercising the real code path unchanged — the e2e sandbox env allow-list
+drops `PYTEST_CURRENT_TEST`, so spawned sandboxes are unaffected.
+
+**Tests:** `tests/hermes_cli/test_checkout_mutation_guards.py::TestAutostashGuard`
+(6 tests: predicate true/false cases, both primitives refusing the live checkout
+without running git, and a sandboxed stash still reaching git). Full
+`tests/hermes_cli/test_update_*.py` + `test_cmd_update.py` + guard file: 948
+passed, 47 skipped, 0 failed, tree untouched.
+
+**Merge guidance:** fork-only file + an additive guard; no upstream conflict
+expected. If upstream ever ships its own live-checkout guard for the stash path,
+take theirs and keep the test class.
+
 ### De-fork audit — 2026-09-24 (post-v2026.9.24: 6-slice sweep, 7 retirements + 2 live defects fixed; one regression flagged DO-NOT-REMOVE)
 
 Companion to the `v2026.9.21` and `v2026.9.24` sync entries above — this is the
