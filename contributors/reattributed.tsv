@@ -119,3 +119,4 @@ b07d307bae64313e4aecaeb1c73dc95e03be204f	2026-09-25T10:08:28-05:00	fix(tui): bin
 6c32a31d30ab61685f405448748c417e2b1e1018	2026-09-25T18:08:28-05:00	test(desktop): neutralize the unshare sandbox probe in the Ctrl-C exit test
 e2b1c6679192263e863dc19bd8e4b95f94eadc36	2026-09-25T18:56:53-05:00	test(desktop): neutralize the Linux password-store D-Bus probe in the Ctrl-C exit test
 02f57212a4cbd305e02d7b0832a585d4a5205692	2026-09-25T18:54:00-05:00	test: check guarded paths with strings, not pathlib
+1f20117b3359f4f7d587f8518dc8dbbcb2def6a3	2026-09-25T11:26:50-05:00	fix(desktop): keep /bg's local action spec canonical over the catalog
