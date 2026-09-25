@@ -39,3 +39,4 @@ d7f06c964b2eec4fb4bba1c0ce2575be53efe7a6	2026-09-24T19:33:21-05:00	style(desktop
 f27bde1fdd2370362b8f1b870cf714e2f124be3f	2026-09-24T23:31:38-05:00	fix(state): skip out-of-window timestamps when computing last_active
 f8d35574ab435b992a2cf231a52055380cd7327e	2026-09-24T23:31:38-05:00	fix(recovery): repair out-of-window timestamp cells in the recovered database
 c29114ea9acc209426c58d4f040e25130da21be9	2026-09-25T10:04:24-05:00	fix(state): filter the started_at fallback of last_active to the epoch window
+c953b2a03ef5681c2b29e714c8f8c3a12f3efe48	2026-09-25T10:53:10-05:00	fix(tui): never auto-resume a source='unknown' guard placeholder
