@@ -27,6 +27,24 @@ _AUTOSTASH_WARN_AGE_DAYS = 7
 _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manually after checking the result."
 
 
+def _pytest_owns_live_checkout(cwd: Path) -> bool:
+    """True under pytest when ``cwd`` is THIS module's own checkout — the checkout the suite runs from.
+
+    An in-process test that drives the update pipeline (``cmd_update``/``_cmd_update_impl``) without
+    redirecting ``PROJECT_ROOT`` reaches the REAL checkout: the autostash below would sweep the
+    developer's uncommitted work into a ``hermes-update-autostash-*`` entry and reset the tree, with
+    the running suite as the only witness. This is the stash-side twin of the guards already on the
+    marker-write and launch-recovery paths (``_early_recovery._pytest_owns_live_checkout`` /
+    ``main_install_repair._pytest_owns_live_checkout``) — same predicate, same doctrine: BOTH
+    conditions (under pytest AND the target is this checkout) so every tmp_path-sandboxed caller keeps
+    exercising the real code path unchanged. Subprocess-spawned sandboxed runs do not inherit
+    ``PYTEST_CURRENT_TEST`` (the e2e sandbox allow-list drops it), so they are unaffected.
+    """
+    import os
+
+    return "PYTEST_CURRENT_TEST" in os.environ and cwd == Path(__file__).resolve().parent.parent
+
+
 def _git_quiet(git_cmd: list[str], args: list[str], cwd: Path, **kwargs):
     """``subprocess.run`` of a git command with captured output; None when git cannot run."""
     try:
@@ -60,6 +78,9 @@ def _git_paths_z(git_cmd: list[str], args: list[str], cwd: Path):
 
 
 def _reset_hard(git_cmd: list[str], cwd: Path) -> None:
+    if _pytest_owns_live_checkout(cwd):
+        logger.debug("Refusing to reset the live checkout under pytest (cwd=%s)", cwd)
+        return
     subprocess.run(git_cmd + ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True)
 
 
@@ -75,6 +96,12 @@ def _print_first_line(text: str) -> None:
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     from hermes_cli.update_cmd import _git_run
+    if _pytest_owns_live_checkout(cwd):
+        # The suite is driving the update pipeline against the checkout it runs from (PROJECT_ROOT
+        # not sandboxed). Stashing here would sweep the developer's live uncommitted work and reset
+        # the tree mid-suite. Refuse the mutation; the caller proceeds with its (test) update flow.
+        logger.debug("Refusing to autostash the live checkout under pytest (cwd=%s)", cwd)
+        return None
     status = _git_run(git_cmd, ["status", "--porcelain", "-z"], cwd, check=True)
     if not status.stdout.strip():
         return None
