@@ -1230,10 +1230,14 @@ def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
 
     original_resolve = _toolsets_mod.resolve_toolset
 
-    def _resolve_with_plugin(ts_key, include_registry=True):
+    def _resolve_with_plugin(ts_key, visited=None, *, include_registry=True):
+        # Signature must mirror toolsets.resolve_toolset: production's recursion calls
+        # it as (name, visited, include_registry=...) whenever a toolset declares
+        # ``includes`` (cross_session -> agent_visibility). A 2-arg fake blows up with
+        # "got multiple values for argument 'include_registry'".
         if ts_key == "dplat_client":
             return ["dplat_call"]
-        return original_resolve(ts_key, include_registry=include_registry)
+        return original_resolve(ts_key, visited, include_registry=include_registry)
 
     monkeypatch.setattr(_toolsets_mod, "resolve_toolset", _resolve_with_plugin)
     monkeypatch.setattr(
