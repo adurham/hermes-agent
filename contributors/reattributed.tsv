@@ -71,3 +71,4 @@ b93c915fab8044baa411bb9829435b7c66d46db5	2026-09-25T17:04:57-05:00	fix(desktop):
 f9b991f9185c544c1b9a5d7be5a64515863b9ed6	2026-09-25T17:08:28-05:00	fix(desktop): keep macOS overlay close position unchanged
 5ba3dfceab9674e2f6bb8e5a805a34479914a949	2026-09-25T13:58:21-05:00	fix(desktop): scope remote-profile session list reads and stop relabeling rows (#64999)
 ffa40b07f0203543778ad3a00c3b0ecb9a27a370	2026-09-25T13:58:22-05:00	fix(desktop): scope per-session remote reads so resume opens the owning state.db (#64999)
+43c1eee1fa6f58a79f54b0770ffe8e479b9fce3a	2026-09-25T12:31:55-05:00	fix(web): bound the /api/model/info context-length probe
