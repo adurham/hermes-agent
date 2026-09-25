@@ -138,3 +138,4 @@ b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop):
 7ca2f5665fe34fd0439203cdd93800590574d61b	2026-09-25T10:07:18-05:00	fix(desktop): keep the Kanban panel and toolset in agreement on a failed write
 2497c3c539c37f0cf2140b856d36d45485fb3426	2026-09-25T18:54:12-05:00	fix(desktop): pass provider_primary through /api/env so a card keeps its own key
 c2af461706ae0dbab7271caf45bb9eefde4cdc53	2026-09-25T18:54:13-05:00	test(desktop): fixture where a shared credential arrives with primary: false
+a052836559683da8f98b538b3aee795aede42fde	2026-09-24T23:51:37-05:00	fix(mcp): connect servers added to config on the next agent build
