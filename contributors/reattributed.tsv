@@ -160,3 +160,4 @@ f0288f2272fae4f2cf2d1f64a8d87924229685d8	2026-09-25T18:53:20-05:00	fix(desktop):
 9d2eca0560b6456d3d2ebaa9a25445d0f0010c0b	2026-09-24T20:50:02-05:00	chore(contributors): map BorgWrightpcalac@outlook.com to DevEverything01
 3836710cfa0beef1a11adff5603443c829da0231	2026-09-25T19:08:13-05:00	fix(desktop): give a pre-save sign-in the same jar its saved connection reads
 b42474b0d1a5822c11e1015be0db6110f5f63acd	2026-09-25T19:11:12-05:00	style(desktop): blank lines around statements this PR adds (eslint warnings)
+625f1d8926a1f0fdfe7fd80d0934845b3dff2179	2026-09-24T19:43:13-05:00	fix(update): retry node dependency preparation after ENOTEMPTY
