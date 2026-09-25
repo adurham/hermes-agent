@@ -18533,3 +18533,72 @@ HEAD-untouched, and the no-op path); a full `--apply` run against the live check
 15 audited entries, left 6 young `--keep-stash` parks, and printed 0 on the next update's
 age check; the archive bundle was unbundled in a scratch repo and a dropped entry's original
 file content read back out.
+
+### Fork-only fix — 2026-09-25 (`hermes_subprocess_env`: opt-out for a nested-`claude`-as-inference-backend provider)
+
+**Symptom:** the `claude-subscription-directsdk-experimental` Hermes plugin
+(third-party, `~/.hermes/plugins/claude-subscription-directsdk-experimental`,
+a model-provider that drives the official `claude` CLI as its inference
+backend) failed every request against an enterprise-org-pinned Claude Code
+login with `Unable to verify organization for the current authentication
+token ... may be a network error, or the token may have been revoked` —
+even though a plain `claude -p "say hi"` in the same shell, same login,
+answered normally.
+
+**Root cause:** native `claude` prioritizes a `CLAUDE_CODE_OAUTH_TOKEN`
+environment variable over its own keychain/file-stored credential when
+resolving auth. `CLAUDE_CODE_OAUTH_TOKEN` is deliberately exempted from
+Hermes' provider-credential blocklist (`tools/environments/local_env_policy.py`,
+`_build_provider_env_blocklist()`, issue #55878) so that a **terminal-spawned**
+`claude` invocation shares the user's live login — stripping it there was
+the bug #55878 fixed. But that same exemption also applies to
+`hermes_subprocess_env(inherit_credentials=True)`, the **non-terminal**
+spawn path (browser, ACP/CLI executors, TUI Node host) that this plugin
+uses to spawn its own dedicated `claude` subprocess per request. Hermes'
+own credential pool (`agent.credential_pool`, `agent.anthropic_credentials`)
+sets `CLAUDE_CODE_OAUTH_TOKEN` in `os.environ` for its own purposes (the
+adopted/pooled Claude Code login the built-in `anthropic` provider's OAuth
+path uses) — a value that can be stale, rotated, or simply for a different
+identity than the one `claude auth login` established directly, and native
+has no way to tell "the terminal's own claude, sharing the live login" apart
+from "a dedicated provider spawning its own claude, which should resolve
+its own current login" — both get the same env var, and for the latter
+case that's actively wrong.
+
+Confirmed live (in the plugin, not this repo, since the plugin builds its
+own env from a raw `os.environ` copy rather than this helper): injecting
+an obviously-invalid dummy `CLAUDE_CODE_OAUTH_TOKEN` into an
+otherwise-successful manual repro reproduced the exact failure verbatim;
+unsetting it restored a normal response. Full incident, dead ends ruled
+out (gateway staleness, request shape, concurrency), and the plugin-side
+fix are documented in that plugin's own FORK.md (a separate repo,
+`adurham/hermes-plugin-claude-subscription-directsdk`).
+
+**Fix:** `tools/environments/local.py` — `hermes_subprocess_env()` and
+`_scrub_credentials()` both gain an `exclude: frozenset[str] = frozenset()`
+keyword-only parameter: additional keys stripped even when
+`inherit_credentials=True`, folded to uppercase for the same
+case-insensitive-Windows-env reasoning the rest of this module already
+uses. Fully backward compatible (default `frozenset()` changes nothing for
+every existing caller — copilot-acp, the TUI Node host, browser/ACP
+executors, etc.) — this is an opt-in for the specific "I am myself a
+dedicated nested-`claude`-as-model-backend provider" case, not a change to
+the general terminal/non-terminal credential-inheritance policy. A
+first-party or third-party `auth_type="external_process"` provider driving
+`claude` as its own inference backend should call
+`hermes_subprocess_env(inherit_credentials=True,
+exclude=frozenset({'CLAUDE_CODE_OAUTH_TOKEN'}))` (add `'ANTHROPIC_TOKEN'`
+too if it resolves a separate credential for that path) rather than a raw
+`os.environ` copy — the raw-copy approach the DirectSDK plugin currently
+uses also skips Tier 1 stripping (`_ALWAYS_STRIP_KEYS`, dynamic internal
+secrets), which this helper still applies.
+
+**Verification:** `tests/tools/test_hermes_subprocess_env.py` +
+`tests/tools/test_local_env_blocklist.py` — 98 passed, 2 skipped (pre-existing
+skips, unrelated). `tests/agent/test_copilot_acp_client.py` (the other real
+`hermes_subprocess_env(inherit_credentials=True)` consumer) — 20 passed,
+unaffected by the new parameter's default. No production call site passes
+`exclude` yet — this repo has no bundled provider that drives a nested
+`claude` process the way the third-party DirectSDK plugin does — so this
+change is additive infrastructure for that plugin (and future ones like
+it) to adopt, not a change in this repo's own runtime behavior today.
