@@ -31,7 +31,10 @@ def _cli():
 _REASONING_TAGS = ("REASONING_SCRATCHPAD", "think", "thinking", "reasoning", "thought")
 
 
-_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
+# FORK: "invoke"/"parameter" appended — some backends leak Anthropic-style tool XML
+# (paired with the same tags in cli.py's own _TOOL_CALL_TAGS).
+_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls",
+                   "invoke", "parameter")
 
 
 def _strip_reasoning_tags(text: str) -> str:
@@ -60,8 +63,10 @@ def _strip_reasoning_tags(text: str) -> str:
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
     cleaned = re.sub(
-        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
-        flags=re.IGNORECASE,
+        # FORK: invoke|parameter — Anthropic-style tool XML some backends leak
+        # (paired with cli.py's _TOOL_CALL_TAGS, which carries the same tags).
+        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function|invoke|parameter))>\s*',
+        '', cleaned, flags=re.IGNORECASE,
     )
     # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
     # mid tool-call serialization (#101899); strip to end of text.
@@ -153,6 +158,20 @@ def _query_osc11_background() -> str | None:
 
     After the main read + TCSAFLUSH, a short drain window (50 ms) catches late-arriving bytes that slipped
     past the flush — a race observed on VPS and container terminals under load (#40250).
+
+    FORK (typeahead safety): this function runs at ``cli`` import, seconds before
+    prompt_toolkit attaches — exactly when users type or paste ahead into a still-booting
+    tab. Its read loop, TCSAFLUSH, and drain window are all stdin *eaters*: typeahead they
+    consume (or tear mid-escape-sequence) later surfaces as literal ``[200~…``/``^[[99;5u``
+    garbage in the composer. Three guards keep typeahead intact:
+      1. If stdin already has pending bytes before the query is written, skip the query
+         entirely (fall back to env hints / the dark default).
+      2. When the DA1 fence closes with a parsed OSC 11 payload (healthy terminal,
+         in-order replies), restore with TCSADRAIN — never TCSAFLUSH — and skip the drain
+         window; there is nothing left to scrub, and anything queued is the user's.
+      3. TCSAFLUSH + drain only run on the degraded paths (fence closed without a payload,
+         or deadline/read error), where a late reply leak is still possible and typeahead
+         was already protected by 1.
     """
     from cli import _DA1_REPLY_RE
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -167,9 +186,24 @@ def _query_osc11_background() -> str | None:
         old = termios.tcgetattr(fd)
     except Exception:
         return None
+    # "clean" = fence closed with a parsed payload -> restore must preserve any queued
+    # typeahead (TCSADRAIN, no drain window). Every other exit keeps the scrubbing
+    # restore (TCSAFLUSH + drain).
+    clean = False
     try:
         try:
             tty.setcbreak(fd)
+        except Exception:
+            return None
+        try:
+            # Typeahead guard 1: if the user already typed/pasted into this
+            # still-booting tab, do not write the query at all — the read
+            # loop below would consume (and tear) their bytes, and the
+            # scrubbing restore would discard the rest.
+            pending, _, _ = select.select([fd], [], [], 0)
+            if pending:
+                clean = True  # nothing of ours is in flight; keep their bytes
+                return None
         except Exception:
             return None
         try:
@@ -198,6 +232,10 @@ def _query_osc11_background() -> str | None:
         m = re.search(rb"rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", buf)
         if not m:
             return None
+        # Guard 2: fence closed AND payload parsed — an in-order terminal answered both
+        # queries and both were consumed above, so nothing of ours can still be in
+        # flight; the scrubbing restore must not run (it would eat later typeahead).
+        clean = True
 
         def norm(h: bytes) -> int:
             v = int(h, 16)
@@ -206,17 +244,26 @@ def _query_osc11_background() -> str | None:
         r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
         return f"#{r:02X}{g:02X}{b:02X}"
     finally:
-        # TCSAFLUSH discards unread input, scrubbing a partial reply before prompt_toolkit reads it.
-        with suppress(Exception):
-            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
-        try:
-            drain_deadline = time.monotonic() + 0.05
-            while time.monotonic() < drain_deadline:
-                r, _, _ = select.select([fd], [], [], drain_deadline - time.monotonic())
-                if not r or not os.read(fd, 64):
-                    break
-        except Exception:
-            pass
+        # Guard 3: TCSAFLUSH + drain only on the degraded paths.
+        if clean:
+            # Preserve queued input: TCSADRAIN waits for our own pending output
+            # but does NOT discard unread input (typeahead).
+            with suppress(Exception):
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        else:
+            # TCSAFLUSH discards unread input, scrubbing a partial reply before
+            # prompt_toolkit reads it as keystrokes.
+            with suppress(Exception):
+                termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+            try:
+                drain_deadline = time.monotonic() + 0.05
+                while time.monotonic() < drain_deadline:
+                    r, _, _ = select.select([fd], [], [], drain_deadline - time.monotonic())
+                    if not r or not os.read(fd, 64):
+                        break
+            except Exception:
+                pass
+
 
 
 def _heal_cooked_mode_drift(fd: int) -> bool:
