@@ -80,3 +80,4 @@ fe59dc2dacf7c27e41c2c0cc3af33ae3924cdf40	2026-09-25T15:27:42-05:00	fix(desktop):
 f6b17285cef057c55c7a19cb2c6cc3d6731af560	2026-09-25T15:49:12-05:00	fix(projects): gate branch switching on non-git folder lanes (#61362)
 c60299e614c202c16aaf37de2b3616fdeb2b603d	2026-09-25T11:40:03-05:00	fix(desktop): surface an exactly-typed command alias in slash completions
 4653130b8d1de90a96dd56bf59906e9d3ac075ca	2026-09-25T12:10:41-05:00	fix(desktop): key the backend-update re-check on profile as well as baseUrl
+133828064816eac6af1c60104d46ce59bcf1f316	2026-09-25T17:06:24-05:00	fix(desktop): include the profile in the backend-update connection key
