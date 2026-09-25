@@ -15,3 +15,4 @@ c19a35d8c9b018d17a84c788eaa56f4afaa8630b	2026-09-24T23:34:29-05:00	fix(desktop):
 99a161531cc7b6ce8d91869666ea19cee0610156	2026-09-24T23:42:58-05:00	fix(desktop): decide image bytes vs path from the session owner's own backend
 69948c005791d4d0e51670ca015238c2c7663749	2026-09-24T23:43:55-05:00	fix(desktop): log what ssh did when an SSH connect fails
 953ca9e094e80061174b8e1716e8781bee8cd356	2026-09-24T23:59:07-05:00	refactor(desktop): move project scope into a dependency-light store module
+4869d3812c2d3197b9647675bb9e1d8e4a5547eb	2026-09-24T23:59:07-05:00	fix(desktop): leave the entered project when switching profile or backend
