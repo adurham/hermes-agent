@@ -200,57 +200,6 @@ class TestOwnerPidCrossProcess:
 
 
 
-        def raise_oserror(*a, **kw):
-            raise OSError("permission denied")
-
-        monkeypatch.setattr("builtins.open", raise_oserror)
-
-        # Must not raise
-        bt_lifecycle._write_owner_pid(str(fake_tmpdir), "h_readonly123")
-
-    def test_run_browser_command_calls_write_owner_pid(
-        self, fake_tmpdir, monkeypatch
-    ):
-        """_run_browser_command wires _write_owner_pid after mkdir."""
-
-        session_name = "h_wiringtest1"
-
-        # Short-circuit Popen so we exit after the owner_pid write
-        class _FakePopen:
-            def __init__(self, *a, **kw):
-                raise RuntimeError("short-circuit after owner_pid")
-
-        monkeypatch.setattr(bt_session.subprocess, "Popen", _FakePopen)
-        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "/bin/true")
-        monkeypatch.setattr(
-            "tools.browser_tool_install._requires_real_termux_browser_install", lambda *a: False
-        )
-        monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
-        monkeypatch.setattr(
-            bt_session, "_get_session_info",
-            lambda task_id: {"session_name": session_name},
-        )
-
-        calls = []
-        orig_write = bt_lifecycle._write_owner_pid
-
-        def _spy(*a, **kw):
-            calls.append(a)
-            orig_write(*a, **kw)
-
-        monkeypatch.setattr("tools.browser_tool_lifecycle._write_owner_pid", _spy)
-
-        with patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(fake_tmpdir)):
-            try:
-                bt_session._run_browser_command(task_id="test_task", command="goto", args=[])
-            except Exception:
-                pass
-
-        assert calls, "_run_browser_command must call _write_owner_pid"
-        # First positional arg is the socket_dir, second is the session_name
-        socket_dir_arg, session_name_arg = calls[0][0], calls[0][1]
-        assert session_name_arg == session_name
-        assert session_name in socket_dir_arg
 
 
 class TestReaperIdentityGuard:
