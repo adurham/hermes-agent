@@ -184,12 +184,19 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
 
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
-    """Warn when a RELATIVE path resolved OUTSIDE the task's workspace root (the
-    edit is about to land in a different checkout than the terminal's cwd).
-    ``None`` for absolute paths, an unknown root, or a path under the root."""
+    """Warn when a path resolved OUTSIDE the task's workspace root (the edit is
+    about to land in a different checkout than the terminal's cwd).
+    ``None`` for an unknown root or a path under the root.
+
+    FORK (dfdb1fc6dd, 2026-07-24): this covers ABSOLUTE paths too, not just
+    relative ones. A relative-only check left a corrupted absolute path with no
+    divergence checking at all — confirmed live on the exo cluster with
+    DeepSeek-V4-Flash, where a single dropped word in a long path silently wrote
+    the file to the wrong location with no error. The refactor that extracted
+    this module (d4cec15b47) snapshotted the pre-dfdb1fc6dd body and silently
+    reinstated the absolute-path skip; this restores the fork behaviour."""
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
-            return None
+        is_absolute = Path(_expand_tilde(filepath)).is_absolute()
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
             return None
@@ -199,6 +206,14 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             root = Path(_expand_tilde(workspace_root)).resolve()
         if resolved.is_relative_to(root):
             return None
+        if is_absolute:
+            return (
+                f"Absolute path {filepath!r} is OUTSIDE the active workspace "
+                f"({str(root)!r}). If this path was meant to be built from the "
+                f"workspace's cwd, double-check it wasn't mistyped/mis-copied — "
+                f"a single dropped word in a long path silently writes to the "
+                f"wrong location with no error. If a different location is "
+                f"genuinely intended, this warning is a false positive.")
         return (
             f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
             f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
