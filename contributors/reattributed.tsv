@@ -28,3 +28,4 @@ fe3c6837be5389bb28717f9b8c1c0aaf7a10c3bb	2026-09-24T23:23:28-05:00	fix(desktop):
 761ad9639f886f9207109098bb2154759cee775c	2026-09-24T18:57:43-05:00	fix(desktop): spin the bot row while a cold chat opens
 a78aa6927bc6a9820aaec918c55485c9ca0c8ff4	2026-09-24T23:43:57-05:00	test(desktop): give the relay test's plugin-sdk mock an atom
 fa58e4ab753b6283c80525b12f72fd1fdc5c90e2	2026-09-24T18:52:49-05:00	fix(desktop): let the boot-failure overlay be dismissed
+de16db2b6b36590206ec51ee88399917e1417065	2026-09-24T19:27:18-05:00	fix(desktop): sort close-stop-kill after the cli-provision import
