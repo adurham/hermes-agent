@@ -578,6 +578,24 @@ def refresh_launchd_plist_if_needed() -> bool:
 
 
 def launchd_install(force: bool = False, *, start_now: bool = True):
+    # FORK (a4c788a9a9): refuse a root install. The gateway is a per-user LaunchAgent in the
+    # GUI session; under sudo the plist lands in /var/root and bootstrap targets gui/0, which
+    # has no GUI session, so launchctl fails with error 125. Guarded here (the one live entry
+    # point) after the fork's copy in hermes_cli/gateway.py — which shadowed this function and
+    # dropped start_now — was deleted.
+    if hasattr(os, "getuid") and os.getuid() == 0:
+        _sudo_user = os.environ.get("SUDO_USER")
+        _hint = f"  Re-run as your user, e.g.: hermes gateway install{' --force' if force else ''}"
+        if _sudo_user and _sudo_user != "root":
+            _hint = f"  Re-run without sudo: sudo -u {_sudo_user} hermes gateway install{' --force' if force else ''}"
+        raise SystemExit(
+            "Refusing to install gateway as root.\n"
+            "  The gateway runs as a per-user LaunchAgent in your GUI session.\n"
+            "  Running with sudo writes the plist to /var/root and bootstraps into\n"
+            "  gui/0, which has no GUI session — launchctl will fail with error 125.\n"
+            f"{_hint}"
+        )
+
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
