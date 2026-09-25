@@ -26,3 +26,4 @@ fe3c6837be5389bb28717f9b8c1c0aaf7a10c3bb	2026-09-24T23:23:28-05:00	fix(desktop):
 4050c915802499d31c5e0dfe8c7aaafe9e18a4c9	2026-09-24T18:56:16-05:00	fix(desktop): track the pointer when dragging a nested section's sash
 8a0371f0f6dfdc58cdd7fbebf60d3ca90225267b	2026-09-24T18:58:41-05:00	fix(desktop): portal dropdown submenus into the parent menu's container
 761ad9639f886f9207109098bb2154759cee775c	2026-09-24T18:57:43-05:00	fix(desktop): spin the bot row while a cold chat opens
+a78aa6927bc6a9820aaec918c55485c9ca0c8ff4	2026-09-24T23:43:57-05:00	test(desktop): give the relay test's plugin-sdk mock an atom
