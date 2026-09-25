@@ -60,6 +60,10 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    # Hermes's own managed-runtime install dir (hermes_cli/managed_uv.py):
+    # a downloaded CPython + its site-packages. Third-party code, not
+    # Hermes-owned source — same class as .venv below, and it is gitignored.
+    ".hermes-runtime",
     ".git",
     ".venv",
     "venv",
