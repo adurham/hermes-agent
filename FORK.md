@@ -18392,3 +18392,75 @@ unfixable. "Pre-existing" is a classification, not a verdict.
 
 **Verification:** the 17 affected files re-run individually at HEAD — 711 passed,
 0 failed, 23 skipped.
+
+## 2026-09-25 — JS workspaces: desktop 8→0, ui-tui 12→0
+
+The Python suite was green, but the JS side had never been run: `apps/desktop`
+(and `ui-tui`, `web`) had empty `node_modules`, so the desktop vitest suite was
+blocked behind `npm ci`. Once installed (one root `npm ci` — this is an npm
+workspace monorepo with a single lockfile) the desktop suite reported
+**8 failures / 10,957 passed**, and ui-tui **12 failures / 1,547 passed**.
+
+**Three real defects, all fixed:**
+
+- **`apps/desktop/scripts/macos-sysroot.mjs` — stale SDKROOT broke the native
+  helper build.** `xcrun` resolves BOTH the tool to run and its default
+  `-isysroot` from `SDKROOT`. The resolver correctly detected a stale SDKROOT,
+  warned, and passed a valid `-isysroot` — but the child still inherited the bad
+  variable, so `xcrun clang` failed with `unable to find utility "clang"` before
+  clang ever saw the flag. That is precisely the #113708 failure mode the
+  resolver was added to prevent, so its stated contract ("reported, then
+  ignored") was not actually met. New `xcrunEnv()` hands the child the resolved,
+  verified SDK path; both `build-*-monitor.mjs` scripts pass it. The native
+  test (which rebuilds both universal helpers under every SDK selection rung)
+  went red→green on this host.
+- **`hermes-ink`'s `dist/` must be built before its tests run.** `dist/` is
+  gitignored and `@hermes/ink`'s entry re-exports from it, so an unbuilt tree
+  leaves `colorize` undefined — 6 ui-tui tests failed at import with
+  `colorize is not a function`. CI runs `npm run build --workspace ui-tui`
+  before the suite; run the same locally.
+
+**Stale tests (each verified red at the fork's pre-merge tip `14f7219d46`
+before touching it, so none of them are merge damage):**
+
+- `set-exe-identity.test.mjs` — drove a bounded **rcedit** retry budget that no
+  longer exists: `9d0d09564b` replaced rcedit with resedit, which rebuilds the
+  PE rather than committing changes in place, so there is no commit step to
+  retry and `stampExeIdentity()` takes no injection options. The fixture also
+  stubbed a PE with the string `"exe"`, which resedit cannot parse
+  (`RangeError: Invalid DataView length 64`). Rewritten against the real
+  contract — stamp, idempotence, and both loud failures — using a synthetic PE
+  built with `NtExecutable.createEmpty()`.
+- `after-pack.test.mjs` — asserted `warn` "not called at all" for linux/win32.
+  True when the hook was macOS-only; the fork's Windows exe-identity stamp
+  legitimately warns on a best-effort failure (e.g. no exe in the fixture dir).
+  Scoped the assertion to the macOS locale message the test is about.
+- `local-pack-publish.test.mjs` — hardcoded `NousResearch` as the publish owner
+  while the fork's `apps/desktop/package.json` points at `adurham`. Expectation
+  is now derived from the declared repository field.
+- `session-row.test.tsx` — queried `[data-reorder-handle]` and expected dnd-kit's
+  keyboard props on it. The row deliberately **splits** the handle: the wide
+  `display:contents` span carries only the pointer activator, while
+  `attributes`/tabindex stay on the inner grab (the span is stripped from the
+  accessibility tree, so it cannot be the KeyboardSensor's focusable node).
+  Targets the focusable node now.
+- `agentsOverlayFallbackModel.test.tsx` — imported `stripAnsi` from
+  `../lib/text.js`, which has never exported it (it imports the symbol for its
+  own use). Now imports from `@hermes/shared/ansi`, as the sibling tests do.
+- `markdown.test.ts` — expected a bare `;url BEL` OSC 8 opener, but
+  `termio/osc.ts` `link()` emits an **`id=` param** (derived from the URL, so
+  terminals group wrapped lines) and terminates with **ST, not BEL**. Verified
+  failing in the pristine v2026.9.24 tree too — upstream ships these two red.
+- `surfaces.{app,late}-routes.test.tsx` — both suites failed to LOAD, not just a
+  test: their `vi.mock`s of `@/store/profile` and `@/store/session` were too thin
+  for the module graph they now reach (`layout.ts` reads `$showAllProfiles`;
+  `session-unread` subscribes to `$sessions`/`$cronSessions`/`$messagingSessions`).
+
+**Host-shaped:** `managed-ssh-update.test.ts` used `hermesPath: '/bin/true'` —
+macOS has no `/bin/true` (only `/usr/bin/true`; `true` is also a shell builtin),
+so the launcher exited 127 and the test read it as a failed updater. Resolved
+per host.
+
+**Verification:** desktop **1240 files / 10,973 tests pass, 0 failures**;
+ui-tui **172 files / 1,568 tests**; web **49 / 359**; tests-js **11 / 46**.
+Commit `d3ffe41764`.
