@@ -133,3 +133,4 @@ c15ebb143574ce8f6136b2519ca57cd684aeb3c5	2026-09-25T17:31:42-05:00	fix(desktop):
 3e11956c1521781ee6b0bc44cec5e20e682be2f3	2026-09-25T10:03:17-05:00	fix(desktop): mark the File Browser setting session-only in Simple mode
 7be5d400337f438d39201ba457f8d5506e25fa11	2026-09-25T11:37:04-05:00	fix(desktop): retry the initial gateway WS connect across backend cold-start
 b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop): narrow the initial-connect retry to local gateways
+6e901fca7891f062a1cc876ea0925647aefe8d2b	2026-09-25T17:09:48-05:00	fix(desktop): sort imports in use-gateway-boot-initial-connect test
