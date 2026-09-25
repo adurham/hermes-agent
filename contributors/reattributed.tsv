@@ -44,3 +44,4 @@ c953b2a03ef5681c2b29e714c8f8c3a12f3efe48	2026-09-25T10:53:10-05:00	fix(tui): nev
 58497395d3d118bd19bcca565009e0eb681e6cd3	2026-09-25T10:56:24-05:00	fix(desktop): declare macOS Contacts and Apple Events usage strings
 8a639e80fec245797a0f031051e65e61a87fd1cd	2026-09-24T23:13:45-05:00	fix(tui-gateway): log when a client model override beats the profile default at session.create
 ba1c1296920923da5101baeec7228062a16fac51	2026-09-25T01:21:19-05:00	fix(desktop): add "Use Settings default" to the composer model menu
+722a02f9675228a60da7af082c275435b4b6f05a	2026-09-25T11:28:56-05:00	test(desktop): import settings panels once so first-test imports can't time out
