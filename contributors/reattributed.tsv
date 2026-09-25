@@ -106,3 +106,4 @@ f84db42a32b28a00a2ef1e11e5471a27d22cc37f	2026-09-25T11:06:00-05:00	fix(cron): de
 40347fd40d732bfad9b403cc224b2054becd22d5	2026-09-25T11:37:53-05:00	fix(mcp): resolve bare uv/uvx under GUI-style PATHs (#37589)
 678a4762b887f3eabe5cad11254b2ab1ae859485	2026-09-25T13:26:28-05:00	fix(mcp): move uv/uvx known-dir table into hermes_platform resolver
 67c6fdc092331ab6c51a7d00612031614ccd3570	2026-09-25T11:36:29-05:00	fix(desktop): stop home-directory repo scans when no roots are configured
+d10afb5a8851be2b0f6fe5d3b04022c3a8877d6c	2026-09-25T18:52:11-05:00	fix(tests): import CONFIG_SCHEMA from its defining module
