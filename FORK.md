@@ -279,6 +279,41 @@ canonical module, 26 carrying fork delta; all 26 active — the def wins over th
 import). Found by the same scan; now ratcheted by
 `tests/hermes_cli/test_module_level_shadow_guard.py` (new shadows fail the suite;
 the allowlist can only shrink). Scope them before the next sync.
+**CLOSED 2026-09-24 (`1a74923d48`)** — all 49 deleted (-1,091 lines); every name
+now resolves to its canonical sibling (checked with `inspect.getsourcefile`).
+Classification (AST body compare, normalizing away the deferred `from cli import X`
+indirection): 37 behaviorally identical to their sibling; of the 12 with real
+deltas, **5 carried fork behaviour and were ported INTO the canonical sibling
+first**:
+- `_strip_reasoning_tags` + `_TOOL_CALL_TAGS` — the fork's `invoke`/`parameter`
+  tags (Anthropic-style tool XML some backends leak). `cli_render.py` was already
+  namespace-aware; this adds the two tags to the tuple + the orphan-close regex.
+  Note the *upstream* tuple is the one that lacked them — the tag list is a
+  genuine fork feature, not drift.
+- `_query_osc11_background` — the fork's three typeahead guards (skip the query
+  when stdin already has pending bytes; **TCSADRAIN instead of TCSAFLUSH** once a
+  payload parses; TCSAFLUSH+drain only on degraded exits). Without them, typeahead
+  typed into a still-booting tab surfaces as literal `[200~…` escape garbage.
+- `_exit_watchdog_timeout` — the fork's **60s**, not upstream's 30. The 45s worst
+  case (15s MCP teardown + 30s memory-extraction LLM call) sat on the guillotine
+  line and could `os._exit(0)` before `_print_exit_summary()` ran.
+- `_estimate_tui_input_height` — `agent.display.display_cwidth` (VS-16-safe) over
+  `prompt_toolkit.get_cwidth`, which undercounts emoji + U+FE0F.
+- `_cli_config_defaults` — the fork-only keys the CLI reads:
+  `display.interrupt_key`, `agent.reasoning_effort_by_model` /
+  `interleaved_thinking` / `strip_cache_on_overload`, `clarify.timeout`.
+The other 7 deltas were cases where the canonical side is the newer/correct one
+(the `_cli()` indirection that keeps patch seams, `auto_prune_from_config`'s own
+config gate, the `_cleanup_in_progress` read) — deleted as-is, no port. The
+`cli.py` half of the allowlist is now **empty** (it may only shrink).
+**Also fixed in the same pass** (both surfaced by the canonical per-file runner):
+`cli.py::_persist_global_model_switch` — my own `e23205abeb` regression, since
+upstream's `persist_model_selection()` deliberately never WRITES `model.api_key`
+(its own callers re-submit it) and the CLI `--global` path has no such step, so a
+switch TO a custom endpoint lost its key — now re-written for custom targets only;
+and `tests/hermes_cli/test_curator_status.py`, where the merge that absorbed
+upstream's test-prune lanes dropped the `_capture_status` helper, leaving two
+blocked-writes tests with a call-time NameError (restored from `12feabce13`).
 
 ---
 
