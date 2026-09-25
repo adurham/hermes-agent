@@ -283,7 +283,9 @@ class TestRunBackgroundTask:
 
             await runner._run_background_task("say hello", source, "bg_test")
 
-        mock_adapter.send.assert_called_once()
+        # The failure diagnostic goes out through emit_warning (the adapter's
+        # warning channel), not send — same as the success path's other notices.
+        mock_adapter.emit_warning.assert_called_once()
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
@@ -305,8 +307,8 @@ class TestRunBackgroundTask:
         with patch("gateway.run._resolve_runtime_agent_kwargs", side_effect=RuntimeError("boom")):
             await runner._run_background_task("test prompt", source, "bg_test")
 
-        mock_adapter.send.assert_called_once()
-        call_args = mock_adapter.send.call_args
+        mock_adapter.emit_warning.assert_called_once()
+        call_args = mock_adapter.emit_warning.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "failed" in content.lower()
 

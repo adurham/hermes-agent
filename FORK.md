@@ -18464,3 +18464,39 @@ per host.
 **Verification:** desktop **1240 files / 10,973 tests pass, 0 failures**;
 ui-tui **172 files / 1,568 tests**; web **49 / 359**; tests-js **11 / 46**.
 Commit `d3ffe41764`.
+
+
+## 2026-09-25 — full per-file sweep: the last 9 failures, fixed
+
+The scoped verification set was green; a full `scripts/run_tests_parallel.py tests`
+sweep then surfaced 9 real failures hiding outside it (~40 further ids were
+contention artifacts that pass in isolation — no action).
+
+* `test_matrix_message_length.py` — merge adopted upstream's trimmed header while
+  the fork's extra tests using those imports survived; import block restored
+  from the fork tip.
+* `test_background_command.py` — two error-path tests asserted `adapter.send`;
+  production emits the failure notice via `emit_warning`. Stale since that
+  change, red at the fork tip too.
+* `test_profiles_toolset_pin.py` — upstream asserts exact set equality for a
+  `[web]` pin; the fork's non-configurable `consult` core toolset is folded into
+  every platform set by `_recover_platform_native_toolsets` (the same generic
+  mechanism as the other non-configurable toolsets). Re-stated as the pin
+  invariant + no-configurable-leak.
+* `test_output_caps_removed.py` — `anthropic_max_output` IS the fork's
+  model-gated wire fallback for Claude-family chat-completions models; asserted
+  that contract plus the no-fallback omission case.
+* `test_managed_runtime_resolution.py` — exempted `.hermes-runtime` (managed
+  CPython install; same class as `.venv`). That unblocked the walker and
+  surfaced 4 genuine fork call sites, now reviewed and allowlisted.
+* `test_80884_multiplex_upstream_authz.py` → `test_multiplex_upstream_authz.py`
+  (tree invariant: no issue numbers in test filenames).
+* `pyproject.toml` — hindsight-client exclude-newer whitelist entry restored
+  (upstream dropped it with the extra; the fork keeps the extra and CI installs it).
+
+Residual red at HEAD, provenance-checked against both baselines (not merge- or
+de-fork-caused): `test_cross_vm_fs_wal_refusal`, `test_guest_durability_barriers`,
+`test_cua_no_overlay` are red on the pristine upstream tag on macOS (Linux-gated
+behavior); `test_transport_a_registration`, `test_restart_stale_runtime_recovery`,
+the a2a suites, `test_tavily_provider`, `test_cross_session_*` are red at the
+fork's pre-merge tip (pre-existing fork-side).
