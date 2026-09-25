@@ -80,6 +80,52 @@ def test_streamed_details_land_on_final_message_and_persist(_mock_close, mock_cr
 
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
+def test_live_details_deglue_summary_part_boundaries(_mock_close, mock_create):
+    """The live display gets the same boundary repair as the persisted reasoning.
+
+    A reasoning-summary model streams one delta per completed summary part, each
+    a bare bold heading. Without the ``separate_glued_reasoning_blocks`` repair
+    on the detail path, the live box glues parts head-to-tail while
+    ``reasoning_content`` stays de-glued — display and history disagree.
+    """
+    agent = _agent()
+    client = MagicMock()
+    mock_create.return_value = client
+
+    def summary_chunk(summary, **kw):
+        chunk = _make_chunk(**kw)
+        chunk.choices[0].delta.reasoning = summary  # provider mirrors both fields
+        chunk.choices[0].delta.model_extra = {
+            "reasoning_details": [{"type": "reasoning.summary", "summary": summary}]}
+        return chunk
+
+    client.chat.completions.create.return_value = iter([
+        summary_chunk("**One**"),
+        summary_chunk("**Two**"),
+        _make_chunk(content="Answer", finish_reason="stop", model="test-model"),
+    ])
+    delivered = []
+    agent.reasoning_callback = delivered.append
+    response = agent._interruptible_streaming_api_call({})
+
+    assert "".join(delivered) == "**One**\n\n**Two**"
+    assert response.choices[0].message.reasoning_content == "**One**\n\n**Two**"
+
+    # Details-only variant: the delta carries no plain ``reasoning`` field at all.
+    client.chat.completions.create.return_value = iter([
+        _make_chunk(reasoning_details=[{"type": "reasoning.summary", "summary": "**One**"}]),
+        _make_chunk(reasoning_details=[{"type": "reasoning.summary", "summary": "**Two**"}]),
+        _make_chunk(content="Answer", finish_reason="stop", model="test-model"),
+    ])
+    delivered = []
+    agent.reasoning_callback = delivered.append
+    response = agent._interruptible_streaming_api_call({})
+
+    assert "".join(delivered) == "**One**\n\n**Two**"
+
+
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
 def test_no_details_leaves_attribute_absent(_mock_close, mock_create):
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = iter([
