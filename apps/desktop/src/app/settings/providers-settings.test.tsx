@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -281,6 +281,77 @@ describe('ProvidersSettings', () => {
 
     expect(screen.getAllByDisplayValue('shared-secret')).toHaveLength(1)
     expect((inputs[1] as HTMLInputElement).value).toBe('')
+  })
+
+  it('keeps a card on its own key when a shared credential arrives with primary: false', async () => {
+    // The CN Coding Plan card's own credential (its index-0 var) plus the
+    // shared DASHSCOPE_API_KEY, which the catalog contributes as a FALLBACK
+    // alias (primary: false) because it is index >= 1 for that provider. The
+    // card's "Paste key" must edit the provider's own key, not the shared one.
+    getEnvVars.mockResolvedValue({
+      ALIBABA_CODING_PLAN_CN_API_KEY: keyVar({
+        provider: 'alibaba-coding-plan-cn',
+        provider_label: 'Alibaba Cloud (Coding Plan, China)',
+        provider_primary: true
+      }),
+      ALIBABA_CODING_PLAN_API_KEY: keyVar({
+        provider: 'alibaba-coding-plan-cn',
+        provider_label: 'Alibaba Cloud (Coding Plan, China)',
+        provider_primary: false
+      }),
+      DASHSCOPE_API_KEY: keyVar({
+        provider: 'alibaba',
+        provider_label: 'Qwen Cloud',
+        provider_profiles: [
+          {
+            description: 'International DashScope route',
+            primary: true,
+            provider: 'alibaba',
+            provider_label: 'Qwen Cloud',
+            url: 'https://modelstudio.console.alibabacloud.com/'
+          },
+          {
+            description: 'Coding Plan fallback alias',
+            primary: false,
+            provider: 'alibaba-coding-plan-cn',
+            provider_label: 'Alibaba Cloud (Coding Plan, China)',
+            url: 'https://help.aliyun.com/zh/model-studio/'
+          }
+        ]
+      })
+    })
+    listOAuthProviders.mockResolvedValue({ providers: [] })
+
+    const { ProvidersSettings } = await import('./providers-settings')
+    const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+
+    expect(await screen.findByText('Alibaba Cloud (Coding Plan, China)')).toBeTruthy()
+
+    // Exactly one primary "Paste … key" input per card; the CN card's must edit
+    // ALIBABA_CODING_PLAN_CN_API_KEY, never the shared DASHSCOPE_API_KEY.
+    const inputs = container.querySelectorAll('input[type="password"]')
+    const pasteInputs = await screen.findAllByPlaceholderText(/Paste .* key/)
+    expect(pasteInputs).toHaveLength(2) // Qwen Cloud card + the CN Coding Plan card
+
+    const cnCard = screen
+      .getAllByText('Alibaba Cloud (Coding Plan, China)')
+      .map(el => el.closest('[role="button"]') ?? el.closest('div[class*="group/card"]'))
+      .find(Boolean)!
+
+    const cnInput = cnCard.querySelector('input[type="password"]')!
+    expect(inputs.length).toBeGreaterThanOrEqual(1)
+
+    fireEvent.focus(cnInput)
+    fireEvent.change(cnInput, { target: { value: 'cn-tier-secret' } })
+    fireEvent.click(within(cnCard as HTMLElement).getByRole('button', { name: 'Save' }))
+
+    // The write names the CN-specific var — never the shared DASHSCOPE_API_KEY.
+    await waitFor(() => {
+      const [key, value] = setEnvVar.mock.calls.at(-1) ?? []
+      expect(key).toBe('ALIBABA_CODING_PLAN_CN_API_KEY')
+      expect(value).toBe('cn-tier-secret')
+      expect(setEnvVar).not.toHaveBeenCalledWith('DASHSCOPE_API_KEY', expect.anything(), expect.anything())
+    })
   })
 
   it('clears the shared reveal when a namespaced provider-card draft is saved', async () => {

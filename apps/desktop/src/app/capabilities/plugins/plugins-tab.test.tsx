@@ -4,7 +4,7 @@ import { type ComponentProps, useState } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $pluginRecords } from '@/contrib/plugins-store'
+import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
