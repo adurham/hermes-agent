@@ -499,6 +499,14 @@ def _recover_format_errors(
             if isinstance(_m, dict) and "reasoning_details" in _m:
                 _m.pop("reasoning_details", None)
                 _api_stripped += 1
+        # FORK: one-shot self-healing recovery. Anthropic signs thinking blocks
+        # against the exact turn content; an interrupt/restart mid-turn (or any
+        # other upstream mutation) invalidates the signature. Stripping the dead
+        # blocks and retrying always succeeds; nothing is lost (the canonical,
+        # DB-persisted ``messages`` list is untouched — only the wire copy is
+        # stripped, see above). Not user-actionable, so debug-level, not the
+        # upstream warning (FORK.md; demotion has been dropped twice by merges —
+        # keep this comment so the next merge doesn't "restore" it again).
         logger.debug(
             "%sThinking block signature recovery: stripped "
             "reasoning_details from %d api_messages "
