@@ -30,3 +30,4 @@ a78aa6927bc6a9820aaec918c55485c9ca0c8ff4	2026-09-24T23:43:57-05:00	test(desktop)
 fa58e4ab753b6283c80525b12f72fd1fdc5c90e2	2026-09-24T18:52:49-05:00	fix(desktop): let the boot-failure overlay be dismissed
 de16db2b6b36590206ec51ee88399917e1417065	2026-09-24T19:27:18-05:00	fix(desktop): sort close-stop-kill after the cli-provision import
 354d499511adc75769cafd9224de8b0ac6ea16ec	2026-09-24T19:36:44-05:00	style(desktop): format close-stop handling
+658e6c885d40a2b27a5c3f35bb6276fa5801daf8	2026-09-24T23:19:53-05:00	revert(agent): drop the no-op side-channel length-stop change
