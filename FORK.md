@@ -258,10 +258,27 @@ launcher skip path); the mixins' `None` sentinels were kept over the copies'
 `0.0` (a `0.0` sentinel throttles the first repaint against boot-time monotonic).
 Verified by the parent: all 18 resolve to their mixins, 187 targeted tests pass
 (the shadow-signature AST guard, streaming/reasoning-box suite, init-state,
-commands, and `test_cli_status_bar` — 43 passed, was 1 failed). **STILL OPEN:
-48 more module-level shadows in `cli.py`** (22 byte-identical to their canonical
-module, 26 carrying fork delta; all 26 active — the def wins over the import).
-Found by the same scan after the merge; scope it before the next sync.
+commands, and `test_cli_status_bar` — 43 passed, was 1 failed). **Phase C closed
+2026-09-24 (`05132227ca`)** with the 4th slice — the 6 status-bar methods
+(`_status_bar_display_width`, `_trim_status_bar_text`, `_render_spinner_text`,
+`_build_status_bar_text`, `_get_status_bar_fragments`, `_get_status_bar_snapshot`)
+merged into `cli_status_bar_mixin.py`. Fork-unique lines ported verbatim: the
+live background/async subagent count via `active_task_count()` (expands a
+`delegate_task` batch to its child count — `active_count()` counts pool units
+and undercounts batches), the skin-overridable glyph helper, failover marker,
+effort label, queued `/steer` note, display-true provider prompt count, and the
+per-turn context delta + cause classification; both renderers now share
+`_status_bar_segments()` so fragments cannot drift.
+`_get_status_bar_session_title` stays KEEP-FORK (config gate +
+pending-title fast path) with a FORK provenance comment; `_format_context_delta`
+stays in `cli.py` (no mixin defines it — no shadow). Verified by the parent:
+all 6 resolve to the mixin, zero class-body copies remain, 136 tests pass across
+the status-bar blast radius. **All 25 Phase C MERGE methods are now de-forked.**
+**STILL OPEN: 48 module-level shadows in `cli.py`** (22 byte-identical to their
+canonical module, 26 carrying fork delta; all 26 active — the def wins over the
+import). Found by the same scan; now ratcheted by
+`tests/hermes_cli/test_module_level_shadow_guard.py` (new shadows fail the suite;
+the allowlist can only shrink). Scope them before the next sync.
 
 ---
 
