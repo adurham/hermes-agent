@@ -140,3 +140,4 @@ b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop):
 c2af461706ae0dbab7271caf45bb9eefde4cdc53	2026-09-25T18:54:13-05:00	test(desktop): fixture where a shared credential arrives with primary: false
 a052836559683da8f98b538b3aee795aede42fde	2026-09-24T23:51:37-05:00	fix(mcp): connect servers added to config on the next agent build
 b148d976023afc6972fc77cce6b9595b86e022e6	2026-09-24T23:51:37-05:00	fix(mcp): point `hermes mcp add` and `configure` at /reload-mcp
+4503c2458beec8aacd0516c7d9496dec4fec122a	2026-09-24T23:10:29-05:00	fix(tui_gateway): honor prefill_messages_file on the Desktop agent path
