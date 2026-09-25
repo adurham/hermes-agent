@@ -127,3 +127,4 @@ a5e949bcefdcb60052d6071a085222c5a0a52001	2026-09-25T17:19:20-05:00	fix(desktop):
 a9972dc3f9156df789f82a9835c4fb2063203b23	2026-09-25T11:37:28-05:00	fix: profile terminal.cwd beats the desktop's inherited workspace cwd
 02b282a5d4efbe0484d5ef3f9e026e0b0228a58b	2026-09-25T11:37:36-05:00	fix(desktop): stop approval.respond timing out behind stalled WS writes
 66bc2597121a7c8cc406ee99bf1273651fdcd0d9	2026-09-25T19:30:24-05:00	fix(gateway): declare cwd_explicit on the session.create contract
+ecaa1f001aa5f3793d4ed781686621c023773fac	2026-09-25T14:10:31-05:00	test: disentangle the cherry-picked customCSS suites
