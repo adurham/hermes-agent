@@ -24621,6 +24621,18 @@
             "default": null,
             "title": "Lineage Ids"
           },
+          "continuation_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Kind"
+          },
           "profile": {
             "anyOf": [
               {
