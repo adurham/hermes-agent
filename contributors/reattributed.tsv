@@ -57,3 +57,4 @@ eda61f644e33a80ee7d5970744cb3faddf20f72f	2026-09-25T11:22:46-05:00	fix(tui-gatew
 a3a85a3143a54305cafd79065a22de5b51395027	2026-09-25T11:36:20-05:00	fix(agent): close non-interrupted tool-tail turns with a visible response
 94f3dbec9bf4480f8c771c4d90c85aff9260df8b	2026-09-25T12:27:39-05:00	fix(agent): close one-shot AIAgents on every exit path
 ec5c9c738acc0b3ed5770c25497ec335cbfe8d33	2026-09-25T11:28:21-05:00	fix(processes): persist_on_release keeps background jobs alive across lifecycle kill sweeps (#41225)
+0cf900ea172d84fc0aef3afbc1de2bd787cc2043	2026-09-24T23:45:27-05:00	fix(skills): keep built-in provenance for skills the catalog dropped
