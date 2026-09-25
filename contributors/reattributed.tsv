@@ -50,3 +50,4 @@ ba1c1296920923da5101baeec7228062a16fac51	2026-09-25T01:21:19-05:00	fix(desktop):
 8bde3a72e8606993de4d2287edbc83a3ffe455c1	2026-09-24T19:43:15-05:00	fix(gateway): preserve settled host identity across restart
 7d171329785fadeecb616d8690bd6d5c4121d7fc	2026-09-24T19:46:38-05:00	test(gateway): cover settled default multiplex restart
 d0cb567273716ffb48c213dd046b26e58e20401a	2026-09-24T20:31:06-05:00	fix(gateway): take host identity from the live host record on replay
+788d82fc9759de268c63fc2c6446718acd04ff8c	2026-09-25T11:38:51-05:00	fix(tui): honor agent.disabled_toolsets in the desktop/TUI gateway (#44499)
