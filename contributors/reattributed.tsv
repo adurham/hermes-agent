@@ -47,3 +47,4 @@ ba1c1296920923da5101baeec7228062a16fac51	2026-09-25T01:21:19-05:00	fix(desktop):
 722a02f9675228a60da7af082c275435b4b6f05a	2026-09-25T11:28:56-05:00	test(desktop): import settings panels once so first-test imports can't time out
 42d9d05f493fca422f04b05931aad6839f17358d	2026-09-25T11:19:35-05:00	fix(desktop): name real interrupt controls in busy-guard copy, not /interrupt
 28545254ddd02eaf01107a9ddf83b3ee9ae127f8	2026-09-25T11:39:38-05:00	fix(desktop): preserve the active chat across a sleep/wake gateway reconnect
+8bde3a72e8606993de4d2287edbc83a3ffe455c1	2026-09-24T19:43:15-05:00	fix(gateway): preserve settled host identity across restart
