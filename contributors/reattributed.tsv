@@ -132,3 +132,4 @@ ecaa1f001aa5f3793d4ed781686621c023773fac	2026-09-25T14:10:31-05:00	test: disenta
 c15ebb143574ce8f6136b2519ca57cd684aeb3c5	2026-09-25T17:31:42-05:00	fix(desktop): drop stray blank lines inside theme import groups
 3e11956c1521781ee6b0bc44cec5e20e682be2f3	2026-09-25T10:03:17-05:00	fix(desktop): mark the File Browser setting session-only in Simple mode
 7be5d400337f438d39201ba457f8d5506e25fa11	2026-09-25T11:37:04-05:00	fix(desktop): retry the initial gateway WS connect across backend cold-start
+b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop): narrow the initial-connect retry to local gateways
