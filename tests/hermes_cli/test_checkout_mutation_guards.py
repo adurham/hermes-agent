@@ -110,3 +110,82 @@ class TestLaunchRecovery:
         monkeypatch.setattr(main_mod, "_update_marker_path", _boom)
         monkeypatch.setattr(hermes_cli_main_install_repair, "_update_marker_path", _boom)
         main_mod._recover_from_interrupted_install()
+
+
+class TestAutostashGuard:
+    """The update autostash must never sweep the LIVE checkout from inside a test run.
+
+    Before this guard, an in-process test driving ``cmd_update`` without sandboxing
+    ``PROJECT_ROOT`` reached the real checkout's ``_stash_local_changes_if_needed``:
+    any uncommitted work in the developer's tree was swept into a
+    ``hermes-update-autostash-*`` entry and the tree reset mid-suite (observed as
+    ``reset: moving to HEAD`` reflog entries clustered through a full-suite run).
+    """
+
+    def test_predicate_true_for_live_checkout_under_pytest(self):
+        from hermes_cli.update_cmd_stash import _pytest_owns_live_checkout
+
+        assert _pytest_owns_live_checkout(CHECKOUT_ROOT) is True
+
+    def test_predicate_false_for_sandboxed_root(self, tmp_path):
+        from hermes_cli.update_cmd_stash import _pytest_owns_live_checkout
+
+        assert _pytest_owns_live_checkout(tmp_path) is False
+
+    def test_predicate_false_outside_pytest(self, monkeypatch):
+        from hermes_cli.update_cmd_stash import _pytest_owns_live_checkout
+
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        assert _pytest_owns_live_checkout(CHECKOUT_ROOT) is False
+
+    def test_stash_refuses_live_checkout_and_creates_nothing(self, monkeypatch):
+        """Against the live checkout the stasher returns None without running git."""
+        from hermes_cli import update_cmd_stash
+
+        ran: list[list[str]] = []
+
+        def _spy_run(cmd, *a, **k):
+            ran.append(list(cmd))
+            raise AssertionError(f"git mutation attempted: {cmd}")
+
+        monkeypatch.setattr(update_cmd_stash.subprocess, "run", _spy_run)
+        assert (
+            update_cmd_stash._stash_local_changes_if_needed(["git"], CHECKOUT_ROOT)
+            is None
+        )
+        assert ran == [], "the live-checkout guard must return before any git call"
+
+    def test_reset_hard_refuses_live_checkout(self, monkeypatch):
+        from hermes_cli import update_cmd_stash
+
+        ran: list[list[str]] = []
+
+        def _spy_run(cmd, *a, **k):
+            ran.append(list(cmd))
+            raise AssertionError(f"git mutation attempted: {cmd}")
+
+        monkeypatch.setattr(update_cmd_stash.subprocess, "run", _spy_run)
+        update_cmd_stash._reset_hard(["git"], CHECKOUT_ROOT)
+        assert ran == []
+
+    def test_sandboxed_stash_still_runs(self, tmp_path, monkeypatch):
+        """The guard must not disable the real path for sandboxed callers."""
+        from hermes_cli import update_cmd_stash
+
+        called: list[list[str]] = []
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def _spy_git_run(git_cmd, args, cwd=None, **k):
+            called.append(list(args))
+            return _Result()
+
+        import hermes_cli.update_cmd as update_cmd
+
+        monkeypatch.setattr(update_cmd, "_git_run", _spy_git_run)
+        update_cmd_stash._stash_local_changes_if_needed(["git"], tmp_path)
+        assert called, "sandboxed stash must reach git"
+        assert called[0][:2] == ["status", "--porcelain"]
