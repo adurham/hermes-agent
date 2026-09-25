@@ -83,3 +83,4 @@ c60299e614c202c16aaf37de2b3616fdeb2b603d	2026-09-25T11:40:03-05:00	fix(desktop):
 133828064816eac6af1c60104d46ce59bcf1f316	2026-09-25T17:06:24-05:00	fix(desktop): include the profile in the backend-update connection key
 20cf14fd6bfa248388c83a3c6c1b665e032be707	2026-09-25T17:06:09-05:00	fix(desktop): drop duplicate link-title-window import and sort local-read-path import
 6dc19ad3c7ad0708c670ebe64f6d97f539b96590	2026-09-24T19:48:12-05:00	test(desktop): keep rebased checks green
+a00fdda6c5dbea7c335894e47fba105cf99cec06	2026-09-25T17:19:28-05:00	fix(desktop): skip lone-tilde escaping on directive lines; align prose tests with the unknown-tag escape
