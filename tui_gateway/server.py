@@ -132,6 +132,11 @@ def _resolve_ws_orphan_reap_grace() -> float:
 
 
 _WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
+# If the reap timer fires with more than this much of the grace still unelapsed on the
+# monotonic clock, the host slept through the wall-clock wait — re-arm for the remainder
+# instead of reaping (#44183). Big enough to ignore timer jitter and wall-clock NTP
+# nudges, small relative to any real sleep.
+_WS_ORPHAN_REAP_SLEEP_SLACK_S = 0.5
 # A detached RUNNING turn is interrupted only once its activity clock (API waits, stream tokens, tool
 # heartbeats) idled this long; 600s = the turn-liveness watchdog so "wedged" means the same. 0 disables.
 _WS_ORPHAN_ACTIVITY_STALE_S = _ws_orphan_setting("HERMES_TUI_WS_ORPHAN_ACTIVITY_STALE_S", "ws_orphan_activity_stale_s", 600.0)

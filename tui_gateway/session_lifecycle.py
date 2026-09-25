@@ -751,11 +751,36 @@ def _schedule_ws_orphan_reap(
     sid: str, *, delay_s: float | None = None, _expected_timer: threading.Timer | None = None,
 ) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned. Called from the WS-disconnect path; a
-    reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0."""
+    reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0.
+
+    The grace is measured in AWAKE (monotonic) time: ``threading.Timer``'s wait elapses in wall-clock time on
+    platforms without a monotonic condvar (macOS lacks ``pthread_condattr_setclock``), so a system sleep makes
+    the timer fire "early" in awake-time terms. Without the monotonic deadline check below, closing a laptop lid
+    for longer than the grace reaped the parked session at the instant of wake — before the Desktop's WS
+    reconnect or ``session.resume`` could re-bind a transport — so every sleep/wake cycle 404'd the open chat
+    (#44183)."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+    # time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC) does not advance while the
+    # host is asleep, so this deadline measures awake time only.
+    deadline = time.monotonic() + (_WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s))
 
     def _reap() -> None:
+        # The wall-clock timer fired. If the monotonic (awake-time) clock says the grace
+        # hasn't actually elapsed — the host slept through the wait — re-arm for the
+        # remainder so the Desktop reconnect gets its full grace of awake time. The
+        # slack keeps ordinary timer jitter and wall-clock NTP nudges from re-arming
+        # a legitimately-expired reap.
+        remaining = deadline - time.monotonic()
+        if remaining > _WS_ORPHAN_REAP_SLEEP_SLACK_S:
+            with _sessions_lock:
+                if _pending_ws_reaps.get(sid) is not timer:
+                    return
+                rearm = threading.Timer(remaining, _reap)
+                rearm.daemon = True
+                _pending_ws_reaps[sid] = rearm
+            rearm.start()
+            return
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
         reschedule_delay = interrupt_session = session = None
