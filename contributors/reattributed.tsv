@@ -65,3 +65,4 @@ ec5c9c738acc0b3ed5770c25497ec335cbfe8d33	2026-09-25T11:28:21-05:00	fix(processes
 954d94c3b008117a067d978dcedbdee0a09ce740	2026-09-25T12:27:19-05:00	fix(cli): name Windows Smart App Control when it blocks the dashboard runtime
 f8123d2401ec505e6a220ec51d3b454a404c0b9b	2026-09-25T11:25:15-05:00	test(desktop): hold the composer's PageUp/PageDown default-prevent in the mirror harness
 d99bb06862c06d21eb0aa20a2df3c19d6ff94d65	2026-09-25T12:19:08-05:00	fix(nix/desktop): compile node-pty against electron.headers
+b93c915fab8044baa411bb9829435b7c66d46db5	2026-09-25T17:04:57-05:00	fix(desktop): gate composer CJK fonts on UI language
