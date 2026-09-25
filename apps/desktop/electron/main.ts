@@ -463,6 +463,7 @@ import {
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
+import { resolveSourcePython } from './source-python'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
@@ -2687,26 +2688,12 @@ function isHermesSourceRoot(root) {
   return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
 }
 
-async function findPythonForRoot(root) {
-  const override = process.env.HERMES_DESKTOP_PYTHON
-
-  if (override && fileExists(override)) {
-    return override
-  }
-
-  const relativePaths = IS_WINDOWS
-    ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
-    : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
-
-  for (const relativePath of relativePaths) {
-    const candidate = path.join(root, relativePath)
-
-    if (fileExists(candidate)) {
-      return candidate
-    }
-  }
-
-  return findSystemPython()
+async function findPythonForRoot(root: string): Promise<string | null> {
+  return resolveSourcePython(root, {
+    override: process.env.HERMES_DESKTOP_PYTHON,
+    isWindows: IS_WINDOWS,
+    fileExists
+  })
 }
 
 async function findSystemPython() {
