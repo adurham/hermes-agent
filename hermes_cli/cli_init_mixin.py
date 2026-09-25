@@ -87,6 +87,13 @@ class CLIInitMixin:
         self._reasoning_preview_buf = ""  # coalesces tiny reasoning chunks
         self._stream_started = self._stream_box_opened = self._stream_box_live = False
         self._held_status_lines: list[str] = []  # agent status lines parked while a box streams
+        # FORK: messages queued while the response box is open (e.g. "Queued for the next
+        # turn") are drained by _flush_stream() AFTER the box closes so they do not
+        # interleave with streamed text. Lock: producer is the UI thread, consumer the
+        # agent thread. _stream_drained latches once _flush_stream has drained them.
+        self._stream_drained = False
+        self._post_stream_messages: list[str] = []
+        self._post_stream_lock = threading.Lock()
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False
@@ -242,20 +249,33 @@ class CLIInitMixin:
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
-        from cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _parse_service_tier_config, _resolve_prefill_messages_file
+        from cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _parse_service_tier_config, _resolve_prefill_messages_file, _resolve_reasoning_for_model
         # Env var wins, then hermes_cli.personality (single owner of overlay resolution).
         from hermes_cli.personality import available_personalities, resolve_ephemeral_system_prompt
 
         self.system_prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "") or resolve_ephemeral_system_prompt(CLI_CONFIG)
         self.personalities = available_personalities(CLI_CONFIG)
 
+        # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(_resolve_prefill_messages_file(CLI_CONFIG))
 
-        # Per-model override > global reasoning_effort.
-        # Reasoning config (OpenRouter reasoning effort level) Per-model override > global reasoning_effort
-        # — resolved through the shared chokepoint in hermes_constants (Closes #21256).
+        # Reasoning config. Upstream resolves through the shared hermes_constants chokepoint
+        # (Closes #21256), which reads agent.reasoning_overrides. The fork additionally keeps
+        # its own per-model map (agent.reasoning_effort_by_model) because /reasoning --global
+        # and _apply_reasoning_for_new_model read/write it — when that map is populated it
+        # wins; otherwise resolution goes through upstream's chokepoint unchanged.
         from hermes_constants import resolve_reasoning_config
-        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+        self._reasoning_effort_by_model: dict = (
+            CLI_CONFIG["agent"].get("reasoning_effort_by_model", {}) or {}
+        )
+        if self._reasoning_effort_by_model:
+            self.reasoning_config = _resolve_reasoning_for_model(
+                self.model or "",
+                self._reasoning_effort_by_model,
+                CLI_CONFIG["agent"].get("reasoning_effort", ""),
+            )
+        else:
+            self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
@@ -266,7 +286,11 @@ class CLIInitMixin:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        # FORK: one tool call per turn so the model emits a fresh <think> block before each
+        # tool. See AIAgent.__init__ for the full rationale.
+        self.interleaved_thinking = bool(CLI_CONFIG["agent"].get("interleaved_thinking", False))
 
+        # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")
         self._providers_only = pr.get("only")
@@ -303,6 +327,10 @@ class CLIInitMixin:
         self._prompt_start_time: Optional[float] = None
         self._prompt_duration: float = 0.0
         self._last_turn_finished_at: Optional[float] = None
+        # FORK: context_tokens at the start of the current turn, so the status bar can show a
+        # signed per-turn delta (new content vs a post-idle cache refresh). None until the
+        # first turn establishes a baseline.
+        self._turn_start_context_tokens: Optional[int] = None
         self._init_session_store()
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
@@ -380,6 +408,9 @@ class CLIInitMixin:
         self._slash_confirm_state = self._model_picker_state = None
         self._clarify_deadline = self._sudo_deadline = self._approval_deadline = self._slash_confirm_deadline = 0
         self._approval_lock = threading.Lock()
+        # FORK: active /reasoning picker state — same dict-based modal pattern as the /model
+        # picker and upstream's Ctrl+P command palette. None when the picker is closed.
+        self._reasoning_picker_state: dict | None = None
         try:  # composer placeholder chosen once so it stays stable on screen
             from hermes_cli.tips import get_random_composer_placeholder
             self._composer_placeholder = get_random_composer_placeholder()
@@ -438,6 +469,11 @@ class CLIInitMixin:
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        # FORK: session-title badge (the yellow right-aligned chip) in the status bar. On by
+        # default (upstream behaviour); display.status_bar_session_title: false hides it.
+        self._status_bar_session_title_visible = bool(
+            CLI_CONFIG["display"].get("status_bar_session_title", True)
+        )
         # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
         # Off by default: prompt_toolkit's standard emacs bindings.
         self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
