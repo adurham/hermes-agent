@@ -97,3 +97,4 @@ cd69be690997ba0391e80a8e2baa5c5d57cbedd7	2026-09-25T17:37:43-05:00	fix(tui-gatew
 7131fe3f03ce3bf51c6a8c4139aaaef0857276df	2026-09-25T12:16:52-05:00	fix(desktop): warn when the GUI is older than the backend (reverse contract check)
 a9756158697202063e90415b72223ae541c42837	2026-09-25T12:24:03-05:00	fix(uninstall): sweep macOS launchd dashboard jobs and caches in the full wipe
 a5e95fb27edcb02726618d06d6f80a2ceae261b3	2026-09-25T16:05:01-05:00	fix(desktop): find UGit's bundled git.exe in the Windows resolver (#61494)
+ab0e060bd77c73bd944dea4aea4c5e1aebfdeb01	2026-09-25T18:08:03-05:00	fix(desktop): sort imports in git-binary-candidates test
