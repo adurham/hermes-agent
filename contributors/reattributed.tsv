@@ -145,3 +145,4 @@ a79311ba9581886e3fe58243018099a0694e5740	2026-09-25T00:10:48-05:00	test(tui_gate
 15e26c76f35d28afc77bf924088cbb6b5c2781e9	2026-09-24T23:10:15-05:00	fix(dashboard): list --port 0 serve backends in --status
 cc9b8eb3ab191863357ed0cad439df4ba3ef5ec0	2026-09-24T21:15:57-05:00	fix(desktop): satisfy backend resolution import ordering
 1753fe16128a9f4bd8d3bccc7f16407436d87f4f	2026-09-24T21:16:24-05:00	fix(desktop): order backend resolution imports
+ed9a63bda414b21770a751bfa85380bc636bf88d	2026-09-24T23:44:26-05:00	fix(desktop): skip the installed runtime when ignore-existing is set
