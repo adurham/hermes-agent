@@ -124,3 +124,4 @@ e2b1c6679192263e863dc19bd8e4b95f94eadc36	2026-09-25T18:56:53-05:00	test(desktop)
 a5e949bcefdcb60052d6071a085222c5a0a52001	2026-09-25T17:19:20-05:00	fix(desktop): sort imports in background-complete-event test
 2bc6cc421a6a4d2af9b4d3a9b456362aa2d7e0fe	2026-09-25T12:05:56-05:00	fix(desktop): trust macOS keychain CAs for remote gateways like Windows
 05426e04f8112f67b4352b82386c051ce4076505	2026-09-25T17:28:31-05:00	fix(desktop): sort the system-ca import in main
+a9972dc3f9156df789f82a9835c4fb2063203b23	2026-09-25T11:37:28-05:00	fix: profile terminal.cwd beats the desktop's inherited workspace cwd
