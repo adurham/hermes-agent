@@ -403,11 +403,23 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                 t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
-        live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
+        # `pgrep -c` is GNU-only (BSD/macOS pgrep has no -c and prints nothing to
+        # stdout), so count the runner's processes directly from ps. Parsed in
+        # Python rather than with an sh/awk pipeline: a pipeline's own shell inherits
+        # this pid and its command line would contain the search string, inflating
+        # the count by one.
+        ps_out = subprocess.run(
+            ["ps", "-o", "pid=", "-o", "ppid=", "-o", "command=", "-ax"],
             capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        ).stdout
+        runner = "hermes" + "_kernel_runner"  # not a literal in this process's argv
+        live = sum(
+            1 for line in ps_out.splitlines()
+            if len(parts := line.split(None, 2)) == 3
+            and parts[1] == str(os.getpid())
+            and runner in parts[2]
+        )
+        self.assertEqual(live, 1)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

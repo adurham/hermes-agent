@@ -9,6 +9,11 @@ from tools.bot_desktop import resources, runtime
 
 
 def test_start_refuses_and_status_explains_when_memory_is_short(tmp_path, monkeypatch):
+    # Bot Desktop is a Linux-gateway feature: status() substitutes
+    # MemoryInfo(None, None) and start() raises "runs on Linux gateway hosts only"
+    # when is_supported_host() is False, so on macOS/Windows the memory gate is
+    # never reached. Pin the host so the gate itself is what's under test.
+    monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bd")
     monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
     monkeypatch.setattr(runtime, "_launcher_pid", lambda: None)
