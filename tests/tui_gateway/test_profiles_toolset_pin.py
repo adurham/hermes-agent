@@ -22,7 +22,13 @@ def _pin_and_resolve(cfg: dict, names: list[str]) -> tuple[set[str], set[str] | 
 def test_toolset_pin_is_what_the_runtime_reads():
     cfg: dict = {}
     resolved, pinned = _pin_and_resolve(cfg, ["web"])
-    assert resolved == {"web"}, f"runtime resolved {sorted(resolved)} for a [web] pin"
+    # `resolved` may carry non-configurable core toolsets the runtime recovers
+    # into every platform set (see _recover_platform_native_toolsets); the pin's
+    # job is that `web` resolves and nothing *configurable* else does.
+    assert "web" in resolved, f"runtime resolved {sorted(resolved)} for a [web] pin"
+    from hermes_cli.tools_config import _configurable_keys
+    leaked = resolved & (_configurable_keys() - {"web"})
+    assert not leaked, f"configurable toolsets leaked past a [web] pin: {sorted(leaked)}"
     assert pinned == {"web"}
     assert "enabled_toolsets" not in (cfg.get("tools") or {}), "writer must not leave the phantom key behind"
 
@@ -33,7 +39,8 @@ def test_toolset_pin_round_trips_a_then_b_then_a(second):
     first, _ = _pin_and_resolve(cfg, ["web"])
     _pin_and_resolve(cfg, second)
     again, pinned = _pin_and_resolve(cfg, ["web"])
-    assert first == again == {"web"}
+    assert first == again, f"pin did not round-trip: {sorted(first)} -> {sorted(again)}"
+    assert "web" in again
     assert pinned == {"web"}
 
 

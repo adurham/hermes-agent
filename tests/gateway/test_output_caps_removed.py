@@ -42,11 +42,23 @@ def test_optional_wire_caps_omitted_required_and_internal_preserved():
     from agent.transports.anthropic import AnthropicTransport
 
     messages = [{"role": "user", "content": "fixture"}]
+    # FORK: a chat-completions proxy serving a Claude-family model still needs
+    # max_tokens on the wire (the Messages API treats it as mandatory, and
+    # proxies default as low as 4096 output tokens). `anthropic_max_output` is
+    # the model-gated last-resort fallback that supplies it — see
+    # _apply_max_tokens. No user cap is involved: this value comes from the
+    # internal per-model output table, not from config.
     chat = ChatCompletionsTransport().build_kwargs(
         "claude-fixture", messages, anthropic_max_output=65536,
         max_tokens_param_fn=lambda value: {"max_tokens": value},
     )
-    assert "max_tokens" not in chat
+    assert chat["max_tokens"] == 65536
+    # A non-Anthropic model with no cap and no fallback omits it entirely.
+    plain = ChatCompletionsTransport().build_kwargs(
+        "fixture", messages,
+        max_tokens_param_fn=lambda value: {"max_tokens": value},
+    )
+    assert "max_tokens" not in plain
     from providers import get_provider_profile
     custom = ChatCompletionsTransport().build_kwargs(
         "fixture", messages, provider_profile=get_provider_profile("custom"),
