@@ -172,3 +172,4 @@ b24b8149ddfacf19e68f4cbdc733e00a59d758b3	2026-09-24T22:03:31-05:00	fix(icons): g
 980318e68954777b08333e7044beeee4518344cf	2026-09-24T23:47:46-05:00	fix(install): detect arch-suffixed desktop builds on repair/upgrade reruns (#94703)
 5ef8d96554993c98bd3358de2d6eb0a3419c81ce	2026-09-24T23:47:46-05:00	fix(bootstrap-installer): resolve linux-arm64-unpacked desktop builds (#94703)
 ce750ff151835ffb66b353b668f6385f576f45f5	2026-09-25T18:05:09-05:00	fix(title): strip a quoted path's line-range suffix in the attachment-only guard
+41de397af68033a3ec692af49bee4146460bcba8	2026-09-25T11:46:05-05:00	fix(serve): announce both ready tokens so a stale packaged parser still boots
