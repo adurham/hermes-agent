@@ -121,3 +121,4 @@ e2b1c6679192263e863dc19bd8e4b95f94eadc36	2026-09-25T18:56:53-05:00	test(desktop)
 02f57212a4cbd305e02d7b0832a585d4a5205692	2026-09-25T18:54:00-05:00	test: check guarded paths with strings, not pathlib
 1f20117b3359f4f7d587f8518dc8dbbcb2def6a3	2026-09-25T11:26:50-05:00	fix(desktop): keep /bg's local action spec canonical over the catalog
 2658607d540c0250e76385a51968d9bcdbc20b38	2026-09-25T11:36:05-05:00	fix(desktop): import GatewayEvent type in the background.complete test
+a5e949bcefdcb60052d6071a085222c5a0a52001	2026-09-25T17:19:20-05:00	fix(desktop): sort imports in background-complete-event test
