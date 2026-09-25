@@ -1,13 +1,14 @@
 name: jev-skill-router
 repo: https://github.com/DoGMaTiiC/hermes-jev
-sha: dfa109f268358b36068c7e436b819858f8913d7a
+sha: f0bd8608d1d29c23a3a0a7318985ddaa15a29ece
 subdir: plugins/jev-skill-router
 description: Names the one skill from your live roster that fits the turn, before the model call —
   typed routing via TypeSafe Jev (one choice over the roster plus gate booleans, then a re-read
   of the shortlist with per-candidate fits), with both thresholds applied in code. Says nothing
-  when nothing fits; opt-in, fail-open, stdlib only, no Node. Disclosure — on eligible turns it
-  sends your message (up to 4,000 chars) plus skill names and short SKILL.md excerpts from your
-  local roster to TypeSafe or your configured gateway, using your key.
+  when nothing fits; opt-in, fail-open, stdlib only, no Node; no redirects, proxy env ignored,
+  payload capped. Disclosure — on eligible turns it sends your message (up to 4,000 chars) plus
+  skill names and short SKILL.md excerpts from your local roster to TypeSafe, OpenRouter, or
+  your configured gateway, using your key.
 maintainer: DoGMaTiiC
 tier: community
 category: automation
