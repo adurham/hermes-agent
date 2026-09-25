@@ -22,3 +22,4 @@ df293160cea1c7356d82ace3ad51b1036e31ad2d	2026-09-24T19:59:29-05:00	fix(desktop):
 b200d3a690ccfd2dea12b478c62501076cf0ffa1	2026-09-24T20:03:11-05:00	fix(desktop): gate the HUD resize frame's hit test on engagement (#108793)
 490037b87d887ed95f344cf8444695409ffdfe9d	2026-09-24T21:22:37-05:00	fix(desktop): statusbar timer shows focus-since on tiles and says so
 0e31fd3b45e123c91f54ecf4860f989748604101	2026-09-24T19:34:05-05:00	test(desktop): type the session-timer element props instead of casting unknown
+fe3c6837be5389bb28717f9b8c1c0aaf7a10c3bb	2026-09-24T23:23:28-05:00	fix(desktop): gate the session.info branch write on the selected session
