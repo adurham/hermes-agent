@@ -65,6 +65,22 @@ def curator_status_env(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _capture_status(curator_cli) -> str:
+    """Run `hermes curator status` against the fixture's isolated HERMES_HOME and
+    return its stdout.
+
+    The merge that absorbed upstream's test-prune lanes dropped this helper (the
+    fork's own version of the file defines it at ``12feabce13``), leaving the two
+    blocked-writes tests below with a NameError at call time — a collection-clean
+    file that fails only when run. Restored from the fork's copy.
+    """
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = curator_cli._cmd_status(Namespace())
+    assert rc == 0
+    return buf.getvalue()
+
+
 def test_list_unmanaged_itemizes_and_explains(curator_status_env):
     """`status` gives the count; this gives the names plus WHY each is
     unmanaged, so the user can decide what to adopt."""

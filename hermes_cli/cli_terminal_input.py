@@ -552,9 +552,16 @@ def _estimate_tui_input_height(
     """
     from cli import _int_or
     try:
-        from prompt_toolkit.utils import get_cwidth
+        # FORK: agent.display.display_cwidth is VS-16-safe — get_cwidth undercounts an
+        # emoji base codepoint followed by VARIATION SELECTOR-16 (U+FE0F), which several
+        # registered tool emoji are exactly (e.g. process's gear). A mis-sized TextArea
+        # leaves stale cells at the bottom, the failure this function exists to prevent.
+        from agent.display import display_cwidth as get_cwidth
     except Exception:
-        get_cwidth = lambda value: len(value or "")  # type: ignore[assignment]
+        try:
+            from prompt_toolkit.utils import get_cwidth
+        except Exception:
+            get_cwidth = lambda value: len(value or "")  # type: ignore[assignment]
 
     columns = max(1, _int_or(terminal_columns or 0, 0))
     prompt_width = max(0, get_cwidth(prompt_text or ""))

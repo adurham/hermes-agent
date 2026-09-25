@@ -201,6 +201,10 @@ def _cli_config_defaults():
         "agent": {
             "max_turns": 500, "verbose": False, "system_prompt": "", "prefill_messages_file": "",  # max_turns shared with subagents
             "reasoning_effort": "", "service_tier": "",
+            # FORK keys the CLI reads: per-model reasoning-effort overrides, the
+            # interleaved-thinking + cache-strip flags, and the personality table.
+            "reasoning_effort_by_model": {}, "interleaved_thinking": False,
+            "strip_cache_on_overload": False,
             "personalities": {},  # user overrides merged by name over hermes_cli.personality builtins
         },
         "display": {
@@ -213,10 +217,12 @@ def _cli_config_defaults():
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,
             "persist_prompts": True,  # one-line summary of resolved modal prompts into scrollback
+            "interrupt_key": "ctrl-c",  # FORK: ctrl-c (default) | escape | both
             "skin": "default",
         },
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
+        "clarify": {"timeout": 120},  # FORK: seconds the clarify tool waits before unblocking
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
         "delegation": {"max_iterations": 45, "model": "", "provider": "", "base_url": "", "api_key": ""},
         "onboarding": {"seen": {}},  # first-touch hint flags (agent/onboarding.py), latched once shown

@@ -49,9 +49,18 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _exit_watchdog_timeout() -> float:
-    """``HERMES_EXIT_WATCHDOG_S`` as a float (default 30; ``0`` disables)."""
+    """``HERMES_EXIT_WATCHDOG_S`` as a float (default 60; ``0`` disables).
+
+    FORK: 60, not upstream's 30. The budget must exceed the worst-case sum of cleanup
+    steps between arming and the process actually exiting: shutdown_mcp_servers() alone
+    can block 15s (future.result(timeout=15)) and confirm_and_commit()'s memory-extraction
+    LLM call defaults to 30s — 45s worst case before shutdown_memory_provider() even runs.
+    A 30s watchdog guillotined that combination outright, os._exit(0)-ing before
+    _print_exit_summary() (cost report + --resume hint) or the memory-confirm UI printed
+    anything.
+    """
     from cli import _float_env
-    return _float_env("HERMES_EXIT_WATCHDOG_S", 30.0)
+    return _float_env("HERMES_EXIT_WATCHDOG_S", 60.0)
 
 
 def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = False) -> None:
