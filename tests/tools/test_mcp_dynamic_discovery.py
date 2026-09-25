@@ -9,6 +9,7 @@ import pytest
 
 from tools.mcp_tool import MCPServerTask
 from tools.mcp_tool_registration import _register_server_tools
+from tools.mcp_tool_schema import mcp_registered_tool_name
 from tools.registry import ToolRegistry
 
 
@@ -87,11 +88,11 @@ class TestRefreshTools:
 
         # Seed initial state: one old tool registered
         mock_registry.register(
-            name="mcp__live_srv__old_tool", toolset="mcp-live_srv", schema={},
+            name=mcp_registered_tool_name("live_srv", "old_tool"), toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
             description="", emoji="",
         )
-        server._registered_tool_names = ["mcp__live_srv__old_tool"]
+        server._registered_tool_names = [mcp_registered_tool_name("live_srv", "old_tool")]
 
         # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
@@ -103,11 +104,11 @@ class TestRefreshTools:
 
         with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
-            assert "mcp__live_srv__old_tool" not in mock_registry.get_all_tool_names()
-            assert "mcp__live_srv__old_tool" not in resolve_toolset("live_srv")
-            assert "mcp__live_srv__new_tool" in mock_registry.get_all_tool_names()
-            assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
-            assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
+            assert mcp_registered_tool_name("live_srv", "old_tool") not in mock_registry.get_all_tool_names()
+            assert mcp_registered_tool_name("live_srv", "old_tool") not in resolve_toolset("live_srv")
+            assert mcp_registered_tool_name("live_srv", "new_tool") in mock_registry.get_all_tool_names()
+            assert mcp_registered_tool_name("live_srv", "new_tool") in resolve_toolset("live_srv")
+            assert server._registered_tool_names == [mcp_registered_tool_name("live_srv", "new_tool")]
 
     @pytest.mark.asyncio
     async def test_restart_with_none_session_skips_without_crash(self, mock_registry):
@@ -128,9 +129,9 @@ class TestRefreshTools:
 
             await server._refresh_tools()
 
-            assert "mcp__restart_srv__old_tool" in mock_registry.get_all_tool_names()
-            assert "mcp__restart_srv__old_tool" in resolve_toolset("restart_srv")
-            assert server._registered_tool_names == ["mcp__restart_srv__old_tool"]
+            assert mcp_registered_tool_name("restart_srv", "old_tool") in mock_registry.get_all_tool_names()
+            assert mcp_registered_tool_name("restart_srv", "old_tool") in resolve_toolset("restart_srv")
+            assert server._registered_tool_names == [mcp_registered_tool_name("restart_srv", "old_tool")]
             assert len(server._tools) == 1
 
     @pytest.mark.asyncio
@@ -142,11 +143,11 @@ class TestRefreshTools:
         server = MCPServerTask("reconnect_srv")
         server._config = {}
         server._tools = [_make_mcp_tool("old_tool", "")]
-        server._registered_tool_names = ["mcp__reconnect_srv__old_tool"]
+        server._registered_tool_names = [mcp_registered_tool_name("reconnect_srv", "old_tool")]
         new_tool = _make_mcp_tool("new_tool", "")
         with patch("tools.registry.registry", mock_registry):
             mock_registry.register(
-                name="mcp__reconnect_srv__old_tool", toolset="mcp-reconnect_srv",
+                name=mcp_registered_tool_name("reconnect_srv", "old_tool"), toolset="mcp-reconnect_srv",
                 schema={}, handler=lambda x: x, check_fn=lambda: True,
                 is_async=False, description="", emoji="",
             )
@@ -159,14 +160,14 @@ class TestRefreshTools:
             assert task.exception() is None
             assert task not in server._pending_refresh_tasks
             assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
-            assert server._registered_tool_names == ["mcp__reconnect_srv__old_tool"]
+            assert server._registered_tool_names == [mcp_registered_tool_name("reconnect_srv", "old_tool")]
 
             server.session = SimpleNamespace(
                 list_tools=AsyncMock(return_value=SimpleNamespace(tools=[new_tool]))
             )
             await server._refresh_tools()
-            assert server._registered_tool_names == ["mcp__reconnect_srv__new_tool"]
-            assert "mcp__reconnect_srv__old_tool" not in mock_registry.get_all_tool_names()
+            assert server._registered_tool_names == [mcp_registered_tool_name("reconnect_srv", "new_tool")]
+            assert mcp_registered_tool_name("reconnect_srv", "old_tool") not in mock_registry.get_all_tool_names()
 
     @pytest.mark.asyncio
     async def test_refresh_after_session_restored_succeeds(self, mock_registry):
@@ -184,9 +185,9 @@ class TestRefreshTools:
                 list_tools=AsyncMock(return_value=SimpleNamespace(tools=[_make_mcp_tool("live_tool", "")]))
             )
             await server._refresh_tools()
-            assert "mcp__restored_srv__live_tool" in mock_registry.get_all_tool_names()
-            assert "mcp__restored_srv__live_tool" in resolve_toolset("restored_srv")
-            assert server._registered_tool_names == ["mcp__restored_srv__live_tool"]
+            assert mcp_registered_tool_name("restored_srv", "live_tool") in mock_registry.get_all_tool_names()
+            assert mcp_registered_tool_name("restored_srv", "live_tool") in resolve_toolset("restored_srv")
+            assert server._registered_tool_names == [mcp_registered_tool_name("restored_srv", "live_tool")]
 
 
 class TestMessageHandler:
