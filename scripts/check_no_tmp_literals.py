@@ -222,6 +222,8 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
 _BASELINE: dict[str, int] = {
     # a tree listing inside a fenced code block; an inline marker would render on the page
     "website/docs/getting-started/nix-setup.md": 1,
+    # historical changelog prose (incident narratives about past /tmp use), not model-facing
+    "FORK.md": 20,
 }
 
 

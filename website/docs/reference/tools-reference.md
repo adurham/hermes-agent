@@ -85,7 +85,7 @@ token). Other sessions do not see it.
 
 ## `cross_session` toolset
 
-Opt-in toolset (not loaded in the default `hermes-cli` set) — see [Local Agent Messaging](/user-guide/features/agent-messaging) for the full behavior, delivery guarantees, and inbound-policy config. Add via `--toolsets cross_session` or include `cross_session` in your `toolsets:` config.
+Opt-in toolset (not loaded in the default `hermes-cli` set) — see [Local Agent Messaging](../user-guide/features/agent-messaging.md) for the full behavior, delivery guarantees, and inbound-policy config. Add via `--toolsets cross_session` or include `cross_session` in your `toolsets:` config.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|

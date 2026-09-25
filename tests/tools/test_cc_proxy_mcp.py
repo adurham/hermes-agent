@@ -7,6 +7,8 @@ Hermes MCP tool calls and Claude Code's proxy protocol.
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import mcp.client.streamable_http
 import mcp_types
 import tools.bridges.cc_proxy_mcp as cc_proxy_mcp
@@ -63,6 +65,7 @@ class TestResolveKeychainService:
     stale/missing) file backend instead of the real, working credential.
     """
 
+    @pytest.mark.macos_only
     def test_finds_suffixed_service_name(self):
         """dump-keychain output containing a suffixed entry is matched."""
         dump_output = (
@@ -75,6 +78,7 @@ class TestResolveKeychainService:
             service = cc_proxy_mcp._resolve_keychain_service()
         assert service == "Claude Code-credentials-3775e6c9"
 
+    @pytest.mark.macos_only
     def test_prefers_exact_bare_name_when_present(self):
         """The un-suffixed legacy name wins if it's also present."""
         dump_output = (
@@ -86,6 +90,7 @@ class TestResolveKeychainService:
             service = cc_proxy_mcp._resolve_keychain_service()
         assert service == "Claude Code-credentials"
 
+    @pytest.mark.macos_only
     def test_returns_none_when_no_match(self):
         dump_output = '    "svce"<blob>="Totally Unrelated"\n'
         with patch("platform.system", return_value="Darwin"), \
@@ -98,6 +103,7 @@ class TestResolveKeychainService:
             service = cc_proxy_mcp._resolve_keychain_service()
         assert service is None
 
+    @pytest.mark.macos_only
     def test_returns_none_on_dump_failure(self):
         with patch("platform.system", return_value="Darwin"), \
              patch("subprocess.run", return_value=_fake_run_result(1, "", "denied")):
@@ -109,6 +115,7 @@ class TestCredStoreKeychainBackend:
     """CredStore must use the resolved (possibly suffixed) service name for
     every keychain operation, not the bare KEYCHAIN_SERVICE constant."""
 
+    @pytest.mark.macos_only
     def test_uses_resolved_suffixed_service_for_read(self, tmp_path):
         missing_file = tmp_path / "does-not-exist" / ".credentials.json"
         find_password_calls = []
@@ -143,6 +150,7 @@ class TestCredStoreKeychainBackend:
             service_arg = cmd[cmd.index("-s") + 1]
             assert service_arg == "Claude Code-credentials-3775e6c9"
 
+    @pytest.mark.macos_only
     def test_falls_back_to_file_backend_when_no_keychain_match(self, tmp_path):
         missing_file = tmp_path / "does-not-exist" / ".credentials.json"
 
