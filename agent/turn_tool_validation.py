@@ -91,26 +91,11 @@ def validate_tool_calls(
     # Repair mismatched tool names before validating (model hallucinations).
     for tc in tool_calls:
         if tc.function.name not in valid_names:
-            original_name = tc.function.name
-            repaired = agent._repair_tool_call(original_name)
+            repaired = agent._repair_tool_call(tc.function.name)
             if repaired:
-                # FORK: route through _vprint so a child agent's patched _print_fn (e.g. the
-                # swarm board's note interceptor) captures the line into its row instead of
-                # letting it scroll past the live board. CC alias hits are well-known and
-                # silent -- ``_repair_tool_call`` sets ``_last_repair_silent`` for them (see
-                # agent/cc_aliases.py); without honoring it every OAuth-path Read/Bash/Edit
-                # call prints a spurious "Auto-repaired" line.
-                if not getattr(agent, "_last_repair_silent", False):
-                    agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{original_name}' -> '{repaired}'",
-                                  force=True, diagnostic=True)
+                agent._vprint(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'",
+                              force=True, diagnostic=True)
                 tc.function.name = repaired
-                # FORK: a CC alias hit also needs its ARGS translated. The OAuth/CC path
-                # advertises CC canonical names on the wire, so the model emits the CC arg
-                # shape too ({"file_path": ...}, not {"path": ...}). handle_function_call's
-                # cc_aliases.adapt_tool_use only fires while the CC NAME is still present --
-                # and the rename above already replaced it -- so without this the untranslated
-                # args reach the handler and read_file fails on a missing 'path'.
-                agent._translate_cc_args_after_repair(tc, original_name)
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid
     # ones; voiding the turn discards real work. Strikes advance only when a
