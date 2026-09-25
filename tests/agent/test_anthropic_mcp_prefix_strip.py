@@ -273,17 +273,12 @@ class TestAnthropicOAuthOutgoingPrefix:
     def test_oauth_adds_double_prefix_to_bare_tool_name(self):
         """OAuth + bare name -> ``mcp__`` prefix added.
 
-        FORK NOTE: uses ``some_custom_tool`` rather than ``read_file``,
-        ``session_search``, or ``web_search``. In this fork the 5 builtins in
-        ``cc_aliases.HERMES_TO_CC`` (read_file→Read, terminal→Bash, …) are
-        renamed to their Claude Code canonical names for billing mimicry and
-        are deliberately NOT mcp__-prefixed; ``session_search``/``memory`` are
-        separately aliased by the upstream #65365 classifier fix (see
-        TestAnthropicOAuthClassifierAlias below); ``web_search`` is reserved
-        for Anthropic's native server-side tool swap and never mcp__-prefixed
-        either. This test picks a bare name with NONE of those special cases
-        so it isolates the plain mcp__ normalization that applies to every
-        OTHER tool.
+        FORK NOTE: uses ``some_custom_tool`` rather than
+        ``session_search`` or ``web_search`` — those are special-cased
+        elsewhere (upstream's #65365 classifier alias and the fork's native
+        server-side web-search swap respectively). This test picks a bare
+        name with NONE of those special cases so it isolates the plain mcp__
+        normalization that applies to every other tool.
         """
         kwargs = self._build([{
             "type": "function",
@@ -296,13 +291,9 @@ class TestAnthropicOAuthOutgoingPrefix:
     def test_oauth_no_single_underscore_mcp_on_wire(self):
         """Mixed set: every wire name is bare-free of single-underscore mcp_.
 
-        FORK NOTE: CC-aliased builtins (read_file→Read, terminal→Bash) ride the
-        CC-canonical billing path and are NOT mcp__-prefixed; genuine MCP /
-        other tools get mcp__. The core invariant still holds either way:
-        nothing single-underscore ``mcp_`` reaches the wire. Uses
-        ``some_custom_tool`` (not ``session_search``/``web_search``) to avoid
-        the separate upstream #65365 classifier alias and the native
-        server-tool swap, both covered elsewhere in this file.
+        FORK NOTE: uses ``some_custom_tool`` (not ``session_search``/
+        ``web_search``) to avoid the upstream #65365 classifier alias and the
+        native server-tool swap, both covered elsewhere in this file.
         """
         kwargs = self._build([
             {"type": "function", "function": {"name": "some_custom_tool",
@@ -313,8 +304,8 @@ class TestAnthropicOAuthOutgoingPrefix:
                                               "description": "z", "parameters": {}}},
         ])
         names = sorted(t["name"] for t in kwargs["tools"])
-        # some_custom_tool + mcp_linear → mcp__; read_file → Read (CC alias).
-        assert names == ["Read", "mcp__linear_get_issue", "mcp__some_custom_tool"]
+        # All three land on the double-underscore form.
+        assert names == ["mcp__linear_get_issue", "mcp__read_file", "mcp__some_custom_tool"]
         # The core invariant: NOTHING single-underscore reaches the wire.
         for n in names:
             assert not (n.startswith("mcp_") and not n.startswith("mcp__"))
@@ -410,12 +401,9 @@ class TestAnthropicOAuthClassifierAlias:
         """Non-aliased tool_choice names still need the mcp__ prefix under
         OAuth (pre-existing GH-25255 invariant, now routed consistently).
 
-        Uses ``some_custom_tool``, not ``read_file`` — read_file IS one of
-        the fork's 5 CC-aliased builtins (HERMES_TO_CC), so it deliberately
-        does NOT get mcp__-prefixed; it becomes ``Read`` via
-        replace_with_cc_canonical instead. Asserting mcp__ on it would
-        contradict this file's own TestAnthropicOAuthClassifierAlias
-        pattern of picking bare names with none of the special cases.
+        Uses ``some_custom_tool``, not ``session_search`` — that one is
+        aliased by the upstream #65365 classifier fix and is covered in
+        TestAnthropicOAuthClassifierAlias.
         """
         kwargs = self._build(
             [self._tool("some_custom_tool")],

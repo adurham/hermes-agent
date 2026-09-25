@@ -48,9 +48,8 @@ _BUILD_KWARG_DEFAULTS = {
     "context_length": None, "base_url": None, "fast_mode": False, "drop_context_1m_beta": False,
     # FORK params (see agent/anthropic_adapter.py::build_anthropic_kwargs):
     # tool_search_config — see _apply_tool_search; None/disabled = no transformation.
-    # session_id — folded into the metadata.user_id blob for per-session correlation.
     # cache_tools / cache_ttl — native tools[] cache-control layout.
-    "tool_search_config": None, "session_id": None, "cache_tools": False, "cache_ttl": "5m",
+    "tool_search_config": None, "cache_tools": False, "cache_ttl": "5m",
 }
 
 

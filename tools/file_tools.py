@@ -1293,9 +1293,8 @@ def _handle_read_file(args, **kw):
     # string to read_file_tool — otherwise it surfaces as "File not found: "
     # with an empty path and a useless similar-files list pulled from cwd.
     # This also catches the case where a CC-shaped tool_use ("file_path")
-    # slipped past the alias translation (see agent/cc_aliases.py and the
-    # _repair_tool_call site in run_agent.py that translates CC args after
-    # a name-repair pass).
+    # shows up (model habit from Claude Code's schema) instead of hermes's
+    # "path" argument.
     raw_path = args.get("path")
     if raw_path is None and "file_path" in args:
         return tool_error(
@@ -1348,8 +1347,8 @@ def _handle_write_file(args, **kw):
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
     # CC-shaped Edit slip-through guard: explicit error beats the cryptic
-    # "path required" the model gets today when an adapter miss leaves
-    # ``file_path`` in the args dict.
+    # "path required" the model gets today when a model emits CC's
+    # ``file_path`` argument name.
     if not args.get("path") and "file_path" in args:
         return tool_error(
             "patch: received CC-shaped argument 'file_path' instead of "

@@ -55,11 +55,6 @@ class ForkForwardersMixin:
         from agent.fork.skill_recall import record_loaded_skill
         return record_loaded_skill(self, name, tool_result)
 
-    def _translate_cc_args_after_repair(self, tc, original_name: str) -> None:
-        """Forwarder — see ``agent.fork.anthropic_recovery.translate_cc_args_after_repair``."""
-        from agent.fork.anthropic_recovery import translate_cc_args_after_repair
-        return translate_cc_args_after_repair(self, tc, original_name)
-
     def _tools_signature(self) -> str:
         """Forwarder — see ``agent.fork.diagnostics.tools_signature``."""
         from agent.fork.diagnostics import tools_signature
