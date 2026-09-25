@@ -124,6 +124,7 @@ test('host script forwards git argv unchanged and sets CREATE_NO_WINDOW', () => 
         HERMES_GIT_NO_CONSOLE: '1'
       }
     })
+
     const parsed = JSON.parse(out)
 
     assert.deepEqual(parsed.argv, [gitBin, ...gitArgs])

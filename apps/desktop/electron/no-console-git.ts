@@ -73,28 +73,38 @@ export function resolveNoConsolePython({
   roots?: string[]
   fileExists?: (candidate: string) => boolean
 }): string | null {
-  if (!isWindows) {return null}
+  if (!isWindows) {
+    return null
+  }
 
   const candidates: string[] = []
   const override = env.HERMES_DESKTOP_PYTHON
 
-  if (override) {candidates.push(override)}
+  if (override) {
+    candidates.push(override)
+  }
 
   const hermesRoot = env.HERMES_DESKTOP_HERMES_ROOT
   const searchRoots = hermesRoot ? [hermesRoot, ...roots] : roots
 
   for (const root of searchRoots) {
-    if (!root) {continue}
+    if (!root) {
+      continue
+    }
 
     candidates.push(path.win32.join(root, '.venv', 'Scripts', 'python.exe'))
     candidates.push(path.win32.join(root, 'venv', 'Scripts', 'python.exe'))
   }
 
   for (const candidate of candidates) {
-    if (!candidate || isPythonW(candidate) || isWindowsAppsStub(candidate)) {continue}
+    if (!candidate || isPythonW(candidate) || isWindowsAppsStub(candidate)) {
+      continue
+    }
 
     try {
-      if (fileExists(candidate)) {return candidate}
+      if (fileExists(candidate)) {
+        return candidate
+      }
     } catch {
       continue
     }
@@ -107,7 +117,9 @@ export function ensureNoConsoleGitScript(dir = os.tmpdir()) {
   const scriptPath = path.join(dir, 'hermes-no-console-git.py')
 
   try {
-    if (fs.readFileSync(scriptPath, 'utf8') === NO_CONSOLE_GIT_SCRIPT) {return scriptPath}
+    if (fs.readFileSync(scriptPath, 'utf8') === NO_CONSOLE_GIT_SCRIPT) {
+      return scriptPath
+    }
   } catch {
     // Missing or unreadable: rewrite below.
   }
@@ -118,11 +130,15 @@ export function ensureNoConsoleGitScript(dir = os.tmpdir()) {
 }
 
 export function windowsGitHost(isWindows = process.platform === 'win32'): NoConsoleGitHost | null {
-  if (!isWindows) {return null}
+  if (!isWindows) {
+    return null
+  }
 
   const pythonBin = resolveNoConsolePython({ isWindows: true })
 
-  if (!pythonBin) {return null}
+  if (!pythonBin) {
+    return null
+  }
 
   try {
     return { isWindows: true, pythonBin, scriptPath: ensureNoConsoleGitScript() }
@@ -135,12 +151,16 @@ export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: str
   const env: NodeJS.ProcessEnv = {}
 
   for (const [key, value] of Object.entries(base || {})) {
-    if (value !== undefined) {env[key] = value}
+    if (value !== undefined) {
+      env[key] = value
+    }
   }
 
   env.HERMES_GIT_ARGV0 = JSON.stringify(gitBin || 'git')
 
-  if (!env.GIT_TERMINAL_PROMPT) {env.GIT_TERMINAL_PROMPT = '0'}
+  if (!env.GIT_TERMINAL_PROMPT) {
+    env.GIT_TERMINAL_PROMPT = '0'
+  }
 
   return env
 }
@@ -242,7 +262,9 @@ export function execGit(
     let settled = false
 
     const finish = (error?: Error, code: number | null = child.exitCode) => {
-      if (settled) {return}
+      if (settled) {
+        return
+      }
 
       settled = true
 
@@ -272,12 +294,16 @@ export function execGit(
       stderr += chunk.toString()
     })
     child.once('error', error => {
-      if (timer) {clearTimeout(timer)}
+      if (timer) {
+        clearTimeout(timer)
+      }
 
       finish(error)
     })
     child.once('close', code => {
-      if (timer) {clearTimeout(timer)}
+      if (timer) {
+        clearTimeout(timer)
+      }
 
       finish(undefined, code)
     })

@@ -273,6 +273,7 @@ function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: n
       env: noninteractiveGitEnv(),
       stdio: ['ignore', 'ignore', 'pipe']
     })
+
     const child = spawn(spec.command, spec.args, spec.options)
 
     let stderr = ''

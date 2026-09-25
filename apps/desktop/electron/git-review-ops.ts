@@ -59,6 +59,7 @@ function gitFor(cwd, gitBin) {
   const binary = simpleGitBinary(gitBin, host)
   const binaryParts = Array.isArray(binary) ? binary : [binary]
   const unsafe = binaryParts.some(part => /\s/.test(part)) || Boolean(gitBin && /\s/.test(gitBin))
+
   const git = simpleGit({
     baseDir: cwd,
     binary,
