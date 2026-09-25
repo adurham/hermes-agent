@@ -110,3 +110,4 @@ d10afb5a8851be2b0f6fe5d3b04022c3a8877d6c	2026-09-25T18:52:11-05:00	fix(tests): i
 3521034ed6b282ba6126b73bb04e3c958570432d	2026-09-24T18:51:45-05:00	fix(desktop): isolate Inbox session actions from the row resume (#85163)
 1ec4957d4c31b719fb4d8caf546fc44c43edfb81	2026-09-24T18:55:04-05:00	fix(desktop): drop ghost sidebar rows absorbed by a reorganized compression chain (#85331)
 7c80df7120781f55749b8843d6ef8016f8672eba	2026-09-24T22:18:52-05:00	fix(test): use hermes_yaml instead of bare pyyaml in onboarding test
+8507948c04714622327a61371cb0f06a0073a3af	2026-09-25T17:49:50-05:00	fix(desktop): qualify lineage absorption members by profile (#92454)
