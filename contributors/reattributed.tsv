@@ -189,3 +189,4 @@ c488b42a82bcb9e8c920e5b7fc2df21c6b47516a	2026-09-25T01:21:15-05:00	fix(desktop):
 9fb2dd4c3961005d99b34aae22343e73423ec5f0	2026-09-24T18:38:38-05:00	fix(acp): stamp ended_at on ACP sessions at adapter shutdown (#118216)
 c42c90552ecb0f0062e91c8bc0a048c1b4d44ea5	2026-09-24T18:44:51-05:00	fix(agent): re-gate later terminal approvals after an earlier batch failure (#113158)
 3d9adc08462c363e053138abb1225c453be0495f	2026-09-24T18:59:17-05:00	fix(desktop): list base branches once and keep the caller-chosen worktree base (#119745)
+188261f4bc42dc4e324e91cf1cfd9858da2e5606	2026-09-24T19:15:10-05:00	fix(desktop): regex-literal state in runtime-loader codeRanges (#120208)
