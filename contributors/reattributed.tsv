@@ -21,3 +21,4 @@ b401fb2e49b34b2b0e585ed47167651a6e28cb41	2026-09-24T18:59:35-05:00	fix(desktop):
 df293160cea1c7356d82ace3ad51b1036e31ad2d	2026-09-24T19:59:29-05:00	fix(desktop): preserve tile widths across reload via hydration suspend + partner-validated recall (#108679)
 b200d3a690ccfd2dea12b478c62501076cf0ffa1	2026-09-24T20:03:11-05:00	fix(desktop): gate the HUD resize frame's hit test on engagement (#108793)
 490037b87d887ed95f344cf8444695409ffdfe9d	2026-09-24T21:22:37-05:00	fix(desktop): statusbar timer shows focus-since on tiles and says so
+0e31fd3b45e123c91f54ecf4860f989748604101	2026-09-24T19:34:05-05:00	test(desktop): type the session-timer element props instead of casting unknown
