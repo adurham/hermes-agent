@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -263,11 +264,17 @@ test('POSIX managed launcher executes the updater command and atomically publish
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
   try {
+    // `true` at a REAL path, resolved per-host: Linux CI has /bin/true, macOS
+    // only /usr/bin/true (`type true` is the shell builtin there, and /bin/true
+    // does not exist — spawning it exits 127, which this test reads as a failed
+    // updater). The subject is the launcher's exec/publish handshake, not the
+    // literal path, so the host's own `true` is the honest stand-in.
+    const truePath = existsSync('/bin/true') ? '/bin/true' : '/usr/bin/true'
     const command = buildPosixManagedUpdateLaunch(
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        hermesPath: truePath,
         hermesHome: home
       },
       CORRELATION
