@@ -53,3 +53,4 @@ d0cb567273716ffb48c213dd046b26e58e20401a	2026-09-24T20:31:06-05:00	fix(gateway):
 788d82fc9759de268c63fc2c6446718acd04ff8c	2026-09-25T11:38:51-05:00	fix(tui): honor agent.disabled_toolsets in the desktop/TUI gateway (#44499)
 37d062b2fa8dc4cee3cd213e113c9e309871a7d2	2026-09-24T19:48:13-05:00	test(desktop): keep rebased checks green
 eda61f644e33a80ee7d5970744cb3faddf20f72f	2026-09-25T11:22:46-05:00	fix(tui-gateway): grant the WS orphan-reap grace in awake time
+35ad70c035dec839846056073ad81a9bdceffca4	2026-09-25T11:48:49-05:00	fix(tui-gateway): measure reap sleep by clock divergence, re-arm via scheduler
