@@ -164,3 +164,4 @@ b42474b0d1a5822c11e1015be0db6110f5f63acd	2026-09-25T19:11:12-05:00	style(desktop
 b85406d5f3a355ab3d0afe303e49eed82ce98a8b	2026-09-24T23:27:29-05:00	fix(update): remove the npm logs dir even when the retry fails
 a6dadb83ba0f2c8dff82daff01f8f1732b381524	2026-09-24T19:08:56-05:00	fix(desktop): strip citeturn web-citation transport markers from prose (#120587)
 6d94896c78a0de6aa24967e0127fbe26b90057de	2026-09-24T21:52:45-05:00	chore: map contributor emails
+2f86fae3bea1a54f72ae1706e2db8beec05b1c2f	2026-09-24T23:23:01-05:00	fix(desktop): forward --profile on the bundled-install launch too
