@@ -193,3 +193,4 @@ c42c90552ecb0f0062e91c8bc0a048c1b4d44ea5	2026-09-24T18:44:51-05:00	fix(agent): r
 e3841b1a0e5b0231d6f0bf257b221336e341fc35	2026-09-24T18:36:24-05:00	fix(desktop): refuse backtick in URL artifact capture (#118415)
 fc91608d853b979e9549a5754c3e74e9beb86720	2026-09-24T19:03:12-05:00	fix(desktop): dedupe acknowledged prompt against all newly committed user rows (#121088)
 4c1f111de3ade8677bfb8c862eb1e43098499402	2026-09-24T19:58:07-05:00	fix(desktop): attachment-tolerant transcript reconciliation (#120978)
+da4a1ffd0827e1a8b56c6cf062d6dbe95fdc9acc	2026-09-24T19:58:13-05:00	fix(desktop+gateway): surface continuation kind on compression-chain tips (#121148)
