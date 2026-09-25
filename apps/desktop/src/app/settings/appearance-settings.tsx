@@ -432,6 +432,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const fileBrowserShadowed = useStore($modeShadowed('fileBrowserOpen'))
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
@@ -927,11 +928,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           )}
 
           {/* The same state as the titlebar toggle / ⌘J, which persists across
-              launches — so this is the file browser's standing default. */}
+              launches — so this is the file browser's standing default. Simple
+              mode shadows it; a flip there only lasts the session, so say so. */}
           {show('window-layout') && (
             <ToggleRow
               checked={fileBrowserOpen}
-              description={a.fileBrowserDesc}
+              description={withModeNote(a.fileBrowserDesc, fileBrowserShadowed)}
               id={settingElementId(ids.fileBrowser)}
               label={a.fileBrowserTitle}
               onChange={setFileBrowserOpen}
