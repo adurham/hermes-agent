@@ -295,6 +295,11 @@ def _get_env_vars_sync(profile: Optional[str] = None):
             # Preserve those identities so Desktop can render distinct cards
             # that edit the same underlying env var.
             "provider_profiles": cat_meta.get("provider_profiles", []),
+            # The provider's own index-0 credential flag. Desktop picks a card's
+            # main "Paste key" field from this FIRST, so a shared alias that a
+            # peer profile contributes (DASHSCOPE_API_KEY for the CN Coding /
+            # Token Plan cards) can never re-point the card's primary field.
+            "provider_primary": bool(cat_meta.get("provider_primary", False)),
             # True for a .env key in no catalog at all — an arbitrary/custom var
             # the user added directly, listed so the Keys page can manage it.
             "custom": custom,
