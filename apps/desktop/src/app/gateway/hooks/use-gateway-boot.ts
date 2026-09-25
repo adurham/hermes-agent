@@ -164,6 +164,51 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
   return connection.mode === 'local' ? 'local' : null
 }
 
+// A freshly spawned backend can block its event loop for 15-30s while it
+// connects MCP servers and discovers plugins, so a single initial connect
+// attempt races backend cold-start and loses intermittently — the renderer
+// surfaced "Could not connect to Hermes gateway" even though the backend
+// became healthy moments later (#49645). Retry the initial dial, re-minting
+// the WS URL on every attempt (OAuth tickets are single-use), instead of
+// failing the whole boot on the first transport error. Reauth failures
+// propagate immediately: more attempts with a dead ticket can never
+// succeed. Exported for tests.
+export async function connectInitialGateway({
+  attempts = 8,
+  connect,
+  delayMs = 3_000,
+  isCancelled
+}: {
+  attempts?: number
+  connect: () => Promise<void>
+  delayMs?: number
+  isCancelled: () => boolean
+}): Promise<void> {
+  let lastConnectError: unknown = null
+
+  for (let attempt = 0; attempt < attempts && !isCancelled(); attempt += 1) {
+    try {
+      await connect()
+      lastConnectError = null
+
+      break
+    } catch (err) {
+      if (isGatewayReauthRequired(err)) {
+        throw err
+      }
+      lastConnectError = err
+
+      if (attempt < attempts - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayMs))
+      }
+    }
+  }
+
+  if (lastConnectError) {
+    throw lastConnectError
+  }
+}
+
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: GatewayEvent) => void
@@ -1345,12 +1390,15 @@ export function useGatewayBoot({
           console.warn('Failed to seed default workspace cwd pre-connect', err)
         }
 
-        // Mint a fresh WS URL right before connecting. For OAuth gateways the
-        // ticket is single-use with a short TTL, so the ticket baked into
+        // Mint a fresh WS URL once to classify the boot boundary: a valid
+        // WebSocket dial against a REMOTE descriptor is the only failure that
+        // counts as a transient renderer-side dial (#82679). URL and capability
+        // failures stay terminal at their own boundaries. For OAuth gateways
+        // the ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
-        // connecting with a dead ticket. Auth rejection asks for sign-in. This
-        // await is bounded like the reconnect path (#93454) so a wedged mint
-        // reaches the recovery affordance instead of hanging "Starting Hermes…".
+        // connecting with a dead ticket. This await is bounded like the
+        // reconnect path (#93454) so a wedged mint reaches the recovery
+        // affordance instead of hanging "Starting Hermes…".
         const wsUrl = await withTimeout(
           resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
@@ -1364,7 +1412,20 @@ export function useGatewayBoot({
           stage = 'dialing'
         }
 
-        await gateway.connect(wsUrl)
+        // Retry the initial dial across backend cold-start (#49645). The WS URL
+        // is re-minted on EVERY attempt: OAuth tickets are single-use, so the
+        // first attempt's ticket is dead by the time a retry runs.
+        await connectInitialGateway({
+          connect: async () => {
+            const attemptWsUrl = await withTimeout(
+              resolveDesktopGatewayWsUrl(desktop, conn),
+              RECONNECT_ATTEMPT_TIMEOUT_MS,
+              'Timed out minting the gateway WebSocket URL'
+            )
+            await gateway.connect(attemptWsUrl)
+          },
+          isCancelled: () => cancelled
+        })
         stage = 'connected'
 
         if (cancelled) {
