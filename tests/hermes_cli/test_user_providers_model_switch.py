@@ -12,8 +12,23 @@ from hermes_cli import runtime_provider as rp
 
 @pytest.fixture(autouse=True)
 def _no_live_builtin_provider_probes(monkeypatch):
-    """Keep picker tests offline: builtin-provider catalog fetches hit the network."""
+    """Keep picker tests offline: builtin-provider catalog fetches hit the network.
+
+    Also routes Ollama-shaped endpoints (localhost:11434) off the NATIVE catalog
+    path. That path probes the real daemon via fetch_ollama_local_models, and a
+    native answer is authoritative even when empty — so on a machine running
+    Ollama with no models pulled, the probe returned _NativePickerModelList([])
+    and the endpoint's genuinely-discovered models never came from the stubbed
+    fetch the test installs. (Upstream CI is unaffected: no daemon there, so the
+    native probe fails and falls through to the generic path.) No test in this
+    file exercises the native catalog, so forcing the generic path changes no
+    assertion: the tests stub hermes_cli.models.fetch_api_models, which is what
+    the generic path calls on a cache miss.
+    """
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *_a, **_kw: False
+    )
     monkeypatch.setattr(
         "hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: []
     )

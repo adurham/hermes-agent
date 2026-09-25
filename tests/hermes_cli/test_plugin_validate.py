@@ -64,8 +64,13 @@ def test_portable_validation_fails_orphan_and_reports_availability(tmp_path: Pat
         }},
     )
     report = validate_plugin_dir(declared)
+    # The check's detail is the availability STATE plus optional suffixes
+    # (", version <v>", ", path <p>") — see plugin_validate.py's
+    # `detail = result.state` block. Match the state as a prefix, not the whole
+    # string, so a real path suffix doesn't fail the assertion.
     assert any(
-        name == "server availability: worker" and ok and detail in {"missing_app", "unsupported_os"}
+        name == "server availability: worker" and ok
+        and detail.split(",", 1)[0] in {"missing_app", "unsupported_os"}
         for name, ok, detail in report.checks
     )
 

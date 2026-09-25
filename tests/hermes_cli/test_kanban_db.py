@@ -562,6 +562,12 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     failure on the same card still counts."""
     import tools.process_registry as process_registry
 
+    # The guard under test is Linux-only: restart_safe_gateway_child_argv returns
+    # "in_process" immediately when _IS_LINUX is False, before it ever consults
+    # INVOCATION_ID or the supervised-gateway/systemd-scope probes this test
+    # stubs. Simulating a managed Linux gateway purely through mocks needs the
+    # platform flag pinned too, or the refusal path is never entered on darwin.
+    monkeypatch.setattr(process_registry, "_IS_LINUX", True)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)

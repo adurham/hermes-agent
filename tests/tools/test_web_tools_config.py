@@ -1152,6 +1152,17 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    # FORK-HERMETIC (same reason as TestCheckWebApiKey.setup_method): the fork's
+    # check_web_api_key ends with a filesystem probe for Claude Code OAuth
+    # credentials, so on a machine that HAS ~/.claude/.credentials.json the probe
+    # returns True and this "keyless off -> tools off" assertion fails. Upstream's
+    # version returns False unconditionally in the plugin path, which is why this
+    # test passed against the tag. Point Path.home() at an empty dir so the probe
+    # sees nothing; the registry/dispatcher behaviour under test is unaffected.
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+    _fake_home = _tempfile.mkdtemp(prefix="hermes-webcfg-xai-")
+    monkeypatch.setattr(_pathlib.Path, "home", staticmethod(lambda: _pathlib.Path(_fake_home)))
     for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     with registry._lock:
