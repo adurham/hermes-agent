@@ -168,3 +168,4 @@ a6dadb83ba0f2c8dff82daff01f8f1732b381524	2026-09-24T19:08:56-05:00	fix(desktop):
 f4795c922c2ef9eef244ea0fb886ad863dc452be	2026-09-25T01:19:44-05:00	fix(desktop): tell the user when a clarify request never reached the app
 c8094dc399def08266d3bee5be1c27ef6dd50345	2026-09-24T21:15:22-05:00	fix(icons): put the dev Dock icon on the mac grid and enlarge the mac art
 b24b8149ddfacf19e68f4cbdc733e00a59d758b3	2026-09-24T22:03:31-05:00	fix(icons): give the dev Dock its own mac-grid png
+41cd3117ae62a689c2b37a137e78eee21bc7650c	2026-09-25T12:33:22-05:00	fix(desktop): keep the sidebar alive for messaging-only and cron-only profiles
