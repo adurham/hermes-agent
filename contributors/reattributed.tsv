@@ -78,3 +78,4 @@ faf9231bc29d426dac070aa41f24400337d52a8f	2026-09-25T12:17:35-05:00	fix(desktop):
 96e036e326e5e27e10486439ff55ccc0faae043f	2026-09-25T12:53:10-05:00	fix(desktop): show the real command on plugin-rule approval cards
 fe59dc2dacf7c27e41c2c0cc3af33ae3924cdf40	2026-09-25T15:27:42-05:00	fix(desktop): revoke optimistic blob previews when the consumer is discarded or replaced
 f6b17285cef057c55c7a19cb2c6cc3d6731af560	2026-09-25T15:49:12-05:00	fix(projects): gate branch switching on non-git folder lanes (#61362)
+c60299e614c202c16aaf37de2b3616fdeb2b603d	2026-09-25T11:40:03-05:00	fix(desktop): surface an exactly-typed command alias in slash completions
