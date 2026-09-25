@@ -99,3 +99,4 @@ a9756158697202063e90415b72223ae541c42837	2026-09-25T12:24:03-05:00	fix(uninstall
 a5e95fb27edcb02726618d06d6f80a2ceae261b3	2026-09-25T16:05:01-05:00	fix(desktop): find UGit's bundled git.exe in the Windows resolver (#61494)
 ab0e060bd77c73bd944dea4aea4c5e1aebfdeb01	2026-09-25T18:08:03-05:00	fix(desktop): sort imports in git-binary-candidates test
 5d0182c5f07cc86d628e345f87c71292a53f77a8	2026-09-25T16:00:26-05:00	fix(desktop): voice chat honors the read-aloud toggle (#44263)
+5dcfd72a968e17cc4dc262c46d918a6841a21722	2026-09-25T17:33:01-05:00	test(desktop): opt voice conversation sibling tests into read-aloud TTS
