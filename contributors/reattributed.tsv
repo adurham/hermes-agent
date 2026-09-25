@@ -152,3 +152,4 @@ c2182f60c1f1fe35dd956dcaff517fb7bdc9e8de	2026-09-25T11:35:45-05:00	fix(cron): sh
 4f11ac246c966aeb03081a24d1067185272d6bda	2026-09-25T11:35:50-05:00	fix(desktop): render script-only cron jobs in the detail view and sidebar
 17c6a566f53f24597899b44492d4916b43b7b7ba	2026-09-25T18:27:06-05:00	fix(cron): reconcile run history per execution and read it in the owner's scope
 627bf49baae142093c7b61aa9ff4d1749fce667b	2026-09-24T23:46:48-05:00	fix(process): kill a re-adopted PID whose start time is unreadable
+aac12dfda54d5298b02cb97a6a186989a21e39fa	2026-09-24T19:01:08-05:00	fix(desktop): stop the queue-drain exhaustion banner from replaying after restart (#98015)
