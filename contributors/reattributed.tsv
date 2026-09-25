@@ -114,3 +114,4 @@ d10afb5a8851be2b0f6fe5d3b04022c3a8877d6c	2026-09-25T18:52:11-05:00	fix(tests): i
 b07d307bae64313e4aecaeb1c73dc95e03be204f	2026-09-25T10:08:28-05:00	fix(tui): bind side-agent UI owner; skip secret prompts with no owner
 283de37b6b4edfce7429f63ff9b0eee6b4882311	2026-09-25T18:13:06-05:00	fix(tui): refuse secret requests after the owning runtime closes
 3ddf82fe249723a181674e4f52aee2dc75fa1d68	2026-09-25T11:39:42-05:00	fix(desktop): detach the Windows packaged launch and swallow launcher Ctrl-C
+701a7559d398b72852772f36eaee0526ae69e008	2026-09-25T11:39:42-05:00	test(desktop): pin the detached Windows launch and clean Ctrl-C exit
