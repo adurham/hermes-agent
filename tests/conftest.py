@@ -555,6 +555,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    # 3a-bis. ``CLAUDE_CONFIG_DIR`` relocates Claude Code's shared
+    #     ``.credentials.json`` (``agent.anthropic_credentials.claude_code_credentials_path``
+    #     honours it exactly as the Claude CLI does). A developer shell that
+    #     exports it — the documented way to keep a personal Claude Code login
+    #     separate — silently defeats every credential test's ``Path.home()``
+    #     monkeypatch: the reader/writer resolves the REAL config dir instead of
+    #     the test's ``tmp_path``, so fixtures vanish and assertions fail while
+    #     CI (which never sets it) stays green. Blank it by default; the handful
+    #     of tests that exercise the override set it explicitly.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test
