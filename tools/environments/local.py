@@ -314,25 +314,51 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+        *, inherit_credentials: bool = False, exclude: frozenset[str] = frozenset()) -> dict[str, str]:
     """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
     computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
     force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
     provider/tool blocklist) unless ``inherit_credentials`` — pass that **only** for
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
-    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
-    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials)
+    CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``.
+
+    ``exclude`` names additional keys to drop regardless of ``inherit_credentials`` —
+    for a model-provider that itself drives a nested ``claude``/``codex``/``gemini`` CLI
+    as its inference backend (an ``auth_type="external_process"`` provider, first-party
+    or plugin), rather than a terminal command that merely happens to invoke one. Those
+    two cases want opposite behavior for the same variable: a terminal-spawned ``claude``
+    should share the user's live login (the whole point of ``inherit_credentials`` and
+    the ``CLAUDE_CODE_OAUTH_TOKEN`` blocklist exemption, see ``local_env_policy.py`` /
+    #55878), but a dedicated provider that spawns its OWN ``claude`` process per request
+    can inherit a STALE value Hermes' own credential pool holds for a DIFFERENT purpose
+    (its adopted/pooled Claude Code login, read by ``agent.anthropic_credentials`` /
+    ``agent.credential_pool``) — native prioritizes an env-var token over its own
+    keychain/file credential, so a stale pooled value silently hijacks the provider's
+    auth instead of letting native resolve its own current login. Confirmed live: the
+    ``claude-subscription-directsdk`` Hermes plugin failed org verification on an
+    enterprise-pinned login until it excluded ``CLAUDE_CODE_OAUTH_TOKEN`` this way; see
+    that plugin's FORK.md for the full incident. Pass
+    ``exclude=frozenset({'CLAUDE_CODE_OAUTH_TOKEN'})`` (add ``'ANTHROPIC_TOKEN'`` too if
+    the provider resolves its own separate credential for that path) from a provider in
+    this second category — never from a terminal/PTY spawn path, which must keep the
+    exemption."""
+    env = _scrub_credentials(os.environ.copy(), inherit_credentials=inherit_credentials, exclude=exclude)
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
     return _finalize_child_env(env)
 
 
-def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
-    """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place."""
+def _scrub_credentials(env: dict, *, inherit_credentials: bool, exclude: frozenset[str] = frozenset()) -> dict:
+    """Tier 1 (always) and, unless ``inherit_credentials``, Tier 2 provider/tool credentials, in place.
+    ``exclude`` additionally strips specific keys even when ``inherit_credentials`` is True —
+    see :func:`hermes_subprocess_env`."""
     # Credential names fold to uppercase for membership: on Windows the env block
     # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
     strip_folded = frozenset(k.upper() for k in (_ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()))
+    exclude_folded = frozenset(k.upper() for k in exclude)
     for key in list(env):
         if (key.upper() in strip_folded
+                or key.upper() in exclude_folded
                 or (not inherit_credentials and _is_provider_env_blocklisted(key))
                 or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
                 or _is_hermes_internal_secret(key)):
