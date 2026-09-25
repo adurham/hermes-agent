@@ -179,3 +179,4 @@ ce750ff151835ffb66b353b668f6385f576f45f5	2026-09-25T18:05:09-05:00	fix(title): s
 e0a5c07109a9d53c141b4298e9090266938ae66e	2026-09-24T19:55:51-05:00	fix(tui): preserve failures in answer-only mode
 66447b4e9f84e967c1b1ac8ddaf50a46e1cdaf51	2026-09-25T10:07:18-05:00	fix(desktop): share the failed-call predicate for answer-only rows
 e9e93b5f575e8b3c5aedc5f07890f676d68b3fba	2026-09-25T10:07:18-05:00	fix(tui): keep moa.aggregating in answer-only mode
+c0f1ed114cf250e2b89feac2b56f806e3c9529e8	2026-09-25T18:09:07-05:00	fix(tui): keep card-tool lifecycle under the answer-only chrome gate
