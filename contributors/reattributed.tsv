@@ -76,3 +76,4 @@ ffa40b07f0203543778ad3a00c3b0ecb9a27a370	2026-09-25T13:58:22-05:00	fix(desktop):
 faf9231bc29d426dac070aa41f24400337d52a8f	2026-09-25T12:17:35-05:00	fix(desktop): keep submenus pinned to their trigger during scroll
 6d70abc87134a6f1243b90512530e201f08b02c2	2026-09-25T13:05:39-05:00	fix(desktop): label the Anthropic OAuth/Pro card 'Anthropic Account'
 96e036e326e5e27e10486439ff55ccc0faae043f	2026-09-25T12:53:10-05:00	fix(desktop): show the real command on plugin-rule approval cards
+fe59dc2dacf7c27e41c2c0cc3af33ae3924cdf40	2026-09-25T15:27:42-05:00	fix(desktop): revoke optimistic blob previews when the consumer is discarded or replaced
