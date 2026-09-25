@@ -5,3 +5,4 @@
 # date, that names the original commit.
 # original_sha	author_date	subject
 b50bb77ec5cf44babadbd2aa8b6338bf505ef972	2026-09-24T19:36:22-05:00	fix(desktop): preserve implicit default local route
+f26825eb2d8809018a7416fc93755a3d830b688e	2026-09-24T19:48:13-05:00	test(desktop): keep rebased checks green
