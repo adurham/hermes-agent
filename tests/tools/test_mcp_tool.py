@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import threading
@@ -673,10 +674,15 @@ class TestSchemaConversion:
             },
         })
 
+        # Production also normalizes `required` on repaired object schemas
+        # (tools/mcp_tool_schema.py:111-113) and emits the key as an empty list
+        # when nothing in `properties` is required. Assert the whole shape
+        # rather than dropping the key from the expectation.
         assert schema["properties"]["filters"]["items"] == {
             "type": "object",
             "properties": {"field": {"type": "string"}},
             "nullable": True,
+            "required": [],
         }
 
     def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
@@ -1146,7 +1152,7 @@ class TestDiscoverAndRegister:
             for record in caplog.records
         )
 
-    def test_native_tool_wins_over_generated_utility_on_collision(self):
+    def test_native_tool_wins_over_generated_utility_on_collision(self, caplog):
         """A server-native tool named `read_resource` must survive its collision
         with the generated `read_resource` utility (#87112).
 
@@ -1172,7 +1178,8 @@ class TestDiscoverAndRegister:
         config = {"tools": {"prompts": False}}
 
         with patch("tools.registry.registry", registry), \
-             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+             patch("tools.mcp_tool_registration._track_mcp_tool_server"), \
+             caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
             registered = _register_server_tools("srv", server, config)
 
         # The native tool is registered (before the fix it was dropped) and it
