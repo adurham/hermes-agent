@@ -11,6 +11,7 @@ import pytest
 
 from hermes_cli.service_manager import (
     S6ServiceManager,
+    WindowsServiceManager,
 )
 
 

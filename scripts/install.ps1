@@ -4430,7 +4430,7 @@ function Install-Desktop {
     #     therefore has to run earlier (afterExtract). resedit carries the
     #     stamped resources through the integrity rewrite, so the stamp can
     #     stay on afterPack, where it also covers `hermes desktop` and a
-    #     dev's manual `npm run pack` — not just installs.
+    #     dev's manual `npm run pack`, not just installs.
 
     # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
     #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with
