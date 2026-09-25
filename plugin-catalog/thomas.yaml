@@ -8,6 +8,7 @@ maintainer: keppy
 tier: community
 category: tools
 requires_hermes: ">=0.21"
+platforms: [linux, macos]
 version: "0.1.0"
 docs_url: https://github.com/keppy/hermes-plugin-thomas#readme
 capabilities:
