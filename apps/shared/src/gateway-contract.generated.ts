@@ -4524,6 +4524,11 @@ export interface SubagentEventPayload {
   delegation_id?: string | null
   depth?: number | null
   model?: string | null
+  provider?: string | null
+  fallback_active?: boolean | null
+  model_label?: string | null
+  primary_model?: string | null
+  primary_provider?: string | null
   tool_count?: number | null
   toolsets?: string[] | null
   input_tokens?: number | null
