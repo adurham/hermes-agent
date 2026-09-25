@@ -42,3 +42,4 @@ c29114ea9acc209426c58d4f040e25130da21be9	2026-09-25T10:04:24-05:00	fix(state): f
 c953b2a03ef5681c2b29e714c8f8c3a12f3efe48	2026-09-25T10:53:10-05:00	fix(tui): never auto-resume a source='unknown' guard placeholder
 85c7e87fc7bbbd2b646da3398b402c42c88454cb	2026-09-25T11:04:04-05:00	fix(gateway): recognize Atomic desktop-gateway.py in gateway detection
 58497395d3d118bd19bcca565009e0eb681e6cd3	2026-09-25T10:56:24-05:00	fix(desktop): declare macOS Contacts and Apple Events usage strings
+8a639e80fec245797a0f031051e65e61a87fd1cd	2026-09-24T23:13:45-05:00	fix(tui-gateway): log when a client model override beats the profile default at session.create
