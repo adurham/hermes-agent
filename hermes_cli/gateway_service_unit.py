@@ -373,6 +373,16 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if _gw()._refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
+    # FORK (656a87c9c2): system-scope units live in /etc/systemd/system, root-owned. A non-root
+    # caller with only a scoped restart sudoers grant (see ``_run_systemctl``) can't write here or
+    # run an unscoped daemon-reload — and that's fine: "can't refresh the unit definition" is not
+    # fatal, the existing installed unit is still used as-is. Treat it exactly like the other
+    # early-returns above (skip, don't crash) rather than propagating a raw
+    # PermissionError/CalledProcessError up through systemd_restart's graceful-SIGUSR1 path, which
+    # no longer gates on root before reaching here.
+    if system and os.geteuid() != 0:  # windows-footgun: ok — systemd unit write, POSIX-only path
+        return False
+
     unit_path.write_text(new_unit, encoding="utf-8")
     _gw()._run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_gw()._service_scope_label(system)} service definition to match the current Hermes install")
