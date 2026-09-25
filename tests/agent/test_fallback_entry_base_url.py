@@ -55,8 +55,13 @@ def test_anthropic_fallback_entry_base_url_is_the_resolved_endpoint():
     assert client.base_url == _RELAY_ANTHROPIC
 
 
-def test_anthropic_fallback_entry_ignores_a_non_anthropic_endpoint():
-    """A foreign host would 401 every call: the canonical host stays, same rule as the primary path."""
+def test_anthropic_fallback_entry_refuses_a_non_anthropic_endpoint():
+    """An explicit target mismatch is REFUSED — never silently demoted to the canonical host.
+
+    Continuing with `base_url` reset to api.anthropic.com would send the caller's explicit
+    credential to a host the caller did not ask for. No client is produced and the SDK
+    builder is never reached.
+    """
     from agent.auxiliary_client import resolve_provider_client
 
     with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build:
@@ -64,8 +69,8 @@ def test_anthropic_fallback_entry_ignores_a_non_anthropic_endpoint():
             "anthropic", model="claude-haiku-4-5-20251001", raw_codex=True,
             explicit_base_url="http://127.0.0.1:9002/openai/v1", explicit_api_key="sk-test-not-a-real-key")
 
-    assert client is not None
-    assert mock_build.call_args[0][1] != "http://127.0.0.1:9002/openai/v1"
+    assert client is None, "an incompatible explicit endpoint must not yield a client"
+    assert mock_build.call_count == 0, "no canonical client may be constructed on refusal"
 
 
 def test_openrouter_fallback_entry_base_url_is_the_resolved_endpoint():

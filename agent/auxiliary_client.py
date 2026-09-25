@@ -3044,9 +3044,18 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
                     base_url = cfg_base_url
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) wins over
     # both the pool row and config.yaml, under the same Anthropic-compatible host rule the
-    # primary path applies — a foreign host would 401 every call (#121359).
+    # primary path applies. A foreign host is REFUSED outright rather than silently demoted to
+    # the canonical host: continuing would send the explicit credential to a target the caller
+    # did not ask for (#121359).
     override_url = (explicit_base_url or "").strip().rstrip("/")
-    if override_url and _is_anthropic_compatible_host(override_url):
+    if override_url:
+        if not _is_anthropic_compatible_host(override_url):
+            logger.warning(
+                "Auxiliary client: refusing anthropic explicit base_url %r — not an "
+                "Anthropic-compatible host; no client built and no request sent.",
+                override_url,
+            )
+            return None, None
         base_url = override_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)

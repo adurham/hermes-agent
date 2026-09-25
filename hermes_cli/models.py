@@ -1638,34 +1638,24 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
         return None
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
-    """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
-    fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
-    requested = str(provider or "").strip().lower()
-    if requested == "ollama":
-        return _ollama_local_catalog(force_refresh)
 
-    normalized = normalize_provider(provider)
-    # A configured `model.base_url` relay wins over the canonical per-provider fetchers: the
-    # picker must list what the configured endpoint serves and must not touch the vendor
-    # host (#121387). Any probe failure falls through to the existing canonical path.
-    relay = _configured_relay_base_url(provider)
-    if relay:
-        relayed = _relay_model_catalog(normalized, relay)
-        if relayed:
-            return relayed
-    fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
-    if fetcher is not None:
-        models = fetcher(normalized, force_refresh)
-        if models is not None:
-            return models
-    try:
-        models = _profile_live_catalog(normalized)
-    except Exception:
-        models = None
-    if models is not None:
-        return models
+# Canonical fetchers that already resolve `model.base_url` themselves for the configured
+# provider AND degrade to their curated list when that relay fails — `_anthropic_catalog`,
+# `_custom_catalog`, `_openai_catalog` (via `_openai_discovery_base_url`) and the simple
+# api-key fetchers (via `resolve_api_key_provider_credentials`). They already satisfy the
+# "no vendor egress when a relay is configured" invariant, so intercepting them would only
+# override correct, better-merged behaviour. Everything else is vendor-pinned (#121387).
+_RELAY_AWARE_CATALOG_FETCHERS = frozenset(
+    {"anthropic", "custom", "openai", "openai-api", "stepfun", "gmi"}
+)
 
+
+def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
+    """The local, no-egress catalog tail: curated static list (+ models.dev merge where preferred).
+
+    Shared by the normal path's final fallback and by the configured-relay degrade path, which
+    must never reach a live vendor fetcher (#121387).
+    """
     # Merge static curated list with live API results so models that the live endpoint omits (stale cache,
     # partial rollout) still appear in the picker. Single providers (kimi, zai) use curated-first (commit
     # 658ac1d86) to surface newest models even when live API lags (#46309). OpenCode Zen / Go are different:
@@ -1682,6 +1672,40 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
     merged = _drop_delisted_opencode_models(normalized, _merge_with_models_dev(normalized, curated_static))
     return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
+
+
+def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+    """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
+    fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
+    requested = str(provider or "").strip().lower()
+    if requested == "ollama":
+        return _ollama_local_catalog(force_refresh)
+
+    normalized = normalize_provider(provider)
+    # A configured `model.base_url` relay is TERMINAL for live catalog egress: the picker must
+    # list what the configured endpoint serves and must never touch the vendor host (#121387).
+    # A failed or empty probe degrades to the local curated list — falling through to the
+    # canonical fetchers would send the provider credential to exactly the host the user
+    # deliberately routed away from, recreating the bug on the failure path.
+    relay = _configured_relay_base_url(provider)
+    if relay and normalized not in _RELAY_AWARE_CATALOG_FETCHERS:
+        relayed = _relay_model_catalog(normalized, relay)
+        if relayed:
+            return relayed
+        return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
+    fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
+    if fetcher is not None:
+        models = fetcher(normalized, force_refresh)
+        if models is not None:
+            return models
+    try:
+        models = _profile_live_catalog(normalized)
+    except Exception:
+        models = None
+    if models is not None:
+        return models
+
+    return _static_catalog(normalized, fetcher)
 
 
 # ---------------------------------------------------------------------------
