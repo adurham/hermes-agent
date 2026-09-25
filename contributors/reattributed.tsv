@@ -1,0 +1,7 @@
+# Commits on main authored as `Hermes Agent <agent@hermes.local>` that were Brooklyn Nicholson's
+# (GitHub: OutThisLife) agent-assisted work. A repo-local git identity on her machine stamped them
+# with an address no GitHub account can verify, so GitHub credited them to nobody. main can't be
+# rewritten, so each row below has a matching attribution commit, authored by her at the original
+# date, that names the original commit.
+# original_sha	author_date	subject
+b50bb77ec5cf44babadbd2aa8b6338bf505ef972	2026-09-24T19:36:22-05:00	fix(desktop): preserve implicit default local route
