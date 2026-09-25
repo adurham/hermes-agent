@@ -163,6 +163,9 @@ def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wir
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "1")
     monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
     monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "20")
+    # FORK: without this the pre-first-event cold-start grace (max(3x stale, 600s))
+    # suppresses the stale kill entirely and the test measures the byte-read timeout.
+    monkeypatch.setenv("HERMES_STREAM_COLD_START_TIMEOUT", "1")
     agent = run_agent.AIAgent(
         api_key="test-key", base_url=silent_wire.base_url, model="m", provider="custom",
         platform="cli",  # worker thread + monitor thread: the gateway shape from the report

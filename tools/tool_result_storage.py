@@ -252,12 +252,17 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""
-    content, _scrubbed = scrub_trigger_patterns(content)
-    if _scrubbed:
-        logger.info(
-            "Scrubbed content-filter trigger pattern(s) from tool result: %s (%s)",
-            tool_name, tool_use_id,
-        )
+    # FORK: guard on str — a tool result may be a dict/JSON payload (e.g. a
+    # {"exit_code", "output", "error"} error envelope), and scrub_trigger_patterns
+    # does re.sub on it -> TypeError. Reachable from the live single-tool path,
+    # not just the concurrent one (agent/tool_executor.py:1124).
+    if isinstance(content, str):
+        content, _scrubbed = scrub_trigger_patterns(content)
+        if _scrubbed:
+            logger.info(
+                "Scrubbed content-filter trigger pattern(s) from tool result: %s (%s)",
+                tool_name, tool_use_id,
+            )
     if threshold is None:
         threshold = config.resolve_threshold(tool_name)
     if threshold == float("inf") or len(content) <= threshold:

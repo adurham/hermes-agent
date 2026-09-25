@@ -52,6 +52,9 @@ def _agent():
         _rate_limit_hot_buckets=set(), _interrupt_requested=False,
         _consecutive_stale_streams=0,
         _emit_status=lambda *a, **k: None, _buffer_status=lambda *a, **k: None,
+        _emit_diagnostic_status=lambda *a, **k: None,
+        _buffer_diagnostic_status=lambda *a, **k: None,
+        _emit_diagnostic_wait=lambda *a, **k: None,
         _emit_wait_notice=lambda *a, **k: None, _touch_activity=lambda *a, **k: None,
         _client_log_context=lambda: "",
     )
@@ -134,6 +137,7 @@ class TestStreamingHeartbeatCarriesRateLimit:
 
     @staticmethod
     def _probe(agent):
+        from agent import chat_completion_wait_notice as wn
         from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 
         class _Probe(StreamingWaitMonitor):
@@ -144,6 +148,7 @@ class TestStreamingHeartbeatCarriesRateLimit:
                 self._stream_stale_timeout = 300.0
                 self._mon = SimpleNamespace(
                     last_heartbeat=time.time(), wait_notice_started_ts=None,
+                    wait_notice=wn.WaitNoticeState(),
                 )
 
         return _Probe()
@@ -160,7 +165,7 @@ class TestStreamingHeartbeatCarriesRateLimit:
         text = notices[-1]
         assert "ITPM" in text and "92%" in text, text
         # The recovery ETA must survive alongside the new fragment.
-        assert "auto-reconnect at 300s" in text, text
+        assert "auto-reconnect: stream stale watchdog in 210s" in text, text
 
     def test_healthy_state_collapses_to_limits_ok(self):
         agent = _agent()
@@ -184,7 +189,7 @@ class TestStreamingHeartbeatCarriesRateLimit:
 
         text = notices[-1]
         assert "ITPM" not in text and "limits OK" not in text
-        assert "auto-reconnect at 300s" in text
+        assert "auto-reconnect: stream stale watchdog in 210s" in text
 
     def test_heartbeat_under_60s_does_not_emit_notice(self):
         """Chunks flowing: touch the activity tracker, leave the display alone."""
