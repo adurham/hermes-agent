@@ -50,12 +50,19 @@ it('restores app localizations from the filtered framework without copying local
 it('leaves other platforms alone and reports a missing framework without failing packaging', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  // This hook now also runs the Windows exe-identity stamp (fork feature). That
+  // branch is best-effort by design — a missing/unstampable exe logs a warning
+  // and packaging continues — so "no warnings at all" is no longer the right
+  // predicate here. What this test is about is the macOS locale path, so assert
+  // on THAT message being absent for the foreign platforms and present for the
+  // missing-framework case.
+  const localeWarnings = () => warn.mock.calls.filter(([m]) => String(m).includes('[after-pack] macOS locale markers'))
   try {
     for (const electronPlatformName of ['linux', 'win32']) {
       await configuredHook({ appOutDir: root, electronPlatformName })
     }
     expect(await readdir(root)).toEqual([])
-    expect(warn).not.toHaveBeenCalled()
+    expect(localeWarnings()).toEqual([])
     await configuredHook(context(root))
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('macOS locale markers were not restored'))
     expect(await readdir(root)).toEqual([])

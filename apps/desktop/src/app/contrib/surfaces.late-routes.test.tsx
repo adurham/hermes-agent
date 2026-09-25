@@ -19,10 +19,41 @@ import type { WiringActions } from './types'
 
 vi.mock('@/store/connections', () => ({ $activeConnectionId: atom('local') }))
 vi.mock('@/store/gateway', () => ({ $gateway: atom<unknown>(null) }))
-vi.mock('@/store/profile', () => ({ $activeGatewayProfile: atom('default') }))
+vi.mock('@/store/profile', () => ({
+  normalizeProfileKey: (k: string) => k,
+  $activeGatewayProfile: atom('default'),
+  // src/store/layout.ts reads these at module load, and this suite's
+  // import graph reaches it through src/store/preview.ts — a mock that
+  // only defines $activeGatewayProfile makes layout.ts throw
+  // 'No "$showAllProfiles" export is defined on the "@/store/profile" mock'.
+  $showAllProfiles: atom(false),
+  setShowAllProfiles: () => {}
+}))
 vi.mock('@/store/session', () => ({
+  $turnStartedAt: atom(null),
+  $currentReasoningEffortWire: atom(null),
+  $currentReasoningEffort: atom(null),
+  $currentProvider: atom(null),
+  $currentModel: atom(null),
+  $currentFastMode: atom(null),
+  $currentCwd: atom(null),
+  $awaitingResponse: atom(null),
+  $busy: atom(null),
+  $messages: atom(null),
+  $activeSessionId: atom(null),
   $freshDraftReady: atom(false),
-  $gatewayState: atom('open')
+  $gatewayState: atom('open'),
+  // src/store/session-states.ts (reached via the session-unread chain) subscribes
+  // to these at module load and calls .listen() on them, so they must be real
+  // atoms — undefined here fails the whole suite at import time with
+  // 'No "$sessions" export is defined on the "@/store/session" mock'.
+  $sessions: atom([]),
+  $cronSessions: atom([]),
+  $messagingSessions: atom([]),
+  $selectedStoredSessionId: atom(null),
+  $unreadFinishedSessionIds: atom([]),
+  sessionMatchesStoredId: () => false,
+  sessionPinId: (id: string) => id
 }))
 vi.mock('../chat', () => ({ ChatView: () => <div data-testid="chat-view" /> }))
 vi.mock('../chat/sidebar', () => ({ ChatSidebar: () => null }))

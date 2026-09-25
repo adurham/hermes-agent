@@ -8,7 +8,7 @@ vi.mock('node:child_process', () => ({
 }))
 
 const { execFileSync } = await import('node:child_process')
-const { macosSysroot, xcrunClangArgv } = await import('./macos-sysroot.mjs')
+const { macosSysroot, xcrunClangArgv, xcrunEnv } = await import('./macos-sysroot.mjs')
 
 const exec = vi.mocked(execFileSync)
 const opts = env => ({ encoding: 'utf8', env, stdio: 'pipe' })
@@ -106,4 +106,36 @@ it('hands SDK selection back to xcrun when xcode-select fails or answers nothing
   exec.mockReturnValue('\n')
   expect(macosSysroot(env)).toBeNull()
   expect(warn).not.toHaveBeenCalled()
+})
+
+it('replaces a rejected SDKROOT in the child environment with the resolved SDK', () => {
+  // xcrun reads SDKROOT for tool *lookup* too, so leaving a stale value in the
+  // child env makes `xcrun clang` fail before our -isysroot applies (#113708).
+  // The child must never inherit the rejected value.
+  const paired = sdkDir(CLT_SDK)
+  const missing = path.join(developerDir, 'SDKs/MacOSX99.sdk')
+  const bare = fs.mkdtempSync(path.join(developerDir, 'not-an-sdk-'))
+  for (const SDKROOT of ['macosx99', missing, bare]) {
+    toolchain(SDKROOT === 'macosx99' ? new Error('cannot be located') : SDKROOT)
+    expect(macosSysroot({ ...env, SDKROOT })).toBe(paired)
+    expect(xcrunEnv(paired, { ...env, SDKROOT }).SDKROOT).toBe(paired)
+  }
+})
+
+it('normalizes an SDKROOT name to the resolved SDK path', () => {
+  const pinned = sdkDir('SDKs/MacOSX15.4.sdk')
+  toolchain(pinned)
+  expect(macosSysroot({ ...env, SDKROOT: 'macosx15.4' })).toBe(pinned)
+  // The caller's pin is kept — as a path, since that is what clang's -isysroot
+  // and xcrun both accept without another lookup.
+  expect(xcrunEnv(pinned, { ...env, SDKROOT: 'macosx15.4' }).SDKROOT).toBe(pinned)
+  // Already the resolved path: identical environment, no copy.
+  expect(xcrunEnv(pinned, { ...env, SDKROOT: pinned })).toEqual({ ...env, SDKROOT: pinned })
+})
+
+it('does not invent an SDKROOT when the caller had none', () => {
+  const paired = sdkDir(CLT_SDK)
+  toolchain()
+  expect(macosSysroot(env)).toBe(paired)
+  expect(xcrunEnv(paired, env)).not.toHaveProperty('SDKROOT')
 })

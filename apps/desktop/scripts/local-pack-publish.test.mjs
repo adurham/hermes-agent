@@ -79,8 +79,17 @@ describe('local desktop pack stays out of the publish path', () => {
 
     assert.ok(Array.isArray(configs) && configs.length > 0)
     assert.equal(configs[0].provider, 'github')
-    assert.equal(configs[0].owner, 'NousResearch')
-    assert.equal(configs[0].repo, 'hermes-agent')
+
+    // Derive the expectation from package.json's own repository field rather
+    // than a literal owner: this fork deliberately points its metadata at the
+    // fork (adurham/hermes-agent), so a hardcoded upstream owner would fail
+    // the suite for a change that is correct on this tree. What the test is
+    // actually guarding is that the resolver picks the declared repository up
+    // (instead of throwing "Cannot detect repository"), not whose fork it is.
+    const declared = desktopPkg.repository.url.match(/github\.com[/:]([^/]+)\/([^/.]+)/)
+    assert.ok(declared, 'apps/desktop/package.json repository must name a GitHub owner/repo')
+    assert.equal(configs[0].owner, declared[1])
+    assert.equal(configs[0].repo, declared[2])
   })
 
   test('a package without the repository field is what breaks resolution', async () => {

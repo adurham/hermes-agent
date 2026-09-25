@@ -27,7 +27,7 @@ import { clearSpawnHistory } from '../app/spawnHistoryStore.js'
 import { patchTurnState, resetTurnState } from '../app/turnStore.js'
 import { AgentsOverlay } from '../components/agentsOverlay.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { stripAnsi } from '../lib/text.js'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { DEFAULT_THEME } from '../theme.js'
 import type { SubagentProgress } from '../types.js'
 

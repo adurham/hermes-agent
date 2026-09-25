@@ -54,3 +54,23 @@ export function macosSysroot(env = process.env) {
 export function xcrunClangArgv(sysroot) {
   return sysroot ? ['clang', '-isysroot', sysroot] : ['--sdk', 'macosx', 'clang']
 }
+
+// xcrun resolves BOTH the tool and the default -isysroot from SDKROOT, so a
+// stale SDKROOT makes `xcrun clang` itself fail ("unable to find utility
+// clang") before clang ever sees our -isysroot — the exact #113708 failure
+// mode. Detecting the staleness in macosSysroot() is not enough: the child
+// still inherits the variable. When an SDKROOT was present but rejected, drop
+// it from the environment we hand to xcrun (or, for a rejected name, replace
+// it with the resolved path) so the resolved sysroot is the one that applies.
+export function xcrunEnv(sysroot, env = process.env) {
+  // No pin to correct, and nothing to pin it to: leave the environment alone.
+  // (When sysroot is null the argv carries `--sdk macosx`, which overrides
+  // SDKROOT for tool lookup, so a stale value cannot break the build.)
+  if (!env.SDKROOT || sysroot === null || env.SDKROOT === sysroot) return env
+  // Replace whatever the caller had — a rejected path, a bare directory, or an
+  // SDK name — with the SDK this module actually resolved and verified. Doing
+  // so keeps a caller's explicit older-SDK pin (clang's -isysroot only takes
+  // paths) while guaranteeing the child never looks a tool up under a
+  // directory that does not exist.
+  return { ...env, SDKROOT: sysroot }
+}

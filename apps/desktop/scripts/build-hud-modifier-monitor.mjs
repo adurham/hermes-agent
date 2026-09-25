@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
+import { macosSysroot, xcrunClangArgv, xcrunEnv } from './macos-sysroot.mjs'
 
 const script = fileURLToPath(import.meta.url)
 const root = resolve(dirname(script), '..')
@@ -42,10 +42,11 @@ export function buildHudModifierMonitor({
   mkdirSync(dirname(output), { recursive: true })
   try {
     if (platform === 'darwin') {
+      const sdk = sysroot === undefined ? macosSysroot() : sysroot
       execFileSync(
         'xcrun',
         [
-          ...xcrunClangArgv(sysroot === undefined ? macosSysroot() : sysroot),
+          ...xcrunClangArgv(sdk),
           '-arch',
           'arm64',
           '-arch',
@@ -64,7 +65,7 @@ export function buildHudModifierMonitor({
           '-o',
           staging
         ],
-        { stdio: 'pipe', timeout: 120_000 }
+        { stdio: 'pipe', timeout: 120_000, env: xcrunEnv(sdk) }
       )
     } else if (platform === 'win32') {
       execFileSync(resolveWindowsFrameworkCompiler(), [

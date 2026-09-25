@@ -319,11 +319,21 @@ describe('SidebarSessionRow inside the sortable list', () => {
 
   it('still starts a keyboard reorder from the grabber', () => {
     const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
-    const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
+    // The row splits the drag handle: the wide `display:contents` span carries
+    // only the POINTER activator, while dnd-kit's `attributes` (role, tabindex)
+    // and the keyboard listeners stay on the inner grab (SidebarRowGrab) —
+    // `display:contents` strips the span from the accessibility tree, so it
+    // cannot be the KeyboardSensor's focusable activator node. querySelector
+    // returns the span first, so target the focusable handle explicitly: that
+    // is the node a Tab key actually lands on.
+    const grabber = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-reorder-handle]')
+    ).find(handle => handle.hasAttribute('tabindex'))
+    expect(grabber).toBeDefined()
 
-    grabber.focus()
-    fireEvent.keyDown(grabber, space)
-    expect(grabber.getAttribute('aria-pressed')).toBe('true')
+    grabber!.focus()
+    fireEvent.keyDown(grabber!, space)
+    expect(grabber!.getAttribute('aria-pressed')).toBe('true')
   })
 })
 
