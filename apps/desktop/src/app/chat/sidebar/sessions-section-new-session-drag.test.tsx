@@ -3,8 +3,10 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $dismissedWorktreeIds, $sidebarShowAllSessions, dismissWorktree, restoreWorktree } from '@/store/layout'
 import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
+import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 
 import {
   EnteredProjectContent,
@@ -115,8 +117,7 @@ const baseProps = () => ({
   onToggleUnread: noop,
   open: true,
   pinned: false,
-  sessions: [] as SessionInfo[],
-  workingSessionIdSet: new Set<string>()
+  sessions: [] as SessionInfo[]
 })
 
 const group = (overrides: Partial<SidebarSessionGroup> = {}): SidebarSessionGroup => ({
@@ -599,5 +600,92 @@ describe('explicit worktree dismissal', () => {
     expect(removeWorktreePath).not.toHaveBeenCalled()
     restoreWorktree('/repo/.worktrees/feature')
     await waitFor(() => expect(screen.getByTitle(/feature/)).toBeTruthy())
+  })
+})
+
+// The collapsed-group working dot (#5072c09a92). The chain broke when the row
+// started reading its own status: the id set behind the group-level cue was
+// dropped from the list chain, orphaning `WorkspaceWorkingDot`. These hold the
+// chain together from the section down — a collapsed group with a running
+// session shows the dot, and never alongside the row cue while expanded.
+describe('collapsed-group working dot', () => {
+  const runningGroup = (id: string, sessionIds: string[]) => ({
+    groups: [
+      {
+        id,
+        isMain: false,
+        label: id,
+        path: id,
+        sessions: sessionIds.map(sid => ({ id: sid }) as unknown as SessionInfo)
+      }
+    ],
+    id: `/repo/${id}`,
+    label: 'Repo',
+    path: '/repo',
+    sessionCount: sessionIds.length
+  })
+
+  // `span[role="status"]`, not bare `[role="status"]`: the DndContext dnd-kit
+  // renders into this subtree contributes a `<div role="status">` live region
+  // of its own, and the cue under test is the header span.
+  const dots = (container: HTMLElement) => container.querySelectorAll('span[role="status"]')
+
+  const renderWith = (sessionIds: string[]) => {
+    const { container } = render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        onNewSessionInWorkspace={noop}
+        projectContent={project({ repos: [runningGroup('feature', sessionIds)] })}
+      />
+    )
+
+    return container
+  }
+
+  beforeEach(() => {
+    clearAllSessionStates()
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+  })
+
+  it('shows the dot on a collapsed group while a session inside it runs', () => {
+    workspaceOpen.value = false
+    const container = renderWith(['s-running'])
+    expect(dots(container)).toHaveLength(0)
+
+    act(() => publishSessionState('rt1', { ...createClientSessionState('s-running'), busy: true }))
+
+    expect(dots(container)).toHaveLength(1)
+  })
+
+  it('shows nothing extra while the group is expanded — the row cue owns that', () => {
+    workspaceOpen.value = true
+    const container = renderWith(['s-running'])
+    act(() => publishSessionState('rt1', { ...createClientSessionState('s-running'), busy: true }))
+
+    // The row's own lead dot is mocked inert here; the header dot must not
+    // double up.
+    expect(dots(container)).toHaveLength(0)
+  })
+
+  it('does not light the dot for a session outside the group', () => {
+    workspaceOpen.value = false
+    const container = renderWith(['s-other'])
+    act(() => publishSessionState('rt1', { ...createClientSessionState('s-elsewhere'), busy: true }))
+
+    expect(dots(container)).toHaveLength(0)
+  })
+
+  it('clears the dot once the turn settles', () => {
+    workspaceOpen.value = false
+    const container = renderWith(['s-running'])
+    act(() => publishSessionState('rt1', { ...createClientSessionState('s-running'), busy: true }))
+    expect(dots(container)).toHaveLength(1)
+
+    act(() => publishSessionState('rt1', { ...createClientSessionState('s-running'), busy: false }))
+
+    expect(dots(container)).toHaveLength(0)
   })
 })
