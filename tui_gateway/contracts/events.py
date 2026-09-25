@@ -464,6 +464,13 @@ class SubagentEventPayload(Payload):
     delegation_id: str | None = None
     depth: int | None = None
     model: str | None = None
+    # FORK: live model identity (see tools/delegate_tool_progress._identity_kwargs ->
+    # agent.failover_state.effective_model_fields). The TUI's fallback-model row reads these.
+    provider: str | None = None
+    fallback_active: bool | None = None
+    model_label: str | None = None
+    primary_model: str | None = None
+    primary_provider: str | None = None
     tool_count: int | None = None
     toolsets: list[str] | None = None
     input_tokens: int | None = None
