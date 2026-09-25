@@ -263,8 +263,9 @@ def test_explicit_only_drops_anthropic_row_without_external_credentials():
         _list_auth_returning(rows),
         patch("hermes_cli.config.read_raw_config", return_value={}),
         patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
-        patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None),
-        patch("agent.anthropic_adapter.read_hermes_oauth_credentials", return_value=None),
+        patch("agent.anthropic_credentials.read_claude_code_credentials", return_value=None),
+        patch("agent.anthropic_credentials.read_hermes_oauth_credentials", return_value=None),
+        patch("hermes_cli.inventory._has_valid_external_anthropic_credentials", return_value=False),
     ):
         payload = build_models_payload(ctx, explicit_only=True)
 
@@ -368,6 +369,12 @@ def test_explicit_only_drops_anthropic_row_without_oauth_credentials():
         ),
         patch(
             "hermes_cli.inventory._anthropic_oauth_credentials_present",
+            return_value=False,
+        ),
+        # The fork added a second ambient-credential gate (the `_is_explicit`
+        # `or`-branch) -- neutralise it too or the row survives.
+        patch(
+            "hermes_cli.inventory._has_valid_external_anthropic_credentials",
             return_value=False,
         ),
     ):

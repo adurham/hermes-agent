@@ -285,10 +285,12 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         def _speed(model):
+            # Wire shape is the typed beta-client one (top-level ``speed`` + ``betas``),
+            # same as test_fast_mode_adds_speed_and_beta above — not extra_body["speed"].
             return build_anthropic_kwargs(
                 model=model, messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
                 tools=None, max_tokens=None, reasoning_config=None, fast_mode=True,
-            ).get("extra_body", {}).get("speed")
+            ).get("speed")
 
         assert _speed("claude-opus-5-5") == "fast"
         assert _speed("claude-opus-5") == "fast"
