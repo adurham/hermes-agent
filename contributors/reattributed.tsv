@@ -73,3 +73,4 @@ f9b991f9185c544c1b9a5d7be5a64515863b9ed6	2026-09-25T17:08:28-05:00	fix(desktop):
 ffa40b07f0203543778ad3a00c3b0ecb9a27a370	2026-09-25T13:58:22-05:00	fix(desktop): scope per-session remote reads so resume opens the owning state.db (#64999)
 43c1eee1fa6f58a79f54b0770ffe8e479b9fce3a	2026-09-25T12:31:55-05:00	fix(web): bound the /api/model/info context-length probe
 2dcb8d756207e546f8cc2c8d55a4eb49cfb14e2e	2026-09-25T12:31:55-05:00	fix(desktop): degrade model settings when /api/model/info hangs
+faf9231bc29d426dac070aa41f24400337d52a8f	2026-09-25T12:17:35-05:00	fix(desktop): keep submenus pinned to their trigger during scroll
