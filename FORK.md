@@ -146,12 +146,13 @@ is ungated — resolve that hunk by KEEPING the fork gate; upstream also has
 ungated `tests.yml` e2e jobs that only stay harmless while the gated caller is
 their sole entry point.
 
-**REGRESSION FLAGGED — DO NOT REMOVE: `agent.strip_cache_on_overload`.**
-`conversation_loop.py::_strip_cache_control` (its enforcement helper) has no
-caller except self-recursion: the enforcement call site was lost in a refactor,
-while `cli.py` and the example config still advertise the key. This is a
-**regression to rewire, not dead code to delete** — and the flag + helper must
-not be swept by a future dead-code pass before the rewire lands. Same for
+**REGRESSION REPAIRED (2026-09-24) — `agent.strip_cache_on_overload`.** The
+enforcement call site (lost in a refactor) was rewired in commit `4ac52ed21e`:
+`agent/turn_recovery.py::route_classified_error` arms `_strip_cache_for_overload`
+on `FailoverReason.overloaded` when the flag is on, and
+`agent/turn_api_request.py::build_api_request` consumes it (one-shot) by calling
+`_strip_cache_control(api_kwargs)`. Verified live 2026-09-24. Keep the flag and
+helper — do NOT sweep them in a dead-code pass. Same for
 `agent/fork/diagnostics.py::tools_signature` (+ its `_mixin` forwarder): proven
 uncalled, but FORK.md documents it as retained — remove only together with this
 doc.
@@ -199,13 +200,15 @@ file). All four unset (backup: `~/.hermes/config.yaml.bak-20260924-143112`).
 No shared key's fork default differs from upstream's while unset — no silent
 default drift.
 
-**Doc debt folded in here / still to fold:** the `## Tests` section (~line
-11853) is stale (3 dead paths, one file wrongly claimed fork-added — it ships
-upstream, undercount by 126 files); ~12 lines still list `fork-merge-plan.py`
-and `hermes_usage_tracker.py` as live (both long deleted); the soft-fork rows
-for `skill_manager_tool.py`/`approval.py` should be deleted and the `mcp_tool.py`
-row refreshed. `test_submit_shim.py` must NOT be deleted — its one-release
-window has not started (the shim is in no release tag).
+**Doc debt folded in here (2026-09-24, this pass):** the `## Tests` section
+(refreshed — 3 dead `run_agent/` paths corrected to `tests/agent/`, list
+regenerated from `git diff --diff-filter=A`, now records the 137-file count), the
+merge recipe in both `## Merging upstream` and `## Future upstream merges`
+(no longer calls the retired `scripts/fork-merge-plan.py`), the hard-fork table
+row for `scripts/fork-merge-plan.py` (deleted), and the
+`strip_cache_on_overload` flag (regression repaired — see above).
+`test_submit_shim.py` must NOT be deleted — its one-release window has not
+started (the shim is in no release tag).
 
 *Also landed alongside (own commit, pre-audit):* the desktop `package.json` +
 lockfile version/lock drift fix (`bd72ac733c`).
@@ -5174,7 +5177,11 @@ Verification: `npm ci --ignore-scripts` (exit 0),
 
 ## Merging upstream
 
-1. `python scripts/fork-merge-plan.py --fetch` — predicts conflicts before you merge.
+1. Predict conflicts with read-only git before you merge (there is no
+   `fork-merge-plan.py` any more — it was retired in `34ee671aba`):
+   `git diff --name-only HEAD upstream/main` for the overlap surface, or
+   `git merge --no-commit --no-ff upstream/main` then `git merge --abort` for a
+   dry run. The fork's conflict hot spots are the soft-fork table above.
 2. `git merge upstream/main`, resolve conflicts.
 3. `python scripts/sync-fork-branding.py` — re-applies the adurham/hermes-agent
    repo-link rebrand. Upstream's own files always say `NousResearch/hermes-agent`;
@@ -9750,7 +9757,6 @@ will never touch them.
 | `tools/consult_tool.py` | Second-opinion tool — asks a configurable reference model (`auxiliary.consult`) for a review before a risky/uncertain decision; refusals/empty responses degrade gracefully to `unavailable: true` rather than erroring. Available to main agent + subagents (not in `DELEGATE_BLOCKED_TOOLS`). |
 | `tools/delegation_router.py` | Cheap classifier that reads a delegate_task goal+context in ONE batch call and serves two roles: (a) full routing for tasks with no explicit model/agent_type (or `agent_type='auto'`) — capability tier (light/standard/deep) and optionally a ruflo persona, mapped tier→role→model through `delegation.model_by_role`; (b) an ESCALATE-ONLY tier check for tasks that DID state an agent_type — replaces the stated role only when the classifier's tier ranks strictly higher (never a downgrade), ranked via `hermes_cli/model_tiers.py`'s Anthropic AND local ladders. An explicit `model=` bypasses both. Fail-open everywhere. Config: `delegation.auto_route.*` (incl. `escalate_only`, default true), `auxiliary.delegation_router`. |
 | `FORK.md` | This file |
-| `scripts/fork-merge-plan.py` | Pre-merge analyzer (see "Future upstream merges" below) |
 | `scripts/setup-merge-drivers.sh` | One-time-per-clone registration of the uv.lock merge driver |
 
 ### Soft-fork edits (merge conflicts possible)
@@ -11925,7 +11931,7 @@ Per merge:
 git fetch upstream --tags && git checkout -b sync/upstream-$(date +%F)
 SYNC_TARGET=$(git tag -l 'v2026.*' --sort=-version:refname | head -1)
 echo "Syncing to $SYNC_TARGET"       # confirm with the user before merging
-python scripts/fork-merge-plan.py    # predicts conflict files before you touch anything
+git diff --name-only HEAD "$SYNC_TARGET"   # overlap surface before you touch anything
 git merge "$SYNC_TARGET"             # release tag, NOT upstream/main
 ```
 
@@ -12066,20 +12072,24 @@ pollution), pass in isolation. Deselect them when judging a merge.
 
 ## Tests
 
-The fork adds these test files:
+The fork adds these test files (verified 2026-09-24 — the three `run_agent/`
+paths below were stale, those files now live under `tests/agent/`):
 
-* `tests/test_skill_recall_reminder.py` (14 tests, fork-only feature)
-* `tests/test_memory_recall_reminder.py` (20 tests, fork-only feature)
-* `tests/test_memory_session_pin.py` (18 tests, fork-only feature)
-* `tests/run_agent/test_rate_limit_observability.py` (6 tests, fork-only feature)
-* `tests/run_agent/test_anthropic_stream_phase_classifier.py` (16 tests, exercises `_classify_anthropic_stream_phase`)
-* `tests/run_agent/test_repair_tool_call_name.py` (CC alias coverage)
+* `tests/agent/test_rate_limit_observability.py` (fork-only feature)
+* `tests/agent/test_rate_limit_observability_call_sites.py`
+* `tests/agent/test_anthropic_stream_phase_classifier.py` (exercises `_classify_anthropic_stream_phase`)
+* `tests/agent/test_repair_tool_call_name.py` (CC alias coverage)
+* `tests/test_skill_recall_reminder.py` (fork-only feature)
+* `tests/test_memory_recall_reminder.py` (fork-only feature)
+* `tests/test_memory_session_pin.py` (fork-only feature)
 
 Plus fork additions to shared upstream test files:
 
 * `tests/agent/test_auxiliary_main_first.py` — `TestExoScopedAuxDelegation` (2 tests, 2026-06-18 exo-scoped aux delegation guard).
 
-All other tests come from upstream.
+The fork-only test surface is much larger than a hand-listed set: regenerate it
+with `git diff --name-only --diff-filter=A upstream/main...HEAD -- tests/`
+(**137 files** as of 2026-09-24) rather than trusting a static list here.
 
 ## When to update this doc
 
