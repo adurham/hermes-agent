@@ -5,7 +5,9 @@ choose again. An update has nobody to ask and must never fail because of a plugi
 core moved (a newer Python, a bumped pin, a newer manifest contract) under a plugin
 that was admitted against the old core. Such a plugin is disabled in every home that
 enables it, the reason reaches the operator and the receipt, and the update continues
-with the rest. Only a core that cannot build on its own still fails.
+with the rest. A secondary profile whose config cannot be read is left out of the union
+the same way (there is nothing to edit in it) until its config is fixed. Only a core that
+cannot build on its own still fails.
 """
 from __future__ import annotations
 
@@ -117,8 +119,15 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     """
     from pm import receipt
     from pm.install import _commit_selection, _runtime_state_matches, _target_selection
+    from pm.plugins_state import dependency_homes, read_home_selection
     from pm.workspace import _is_member_candidate, enabled_plugin_entries
 
+    notices: list[str] = []
+    for home in dependency_homes()[1:]:
+        try:
+            read_home_selection(home)
+        except ValueError as exc:
+            notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
     reasons = static_reasons(entries, _interpreter_version())
 
@@ -132,7 +141,8 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         receipt.record_feature_list(enabled)
         _commit_selection(package, facts, PluginEviction(entries, reasons) if reasons else None,
                           enabled=enabled, stamp=stamp, inputs=inputs,
-                          current=_runtime_state_matches(fact, stamp), repair=False, explicit=explicit)
+                          current=_runtime_state_matches(fact, stamp), repair=False, explicit=explicit,
+                          skip_invalid_secondary=True)
 
     kept = members()
     try:
@@ -143,21 +153,20 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         enabled = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": []},
                                     repair=False, shipped=shipped, frozen=frozen)[0]
         try:
-            package.apply(enabled, explicit=explicit, plugin_dirs=[])
+            package.apply(enabled, explicit=explicit, plugin_dirs=[], skip_invalid_secondary=True)
         except InstallError:
             raise failure from None
         fitting: list[Path] = []
         for member in kept:
             try:
-                package.apply(enabled, explicit=explicit, plugin_dirs=[*fitting, member])
+                package.apply(enabled, explicit=explicit, plugin_dirs=[*fitting, member], skip_invalid_secondary=True)
             except InstallError as exc:
                 reasons[member.resolve()] = f"the dependency environment no longer builds with it: {exc.cause[-400:]}"
             else:
                 fitting.append(member)
         commit()
-    for plugins_dir, name, plugin_dir in entries:
-        reason = reasons.get(plugin_dir.resolve())
-        if reason:
-            message = f"Disabled plugin '{name}' in {plugins_dir.parent}: {reason}"
-            print(f"⚠ {message}", file=sys.stderr, flush=True)
-            receipt.record_warning(message)
+    notices += [f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[plugin_dir.resolve()]}"
+                for plugins_dir, name, plugin_dir in entries if plugin_dir.resolve() in reasons]
+    for message in notices:
+        print(f"⚠ {message}", file=sys.stderr, flush=True)
+        receipt.record_warning(message)

@@ -656,13 +656,14 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
 
 
 def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stamp: str, inputs: dict,
-                      current: bool, repair: bool, explicit: bool) -> None:
+                      current: bool, repair: bool, explicit: bool, skip_invalid_secondary: bool = False) -> None:
     """Build (unless current), publish the plugin change, then record the selection."""
     from pm import receipt
     from hermes_cli.runtime_state import finish_publication, recover_publication
 
     try:
-        result = {} if current else (package.apply(enabled, explicit=explicit, **inputs) or {})
+        result = {} if current else (package.apply(enabled, explicit=explicit,
+                                                   skip_invalid_secondary=skip_invalid_secondary, **inputs) or {})
         if not repair and package.expected_stamp(enabled, **inputs) != stamp:
             raise ValueError("Dependency inputs changed while preparing publication; retry.")
         if change is not None:

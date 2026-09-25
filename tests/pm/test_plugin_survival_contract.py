@@ -392,6 +392,39 @@ def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
     assert venv_is_current(project_root=tmp_path / "core") is True
 
 
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_update_sync_survives_unreadable_secondary_profile(admission_env):
+    """A secondary profile's broken config.yaml cannot fail an update: its plugins sit out
+    (reported), the rest build, and the next boot sees a current venv."""
+    from pm.environments import runtime_facts_path
+    from pm.install import sync_venv, venv_is_current
+    from pm.lock import Facts
+
+    tmp_path, home = admission_env
+    core = tmp_path / "core"
+    member = home / "plugins" / "primary-dep"
+    member.mkdir(parents=True)
+    (member / "pyproject.toml").write_text(
+        '[project]\nname="primary-dep"\nversion="1"\nrequires-python=">=3.11"\n'
+        'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
+    )
+    _write_enabled(home, ["primary-dep"])
+    broken = home / "profiles" / "work" / "config.yaml"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("plugins: [broken]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="config.yaml"):
+        sync_venv(explicit=True)  # an ordinary sync still refuses to shrink the graph
+
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
+    assert "primary-dep" in (workspace / "pyproject.toml").read_text()
+    assert broken.read_text(encoding="utf-8") == "plugins: [broken]\n"
+    assert str(broken.parent) in json.dumps(_latest_receipt(home).get("warnings"))
+    assert venv_is_current(project_root=core) is True
+
+
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tools.environments.local import build_subprocess_env
