@@ -2607,12 +2607,20 @@ class CLICommandsMixin:
     # ---- model-behaviour settings: /reasoning, /busy, /indicator, /fast -------------------
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
-        scope unless --global) and thinking display toggles (always saved)."""
+        scope unless --global) and thinking display toggles (always saved). With no argument the
+        FORK's interactive picker opens first (status readout is the fallback when the modal
+        toolkit is unavailable)."""
         from cli import CLI_CONFIG, _parse_reasoning_config
         from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
         _route = (getattr(self, "provider", None), getattr(self, "model", None))
-        if not raw:  # show current state
+        if not raw:  # no argument — FORK picker first, upstream status readout as fallback
+            try:
+                self._open_reasoning_picker()
+                if getattr(self, "_reasoning_picker_state", None):
+                    return
+            except Exception:
+                pass  # modal toolkit unavailable — fall through to the readout
             rc = self.reasoning_config
             level = ("medium (default)" if rc is None else "none (disabled)"
                      if rc.get("enabled") is False else effort_display_label(rc.get("effort", "medium"), *_route))
@@ -2654,7 +2662,15 @@ class CLICommandsMixin:
                          f"{_scope_outcome(explicit_global, saved)}"))
 
     def _handle_busy_command(self, cmd: str):
-        """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
+        """Handle /busy — control what Enter does while Hermes is working.
+
+        Usage:
+            /busy               Show current busy input mode
+            /busy status        Show current busy input mode
+            /busy queue         Queue input for the next turn instead of interrupting
+            /busy steer         Inject Enter mid-run via /steer (after next tool call)
+            /busy interrupt     Interrupt the current run on Enter (default)
+        """
         arg = _command_arg(cmd, lower=True)
         usage = _dim_line('Usage: /busy [queue|steer|interrupt|status]')
         if not arg or arg == "status":
@@ -2664,7 +2680,14 @@ class CLICommandsMixin:
         if arg not in _BUSY_MODE_LONG:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
         self.busy_input_mode = arg
-        _persist_display_choice("display.busy_input_mode", arg, "Busy input mode", _BUSY_MODE_LONG[arg])
+        # FORK seam: tests pin cli._cprint + cli.save_config_value, so resolve both
+        # through cli (module-level _cp/_save would bypass the patches).
+        from cli import _cprint, save_config_value
+        if save_config_value("display.busy_input_mode", arg):
+            _cprint(_accent_line(f"✓ Busy input mode set to '{arg}' (saved to config)"))
+            _cprint(_dim_line(_BUSY_MODE_LONG[arg]))
+        else:
+            _cprint(_accent_line(f"✓ Busy input mode set to '{arg}' (session only)"))
 
     def _handle_indicator_command(self, cmd: str):
         """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.

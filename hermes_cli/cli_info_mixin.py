@@ -119,7 +119,9 @@ class CLIInfoMixin:
             banner_kw = dict(
                 console=self.console, model=self.model, cwd=cwd,
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
+                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned,
+                # FORK: filter the tool panel by toolsets disabled at startup.
+                disabled_toolsets=self.disabled_toolsets)
 
             if snapshot is not None:
                 self._defer_tool_warnings = True
@@ -400,6 +402,17 @@ class CLIInfoMixin:
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
         from toolsets import get_all_toolsets, get_toolset_info
+        # FORK: the hermes-<platform> composites for OTHER platforms (e.g.
+        # hermes-discord, hermes-feishu, hermes-yuanbao) all mirror
+        # _HERMES_CORE_TOOLS and only matter when running as that bot.
+        # Skip them here so the cli's `/toolsets` listing isn't padded
+        # with messenger-bot composites the user can't actually use.
+        from hermes_cli.platforms import PLATFORMS as _PLATFORMS
+        other_platform_composites = {
+            info.default_toolset
+            for key, info in _PLATFORMS.items()
+            if key != "cli"
+        }
         all_toolsets = get_all_toolsets()
 
         print()
@@ -407,6 +420,8 @@ class CLIInfoMixin:
         print()
 
         for name in sorted(all_toolsets.keys()):
+            if name in other_platform_composites:
+                continue
             info = get_toolset_info(name)
             if info:
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
@@ -685,8 +700,16 @@ class CLIInfoMixin:
 
         The Nous credits block is agent-independent (portal fetch), so it runs even with no live
         agent — the TUI's /usage slash-worker resumes the session WITHOUT building an agent.
+
+        FORK: unlike upstream (which removed cost reporting in fd2a35b16), this keeps the fork's
+        parent/subagent cost split (estimate_usage_cost + subagent counters) on top of upstream's
+        newer account-limit/context-pin reporting.
         """
         from cli import datetime, format_duration_compact
+        # FORK: cost reporting is a deliberate divergence from upstream (fd2a35b16).
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        # Account limits are agent-independent — fetched here so the early returns can show them.
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines  # noqa: F401
 
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
@@ -716,8 +739,18 @@ class CLIInfoMixin:
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
+        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
+        prompt = agent.session_prompt_tokens
+        completion = agent.session_completion_tokens
+        total = agent.session_total_tokens
         compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens if compressor.last_prompt_tokens > 0 else 0
+        # Real provider count for display (not the preflight-inflated last_prompt_tokens),
+        # so the context line cannot show the phantom balloon. See display_prompt_tokens.
+        if hasattr(compressor, "display_prompt_tokens"):
+            last_prompt = compressor.display_prompt_tokens()
+        else:
+            last_prompt = compressor.last_prompt_tokens
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
@@ -729,11 +762,65 @@ class CLIInfoMixin:
         print(f"  Output tokens:             {output_tokens:>10,}")
         if reasoning_tokens:
             print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {agent.session_prompt_tokens:>10,}")
-        print(f"  Completion tokens:         {agent.session_completion_tokens:>10,}")
-        print(f"  Total tokens:              {agent.session_total_tokens:>10,}")
+        print(f"  Prompt tokens (total):     {prompt:>10,}")
+        print(f"  Completion tokens:         {completion:>10,}")
+        print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
+        print(f"  {'─' * 40}")
+        # FORK: full cost reporting (upstream removed it in fd2a35b16). Parent cost is the
+        # estimate for this agent's own tokens; subagent spend is rolled up by
+        # tools/delegate_tool.py, so the total adds them without double-counting.
+        cost_result = estimate_usage_cost(
+            agent.model,
+            CanonicalUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            ),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+        )
+        sub_cost = float(getattr(agent, "session_subagent_cost_usd", 0.0) or 0.0)
+        sub_in = int(getattr(agent, "session_subagent_input_tokens", 0) or 0)
+        sub_out = int(getattr(agent, "session_subagent_output_tokens", 0) or 0)
+        sub_n = int(getattr(agent, "session_subagent_count", 0) or 0)
+        # Authoritative session total: parent (computed) + children (rolled).
+        parent_cost = (
+            float(cost_result.amount_usd) if cost_result.amount_usd is not None else 0.0
+        )
+        session_cost_total = parent_cost + sub_cost
+        print(f"  Cost status:              {cost_result.status:>10}")
+        print(f"  Cost source:              {cost_result.source:>10}")
+        if session_cost_total > 0:
+            # Parent vs subagent breakdown when we have BOTH (otherwise just the Total line).
+            if parent_cost > 0 and sub_cost > 0:
+                print(f"  Parent cost:             ${parent_cost:>10.4f}")
+                print(
+                    f"  Subagent cost:           ${sub_cost:>10.4f}  "
+                    f"({sub_n} child{'ren' if sub_n != 1 else ''}, "
+                    f"{sub_in:,}↓/{sub_out:,}↑ tok)"
+                )
+                prefix = "~" if cost_result.status == "estimated" else ""
+                print(f"  Total cost:              {prefix}${session_cost_total:>10.4f}")
+            elif sub_cost > 0:
+                # No parent cost (rare — parent did nothing but delegate)
+                print(
+                    f"  Subagent cost:           ${sub_cost:>10.4f}  "
+                    f"({sub_n} child{'ren' if sub_n != 1 else ''}, "
+                    f"{sub_in:,}↓/{sub_out:,}↑ tok)"
+                )
+                prefix = "~"
+                print(f"  Total cost:              {prefix}${session_cost_total:>10.4f}")
+            else:
+                # Parent only — original single-line shape
+                prefix = "~" if cost_result.status == "estimated" else ""
+                print(f"  Total cost:              {prefix}${parent_cost:>10.4f}")
+        elif cost_result.status == "included":
+            print(f"  Total cost:              {'included':>10}")
+        else:
+            print(f"  Total cost:              {'n/a':>10}")
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
@@ -754,6 +841,13 @@ class CLIInfoMixin:
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
             logging.getLogger().setLevel(logging.INFO)
+            # NOTE: We deliberately do NOT raise per-logger levels for
+            # tools/run_agent/etc. in quiet mode. Setting logger.setLevel
+            # above the file handler level filters records before they
+            # reach handlers, so agent.log / errors.log lose visibility
+            # into stream-retry events, credential rotations, etc.
+            # Console quietness is enforced by hermes_logging not
+            # installing a console StreamHandler in non-verbose mode.
 
     def _print_account_limits(self) -> bool:
         """Provider account limits block for `/usage`; True if anything printed.
