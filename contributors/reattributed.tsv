@@ -18,3 +18,4 @@ c19a35d8c9b018d17a84c788eaa56f4afaa8630b	2026-09-24T23:34:29-05:00	fix(desktop):
 4869d3812c2d3197b9647675bb9e1d8e4a5547eb	2026-09-24T23:59:07-05:00	fix(desktop): leave the entered project when switching profile or backend
 cc6bfebfabf5ca2bd0d95527860236f215149ee9	2026-09-24T18:45:26-05:00	fix(desktop): tear down a HUD whose renderer dies before first paint (#108230)
 b401fb2e49b34b2b0e585ed47167651a6e28cb41	2026-09-24T18:59:35-05:00	fix(desktop): clear PrimaryProfilePin on current-owner exit/error and make one launch-profile decision per start (#108417)
+df293160cea1c7356d82ace3ad51b1036e31ad2d	2026-09-24T19:59:29-05:00	fix(desktop): preserve tile widths across reload via hydration suspend + partner-validated recall (#108679)
