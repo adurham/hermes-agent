@@ -177,18 +177,21 @@ export async function connectInitialGateway({
   attempts = 8,
   connect,
   delayMs = 3_000,
+  initialUrl,
   isCancelled
 }: {
   attempts?: number
-  connect: () => Promise<void>
+  connect: (wsUrl?: string) => Promise<void>
   delayMs?: number
+  /** URL already minted at the boot boundary; used for the first attempt so the mint count stays observable. */
+  initialUrl?: string
   isCancelled: () => boolean
 }): Promise<void> {
   let lastConnectError: unknown = null
 
   for (let attempt = 0; attempt < attempts && !isCancelled(); attempt += 1) {
     try {
-      await connect()
+      await connect(attempt === 0 ? initialUrl : undefined)
       lastConnectError = null
 
       break
@@ -1390,15 +1393,12 @@ export function useGatewayBoot({
           console.warn('Failed to seed default workspace cwd pre-connect', err)
         }
 
-        // Mint a fresh WS URL once to classify the boot boundary: a valid
-        // WebSocket dial against a REMOTE descriptor is the only failure that
-        // counts as a transient renderer-side dial (#82679). URL and capability
-        // failures stay terminal at their own boundaries. For OAuth gateways
-        // the ticket is single-use with a short TTL, so the ticket baked into
+        // Mint a fresh WS URL right before connecting. For OAuth gateways the
+        // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
-        // connecting with a dead ticket. This await is bounded like the
-        // reconnect path (#93454) so a wedged mint reaches the recovery
-        // affordance instead of hanging "Starting Hermes…".
+        // connecting with a dead ticket. Auth rejection asks for sign-in. This
+        // await is bounded like the reconnect path (#93454) so a wedged mint
+        // reaches the recovery affordance instead of hanging "Starting Hermes…".
         const wsUrl = await withTimeout(
           resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
@@ -1412,20 +1412,37 @@ export function useGatewayBoot({
           stage = 'dialing'
         }
 
-        // Retry the initial dial across backend cold-start (#49645). The WS URL
-        // is re-minted on EVERY attempt: OAuth tickets are single-use, so the
-        // first attempt's ticket is dead by the time a retry runs.
-        await connectInitialGateway({
-          connect: async () => {
-            const attemptWsUrl = await withTimeout(
-              resolveDesktopGatewayWsUrl(desktop, conn),
-              RECONNECT_ATTEMPT_TIMEOUT_MS,
-              'Timed out minting the gateway WebSocket URL'
-            )
-            await gateway.connect(attemptWsUrl)
-          },
-          isCancelled: () => cancelled
-        })
+        if (conn.mode === 'remote') {
+          // REMOTE keeps the single dial: a remote dial failure must stay a
+          // retryable boot failure (stage 'dialing') so the bounded boot-retry
+          // loop below re-runs the whole handshake — including a fresh
+          // getConnection() against a possibly-rebuilt tunnel.
+          await gateway.connect(wsUrl)
+        } else {
+          // LOCAL retries the dial across backend cold-start (#49645): main's
+          // readiness probe already passed, but a freshly spawned backend can
+          // still stall its event loop for seconds on the first WS handshake —
+          // a local boot failure is latched non-retryable, so without this
+          // retry the one lost race ended the boot in "Could not connect to
+          // Hermes gateway". The first attempt reuses the URL minted at the
+          // boot boundary above — the mint count stays observable (#93454) —
+          // while later attempts re-mint; local token URLs are long-lived, so
+          // the re-mint is a cheap no-op.
+          await connectInitialGateway({
+            connect: async (attemptWsUrl?: string) => {
+              const url =
+                attemptWsUrl ??
+                (await withTimeout(
+                  resolveDesktopGatewayWsUrl(desktop, conn),
+                  RECONNECT_ATTEMPT_TIMEOUT_MS,
+                  'Timed out minting the gateway WebSocket URL'
+                ))
+              await gateway.connect(url)
+            },
+            isCancelled: () => cancelled,
+            initialUrl: wsUrl
+          })
+        }
         stage = 'connected'
 
         if (cancelled) {
