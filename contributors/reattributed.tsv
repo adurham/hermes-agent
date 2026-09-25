@@ -52,3 +52,4 @@ ba1c1296920923da5101baeec7228062a16fac51	2026-09-25T01:21:19-05:00	fix(desktop):
 d0cb567273716ffb48c213dd046b26e58e20401a	2026-09-24T20:31:06-05:00	fix(gateway): take host identity from the live host record on replay
 788d82fc9759de268c63fc2c6446718acd04ff8c	2026-09-25T11:38:51-05:00	fix(tui): honor agent.disabled_toolsets in the desktop/TUI gateway (#44499)
 37d062b2fa8dc4cee3cd213e113c9e309871a7d2	2026-09-24T19:48:13-05:00	test(desktop): keep rebased checks green
+eda61f644e33a80ee7d5970744cb3faddf20f72f	2026-09-25T11:22:46-05:00	fix(tui-gateway): grant the WS orphan-reap grace in awake time
