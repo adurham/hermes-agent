@@ -8,3 +8,4 @@ b50bb77ec5cf44babadbd2aa8b6338bf505ef972	2026-09-24T19:36:22-05:00	fix(desktop):
 f26825eb2d8809018a7416fc93755a3d830b688e	2026-09-24T19:48:13-05:00	test(desktop): keep rebased checks green
 f1247d2e0146bbd8edd4e510b9e67e0d259509a4	2026-09-24T19:25:16-05:00	fix(desktop): adopt a published session token on the post-update relaunch
 6c4a983e8de6340737735b98dea11ab64ea78242	2026-09-24T19:54:10-05:00	style(desktop): format session action hook
+da931c9ea822f301cd668dc5b701e9860ddda181	2026-09-24T23:12:30-05:00	fix(desktop): ignore auto-repeat and post-focus Ctrl+W/Ctrl+R
