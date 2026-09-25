@@ -121,7 +121,7 @@ function sessionTimerItem() {
 }
 
 function timerSince(item: ReturnType<typeof sessionTimerItem>): number | null {
-  return isValidElement(item?.detail) ? (item.detail.props.since as number | null) : null
+  return isValidElement<{ since: number | null }>(item?.detail) ? item.detail.props.since : null
 }
 
 describe('statusbar session timer — focused since (#103123)', () => {
