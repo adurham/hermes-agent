@@ -89,3 +89,4 @@ e2ee9a6978119cafa7b1eb59fc8833d374fe4ccc	2026-09-25T12:24:29-05:00	fix(desktop):
 81b0ee63234c8e974bd38150f18e7cf5b82983b7	2026-09-25T15:42:12-05:00	test(desktop): resolve runtime timer salvage against current main
 1f30bdbaff7926491188231686886173e51910be	2026-09-25T17:25:41-05:00	fix(desktop): add runtimeStartedAt to onboarding fixture and sort test import
 0fb7c95203ff787eaf85040789e2c3cda7e2d49d	2026-09-25T01:19:32-05:00	fix(desktop): give preview error states a Close that closes the tab
+32b4acf4c876322059dc867601288251b7875537	2026-09-25T01:19:59-05:00	fix(desktop): name the connected Telegram bot after QR setup
