@@ -9860,6 +9860,7 @@ will never touch them.
 | `tools/delegation_router.py` | Cheap classifier that reads a delegate_task goal+context in ONE batch call and serves two roles: (a) full routing for tasks with no explicit model/agent_type (or `agent_type='auto'`) — capability tier (light/standard/deep) and optionally a ruflo persona, mapped tier→role→model through `delegation.model_by_role`; (b) an ESCALATE-ONLY tier check for tasks that DID state an agent_type — replaces the stated role only when the classifier's tier ranks strictly higher (never a downgrade), ranked via `hermes_cli/model_tiers.py`'s Anthropic AND local ladders. An explicit `model=` bypasses both. Fail-open everywhere. Config: `delegation.auto_route.*` (incl. `escalate_only`, default true), `auxiliary.delegation_router`. |
 | `FORK.md` | This file |
 | `scripts/setup-merge-drivers.sh` | One-time-per-clone registration of the uv.lock merge driver |
+| `scripts/autostash_cleanup.py` | Safe cleanup for the `hermes-update-autostash-*` orphans `hermes update` parks (and never GCs - it only warns past 7 days). Containment audit per touched path (HEAD blob compare, then an exact-blob search of reachable history), bundle-archive before dropping, drop by INDEX highest-first. An uncontained blob is recoverable work and is never dropped; paths absent from HEAD count as superseded-by-removal only when they were TRACKED at the stash base AND `--allow-removed` is passed. Read-only by default. Tests: `tests/scripts/test_autostash_cleanup.py`. |
 
 ### Soft-fork edits (merge conflicts possible)
 
@@ -18500,3 +18501,35 @@ de-fork-caused): `test_cross_vm_fs_wal_refusal`, `test_guest_durability_barriers
 behavior); `test_transport_a_registration`, `test_restart_stale_runtime_recovery`,
 the a2a suites, `test_tavily_provider`, `test_cross_session_*` are red at the
 fork's pre-merge tip (pre-existing fork-side).
+
+## 2026-09-25 - fork tooling: safe cleanup for aged `hermes update` autostash orphans
+
+`hermes update` parks a `hermes-update-autostash-<stamp>` entry whenever the tree is dirty
+(the desktop updater's `--keep-stash` parks one on EVERY run; a non-interactive update parks
+one when the restore is declined). Nothing in the product ever drops one - by design, since a
+stash may be the only copy of someone's work - so the pile only grows and the updater's
+>7-day notice has no matching cleanup path. This checkout had accumulated 21 entries.
+
+New fork tooling `scripts/autostash_cleanup.py` (+ `tests/scripts/test_autostash_cleanup.py`,
+7 tests): triage by entry stamp, containment audit, bundle-archive, drop by index, verify.
+
+The two traps it encodes, both found the hard way:
+
+* **"The file changed since the stash" is not "the stash is superseded".** A stash carries
+  whole-file blobs; a path whose content changed may still be byte-identical to HEAD, and a
+  blob no commit holds may be a partial fork re-application that no merge ever landed. Audit
+  containment: `rev-parse stash@{N}:<p>` vs `HEAD:<p>`, and for anything different search
+  reachable history for that EXACT blob. Only all-contained entries are droppable.
+* **An absent path is ambiguous.** `HEAD:<p>` is empty for a file deliberately deleted
+  upstream (the contributor-email artifacts purged for case collisions) AND for an untracked
+  file - which is absent from HEAD by definition. Treating the two alike drops
+  never-committed work; the first cut of this tool did exactly that on a synthetic fixture.
+  Superseded-by-removal requires the path to have been TRACKED at the stash's own base
+  (`<sel>^1`) and an explicit `--allow-removed`.
+
+Verified: 7/7 tests on synthetic repos (each disposition - superseded-by-commit,
+superseded-by-removal, unique untracked work, fresh - plus archive-manifest completeness,
+HEAD-untouched, and the no-op path); a full `--apply` run against the live checkout dropped
+15 audited entries, left 6 young `--keep-stash` parks, and printed 0 on the next update's
+age check; the archive bundle was unbundled in a scratch repo and a dropped entry's original
+file content read back out.
