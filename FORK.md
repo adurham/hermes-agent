@@ -18296,3 +18296,99 @@ commit (`f0cad06871`) and the sync branch ON THE SAME MACHINE, so "merge-caused"
 is decided by one machine's failure signature rather than by comparing a Mac run
 against a Linux run. Comparing different hosts is how you misattribute a
 platform difference to a merge.
+
+
+## 2026-09-25 — De-fork verification: full per-file suite driven green (13 fixes)
+
+After absorbing upstream v2026.9.21 + v2026.9.24, the fork's suite was swept with the
+CI runner (`scripts/run_tests_parallel.py`, per-file subprocess isolation): **32,725
+passed / 50 failed / 24 files**. Every failure was then classified against TWO
+baselines besides HEAD — the upstream tag `v2026.9.24` and the fork's own pre-merge
+tip `14f7219d46` (see `references/three-baseline-triage.md` in the fork-sync skill).
+Final classification: **0 merge-caused, 22 pre-existing fork-side, 3 no-baseline** —
+i.e. the sync did not break the fork. All were then fixed anyway; the suite is green.
+
+### Production fixes (not test-only)
+
+- **`tools/file_tools_paths.py` — restored the absolute-path workspace-divergence
+  warning.** The fork's `dfdb1fc6dd` (2026-07-24) extended
+  `_path_resolution_warning` to ABSOLUTE paths after a live incident where a
+  mangled long path silently wrote a file to the wrong location. The fork's own
+  refactor `d4cec15b47` (2026-09-02) extracted the module and carried back the
+  PRE-fix body, reinstating the early `return None` two days later; the
+  regression test had been red ever since. Not merge damage — a genuine open hole.
+
+- **`tests/tools/test_skill_manager_tool.py` fixture retargeted (production
+  behavior verified, not changed).** `TestBackgroundReviewExternalGuard` patched
+  `agent.skill_utils.get_all_skills_dirs`, but the guard the merge introduced
+  (`_background_review_write_guard` -> `is_external_skill_path`) reads
+  `get_external_skills_dirs()` (config `skills.external_dirs`) and
+  `get_project_skills_dirs()`. The fixture's directory was therefore never seen as
+  external: the call fell through to the curator-ownership refusal and the tests
+  failed on message text — **masking that the external-dirs branch was never
+  exercised at all**. The fork's own `_background_review_external_guard`
+  (`0e73b1ca1f`) is gone; upstream's successor covers the same case (plus
+  pinned/builtin/hub/bundled). Superseded, not lost.
+
+### Stale seams — upstream-designed changes the fork's tests hadn't followed
+
+- `test_approval.py` patched `mod._fire_approval_hook` where `mod = tools.approval`;
+  the function lives in `tools/approval_context.py` and the module's PEP-562 lazy map
+  covers plugin-compat names only. Patch the owner module.
+- `test_delegate_persona_injection.py` asserted the task goal was in the child's
+  SYSTEM prompt. Upstream `0aa178736a` (v2026.9.21) moved it to the child's first
+  USER turn (`delegate_tool_child_run.py:940`). The fork's persona behavior under
+  test is unchanged and still asserted.
+- `test_mcp_dynamic_discovery.py` hardcoded `mcp__<server>__<tool>` literals while
+  the fork's registered-name convention is deliberately BARE (`9477c3ed90`). All 18
+  literals now call `mcp_registered_tool_name()`, so they track the convention
+  instead of re-encoding it.
+- `test_async_delegation.py` (3): goals under the batch-quality minimum
+  (`_MIN_BATCH_GOAL_LEN = 10`, upstream #81141, present at all three baselines);
+  a dispatch-handle id asserted against the fake dispatcher's return instead of the
+  live-transcript id; and the literal `"stalled"` asserted in USER-facing text that
+  deliberately excludes worker internals (now asserts the structured `stall_*`
+  metadata — a stronger check).
+
+### Host-shaped failures (macOS vs upstream's Linux CI) — all fixable, all fixed
+
+- Linux-only gates read BEFORE the stubbed probe: `runtime.is_supported_host`
+  (bot-desktop memory gate), `process_registry._IS_LINUX` (kanban managed-gateway
+  spawn refusal).
+- GNU-only `pgrep -c` prints nothing on BSD — count from `ps` in Python (never an
+  sh/awk pipeline: its own shell matches the pattern).
+- `AF_UNIX path too long` — macOS caps `sun_path` at 104 bytes vs Linux's 108, and
+  pytest's `tmp_path` under `/private/var/folders/...` overflows it, raised by the
+  TEST's own `bind()`. A `short_socket_dir` fixture hands out a short `/tmp` path.
+- A localhost:11434 endpoint takes the NATIVE Ollama catalog path straight to the
+  real daemon; on a box running Ollama with zero models pulled, that authoritative
+  empty answer means the stubbed fetch is never consulted. Extended the file's own
+  autouse offline fixture to force the generic path.
+- The desktop stage-and-swap lock test gated injection on `Path(dst) ==
+  live_exe.parent`, which only matches a FLAT unpacked layout; macOS nests the
+  binary at `mac-arm64/Hermes.app/Contents/MacOS/Hermes`. Gate on the rename whose
+  SOURCE is the staged root — the sibling test in the same file already did.
+- `test_update_import_guard.py`: the fake venv was a bare symlink of the current
+  interpreter, which on macOS cannot resolve its own home when invoked through a
+  foreign path (`Could not find platform independent libraries <prefix>`; a copy of
+  the uv-managed binary dies on `@rpath/libpython3.11.dylib`). Mirror a real venv:
+  symlink the BASE interpreter from `pyvenv.cfg`'s `home =` line and write that cfg.
+  Its subject and semantics are preserved (cwd-importable WITHOUT `-P`, invisible
+  WITH it).
+- `test_plugin_validate.py`: upstream ships this test BROKEN — the availability
+  check appends `", path <p>"` / `", version <v>"` to the state, but the assertion
+  matched the detail exactly. Verified failing in the pristine v2026.9.24 tree;
+  production code is identical at tag and HEAD. Match the state as a prefix.
+- `test_web_tools_config.py` — the ONE tag-green/HEAD-red case, resolved as
+  host-state, not merge damage: the fork's `check_web_api_key` ends with a
+  `~/.claude/.credentials.json` probe, present on this machine. The file's
+  class-based tests already redirect `Path.home()`; the module-level test did not.
+
+**Lesson recorded (fork-sync skill pitfalls #34-#36):** on macOS the majority of
+leftover failures are host-shaped rather than product defects, and they are
+fixable. Byte-identity across baselines does not prove a test cannot pass here —
+check whether a SIBLING test already solved the shape before declaring it
+unfixable. "Pre-existing" is a classification, not a verdict.
+
+**Verification:** the 17 affected files re-run individually at HEAD — 711 passed,
+0 failed, 23 skipped.
