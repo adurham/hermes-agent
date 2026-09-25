@@ -171,3 +171,4 @@ b24b8149ddfacf19e68f4cbdc733e00a59d758b3	2026-09-24T22:03:31-05:00	fix(icons): g
 41cd3117ae62a689c2b37a137e78eee21bc7650c	2026-09-25T12:33:22-05:00	fix(desktop): keep the sidebar alive for messaging-only and cron-only profiles
 980318e68954777b08333e7044beeee4518344cf	2026-09-24T23:47:46-05:00	fix(install): detect arch-suffixed desktop builds on repair/upgrade reruns (#94703)
 5ef8d96554993c98bd3358de2d6eb0a3419c81ce	2026-09-24T23:47:46-05:00	fix(bootstrap-installer): resolve linux-arm64-unpacked desktop builds (#94703)
+ce750ff151835ffb66b353b668f6385f576f45f5	2026-09-25T18:05:09-05:00	fix(title): strip a quoted path's line-range suffix in the attachment-only guard
