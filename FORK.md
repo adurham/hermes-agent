@@ -213,6 +213,56 @@ started (the shim is in no release tag).
 *Also landed alongside (own commit, pre-audit):* the desktop `package.json` +
 lockfile version/lock drift fix (`bd72ac733c`).
 
+**MERGE DEFECT — 49 stale pre-refactor defs in `hermes_cli/gateway.py`
+(2026-09-24, commit `5d6dde7704`).** Same class as the `cli.py` class-body
+shadowing below, found by following a 12-test failure cluster
+(`tests/hermes_cli/test_gateway_service.py`). Upstream's refactors `ae85aaa366`
+(launchd backend → `gateway_launchd.py`) and `70fceb80ab` (systemd unit cluster
+→ `gateway_service_unit.py`) moved these functions out of the monolith and left
+facade re-export imports in `gateway.py`. The sync merge re-introduced the old
+in-file bodies **after** those imports, so each one silently clobbered the
+canonical module's version at import time. **None of the 49 exist at the
+`v2026.9.24` tag** — it is purely merge-introduced. Blast radius: the launchd
+plist lost its `osascript` Local-Network wrapper (`#71206`), the systemd unit
+lost its `_ld_library_path_line`, and `launchd_install` had no `start_now=` so
+`hermes gateway install --start-now` TypeErrored on the wizard and CLI paths
+(the caller at `gateway.py:6117` passed it). Deleted all 49 (1239 lines); every
+name still resolves through the facade imports. Two fork behaviours that lived
+**only** in the stale copies were ported into the canonical modules instead of
+being lost: the refuse-root install guard (`a4c788a9a9`) into
+`gateway_launchd.py::launchd_install`, and the scoped-sudo soft skip
+(`656a87c9c2`) into `gateway_service_unit.py::refresh_systemd_unit_if_needed`.
+Verified: 219 passed / 11 skipped across the 7 gateway/systemd/launchd suites
+(was 12 failed in `test_gateway_service.py` alone). **Next sync: after any merge
+that touches `gateway.py`, re-check for re-introduced in-file copies — the
+shadow scan is `~/.hermes/cache/scratch/shadow_scan.py` (name imported at module
+level AND defined in the same file ⇒ the def wins).**
+
+**Phase C — 18 shadowed `HermesCLI` methods merged into their mixins
+(2026-09-24, commit `ac69ba27a0`).** The `cli.py` half of the same defect class:
+upstream's `2ca53fc386` moved `cli.py`'s module-level helper clusters and method
+bodies into `hermes_cli/cli_{render,config_load,shutdown,terminal_input,
+auto_maintenance}.py` + the `cli_*_mixin.py` modules, and the sync merge
+re-introduced the old bodies after the re-export imports. Landed here: 5
+init/state methods → `cli_init_mixin.py`, 6 commands/info methods →
+`cli_info_mixin.py` / `cli_commands_mixin.py` (this retires the stale
+`_show_usage` that shadowed the `#42904` account-limits fix), 7 streaming
+methods → `cli_stream_mixin.py` / `cli_tui_mixin.py`. Fork behaviour preserved
+in the unions: post-stream deferral drain, reasoning indent/hard-wrap
+(`_wrap_stream_line` + `_STREAM_PAD`), table-cell markdown strip, picker-first
+`/reasoning` routing, `/busy` patchable seams, cost reporting in `_show_usage`,
+`disabled_toolsets` in `show_banner`. Deliberate calls: `_init_toolsets` keeps
+upstream's non-blocking `get_plugin_toolset_keys_nowait()` (the fork's eager
+`discover_plugins()` broke `TestPluginToolsetStartupValidation` and the TUI
+launcher skip path); the mixins' `None` sentinels were kept over the copies'
+`0.0` (a `0.0` sentinel throttles the first repaint against boot-time monotonic).
+Verified by the parent: all 18 resolve to their mixins, 187 targeted tests pass
+(the shadow-signature AST guard, streaming/reasoning-box suite, init-state,
+commands, and `test_cli_status_bar` — 43 passed, was 1 failed). **STILL OPEN:
+48 more module-level shadows in `cli.py`** (22 byte-identical to their canonical
+module, 26 carrying fork delta; all 26 active — the def wins over the import).
+Found by the same scan after the merge; scope it before the next sync.
+
 ---
 
 **Decision:** adopt upstream's `agent/anthropic_message_convert.py` as the one
