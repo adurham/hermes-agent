@@ -21,13 +21,14 @@ vi.mock('@hermes/ink', async importOriginal => {
   }
 })
 
+import { stripAnsi } from '@hermes/shared/ansi'
+
 import { resetDelegationState } from '../app/delegationStore.js'
 import { resetOverlayState } from '../app/overlayStore.js'
 import { clearSpawnHistory } from '../app/spawnHistoryStore.js'
 import { patchTurnState, resetTurnState } from '../app/turnStore.js'
 import { AgentsOverlay } from '../components/agentsOverlay.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { stripAnsi } from '@hermes/shared/ansi'
 import { DEFAULT_THEME } from '../theme.js'
 import type { SubagentProgress } from '../types.js'
 
