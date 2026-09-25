@@ -11,3 +11,4 @@ f1247d2e0146bbd8edd4e510b9e67e0d259509a4	2026-09-24T19:25:16-05:00	fix(desktop):
 da931c9ea822f301cd668dc5b701e9860ddda181	2026-09-24T23:12:30-05:00	fix(desktop): ignore auto-repeat and post-focus Ctrl+W/Ctrl+R
 f9f1413f4e28a93e1a1aa1395f82f9b343c0a591	2026-09-24T23:12:16-05:00	fix(desktop): stop an entered project refetching on every tree refresh (#77591)
 f216e446430f9c1b404d57c79e8575681f074bab	2026-09-24T23:12:16-05:00	fix(desktop): list a compressed project chat once (#77591)
+c19a35d8c9b018d17a84c788eaa56f4afaa8630b	2026-09-24T23:34:29-05:00	fix(desktop): keep pip downloads and cache files out of Artifacts
