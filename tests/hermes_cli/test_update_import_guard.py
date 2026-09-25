@@ -399,6 +399,25 @@ def test_hint_fires_for_each_first_party_root(modname):
     assert partial_update_hint(exc), f"expected guidance for {modname}"
 
 
+def _fake_venv_base_home() -> Path:
+    """The base interpreter's ``bin`` dir for a functional fake venv.
+
+    A venv's ``pyvenv.cfg`` points ``home =`` at the interpreter installation the
+    venv was built from; that is what a started process uses to find the stdlib.
+    Read the running venv's own config when we have one (the common case), and
+    fall back to deriving it from ``sys._base_executable``.
+    """
+    import sysconfig
+
+    running_cfg = Path(sys.prefix) / "pyvenv.cfg"
+    if running_cfg.exists():
+        for line in running_cfg.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "home" and value.strip():
+                return Path(value.strip())
+    return Path(sys._base_executable).parent
+
+
 def test_import_probe_sees_a_stale_editable_finder_instead_of_the_checkout_cwd(monkeypatch, tmp_path):
     """``-c`` puts the checkout cwd on sys.path[0], so a venv whose editable finder cannot resolve a
     new top-level package still probed green — the exact state that crash-loops a gateway started
@@ -409,7 +428,27 @@ def test_import_probe_sees_a_stale_editable_finder_instead_of_the_checkout_cwd(m
     venv = tmp_path / "venv"
     python = venv / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.symlink_to(sys.executable)
+    # The fake venv must be a FUNCTIONAL interpreter, not just a symlink: the
+    # probe subprocess has to actually start and report. Pointing the symlink at
+    # the current interpreter leaves it unable to resolve its own home on macOS
+    # when invoked through a foreign path — it dies with "Could not find platform
+    # independent libraries <prefix>" (and a bare copy of the uv-managed binary
+    # dies on @rpath/libpython3.11.dylib), so the probe never reports and
+    # _critical_module_import_failures returns a ProbeTerminated row. Mirror a
+    # real venv instead: symlink the BASE interpreter (the stdlib's real home,
+    # from pyvenv.cfg's `home =` line) and write the pyvenv.cfg that makes it
+    # resolve. This is the same shape `venv.EnvBuilder` produces, and it is what
+    # gives this test its meaning: cwd-importable WITHOUT -P, invisible WITH -P.
+    _base_home = _fake_venv_base_home()
+    base_python = _base_home / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    if not base_python.exists():
+        base_python = _base_home / "python3"
+    python.symlink_to(base_python)
+    (venv / "pyvenv.cfg").write_text(
+        f"home = {_base_home}\n"
+        f"include-system-site-packages = false\n"
+        f"version = {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}\n",
+        encoding="utf-8")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_probe_pkg",))
     monkeypatch.setattr(update_cmd_deps, "_UPDATE_CRITICAL_MODULES", ("hermes_probe_pkg",))
     monkeypatch.setattr(update_cmd_deps, "project_venv_dir", lambda root: venv)

@@ -44,7 +44,15 @@ def test_swap_retries_transient_permission_error_then_promotes(tmp_path, monkeyp
     locked = {"n": 0}
 
     def scanner_locked_rename(src, dst):
-        if Path(dst) == live_exe.parent and locked["n"] < 2:
+        # Gate on the rename whose SOURCE is the staged root — that is the
+        # promotion (staged -> release/<unpacked>), which is the rename a scanner
+        # actually holds. Comparing Path(dst) against live_exe.parent (the
+        # .exe's own directory) only matches a FLAT unpacked layout
+        # (win-unpacked/Hermes.exe, linux-unpacked/hermes); electron-builder's
+        # macOS output nests the exe at mac-arm64/Hermes.app/Contents/MacOS/
+        # Hermes, so that predicate never matched and the injection never fired
+        # (slept == 0). This mirrors the sibling give-up test's predicate.
+        if Path(src) == staging / _packaged_exe_rel().parts[0] and locked["n"] < 2:
             locked["n"] += 1
             raise PermissionError(32, "being used by another process")
         return real_rename(src, dst)
