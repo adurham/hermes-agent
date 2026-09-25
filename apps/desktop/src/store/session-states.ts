@@ -1098,7 +1098,16 @@ function parseTileList(value: unknown): StoredTile[] {
           const raw = t as SessionTile
 
           return {
-            anchor: typeof raw.anchor === 'string' ? raw.anchor : undefined,
+            // #108679: a tile whose anchor is its OWN pane id is
+            // self-referential — the re-dock target can never exist (the
+            // pane is not in the tree at adoption time), so the dock falls
+            // through to an arbitrary same-placement neighbor instead of the
+            // recorded layout. Rewrite it to the workspace anchor at load,
+            // the same surface an anchorless tile re-docks against.
+            anchor:
+              typeof raw.anchor === 'string' && raw.anchor !== `${TILE_PANE_PREFIX}${raw.storedSessionId}`
+                ? raw.anchor
+                : undefined,
             before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
             dir: raw.dir,
             ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
