@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 
 def _make_anthropic_text_block(text: str) -> SimpleNamespace:
     return SimpleNamespace(type="text", text=text)
