@@ -93,13 +93,16 @@ class TestPersonaInjectionIntoChildPrompt(unittest.TestCase):
 
         self.assertIn("# RUFLO PERSONA: sr-coder (delegation)", prompt)
         self.assertIn(PERSONA_BODY, prompt)
-        # Persona is a PREFIX: it precedes the generic subagent boilerplate and the task.
-        self.assertLess(prompt.index("RUFLO PERSONA"), prompt.index("YOUR TASK:"))
+        # Persona is a PREFIX: it precedes the generic subagent boilerplate.
+        # (The goal is deliberately NOT in this system prompt any more — it is the
+        # child's first user turn; see _build_child_system_prompt's docstring and
+        # tools/delegate_tool_child_run.py:940.)
+        self.assertLess(prompt.index("RUFLO PERSONA"), prompt.index("focused subagent"))
         # Frontmatter is stripped, not pasted through.
         self.assertNotIn("description: Senior coder persona.", prompt)
         # The generic brief still follows — persona augments, never replaces.
-        self.assertIn("ship the fix", prompt)
         self.assertIn("focused subagent", prompt)
+        self.assertNotIn("ship the fix", prompt)
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_no_agent_type_means_no_persona_block(self, _cfg):
@@ -115,7 +118,7 @@ class TestPersonaInjectionIntoChildPrompt(unittest.TestCase):
             prompt = MockAgent.call_args[1]["ephemeral_system_prompt"]
 
         self.assertNotIn("RUFLO PERSONA", prompt)
-        self.assertIn("ship the fix", prompt)
+        self.assertIn("focused subagent", prompt)
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_unknown_agent_type_falls_through_silently(self, _cfg):

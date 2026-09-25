@@ -1619,13 +1619,17 @@ class TestApprovalTimeoutIsNotConsent:
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
 
         hook_calls = []
-        original_fire = mod._fire_approval_hook
+        # _fire_approval_hook lives in tools/approval_context.py; tools.approval only
+        # CALLS it (approval.py:914/917) and no longer re-exports it (its PEP-562
+        # lazy map covers plugin-compat names only). Patch the owner module so the
+        # call sites actually see the spy.
+        original_fire = approval_context._fire_approval_hook
 
         def _capture(event_name, **kwargs):
             hook_calls.append((event_name, kwargs))
             return original_fire(event_name, **kwargs)
 
-        monkeypatch.setattr(mod, "_fire_approval_hook", _capture)
+        monkeypatch.setattr(approval_context, "_fire_approval_hook", _capture)
 
         result = mod.check_all_command_guards("rm -rf .git", "local")
 
