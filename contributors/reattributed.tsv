@@ -93,3 +93,4 @@ e2ee9a6978119cafa7b1eb59fc8833d374fe4ccc	2026-09-25T12:24:29-05:00	fix(desktop):
 7f35350bf1260e71b9149423c8e211694e5c0e33	2026-09-25T12:33:55-05:00	fix(tui-gateway): single-flight the runtime readiness probes
 cd69be690997ba0391e80a8e2baa5c5d57cbedd7	2026-09-25T17:37:43-05:00	fix(tui-gateway): register the readiness done-callback off the lock and give joiners a short grace
 39e20f4d552718627c5ad8feadfffeeb9245ea5a	2026-09-25T01:19:32-05:00	fix(desktop): keep the tab strip on a lone workspace in auto mode
+3273971a59eafec7de504b42efcc2a1d3c4e3834	2026-09-25T17:56:10-05:00	fix(desktop): keep Close and + on a lone workspace even when tabs are hidden
