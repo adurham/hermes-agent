@@ -467,7 +467,7 @@ def test_active_agent_route_signature_matches_resolved_turn_signature(monkeypatc
     cli = _import_cli()
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr("run_agent.AIAgent", _DummyAgent)
 
     shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
 
@@ -542,7 +542,7 @@ def test_credential_only_refresh_updates_agent_in_place_without_reinit(monkeypat
     cli = _import_cli()
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr("run_agent.AIAgent", _DummyAgent)
 
     shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
     assert shell._init_agent() is True
@@ -596,7 +596,7 @@ def test_credential_refresh_falls_back_to_full_rebuild_when_swap_fails(monkeypat
     cli = _import_cli()
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr("run_agent.AIAgent", _DummyAgent)
 
     shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
     assert shell._init_agent() is True
@@ -647,7 +647,7 @@ def test_routing_change_still_forces_full_rebuild(monkeypatch):
     cli = _import_cli()
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr("run_agent.AIAgent", _DummyAgent)
 
     shell = cli.HermesCLI(model="claude-sonnet-5", compact=True, max_turns=1)
     assert shell._init_agent() is True

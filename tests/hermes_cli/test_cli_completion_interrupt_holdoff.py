@@ -19,6 +19,7 @@ post-turn drain runs normally).
 import queue
 
 from cli import HermesCLI
+from tools.process_registry_notifications import ProcessNotificationBatch
 
 
 def _make_event(pid: str = "proc-1") -> dict:
@@ -97,7 +98,14 @@ def test_drain_resumes_on_next_user_turn(monkeypatch):
     delivered = []
     while not cli._pending_input.empty():
         delivered.append(cli._pending_input.get_nowait())
-    assert delivered == ["[IMPORTANT: proc-A done]"], (
+    # Completions are wrapped in a ProcessNotificationBatch (completion identity
+    # must survive until the owning surface starts its turn), not a raw string.
+    assert len(delivered) == 1, (
+        "queued completion must be delivered on the next non-interrupted turn"
+    )
+    assert isinstance(delivered[0], ProcessNotificationBatch)
+    assert [text for _event, text in delivered[0].notifications] == [
+        "[IMPORTANT: proc-A done]"], (
         "queued completion must be delivered on the next non-interrupted turn"
     )
 
@@ -114,5 +122,7 @@ def test_drain_default_behavior_unchanged(monkeypatch):
     _install_delegation_stubs(monkeypatch)
 
     cli._drain_process_notifications("cli-idle")
-    assert cli._pending_input.get_nowait() == "[IMPORTANT: proc-X done]"
+    batch = cli._pending_input.get_nowait()
+    assert isinstance(batch, ProcessNotificationBatch)
+    assert [text for _event, text in batch.notifications] == ["[IMPORTANT: proc-X done]"]
     assert registry.calls == 1

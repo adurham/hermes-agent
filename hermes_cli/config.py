@@ -2506,6 +2506,10 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_network": "TERMINAL_DOCKER_NETWORK",
     "docker_extra_args": "TERMINAL_DOCKER_EXTRA_ARGS",
     "docker_shm_size": "TERMINAL_DOCKER_SHM_SIZE",
+    # Bridged by cli.py + gateway/run.py; without this entry `hermes config set
+    # terminal.docker_snap_compat` never reaches .env (caught by
+    # tests/tools/test_terminal_config_env_sync.py::test_save_config_set_bridges_every_cli_terminal_key).
+    "docker_snap_compat": "TERMINAL_DOCKER_SNAP_COMPAT",
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
     "docker_shared_container_key": "TERMINAL_DOCKER_SHARED_CONTAINER_KEY",
@@ -3745,10 +3749,15 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
         return value
     # Fork: list-typed keys (agent.disabled_toolsets, toolsets, ...) must parse a comma/JSON
     # string into a real list; stored as a raw comma-string every isinstance(..., list)-gated
-    # reader silently ignores it. Runs first so it wins over the scalar paths below.
-    coerced = _coerce_config_value(key, value, DEFAULT_CONFIG)
-    if coerced != value:
-        return coerced
+    # reader silently ignores it. Runs first so it wins over the scalar paths below -- but only
+    # for a value that carries list shape itself (``a,b`` / ``[...]`` / YAML flow): turning a BARE
+    # scalar into a one-item list would bypass ``_refuse_container_type_mismatch``, which is what
+    # refuses ``config set toolsets notacontainer`` (#114471). Bare names stay writable only for the
+    # ``parse_config_string_list`` slots, which that guard already special-cases.
+    if "," in value or _looks_structured_value(value):
+        coerced = _coerce_config_value(key, value, DEFAULT_CONFIG)
+        if coerced != value:
+            return coerced
     stripped = value.strip()
     lower = stripped.lower()
     if lower in _SCALAR_WORDS:
