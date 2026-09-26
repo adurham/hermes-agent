@@ -79,9 +79,9 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     if (terminalTakeover && ready) {
       setMounted(true)
       const scope = $projectScope.get()
-      const cwd = scope !== ALL_PROJECTS
-        ? projectRootCwd($projectTree.get().find(node => node.id === scope))
-        : ''
+
+      const cwd = scope !== ALL_PROJECTS ? projectRootCwd($projectTree.get().find(node => node.id === scope)) : ''
+
       ensureTerminal(cwd ? { id: scope, cwd } : undefined)
     }
   }, [terminalTakeover, ready])

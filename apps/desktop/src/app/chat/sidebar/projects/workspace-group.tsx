@@ -112,10 +112,12 @@ export function SidebarWorkspaceGroup({
         : rankSessions(group.sessions, rankIds),
     [group.sessions, laneSessionOrder, rankIds]
   )
+
   // A lane ranks by whatever the sort key says before it trims itself, so the
   // rows it hides are the ones the sort ranked last, and it opens on its first
   // few rows, paging the rest in on demand.
   const lane = useRevealedRows(sessions, SIDEBAR_GROUP_PAGE)
+
   // A profile previews the same handful a project does, and clicking its label
   // is how you see the rest. Workspace groups page within what's loaded unless
   // the user asked for everything.
@@ -243,7 +245,11 @@ export function SidebarWorkspaceGroup({
   )
 
   return (
-    <SidebarRowStack className={dragging ? 'relative z-10 bg-(--ui-sidebar-surface-background)' : undefined} ref={ref} style={style}>
+    <SidebarRowStack
+      className={dragging ? 'relative z-10 bg-(--ui-sidebar-surface-background)' : undefined}
+      ref={ref}
+      style={style}
+    >
       {isProfileGroup ? (
         // A profile heads its sessions the way a project does, so it takes the
         // project row's shape rather than the tree caption the lanes below use.

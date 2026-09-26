@@ -106,9 +106,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
         {(modelText || durationText) && (
           <span className={SCAFFOLD_META_CLASS}>
             {modelText && (
-              <span className={row.fallbackActive ? 'text-amber-600 dark:text-amber-400' : undefined}>
-                {modelText}
-              </span>
+              <span className={row.fallbackActive ? 'text-amber-600 dark:text-amber-400' : undefined}>{modelText}</span>
             )}
             {modelText && durationText ? ' · ' : ''}
             {durationText}

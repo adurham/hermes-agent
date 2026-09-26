@@ -115,7 +115,9 @@ describe('AgentsOverlay — fallback model indicator', () => {
   })
 
   it('renders the fallback glyph + swap when fallbackActive is true', async () => {
-    const out = await renderDetail([subagent({ fallbackActive: true, model: 'claude-opus-5', primaryModel: 'glm-5.3' })])
+    const out = await renderDetail([
+      subagent({ fallbackActive: true, model: 'claude-opus-5', primaryModel: 'glm-5.3' })
+    ])
 
     expect(out).toContain('⚠')
     expect(out).toContain('claude-opus-5')
@@ -136,9 +138,7 @@ describe('AgentsOverlay — fallback model indicator', () => {
   })
 
   it('shows no glyph for an older gateway that never sends the new fields', async () => {
-    const out = await renderDetail([
-      subagent({ fallbackActive: undefined, model: 'glm-5.3', primaryModel: undefined })
-    ])
+    const out = await renderDetail([subagent({ fallbackActive: undefined, model: 'glm-5.3', primaryModel: undefined })])
 
     expect(out).toContain('glm-5.3')
     expect(out).not.toContain('⚠')

@@ -233,9 +233,7 @@ export function ensureProjectTerminal(projectId: string, cwd: string): string {
 
   const adoptable =
     root &&
-    list.find(
-      term => term.kind === 'user' && !term.projectId && underPath(root, (term.restoreCwd || term.cwd).trim())
-    )
+    list.find(term => term.kind === 'user' && !term.projectId && underPath(root, (term.restoreCwd || term.cwd).trim()))
 
   if (adoptable) {
     $terminals.set(list.map(term => (term.id === adoptable.id ? { ...term, projectId } : term)))
