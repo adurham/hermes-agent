@@ -187,13 +187,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
                "Configuration", args_hint="[manual|smart|off]",
                subcommands=("manual", "smart", "off")),
+    # FORK: ``/effort`` (Claude Code parity) is an alias, so every surface's alias
+    # resolution routes it to the real /reasoning handler.
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
+               aliases=("effort",),
                args_hint="[level|show|hide|full|clamp] [--global]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "show", "hide", "on", "off", "full", "clamp", "--global")),
-    CommandDef("effort", "Set reasoning effort (alias for /reasoning, mirrors Claude Code's /effort)",
-               "Configuration",
-               args_hint="[level]",
-               subcommands=("low", "medium", "high", "xhigh", "max")),
     CommandDef("delegation", "Configure subagent (ruflo) personas → model assignments",
                "Configuration", cli_only=True,
                args_hint="[role|list|defaults|stats|parallel|depth]",
