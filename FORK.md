@@ -3,7 +3,6 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
-<<<<<<< HEAD
 ### Post-de-fork repair — 2026-09-26 (`/effort` on every surface; 5 merge-dropped wirings; CI red → green)
 
 **Why:** after the v2026.9.24 sync + de-fork slices A–C, `main` CI was red (6 Python shards + JS) and
@@ -40,7 +39,7 @@ CI's extras: `uv sync --locked --extra all --extra dev --extra anthropic --extra
 --extra modal --extra daytona --extra parallel-web --extra bedrock` (uv ≥ 0.12 — 0.8 can't parse uv.lock).
 
 ---
-=======
+
 ### Fork-only fixes — 2026-09-25/26 (memory stack: 5 commits, one root-cause thread)
 
 All five landed the same session and are one investigation: a warning
@@ -125,7 +124,8 @@ the bank is gone by design. If HRR compositional queries are ever wanted for rea
 encoding needs replacing (an invertible binding, e.g. a proper circular-convolution variant
 with unit-magnitude components) and all stored vectors re-encoded; the backfill pattern for
 that is the one-shot pass over `facts.hrr_vector` used on 2026-09-25.
->>>>>>> origin/main
+
+---
 
 ### Fork-only retirement — 2026-09-25 (Slice C: Anthropic server-tool cluster removed)
 
