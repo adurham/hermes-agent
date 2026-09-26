@@ -246,7 +246,12 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             snapshot = capture_local_edit_snapshot(name, args, task_id=task_id)
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
-        session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        started_at = time.time()
+        session.setdefault("tool_started_at", {})[tool_call_id] = started_at
+        # FORK: the currently-open call, surfaced by _inflight_snapshot on resume/reconnect mid-tool-call.
+        session.setdefault("open_tool_calls", {})[tool_call_id] = {
+            "args": args, "name": name, "started_at": started_at, "tool_call_id": tool_call_id,
+        }
         # A preview prepared for an earlier call whose completion never fired (failed
         # flush) must not attach to a provider that reuses the same call id.
         session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
@@ -285,6 +290,8 @@ def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
     session = _sessions.get(sid)
+    if session is not None:
+        session.setdefault("open_tool_calls", {}).pop(tool_call_id, None)
     prepared = session.setdefault("tool_result_metadata", {}) if session is not None else {}
     # Consume the pre-flush preview even when this completion is dropped as stale.
     metadata = prepared.pop(tool_call_id, None)

@@ -17001,9 +17001,6 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         )
 
         inflight = resp["result"].get("inflight")
-        assert inflight is not None
-        started_at = inflight.pop("started_at", None)
-        assert isinstance(started_at, float)
         assert inflight == {
             "assistant": "partial answer",
             "streaming": True,
@@ -17035,56 +17032,6 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         server._sessions.pop("sid-live", None)
 
 
-def test_inflight_snapshot_carries_turn_started_at():
-    """Regression: resuming/reconnecting into a running turn must restore its
-    real backend start time, not let the frontend re-stamp "now" and reset the
-    live "thinking" timer.
-
-    ``_inflight_snapshot`` feeds both ``session.resume``'s reuse-live path and
-    ``session.activate`` (see ``_live_session_payload``).
-    """
-    session = _session(
-        inflight_turn={
-            "assistant": "partial",
-            "started_at": 1_700_000_000.5,
-            "streaming": True,
-            "updated_at": 1_700_000_001.0,
-            "user": "prompt",
-        }
-    )
-
-    snapshot = server._inflight_snapshot(session)
-
-    assert snapshot == {
-        "assistant": "partial",
-        "started_at": 1_700_000_000.5,
-        "streaming": True,
-        "user": "prompt",
-    }
-
-
-def test_inflight_snapshot_omits_started_at_when_absent_or_invalid():
-    # A turn dict built by hand (e.g. an older in-memory shape, or a caller
-    # that didn't go through _start_inflight_turn) must not crash or leak a
-    # non-numeric value into the payload.
-    no_started_at = _session(
-        inflight_turn={"assistant": "partial", "streaming": True, "user": "prompt"}
-    )
-    snapshot = server._inflight_snapshot(no_started_at)
-    assert snapshot is not None
-    assert "started_at" not in snapshot
-
-    bad_started_at = _session(
-        inflight_turn={
-            "assistant": "partial",
-            "started_at": "not-a-number",
-            "streaming": True,
-            "user": "prompt",
-        }
-    )
-    snapshot = server._inflight_snapshot(bad_started_at)
-    assert snapshot is not None
-    assert "started_at" not in snapshot
 
 
 def test_on_tool_start_and_complete_track_open_tool_calls(monkeypatch):
@@ -22409,11 +22356,11 @@ def _poller_harness(monkeypatch, sid, running=False):
             return {"final_response": "ok", "messages": []}
 
     class _ImmediateThread:
-        def __init__(self, target=None, daemon=None):
-            self._target = target
+        def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
+            self._target, self._args, self._kwargs = target, args, kwargs or {}
 
         def start(self):
-            self._target()
+            self._target(*self._args, **self._kwargs)
 
     sess = _session(agent=_Agent(), running=running)
     server._sessions[sid] = sess

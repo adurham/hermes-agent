@@ -1642,16 +1642,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
-                # The notification's task_id must carry the subagent's RAW id
-                # (owner_task_id) — session.task_id is the container-sharing
-                # key that collapses to "default" for every subagent on local
-                # backend, which would make the liveness gate
-                # (event_owner_still_running) and delegation attribution
-                # resolve against "default" and never engage for a subagent's
-                # background process. owner_task_id is still emitted as a
-                # separate field so consumers that already read
-                # `owner_task_id or task_id` continue to behave identically.
-                "task_id": session.owner_task_id or session.task_id,
+                "task_id": session.task_id,
+                # The subagent's RAW id; the liveness gate and delegation attribution read this first
+                # (task_id is the container-sharing key, "default" for every local-backend subagent).
                 "owner_task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),

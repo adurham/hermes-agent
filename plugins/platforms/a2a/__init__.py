@@ -79,18 +79,9 @@ def interactive_setup() -> None:
 def register(ctx) -> None:
     """Plugin entry point. Client tools register even when the inbound platform is disabled
     so the agent can call peers without exposing itself."""
-    # 1) Client tools (outbound).
-    #    #78050: when this plugin is loaded via the deferred-platform path,
-    #    the CLI/TUI-visible client tools are already registered eagerly from
-    #    plugin discovery (see PluginManager._register_deferred_platform_client_tools
-    #    + ``client_tools_module: tools`` in plugin.yaml). In that case the
-    #    tools module carries a sentinel and we skip re-registration to avoid
-    #    cross-toolset shadow warnings from tools.registry.register().
     try:
-        from . import tools as _tools_mod
-        if not getattr(_tools_mod, "__hermes_client_tools_registered__", False):
-            _tools_mod.register_tools(ctx)
-            setattr(_tools_mod, "__hermes_client_tools_registered__", True)
+        from .tools import register_tools
+        register_tools(ctx)
     except Exception:
         logger.warning("A2A: failed to register client tools", exc_info=True)
     try:

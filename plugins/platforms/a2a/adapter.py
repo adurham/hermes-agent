@@ -324,10 +324,16 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             (lambda: not adapter._security_context.is_trusted_peer(identity), 403, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"),
             (lambda: not handler_name, 200, protocol.ERR_METHOD_NOT_FOUND, f"method not found: {method}"),
         )
+        # FORK (#81003): authz rejections are audited — probing must be visible in a2a_audit.jsonl.
+        audited = {protocol.ERR_RATE_LIMITED: security.AUTH_REJECTED_RATE_LIMIT,
+                   protocol.ERR_UNTRUSTED_PEER: security.AUTH_REJECTED_UNTRUSTED_PEER}
         for failed, http, code, msg in checks:
             if failed():
                 if code == protocol.ERR_RATE_LIMITED:
                     protocol.metrics.rate_limit_triggers += 1
+                if code in audited:
+                    return self._auth_reject(http, audited[code], req_id, code, msg,
+                                             identity=identity, token_fp=token_fp, client_ip=client_ip)
                 return self._error(http, req_id, code, msg)
         agent = route["agent"]
         # Auth + authz + rate limit + trust all passed — audit the accept (#80534: every

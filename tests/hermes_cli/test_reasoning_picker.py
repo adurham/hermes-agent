@@ -88,6 +88,14 @@ def _pick(stub, key):
     return [c.args[0] for c in save.call_args_list]
 
 
+def _dispatch_alias(stub, cmd):
+    """Route ``cmd`` the way ``process_command`` does: registry alias -> canonical -> handler."""
+    from hermes_cli.commands import resolve_command
+
+    method, _pass_arg = HermesCLI._slash_handler(resolve_command(cmd.split()[0]).name)
+    getattr(stub, method)(cmd)
+
+
 class TestPickerOpens:
     def test_bare_reasoning_opens_the_picker(self):
         stub = _make_stub()
@@ -98,7 +106,7 @@ class TestPickerOpens:
     def test_effort_alias_opens_the_same_picker(self):
         stub = _make_stub()
         with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
-            HermesCLI._handle_effort_command(stub, "/effort")
+            _dispatch_alias(stub, "/effort")
         assert stub._reasoning_picker_state, "/effort must reach the same picker as /reasoning"
 
     def test_choices_are_filtered_to_the_active_model(self):
@@ -264,5 +272,5 @@ class TestTypedFormUnaffected:
     def test_typed_effort_level_still_applies(self):
         stub = _make_stub()
         with patch("cli.save_config_value", return_value=True), patch("cli._cprint"):
-            HermesCLI._handle_effort_command(stub, "/effort xhigh")
+            _dispatch_alias(stub, "/effort xhigh")
         assert stub.reasoning_config == {"enabled": True, "effort": "xhigh"}

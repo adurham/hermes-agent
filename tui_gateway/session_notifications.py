@@ -733,6 +733,18 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                 ready.append(queue.get_nowait())
             except Exception:
                 break
+        # FORK liveness gate (mirrors drain_notifications): a completion whose owning subagent is STILL running
+        # must not bubble into the top-level chat mid-task — its session_key is the parent's, so ownership routing
+        # would consume it. Requeue while the owner lives (same max-hold as the drain); back off so the requeued
+        # event doesn't spin this loop. The shutdown drain below stays ungated.
+        held = [e for e in ready if _notification_event_should_hold_for_liveness(e)]
+        if held:
+            ready = [e for e in ready if not any(e is h for h in held)]
+            for e in held:
+                queue.put(e)
+            if not ready:
+                time.sleep(0.1)
+                continue
         try:
             handle(ready, None)
         except Exception as exc:

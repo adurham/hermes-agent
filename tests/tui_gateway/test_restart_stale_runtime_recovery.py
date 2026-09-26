@@ -94,7 +94,7 @@ def restart_server(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: None)
+    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key, *_a: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *a, **k: None)

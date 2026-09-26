@@ -1922,118 +1922,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 print(f"  {label} {value}")
         print()
 
-    def _rewind_persisted_user_turn(
-        self,
-        *,
-        warm_history: List[Dict[str, Any]],
-        user_ordinal: int,
-        warm_live_view: Dict[str, Any],
-    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
-        """Bind one warm user ordinal to a durable row and rewind it atomically."""
-        if self._session_db is None or not self.session_id:
-            raise RuntimeError("session database is unavailable")
-
-        from agent.context_compressor import (
-            history_before_user_originated_turn,
-            split_user_originated_turn,
-            user_originated_turn_view,
-        )
-        from agent.memory_manager import sanitize_context
-        from agent.tool_dispatch_helpers import (
-            _is_multimodal_tool_result,
-            _multimodal_text_summary,
-        )
-        from run_agent import _is_ephemeral_scaffolding
-
-        def _persistence_content(content: Any) -> Any:
-            """Project warm content exactly as the session DB flush does."""
-            if _is_multimodal_tool_result(content):
-                return _multimodal_text_summary(content)
-            if isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append(str(part.get("text", "")))
-                    elif isinstance(part, dict) and part.get("type") in {
-                        "image",
-                        "image_url",
-                        "input_image",
-                    }:
-                        text_parts.append("[screenshot]")
-                return "\n".join(text_parts) if text_parts else None
-            return content
-
-        def _comparison_content(message: Dict[str, Any]) -> Any:
-            content = _persistence_content(message.get("content"))
-            if message.get("role") in {"user", "assistant"} and isinstance(
-                content, str
-            ):
-                return sanitize_context(content).strip()
-            return content
-
-        expected_active_ids = self._session_db.get_active_message_ids(
-            self.session_id
-        )
-        durable = self._session_db.get_messages_as_conversation(
-            self.session_id,
-            include_row_ids=True,
-        )
-        warm_persistence_history = [
-            message
-            for message in warm_history
-            if not _is_ephemeral_scaffolding(message)
-        ]
-        warm_user_indices = [
-            index
-            for index, message in enumerate(warm_persistence_history)
-            if user_originated_turn_view(message) is not None
-        ]
-        durable_user_indices = [
-            index
-            for index, message in enumerate(durable)
-            if user_originated_turn_view(message) is not None
-        ]
-        if len(durable_user_indices) != len(warm_user_indices):
-            raise RuntimeError(
-                "session history changed before the rewind could be persisted"
-            )
-        if user_ordinal < 0 or user_ordinal >= len(durable_user_indices):
-            raise RuntimeError("persisted rewind target is no longer available")
-
-        warm_prefix, _ = history_before_user_originated_turn(
-            warm_persistence_history, warm_user_indices[user_ordinal]
-        )
-        durable_target_index = durable_user_indices[user_ordinal]
-        durable_target = durable[durable_target_index]
-        durable_prefix, durable_live_view = history_before_user_originated_turn(
-            durable, durable_target_index
-        )
-        if _comparison_content(durable_live_view) != _comparison_content(
-            warm_live_view
-        ):
-            raise RuntimeError(
-                "session history changed before the rewind could be persisted"
-            )
-        target_row_id = durable_target.get("_row_id")
-        if not isinstance(target_row_id, int):
-            raise RuntimeError("persisted rewind target has no row identity")
-        scaffold, _ = split_user_originated_turn(durable_target)
-        result = self._session_db.rewind_to_message(
-            self.session_id,
-            target_row_id,
-            preserve_compaction_handoff=scaffold is not None,
-            expected_active_ids=expected_active_ids,
-            expected_target_content=durable_live_view.get("content"),
-        )
-        if scaffold is not None:
-            replacement_id = result.get("replacement_message_id")
-            if not isinstance(replacement_id, int) or not durable_prefix:
-                raise RuntimeError("rewind did not retain its compaction handoff")
-            durable_prefix[-1]["_row_id"] = replacement_id
-            durable_prefix[-1]["_db_persisted"] = True
-            warm_prefix[-1] = durable_prefix[-1]
-        return warm_prefix, durable_live_view, result
-    
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
         import threading
@@ -2502,17 +2390,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         else:
             return self._expand_slash_prefix(cmd_original, cmd_lower, skill_commands, skill_bundles)
         return True
-
-    def _handle_effort_command(self, cmd_original: str) -> None:
-        """FORK: ``/effort`` is an alias for ``/reasoning`` (Claude Code parity).
-
-        Upstream's ``_SLASH_DISPATCH`` has no ``effort`` entry and the naming-convention
-        fallback in ``_slash_handler`` looks for exactly this method name, so the alias
-        has to exist as a real handler. Rewrites the verb so the /reasoning parser sees
-        the form it expects: bare ``/effort`` opens the interactive picker, ``/effort <level>``
-        applies the level, both through the same handlers the canonical verb uses.
-        """
-        self._handle_reasoning_command(cmd_original.replace("/effort", "/reasoning", 1))
 
     def _run_quick_command(self, base_cmd: str, qcmd: dict, user_args: str) -> bool:
         """User-defined quick command (config.yaml): ``exec`` runs a shell snippet, ``alias`` re-dispatches."""
