@@ -360,9 +360,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
           <Field
             name="model"
             t={t}
-            value={
-              item.fallbackActive ? <Text color={t.color.warn}>{fallbackModelLabel(item)}</Text> : item.model
-            }
+            value={item.fallbackActive ? <Text color={t.color.warn}>{fallbackModelLabel(item)}</Text> : item.model}
           />
         ) : null}
         {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}

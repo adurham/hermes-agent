@@ -187,6 +187,7 @@ export function openSession(
     } else {
       openSessionTile(storedSessionId, 'center')
     }
+
     // A fresh tile ADOPTS silently (insertAtGroup's activate:false — a
     // background pane must not steal an already-visible tab out from under a
     // drag/plugin adoption), so front the tab this explicit open gesture just

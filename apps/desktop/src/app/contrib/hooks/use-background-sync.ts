@@ -536,7 +536,6 @@ const SESSIONS_LIST_TICK_GAP_MS = 10_000
 // list reconciliation.
 const TYPING_BURST_QUIET_MS = 1_500
 
-
 interface LiveSessionStatusItem {
   id?: string
   last_active?: number

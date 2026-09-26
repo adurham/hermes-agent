@@ -455,7 +455,14 @@ describe('subagent store — fallback model fields', () => {
 
     upsertSubagent(
       's1',
-      { fallback_active: false, goal: 'do work', model: 'glm-5.3', status: 'running', subagent_id: 'a1', task_index: 0 },
+      {
+        fallback_active: false,
+        goal: 'do work',
+        model: 'glm-5.3',
+        status: 'running',
+        subagent_id: 'a1',
+        task_index: 0
+      },
       false,
       'subagent.progress'
     )

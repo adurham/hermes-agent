@@ -270,6 +270,7 @@ test('POSIX managed launcher executes the updater command and atomically publish
     // updater). The subject is the launcher's exec/publish handshake, not the
     // literal path, so the host's own `true` is the honest stand-in.
     const truePath = existsSync('/bin/true') ? '/bin/true' : '/usr/bin/true'
+
     const command = buildPosixManagedUpdateLaunch(
       {
         ssh: { exec: async () => '' },
