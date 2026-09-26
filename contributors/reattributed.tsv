@@ -156,3 +156,4 @@ aac12dfda54d5298b02cb97a6a186989a21e39fa	2026-09-24T19:01:08-05:00	fix(desktop):
 3d9040c188522810a4f92e4989874793b04eb515	2026-09-24T19:59:05-05:00	fix(desktop): fold i18n queueDropped keys + dedupe isSessionOwnerRoute into their fixes
 80f9c698b985846648d8ae9338137002195cca60	2026-09-24T21:52:55-05:00	chore: map contributor emails
 f0288f2272fae4f2cf2d1f64a8d87924229685d8	2026-09-25T18:53:20-05:00	fix(desktop): require proof of absence before dropping a drained queue entry (#122083 review)
+26780d55ae5023817dc20e074e07127d5234d59e	2026-09-26T16:54:21-05:00	fix(desktop): evict the whole subtree on a scoped clearProjectDirCache (#122083 review)
