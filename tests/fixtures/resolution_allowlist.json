@@ -286,11 +286,6 @@
   },
   {
     "path": "hermes_cli/main.py",
-    "symbol": "_cmd_update_pip",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/main.py",
     "symbol": "_exec_in_container",
     "kind": "bare_which"
   },
