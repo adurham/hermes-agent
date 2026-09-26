@@ -158,3 +158,4 @@ aac12dfda54d5298b02cb97a6a186989a21e39fa	2026-09-24T19:01:08-05:00	fix(desktop):
 f0288f2272fae4f2cf2d1f64a8d87924229685d8	2026-09-25T18:53:20-05:00	fix(desktop): require proof of absence before dropping a drained queue entry (#122083 review)
 26780d55ae5023817dc20e074e07127d5234d59e	2026-09-26T16:54:21-05:00	fix(desktop): evict the whole subtree on a scoped clearProjectDirCache (#122083 review)
 9d2eca0560b6456d3d2ebaa9a25445d0f0010c0b	2026-09-24T20:50:02-05:00	chore(contributors): map BorgWrightpcalac@outlook.com to DevEverything01
+3836710cfa0beef1a11adff5603443c829da0231	2026-09-25T19:08:13-05:00	fix(desktop): give a pre-save sign-in the same jar its saved connection reads
