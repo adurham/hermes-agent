@@ -219,3 +219,45 @@ def test_search_hrr_score_is_informative_not_neutral(tmp_path):
         assert abs(np.mean([hrr_term(other_id)])) < 0.1, "unrelated fact should sit near zero"
     finally:
         store.close()
+
+
+def test_provider_prefetch_feeds_recall_accounting(tmp_path, monkeypatch):
+    """Provider prefetch must credit retrieval_count + the auto-feedback window.
+
+    The mutual-exclusion guard withdraws the warm tier's model-facing recall once
+    memory.provider is set, so the provider's prefetch IS the recall surface. If it
+    skips the warm tier's accounting, a fact the model actually used never gets
+    credited: retrieval_count freezes and auto-feedback has nothing to match.
+    """
+    import tools.memory_warm as mw
+    from tools.memory_auto_feedback import audit as A
+
+    monkeypatch.setattr(mw, "holographic_provider_is_registered", lambda: True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # The tmp home needs auto_feedback ON, or the window is legitimately empty.
+    (tmp_path / "config.yaml").write_text("memory:\n  auto_feedback: true\n")
+
+    # Seed the DB the PROVIDER will open (its db_path defaults to
+    # $HERMES_HOME/memory_store.db), not a private file.
+    store = MemoryStore(str(tmp_path / "memory_store.db"))
+    store.add_fact("Kestrel mercury zephyr falcon tundra quartz nimbus ledger entry.", category="c")
+    store.add_fact("Sable prism meadow thistle ember gale hollow ivory juniper.", category="c")
+
+    from plugins.memory.holographic import HolographicMemoryProvider
+    provider = HolographicMemoryProvider()
+    provider.initialize(session_id="acct-session")
+
+    A._reset_state_for_testing()
+    maf = __import__("tools.memory_auto_feedback", fromlist=["set_session"])
+    maf.set_session("acct-session")
+
+    before = {r["fact_id"]: r["retrieval_count"] for r in store.list_facts(limit=10)}
+    out = provider.prefetch("kestrel mercury zephyr falcon", session_id="acct-session")
+    after = {r["fact_id"]: r["retrieval_count"] for r in store.list_facts(limit=10)}
+
+    assert out, "prefetch returned nothing to account for"
+    bumped = [fid for fid in before if after.get(fid, 0) > before[fid]]
+    assert bumped, f"no retrieval_count advanced: {before} -> {after}"
+    assert A._session_windows.get("acct-session"), "auto-feedback window stayed empty"
+
+    provider.shutdown()
