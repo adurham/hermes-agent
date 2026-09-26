@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import time
 import types
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -893,29 +894,43 @@ def test_cli_idle_hook_passes_attention_signal_for_holds(cst, monkeypatch):
     assert len(signals) == 1
 
 
-def test_process_loop_calls_the_idle_drain_hook():
-    """The hook must actually be wired into the 0.1s idle tick."""
-    import inspect
-
+def test_idle_tick_drains_the_cross_session_inbox():
+    """The hook must actually run on the CLI's 0.1s idle tick."""
     import cli as cli_module
 
-    src = inspect.getsource(cli_module.HermesCLI.run)
-    assert "_drain_cross_session_inbox()" in src
-    assert '_drain_process_notifications("cli-idle")' in src
+    fake = MagicMock()
+    cli_module.HermesCLI._tui_idle_tick(fake)
+
+    fake._drain_cross_session_inbox.assert_called_once_with()
+    fake._drain_process_notifications.assert_called_once_with("cli-idle")
 
 
-def test_conversation_loop_calls_the_midturn_hook():
-    import inspect
+def test_iteration_prep_feeds_cross_session_before_steer_drain():
+    """Mid-turn delivery must feed the steer queue BEFORE it drains, or the message waits a
+    whole extra tool batch."""
+    from agent.turn_iteration_prep import prepare_iteration
 
-    import agent.conversation_loop as loop
+    class _Stop(Exception):
+        pass
 
-    src = inspect.getsource(loop)
-    assert "drain_into_pending_steer(agent)" in src
-    # Must feed the steer machinery BEFORE it drains, or the message waits a
-    # whole extra tool batch.
-    assert src.index("drain_into_pending_steer(agent)") < src.index(
-        "_pre_api_steer = agent._drain_pending_steer()"
-    )
+    calls = []
+
+    def _drain_steer():
+        calls.append("steer_drain")
+        raise _Stop
+
+    agent = MagicMock()
+    agent.step_callback = None
+    agent._nous_wire_pending = None
+    agent._skill_nudge_interval = 0
+    agent._drain_pending_steer.side_effect = _drain_steer
+    with patch(
+        "tools.cross_session_integration.drain_into_pending_steer",
+        side_effect=lambda a: calls.append(("cross_session", a)),
+    ), pytest.raises(_Stop):
+        prepare_iteration(agent, messages=[{"role": "user", "content": "hi"}], api_call_count=1)
+
+    assert calls == [("cross_session", agent), "steer_drain"]
 
 
 def test_run_agent_heartbeats_on_the_activity_hook():
