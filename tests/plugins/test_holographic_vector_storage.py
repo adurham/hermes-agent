@@ -148,25 +148,14 @@ def test_memory_store_reads_legacy_float64_vectors(tmp_path) -> None:
             "SELECT hrr_vector FROM facts WHERE fact_id = ?",
             (fact_id,),
         ).fetchone()["hrr_vector"]
-        bank_blob = store._conn.execute(
-            "SELECT vector FROM memory_banks WHERE bank_name = ?",
-            ("cat:compat",),
-        ).fetchone()["vector"]
-
         legacy_fact_blob = hrr.bytes_to_phases(fact_blob, dim=dim).astype(np.float64).tobytes()
-        legacy_bank_blob = hrr.bytes_to_phases(bank_blob, dim=dim).astype(np.float64).tobytes()
         store._conn.execute(
             "UPDATE facts SET hrr_vector = ? WHERE fact_id = ?",
             (legacy_fact_blob, fact_id),
         )
-        store._conn.execute(
-            "UPDATE memory_banks SET vector = ? WHERE bank_name = ?",
-            (legacy_bank_blob, "cat:compat"),
-        )
         store._conn.commit()
 
         assert len(legacy_fact_blob) == dim * np.dtype(np.float64).itemsize
-        assert len(legacy_bank_blob) == dim * np.dtype(np.float64).itemsize
 
         retriever = FactRetriever(store, hrr_dim=dim)
         results = retriever.search("legacy HRR vectors", category="compat", limit=1)
@@ -175,7 +164,7 @@ def test_memory_store_reads_legacy_float64_vectors(tmp_path) -> None:
     assert results[0]["fact_id"] == fact_id
 
 
-def test_memory_store_persists_fact_and_bank_vectors_as_float32(tmp_path) -> None:
+def test_memory_store_persists_fact_vectors_as_float32(tmp_path) -> None:
     dim = 64
     db_path = tmp_path / "memory_store.db"
 
@@ -190,13 +179,7 @@ def test_memory_store_persists_fact_and_bank_vectors_as_float32(tmp_path) -> Non
             "SELECT hrr_vector FROM facts WHERE fact_id = ?",
             (fact_id,),
         ).fetchone()["hrr_vector"]
-        bank_blob = store._conn.execute(
-            "SELECT vector FROM memory_banks WHERE bank_name = ?",
-            ("cat:perf",),
-        ).fetchone()["vector"]
-
         assert len(fact_blob) == _float32_blob_size(dim)
-        assert len(bank_blob) == _float32_blob_size(dim)
 
         retriever = FactRetriever(store, hrr_dim=dim)
         results = retriever.search("compact HRR vectors", category="perf", limit=1)

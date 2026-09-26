@@ -180,10 +180,14 @@ class TestConcurrency:
         broken = MemoryStore(db_path)
         sibling = MemoryStore(db_path)
         try:
+            # _rebuild_bank used to be the last step of add_fact; it is gone (the
+            # category banks were removed), so inject the failure at the step that is
+            # now last — the HRR vector write. The property under test is unchanged:
+            # a raise mid-method must not leave the write lock pinned.
             monkeypatch.setattr(
                 MemoryStore,
-                "_rebuild_bank",
-                lambda self, category: (_ for _ in ()).throw(RuntimeError("boom")),
+                "_compute_hrr_vector",
+                lambda self, fact_id, content: (_ for _ in ()).throw(RuntimeError("boom")),
             )
             with pytest.raises(RuntimeError, match="boom"):
                 broken.add_fact("write that fails after the INSERT")
