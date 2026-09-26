@@ -3,6 +3,43 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Post-de-fork repair — 2026-09-26 (`/effort` on every surface; 5 merge-dropped wirings; CI red → green)
+
+**Why:** after the v2026.9.24 sync + de-fork slices A–C, `main` CI was red (6 Python shards + JS) and
+`/effort` did nothing outside the classic CLI. Root causes were mostly the **v2026.9.14 god-file split**:
+fork helpers survived in the facade while their call sites in the new siblings were never written, a
+few parked with a literal "call it bare once rewired" note.
+
+**`/effort`:** now `aliases=("effort",)` on the `reasoning` CommandDef (was a standalone CommandDef +
+a CLI-only shim). The gateway canonicalized "effort", found no handler, and sent `/effort high` to the
+model as chat text; TUI/desktop hit tui_gateway's "Use /reasoning" stub. The ui-tui reasoning command
+and the desktop `/reasoning` spec carry the alias. (The classic-CLI picker wiring is `1aabe7e2f0`.)
+
+**Merge-dropped wiring restored (all silently inert until now):**
+1. Cross-session messaging: CLI idle-tick `_drain_cross_session_inbox`, mid-turn
+   `drain_into_pending_steer` (now in `agent/turn_iteration_prep.py`), durable cross-process subagent
+   registry row (`delegate_tool_child_run._register_durable_subagent` + cleanup mirror).
+2. TUI notification poller liveness hold (`_notification_event_should_hold_for_liveness`): a running
+   subagent's background-process completion leaked into the parent chat mid-task.
+3. Resume/reconnect mid-tool-call: `open_tool_calls` tracking + `inflight.tool` (+ `InflightTool` on the
+   RPC contract — the contract validator rejected the field).
+4. A2A: 403/429 authz rejections audited again (#81003) after upstream's check-table refactor.
+
+**De-forked (upstream now ships it):** a2a `client_tools_module` (upstream `provides_tools` path);
+`inflight.started_at` (= upstream `turn_started_at`; the merged desktop "prefer inflight ?? stale" logic
+also broke upstream's clear-stale-timer rule — three hunks back to upstream); inventory's duplicate
+Anthropic-OAuth visibility clause; process-registry completion `task_id` override (consumers read
+`owner_task_id` first). The hermes-agent skill had ~900 lines of pre-refactor body re-inserted by a sync;
+rebuilt from upstream + the fork's URL rebranding.
+
+**Host-sensitive tests** (why agents kept spinning locally): voice-prefs Storage spy (Node 22 jsdom vs
+CI's Node 26 fallback Storage), OSC 8 terminator (ST on kitty, BEL elsewhere), vision/LSP tests that need
+models.dev egress / a normal process tree. Run JS checks on **Node 26** (CI's version) and Python with
+CI's extras: `uv sync --locked --extra all --extra dev --extra anthropic --extra mistral --extra fal
+--extra modal --extra daytona --extra parallel-web --extra bedrock` (uv ≥ 0.12 — 0.8 can't parse uv.lock).
+
+---
+
 ### Fork-only retirement — 2026-09-25 (Slice C: Anthropic server-tool cluster removed)
 
 **Owner-approved removal**, in the same words that scoped slices A/B: *"the CC wire-shape and
