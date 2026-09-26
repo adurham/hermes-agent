@@ -59,15 +59,6 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
         VALUES (new.fact_id, new.content, new.tags);
 END;
-
-CREATE TABLE IF NOT EXISTS memory_banks (
-    bank_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    bank_name  TEXT NOT NULL UNIQUE,
-    vector     BLOB NOT NULL,
-    dim        INTEGER NOT NULL,
-    fact_count INTEGER DEFAULT 0,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 """
 
 _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
@@ -143,7 +134,7 @@ class MemoryStore:
 
     def add_fact(self, content: str, category: str = "general", tags: str = "") -> int:
         """Insert a fact and return its fact_id; on duplicate content (UNIQUE) return the existing fact_id untouched.
-        Links extracted entities and rebuilds the category bank."""
+        Links extracted entities and computes the fact's HRR vector."""
         with self._lock:
             content = content.strip()
             if not content:
@@ -155,7 +146,6 @@ class MemoryStore:
                 return int(self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))["fact_id"])
             self._link_entities(fact_id, content)
             self._compute_hrr_vector(fact_id, content)
-            self._rebuild_bank(category)
             return fact_id
 
     def update_fact(self, fact_id: int, content: str | None = None, trust_delta: float | None = None,
@@ -175,7 +165,6 @@ class MemoryStore:
                 self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
                 self._link_entities(fact_id, content)
                 self._compute_hrr_vector(fact_id, content)
-            self._rebuild_bank(category or self._one("SELECT category FROM facts WHERE fact_id = ?", (fact_id,))["category"])
             return True
 
     def bump_retrieval_counts(self, fact_ids: "list[int]") -> int:
@@ -222,7 +211,6 @@ class MemoryStore:
                 return False
             self._conn.execute("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
             self._write("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
-            self._rebuild_bank(row["category"])
             return True
 
     def list_facts(self, category: str | None = None, min_trust: float = 0.0, limit: int = 50) -> list[dict]:
@@ -280,22 +268,6 @@ class MemoryStore:
         entities = [row["name"] for row in self._conn.execute(_ENTITY_NAMES_SQL, (fact_id,)).fetchall()]
         blob = hrr.phases_to_bytes(hrr.encode_fact(content, entities, self.hrr_dim))
         self._write("UPDATE facts SET hrr_vector = ? WHERE fact_id = ?", (blob, fact_id))
-
-    def _rebuild_bank(self, category: str) -> None:
-        """Full rebuild of a category's memory bank from all its fact vectors."""
-        if not self._hrr_available:
-            return
-        bank_name = f"cat:{category}"
-        rows = self._conn.execute("SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL", (category,)).fetchall()
-        if not rows:
-            self._write("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
-            return
-        bank_vector = hrr.bundle(*[hrr.bytes_to_phases(row["hrr_vector"], dim=self.hrr_dim) for row in rows])
-        hrr.snr_estimate(self.hrr_dim, len(rows))  # warns when near capacity
-        self._write("INSERT INTO memory_banks (bank_name, vector, dim, fact_count, updated_at) "
-                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(bank_name) DO UPDATE SET "
-                    "vector = excluded.vector, dim = excluded.dim, fact_count = excluded.fact_count, "
-                    "updated_at = excluded.updated_at", (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, len(rows)))
 
     @classmethod
     def release_all_under(cls, directory: "str | Path") -> int:
