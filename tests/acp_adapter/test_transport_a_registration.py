@@ -207,6 +207,8 @@ def test_restore_registers_transport_a_participant(
 
     manager = _manager(monkeypatch)
     created = manager.create_session(cwd="/tmp/work")
+    # Empty editor probes stay ephemeral (never persisted), so give it a real turn first.
+    created.history.append({"role": "user", "content": "hello"})
     manager.save_session(created.session_id)
 
     # Simulate a process restart: drop the in-memory session, force _restore.

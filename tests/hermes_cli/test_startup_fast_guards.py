@@ -67,7 +67,8 @@ def test_cli_starts_from_a_deleted_cwd(tmp_path):
     finally:
         os.close(fd)
     assert result.returncode == 0, result.stderr
-    assert "Hermes Agent v" in result.stdout
+    # Fork: the version line is rebranded (hermes_cli/fork_banner.py); match it by shape.
+    assert re.search(r"hermes[-\w/ ]*\bv\d", result.stdout, re.IGNORECASE), result.stdout
     assert "FileNotFoundError" not in result.stderr
 
 

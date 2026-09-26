@@ -1,14 +1,14 @@
 ---
-title: "Deepseek Harness — Delegate coding to DeepSeek Harness (dsh) pointed at a local/OpenAI-compatible endpoint (e.g"
+title: "Deepseek Harness — Delegate coding to DeepSeek Harness (dsh), local endpoint"
 sidebar_label: "Deepseek Harness"
-description: "Delegate coding to DeepSeek Harness (dsh) pointed at a local/OpenAI-compatible endpoint (e.g"
+description: "Delegate coding to DeepSeek Harness (dsh), local endpoint"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Deepseek Harness
 
-Delegate coding to DeepSeek Harness (dsh) pointed at a local/OpenAI-compatible endpoint (e.g. exo).
+Delegate coding to DeepSeek Harness (dsh), local endpoint.
 
 ## Skill metadata
 

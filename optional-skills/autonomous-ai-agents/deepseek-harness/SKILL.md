@@ -1,6 +1,6 @@
 ---
 name: deepseek-harness
-description: "Delegate coding to DeepSeek Harness (dsh) pointed at a local/OpenAI-compatible endpoint (e.g. exo)."
+description: "Delegate coding to DeepSeek Harness (dsh), local endpoint."
 version: 0.1.0
 author: Hermes Agent
 license: MIT
