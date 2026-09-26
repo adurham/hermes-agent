@@ -197,3 +197,4 @@ da4a1ffd0827e1a8b56c6cf062d6dbe95fdc9acc	2026-09-24T19:58:13-05:00	fix(desktop+g
 4da922446725662656b1b9ce70d75bd7184f9472	2026-09-24T21:52:47-05:00	chore: map contributor emails
 056a9608700592a686880ec24023f89595ef9618	2026-09-25T18:25:51-05:00	fix(desktop): never tolerance-match a captionless attachment turn (#122079 review)
 820bb0b1af2849c92f6779b51989829c819ced90	2026-09-26T16:59:20-05:00	fix(desktop): keep the attachment-tolerance dedupe inside the identity gate (#122079)
+0f4a98f87c17007b81500239d0bd5b9574027b73	2026-09-26T16:59:21-05:00	fix(desktop): pair repeated-caption attachment folds by paste ordinal (#122079)
