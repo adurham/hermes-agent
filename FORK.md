@@ -3,6 +3,55 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Doc-sync — 2026-09-26 (FORK.md corrected against the post-Slice-B tree; no code change)
+
+**Why:** a provider-migration task on the gateway (hermes-gw-01 moved off the built-in `anthropic`
+provider onto `claude-subscription-directsdk-experimental`) surfaced that several **live-state**
+sections of this file still described the Claude Code disguise layer as intact. Slice B
+(`baee2825c6` + `06b24bbbeb`, 2026-09-25) had already deleted most of it — the config-side
+workarounds (compact system prompt, lazy skill listing) were retired separately the same day
+(homelab repo, not this one), but this doc was never reconciled. No code in this repo changed here.
+
+**What the tree actually contains now** (verified by grep + `git log`, not by reading this file):
+
+* **Deleted outright** — `agent/cc_aliases.py` (+ `HERMES_TO_CC` / `replace_with_cc_canonical` /
+  `adapt_tool_use` / the CC arg-translation fast-path in `_repair_tool_call`), the
+  `x-anthropic-billing-header` system block, the `metadata.user_id` identity blob, the
+  `agent/cc_canonical/` tree, `scripts/refresh_cc_canonical.sh`, and `tests/agent/test_cc_aliases.py`.
+  Repo-wide greps return zero code hits for each; only historical FORK.md prose still names them.
+* **Still live, and correctly OAuth-gated** (`if is_oauth:`, `anthropic_route_is_oauth` —
+  native host or `provider == 'anthropic'` **and** an OAuth-shaped credential) — upstream's own
+  GH-25255 wire normalization: `mcp__` prefixing with a *narrow* skip-set,
+  `_OAUTH_TOOL_NAME_ALIASES` (`session_search` → `chat_history_lookup`,
+  `memory` → `context_notes`), `_apply_oauth_prose_aliases` on descriptions, and the reverse map in
+  `transports/anthropic.py::_unprefix_oauth_tool_name`. **This is not fork-only any more** — the
+  rename table and prose alias are upstream's; the fork's remaining delta is the bridge-tool guard
+  in the reverse resolver.
+* **Still live, NOT provider-gated** — `.beta.messages` targeting (gated on *client capability*, so
+  it also applies to third-party Anthropic-protocol routes: MiniMax/Kimi/GLM/Azure/Bedrock) and the
+  SSE ping observer (installs a process-wide `Stream._iter_events` monkey-patch on first SDK client
+  build; inert without a thread-local callback, which is armed only on the `anthropic_messages`
+  wire; inbound telemetry only, never touches the outbound request). Both were left alone.
+
+**Verified by construction:** none of this can reach `claude-subscription-directsdk-experimental`
+(`api_mode='chat_completions'`, `base_url='process://…'`, zero imports of the adapter) or
+`exo`/`ollama-cloud` (chat_completions wire). One nuance worth knowing: the gate is per-**route**,
+not per-main-provider — an auxiliary task explicitly pinned to the `anthropic` provider trips the
+OAuth transforms even while the main provider is DirectSDK. That is the anthropic route by
+definition, so it is correct, but it is the one place the two concepts diverge.
+
+**Two optional hardening patches were proposed and NOT applied** (returned as text during the audit,
+deliberately unlanded): route-scoping `.beta.messages` so third-party hosts stop taking
+`?beta=true`, and making the SSE observer install lazily so the monkey-patch only exists on wires
+that observe pings. Neither fixes a defect — the DirectSDK guarantee above already holds — and the
+first changes third-party wire shape (Kimi/GLM adaptive thinking depends on the beta namespace).
+Needs validation on a non-production machine before it could land.
+
+**Standing rule for future syncs:** this file is a *dated log*; entries below describing the
+billing header / identity blob / `cc_aliases` as live behaviour are historically accurate for their
+date and must not be "corrected" retroactively. Only the live-state sections were edited here, and
+each carries an inline note saying so.
+
 ### Dead-login visibility — 2026-09-26 (`/model` switch warning; the fallback banner's label)
 
 **Why:** the DirectSDK provider's Claude Code login died mid-session and every turn failed into the
@@ -2061,10 +2110,14 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   `hermes submit` → `hermes peer run` consolidation entry below)
   (upstream "cross-session"/"Transport A" hits are unrelated: approval-prompt
   transports and session_search prompt text — read, not keyword-matched).
-- provider/auth layer: `agent/cc_aliases.py`, `agent/google_oauth.py`,
-  `agent/gemini_cloudcode_adapter.py`, `plugins/model-providers/exo/*`,
-  `agent/fork/anthropic_server_tool_passes.py`/`anthropic_recovery.py`/
-  `diagnostics.py`/`_mixin.py`: 0 upstream.
+- provider/auth layer: `agent/google_oauth.py` **[REMOVED 2026-09-23]**,
+  `agent/gemini_cloudcode_adapter.py` **[REMOVED 2026-09-23]**,
+  `agent/cc_aliases.py` **[DELETED 2026-09-25, Slice B]**,
+  `agent/fork/anthropic_server_tool_passes.py` **[RETIRED 2026-09-25, Slice C]**,
+  `plugins/model-providers/exo/*`,
+  `agent/fork/anthropic_recovery.py`/`diagnostics.py`/`_mixin.py`: 0 upstream.
+  *(Amended 2026-09-26 — this list named the first four as live; three had already been
+  removed/deleted. Only the exo plugin and the three `agent/fork/` modules remain current.)*
 - nudges/recall: `skill_recall`/`memory_recall`/`memory_session_pin`/
   `consult_nudge` re-confirmed (spot-check).
 - `tools/content_filter_scrub.py`, `tools/hermes_load_tools.py`:
@@ -2078,9 +2131,11 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   the vitest suite during the sync).
 - fork scripts with no upstream counterpart (`corporate-rip.py`,
   `hermes_hard_eval.py`, `hermes_token_check.py`, `hermes_usage_tracker.py`,
-  `refresh_cc_canonical.sh`, `sync-fork-branding.py`,
+  `sync-fork-branding.py`,
   `setup-merge-drivers.sh`, `check-unspecced-sdk-mocks.py`): upstream
   `scripts/` enumerated, no name/purpose collisions.
+  *(Amended 2026-09-26 — `refresh_cc_canonical.sh` was on this list and has since been deleted
+  with Slice B, along with the `agent/cc_canonical/` tree it regenerated.)*
 
 **First-pass items re-verified (spot-check only, per scope):** `owner_task_id`
 threading present in `tools/process_registry.py` (23 hits, upstream-shaped);
@@ -2347,8 +2402,9 @@ pre/post-first-event distinction, and its `partial_stream_recovery` salvages
 already-streamed content, a different mechanism and layer); `skill_recall` /
 `memory_recall` / `memory_session_pin` / `consult_nudge`;
 `tool_search_lazy` (`defer_toolsets` / `keep_eager_tools` /
-`additional_deferred`); `fork_banner`; `cc_aliases`; refusal sanitization
-(`sanitize_messages_for_refusal_retry`, `is_anthropic_refusal`);
+`additional_deferred`); `fork_banner`; ~~`cc_aliases`~~ **[deleted 2026-09-25,
+Slice B]**; refusal sanitization
+(`sanitize_messages_for_refusal_retry`; `is_anthropic_refusal` retired 2026-09-22);
 `google_oauth` / `gemini_cloudcode_adapter` / the `exo` provider plugin /
 `claude_code` web plugin / `swarm_board` / `anthropic_native_web_search`;
 `personas` / `model_tiers` / `model_by_role` / `reasoning_effort_by_role`;
@@ -3423,9 +3479,11 @@ resolved here. Nothing below was removed or changed.
    2026-08-04 — the last two syncs were driven by this audit workflow instead,
    so: still used?). The other fork-only scripts are demonstrably live
    (`hermes_token_check.py`/`hermes_usage_tracker.py` run as gateway systemd
-   timers, `refresh_cc_canonical.sh` is the only refresh path for
-   `agent/cc_canonical/tools_eager.json`, `corporate-rip.py` is idempotent by
+   timers, `corporate-rip.py` is idempotent by
    design, `check-unspecced-sdk-mocks.py` is an active CI guardrail).
+   *(Amended 2026-09-26 — this paragraph also credited `refresh_cc_canonical.sh` as live and the
+   "only refresh path" for `agent/cc_canonical/tools_eager.json`; both were deleted with Slice B,
+   2026-09-25.)*
 7. **Possible merge-time regression, not a de-fork question.**
    `agent/system_prompt.py` reverted upstream's init-time
    `_kanban_worker_guidance` resolution to a per-build `valid_tool_names` check
@@ -10052,7 +10110,7 @@ will never touch them.
 | `agent/fork/memory_recall.py` | Memory-recall reminder — nudges agent to call `memory(action='recall', ...)` against the warm-tier store every N tool calls (or on explicit "remember"-style directives); auto mode runs the recall and injects the top hit. Config: `agent.memory.recall_reminder_*`. |
 | `agent/fork/memory_session_pin.py` | Session-pin — keeps selected warm-tier facts visible in the system prompt for the rest of the current session (gone on restart). Exposes `memory(action='pin'/'unpin'/'pinned', fact_id=N)`. Config: `agent.memory.session_pin_max_count`/`max_chars`. |
 | `agent/fork/rate_limit_tracker.py` | Rate-limit observability — one-shot INFO on first header capture, WARN on 90% bucket transitions with 80% hysteresis |
-| `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context) + CC alias arg translation + `is_anthropic_refusal` detection predicate (T2.3) |
+| `agent/fork/anthropic_recovery.py` | Refusal retry sanitization (strip credential-extraction shell patterns from historical context). **CC alias arg translation REMOVED 2026-09-25** with the CC alias layer (Slice B — `_repair_tool_call`'s CC fast-path and the CC canonical name advertising no longer exist, so there are no CC-named args to translate); `is_anthropic_refusal` was retired 2026-09-22 (upstream maps `stop_reason="refusal"` itself). The scrub rung is still live. |
 | `agent/fork/anthropic_server_tool_passes.py` | The fork's Anthropic **server-tool** passes for native web search / tool_search (pairing, ordering, orphan and type-canonicalization rules), plus the deliberate verbatim-replay citation strip. Replaced `agent/fork/anthropic_messages.py` (the fork's ~540-line vendored `convert_messages_to_anthropic`) in the 2026-09-14 sync: upstream's `agent/anthropic_message_convert.py` converged on and overtook the fork converter, so the fork now layers ONLY these passes on top of upstream's implementation. See "Converter consolidation" below. **RETIRED 2026-09-25** (Slice C, owner-approved server-tool cluster removal — see "Fork-only retirement — 2026-09-25 (Slice C)" below). |
 | `agent/fork/stream_recovery.py` | Cold-start stale-timeout computation (`effective_stale_timeout`) — the fork's grace window before the first stream event (T2.3). |
 | `agent/fork/tool_search_lazy.py` | Client-side lazy MCP tool loading — name-only stubs inflated to full schemas on demand |
@@ -10060,7 +10118,7 @@ will never touch them.
 | `agent/fork/consult_nudge.py` | Second-opinion (consult tool) reminder — nudges the agent to call `consult(question, context)` for a review from a configurable reference model after N risky tool calls; reuses `skill_recall`'s risky-tool set. Config: `consult.nudge_interval`. |
 | `agent/hot_tier_audit.py` | Hot-tier audit — heuristic stale-path detection + opt-in LLM keep/demote/stale/dead classification. On a real curator pass, reads `MEMORY.md`/`USER.md`; heuristic-only mode (default) flags/demotes entries whose extracted filesystem paths no longer exist on disk. `curator.consolidate: true` upgrades to an LLM classification pass (reuses the skill curator's aux-model binding) whose `demote` verdicts move to warm tier and `stale`/`dead` verdicts hard-delete only when `curator.prune_builtins` is also on; an LLM failure or a sanity-cap trip aborts with zero mutation rather than falling back to the heuristic. Opt-in via `curator.hot_tier_audit` (default off), `curator.hot_tier_audit_dry_run` (default on). See `docs/plans/2026-07-14-hot-tier-audit.md`. |
 || `agent/fork/anthropic_native_web_search.py` | Provider-aware web search — on first-party Anthropic (Claude) swaps the client `web_search` tool for Anthropic's native server-side `web_search_20250305` tool so search runs inline; non-Claude endpoints keep the client tool. Config: `web.anthropic_native_search` (default on), `web.anthropic_native_search_max_uses`. **RETIRED 2026-09-25** (Slice C, owner-approved server-tool cluster removal — see "Fork-only retirement — 2026-09-25 (Slice C)" below). |
-|| `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. |
+||| `agent/cc_aliases.py` | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility — maps Hermes built-in tool names to their Claude Code canonical equivalents so OAuth traffic counts as CC-API usage for billing. **DELETED 2026-09-25** (Slice B, commits `baee2825c6` + `06b24bbbeb`, owner-approved CC-wire-shape removal; restore point tag `pre-cc-removal-20260925` → `822cbb45f6`). Do NOT re-carry on the next sync. |
 || `agent/gemini_cloudcode_adapter.py` | Gemini → Cloud Code adapter for Gemini provider OAuth path. **REMOVED 2026-09-23** (deliberate product decision, commit `658d2248f3` — account-ban risk + already non-functional; see "Fork-only retirements — 2026-09-23" below). Do NOT re-carry on the next sync. |
 || `agent/google_oauth.py` | Google OAuth credential handling for Gemini provider. **REMOVED 2026-09-23** (same decision/commit as `gemini_cloudcode_adapter.py` above). Do NOT re-carry on the next sync. |
 || `hermes_cli/fork_banner.py` | The fork's banner branding + git-state subsystem (carried/upstream-behind line, fork-aware agent name, HEAD-date label, fork-tree release URLs) (T2.5). Moved out of `banner.py`. |
@@ -10096,7 +10154,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | File | Adds / Dels | Why |
 |---|---|---|
 | `cli.py` | +2653 / -143 | Cancel-ladder keybindings, session-finalize, memory wiring, `/model --global` provider switch clears stale endpoint creds, per-model reasoning effort isolation. |
-| `agent/anthropic_adapter.py` | +1784 / -93 | CC wire-shape parity: alias translation (Bash/Read/Edit/Write/Grep), `metadata.user_id` identity blob, billing header, SSE ping observer, `.beta.messages` namespace. Upstream v2026.7.1 absorbed OAuth creds, beta headers, 1M-context gate. The OAuth path is no longer fork-only. |
+| `agent/anthropic_adapter.py` | +1784 / -93 | CC wire-shape parity: alias translation (Bash/Read/Edit/Write/Grep), `metadata.user_id` identity blob, billing header, SSE ping observer, `.beta.messages` namespace. Upstream v2026.7.1 absorbed OAuth creds, beta headers, 1M-context gate. The OAuth path is no longer fork-only. **SUPERSEDED 2026-09-25/26** — Slice B deleted the alias translation, identity blob and billing header; only the SSE observer and `.beta.messages` targeting remain, and both are upstream-owned now. See the doc-sync entry at the top of this file for the current delta. |
 | `tools/delegate_tool.py` | +888 / -158 | Background-by-default delegation (adopted upstream's model), SwarmBoard, prompt-cache stagger, 1M-beta latch, cost/token rollup, `delegation.by_provider` provider-scoped config. |
 | `agent/chat_completion_helpers.py` | +858 / -114 | Streaming reliability: SDK monkey-patch for SSE events, heartbeat ticks, stream-drop reconnect, cold-start detection. |
 | `tools/mcp_tool.py` | +743 / -98 | MCP tool registration (no `mcp_` prefix — exact server provenance map), parallel-safety fix, disk cache. |
@@ -10106,7 +10164,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `hermes_cli/config.py` | +513 / -14 | Config keys for fork features: `delegation.by_provider`, `web.by_provider`, `agent.reasoning_effort_by_model`, `auxiliary.<provider>` schema, `tools.tool_search.defer_*`, v31 migration, `get_missing_config_fields` guard. |
 | `tools/swarm_board.py` | +467 / -1 | Live SwarmBoard display for multi-agent task progress. **RETIRED 2026-09-23** (`37d7fb4782`) — see the hard-fork table row above. |
 | `tools/memory_extraction/extractor.py` | +448 / -1 | Memory extraction with provider-first aux schema detection, per-task override support. |
-| `agent/cc_aliases.py` | +306 / -1 | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility. |
+| `agent/cc_aliases.py` | +306 / -1 | CC alias name mappings (Bash/Read/Edit/Write/Grep) for plan billing compatibility. **DELETED 2026-09-25** (Slice B) — see the hard-fork table row above. |
 | `hermes_state.py` | +257 / -7 | `FORK_SCHEMA_SQL` (`api_calls` table), `FORK_TABLE_COLUMNS` (`anthropic_content_blocks`), `SCHEMA_VERSION` 18. |
 | `run_agent.py` | +230 / -17 | 12 forwarder methods (now `ForkForwardersMixin`), `_classify_anthropic_stream_phase`, fork-state initialization. |
 | `tools/skills_tool.py` | +224 / -1 | Skill management with lazy listing support. |
@@ -11406,9 +11464,17 @@ looks generally useful.
 
 Specific things that **must never** be sent upstream:
 
-* Claude Code wire-shape parity (`anthropic_adapter.py` — CC alias translation, metadata identity blob, billing header, SSE observer, `.beta.messages` targeting)
 * `_decorate_xai_entitlement_error` (xAI billing hint UX)
 * Anything in `agent/fork/`
+
+> **Amended 2026-09-26** — the first bullet used to read "Claude Code wire-shape parity
+> (`anthropic_adapter.py` — CC alias translation, metadata identity blob, billing header, SSE
+> observer, `.beta.messages` targeting)". That entry is now **substantially obsolete**: Slice B
+> deleted the alias translation, the identity blob and the billing header outright (see the
+> doc-sync entry at the top of this file). What remains in `anthropic_adapter.py` is the SSE
+> observer and `.beta.messages` targeting — neither of which is fork-only any more, so neither is
+> a "must never send upstream" item; the fork's live delta there is the bridge-tool guard in
+> `transports/anthropic.py::_unprefix_oauth_tool_name`.
 
 If a fork feature later seems genuinely upstream-worthy, file a separate
 clean PR built from upstream's tree, not a backport of fork code.
@@ -12064,14 +12130,14 @@ the infrastructure they depend on doesn't obviously exist upstream in the
 same shape. "Light de-forking" is the same euphemism that hid 28K LOC in
 PR #25234 — treat every item here as needing full extraction work, not a
 quick rename, before it's upstream-shaped.
+*(Amended 2026-09-26 — the CC-wire-shape code these items are tied to has since been deleted;
+see the doc-sync entry at the top of this file.)*
 
 * **Claude Code Keychain write-back on OAuth refresh** (2026-07-14) — this is
-  a bugfix *inside* the CC-mimicry OAuth/keychain system, which is on this
-  file's own "must never be sent upstream" list (`anthropic_adapter.py` CC
-  alias translation, metadata identity blob, billing header, SSE observer).
-  Upstream has no Hermes-mimics-Claude-Code keychain integration for this bug
-  to exist in — there is likely nothing to patch upstream. Do not file unless
-  you first confirm upstream independently has an equivalent OAuth-refresh
+  a bugfix *inside* the CC-mimicry OAuth/keychain system, most of which Slice B has since deleted
+  (see the doc-sync entry at the top of this file). Upstream has no Hermes-mimics-Claude-Code
+  keychain integration for this bug to exist in — there is likely nothing to patch upstream. Do not
+  file unless you first confirm upstream independently has an equivalent OAuth-refresh
   keychain-write code path with the same bug (unlikely).
 * **Bearer clients leak `ANTHROPIC_API_KEY` as `x-api-key`** (2026-07-14) —
   **RESOLVED, no action needed (re-verified 2026-08-20).** Upstream
@@ -12198,7 +12264,7 @@ equivalent as of v2026.9.24:**
 | web plugins | `plugins/web/trafilatura/`, `plugins/model-providers/exo/`, `tools/web_tools.py` chain (`plugins/web/claude_code/` RETIRED 2026-09-25) |
 | tooling / CLI | `tools/consult_tool.py`, `tools/hermes_load_tools.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py`, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` |
 | desktop | pet zone/voice (`store/pet-voice.ts`), `lib/model-fallback-label.ts`, `session-row-state.ts` drag handle, `sync-version.mjs`, version-sync prebuild |
-| scripts / CI | `scripts/setup-merge-drivers.sh`, `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_hard_eval.py`, `hermes_token_check.py`, `refresh_cc_canonical.sh`, `check-unspecced-sdk-mocks.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` |
+| scripts / CI | `scripts/setup-merge-drivers.sh`, `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_hard_eval.py`, `hermes_token_check.py`, `check-unspecced-sdk-mocks.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` |
 
 **Deleted from the fork on purpose (do NOT re-carry at the next sync):** Google
 Code Assist OAuth providers, the vendored Anthropic converter, `submit.py` (shim
@@ -12311,7 +12377,10 @@ just take either side and run `uv lock`.
   converter, re-apply the three seams. The block/tool/content helpers stay in the
   adapter (some upstream-shared) and the fork pass module binds them via a lazy import
   (breaks the circular dep).
-  Still take "ours" for CC wire-shape edits (alias translation, metadata blob, billing header, SSE observer). Tool naming: the fork DELIBERATELY does
+  Still take "ours" for the surviving OAuth wire-shape edits (SSE observer, `.beta.messages`
+  targeting). **Amended 2026-09-26:** this line used to also name "alias translation" and "metadata
+  blob" and "billing header" — all three were deleted in Slice B (`baee2825c6` + `06b24bbbeb`,
+  2026-09-25), so there is nothing to take "ours" on for them any more. Tool naming: the fork DELIBERATELY does
   NOT prepend `mcp_` to bare tool names (registers MCP tools as `mcp__server__tool`);
   upstream re-adds single-underscore prefixing every few syncs — take ours, drop
   upstream's prefix loop + its 2 outgoing-prefix tests.
