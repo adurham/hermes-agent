@@ -157,6 +157,41 @@ def _launchctl_label_supervising_process(label: str) -> bool:
     return _gw()._launchctl_supervised_pid(label) is not None
 
 
+def _launchctl_label_disabled(label: str) -> bool:
+    """True when launchd's override database lists ``label`` as disabled.
+
+    Live-verified on macOS 27: while a label is disabled, ``launchctl bootstrap`` of a perfectly
+    installable plist answers ``5: Input/output error`` — byte-identical to the EIO of a domain that
+    genuinely cannot manage the job. That ambiguity is why an unrelated disable silently became
+    "launchd cannot manage the gateway on this macOS version": the host was branded unsupported
+    (permanent marker), a detached gateway was started beside the still-healthy domain, and the
+    update sweep then stopped that detached process — leaving no gateway at all. Bootstrap/kickstart
+    failures must consult this before degrading. Any probed domain reporting "disabled" wins; a
+    label launchd does not mention anywhere is not disabled.
+    """
+    uid = os.getuid()  # windows-footgun: ok — launchd is macOS-only
+    domains: list[str] = []
+    with contextlib.suppress(Exception):
+        domains.append(_gw()._launchd_domain())
+    for candidate in (f"gui/{uid}", f"user/{uid}"):
+        if candidate not in domains:
+            domains.append(candidate)
+    for domain in domains:
+        try:
+            result = subprocess.run(
+                ["launchctl", "print-disabled", domain], check=False, timeout=5, **_gw()._CAPTURE_TEXT
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+        for line in (result.stdout or "").splitlines():
+            name, sep, value = line.partition("=>")
+            if sep and name.strip().strip('"') == label and value.strip() == "disabled":
+                return True
+    return False
+
+
 def _retry_launchctl_bootstrap_until_registered(
     domain: str, plist_path, label: str, *, deadline: float
 ) -> bool:
@@ -314,6 +349,8 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     :func:`wait_for_launchd_gateway_supervision` answer True unconditionally — so no later
     install/update can tell that nothing ties the gateway to launchd any more. A live supervised PID is
     direct evidence this macOS does manage the job, so surface the failure instead of branding the host.
+    A disabled override is the second such case — EIO again, on a domain that manages jobs fine — so it
+    gets the same surface-don't-degrade treatment, with the ``launchctl enable`` command as the remedy.
     """
     if not _launchctl_domain_unsupported(exc.returncode):
         raise exc
@@ -322,6 +359,16 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
         print(f"⚠ {what} failed (exit {exc.returncode}), but launchd still supervises {label}")
         print("  Not switching to the detached fallback — this host manages the job.")
         print("  Apply the definition with: hermes gateway stop && hermes gateway install --force")
+        raise exc
+    if _gw()._launchctl_label_disabled(label):
+        # A disabled override makes bootstrap/kickstart answer EIO-5 on a domain that manages jobs
+        # perfectly well (live-verified: same plist, enable -> rc=0, disable -> rc=5). Degrading here
+        # would brand the host unsupported forever — and the marker that records it also short-circuits
+        # wait_for_launchd_gateway_supervision(), so no later install/update could tell the service was
+        # gone. Report the real cause; the remedy is one command.
+        print(f"⚠ {what} failed (exit {exc.returncode}): {label} is DISABLED in launchd's override database.")
+        print(f"  Re-enable it with: launchctl enable {_gw()._launchd_domain()}/{label}")
+        print("  Not switching to the detached fallback — this host manages the job.")
         raise exc
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
@@ -891,6 +938,9 @@ def launchd_status(deep: bool = False):
     if not service_listed:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
+        if _gw()._launchctl_label_disabled(label):
+            print("  ⚠ The label is DISABLED in launchd's override database — bootstrap will fail")
+            print(f"  with EIO 5. Re-enable it with: launchctl enable {_gw()._launchd_domain()}/{label}")
         print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")

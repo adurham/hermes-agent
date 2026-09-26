@@ -150,6 +150,13 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     the orphan reaper passes all_profiles=True for the same friendly-fire reason. The systemd branch mirrors
     this: default scope filters to the current profile's exact unit name; ``all_profiles=True`` widens to
     the ``hermes-gateway*`` fleet glob.
+
+    The result also carries every live DESCENDANT of a service PID: a launchd job runs
+    osascript → stderr_timestamp → gateway, and only the top PID is "the service". Every child's argv
+    matches the gateway scan on its own, so an exclusion set holding just the top PID let the update
+    sweep classify the live gateway as a manual process and SIGTERM it right after its supervised
+    restart — a mere extra restart where something revives it, and the total-outage class where
+    nothing does (the detached fallback has no supervisor).
     """
     pids: set = set()
 
@@ -223,7 +230,48 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
+    # Exclusion sets must cover the whole supervised tree, not just the job's top PID (see docstring).
+    pids |= _service_descendant_pids(pids)
+
     return pids
+
+
+def _service_descendant_pids(roots: set[int]) -> set[int]:
+    """Live descendants of ``roots`` (POSIX, best-effort; empty set on any failure or on Windows).
+
+    A launchd job's recorded PID is the osascript wrapper; the stderr_timestamp wrapper and the real
+    gateway are its descendants, and their argv matches the gateway scan on its own. Without this walk
+    an update's stale-process sweep saw the live gateway as an unsupervised "manual" process and
+    SIGTERM'd it (live repro 2026-09-26: service_pids={osascript}, manual_pids={stderr_timestamp,
+    gateway}). One ``ps`` call, the same source the process scan already uses; a miss only restores
+    the old over-broad exclusion, never widens a kill set.
+    """
+    if not roots or is_windows():
+        return set()
+    try:
+        result = subprocess.run(["ps", "-Aww", "-o", "pid=,ppid="], timeout=10, **_CAPTURE_TEXT)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    children: dict[int, list[int]] = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        children.setdefault(ppid, []).append(pid)
+    descendants: set[int] = set()
+    stack = list(roots)
+    while stack:
+        for child in children.get(stack.pop(), ()):
+            if child not in descendants and child not in roots:
+                descendants.add(child)
+                stack.append(child)
+    return descendants
 
 
 def _get_parent_pid(pid: int) -> int | None:
@@ -3622,6 +3670,7 @@ from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-export
     _launchd_reload_budget,
     _launchctl_supervised_pid,
     _launchctl_label_supervising_process,
+    _launchctl_label_disabled,
     _retry_launchctl_bootstrap_until_registered,
     _launchd_unsupported_marker_path,
     _write_launchd_unsupported_marker,

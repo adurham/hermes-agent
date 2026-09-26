@@ -842,6 +842,7 @@ class TestLaunchdUnsupportedFallbackPolicy:
         monkeypatch.setattr(
             gateway_cli, "_launchctl_label_supervising_process", lambda label: True
         )
+        monkeypatch.setattr(gateway_cli, "_launchctl_label_disabled", lambda label: False)
         marker_writes, spawned = self._spy_fallback(monkeypatch)
 
         with pytest.raises(subprocess.CalledProcessError):
@@ -857,12 +858,107 @@ class TestLaunchdUnsupportedFallbackPolicy:
         monkeypatch.setattr(
             gateway_cli, "_launchctl_label_supervising_process", lambda label: False
         )
+        monkeypatch.setattr(gateway_cli, "_launchctl_label_disabled", lambda label: False)
         marker_writes, spawned = self._spy_fallback(monkeypatch)
 
         gateway_cli._launchd_degrade_or_raise(exc, "launchctl kickstart")
 
         assert marker_writes == ["marker"]
         assert spawned == ["detached"]
+
+
+class TestLaunchdDisabledLabelPolicy:
+    """A disabled override answers EIO-5 on a domain that manages jobs fine — never degrade on it.
+
+    Live root cause (2026-09-26): the ``ai.hermes.gateway`` label sat disabled in launchd's
+    per-user override database. ``launchctl bootstrap`` answered ``5: Input/output error`` —
+    byte-identical to the unmanageable-domain signature — so every install/update degraded: a
+    permanent "launchd cannot manage the gateway on this macOS version" marker, a detached gateway
+    the same update's manual sweep then stopped, and no gateway at all for days. Probe evidence on
+    the affected host: same plist, enable -> bootstrap rc=0; disable -> rc=5; re-enable -> rc=0.
+    """
+
+    def test_print_disabled_parsing(self, monkeypatch):
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["launchctl", "print-disabled"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='\t\t"ai.hermes.gateway" => disabled\n\t\t"com.example.other" => enabled\n',
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+
+        assert gateway_cli._launchctl_label_disabled("ai.hermes.gateway") is True
+        assert gateway_cli._launchctl_label_disabled("com.example.other") is False
+        assert gateway_cli._launchctl_label_disabled("com.example.absent") is False
+
+    def test_disabled_label_refuses_detached_fallback(self, monkeypatch):
+        exc = subprocess.CalledProcessError(
+            5, ["launchctl", "bootstrap"], stderr="Bootstrap failed: 5: Input/output error"
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "_launchctl_label_supervising_process", lambda label: False)
+        monkeypatch.setattr(gateway_cli, "_launchctl_label_disabled", lambda label: True)
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        marker_writes, spawned = [], []
+        monkeypatch.setattr(
+            gateway_cli, "_write_launchd_unsupported_marker", lambda: marker_writes.append("marker")
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append("detached") or True
+        )
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli._launchd_degrade_or_raise(exc, "launchctl bootstrap")
+
+        assert marker_writes == [], "a disabled label must not brand the host unsupported"
+        assert spawned == [], "no detached gateway beside a domain that manages the job"
+
+
+class TestServicePidsIncludeDescendants:
+    """The service-PID exclusion must cover the whole supervised tree, not just the top PID.
+
+    A launchd job runs osascript -> stderr_timestamp -> gateway (launchd_program_arguments). Only
+    the osascript PID is "the service"; the two children match the gateway scan on their own, so an
+    exclusion set holding just the top PID let the update sweep SIGTERM the live gateway right after
+    its supervised restart (live repro: service_pids={osascript}, manual={both children}).
+    """
+
+    def test_descendant_walk_includes_grandchildren_only(self, monkeypatch):
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["ps", "-Aww"]:
+                return SimpleNamespace(
+                    returncode=0, stdout="100 1\n101 100\n102 101\n200 1\n", stderr=""
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+
+        assert gateway_cli._service_descendant_pids({100}) == {101, 102}
+        assert gateway_cli._service_descendant_pids(set()) == set()
+
+    def test_get_service_pids_unions_descendants(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli, "_locate_launchd_gateway_service", lambda label: ("gui/501", 100)
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            if cmd[:2] == ["ps", "-Aww"]:
+                return SimpleNamespace(returncode=0, stdout="100 1\n101 100\n102 101\n", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {100, 101, 102}
+
 
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
