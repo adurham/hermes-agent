@@ -3,6 +3,7 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+<<<<<<< HEAD
 ### Post-de-fork repair — 2026-09-26 (`/effort` on every surface; 5 merge-dropped wirings; CI red → green)
 
 **Why:** after the v2026.9.24 sync + de-fork slices A–C, `main` CI was red (6 Python shards + JS) and
@@ -39,6 +40,92 @@ CI's extras: `uv sync --locked --extra all --extra dev --extra anthropic --extra
 --extra modal --extra daytona --extra parallel-web --extra bedrock` (uv ≥ 0.12 — 0.8 can't parse uv.lock).
 
 ---
+=======
+### Fork-only fixes — 2026-09-25/26 (memory stack: 5 commits, one root-cause thread)
+
+All five landed the same session and are one investigation: a warning
+(`HRR storage near capacity: SNR=…`) that turned out to be the *symptom* of a memory
+stack whose vector retrieval had never worked. Deployed and verified on all three
+machines (personal MacBook, `work-macbook-m4`, `hermes-gw-01`).
+
+**`850a2faf97` — role-bind the `search()` query vector.** `encode_fact` stores a fact's
+content signal role-bound as `bind(content, ROLE_CONTENT)`; `search()` compared a raw
+`encode_text(query)` against that vector, i.e. across roles. Measured on the real
+2,283-fact store: the source fact of its own 8-word query ranked median **1293** of 2283
+(chance ≈ 1141; a random-word control also landed ~1212), i.e. the weighted HRR term
+(30% of the rerank score) was scoring noise and could float unrelated facts above the
+true match. With the query bound identically: median rank **3**. This is a fork-only
+divergence from upstream — the same unbound comparison is live upstream
+(`plugins/memory/holographic/retrieval.py`, introduced by upstream's own 2026-09-02
+refactor `002ace8602`, which only renamed the expression, not the semantics).
+
+**`9b4daf78cd` — `memory.auto_feedback` was dead code.** `tools/memory_auto_feedback/audit.py`
+read its config via `from hermes_cli.config_io import get_config` — **a module that does not
+exist** in this tree or upstream's. The import raised, a bare `except Exception` swallowed
+it, `cfg` fell back to `{}`, and `enabled` was therefore permanently `False`: the whole
+auto-feedback layer was inert no matter what `memory.auto_feedback` said. Every one of its
+32 tests patches `_get_config`, so the real reader was never exercised — green tests over a
+feature that could not run. Switched to `hermes_cli.config.load_config`, the reader the
+sibling fork modules use (`memory_extraction/extractor.py`, `hot_tier_audit.py`,
+`fork/tool_search_lazy.py`). Regression test reads through the real reader from a
+`config.yaml` on disk.
+
+**`4e472ff38d` — credit provider prefetch through the warm tier's accounting.** With
+`memory.provider: holographic` set, the fork's mutual-exclusion guard withdraws the warm
+tier's model-facing recall, so the provider's `prefetch()` IS the recall surface for that
+machine — and it called `retriever.search()` directly, skipping `WarmStore._after_recall()`.
+Nothing was ever credited: `retrieval_count` froze at whatever it was when the provider was
+enabled, and auto-feedback had no recall window to match citations against, so trust scores
+could never move. Prefetch now routes its rows through `_after_recall()` (the same
+bookkeeping the warm tier's own recall does), so both tiers keep identical accounting.
+Volume note: prefetch runs per non-trivial turn, so this credits up to 5 facts/turn — the
+intended semantics (those facts WERE handed to the model), and `max_facts_per_session` (200)
+is sized for it; only a later citation moves trust, so prefetch alone cannot inflate it.
+
+**`445ae4c2c6` — `probe()`/`reason()` use the exact `fact_entities` links.** Both were built
+on `unbind(fact, bind(entity, ROLE_ENTITY))` and both measured at chance against ground
+truth: probe p@k **0.000** and reason p@k **0.000** (25 entities / 14 pairs) against a
+0.003 random baseline. Dropping the category-bank shortcut (the obvious first guess) would
+NOT have helped — the per-fact path is equally at chance.
+
+Root cause is the **encoding, not the bank**: `bundle()` is a circular *mean*
+(`np.angle` of summed unit phasors), so each of K terms is attenuated to ~1/√K and phase
+subtraction does not isolate one of them. Decisive test: a fact cannot recover its **own**
+content vector via `unbind` (sim −0.027 self vs −0.010 cross — separation is *negative*,
+i.e. worse than nothing). A primitive that cannot invert itself cannot support anything
+built on it, which is why bank size never mattered. `related()` is unaffected and still
+works (p@k **0.961**): subtracting the bare entity phase leaves a *role-shaped* residual,
+and comparing against the role atoms is the one thing phase arithmetic does deliver.
+
+The relations the vector path was approximating are already stored exactly —
+`fact_entities`. `probe()`/`reason()` now read them (one `EXISTS` per name,
+case-insensitive with alias fallback, trust-ordered), falling back to FTS5 for a term never
+extracted as an entity, preserving the old contract. **Fixed during testing:** an
+intersection of entity-ID sets is empty by construction for two genuinely different
+entities, so every multi-entity `reason()` would have silently degraded to a keyword
+fallback. Measured after: probe p@k **1.000**, reason p@k **1.000**.
+
+**`ac5a855ce0` — drop the category `memory_banks`.** Dead weight once `probe()`/`reason()`
+moved to the exact joins: nothing read it, but every `add_fact`/`update_fact`/`remove_fact`
+rebuilt a category's bank over ALL its facts — O(category size) vector math per write, up
+to 457 facts on the real store, 40–89 banks per write. It was also the source of the SNR
+warnings that started this thread: a bank past ~√dim facts is past the point where bundling
+is meaningful, which is why the big categories warned and the small ones didn't. Removed the
+table definition, `_rebuild_bank()`, its three call sites, and the bank half of two
+vector-storage tests (the fact-vector assertions they also carried are kept — that was the
+real coverage). `snr_estimate()` stays in `holographic.py` as a library function with no
+in-tree caller. The write-lock regression test used `_rebuild_bank` as its failure injector;
+retargeted to `_compute_hrr_vector`, now the last step of `add_fact` — the property it pins
+(a raise mid-method must not leave the write lock pinned) is unchanged and still verified.
+Existing DBs keep a stale `memory_banks` table; nothing reads it.
+
+**Standing conclusion for future audits:** do not "restore" the pre-`445ae4c2c6`
+`probe`/`reason` vector paths, and do not treat a `memory_banks` SNR warning as actionable —
+the bank is gone by design. If HRR compositional queries are ever wanted for real, the
+encoding needs replacing (an invertible binding, e.g. a proper circular-convolution variant
+with unit-magnitude components) and all stored vectors re-encoded; the backfill pattern for
+that is the one-shot pass over `facts.hrr_vector` used on 2026-09-25.
+>>>>>>> origin/main
 
 ### Fork-only retirement — 2026-09-25 (Slice C: Anthropic server-tool cluster removed)
 
