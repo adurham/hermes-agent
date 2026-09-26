@@ -149,6 +149,14 @@ def prepare_iteration(
     # standalone user row after the newest tool result (never smeared onto the tool row: that
     # row is already persisted append-only, so replay would diverge from the live request and
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
+    # FORK: feed pending cross-session messages into the steer queue FIRST, or they wait a
+    # whole extra tool batch.
+    try:
+        from tools.cross_session_integration import drain_into_pending_steer
+
+        drain_into_pending_steer(agent)
+    except Exception:
+        logger.debug("cross-session mid-turn drain failed", exc_info=True)
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
         _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
