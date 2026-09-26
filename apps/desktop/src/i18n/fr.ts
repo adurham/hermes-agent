@@ -2057,6 +2057,8 @@ export const frOverrides = {
       provider: 'Fournisseur',
       model: 'Modèle',
       applying: 'Application...',
+      mainAppliedTitle: 'Modèle principal mis à jour',
+      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
