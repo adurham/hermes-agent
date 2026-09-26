@@ -3,6 +3,44 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Dead-login visibility — 2026-09-26 (`/model` switch warning; the fallback banner's label)
+
+**Why:** the DirectSDK provider's Claude Code login died mid-session and every turn failed into the
+fallback provider with the banner `⚠️ Model fallback: claude-sonnet-5[1m] via
+claude-subscription-directsdk-experimental unavailable (provider failure); using
+deepseek-v4.1-flash via ollama-cloud.` Two defects kept the cause invisible:
+
+1. **A local-CLI auth failure classified as `unknown`.** Core's pattern tables are HTTP-shaped and
+   carry no phrase for "the spawned CLI has no credential", so `ClaudeCodeLoggedOut` fell through
+   to the catch-all: the label read `provider failure` (naming neither cause nor fix) and, because
+   `unknown` is retryable, every call burned the full retry budget before the fallback ran. Fixed
+   in the provider where the knowledge lives — `claude-subscription-directsdk-experimental`
+   now passes `classify_api_error=classify_native_error` to its `ProviderProfile`
+   (`agent/error_classifier._profile_verdict` consults it before the built-in pipeline) →
+   `auth_permanent`, non-retryable, fallback. The transient sibling
+   (`another Claude Code process is refreshing it`) deliberately stays retryable.
+   `ProviderProfile.classify_api_error` is a **dataclass field**, so the hook must be passed at
+   construction — a subclass *method* of that name is shadowed by the field's `None` default
+   (cost one red test run to learn).
+2. **The `/model` switch accepted a dead login.** `auth._external_process_auth_evidence` can only
+   prove the *binary resolves* (spawning the CLI from status/picker paths was rejected to avoid a
+   cold-start stall), so the switch saved and the failure surfaced one request later, far from the
+   action that caused it. `model_switch._external_process_login_warning` now reads the profile's
+   own `setup_status()` on the switch path and appends its `detail` to `warning_message` — a
+   WARNING, not a refusal (the answer can go stale the instant it returns, and a mid-session death
+   is also possible), so `hermes model`'s existing pre-write login gate keeps its stricter
+   behavior while the mid-session switch gains the visibility.
+
+**Operational note (this machine):** macOS Claude Code 2.1.283 authenticates from the **Keychain
+only** — a config-dir `.credentials.json` with valid tokens is ignored (verified: a fresh
+`CLAUDE_CONFIG_DIR` containing a byte-copy of a valid credentials file still reports
+`loggedIn: false`, and `~/.claude/.credentials.json`'s tokens are stale-refreshed Sep 23). The
+Keychain's `Claude Code-credentials` slot holds an empty-token husk whose refresh window closed
+2026-08-01 — which is what "OAuth session expired and could not be refreshed" actually means here.
+The working credential is the `claude-setup-token` item, wired into `~/.hermes/.env` as
+`CLAUDE_CODE_OAUTH_TOKEN` (and `claude` itself falls back to it in-process, which is why an
+interactive session still works).
+
 ### Post-de-fork repair — 2026-09-26 (`/effort` on every surface; 5 merge-dropped wirings; CI red → green)
 
 **Why:** after the v2026.9.24 sync + de-fork slices A–C, `main` CI was red (6 Python shards + JS) and
