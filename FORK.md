@@ -18663,3 +18663,61 @@ unaffected by the new parameter's default. No production call site passes
 `claude` process the way the third-party DirectSDK plugin does — so this
 change is additive infrastructure for that plugin (and future ones like
 it) to adopt, not a change in this repo's own runtime behavior today.
+
+### Fork-only fix — 2026-09-25 (`/reasoning` + `/effort` interactive picker: restore the merge-dropped UI wiring)
+
+**Problem:** bare `/reasoning` (and the newer `/effort` alias) set
+`_reasoning_picker_state` and then painted nothing, while the app's input filter
+(`_normal_input`) *did* exclude that state — so the composer was locked behind an
+invisible modal. The picker's state machine, render helper, and Enter handler all
+survived; the UI wiring did not. `git show <tag>:cli.py | grep -c
+"_get_reasoning_picker_display"` is `2` at `ff9726437d`/`a4c788a9a9` and `0` from
+`v2026.7.20` onward — the widget construction, its placement in
+`_build_tui_layout_children`, the up/down/escape keybindings, the Enter branch in
+the overlay dispatcher, and the Ctrl+C/Ctrl+Q closers were all dropped in the
+2026-07-21 upstream sync and stayed dropped through every later sync.
+
+**Fix (wiring):** re-added on the mixin that owns the layout now
+(`hermes_cli/cli_tui_mixin.py`):
+- `_get_reasoning_picker_display_fragments` — renders through the same
+  `_render_scroll_list_panel` the model picker and command palette use, so the
+  picker inherits the shared viewport/wrap/chrome behaviour instead of the original
+  commit's hand-rolled panel (which referenced helpers that no longer exist).
+- `_tui_reasoning_picker_{up,down,escape}` + the three `kb.add(...)` bindings.
+  Enter is deliberately NOT bound: submission goes through `_tui_enter_overlay`,
+  exactly like the model picker.
+- `reasoning_picker_widget` built in `_tui_build_layout` and passed into
+  `_build_tui_layout_children` (a parameter that had survived the whole time with
+  nothing to fill it).
+- `_reasoning_picker_state` added to both `_tui_cancel_foreground_ui` closer lists
+  (Ctrl+C / Ctrl+Q) so the picker can always be dismissed.
+
+**Fix (apply semantics):** `_apply_reasoning_arg` gained
+`persist_global: bool = False`. The original helper wrote
+`agent.reasoning_effort` (the GLOBAL default) unconditionally on every picker
+selection; upstream has since made the same command's typed form
+session-scoped-with-`--global` (#86414), and the picker has no scope affordance, so
+restoring that write verbatim would have made one command carry two persistence
+policies. The per-model map write (`agent.reasoning_effort_by_model`) is
+deliberately NOT gated: it is this fork's isolation feature, this helper is its
+only writer, and the map's reader (`_apply_reasoning_for_new_model`) runs on every
+model switch — gating it would leave the documented feature write-dead. The
+confirmation line now names the scope it actually used
+(`session; default for <model>`).
+
+**Files:** `cli.py` (handler docstring, `_apply_reasoning_arg`),
+`hermes_cli/cli_tui_mixin.py` (fragments fn, nav handlers, keybindings, Enter
+branch, widget construction/placement, Ctrl+C/Ctrl+Q closers),
+`tests/hermes_cli/test_reasoning_picker.py` (new).
+
+**Verification:** 24 new tests in `tests/hermes_cli/test_reasoning_picker.py`.
+Fail-first proven against a pristine `git archive HEAD` export of the PRE-fix tree:
+11 failed / 13 passed there, 24/24 pass after. The wiring class is pinned by
+source-level invariants (a behavioural test cannot observe "the widget is placed in
+the layout" without a live prompt_toolkit app) and the behaviour class by driving
+the real handlers. Two standalone probes drove the real layout assembly and the real
+`KeyBindings` registry: the widget lands immediately after the model picker and its
+filter tracks the state; the registry resolves Up/Down/Escape to the picker
+handlers while open and to none of them while closed; Escape is eager. Existing
+`test_reasoning_command.py` / `test_reasoning_full_command.py` / layout-hook suites
+unaffected.
