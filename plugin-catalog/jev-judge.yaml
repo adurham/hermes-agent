@@ -10,7 +10,10 @@ description: TypeSafe Jev as a judgment layer — a pre-tool gate (shadow by def
   no redirects, proxy env ignored, payload capped; works with TYPESAFE_API_KEY,
   OPENROUTER_API_KEY, or AI_GATEWAY_API_KEY. Disclosure — each judged call sends the tool name
   and its redacted arguments (≤600 chars each, ≤12 args) to TypeSafe, OpenRouter, or your
-  configured gateway, using your key; shadow mode only logs.
+  configured gateway, using your key; shadow mode only logs. With the default backend auto,
+  OPENROUTER_API_KEY is used automatically whenever it is present and TYPESAFE_API_KEY is not,
+  so tool names and redacted arguments go to openrouter.ai on your main-model OpenRouter key
+  unless backend is set to typesafe or gateway.
 maintainer: DoGMaTiiC
 tier: community
 category: tools
