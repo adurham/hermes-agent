@@ -55,7 +55,10 @@ class FactRetriever:
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
         query_tokens = self._tokenize(query)
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
-        # so stores whose hrr_vector was never backfilled don't pay for it.
+        # so stores whose hrr_vector was never backfilled don't pay for it. encode_fact stores the content
+        # signal role-bound as bind(content, ROLE_CONTENT), so the query must be role-bound identically
+        # before comparison — a raw encode_text(query) against a fact vector is comparing across roles and
+        # scores as noise (measured: median rank ~N/2 on the user's own store; role-bound: rank 3).
         query_vec = None
         for fact in candidates:
             jaccard = self._jaccard_similarity(query_tokens, self._tokenize(fact["content"]) | self._tokenize(fact.get("tags", "")))
@@ -63,7 +66,7 @@ class FactRetriever:
             if self.hrr_weight > 0 and fact.get("hrr_vector"):
                 fact_vec = self._phases(fact["hrr_vector"])
                 if query_vec is None:
-                    query_vec = hrr.encode_text(query, self.hrr_dim)
+                    query_vec = hrr.bind(hrr.encode_text(query, self.hrr_dim), self._atom(_ROLE_CONTENT))
                 hrr_sim = _shift(hrr.similarity(query_vec, fact_vec))
             relevance = self.fts_weight * fact.get("fts_rank", 0.0) + self.jaccard_weight * jaccard + self.hrr_weight * hrr_sim
             fact["score"] = relevance * fact["trust_score"]
