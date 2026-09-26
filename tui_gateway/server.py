@@ -2578,10 +2578,9 @@ def _open_tool_call_snapshot(session: dict) -> dict | None:
     """Most-recently-started tool call that hasn't completed yet, if any.
 
     FORK-ONLY. Surfaced alongside the inflight-turn projection so a reconnect/resume/session-switch
-    that lands mid-tool-call renders its pending row instead of a bare "thinking" bubble. Upstream
-    v2026.9.14 moved _inflight_snapshot into tui_gateway/session_history.py without this hook; the
-    helper stays here (method_ctx.bind_module rebinds split-module functions against THIS namespace,
-    so session_history can call it bare once rewired).
+    that lands mid-tool-call renders its pending row instead of a bare "thinking" bubble. Called bare
+    from session_auto_continue._inflight_snapshot (method_ctx.bind_module rebinds it against THIS
+    namespace); open_tool_calls is maintained by tool_progress._on_tool_start/_on_tool_complete.
     """
     open_calls = session.get("open_tool_calls")
     if not isinstance(open_calls, dict) or not open_calls:
@@ -3235,9 +3234,8 @@ def _notification_event_should_hold_for_liveness(evt: dict) -> bool:
     otherwise positively match and consume it immediately). Bounded by the SAME max-hold as
     drain_notifications and stamps the SAME hold key. Scoped to "completion" ONLY.
 
-    Upstream v2026.9.14 moved the notification poller into tui_gateway/session_notifications.py,
-    which has no equivalent gate; this helper stays here (method_ctx.bind_module rebinds split-module
-    functions against THIS namespace, so session_notifications can call it bare once rewired).
+    Called bare from session_notifications._notification_poller_scoped_loop's live loop
+    (method_ctx.bind_module rebinds it against THIS namespace).
     """
     from tools.process_registry import should_hold_completion_event
 

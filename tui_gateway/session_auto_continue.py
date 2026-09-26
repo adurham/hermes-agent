@@ -353,6 +353,10 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
+    # FORK: the open tool call, so a reconnect/resume mid-tool-call shows the running tool instead of a bare
+    # "thinking" bubble (_open_tool_call_snapshot). The turn's start time rides upstream's turn_started_at.
+    if (open_tool := _open_tool_call_snapshot(session)) is not None:
+        snapshot["tool"] = open_tool
     if isinstance(display_kind := turn.get("display_kind"), str) and display_kind:
         snapshot["display_kind"] = display_kind
     if isinstance(display_metadata := turn.get("display_metadata"), dict):

@@ -704,10 +704,6 @@ export interface SessionResumeResult {
   hydrating?: boolean
   inflight?: null | {
     assistant?: string
-    /** Epoch seconds the in-flight turn actually started (backend clock), so a
-     *  resume/reconnect can restore the live "thinking" timer instead of
-     *  restarting it from the moment of the switch. */
-    started_at?: number
     /** Mid-turn redirect corrections, oldest first. The turn's original prompt
      *  stays in `user`; these are the follow-ups typed while it ran. */
     corrections?: string[]

@@ -26,6 +26,15 @@ class OpenRequestEntry(Result):
     params: dict[str, JsonValue]
 
 
+class InflightTool(Result):
+    """FORK: ``server._open_tool_call_snapshot`` — the tool call still running when a client resumes mid-turn."""
+
+    args: dict[str, JsonValue]
+    name: str
+    tool_call_id: str
+    started_at: float | None = None
+
+
 class InflightTurn(Result):
     """``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting
     client rebuilds its bubbles from."""
@@ -33,6 +42,8 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    # FORK: the tool call still open when a client resumes/reconnects mid-turn.
+    tool: InflightTool | None = None
     display_kind: str | None = None
     display_metadata: dict[str, JsonValue] | None = None
     corrections: list[str] | None = None
