@@ -2503,17 +2503,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return self._expand_slash_prefix(cmd_original, cmd_lower, skill_commands, skill_bundles)
         return True
 
-    def _handle_effort_command(self, cmd_original: str) -> None:
-        """FORK: ``/effort`` is an alias for ``/reasoning`` (Claude Code parity).
-
-        Upstream's ``_SLASH_DISPATCH`` has no ``effort`` entry and the naming-convention
-        fallback in ``_slash_handler`` looks for exactly this method name, so the alias
-        has to exist as a real handler. Rewrites the verb so the /reasoning parser sees
-        the form it expects: bare ``/effort`` opens the interactive picker, ``/effort <level>``
-        applies the level, both through the same handlers the canonical verb uses.
-        """
-        self._handle_reasoning_command(cmd_original.replace("/effort", "/reasoning", 1))
-
     def _run_quick_command(self, base_cmd: str, qcmd: dict, user_args: str) -> bool:
         """User-defined quick command (config.yaml): ``exec`` runs a shell snippet, ``alias`` re-dispatches."""
         qtype = qcmd.get("type")

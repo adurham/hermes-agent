@@ -114,6 +114,34 @@ class TestReasoningCommand:
         }
 
 
+    @pytest.mark.asyncio
+    async def test_effort_alias_dispatches_to_reasoning_handler(self, tmp_path, monkeypatch):
+        """``/effort <level>`` (Claude Code parity) canonicalizes to /reasoning and sets the
+        session effort instead of falling through to the agent as plain text."""
+        from hermes_cli.commands import resolve_command
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event("/effort xhigh")
+        session_key = runner._session_key_for_source(event.source)
+        canonical = resolve_command(event.get_command()).name
+
+        handled, _ = await runner._hm_dispatch_canonical_command(
+            event, event.source, session_key, canonical
+        )
+
+        assert handled
+        assert runner._session_reasoning_overrides[session_key] == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
     def test_resolve_session_reasoning_prefers_session_override(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()

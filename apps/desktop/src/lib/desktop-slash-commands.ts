@@ -193,6 +193,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   {
     name: '/reasoning',
     description: 'Reasoning effort or display [<level> [--global]|show|hide|full|clamp]',
+    aliases: ['/effort'],
     surface: action('reasoning'),
     argumentMode: 'options'
   },
