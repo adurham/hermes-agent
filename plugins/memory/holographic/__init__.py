@@ -167,6 +167,18 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
         try:
             results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
+            # FORK: prefetch is the provider's model-facing recall — the exact surface the
+            # mutual-exclusion guard withdraws from the warm tier. Without this, a fact the
+            # model actually used here is never credited: auto-feedback gets no recall to
+            # match against, and retrieval_count stays frozen at whatever it was before the
+            # provider was enabled. Route the rows through the warm tier's own accounting so
+            # both tiers keep identical bookkeeping. Best-effort — never break prefetch.
+            try:
+                from tools.memory_warm import get_warm_store
+
+                get_warm_store()._after_recall(results)
+            except Exception as e:  # noqa: BLE001 — accounting must never break recall
+                logger.debug("prefetch recall accounting failed: %s", e)
             lines = [f"- [{r.get('trust_score', r.get('trust', 0)):.1f}] {r.get('content', '')}" for r in results]
             return "## Holographic Memory\n" + "\n".join(lines) if results else ""
         except Exception as e:
