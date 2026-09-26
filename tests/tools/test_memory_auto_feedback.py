@@ -499,3 +499,28 @@ class TestWarmStoreHook:
 
         snap = maf._snapshot_window("sid-related")
         assert len(snap) >= 1
+
+
+def test_get_config_reads_the_real_config_file(isolated_hermes_home):
+    """_get_config() must resolve memory.auto_feedback from config.yaml itself.
+
+    Regression: the reader imported ``hermes_cli.config_io``, a module that does
+    not exist, so the import raised, the except swallowed it, and _get_config()
+    returned the disabled default — auto_feedback was dead code on every machine
+    no matter what the config said. Every other test patches _get_config, so
+    none of them could see it.
+    """
+    import yaml
+    from tools.memory_auto_feedback import audit as A
+
+    cfg_path = isolated_hermes_home / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({
+        "memory": {"auto_feedback": True, "recall_window_turns": 7,
+                   "min_fingerprint_words": 5, "max_facts_per_session": 42},
+    }))
+
+    got = A._get_config()
+    assert got["enabled"] is True, got
+    assert got["recall_window_turns"] == 7, got
+    assert got["min_fingerprint_words"] == 5, got
+    assert got["max_facts_per_session"] == 42, got
