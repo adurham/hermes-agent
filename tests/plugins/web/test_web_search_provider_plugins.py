@@ -18,6 +18,8 @@ glue layer simultaneously.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
@@ -66,38 +68,20 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All bundled web plugins discover and register correctly.
-
-    Seven providers ship from upstream (brave-free / ddgs / searxng / exa /
-    parallel / tavily / firecrawl); the fork adds ``claude-code`` (delegates
-    to the Claude Code CLI's WebSearch/WebFetch tools), ``xai`` (Grok's
-    agentic web_search), and ``trafilatura`` (free, no-key, no-account
-    extract-only backend via direct httpx fetch + the trafilatura content
-    extraction library — closes the gap for non-Anthropic providers that
-    have a free search backend but no free extract backend, since
-    brave-free/ddgs/searxng are all search-only).
-    """
+    """All bundled web plugins discover and register correctly."""
 
     def test_all_bundled_plugins_present_in_registry(self) -> None:
+        """Every bundled ``plugins/web/<name>/`` package registers exactly the provider named
+        after its directory — a contract between the tree and the registry, not a snapshot."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
-        names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "claude-code",
-            "ddgs",
-            "exa",
-            "firecrawl",
-            "keenable",
-            "openai-native",
-            "parallel",
-            "perplexity",
-            "searxng",
-            "tavily",
-            "trafilatura",
-            "xai",
-        ]
+        web_dir = Path(__file__).resolve().parents[3] / "plugins" / "web"
+        bundled = sorted(
+            d.name.replace("_", "-") for d in web_dir.iterdir() if (d / "__init__.py").is_file()
+        )
+        assert bundled
+        assert sorted(p.name for p in list_providers()) == bundled
 
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract",

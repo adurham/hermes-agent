@@ -189,7 +189,6 @@ class TestTavilyExtract:
         """Tavily failed_results map to per-URL error entries, not raises."""
         docs = _normalize_tavily_documents(
             {"results": [], "failed_results": [{"url": "https://x", "error": "blocked"}]},
-            fallback_url="",
         )
         assert len(docs) == 1
         assert docs[0]["url"] == "https://x"
