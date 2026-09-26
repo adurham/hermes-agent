@@ -77,7 +77,6 @@ import {
 } from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
-import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
   AGENTS_ROUTE,

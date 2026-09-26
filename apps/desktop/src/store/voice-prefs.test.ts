@@ -16,18 +16,19 @@ import {
   applyVoiceStopPhraseFromConfig
 } from './voice-prefs'
 
+// Spy where setItem actually lives: vitest.setup's fallback Storage (Node 26) owns it, while jsdom's Storage
+// (Node < 25) serves it from the prototype — and its named-property access turns an instance spy into a no-op.
+function setItemOwner(): Storage {
+  return Object.hasOwn(localStorage, 'setItem') ? localStorage : (Object.getPrototypeOf(localStorage) as Storage)
+}
+
 it('keeps the desktop toggle local across config refreshes', async () => {
   for (const fails of [false, true]) {
     for (const enabled of [false, true]) {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      // jsdom's Storage implements named-property access (localStorage.foo = 'x'
-      // both reads and writes a storage entry, per the WebIDL spec), so spying on
-      // the localStorage INSTANCE silently creates/writes a same-named own
-      // property instead of shadowing the prototype method callers actually
-      // invoke — the mock never intercepts anything. Spy on Storage.prototype.
-      const write = vi.spyOn(Storage.prototype, 'setItem')
+      const write = vi.spyOn(setItemOwner(), 'setItem')
 
       if (fails) {
         write.mockImplementation(() => {
@@ -56,10 +57,7 @@ it('migrates the legacy preference once, not on every refresh', async () => {
       localStorage.clear()
       vi.resetModules()
       const prefs = await import('./voice-prefs')
-      // See the sibling test above for why this must be Storage.prototype, not
-      // the localStorage instance (jsdom named-property access shadows an
-      // instance-level spy so it never actually intercepts).
-      const write = vi.spyOn(Storage.prototype, 'setItem')
+      const write = vi.spyOn(setItemOwner(), 'setItem')
 
       if (fails) {
         write.mockImplementation(() => {
