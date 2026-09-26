@@ -40,9 +40,9 @@ def _get_config() -> Dict[str, Any]:
     Defaults: feature OFF. Opt-in via ``memory.auto_feedback: true``.
     """
     try:
-        from hermes_cli.config_io import get_config
+        from hermes_cli.config import load_config
 
-        cfg = get_config() or {}
+        cfg = load_config() or {}
     except Exception:
         cfg = {}
     mem = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
