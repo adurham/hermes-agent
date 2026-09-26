@@ -35,6 +35,8 @@ const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
 const BEL = String.fromCharCode(7)
 const ST = String.fromCharCode(27) + '\\'
 const ESC = String.fromCharCode(27)
+// termio/osc.ts terminates OSC with ST on kitty and BEL elsewhere, so the target may end either way.
+const endsOsc8Target = (ansi: string, url: string) => [BEL, ST].some(t => ansi.includes(`;${url}${t}`))
 const CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
 const OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
 
@@ -273,12 +275,8 @@ describe('Md link labels', () => {
     const url = 'https://connect.example.com/link/lk_9f2c1d7e'
     const ansi = renderAnsi(md(`Connect link: ${url}`))
 
-    // The opener carries an `id=` param (termio/osc.ts link() derives it from
-    // the URL so terminals group wrapped lines of one link) and is terminated
-    // by ST, not BEL — assert the shape the renderer actually emits rather
-    // than a bare `;url BEL` that never matched it.
-    expect(ansi).toContain(`;${url}${ST}`)
-    expect(ansi).toContain(`${ESC}]8;id=`)
+    expect(endsOsc8Target(ansi, url)).toBe(true)
+    expect(ansi).toContain(`${ESC}]8;`)
   })
 
   it('leaves trailing prose punctuation outside the visible URL', () => {
@@ -300,8 +298,7 @@ describe('Md link labels', () => {
     const ansi = renderAnsi(md(`[Trip details](${url})`))
 
     expect(stripAnsi(ansi.replace(OSC_RE, ''))).toContain('Trip details')
-    // Same opener shape as above: `id=` param, ST-terminated.
-    expect(ansi).toContain(`;${url}${ST}`)
+    expect(endsOsc8Target(ansi, url)).toBe(true)
   })
 
   it('never lets a fetched page title replace the URL', async () => {

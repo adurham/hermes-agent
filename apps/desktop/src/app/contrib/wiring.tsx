@@ -88,7 +88,6 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { requestForSessionProfile } from '@/store/session-request-router'
 import { goToSession } from '@/store/session-states'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'

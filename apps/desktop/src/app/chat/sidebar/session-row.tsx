@@ -32,7 +32,7 @@ import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
-import { $attentionSessionIds, $openStoredSessionIds, openSessionTile } from '@/store/session-states'
+import { $openStoredSessionIds, openSessionTile } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
