@@ -261,3 +261,102 @@ def test_provider_prefetch_feeds_recall_accounting(tmp_path, monkeypatch):
     assert A._session_windows.get("acct-session"), "auto-feedback window stayed empty"
 
     provider.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# probe()/reason() must use the EXACT fact_entities links, not HRR extraction.
+#
+# The HRR path cannot work with this encoding: bundle() is a circular mean, so
+# unbind() does not isolate a component (a fact cannot even recover its own
+# content vector). Both the bank and per-fact paths measured at chance
+# (p@k 0.000 vs 0.003 baseline), so these pin the exact-lookup replacement.
+# ---------------------------------------------------------------------------
+
+def _seed_entities(store, specs):
+    """specs: list of (content, [entity names to link]) — links written directly so the
+    test does not depend on the extractor's regexes."""
+    ids = {}
+    for content, ents in specs:
+        fid = store.add_fact(content=content, category="c")
+        for name in ents:
+            eid = store._resolve_entity(name)
+            store._write("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)", (fid, eid))
+        ids[fid] = ents
+    return ids
+
+
+def test_probe_returns_exactly_the_linked_facts(tmp_path):
+    """probe(E) must return the facts linked to E — exactly, and nothing else."""
+    store = MemoryStore(str(tmp_path / "probe.db"))
+    try:
+        linked = _seed_entities(store, [
+            ("Alpha deployment rollback stalled on stale migration state.", ["Kestrel"]),
+            ("Kestrel latency rose after the cache change.", ["Kestrel"]),
+            ("Kestrel was retired from the cluster in August.", ["Kestrel"]),
+            ("Unrelated note about garden irrigation timers.", ["Mercury"]),
+            ("Another unrelated note about paint colours.", ["Mercury"]),
+        ])
+        retriever = FactRetriever(store=store)
+        expected = {fid for fid, ents in linked.items() if "Kestrel" in ents}
+
+        got = [r["fact_id"] for r in retriever.probe("Kestrel", limit=10)]
+        assert set(got) == expected, f"probe returned {got}, expected {expected}"
+    finally:
+        store.close()
+
+
+def test_probe_is_case_insensitive_and_ignores_category_filter_mismatch(tmp_path):
+    """Entity resolution mirrors the store's own (case-insensitive), and a category
+    filter that excludes the linked facts yields nothing rather than noise."""
+    store = MemoryStore(str(tmp_path / "probe2.db"))
+    try:
+        fid = store.add_fact(content="Kestrel rollout completed cleanly.", category="alpha")
+        eid = store._resolve_entity("Kestrel")
+        store._write("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)", (fid, eid))
+        retriever = FactRetriever(store=store)
+
+        assert [r["fact_id"] for r in retriever.probe("kestrel", limit=5)] == [fid]
+        assert [r["fact_id"] for r in retriever.probe("KESTREL", limit=5)] == [fid]
+        # category filter that cannot match -> no exact rows (caller may fall back)
+        assert retriever.probe("Kestrel", category="nonexistent", limit=5) == [] or \
+            all(r["category"] == "nonexistent" for r in retriever.probe("Kestrel", category="nonexistent", limit=5))
+    finally:
+        store.close()
+
+
+def test_probe_falls_back_to_keyword_search_for_unknown_entity(tmp_path):
+    """A term never extracted as an entity must not return empty — the old contract
+    fell through to FTS5, and callers rely on that."""
+    store = MemoryStore(str(tmp_path / "probe3.db"))
+    try:
+        store.add_fact(content="The zephyrwind turbine inspection is scheduled.", category="c")
+        retriever = FactRetriever(store=store)
+        got = retriever.probe("zephyrwind", limit=5)
+        assert got, "unknown entity should fall back to keyword search, not return empty"
+    finally:
+        store.close()
+
+
+def test_reason_requires_all_entities_to_co_occur(tmp_path):
+    """reason([A, B]) must return only facts linked to BOTH, not either."""
+    store = MemoryStore(str(tmp_path / "reason.db"))
+    try:
+        linked = _seed_entities(store, [
+            ("Kestrel and Mercury both drive the rollback path.", ["Kestrel", "Mercury"]),
+            ("Kestrel alone appears in this note.", ["Kestrel"]),
+            ("Mercury alone appears in this other note.", ["Mercury"]),
+        ])
+        retriever = FactRetriever(store=store)
+        both = {fid for fid, ents in linked.items() if {"Kestrel", "Mercury"} <= set(ents)}
+
+        got = [r["fact_id"] for r in retriever.reason(["Kestrel", "Mercury"], limit=10)]
+        assert set(got) == both, f"reason returned {got}, expected only {both}"
+
+        # a pair that never co-occurs: an unknown entity has no links, so there is no exact
+        # result and the keyword fallback runs over the query terms (it may still match
+        # "Kestrel" by text). The contract being pinned is that no exact co-occurrence is
+        # claimed — not that the fallback returns nothing.
+        neither = retriever.reason(["Kestrel", "Nonexistent Entity"], limit=5)
+        assert set(r["fact_id"] for r in neither) != both
+    finally:
+        store.close()

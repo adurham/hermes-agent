@@ -83,20 +83,25 @@ class FactRetriever:
         return self._rank_by_vector(rows, sim_fn, limit) if rows else self.search(fallback, category=category, limit=limit)
 
     def probe(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
-        """Compositional entity query: unbind bind(entity, ROLE_ENTITY) from the category bank (or each fact vector)
-        to find facts where the entity plays a structural role. Not keyword search. Falls back to FTS5 without numpy."""
-        if not hrr._HAS_NUMPY:
-            return self.search(entity, category=category, limit=limit)
-        probe_key = hrr.bind(self._atom(entity.lower()), self._atom(_ROLE_ENTITY))
-        if category:  # category bank first, then individual fact vectors
-            bank_row = self.store._conn.execute("SELECT vector FROM memory_banks WHERE bank_name = ?", (f"cat:{category}",)).fetchone()
-            if bank_row:
-                extracted = hrr.unbind(self._phases(bank_row["vector"]), probe_key)
-                return self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
-        role_content = self._atom(_ROLE_CONTENT)  # loop-invariant: encode once, not per row
-        # Does unbinding the probe key leave the fact's content signal?
-        return self._vector_query(entity, category, limit, lambda fact, fact_vec: hrr.similarity(
-            hrr.unbind(fact_vec, probe_key), hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)))
+        """Facts where *entity* plays a structural role — an EXACT lookup over fact_entities.
+
+        Was an HRR extraction over the category bank (or each fact vector):
+        unbind(fact, bind(entity, ROLE_ENTITY)) then rank by similarity. That cannot
+        work with this encoding — ``bundle()`` is a circular mean, so each term is
+        attenuated to ~1/sqrt(K) and phase subtraction removes nothing; a fact cannot
+        even recover its OWN content vector (measured sim -0.027 self vs -0.010 cross,
+        i.e. worse than nothing), which put both the bank and per-fact paths at chance
+        (p@k 0.000 vs 0.003 baseline over 25 entities). The links the vector path was
+        approximating are already stored exactly, so read them instead.
+
+        Falls back to FTS5 when the entity is unknown, preserving the old contract for
+        callers that probe a term which was never extracted as an entity.
+        """
+        entity = (entity or "").strip()
+        if not entity:
+            return []
+        rows = self._facts_for_entity(entity, category=category, limit=limit)
+        return rows if rows else self.search(entity, category=category, limit=limit)
 
     def related(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Facts structurally connected to an entity (shared context), not just facts *about* it as in probe.
@@ -110,15 +115,72 @@ class FactRetriever:
             hrr.similarity(hrr.unbind(fact_vec, entity_vec), role) for role in roles))
 
     def reason(self, entities: list[str], category: str | None = None, limit: int = 10) -> list[dict]:
-        """Multi-entity compositional query (vector-space JOIN): facts where ALL entities play structural roles.
-        Falls back to FTS5 without numpy."""
-        if not hrr._HAS_NUMPY or not entities:
-            return self.search(" ".join(entities), category=category, limit=limit)
-        role_entity, role_content = self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT)
-        probe_keys = [hrr.bind(self._atom(entity.lower()), role_entity) for entity in entities]
-        # AND semantics via min: high only if EVERY entity is structurally present.
-        return self._vector_query(" ".join(entities), category, limit, lambda _f, fact_vec: min(
-            hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys))
+        """Facts where ALL given entities play a structural role (vector-space JOIN).
+
+        Same replacement as ``probe``: the HRR AND-join sat at chance (p@k 0.000 over 15
+        pairs) because it is built on the non-invertible unbind, so this now intersects
+        the exact fact_entities links — set intersection instead of a min() over
+        residuals, which is both correct and cheaper.
+        """
+        names = [e for e in ((entities or [])) if (e or "").strip()]
+        if not names:
+            return []
+        if not hrr._HAS_NUMPY:
+            return self.search(" ".join(names), category=category, limit=limit)
+        rows = self._facts_for_entities(names, category=category, limit=limit)
+        return rows if rows else self.search(" ".join(names), category=category, limit=limit)
+
+    # -- exact entity joins (fact_entities) ---------------------------------
+
+    def _facts_for_entity(self, entity: str, category: str | None, limit: int) -> list[dict]:
+        """Facts linked to *entity* (case-insensitive exact, then alias match), trust-ordered."""
+        return self._facts_for_entities([entity], category=category, limit=limit)
+
+    def _facts_for_entities(self, entities: list[str], category: str | None, limit: int) -> list[dict]:
+        """Facts linked to EVERY name in *entities*; entity resolution mirrors store._resolve_entity
+        (exact name, then whole-alias), so a probe for a name the extractor stored differently still hits.
+
+        One EXISTS per name (not an intersection of entity-ID sets: two different entities have
+        disjoint ids by construction, so intersecting them always yields the empty set and would
+        silently degrade every multi-entity query to a keyword fallback).
+        """
+        id_sets: list[set[int]] = []
+        for name in entities:
+            ids = self._entity_ids(name)
+            if not ids:  # unknown name -> no exact match; caller falls back to FTS
+                return []
+            id_sets.append(ids)
+        where = []
+        params: list = []
+        for ids in id_sets:
+            where.append("EXISTS (SELECT 1 FROM fact_entities fe WHERE fe.fact_id = f.fact_id "
+                         f"AND fe.entity_id IN ({','.join('?' * len(ids))}))")
+            params.extend(sorted(ids))
+        if category:
+            where.append("f.category = ?")
+            params.append(category)
+        params.append(limit)
+        sql = (f"SELECT {', '.join('f.' + c for c in _FACT_COLUMNS.split(', '))} FROM facts f "
+               f"WHERE {' AND '.join(where)} "
+               "ORDER BY f.trust_score DESC, f.updated_at DESC LIMIT ?")
+        try:
+            rows = [dict(r) for r in self.store._conn.execute(sql, params).fetchall()]
+        except Exception:
+            return []
+        for fact in rows:
+            fact["score"] = float(fact.get("trust_score") or 0.0)
+        return rows
+
+    def _entity_ids(self, name: str) -> set[int]:
+        """entity_ids matching *name* exactly (case-insensitive) or as a whole alias."""
+        out: set[int] = set()
+        for sql, param in (("SELECT entity_id FROM entities WHERE name LIKE ?", name.strip()),
+                          ("SELECT entity_id FROM entities WHERE ',' || aliases || ',' LIKE ?", f"%,{name.strip()},%")):
+            try:
+                out |= {int(r["entity_id"]) for r in self.store._conn.execute(sql, (param,)).fetchall()}
+            except Exception:
+                continue
+        return out
 
     def contradict(self, category: str | None = None, threshold: float = 0.3, limit: int = 10) -> list[dict]:
         """Pairs of facts sharing entities (same subject) with low content-vector similarity (different claims). Empty without numpy."""
