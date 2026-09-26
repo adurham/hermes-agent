@@ -3255,13 +3255,13 @@ class TestOwnerTaskIdContainerCollapse:
             registry.kill_process(session.id)
 
     def test_completion_notification_uses_owner_task_id_not_collapsed_task_id(
-        self, registry, tmp_path,
+        self, registry, tmp_path, _subagent_registry_guard,
     ):
         """The bug: a subagent's background process spawned through the
-        container-collapse path used to enqueue a completion event whose
-        task_id was "default" -- never resolvable as a live subagent by
-        event_owner_still_running(). owner_task_id fixes this: the
-        notification's task_id must be the real subagent id."""
+        container-collapse path used to enqueue a completion event resolvable
+        only as "default" -- never a live subagent to event_owner_still_running().
+        The enqueued event must carry the real id and the live gate must engage on it."""
+        _register_test_subagent("sa-0-livebug")
         session = registry.spawn_local(
             "sleep 0.2 && echo hi",
             cwd=str(tmp_path),
@@ -3279,10 +3279,11 @@ class TestOwnerTaskIdContainerCollapse:
             item = _wait_until_queue_item(registry.completion_queue, timeout=5.0)
             assert item is not None, "completion notification was never enqueued"
             assert item["type"] == "completion"
-            assert item["task_id"] == "sa-0-livebug", (
-                "completion notification must carry the subagent's real "
-                "task_id, not the collapsed container-sharing key"
+            assert item["owner_task_id"] == "sa-0-livebug", (
+                "completion notification must carry the subagent's real id, "
+                "not only the collapsed container-sharing key"
             )
+            assert event_owner_still_running(item) is True
         finally:
             registry.kill_process(session.id)
 

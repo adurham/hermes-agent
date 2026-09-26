@@ -456,7 +456,30 @@ def _register_child(
         "owner_transport": owner_transport,
         "owner_session_record": owner_session_record,
     })
+    _register_durable_subagent(parent_agent, _subagent_id, goal)
     return _subagent_id
+
+
+def _register_durable_subagent(parent_agent: Any, subagent_id: str, goal: str) -> None:
+    """FORK: machine-wide, read-only subagent visibility (cross-process, unlike the in-process registry above) so a
+    DIFFERENT session's list_agents can show "session X is running a subagent on goal Y in directory Z" and a user
+    notices a cwd collision before it happens. Not a send path (docs/design/local-agent-messaging.md, Finding 7)."""
+    owner_sid = _str_or_none(getattr(parent_agent, "session_id", None))
+    if not owner_sid:
+        return
+    with _quiet("cross-process subagent registration failed: %s"):  # never block a spawn over bookkeeping
+        from tools.cross_session_integration import session_display_name, session_origin
+        from tools.cross_session_transport import heartbeat_registry, register_subagent
+        from tools.delegate_tool import _resolve_workspace_hint
+
+        cwd = _resolve_workspace_hint(parent_agent)
+        # Force (not rate-limited) the OWNER's registry row first: the subagent row FKs to it, and on a session's
+        # first spawn its turn-boundary heartbeat_if_due tick may not have run yet. Idempotent upsert.
+        heartbeat_registry(
+            session_id=owner_sid, name=session_display_name(parent_agent), cwd=cwd, platform="cli",
+            session_origin=session_origin(),
+        )
+        register_subagent(subagent_id=subagent_id, owner_session_id=owner_sid, goal=goal, cwd=cwd, status="running")
 
 def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
@@ -1116,6 +1139,11 @@ class _ChildRun:
         # Safe even if the child was never registered (ID missing on test doubles).
         if self.subagent_id:
             _unregister_subagent(self.subagent_id, agent=child)
+            # FORK: mirror the drop in the durable cross-process registry (no-op if the spawn write never landed).
+            with _quiet("cross-process subagent unregistration failed: %s"):
+                from tools.cross_session_transport import unregister_subagent as _cross_process_unregister_subagent
+
+                _cross_process_unregister_subagent(self.subagent_id)
 
         if child_pool is not None and leased_cred_id is not None:
             with _quiet("Failed to release credential lease: %s"):

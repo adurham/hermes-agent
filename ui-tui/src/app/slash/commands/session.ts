@@ -535,6 +535,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['effort'],
     help: 'inspect or set reasoning effort (updates live agent)',
     name: 'reasoning',
     run: (arg, ctx) => {

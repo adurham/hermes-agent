@@ -5,8 +5,7 @@ import { useNavigate } from 'react-router'
 
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, goToSession } from '@/store/session-states'
+import { goToSession } from '@/store/session-states'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
 import { SessionStatusDot } from './chat/session-status-dot'

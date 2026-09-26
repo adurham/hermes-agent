@@ -286,12 +286,12 @@ def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     launch_ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
          patch("hermes_cli.main_desktop._write_desktop_build_stamp") as mock_stamp, \
@@ -304,8 +304,10 @@ def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     assert exc.value.code == 0
     mock_install.assert_called_once()
     mock_stamp.assert_called_once()
-    # pack + launch = 2 calls
-    assert mock_run.call_count == 2
+    # The stamp said up-to-date, yet exactly one pack ran, then the packaged app launched.
+    argvs = [c.args[0] for c in mock_run.call_args_list if c.args]
+    assert sum(argv[1:3] == ["run", "pack"] for argv in argvs) == 1
+    assert any(argv[0] == str(packaged_exe) for argv in argvs)
 # ── Electron build-cache recovery tests ───────────────────────────────
 
 

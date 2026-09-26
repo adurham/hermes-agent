@@ -464,10 +464,14 @@ class TestTaskStore:
         assert store.fail_orphans(timeout_seconds=300) == []
 
     def test_watchdog_preserves_active_requests_and_reply_window(self, monkeypatch):
+        from plugins.platforms.a2a import adapter as mod
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
         adapter, _base = _make_live_adapter(monkeypatch)
         now = time.time()
-        for task_id, age in (("t-live", 700), ("t-orphan", 700), ("t-within-reply-window", 400)):
+        # FORK: ages are relative to the live orphan grace (doubled against the reply window for
+        # the #78007 quick-ack), not upstream's hardcoded 700s.
+        expired = mod._orphan_timeout() + 100
+        for task_id, age in (("t-live", expired), ("t-orphan", expired), ("t-within-reply-window", 400)):
             adapter.tasks.create(task_id, "c1", "p")
             adapter.tasks.set_state(task_id, protocol.STATE_WORKING)
             adapter.tasks._tasks[task_id]["created_at"] = now - age
@@ -479,7 +483,7 @@ class TestTaskStore:
             forwarded_id = next(tid for tid in adapter.tasks._tasks if tid not in {
                 "t-live", "t-orphan", "t-within-reply-window"
             })
-            adapter.tasks._tasks[forwarded_id]["created_at"] = now - 700
+            adapter.tasks._tasks[forwarded_id]["created_at"] = now - expired
             assert adapter._fail_orphans_once() == ["t-orphan"]
             return "forwarded reply", protocol.STATE_COMPLETED
 
@@ -531,7 +535,8 @@ class TestTaskStore:
 
         monkeypatch.setattr(security, "redact_outbound", pause_while_finalizing)
         thread = threading.Thread(
-            target=lambda: result.append(adapter._finalize_task(pending, *adapter._await_reply(pending)))
+            # FORK: _await_reply returns (state, reply, resolved) for the #78007 quick-ack.
+            target=lambda: result.append(adapter._finalize_task(pending, *adapter._await_reply(pending)[:2]))
         )
         thread.start()
         assert finalizing.wait(timeout=1)

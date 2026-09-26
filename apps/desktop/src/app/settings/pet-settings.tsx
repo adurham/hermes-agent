@@ -294,40 +294,22 @@ export function PetSettings() {
         )}
 
         {enabled && (
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  setPetZoneEnabled(id === 'on')
-                  triggerHaptic('crisp')
-                }}
-                options={[
-                  { id: 'off', label: copy.off },
-                  { id: 'on', label: copy.on }
-                ]}
-                value={zoneEnabled ? 'on' : 'off'}
-              />
-            }
+          <ToggleRow
+            checked={zoneEnabled}
             description={copy.zoneDesc}
-            title={copy.zoneTitle}
+            label={copy.zoneTitle}
+            onChange={on => {
+              setPetZoneEnabled(on)
+              triggerHaptic('crisp')
+            }}
           />
         )}
         {enabled && (
-          <ListRow
-            action={
-              <SegmentedControl
-                onChange={id => {
-                  void setPetVoiceEnabled(id === 'on').then(() => triggerHaptic('crisp'))
-                }}
-                options={[
-                  { id: 'off', label: copy.off },
-                  { id: 'on', label: copy.on }
-                ]}
-                value={voiceEnabled ? 'on' : 'off'}
-              />
-            }
+          <ToggleRow
+            checked={voiceEnabled}
             description={copy.voiceDesc}
-            title={copy.voiceTitle}
+            label={copy.voiceTitle}
+            onChange={on => void setPetVoiceEnabled(on).then(() => triggerHaptic('crisp'))}
           />
         )}
       </div>

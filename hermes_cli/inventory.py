@@ -534,14 +534,6 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             (slug == "anthropic" and _anthropic_oauth_credentials_present())
             or _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
-            # Fork: is_provider_explicitly_configured() deliberately excludes CLAUDE_CODE_OAUTH_TOKEN /
-            # external Claude Code credential files so aux tasks never silently burn the user's Claude
-            # Code subscription tokens without an explicit Hermes-side choice (PR #4210) — that gate
-            # stays untouched. But list_authenticated_providers() (feeding BOTH the CLI `/model` picker
-            # and the desktop picker upstream of this filter) already surfaces anthropic when valid
-            # external credentials exist, so dropping the row here made the two surfaces disagree.
-            # Display only; aux-task gating and credential-pool behavior are unchanged.
-            or (slug == "anthropic" and _has_valid_external_anthropic_credentials())
         )
 
     return [row for row in rows
@@ -559,37 +551,6 @@ def _external_process_signed_in(slug: str) -> bool:
         return False
 
 
-def _has_valid_external_anthropic_credentials() -> bool:
-    """True when Claude Code CLI or Hermes-managed OAuth creds are usable.
-
-    Mirrors the has_creds fallback in ``list_authenticated_providers()`` so
-    the desktop's explicit-only picker filter agrees with what the CLI
-    `/model` picker already shows for Anthropic. Display-only check — does
-    NOT affect ``is_provider_explicitly_configured()`` or aux-task gating.
-    """
-    try:
-        from agent.anthropic_credentials import (
-            read_claude_code_credentials,
-            read_hermes_oauth_credentials,
-        )
-        hermes_creds = read_hermes_oauth_credentials()
-        cc_creds = read_claude_code_credentials()
-        return bool(
-            (hermes_creds and hermes_creds.get("accessToken"))
-            or (cc_creds and cc_creds.get("accessToken"))
-        )
-    except Exception:
-        return False
-
-
-def _provider_is_keyless(slug: str) -> bool:
-    """True when the provider's Hermes overlay declares it keyless."""
-    try:
-        from hermes_cli.providers import HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS.get(slug)
-        return bool(overlay is not None and getattr(overlay, "keyless", False))
-    except Exception:
-        return False
 def _raw_config_has_enabled_moa_preset() -> bool:
     """True when the user's RAW config enables MoA: ``load_config()`` merges the DEFAULT_CONFIG preset for
     everyone, which is not a user choice; visible once one enabled preset (or legacy flat config) is saved."""
