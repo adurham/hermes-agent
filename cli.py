@@ -2509,7 +2509,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         Upstream's ``_SLASH_DISPATCH`` has no ``effort`` entry and the naming-convention
         fallback in ``_slash_handler`` looks for exactly this method name, so the alias
         has to exist as a real handler. Rewrites the verb so the /reasoning parser sees
-        the form it expects.
+        the form it expects: bare ``/effort`` opens the interactive picker, ``/effort <level>``
+        applies the level, both through the same handlers the canonical verb uses.
         """
         self._handle_reasoning_command(cmd_original.replace("/effort", "/reasoning", 1))
 
@@ -2880,8 +2881,17 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if kind == "level":
             self._apply_reasoning_arg(key)
 
-    def _apply_reasoning_arg(self, arg: str) -> None:
-        """Shared apply path for both the picker and the typed CLI form."""
+    def _apply_reasoning_arg(self, arg: str, *, persist_global: bool = False) -> None:
+        """Shared apply path for the picker's effort/display rows.
+
+        Session-scoped unless ``persist_global``: the typed form (``/reasoning <level>``,
+        ``/effort <level>``) became session-only-with-``--global`` upstream (#86414), and this
+        path has to agree with it or one command would carry two persistence policies. The
+        per-model map write is deliberately NOT gated on ``persist_global`` — it is this fork's
+        ``agent.reasoning_effort_by_model`` isolation feature (read by
+        ``_apply_reasoning_for_new_model`` on every model switch) and this helper is its only
+        writer, so gating it would leave the documented feature write-dead.
+        """
         arg = arg.strip().lower()
         if arg in ("show", "on") and arg != "on":
             self.show_reasoning = True
@@ -2909,21 +2919,20 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
-        # Save to global config
-        saved_global = save_config_value("agent.reasoning_effort", arg)
+        # Global default: only on an explicit persistence request.
+        saved_global = persist_global and save_config_value("agent.reasoning_effort", arg)
 
-        # Also save per-model so switching back to this model restores it
+        # Per-model default so switching back to this model restores it.
         current_model = (self.model or "").strip()
         if current_model:
             by_model = dict(self._reasoning_effort_by_model)
             by_model[current_model] = arg
             save_config_value("agent.reasoning_effort_by_model", by_model)
             self._reasoning_effort_by_model = by_model
-
-        if saved_global:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+            scope = "saved to config" if saved_global else f"session; default for {current_model}"
         else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+            scope = "saved to config" if saved_global else "session only"
+        _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' ({scope}){_RST}")
 
     # ── /delegation — ruflo agent persona → model assignments ─────────────
 

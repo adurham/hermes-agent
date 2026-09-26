@@ -714,6 +714,24 @@ class CLITuiMixin:
         return self._render_scroll_list_panel(
             state, title, hint, choices, min_width=46, max_width=84, indent='  ')
 
+    def _get_reasoning_picker_display_fragments(self):
+        """FORK: the /reasoning (and /effort) effort picker, rendered like the model picker.
+
+        ``state["choices"]`` carries ``{key,label,kind}`` dicts: the levels the ACTIVE model
+        actually supports (``_reasoning_levels_for_active_model`` — DSv4 lists only
+        none/high/xhigh, MiniMax only none/on), the ``show``/``hide`` display toggles, and a
+        Cancel row. Only the label is rendered; selection resolves through the state index, so
+        the panel list and ``_handle_reasoning_picker_selection``'s index must stay 1:1.
+        """
+        state = self._reasoning_picker_state
+        if not state:
+            return []
+        labels = [c["label"] for c in (state.get("choices") or [])]
+        hint = (f"Effort: {state.get('current_level', '?')}   "
+                f"Display: {state.get('current_display', '?')}")
+        return self._render_scroll_list_panel(
+            state, "🧠 Reasoning", hint, labels, min_width=46, max_width=84, indent='  ')
+
     def _get_command_palette_display_fragments(self):
         state = self._command_palette_state
         if not state:
@@ -1031,6 +1049,7 @@ class CLITuiMixin:
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
             ("_model_picker_state", self._close_model_picker),
+            ("_reasoning_picker_state", self._close_reasoning_picker),
             ("_command_palette_state", self._close_command_palette))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
@@ -1054,7 +1073,8 @@ class CLITuiMixin:
             return
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
-            ("_model_picker_state", self._close_model_picker))):
+            ("_model_picker_state", self._close_model_picker),
+            ("_reasoning_picker_state", self._close_reasoning_picker))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
@@ -1335,6 +1355,28 @@ class CLITuiMixin:
         st["filter"] = value
         st["selected"] = 0
         st["_scroll_offset"] = 0
+
+    def _tui_reasoning_picker_down(self, event):
+        """FORK: ↓ in the /reasoning + /effort picker, clamped to the choice list."""
+        state = self._reasoning_picker_state
+        if not state:
+            return
+        max_idx = len(state.get("choices") or []) - 1
+        state["selected"] = min(max_idx, state.get("selected", 0) + 1)
+        event.app.invalidate()
+
+    def _tui_reasoning_picker_up(self, event):
+        """FORK: ↑ in the /reasoning + /effort picker."""
+        if self._reasoning_picker_state:
+            self._reasoning_picker_state["selected"] = max(
+                0, self._reasoning_picker_state.get("selected", 0) - 1)
+            event.app.invalidate()
+
+    def _tui_reasoning_picker_escape(self, event):
+        """FORK: ESC cancels the /reasoning + /effort picker (restores the draft)."""
+        self._close_reasoning_picker()
+        event.app.current_buffer.reset()
+        event.app.invalidate()
 
     def _tui_model_picker_escape(self, event):
         """ESC clears an active filter first, else steps back from the effort stage, else closes."""
@@ -1713,6 +1755,13 @@ class CLITuiMixin:
             except Exception as _exc:
                 _cprint(f"  ✗ Model selection failed: {_exc}")
                 self._close_model_picker()
+            buf.reset()
+            event.app.invalidate()
+            return True
+        if self._reasoning_picker_state:
+            # FORK: /reasoning + /effort effort picker — same index-based choice shape as the
+            # approval/slash-confirm overlays, so Enter reuses the CLI's own apply path.
+            self._handle_reasoning_picker_selection()
             buf.reset()
             event.app.invalidate()
             return True
@@ -2166,6 +2215,15 @@ class CLITuiMixin:
         kb.add('up', filter=_picker)(self._tui_model_picker_up)
         kb.add('down', filter=_picker)(self._tui_model_picker_down)
 
+        # /reasoning + /effort effort picker (FORK): its own nav keys, mirroring the model
+        # picker's. Enter is NOT bound here — like the model picker, submission goes through
+        # ``_tui_enter_overlay`` so the picker can't be bypassed by the normal submit path.
+        # ``_normal_input`` above already excludes this state, so these filters are unambiguous.
+        _reasoning_picker = Condition(lambda: bool(self._reasoning_picker_state))
+        kb.add('up', filter=_reasoning_picker)(self._tui_reasoning_picker_up)
+        kb.add('down', filter=_reasoning_picker)(self._tui_reasoning_picker_down)
+        kb.add('escape', filter=_reasoning_picker, eager=True)(self._tui_reasoning_picker_escape)
+
         def _model_picker_typing_active() -> bool:
             # Type-to-filter is only live on the model stage (concrete list).
             st = self._model_picker_state
@@ -2280,6 +2338,8 @@ class CLITuiMixin:
             self._get_slash_confirm_display_fragments, "_slash_confirm_state")
         model_picker_widget = self._tui_overlay_widget(
             self._get_model_picker_display_fragments, "_model_picker_state")
+        reasoning_picker_widget = self._tui_overlay_widget(
+            self._get_reasoning_picker_display_fragments, "_reasoning_picker_state")
         command_palette_widget = self._tui_overlay_widget(
             self._get_command_palette_display_fragments, "_command_palette_state")
         # Rules above/below the input; narrow terminals hide the bottom one to recover a row.
@@ -2321,6 +2381,7 @@ class CLITuiMixin:
             slash_confirm_widget=slash_confirm_widget,
             clarify_widget=clarify_widget,
             model_picker_widget=model_picker_widget,
+            reasoning_picker_widget=reasoning_picker_widget,
             command_palette_widget=command_palette_widget,
             spinner_widget=spinner_widget,
             spacer=spacer,
