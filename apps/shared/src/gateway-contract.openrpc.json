@@ -15407,6 +15407,44 @@
         "title": "ImageGenerateResult",
         "type": "object"
       },
+      "InflightTool": {
+        "additionalProperties": false,
+        "description": "FORK: ``server._open_tool_call_snapshot`` \u2014 the tool call still running when a client resumes mid-turn.",
+        "properties": {
+          "args": {
+            "additionalProperties": true,
+            "title": "Args",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "tool_call_id": {
+            "title": "Tool Call Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          }
+        },
+        "required": [
+          "args",
+          "name",
+          "tool_call_id"
+        ],
+        "title": "InflightTool",
+        "type": "object"
+      },
       "InflightTurn": {
         "additionalProperties": false,
         "description": "``session_auto_continue._inflight_snapshot``: the live (or retained failed) turn a reconnecting\nclient rebuilds its bubbles from.",
@@ -15425,6 +15463,17 @@
             "default": "",
             "title": "User",
             "type": "string"
+          },
+          "tool": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InflightTool"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "display_kind": {
             "anyOf": [

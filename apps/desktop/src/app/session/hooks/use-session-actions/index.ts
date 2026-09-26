@@ -1460,16 +1460,7 @@ export function useSessionActions({
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
                   adoptedRunningTurn: state.adoptedRunningTurn || running,
-                  // The backend's inflight snapshot carries the turn's REAL start
-                  // time; prefer it so a reconnect doesn't reset the "thinking"
-                  // timer to 0. Fall back to whatever the cache already tracked
-                  // (set locally by message.start) when the backend doesn't send
-                  // one, and clear it once the turn is no longer running.
-                  turnStartedAt: running
-                    ? (activated.inflight?.started_at
-                        ? activated.inflight.started_at * 1000
-                        : (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()))
-                    : null
+                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
                 }),
                 storedSessionId
               )
@@ -2078,8 +2069,6 @@ export function useSessionActions({
             transcriptProvenance,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
-            // Turn start time is set below in the recovery/else branches (both
-            // prefer the backend's inflight snapshot, fork-style).
             // Backend reported this turn running at resume time — live proof.
             turnLive: state.turnLive || resumedRunning,
             needsInput:
@@ -2094,24 +2083,10 @@ export function useSessionActions({
                   // Point live deltas at the recovered row when the backend is
                   // still mid-turn; a settled recovery keeps the stream idle.
                   streamId: resumedRunning ? inFlightRecovery.streamId : null,
-                  // Union of both sides: the fork prefers the backend's inflight
-                  // snapshot start time, falling back to upstream's recovered /
-                  // resumed turn timestamps.
-                  turnStartedAt: resumedRunning
-                    ? resumed.inflight?.started_at
-                      ? resumed.inflight.started_at * 1000
-                      : (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt ?? state.turnStartedAt)
-                    : null
+                  turnStartedAt: resumedRunning ? (inFlightRecovery.turnStartedAt ?? resumedTurnStartedAt) : null
                 }
               : {
-                  // Same rationale as the recovery branch: prefer the backend's
-                  // inflight snapshot start time (fork), else the resumed
-                  // turn timestamp (upstream).
-                  turnStartedAt: resumedRunning
-                    ? resumed.inflight?.started_at
-                      ? resumed.inflight.started_at * 1000
-                      : (resumedTurnStartedAt ?? state.turnStartedAt)
-                    : null
+                  turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
                 }),
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection

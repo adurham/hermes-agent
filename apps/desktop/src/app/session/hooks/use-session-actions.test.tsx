@@ -1455,8 +1455,7 @@ describe('resumeSession failure recovery', () => {
           inflight: {
             user: 'current prompt',
             assistant: 'partial answer',
-            streaming: true,
-            started_at: 1_000
+            streaming: true
           },
           queued: { user: 'newest prompt' },
           info: {}
@@ -1483,14 +1482,7 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('current prompt')
     expect(renderedMessages).toContain('partial answer')
     expect(renderedMessages).toContain('newest prompt')
-
-    // Regression: resuming into a session with a running turn used to leave
-    // turnStartedAt at whatever the cache had (usually null on a fresh
-    // renderer), so the "thinking" activity timer restarted from 0 instead
-    // of showing how long the in-flight turn has actually been running.
-    // inflight.started_at is in epoch SECONDS off the backend clock, and the
-    // fork prefers it over the coarser resume-level turn_started_at.
-    expect(resumedState?.turnStartedAt).toBe(1_000_000)
+    expect(resumedState?.turnStartedAt).toBe(1_700_000_000_000)
   })
 
   it('preserves a runtime-cache delta that arrives while cold resume waits for REST', async () => {
@@ -3859,19 +3851,20 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect($sessionStartedAt.get()).toBe(12_345_000)
   })
 
-  // Regression: session.activate's warm-cache fast path also used to drop the
-  // in-flight turn's real start time, so resuming into a still-running warm
-  // session restarted its "thinking" activity timer from 0.
-  it('restores the running turn\'s real start time from session.activate\'s inflight snapshot (warm cache)', async () => {
+  it('restores the warm reconnect turn clock from session.activate', async () => {
+    const turnStartedAtSeconds = 1_700_000_123
+
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
 
-    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
-      current: new Map([['rt-A', clientState('stored-A')]])
-    }
+    const cachedState = clientState('stored-A')
+    cachedState.busy = true
+    cachedState.turnStartedAt = null
 
-    let resumedState: ClientSessionState | undefined
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', cachedState]])
+    }
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.activate') {
@@ -3879,10 +3872,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
           session_id: 'rt-A',
           session_key: 'stored-A',
           resumed: 'stored-A',
-          message_count: 1,
-          messages: [{ content: 'still going', role: 'assistant', timestamp: 1 }],
+          message_count: 0,
+          messages: [],
           running: true,
-          inflight: { user: 'prompt', assistant: 'partial', streaming: true, started_at: 5_000 },
+          turn_started_at: turnStartedAtSeconds,
+          inflight: {
+            user: 'current prompt',
+            assistant: 'partial answer',
+            streaming: true
+          },
           info: {}
         } as never
       }
@@ -3890,10 +3888,13 @@ describe('resumeSession warm-cache mapping integrity', () => {
       return {} as never
     })
 
+    vi.mocked(getAllSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    let resumedState: ClientSessionState | undefined
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
     render(
       <ResumeHarness
-        onReady={r => (resume = r)}
+        onReady={ready => (resume = ready)}
         onStateUpdate={(_sessionId, state) => (resumedState = state)}
         requestGateway={requestGateway}
         runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
@@ -3903,8 +3904,12 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-A', true)
 
-    // inflight.started_at is in epoch SECONDS off the backend clock.
-    expect(resumedState?.turnStartedAt).toBe(5_000_000)
+    expect(resumedState).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnStartedAt: turnStartedAtSeconds * 1000
+    })
+    expect(JSON.stringify(resumedState?.messages)).toContain('partial answer')
   })
 
   it('sets the session timer from the stored session\'s real started_at, not the resume time (cold path)', async () => {

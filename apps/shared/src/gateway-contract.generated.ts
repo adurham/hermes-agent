@@ -2870,6 +2870,7 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  tool?: InflightTool | null
   display_kind?: string | null
   display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
@@ -2878,6 +2879,13 @@ export interface InflightTurn {
   status?: string | null
   recoverable?: boolean | null
   error_surface?: Record<string, unknown> | null
+}
+/** FORK: ``server._open_tool_call_snapshot`` — the tool call still running when a client resumes mid-turn. */
+export interface InflightTool {
+  args: Record<string, unknown>
+  name: string
+  tool_call_id: string
+  started_at?: number | null
 }
 export interface QueuedPrompt {
   user: string
