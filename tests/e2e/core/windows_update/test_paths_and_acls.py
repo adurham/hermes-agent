@@ -34,9 +34,6 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 
 PERSON = "Jörg Ñúñez"  # the profile is "Jörg Ñúñez hermes-e2e-<id>"
 KNOWN = {
-    "install": (r"^install\.ps1 failed for a profile path with non-ASCII characters and spaces: .*"
-                r"is not recognized as the name of a cmdlet",
-                "gated on #124526: a non-ASCII profile path breaks uv Python path resolution in python-deps"),
     "acl": (r"^managed tools are not executable by a non-elevated process after update: .*WinError 5",
             "gated on #122935: tools\\* keep a hardened DACL a standard-user token cannot execute"),
 }
@@ -112,7 +109,11 @@ def run_as_standard_user(argv: list[str], timeout: float = 120.0) -> tuple[int |
 
 def _standard_user_token_is_really_restricted(scratch: Path) -> str:
     """Harness control: the Basic User token runs system binaries and is not an admin."""
-    out = scratch / "whoami-groups.txt"
+    # A dir the restricted token may write: the machine root is Administrators-owned.
+    box = scratch / "basic-user"
+    box.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["icacls", str(box), "/grant", "*S-1-1-0:(OI)(CI)F"], capture_output=True, check=True, timeout=60)
+    out = box / "whoami-groups.txt"
     code, err = run_as_standard_user(
         [r"C:\Windows\System32\cmd.exe", "/d", "/c", f'whoami /groups /fo csv > "{out}"'])
     assert code == 0, f"harness: cannot launch cmd.exe with a Basic User token (code={code}, {err})"

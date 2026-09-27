@@ -44,6 +44,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -268,18 +269,33 @@ class Machine:
         self._seq += 1
         log = self.logs / f"{self._seq:02d}-{label}.log"
         started = time.monotonic()
-        with log.open("wb") as fh:
-            proc = subprocess.Popen(argv, cwd=cwd or self.profile, env=self.env(env_extra),
-                                    stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT)
-            try:
-                code = proc.wait(timeout=timeout)
-                self.timings.append((label, round(time.monotonic() - started, 1)))
-            except subprocess.TimeoutExpired:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
-                proc.wait(timeout=60)
-                raise AssertionError(
-                    f"{label} did not finish within {timeout:.0f}s\n{self._tail(log)}\n{self.evidence()}")
-        return Run(code, _decode(log.read_bytes()), "")
+        chunks: list[bytes] = []
+        proc = subprocess.Popen(argv, cwd=cwd or self.profile, env=self.env(env_extra),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+        def pump() -> None:
+            # Every transcript line carries its offset: install.ps1 prints no timestamps, and
+            # a stall is only visible as a gap. The pump outlives the command (daemon) so a
+            # detached grandchild that inherited the pipe can never block on a full buffer.
+            with log.open("w", encoding="utf-8") as fh:
+                for raw in iter(proc.stdout.readline, b""):
+                    chunks.append(raw)
+                    fh.write(f"[{time.monotonic() - started:7.1f}s] {_decode(raw).rstrip()}\n")
+                    fh.flush()
+
+        reader = threading.Thread(target=pump, name=f"pump-{label}", daemon=True)
+        reader.start()
+        try:
+            code = proc.wait(timeout=timeout)
+            self.timings.append((label, round(time.monotonic() - started, 1)))
+        except subprocess.TimeoutExpired:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+            proc.wait(timeout=60)
+            reader.join(timeout=10)
+            raise AssertionError(
+                f"{label} did not finish within {timeout:.0f}s\n{self._tail(log)}\n{self.evidence()}") from None
+        reader.join(timeout=20)
+        return Run(code, _decode(b"".join(chunks)), "")
 
     @staticmethod
     def _tail(path: Path, n: int = 6000) -> str:
@@ -526,6 +542,8 @@ def failure_line(run: Run) -> str:
 
 def fail_with(machine: Machine, message: str, run: Run | None = None) -> str:
     """Assertion text: the claim first (gates match on it), then the transcript and evidence."""
+    with contextlib.suppress(OSError), (machine.logs / "claims.txt").open("a", encoding="utf-8") as fh:
+        fh.write(message.splitlines()[0] + "\n")  # CI prints no reason for a passing file's xfails
     tail = f"\n--- transcript rc={run.returncode} ---\n{run.stdout[-6000:]}" if run is not None else ""
     return f"{message}{tail}\n{machine.evidence()}"
 

@@ -37,12 +37,9 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
-KNOWN = {
-    "path_python": (r"^the gateway runs on a Python outside the managed runtime",
-                    "gated on #123185: the Windows gateway boots under a newer system Python on PATH"),
-    "stale_venv": (r"^the gateway loaded the stale pre-PM in-tree venv",
-                   "gated on #123965/#123972: the Windows gateway adds the stale in-tree venv to sys.path"),
-}
+# Gates cover observed failures only. On main these cells pass: the gateway boots on the
+# managed Python and skips the stale venv (#123185, #123965 and #123972 do not reproduce).
+KNOWN: dict[str, tuple[str, str]] = {}
 _WORKER_DEATH = re.compile(r"^.*Supervised task \S+ died.*$", re.M)
 
 
@@ -65,9 +62,12 @@ def _seed_stale_venv(machine: Machine) -> Path:
     (venv / "Scripts").mkdir(exist_ok=True)
     (venv / "pyvenv.cfg").write_text(
         "home = C:\\Python311\ninclude-system-site-packages = false\nversion = 3.11.15\n", encoding="utf-8")
-    (site / "zz_e2e_stale_venv_probe.pth").write_text(
+    (machine.install_dir / _PROBE).write_text(
         f"import os; open(os.path.join({str(markers)!r}, str(os.getpid())), 'w').close()\n", encoding="utf-8")
     return markers
+
+
+_PROBE = Path("venv", "Lib", "site-packages", "zz_e2e_stale_venv_probe.pth")
 
 
 def _loaded_by(markers: Path) -> set[int]:
@@ -104,11 +104,13 @@ def journey(tmp_path_factory):
                                                            f"hermes update exited {update.returncode}", update))
                 if j.ok("update_ok"):
                     with machine.gateway_phase():
+                        j.results["probe_present"] = (machine.install_dir / _PROBE).is_file()
                         j.step("spawn", machine.spawn_gateway)
                         state = j.step("state", machine.wait_gateway_running)
                         if j.ok("state"):
                             time.sleep(15)  # supervised workers start ~2 s after boot; give them room to die
                             j.step("gateway_proc", lambda: _inspect(int(state["pid"])))
+                            j.results["loaded_by_gateway"] = _loaded_by(markers)
                         machine.kill_owned()  # nothing of this machine outlives its gateway phase
                     j.step("turn", lambda: one_shot_turn(machine, srv, "turn-stale-venv"))
             yield j
@@ -133,24 +135,25 @@ def test_gateway_runs_on_managed_python(journey: Journey) -> None:
 
 
 def test_gateway_does_not_load_stale_in_tree_venv(journey: Journey) -> None:
-    m, info, markers = journey.machine, journey["gateway_proc"], journey.results["markers"]
+    m, info = journey.machine, journey["gateway_proc"]
     stale = str(m.install_dir / "venv")
     published = [k for k in ("VIRTUAL_ENV", "PYTHONPATH")
                  if os.path.normcase(stale) in os.path.normcase(info[k])]
-    loaded = info["pid"] in _loaded_by(markers)
+    assert journey.results["probe_present"], fail_with(
+        m, f"harness: the stale-venv probe {_PROBE} was gone before the gateway started")
+    loaded = sorted(journey.results["loaded_by_gateway"])
     log = m.hermes_home / "logs" / "gateway.log"
     deaths = _WORKER_DEATH.findall(log.read_text(encoding="utf-8", errors="replace")) if log.is_file() else []
     with known_gate(KNOWN, "stale_venv"):
         assert not loaded and not published, fail_with(
-            m, f"the gateway loaded the stale pre-PM in-tree venv {stale} (site dir added in the gateway "
-               f"pid {info['pid']}={loaded}; published via {published or 'nothing'}; worker deaths: {deaths[:3]})")
+            m, f"the gateway loaded the stale pre-PM in-tree venv {stale} (site dir added by pids "
+               f"{loaded}, gateway pid {info['pid']}; published via {published or 'nothing'}; worker deaths: {deaths[:3]})")
     assert not deaths, fail_with(m, f"gateway supervised workers died: {deaths[:5]}")
 
 
 def test_cli_turn_ignores_stale_venv_and_path_python(journey: Journey) -> None:
     m, turn, markers = journey.machine, journey["turn"], journey.results["markers"]
-    gateway_pid = journey["gateway_proc"]["pid"] if journey.ok("gateway_proc") else None
-    others = sorted(_loaded_by(markers) - {gateway_pid})
+    others = sorted(_loaded_by(markers) - set(journey.results.get("loaded_by_gateway", ())))
     assert turn.ok, fail_with(
         m, f"a turn with a stale in-tree venv and a system Python on PATH failed (reply printed="
            f"{turn.reply_id in turn.run.stdout}, prompt reached provider={turn.reached_wire})", turn.run)
