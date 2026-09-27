@@ -940,35 +940,35 @@ def owned(args):
 pidfd=None
 if sys.platform.startswith("linux"):
  if not hasattr(os,"pidfd_open") or not hasattr(signal,"pidfd_send_signal"):
-  print("UNAVAILABLE");sys.exit(2)
+  print("UNAVAILABLE");sys.exit(0)
  try:pidfd=os.pidfd_open(pid,0)
  except ProcessLookupError:print("ALREADY_STOPPED");sys.exit(0)
- except (OSError,PermissionError):print("UNAVAILABLE");sys.exit(2)
+ except (OSError,PermissionError):print("UNAVAILABLE");sys.exit(0)
 
 try:
  live_creation,live_args=identity_before_signal()
  if live_creation!=expected_creation or not owned(live_args):
-  print("REFUSED");sys.exit(3)
+  print("REFUSED");sys.exit(0)
  if (sys.platform=="darwin"):
   # Darwin has no pidfd-style signal binding. Refuse instead of accepting the
   # residual PID-reuse window between ps and os.kill; reconnect will surface
   # the still-running remote owner for an explicit retry.
-  print("DARWIN_UNAVAILABLE");sys.exit(2)
+  print("DARWIN_UNAVAILABLE");sys.exit(0)
  try:
   if pidfd is not None:signal.pidfd_send_signal(pidfd,signal.SIGTERM)
   else:os.kill(pid,signal.SIGTERM)
  except ProcessLookupError:print("ALREADY_STOPPED");sys.exit(0)
  if pidfd is not None:
   poller=select.poll();poller.register(pidfd,select.POLLIN)
-  if not poller.poll(10000):print("TIMEOUT");sys.exit(4)
+  if not poller.poll(10000):print("TIMEOUT");sys.exit(0)
  else:
   deadline=time.monotonic()+10
   while time.monotonic()<deadline:
    try:os.kill(pid,0)
    except ProcessLookupError:break
-   except PermissionError:print("UNAVAILABLE");sys.exit(2)
+   except PermissionError:print("UNAVAILABLE");sys.exit(0)
    time.sleep(.1)
-  else:print("TIMEOUT");sys.exit(4)
+  else:print("TIMEOUT");sys.exit(0)
  print("TERMINATED")
 finally:
  if pidfd is not None:os.close(pidfd)

@@ -1414,6 +1414,54 @@ test('managed update drain never falls back to a bare kill when the identity-bou
   )
 })
 
+test.skipIf(process.platform === 'win32')(
+  'managed update drain reports the real POSIX refusal, not a generic transport error',
+  async () => {
+    // Regression for #124617: the termination probe prints REFUSED (and, on
+    // Darwin, DARWIN_UNAVAILABLE) but used to exit non-zero for it. ssh.exec()
+    // throws on any non-zero remote exit, so the specific message built below
+    // from the probe's stdout was dead code in production — every refusal
+    // collapsed into the generic "Could not terminate the Desktop-owned
+    // remote serve for update." Run the real probe (not a canned string)
+    // against a live-but-foreign local process so its actual exit code
+    // decides the outcome, the same way the real SSH transport does.
+    const dummy = spawn('sleep', ['5'], { stdio: 'ignore' })
+
+    try {
+      const lock = ownedLock({ pid: dummy.pid })
+      const rawLock = JSON.stringify(lock)
+
+      const ssh: Pick<SshConnection, 'exec'> = {
+        async exec(cmd: string): Promise<string> {
+          if (/cat .*lock\.json/.test(cmd)) {
+            return rawLock
+          }
+
+          if (/kill -0 /.test(cmd)) {
+            return 'ALIVE'
+          }
+
+          if (/fields\[19\]/.test(cmd)) {
+            return lock.creationTime
+          }
+
+          if (/print\("OWNED" if ok else "FOREIGN"\)/.test(cmd)) {
+            return 'OWNED'
+          }
+
+          // The real termination probe: execute it for real so its actual
+          // exit code — not a canned string — is what drives the caller.
+          return (await exec(cmd)).stdout
+        }
+      }
+
+      await assert.rejects(terminateOwnedDashboardForUpdate(ssh, lock), /identity changed at the signal boundary/)
+    } finally {
+      dummy.kill('SIGKILL')
+    }
+  }
+)
+
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
   const reuseToken = 'stored'
   const lock = ownedLock({ tokenFingerprint: fingerprintToken(reuseToken) })
