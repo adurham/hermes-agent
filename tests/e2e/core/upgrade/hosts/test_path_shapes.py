@@ -4,7 +4,8 @@ Failure class: PATH shapes. Two things users report once the install "works":
 
 * the installer's PATH wiring duplicates ``~/.local/bin`` when the distro's own startup files
   already put it on PATH with a bare ``PATH=...`` assignment (Fedora ``.bashrc``, Debian
-  ``.profile``), and a re-run appends again (gated on #123424);
+  ``.profile``), so a login shell carries it more than once (gated on #123424); a re-run of the
+  installer must not edit the startup files again;
 * a node/npm the user already has, earlier on PATH, either shadows the managed toolchain where
   Hermes needs the managed one (the TUI/web builds), or the managed node is forced onto an MCP
   server the user configured with their own ``node`` (gated on #124264).
@@ -175,16 +176,15 @@ def test_login_shell_has_local_bin_once_with_stock_fedora_startup_files(world):
     assert rerun.returncode == 0, "re-running install.sh failed:\n" + I.describe(rerun)
     rc_after_rerun = {n: (sb.home / n).read_text(encoding="utf-8") for n in FEDORA_SKEL}
     count_rerun, line_rerun = _local_bin_count(sb)
-    with known_failure(r"~/\.local/bin (appears [2-9]\d* times|was appended to stock startup files)",
+    assert rc_after_rerun == world["rc_after_install"], (
+        "re-running the installer edited the startup files again: "
+        f"{[n for n in FEDORA_SKEL if rc_after_rerun[n] != world['rc_after_install'][n]]}")
+    with known_failure(r"~/\.local/bin appears [2-9]\d* times",
                        "gated on #123424: wire_shell_path's existing-setup regex misses bare PATH= assignments"):
-        assert rc_after_rerun == world["rc_after_install"], (
-            "re-running the installer edited the startup files again: "
-            f"{[n for n in FEDORA_SKEL if rc_after_rerun[n] != world['rc_after_install'][n]]}")
         changed = [n for n, text in FEDORA_SKEL.items() if world["rc_after_install"][n] != text]
         assert count == 1 and count_rerun == 1, (
             f"~/.local/bin appears {count} times on a login shell's PATH after install ({count_rerun} after a re-run):\n"
             f"{line_rerun}\n(startup files the installer changed: {changed})")
-        assert not changed, f"~/.local/bin was appended to stock startup files that already set it: {changed}"
 
 
 def test_mcp_server_configured_with_the_users_node_runs_on_the_users_node(world, provider):

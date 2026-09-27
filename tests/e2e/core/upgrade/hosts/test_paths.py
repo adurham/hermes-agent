@@ -1,20 +1,15 @@
-"""Install, update, gateway and a turn on homes whose paths are not plain ASCII.
+"""Install, update, gateway and a turn in a home whose path has spaces and non-ASCII bytes.
 
 Failure class: path handling. Users run Hermes from homes like ``/home/José Müller`` or a
-CJK-named directory, and keep ``~/.hermes`` (or just its ``tools`` store) on another disk behind a
-symlink. Every path the installer and updater write (clone target, uv/python/node store, PM
-generation, the ``~/.local/bin/hermes`` launcher, the rc-file PATH line, sys.path) must survive a
-space, non-ASCII bytes and a symlink hop, and must stay stable from one launch to the next.
+CJK-named directory. Every path the installer and updater write (clone target, uv/python/node
+store, PM generation, the ``~/.local/bin/hermes`` launcher, the rc-file PATH line, sys.path) must
+survive a space and non-ASCII bytes.
 
-Two real installs through HEAD's ``scripts/install.sh``:
-
-* ``odd_home``: the whole sandbox (HOME, HERMES_HOME, TMPDIR) lives under
-  ``José Müller 漢字 dir``. Then a one-shot turn, a new login shell resolving ``hermes``, an
-  upstream release and ``hermes update``, a turn on the new commit and ``hermes gateway run``.
-* ``linked_home``: ``~/.hermes`` is a symlink to a directory on "another volume" (a path with a
-  space and a non-ASCII char); plain launches through it must not re-run the source-update
-  completion. An orchestrator-style per-task HERMES_HOME reaches the same ``tools``/``installs`` through
-  symlinks, which must not change the PM runtime's identity either (gated on #123798).
+One real install through HEAD's ``scripts/install.sh`` with the whole sandbox (HOME, HERMES_HOME,
+TMPDIR) under ``José Müller 漢字 dir``; then a one-shot turn, a new login shell resolving
+``hermes``, an upstream release and ``hermes update``, a turn on the new commit and
+``hermes gateway run``. The symlinked-home shapes live in ``test_paths_symlinked.py`` so the two
+installs run in parallel.
 """
 
 from __future__ import annotations
@@ -24,7 +19,6 @@ import shutil
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -39,7 +33,6 @@ pytestmark = [
 ]
 
 ODD_DIR = "José Müller 漢字 dir"
-VOLUME_DIR = "external volume ü"
 
 
 @pytest.fixture(scope="module")
@@ -57,22 +50,6 @@ def odd_home(tmp_path_factory, provider):
     (sb.home / ".profile").write_text('if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n', encoding="utf-8")
     first = I.run_installer(sb)
     return {"sb": sb, "origin": origin, "root": root, "install": first}
-
-
-@pytest.fixture(scope="module")
-def linked_home(tmp_path_factory, provider):
-    root = tmp_path_factory.mktemp("paths-linked")
-    origin = X.make_origin(root)
-    sb = X.new_sandbox(root / "sb", origin)
-    real = root / "sb" / VOLUME_DIR / "hermes-data"
-    real.mkdir(parents=True)
-    os.symlink(real, sb.hermes_home)
-    first = I.run_installer(sb)
-    return {"sb": sb, "origin": origin, "root": root, "real": real, "install": first}
-
-
-def _pending_markers(sb: I.Sandbox) -> list[str]:
-    return sorted(str(p) for p in (sb.hermes_home / "installs").glob("*/source-completion-pending"))
 
 
 def test_install_update_gateway_and_turn_under_a_non_ascii_spaced_home(odd_home, provider):
@@ -113,34 +90,3 @@ def test_install_update_gateway_and_turn_under_a_non_ascii_spaced_home(odd_home,
         assert st.get("pid") and gw.proc.poll() is None, f"gateway state says running but the process is gone: {st}\n{gw.tail()}"
     finally:
         gw.stop()
-
-
-def test_per_task_home_sharing_the_tools_store_by_symlink_is_current(linked_home, provider):
-    """An orchestrator's per-task HERMES_HOME whose ``tools``/``installs`` link back to the main home.
-
-    Precondition (not gated): the main home is itself a symlink, and plain launches through it are
-    current; only the per-task home's launch is the #123798 gap.
-    """
-    sb, first = linked_home["sb"], linked_home["install"]
-    assert sb.hermes_home.is_symlink(), "harness: ~/.hermes is not a symlink"
-    assert first.returncode == 0, "install.sh failed with ~/.hermes behind a symlink:\n" + I.describe(first)
-    assert (linked_home["real"] / "hermes-agent" / ".git").exists(), "install did not land on the symlink's target"
-    X.configure(sb, provider)
-    alt = linked_home["root"] / "per-task home ü"
-    alt.mkdir()
-    for name in ("tools", "installs"):
-        os.symlink(sb.hermes_home / name, alt / name)
-    for name in ("config.yaml", ".env"):
-        shutil.copy(sb.hermes_home / name, alt / name)
-    launches = [X.turn(sb, provider, f"turn {i} through the symlinked main home") for i in range(2)]
-    reruns = [i for i, cp in enumerate(launches) if X.reran_completion(cp)]
-    assert not reruns, (f"plain launches {reruns} through a symlinked ~/.hermes re-ran the source-update completion:\n"
-                        + I.describe(launches[reruns[0]]))
-    assert not _pending_markers(sb), f"a plain launch left source-completion-pending markers: {_pending_markers(sb)}"
-    task = X.turn(sb, provider, "turn in a per-task home", env=dict(sb.env, HERMES_HOME=str(alt)))
-    with known_failure(r"per-task HERMES_HOME .* re-ran the source-update completion",
-                       "gated on #123798: store_root() returns the unresolved $HERMES_HOME/tools, so the same "
-                       "store through a symlink is a different PM runtime identity"):
-        assert not X.reran_completion(task), (
-            "a per-task HERMES_HOME whose tools/installs symlink to the main home re-ran the source-update "
-            "completion on a current install:\n" + I.describe(task))
