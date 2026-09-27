@@ -19,6 +19,7 @@ from tests.e2e.core.windows_update._machine import (
     REQUIRES_OPT_IN,
     Journey,
     fail_with,
+    failure_line,
     new_machine,
     one_shot_turn,
     source_completion_detour,
@@ -29,10 +30,10 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 KNOWN = {
-    "first_launch": (
-        r"^first agent launch after a pristine install detoured through source-update completion",
-        "gated on #123314: a fresh Windows source install enters source-update completion on the "
-        "first agent launch",
+    "update": (
+        r"^hermes update exited 1: ✗ Update failed: \[WinError 2\]",
+        "gated on #124634: on a machine without system Git, the pinned Git that install.ps1 "
+        "staged never reaches `hermes update`'s PATH",
     ),
 }
 
@@ -71,10 +72,9 @@ def test_install_lands_on_head_and_publishes_hermes(journey: Journey) -> None:
 def test_first_agent_launch_runs_the_turn(journey: Journey) -> None:
     m, turn = journey.machine, journey["first_turn"]
     detour = source_completion_detour(turn.run)
-    with known_gate(KNOWN, "first_launch"):
-        assert detour is None, fail_with(
+    assert detour is None, fail_with(
             m, f"first agent launch after a pristine install detoured through source-update completion "
-               f"(printed {detour!r})", turn.run)
+           f"(printed {detour!r})", turn.run)
     assert turn.ok, fail_with(
         m, f"first agent launch did not complete a turn (reply printed={turn.reply_id in turn.run.stdout}, "
            f"prompt reached provider={turn.reached_wire})", turn.run)
@@ -82,7 +82,8 @@ def test_first_agent_launch_runs_the_turn(journey: Journey) -> None:
 
 def test_update_moves_checkout_to_next(journey: Journey) -> None:
     m, run = journey.machine, journey["update"]
-    assert run.returncode == 0, fail_with(m, f"hermes update exited {run.returncode}", run)
+    with known_gate(KNOWN, "update"):
+        assert run.returncode == 0, fail_with(m, f"hermes update exited {run.returncode}: {failure_line(run)}", run)
     head = m.installed_head()
     assert head == m.next, fail_with(m, f"after hermes update the checkout is at {head}, expected NEXT {m.next}", run)
     assert (m.install_dir / NEXT_MARKER).is_file(), fail_with(m, "NEXT's marker file is missing from the checkout", run)

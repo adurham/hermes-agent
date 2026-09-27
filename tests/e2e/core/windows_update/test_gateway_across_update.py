@@ -53,10 +53,18 @@ def _alive(pid: int) -> bool:
         return False
 
 
+def _exits(pid: int, timeout: float) -> bool:
+    try:
+        wait_until(lambda: not _alive(pid), timeout, f"gateway pid {pid} to exit", interval=0.5)
+    except AssertionError:
+        return False
+    return True
+
+
 @pytest.fixture(scope="module")
 def journey(tmp_path_factory):
     with FakeLLMServer() as srv:
-        machine = new_machine(tmp_path_factory.mktemp("gw"), srv.base_url, label="gw")
+        machine = new_machine(tmp_path_factory.mktemp("gw"), srv.base_url, label="gw", system_git=True)
         j = Journey(machine)
         try:
             install = j.step("install", machine.install)
@@ -64,18 +72,22 @@ def journey(tmp_path_factory):
                 j.step("install_ok", lambda: j.require("install", install.returncode == 0,
                                                         f"install.ps1 exited {install.returncode}", install))
             if j.ok("install_ok"):
-                j.step("spawn", machine.spawn_gateway)
-                before = j.step("state_before", machine.wait_gateway_running)
-                j.step("status_before", lambda: machine.hermes("gateway", "status", label="status-before"))
-                machine.advance()
-                j.step("update", machine.update)
-                old_pid = int(before.get("pid") or 0) if isinstance(before, dict) else None
-                j.step("state_after", lambda: machine.wait_gateway_running(not_pid=old_pid))
-                j.step("status_after", lambda: machine.hermes("gateway", "status", label="status-after"))
-                j.step("pidfile_after", lambda: (machine.hermes_home / "gateway.pid").exists())
-                j.step("update_again", lambda: machine.update(label="update-again"))
-                j.step("state_before_stop", machine.gateway_state)
-                j.step("stop", lambda: machine.hermes("gateway", "stop", label="stop"))
+                with machine.gateway_phase():
+                    j.step("spawn", machine.spawn_gateway)
+                    before = j.step("state_before", machine.wait_gateway_running)
+                    j.step("status_before", lambda: machine.hermes("gateway", "status", label="status-before"))
+                    machine.advance()
+                    j.step("update", machine.update)
+                    old_pid = int(before.get("pid") or 0) if isinstance(before, dict) else None
+                    j.step("state_after", lambda: machine.wait_gateway_running(not_pid=old_pid))
+                    j.step("status_after", lambda: machine.hermes("gateway", "status", label="status-after"))
+                    j.step("pidfile_after", lambda: (machine.hermes_home / "gateway.pid").exists())
+                    j.step("update_again", lambda: machine.update(label="update-again"))
+                    last = j.step("state_before_stop", machine.gateway_state)
+                    j.step("stop", lambda: machine.hermes("gateway", "stop", label="stop"))
+                    last_pid = int(last.get("pid") or 0) if isinstance(last, dict) else 0
+                    j.step("stopped", lambda: _exits(last_pid, 90))
+                    machine.kill_owned()  # nothing of this machine outlives its gateway phase
             yield j
         finally:
             machine.teardown()
@@ -100,8 +112,7 @@ def test_update_with_running_gateway_succeeds(journey: Journey) -> None:
 
 def test_gateway_serves_next_after_update(journey: Journey) -> None:
     m, state = journey.machine, journey["state_after"]
-    pid, sha = int(state.get("pid") or 0), str(state.get("code_sha") or "")
-    assert _alive(pid), fail_with(m, f"the relaunched gateway pid {pid} is not alive")
+    sha = str(state.get("code_sha") or "")  # state_after only resolves for a live, running pid
     assert len(sha) >= 7 and m.next.startswith(sha), fail_with(
         m, f"the relaunched gateway serves code_sha={sha!r}, expected NEXT {m.next}")
 
@@ -130,12 +141,7 @@ def test_gateway_stop_after_update(journey: Journey) -> None:
     m, stop, state = journey.machine, journey["stop"], journey["state_before_stop"]
     pid = int(state.get("pid") or 0)
     assert pid, fail_with(m, f"no gateway recorded before stop: {state}")
-    try:
-        wait_until(lambda: not _alive(pid), 90, f"gateway pid {pid} to exit after stop", interval=0.5)
-        stopped = True
-    except AssertionError:
-        stopped = False
     with known_gate(KNOWN, "stop"):
-        assert stopped, fail_with(
+        assert journey["stopped"], fail_with(
             m, f"after update `hermes gateway stop` left the serving gateway (pid {pid}) running", stop)
     assert stop.returncode == 0, fail_with(m, f"hermes gateway stop exited {stop.returncode}", stop)

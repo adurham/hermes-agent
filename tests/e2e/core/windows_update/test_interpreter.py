@@ -84,7 +84,7 @@ def _under(path: str, root: Path) -> bool:
 def journey(tmp_path_factory):
     system_python = _system_python_dir()
     with FakeLLMServer() as srv:
-        machine = new_machine(tmp_path_factory.mktemp("interp"), srv.base_url, label="interp")
+        machine = new_machine(tmp_path_factory.mktemp("interp"), srv.base_url, label="interp", system_git=True)
         j = Journey(machine)
         try:
             install = j.step("install", machine.install)
@@ -103,11 +103,13 @@ def journey(tmp_path_factory):
                     j.step("update_ok", lambda: j.require("update", update.returncode == 0,
                                                            f"hermes update exited {update.returncode}", update))
                 if j.ok("update_ok"):
-                    j.step("spawn", machine.spawn_gateway)
-                    state = j.step("state", machine.wait_gateway_running)
-                    if j.ok("state"):
-                        time.sleep(15)  # supervised workers start ~2 s after boot; give them room to die
-                        j.step("gateway_proc", lambda: _inspect(int(state["pid"])))
+                    with machine.gateway_phase():
+                        j.step("spawn", machine.spawn_gateway)
+                        state = j.step("state", machine.wait_gateway_running)
+                        if j.ok("state"):
+                            time.sleep(15)  # supervised workers start ~2 s after boot; give them room to die
+                            j.step("gateway_proc", lambda: _inspect(int(state["pid"])))
+                        machine.kill_owned()  # nothing of this machine outlives its gateway phase
                     j.step("turn", lambda: one_shot_turn(machine, srv, "turn-stale-venv"))
             yield j
         finally:

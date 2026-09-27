@@ -26,6 +26,7 @@ from tests.e2e.core.windows_update._machine import (
     Journey,
     Machine,
     fail_with,
+    failure_line,
     new_machine,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
@@ -34,8 +35,9 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 KNOWN = {
-    "partial_fetch": (r"^hermes update over the installer's partial clone failed: .*BUG: builtin/pack-objects",
-                      "gated on #124323: the pinned Git's pack-objects BUG on the --filter=tree:0 clone"),
+    "partial_fetch": (r"^hermes update over the installer's partial clone failed: rc=1, .*"
+                      r"✗ Update failed: \[WinError 2\]",
+                      "gated on #124634: the pinned Git install.ps1 staged never reaches `hermes update`'s PATH"),
     "holders": (r"^`hermes update --list-venv-holders` did not report the live venv holders .*"
                 r"\(rc=0, reported pids \[\]\)",
                 "gated on #123050: --list-venv-holders reads the retired hermes_cli.main stub and always "
@@ -108,7 +110,8 @@ def test_update_fetches_into_the_installers_partial_clone(journey: Journey) -> N
     m, run, flt = journey.machine, journey["update"], journey["partial_filter"]
     assert flt, fail_with(m, "harness: the installer's clone is not partial (no remote.origin.partialclonefilter); "
                              "serve.git should allow filters")
-    fetch_bug = next((ln.strip() for ln in run.stdout.splitlines() if "BUG:" in ln or "fatal:" in ln), "")
+    fetch_bug = next((ln.strip() for ln in run.stdout.splitlines() if "BUG:" in ln or "fatal:" in ln),
+                     failure_line(run))
     with known_gate(KNOWN, "partial_fetch"):
         assert run.returncode == 0 and m.installed_head() == m.next, fail_with(
             m, f"hermes update over the installer's partial clone failed: rc={run.returncode}, checkout at "

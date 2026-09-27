@@ -32,7 +32,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
-PROFILE_NAME = "Jörg Ñúñez e2e"
+PERSON = "Jörg Ñúñez"  # the profile is "Jörg Ñúñez hermes-e2e-<id>"
 KNOWN = {
     "install": (r"^install\.ps1 failed for a profile path with non-ASCII characters and spaces: .*"
                 r"is not recognized as the name of a cmdlet",
@@ -138,7 +138,7 @@ def _tool_runs(hermes_home: Path) -> list[tuple[Path, int | None, str]]:
 def journey(tmp_path_factory):
     with FakeLLMServer() as srv:
         machine = new_machine(tmp_path_factory.mktemp("paths"), srv.base_url, label="paths",
-                              profile_name=PROFILE_NAME)
+                              person=PERSON, system_git=True)
         j = Journey(machine)
         try:
             install = j.step("install", machine.install)

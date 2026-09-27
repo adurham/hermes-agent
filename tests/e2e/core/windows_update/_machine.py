@@ -20,11 +20,17 @@ Only external edges are replaced (tests/install/README.md, "The isolation trick"
 Tool and dependency downloads (uv, the managed Python, wheels, Node) use the network,
 exactly like the real installer.
 
-Each machine is a fake user profile under pytest's tmp dir: ``USERPROFILE``/``HOME``/
-``LOCALAPPDATA``/``APPDATA`` point inside it and ``HERMES_HOME`` is NOT set, so the
-installer and every ``hermes`` command resolve the default ``%LOCALAPPDATA%\\hermes``
-the way a real user's do. The installer also prepends its bin dir to the user PATH in
-HKCU; the machine restores that value on teardown.
+Each machine is a fake user profile: ``USERPROFILE``/``HOME``/``LOCALAPPDATA``/``APPDATA``
+point inside it and ``HERMES_HOME`` is NOT set, so the installer and every ``hermes``
+command resolve the default ``%LOCALAPPDATA%\\hermes`` the way a real user's do. CI
+puts the profiles in ``C:\\Users`` itself (``HERMES_E2E_PROFILES_ROOT``): the checkout
+carries 159-character paths, so a profile any deeper than a real one would hit MAX_PATH
+where no user does. The installer also prepends its bin dir to the user PATH in HKCU;
+the machine restores that value on teardown.
+
+Machines run in parallel, but ``hermes update`` on Windows pauses every gateway on the
+host, including other installs' (#124659). Updates and gateway lifetimes therefore take
+a job-wide lock (``gateway_phase``); installs, turns and everything else stay parallel.
 
 The suite mutates HKCU and downloads a toolchain per machine, so it only runs where
 ``HERMES_E2E_WINDOWS_INSTALL=1`` (the CI job sets it).
@@ -32,11 +38,12 @@ The suite mutates HKCU and downloads a toolchain per machine, so it only runs wh
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
-import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -135,6 +142,10 @@ class Machine:
     root: Path
     profile_name: str
     base_url: str
+    profiles_root: Path | None = None
+    # Git for Windows on PATH (a typical developer box). False: a clean machine, where the
+    # installer must stage its own pinned Git.
+    system_git: bool = False
     path_prepend: list[str] = field(default_factory=list)
     head: str = ""
     next: str = ""
@@ -142,12 +153,14 @@ class Machine:
     _hkcu: Any = None
     _seq: int = 0
     _spawned: list[subprocess.Popen] = field(default_factory=list)
+    _lock_depth: int = 0
+    timings: list[tuple[str, float]] = field(default_factory=list)
 
     # -- layout ---------------------------------------------------------------
 
     @property
     def profile(self) -> Path:
-        return self.root / "Users" / self.profile_name
+        return (self.profiles_root or self.root / "Users") / self.profile_name
 
     @property
     def local(self) -> Path:
@@ -183,7 +196,8 @@ class Machine:
         roaming = self.profile / "AppData" / "Roaming"
         self.local.mkdir(parents=True, exist_ok=True)
         roaming.mkdir(parents=True, exist_ok=True)
-        path = _strip_path(os.environ.get("PATH", ""), ("git.exe", "python.exe", "python3.exe", "uv.exe"))
+        drop = ("python.exe", "python3.exe", "uv.exe") + (() if self.system_git else ("git.exe",))
+        path = _strip_path(os.environ.get("PATH", ""), drop)
         env.update({
             "PATH": os.pathsep.join([*self.path_prepend, path]),
             "USERPROFILE": str(self.profile),
@@ -253,11 +267,13 @@ class Machine:
         """Run to completion with the full transcript on disk (survives a timeout)."""
         self._seq += 1
         log = self.logs / f"{self._seq:02d}-{label}.log"
+        started = time.monotonic()
         with log.open("wb") as fh:
             proc = subprocess.Popen(argv, cwd=cwd or self.profile, env=self.env(env_extra),
                                     stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT)
             try:
                 code = proc.wait(timeout=timeout)
+                self.timings.append((label, round(time.monotonic() - started, 1)))
             except subprocess.TimeoutExpired:
                 subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
                 proc.wait(timeout=60)
@@ -290,7 +306,46 @@ class Machine:
         return self._run_logged([str(self.hermes_exe), *args], name, timeout=timeout, env_extra=env_extra)
 
     def update(self, *extra: str, label: str = "update") -> Run:
-        return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT)
+        with self.gateway_phase():
+            return self.hermes("update", "--yes", *extra, label=label, timeout=UPDATE_TIMEOUT)
+
+    @contextlib.contextmanager
+    def gateway_phase(self):
+        """Job-wide mutex for updates and gateway lifetimes (reentrant within a machine).
+
+        ``hermes update`` on Windows discovers gateways host-wide and stops ones it cannot map
+        to its own profiles (#124659), so one machine's update would kill another machine's
+        gateway. Real users rarely run two installs side by side; this suite always does."""
+        if self._lock_depth:
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+            return
+        import msvcrt
+
+        lock_dir = Path(os.environ.get("HERMES_E2E_MACHINE_ROOT") or tempfile.gettempdir())
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        waited = time.monotonic()
+        with (lock_dir / "gateway-phase.lock").open("a+b") as fh:
+            while True:
+                try:
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() - waited > 1800:
+                        raise RuntimeError("harness: gateway-phase lock not acquired within 30 min") from None
+                    time.sleep(0.5)
+            self.timings.append(("(waited for gateway phase)", round(time.monotonic() - waited, 1)))
+            self._lock_depth = 1
+            try:
+                yield
+            finally:
+                self._lock_depth = 0
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
     def installed_head(self) -> str:
         try:
@@ -348,7 +403,7 @@ class Machine:
         """Live processes of this machine: exe/cwd/argv under its root, or its HERMES_HOME."""
         import psutil
 
-        root = os.path.normcase(os.path.normpath(str(self.root)))
+        roots = {os.path.normcase(os.path.normpath(str(p))) for p in (self.root, self.profile)}
         home = os.path.normcase(os.path.normpath(str(self.hermes_home)))
         me = os.getpid()
         owned = []
@@ -361,14 +416,14 @@ class Machine:
                 blob = os.path.normcase(" ".join([proc.exe() or "", proc.cwd() or "", *proc.cmdline()]))
             except (psutil.Error, OSError):
                 continue
-            if hh == home or root in blob:
+            if hh == home or any(root in blob for root in roots):
                 owned.append(proc)
         return owned
 
     def evidence(self) -> str:
         """Receipts, logs and the process table: what a failure message must carry."""
-        parts = [f"machine root: {self.root}", f"HEAD={self.head} NEXT={self.next}",
-                 f"installed checkout: {self.installed_head()}"]
+        parts = [f"machine root: {self.root}", f"profile: {self.profile}", f"HEAD={self.head} NEXT={self.next}",
+                 f"installed checkout: {self.installed_head()}", f"timings (s): {self.timings}"]
         receipt = self.hermes_home / "logs" / "update_receipts" / "latest.json"
         if receipt.is_file():
             parts.append(self._tail(receipt, 4000))
@@ -385,11 +440,15 @@ class Machine:
             parts.append(f"process table unavailable: {exc}")
         return "\n".join(parts)
 
-    def teardown(self) -> None:
+    def kill_owned(self) -> None:
+        """Hard-stop every live process of this machine (end of a gateway phase, teardown)."""
         kill_tree(self.owned_processes())
         for proc in self._spawned:
             if proc.poll() is None:
                 subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+
+    def teardown(self) -> None:
+        self.kill_owned()
         try:
             _restore_hkcu_path(self._hkcu)
         except OSError:
@@ -404,17 +463,20 @@ class Machine:
                     shutil.copytree(src, dest / sub, dirs_exist_ok=True,
                                     ignore=shutil.ignore_patterns("*.db", "*.db-*"))
             (dest / "evidence.txt").write_text(self.evidence(), encoding="utf-8", errors="replace")
+            (dest / "timings.json").write_text(json.dumps(self.timings, indent=1), encoding="utf-8")
 
 
-def new_machine(tmp_root: Path, base_url: str, *, label: str, profile_name: str = "e2e",
-                path_prepend: list[str] | None = None) -> Machine:
-    """A staged machine. ``HERMES_E2E_MACHINE_ROOT`` (CI: a short runner.temp dir) keeps the
-    install tree near the depth of a real ``C:\\Users\\<name>\\AppData\\Local\\hermes``;
-    pytest's own tmp dir is already ~100 characters deep on Windows, and node_modules does
-    the rest of the way to MAX_PATH."""
+def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
+                system_git: bool = False) -> Machine:
+    """A staged machine. Its work dir (serve.git, transcripts) lives under
+    ``HERMES_E2E_MACHINE_ROOT`` (else ``tmp_root``); its user profile under
+    ``HERMES_E2E_PROFILES_ROOT`` (CI: ``C:\\Users``), named ``[<person> ]hermes-e2e-<id>``."""
+    sfx = uuid.uuid4().hex[:4]
     base = Path(os.environ.get("HERMES_E2E_MACHINE_ROOT") or tmp_root)
-    machine = Machine(root=base / f"{label}-{uuid.uuid4().hex[:4]}", profile_name=profile_name,
-                      base_url=base_url, path_prepend=list(path_prepend or []))
+    profiles = os.environ.get("HERMES_E2E_PROFILES_ROOT")
+    name = f"{person} hermes-e2e-{sfx}" if person else f"hermes-e2e-{sfx}"
+    machine = Machine(root=base / f"{label}-{sfx}", profile_name=name, base_url=base_url,
+                      profiles_root=Path(profiles) if profiles else None, system_git=system_git)
     machine.stage()
     return machine
 
@@ -452,6 +514,14 @@ class Journey:
         """A prerequisite of later steps: raise (recorded by ``step``) when it does not hold."""
         if not ok:
             raise RuntimeError(fail_with(self.machine, f"{name}: {message}", run))
+
+
+def failure_line(run: Run) -> str:
+    """The first line a ``hermes`` command printed as its failure (``✗ ...``), else ``""``."""
+    for line in run.stdout.splitlines():
+        if line.strip().startswith("✗"):
+            return line.strip()
+    return ""
 
 
 def fail_with(machine: Machine, message: str, run: Run | None = None) -> str:

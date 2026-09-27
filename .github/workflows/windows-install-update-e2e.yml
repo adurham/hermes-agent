@@ -50,9 +50,12 @@ jobs:
             -m "platforms and integration" -v --tb=short -rA
         env:
           HERMES_E2E_WINDOWS_INSTALL: '1'
-          # Short machine roots: a real install lives at C:\Users\<name>\AppData\Local\hermes;
-          # pytest's tmp dir would add ~100 characters before node_modules.
+          # Machine work dirs (serve.git, transcripts) stay short under runner.temp. The fake
+          # user profiles live in C:\Users itself, where a real one does: the checkout carries
+          # 159-character paths, so a deeper profile hits MAX_PATH where no user would (the
+          # runner is disposable, so writing C:\Users is fine).
           HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
+          HERMES_E2E_PROFILES_ROOT: C:\Users
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           # One journey per file, all in parallel (each is mostly network + subprocess wait).
           HERMES_TEST_WORKERS: '6'
@@ -77,11 +80,14 @@ jobs:
         shell: pwsh
         run: |
           $names = 'python.exe', 'pythonw.exe', 'hermes.exe', 'node.exe'
+          # Work dirs live under runner.temp\wm; profiles are C:\Users\*hermes-e2e-<id>.
           $root = "${{ runner.temp }}\wm".ToLower()
+          $profileMark = 'hermes-e2e-'
           $deadline = (Get-Date).AddSeconds(20)
           do {
             $left = @(Get-CimInstance Win32_Process | Where-Object {
-              ($names -contains $_.Name.ToLower()) -and ("$($_.CommandLine) $($_.ExecutablePath)".ToLower().Contains($root))
+              $blob = "$($_.CommandLine) $($_.ExecutablePath)".ToLower()
+              ($names -contains $_.Name.ToLower()) -and ($blob.Contains($root) -or $blob.Contains($profileMark))
             })
             if ($left.Count -eq 0) { 'no leftover processes from the E2E machines'; exit 0 }
             Start-Sleep -Milliseconds 500
