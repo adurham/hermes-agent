@@ -310,7 +310,7 @@ class SessionCompressionMixin:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
             from hermes_state_local_lineage import advance_local_target
             advance_local_target(conn, parent_session_id, child_session_id)
-        self._execute_write(_do)
+        self._execute_transcript_write(_do, messages)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
         """``_write_sql`` that logs (never raises) on ``sqlite3.Error``."""

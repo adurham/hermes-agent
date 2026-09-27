@@ -1226,6 +1226,8 @@ export interface DesktopConnectionProbeResult {
 export interface ExternalOpenFailedPayload {
   url: string
   message?: string
+  /** Machine-readable failure class; the dialog picks localized copy per code. */
+  code?: 'missing-file'
 }
 
 export interface DesktopOauthLoginOptions {
