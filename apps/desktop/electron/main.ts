@@ -4797,6 +4797,7 @@ async function ensureRuntime(
   assertStillOwned()
 
   if (!backend.bootstrap) {
+    rememberLog(`[backend] using ${backend.label}`)
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
     return backend
@@ -12093,6 +12094,7 @@ async function startHermes(requestedProfile?: string) {
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     backendStartFailure = null
+    rememberLog('[backend] Hermes gateway is ready')
     updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
     bootstrapRepairAttempt = 0
 
