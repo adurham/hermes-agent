@@ -155,10 +155,12 @@ def _calls(world) -> list[str]:
 
 def test_user_node_first_on_path_does_not_shadow_the_managed_toolchain(world, provider):
     sb, first = world["sb"], world["install"]
-    assert first.returncode == 0, "install.sh failed with the user's own node first on PATH:\n" + I.describe(first)
+    # The shim log first: when the user's node is picked up the build usually dies on it, and the
+    # log names that root cause where the exit code alone would not.
     used = [c for c in _calls(world) if not re.fullmatch(r"(node|npm|npx) (--version|-v)", c)]
     assert not used, ("the installer ran the user's node/npm for real work instead of the managed toolchain:\n"
                       + "\n".join(used) + "\n" + I.describe(first))
+    assert first.returncode == 0, "install.sh failed with the user's own node first on PATH:\n" + I.describe(first)
     X.ok(sb.cli("--version"))
     X.configure(sb, provider)
     X.turn(sb, provider, "turn with the user's node first on PATH")

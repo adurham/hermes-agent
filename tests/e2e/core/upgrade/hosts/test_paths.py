@@ -12,8 +12,8 @@ Two real installs through HEAD's ``scripts/install.sh``:
   ``José Müller 漢字 dir``. Then a one-shot turn, a new login shell resolving ``hermes``, an
   upstream release and ``hermes update``, a turn on the new commit and ``hermes gateway run``.
 * ``linked_home``: ``~/.hermes`` is a symlink to a directory on "another volume" (a path with a
-  space and a non-ASCII char). Plain launches must not re-run the source-update completion. Then
-  an orchestrator-style per-task HERMES_HOME reaches the same ``tools``/``installs`` through
+  space and a non-ASCII char); plain launches through it must not re-run the source-update
+  completion. An orchestrator-style per-task HERMES_HOME reaches the same ``tools``/``installs`` through
   symlinks, which must not change the PM runtime's identity either (gated on #123798).
 """
 
@@ -115,23 +115,16 @@ def test_install_update_gateway_and_turn_under_a_non_ascii_spaced_home(odd_home,
         gw.stop()
 
 
-def test_symlinked_hermes_home_launches_without_rerunning_the_completion(linked_home, provider):
+def test_per_task_home_sharing_the_tools_store_by_symlink_is_current(linked_home, provider):
+    """An orchestrator's per-task HERMES_HOME whose ``tools``/``installs`` link back to the main home.
+
+    Precondition (not gated): the main home is itself a symlink, and plain launches through it are
+    current; only the per-task home's launch is the #123798 gap.
+    """
     sb, first = linked_home["sb"], linked_home["install"]
     assert sb.hermes_home.is_symlink(), "harness: ~/.hermes is not a symlink"
     assert first.returncode == 0, "install.sh failed with ~/.hermes behind a symlink:\n" + I.describe(first)
     assert (linked_home["real"] / "hermes-agent" / ".git").exists(), "install did not land on the symlink's target"
-    X.configure(sb, provider)
-    launches = [X.turn(sb, provider, f"turn {i} through a symlinked HERMES_HOME") for i in range(2)]
-    reruns = [i for i, cp in enumerate(launches) if X.reran_completion(cp)]
-    assert not reruns, (f"plain launches {reruns} re-ran the source-update completion on a healthy install:\n"
-                        + I.describe(launches[reruns[0]]))
-    assert not _pending_markers(sb), f"a plain launch left source-completion-pending markers: {_pending_markers(sb)}"
-
-
-def test_per_task_home_sharing_the_tools_store_by_symlink_is_current(linked_home, provider):
-    """An orchestrator's per-task HERMES_HOME whose ``tools``/``installs`` link back to the main home."""
-    sb = linked_home["sb"]
-    assert linked_home["install"].returncode == 0, I.describe(linked_home["install"])
     X.configure(sb, provider)
     alt = linked_home["root"] / "per-task home ü"
     alt.mkdir()
@@ -139,8 +132,11 @@ def test_per_task_home_sharing_the_tools_store_by_symlink_is_current(linked_home
         os.symlink(sb.hermes_home / name, alt / name)
     for name in ("config.yaml", ".env"):
         shutil.copy(sb.hermes_home / name, alt / name)
-    main = X.turn(sb, provider, "control turn in the main home")
-    assert not X.reran_completion(main), "control: the main home itself re-ran the completion:\n" + I.describe(main)
+    launches = [X.turn(sb, provider, f"turn {i} through the symlinked main home") for i in range(2)]
+    reruns = [i for i, cp in enumerate(launches) if X.reran_completion(cp)]
+    assert not reruns, (f"plain launches {reruns} through a symlinked ~/.hermes re-ran the source-update completion:\n"
+                        + I.describe(launches[reruns[0]]))
+    assert not _pending_markers(sb), f"a plain launch left source-completion-pending markers: {_pending_markers(sb)}"
     task = X.turn(sb, provider, "turn in a per-task home", env=dict(sb.env, HERMES_HOME=str(alt)))
     with known_failure(r"per-task HERMES_HOME .* re-ran the source-update completion",
                        "gated on #123798: store_root() returns the unresolved $HERMES_HOME/tools, so the same "

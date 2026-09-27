@@ -74,6 +74,12 @@ def world(tmp_path_factory, provider):
             try:
                 out["ro_turn"] = sb.run([sb.hermes, "-z", "turn on a read-only install tree"], timeout=900)
                 out["ro_turn_requests"] = len(provider.main_requests()) - n
+            finally:
+                _chmod_code(sb, writable=True)
+            # Only the checkout read-only: the launch path works (#124635 needs installs/ too), so
+            # this reaches `hermes update`'s own handling of a tree it cannot write.
+            subprocess.run(["chmod", "-R", "a-w", str(sb.checkout)], check=True)
+            try:
                 out["ro_update"] = sb.cli("update", "--yes", "--branch", "main", timeout=X.UPDATE_TIMEOUT)
                 out["ro_head"] = I.git("rev-parse", "HEAD", cwd=sb.checkout)
             finally:
