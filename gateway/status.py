@@ -588,30 +588,66 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
-def _runtime_launcher_entry_argv(tokens: list[str]) -> list[str] | None:
-    """Trailing argv of a Hermes runtime-launcher process (``hermes_cli._launchers.runtime_command``).
+# Hermes' own inline bootstraps hand control to a Hermes entry point IN this process, so the argv
+# they run with is this process's own identity; every other ``-c`` program keeps its trailing argv
+# as data (#107002). Each pattern is one emitted source shape, anchored at both ends so a program
+# merely CARRYING a bootstrap command line (the restart watcher's respawn argv) never matches.
+_Q = r"""['"]?"""
+_MAIN = rf"{_Q}__main__{_Q}"
+_RUN_MODULE = rf"runpy\.run_module\(\s*{_Q}(?P<target>[\w.]+){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*,\s*alter_sys\s*=\s*True\s*\)"
+_BOOTSTRAPS = (
+    # hermes_cli._launchers.runtime_command (store launcher, the Windows updater's relaunch)
+    ("module", re.compile(rf"import os, sys, runpy;.*\b{_RUN_MODULE}", re.S)),
+    # hermes_cli.venv_sync.relaunch_command: argv is assigned inside the source
+    ("module", re.compile(rf"import sys, runpy; sys\.path\.insert\(.*\b{_RUN_MODULE}", re.S)),
+    ("path", re.compile(
+        rf"import sys, runpy; sys\.path\.insert\(.*\brunpy\.run_path\(\s*{_Q}(?P<target>[^'\"]+?){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*\)",
+        re.S)),
+    # hermes_cli._launchers._launcher_script (the published POSIX shell / Windows .cmd launcher)
+    ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)),
+    # hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
+    ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
+)
+_ASSIGNED_ARGV = re.compile(r"\bsys\.argv\s*=\s*\[(.*?)\]\s*;")
 
-    The launcher starts Hermes as ``python -I -c <bootstrap> <entry argv…>`` where the bootstrap runs
-    the entry module IN PLACE (``runpy.run_module(…, alter_sys=True)`` after ``import hermes_bootstrap``),
-    so the argv following that program IS this process's own subcommand: ``python -I -c <bootstrap>
-    gateway run --replace`` really is a gateway -- the form the Windows updater's post-update relaunch
-    spawns (``hermes_cli.gateway._gateway_run_args_for_profile``). Every OTHER inline source keeps the
-    #107002 rule: the detached restart watcher (``… -c <watcher> <old_pid> … -m hermes_cli.main gateway
-    run``) hides a FUTURE spawn in its trailing argv, which must never be read as this process's identity.
 
-    Command lines reach us space-joined from argv, so this one-source program arrives split across many
-    tokens, and only the tail it emits (``alter_sys=True)`` last) marks where the entry argv begins.
-    Marker checks against the launcher's own emitted format -- never a loose ``-c`` test.
+def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
+    """``[-m, <module>, *argv]`` (or ``[<path>, *argv]``) the inline *source* runs in-process, else None."""
+    source = source.strip()
+    kind, match = next(((k, m) for k, p in _BOOTSTRAPS if (m := p.fullmatch(source))), (None, None))
+    if match is None:
+        return None
+    target = match["target"]
+    if kind == "base64":
+        import base64
+        import binascii
+        try:
+            return _bootstrap_entry(base64.b64decode(target, validate=True).decode("utf-8"), argv)
+        except (binascii.Error, UnicodeDecodeError):
+            return None
+    if kind == "entry":  # the launcher script's own ``--run-module <module>`` switch
+        return ["-m", argv[1], *argv[2:]] if argv[:1] == ["--run-module"] and len(argv) > 1 else ["-m", target, *argv]
+    if assigned := _ASSIGNED_ARGV.search(source):
+        argv = [item.strip().strip("'\"") for item in assigned.group(1).split(",")][1:]
+    return [target, *argv] if kind == "path" else ["-m", target, *argv]
+
+
+def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
+    """*tokens* as the equivalent ``python -m <module> <argv…>`` when this interpreter's ``-c`` source
+    is a Hermes bootstrap running an entry point in-process; None for any other inline source.
+
+    Command lines usually arrive space-joined (``/proc``, psutil, ``ps``), which splits the source
+    across tokens; the shortest token run that ends in a recognised tail is the source, whatever
+    joined it, and the tokens after it are the entry point's argv.
     """
     index = inline_source_flag_index(tokens)
     if index is None:
         return None
-    for position in range(index, len(tokens)):
-        if "alter_sys=True" not in tokens[position]:
-            continue
-        program = " ".join(tokens[index : position + 1])
-        if "runpy.run_module(" in program and "hermes_bootstrap" in program:
-            return tokens[position + 1 :]
+    for end in range(index + 1, len(tokens)):
+        if tokens[end].rstrip().endswith(")"):
+            entry = _bootstrap_entry(" ".join(tokens[index + 1 : end + 1]), tokens[end + 1 :])
+            if entry is not None:
+                return [tokens[0], *entry]
     return None
 
 
@@ -636,23 +672,14 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    launcher_bootstrap = False
     if command_line_runs_inline_source(cased_tokens):
-        # …with ONE exception: Hermes's own runtime launcher starts Hermes as ``python -I -c
-        # <bootstrap> <entry argv…>`` and the bootstrap runs the entry module IN PLACE, so the
-        # trailing argv IS this process's own subcommand. That is the form the Windows updater's
-        # post-update relaunch spawns (``gateway._gateway_run_args_for_profile`` →
-        # ``gateway run --replace``); refusing it made the updater blind to the gateway it had just
-        # respawned -- its liveness probe "found no stable gateway process" while the respawned
-        # gateway was alive and serving, and the next update's preflight then failed on the lock.
-        source_index = inline_source_flag_index(cased_tokens)
-        launcher_argv = None if source_index is None else _runtime_launcher_entry_argv(cased_tokens)
-        if launcher_argv is None:
+        # …unless the source is a Hermes bootstrap running the entry point in THIS process (store
+        # launcher, launcher script, venv_sync re-entry): then its argv is this process's (#124318).
+        cased_tokens = inline_bootstrap_argv(cased_tokens)
+        if cased_tokens is None:
             return None
-        cased_tokens = [cased_tokens[0], *launcher_argv]
         tokens = [t.lower() for t in cased_tokens]
         basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-        launcher_bootstrap = True
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
@@ -669,11 +696,8 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
     joined = " ".join(tokens)
-    # A runtime-launcher process names its entry point in the bootstrap source, not in argv.
-    if not launcher_bootstrap and (
-        "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
-            b in ("hermes", "hermes.exe") for b in basenames
-        )
+    if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
+        b in ("hermes", "hermes.exe") for b in basenames
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
