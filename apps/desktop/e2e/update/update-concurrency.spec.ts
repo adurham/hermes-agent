@@ -105,9 +105,10 @@ test('Update now while a terminal update runs is refused, and the panel is truth
           .click()
         await expect(page.getByText(/An update is already running/).first()).toBeVisible({ timeout: 30_000 })
         expect(appExited, 'the app stays up').toBe(false)
-        expect(updateLogLines(facts, offset), 'the app refused the hand-off').toMatch(
-          /refusing (posix )?hand-off: An update is already running/
-        )
+        // desktop.log is flushed on a timer, so the refusal line can trail the dialog.
+        await expect
+          .poll(() => updateLogLines(facts, offset), { timeout: 20_000, message: 'the app refused the hand-off' })
+          .toMatch(/refusing (posix )?hand-off: An update is already running/)
         expect(
           installProcesses(facts)
             .filter(proc => /desktop-update\/posix\.sh|hermes-desktop-update/.test(proc.cmdline))
