@@ -12,7 +12,7 @@ description: >-
   when the user runs `restore`; no network.
 maintainer: AhmetArif0
 tier: community
-category: memory
+category: general
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/AhmetArif0/hermes-memory-rewind
 version: "1.0.0"
