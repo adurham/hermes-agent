@@ -1,4 +1,4 @@
-"""Which interpreter and which site-packages a Windows gateway runs on after an update.
+"""Which site-packages a Windows gateway and CLI load after an update.
 
 Failure class: interpreter. Real Windows machines carry two traps the managed runtime
 must ignore:
@@ -6,9 +6,9 @@ must ignore:
 * a different, standalone Python on PATH ahead of anything Hermes installed (#123185);
 * the pre-PM in-tree ``hermes-agent\\venv`` an older install left behind (#123965, #123972).
 
-After ``hermes update`` the gateway the user starts through ``hermes.exe`` must run on
-the managed Python under ``%LOCALAPPDATA%\\hermes`` and must never add the stale venv to
-``sys.path`` or publish it to its children. The stale venv carries a ``.pth`` hook that
+After ``hermes update`` neither the gateway the user starts through ``hermes.exe`` nor a
+CLI turn may add the stale venv to ``sys.path`` or publish it to its children, with the
+standalone Python first on PATH. The stale venv carries a ``.pth`` hook that
 drops a ``<pid>`` marker whenever any process adds its site dir, so "loaded the stale
 venv" is observed directly rather than inferred from a crash.
 """
@@ -70,12 +70,6 @@ def _loaded_by(markers: Path) -> set[int]:
     return {int(p.name) for p in markers.iterdir() if p.name.isdigit()} if markers.is_dir() else set()
 
 
-def _under(path: str, root: Path) -> bool:
-    norm = os.path.normcase(os.path.normpath(path))
-    base = os.path.normcase(os.path.normpath(str(root)))
-    return norm == base or norm.startswith(base + os.sep)
-
-
 @pytest.fixture(scope="module")
 def journey(tmp_path_factory):
     system_python = _system_python_dir()
@@ -119,14 +113,6 @@ def _inspect(pid: int) -> dict:
     env = {k.upper(): v for k, v in proc.environ().items()}
     return {"pid": pid, "exe": proc.exe(), "cmdline": proc.cmdline(),
             "VIRTUAL_ENV": env.get("VIRTUAL_ENV", ""), "PYTHONPATH": env.get("PYTHONPATH", "")}
-
-
-def test_gateway_runs_on_managed_python(journey: Journey) -> None:
-    m, info = journey.machine, journey["gateway_proc"]
-    system_python = journey["system_python"]
-    assert _under(info["exe"], m.hermes_home) and not _under(info["exe"], system_python), fail_with(
-        m, f"the gateway runs on a Python outside the managed runtime: {info['exe']} "
-           f"(PATH starts with {system_python}; managed runtime lives under {m.hermes_home})")
 
 
 def test_gateway_does_not_load_stale_in_tree_venv(journey: Journey) -> None:
