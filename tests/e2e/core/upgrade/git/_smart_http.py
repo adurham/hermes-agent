@@ -13,6 +13,14 @@ Faults (``Fault``) are matched per request, in arming order, and consumed:
   without the terminating chunk (curl: "transfer closed with outstanding read data");
 * ``stall_after``: stream that many body bytes, then go silent until released or ``stall_max``.
 
+A byte offset only means something at a fixed pkt-line framing. ``upload-pack`` relays whatever
+``pack-objects`` has buffered, so the same pack arrives as 8 KiB sideband packets when it keeps up
+and as 65520-byte ones when it lags (a loaded CI runner). The client acts only on whole pkt-lines:
+a cut inside the first, coalesced packet means it never sees the ``PACK`` header and never starts
+``index-pack``. So a cut/stall response has its sideband-1 pack data re-framed to the unhurried
+``_FRAME``-byte packets first (a valid framing; the pack bytes are untouched), and the request log
+records how many pack bytes the client got in whole packets before the drop.
+
 Every request is recorded (``requests``): method, path, v2 command, status, body bytes sent and
 whether a fault fired, so a cell can bound what a retry downloaded.
 """
@@ -32,6 +40,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 _CHUNK = 64 * 1024
+_FRAME = 8192  # sideband-1 payload per pkt-line that an unhurried upload-pack emits
 
 
 @dataclass
@@ -68,6 +77,7 @@ class Request:
     status: int = 0
     body_bytes: int = 0
     fault: str = ""
+    pack_bytes: int = -1  # faulted responses: pack payload delivered in whole pkt-lines before the drop
     at: float = field(default_factory=time.monotonic)
 
 
@@ -87,6 +97,64 @@ def _v2_command(body: bytes) -> str | None:
             return line[len(b"command="):].decode("ascii", "replace")
         i += n
     return None
+
+
+class _Reframer:
+    """Re-frame a streamed upload-pack response so every sideband-1 pkt-line after the v2
+    ``packfile`` section header carries at most ``_FRAME`` bytes. Everything else (section
+    headers, progress, flush/delim packets) passes through unchanged; a body that is not pkt-lines
+    passes through raw. Records where each pack pkt ends in the output, for ``pack_bytes_before``."""
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self._in_pack = False
+        self._raw = False
+        self._emitted = 0
+        self._pack_ends: list[tuple[int, int]] = []  # (end offset in output, pack payload bytes)
+
+    def feed(self, data: bytes) -> bytes:
+        if self._raw:
+            self._emitted += len(data)
+            return data
+        self._buf += data
+        out = bytearray()
+        while len(self._buf) >= 4:
+            try:
+                n = int(bytes(self._buf[:4]), 16)
+            except ValueError:
+                self._raw = True
+                out += self._buf
+                self._buf.clear()
+                break
+            if n < 4:  # flush / delim / response-end
+                out += self._buf[:4]
+                del self._buf[:4]
+                continue
+            if len(self._buf) < n:
+                break
+            pkt = bytes(self._buf[4:n])
+            del self._buf[:n]
+            if self._in_pack and pkt[:1] == b"\x01":
+                for i in range(1, len(pkt), _FRAME):
+                    piece = pkt[i:i + _FRAME]
+                    out += b"%04x\x01" % (len(piece) + 5) + piece
+                    self._pack_ends.append((self._emitted + len(out), len(piece)))
+            else:
+                if pkt.rstrip(b"\n") == b"packfile":
+                    self._in_pack = True
+                out += b"%04x" % n + pkt
+        self._emitted += len(out)
+        return bytes(out)
+
+    def tail(self) -> bytes:
+        """An incomplete trailing pkt at EOF, passed through as the backend sent it."""
+        rest = bytes(self._buf)
+        self._buf.clear()
+        self._emitted += len(rest)
+        return rest
+
+    def pack_bytes_before(self, offset: int) -> int:
+        return sum(size for end, size in self._pack_ends if end <= offset)
 
 
 class GitHTTPServer:
@@ -169,6 +237,7 @@ class GitHTTPServer:
 
     def describe(self, mark: int = 0) -> str:
         return "\n".join(f"  {r.method} {r.path} cmd={r.command} -> {r.status} {r.body_bytes}B {r.fault}"
+                         + (f" (pack bytes in whole pkt-lines: {r.pack_bytes})" if r.pack_bytes >= 0 else "")
                          for r in self.since(mark)) or "  (no requests)"
 
     # -- request handling ------------------------------------------------------------------
@@ -269,19 +338,29 @@ class GitHTTPServer:
         limit = None
         if fault is not None:
             limit = fault.cut_after if fault.cut_after is not None else fault.stall_after
-        sent = 0
+        framer = _Reframer() if limit is not None else None
+        sent, pending = 0, b""
         try:
             while True:
-                want = _CHUNK if limit is None else max(0, min(_CHUNK, limit - sent))
-                data = out.read1(want) if want else b""
-                if want and not data:
-                    break
-                if data:
-                    h.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
-                    sent += len(data)
+                if not pending:
+                    data = out.read1(_CHUNK)
+                    if not data:
+                        pending = framer.tail() if framer else b""
+                        if not pending:
+                            break
+                    else:
+                        pending = framer.feed(data) if framer else data
+                        if not pending:
+                            continue
+                take = pending if limit is None else pending[:max(0, limit - sent)]
+                pending = pending[len(take):]
+                if take:
+                    h.wfile.write(b"%x\r\n%s\r\n" % (len(take), take))
+                    sent += len(take)
                 if limit is not None and sent >= limit:
                     h.wfile.flush()
                     rec.body_bytes = sent
+                    rec.pack_bytes = framer.pack_bytes_before(sent)
                     if fault.cut_after is not None:
                         rec.fault = f"cut after {sent}B"
                         self._abort(h)
@@ -295,6 +374,8 @@ class GitHTTPServer:
         except (BrokenPipeError, ConnectionResetError):
             rec.fault = rec.fault or "client went away"
         rec.body_bytes = sent
+        if framer is not None:
+            rec.pack_bytes = framer.pack_bytes_before(sent)
 
     @staticmethod
     def _abort(h: BaseHTTPRequestHandler) -> None:

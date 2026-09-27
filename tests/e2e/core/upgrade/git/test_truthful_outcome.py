@@ -87,8 +87,8 @@ def test_retry_after_interrupted_fetches_heals_without_refetching_history(w):
 
     before = w.head()
     target = w.publish("release: e2e truthful after cuts", {"e2e-truthful-after-cuts.txt": "release\n"})
-    # Every checkout lazy fetch is cut mid-pack (each leaves a dead temp pack behind); the commits
-    # themselves arrive on the first attempt.
+    # Every checkout lazy fetch is cut mid-pack, after ~20 KB of pack data in whole pkt-lines (so
+    # index-pack has started and each cut leaves a dead temp pack); the commits arrive on the first attempt.
     w.srv.arm(Fault(cut_after=20000, command="fetch", skip=1, times=99))
     for attempt in range(3):
         mark = w.srv.mark()
@@ -98,7 +98,10 @@ def test_retry_after_interrupted_fetches_heals_without_refetching_history(w):
     w.srv.clear_faults()
     pack_dir = w.checkout / ".git" / "objects" / "pack"
     dead = sorted(p.name for p in pack_dir.glob("tmp_*"))
-    assert dead, f"the interrupted fetches left no temp packs; the cell exercised nothing:\n{w.diag(cp, mark)}"
+    assert dead, (
+        "the interrupted fetches left no temp packs; the cell exercised nothing (a cut the client saw before "
+        "any whole pack pkt-line never starts index-pack: see 'pack bytes in whole pkt-lines' below)\n"
+        f"objects/pack: {sorted(p.name for p in pack_dir.iterdir())}\n{w.diag(cp, mark)}")
     old = time.time() - 3600  # the user retries later: dead transfers are past any in-flight window
     for p in pack_dir.glob("tmp_*"):
         os.utime(p, (old, old))
