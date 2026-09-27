@@ -192,6 +192,9 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
         if strict:
             return (create_time is not None and proc.create_time() == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
+        # An exited process its parent has not reaped yet runs nothing and holds nothing: dead.
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return False
         return _same_incarnation(proc, create_time)
     except psutil.NoSuchProcess:
         return False
