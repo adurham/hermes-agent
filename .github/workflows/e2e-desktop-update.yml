@@ -78,10 +78,16 @@ jobs:
         working-directory: apps/desktop
         run: |
           # Resource trail in the log, so a runner that dies mid-run leaves its last state behind.
-          ( while sleep 20; do
+          ( while sleep 10; do
               echo "::group::resources $(date -u +%T)"
               df -h / "$RUNNER_TEMP" | tail -n +2; free -g | head -2
-              ps -eo pid,ppid,etimes,rss,args --sort=-rss | head -8 | cut -c1-200
+              echo "procs=$(ps -e --no-headers | wc -l) upload-packs=$(pgrep -c -f git-upload-pack || true)"
+              ps -eo pid,ppid,etimes,rss,args --sort=-rss | head -6 | cut -c1-200
+              # The client side of any git transfer, with its ancestry.
+              p=$(pgrep -f -o 'git(-core/git)? .*(fetch|clone)' || true)
+              while [ -n "$p" ] && [ "$p" != 1 ]; do
+                ps -o pid=,etimes=,args= -p "$p" | cut -c1-220; p=$(ps -o ppid= -p "$p" | tr -d ' ')
+              done
               echo "::endgroup::"
             done ) &
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
