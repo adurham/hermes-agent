@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -36,20 +36,52 @@ def _app(adapter):
     return app
 
 
-def _owner_answers(home, reply):
-    """What the Desktop's live session does: claim the delivery, run it as its next turn, settle it."""
+def _owner_settles(monkeypatch, home, *, status, reply="", error="", reason=""):
+    """Start an owner that claims the exact delivery after durable admission."""
+    admitted: queue.Queue[str] = queue.Queue()
+    original_deliver = mailbox.deliver_to_live_owner
+
+    def _deliver(*args, **kwargs):
+        record = original_deliver(*args, **kwargs)
+        admitted.put(record["delivery_id"])
+        return record
+
+    monkeypatch.setattr(mailbox, "deliver_to_live_owner", _deliver)
+    ready = threading.Event()
+    errors = []
+
     def _run():
-        owner = mailbox.find_canonical_live_owner(home)
-        for _ in range(200):
+        try:
+            owner = mailbox.find_canonical_live_owner(home)
+            ready.set()
+            delivery_id = admitted.get()
             claimed = mailbox.claim_pending_delivery(home, owner)
-            if claimed is not None:
-                mailbox.complete_delivery(home, claimed["delivery_id"], status="settled", reply=reply)
-                return
-            time.sleep(0.02)
+            assert claimed is not None and claimed["delivery_id"] == delivery_id
+            mailbox.complete_delivery(
+                home, delivery_id, status=status, reply=reply, error=error, reason=reason
+            )
+        except BaseException as exc:
+            errors.append(exc)
+            ready.set()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    return thread
+    ready.wait()
+    if errors:
+        raise errors[0]
+    return thread, errors
+
+
+def _owner_answers(monkeypatch, home, reply):
+    """What the Desktop's live session does: claim the delivery, run it as its next turn, settle it."""
+    return _owner_settles(monkeypatch, home, status="settled", reply=reply)
+
+
+def _join_owner(owner) -> None:
+    thread, errors = owner
+    thread.join()
+    if errors:
+        raise errors[0]
 
 
 @pytest.mark.asyncio
@@ -81,7 +113,7 @@ async def test_a_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
             session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
             metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
         assert lease is not None and refusal is None
-    owner = _owner_answers(home, "pong") if owner_replies and target == "bot-chat" else None
+    owner = _owner_answers(monkeypatch, home, "pong") if owner_replies and target == "bot-chat" else None
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter._session_db = db
     try:
@@ -90,7 +122,7 @@ async def test_a_peer_turn_into_an_open_bot_chat_is_answered_by_its_live_owner(
                 resp = await cli.post(f"/api/sessions/{target}/chat", json={"message": "ping", "author": AUTHOR})
                 body = await resp.json()
         if owner is not None:
-            owner.join(5)
+            _join_owner(owner)
         assert resp.status == status, body
         assert run.called is turn_ran_here
         admitted = sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))
@@ -128,24 +160,6 @@ def _runs_app(adapter):
     return app
 
 
-def _owner_settles(home, *, status, reply="", error="", reason="", after=0.05):
-    """The Desktop's live session: claim the delivery, run it, write the receipt."""
-    def _run():
-        owner = mailbox.find_canonical_live_owner(home)
-        for _ in range(200):
-            claimed = mailbox.claim_pending_delivery(home, owner)
-            if claimed is not None:
-                time.sleep(after)
-                mailbox.complete_delivery(home, claimed["delivery_id"], status=status, reply=reply,
-                                          error=error, reason=reason)
-                return
-            time.sleep(0.02)
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    return thread
-
-
 async def _poll_terminal(cli, run_id, *, until=("completed", "failed", "cancelled"), tries=100):
     status = {}
     for _ in range(tries):
@@ -181,7 +195,13 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
         session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
         metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
     assert lease is not None and refusal is None
-    owner = _owner_settles(home, status=receipt[0], reply=receipt[1], error=receipt[2], reason=receipt[3]) if receipt else None
+    owner = (
+        _owner_settles(
+            monkeypatch, home, status=receipt[0], reply=receipt[1], error=receipt[2], reason=receipt[3]
+        )
+        if receipt
+        else None
+    )
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
     adapter._session_db = db
     ran_here = []
@@ -205,7 +225,7 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
                     assert (await cli.post(f"/v1/runs/{run_id}/stop")).status == 200
                 status = await _poll_terminal(cli, run_id)
         if owner is not None:
-            owner.join(5)
+            _join_owner(owner)
         assert status["status"] == expected[0], status
         assert bool(ran_here) is turn_ran_here
         admitted = sorted((home / "runtime" / "bot_live_delivery").glob("*.json"))

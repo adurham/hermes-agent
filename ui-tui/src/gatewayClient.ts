@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -60,25 +59,24 @@ const resolveSidecarUrl = () => {
   return raw ? raw : null
 }
 
-const resolvePython = (root: string) => {
-  const configured = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim()
+const resolvePython = () => {
+  // Trust HERMES_PYTHON only. The launcher guarantees it: hermes_cli/main.py
+  // validates it and falls back to its own sys.executable, and the Nix
+  // wrapper sets it too. So a TUI started the normal way already knows its
+  // interpreter, and scanning VIRTUAL_ENV / .venv here can only find a
+  // DIFFERENT python than the parent process runs on — with the pm store,
+  // a stale venv path is actively dangerous (the interpreter a gateway
+  // child gets must match the one that spawned it).
+  const configured = process.env.HERMES_PYTHON?.trim()
 
   if (configured) {
     return configured
   }
 
-  const venv = process.env.VIRTUAL_ENV?.trim()
-
-  const hit = [
-    venv && resolve(venv, 'bin/python'),
-    venv && resolve(venv, 'Scripts/python.exe'),
-    resolve(root, '.venv/bin/python'),
-    resolve(root, '.venv/bin/python3'),
-    resolve(root, 'venv/bin/python'),
-    resolve(root, 'venv/bin/python3')
-  ].find(p => p && existsSync(p))
-
-  return hit || (process.platform === 'win32' ? 'python' : 'python3')
+  // The one case with no launcher above it: `npm run dev` / `npm start`
+  // straight out of ui-tui/. A developer doing that runs inside their own
+  // activated environment, so PATH is the right question there.
+  return process.platform === 'win32' ? 'python' : 'python3'
 }
 
 // Matches `<scheme>://user:pass@host…` style user-info segments in
@@ -118,7 +116,7 @@ export interface LocalGatewayGrant { url: string; protocols: string[]; profile_i
 const bootstrapLocalGateway = async (start: boolean): Promise<LocalGatewayGrant> => {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
-  const { stdout } = await promisify(execFile)(resolvePython(root),
+  const { stdout } = await promisify(execFile)(resolvePython(),
     [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : [])],
     { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
 

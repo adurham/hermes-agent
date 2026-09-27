@@ -4,7 +4,6 @@ import sys
 import types
 from types import SimpleNamespace
 
-
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
@@ -72,7 +71,6 @@ def _patch_agent_bootstrap(monkeypatch):
     )
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
-
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -86,12 +84,10 @@ def _codex_message_response(text: str):
         model="gpt-5-codex",
     )
 
-
 class _UnauthorizedError(RuntimeError):
     def __init__(self):
         super().__init__("Error code: 401 - unauthorized")
         self.status_code = 401
-
 
 class _FakeOpenAI:
     def __init__(self, **kwargs):
@@ -99,7 +95,6 @@ class _FakeOpenAI:
 
     def close(self):
         return None
-
 
 class _Codex401ThenSuccessAgent(run_agent.AIAgent):
     refresh_attempts = 0
@@ -162,5 +157,3 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch, tmp_p
     assert _Codex401ThenSuccessAgent.refresh_attempts == 1
     assert _Codex401ThenSuccessAgent.last_init["provider"] == "openai-codex"
     assert _Codex401ThenSuccessAgent.last_init["api_mode"] == "codex_responses"
-
-

@@ -7,6 +7,7 @@ import {
   notifyPairingChanged,
   notifyPetChanged,
   notifyPlatformsChanged,
+  notifyProjectsChanged,
   notifySessionsChanged,
   notifySetupReady,
   type PetChangeMeta,
@@ -71,6 +72,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     event.type === 'pet.changed' ||
     event.type === 'cron.changed' ||
     event.type === 'sessions.changed' ||
+    event.type === 'projects.changed' ||
     event.type === 'platforms.changed' ||
     event.type === 'pairing.changed'
   ) {
@@ -84,6 +86,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
         notifyPetChanged(payload as PetChangeMeta | undefined)
       } else if (event.type === 'cron.changed') {
         notifyCronChanged()
+      } else if (event.type === 'projects.changed') {
+        notifyProjectsChanged()
       } else if (event.type === 'platforms.changed') {
         notifyPlatformsChanged()
       } else if (event.type === 'pairing.changed') {

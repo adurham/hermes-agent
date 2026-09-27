@@ -147,7 +147,8 @@ def write_remote_roster(root: Path | str, rows: Any) -> int:
 def read_remote_roster(root: Path | str) -> list[dict]:
     """The current remote roster (possibly empty). Never raises."""
     try:
-        data = json.loads((relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8"))
+        raw = (relay_root(root) / ROSTER_FILE).read_text(encoding="utf-8-sig")
+        data = json.loads(raw)
         agents = data.get("agents") if isinstance(data, dict) else None
         return [r for r in map(_normalize_roster_row, agents) if r] if isinstance(agents, list) else []
     except FileNotFoundError:
@@ -296,7 +297,7 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     """True when the outbox envelope is older than ``ttl``; writes the 'queued_expired'
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
-        env = json.loads(path.read_text(encoding="utf-8"))
+        env = json.loads(path.read_text(encoding="utf-8-sig"))  # BOM-tolerant (pm-era read fix)
         if not isinstance(env, dict):
             raise ValueError(f"expected a JSON object, got {type(env).__name__}")
         created = float(env.get("created_at") or path.stat().st_mtime)
@@ -345,7 +346,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+            envelope = json.loads(claimed.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
             out.append(envelope)
@@ -371,7 +372,7 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
         if (base / REPLIES_DIR / path.name).exists():
             continue
         with contextlib.suppress(OSError, ValueError):
-            envelope = json.loads(path.read_text(encoding="utf-8"))
+            envelope = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
             if envelope.get("canonical_delivery_v1") is not True or envelope.get("id") in seen:

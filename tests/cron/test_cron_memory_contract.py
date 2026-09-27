@@ -49,7 +49,6 @@ from unittest.mock import MagicMock, patch
 
 from tests.cron.test_scheduler import _run_owned_job
 
-
 @contextlib.contextmanager
 def _run_job_patches(tmp_path):
     """Patch bundle so run_job runs offline; yields (fake_db, mock_agent_cls).
@@ -86,9 +85,6 @@ def _run_job_patches(tmp_path):
         entered = [stack.enter_context(cm) for cm in base]
         yield fake_db, entered[-1]
 
-
-
-
 class TestCronMemoryContractOff:
     """Direction (b): the supported OFF switch stays off."""
 
@@ -116,4 +112,3 @@ class TestCronMemoryContractOff:
             "config.yaml agent.disabled_toolsets must propagate 'memory' into "
             "the cron agent's denylist — the OFF direction of the contract"
         )
-
