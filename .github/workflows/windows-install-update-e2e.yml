@@ -26,7 +26,8 @@ jobs:
   install-update:
     name: Windows install.ps1 + hermes update E2E
     runs-on: windows-latest-32-core
-    timeout-minutes: 40
+    # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
+    timeout-minutes: 50
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -59,7 +60,7 @@ jobs:
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           # One journey per file, all in parallel (each is mostly network + subprocess wait).
           HERMES_TEST_WORKERS: '6'
-          HERMES_TEST_FILE_TIMEOUT: '1800'
+          HERMES_TEST_FILE_TIMEOUT: '2400'
           HERMES_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
