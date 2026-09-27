@@ -25,17 +25,17 @@ import {
   backendServeProcesses,
   closeQuietly,
   currentAs,
+  desktopLog,
   diagnostics,
-  isAlive,
   git,
   installProcesses,
+  isAlive,
   launchInstalledApp,
   openAbout,
   publishUpstream,
   readText,
   startInstallSession,
   updateLogLines,
-  desktopLog,
   waitFor,
   waitForUpdateOffer
 } from './harness'
@@ -61,6 +61,7 @@ test('Update now while a terminal update runs is refused, and the panel is truth
     app.process().once('exit', () => {
       appExited = true
     })
+
     const explain = (extra = '') =>
       diagnostics(
         facts,
@@ -78,11 +79,13 @@ test('Update now while a terminal update runs is refused, and the panel is truth
 
       await test.step('a terminal `hermes update` is running', async () => {
         const out = fs.openSync(cliLog, 'w')
+
         const cli = spawn(facts.hermes, ['update', '--yes'], {
           cwd: facts.home,
           env: { ...env, TERM: 'dumb' },
           stdio: ['ignore', out, out]
         })
+
         cli.once('exit', code => {
           cliExit = code ?? -1
         })
@@ -130,12 +133,14 @@ test('Update now while a terminal update runs is refused, and the panel is truth
         if (!appExited) {
           await closeQuietly(app)
         }
+
         await waitFor(
           'the pre-update backend to be gone once its app is',
           () => oldBackends.every(pid => !isAlive(pid)),
           { timeout: 60_000, explain }
         )
         const reopened = await launchInstalledApp(facts, env)
+
         try {
           const ws2 = recordWebSockets(reopened.page)
           await waitForInteractive(reopened.app, reopened.page).catch(error => {

@@ -110,6 +110,7 @@ function apiHandler(origin: string, hits: string[]) {
   return (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', 'https://api.github.com')
     hits.push(`${req.method} ${url.pathname}`)
+
     const send = (status: number, body: string, type = 'application/json') => {
       res.writeHead(status, { 'content-type': type })
       res.end(body)
@@ -140,6 +141,7 @@ function apiHandler(origin: string, hits: string[]) {
       }
 
       const behind = gitIn(origin, ['rev-list', '--count', `${head}..${base}`])
+
       const commits = log.out
         ? log.out.split('\n').map(line => {
             const [sha, author, date, message] = line.split('\x1f')

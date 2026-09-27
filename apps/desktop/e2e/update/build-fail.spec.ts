@@ -58,10 +58,12 @@ test('a Desktop build failure during Update now is reported to the user as a fai
         () => /\[updates\] detached update (finished|FAILED)/.test(desktopLog(facts)),
         { timeout: 12 * 60_000, interval: 2_000, explain }
       )
+
       const outcome = desktopLog(facts)
         .split('\n')
         .filter(line => /\[updates\] detached update/.test(line))
         .join('\n')
+
       expect(outcome, `the update is reported as FAILED, not finished\n${explain()}`).toMatch(/detached update FAILED/)
       expect(outcome).not.toMatch(/detached update finished OK/)
       expect(

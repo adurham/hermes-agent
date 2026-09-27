@@ -19,7 +19,7 @@ import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, expect, type Page } from '@playwright/test'
 
-import { type CoreSandbox, providerConfigYaml, sandboxProcesses, type ProcInfo } from '../core/harness'
+import { type CoreSandbox, type ProcInfo, providerConfigYaml, sandboxProcesses } from '../core/harness'
 import { type ScriptedProvider, startScriptedProvider } from '../core/provider'
 
 import { gatedOn, KNOWN } from './gates'

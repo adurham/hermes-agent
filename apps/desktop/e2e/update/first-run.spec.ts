@@ -23,14 +23,14 @@ import { recordWebSockets, send, waitForInteractive } from '../core/harness'
 
 import {
   backendServeProcesses,
+  closeQuietly,
   diagnostics,
   firstRunScreensSeen,
   type InstallFacts,
   installFirstRunSampler,
   installProcesses,
   launchInstalledApp,
-  startInstallSession,
-  closeQuietly
+  startInstallSession
 } from './harness'
 
 const RUN = Date.now().toString(36)

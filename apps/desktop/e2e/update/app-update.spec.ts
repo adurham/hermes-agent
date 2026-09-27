@@ -24,6 +24,7 @@ import { recordWebSockets, send, waitForInteractive } from '../core/harness'
 import {
   backendServeProcesses,
   clickUpdateNowAndExpectHandoff,
+  closeQuietly,
   currentAs,
   desktopLog,
   desktopMainProcesses,
@@ -36,8 +37,7 @@ import {
   publishUpstream,
   startInstallSession,
   waitFor,
-  waitForUpdateOffer,
-  closeQuietly
+  waitForUpdateOffer
 } from './harness'
 
 const RUN = Date.now().toString(36)
@@ -82,6 +82,7 @@ test('clicking Update now moves the backend to the new commit, relaunches the ap
       expect(git(facts.checkout, 'rev-parse', 'HEAD'), 'the backend checkout is on the new upstream commit').toBe(
         target
       )
+
       // The updater's progress window can be the same Electron binary (--app=http://127.0.0.1:...): not a relaunch.
       const relaunched = await waitFor(
         'the app to relaunch itself',
@@ -91,6 +92,7 @@ test('clicking Update now moves the backend to the new commit, relaunches the ap
           ),
         { timeout: 3 * 60_000, interval: 1_000, explain: () => explain(`handoff log:\n${handoffLog(facts)}`) }
       )
+
       await waitFor(
         'the relaunched app to log the update result',
         () => /\[updates\] detached update (finished|FAILED)/.test(desktopLog(facts)),
