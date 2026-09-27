@@ -23,7 +23,6 @@ from pathlib import Path
 import psutil
 import pytest
 
-from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.windows_update._machine import (
     REQUIRES_OPT_IN,
     Journey,
@@ -37,9 +36,6 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
-# Gates cover observed failures only. On main these cells pass: the gateway boots on the
-# managed Python and skips the stale venv (#123185, #123965 and #123972 do not reproduce).
-KNOWN: dict[str, tuple[str, str]] = {}
 _WORKER_DEATH = re.compile(r"^.*Supervised task \S+ died.*$", re.M)
 
 
@@ -128,10 +124,9 @@ def _inspect(pid: int) -> dict:
 def test_gateway_runs_on_managed_python(journey: Journey) -> None:
     m, info = journey.machine, journey["gateway_proc"]
     system_python = journey["system_python"]
-    with known_gate(KNOWN, "path_python"):
-        assert _under(info["exe"], m.hermes_home) and not _under(info["exe"], system_python), fail_with(
-            m, f"the gateway runs on a Python outside the managed runtime: {info['exe']} "
-               f"(PATH starts with {system_python}; managed runtime lives under {m.hermes_home})")
+    assert _under(info["exe"], m.hermes_home) and not _under(info["exe"], system_python), fail_with(
+        m, f"the gateway runs on a Python outside the managed runtime: {info['exe']} "
+           f"(PATH starts with {system_python}; managed runtime lives under {m.hermes_home})")
 
 
 def test_gateway_does_not_load_stale_in_tree_venv(journey: Journey) -> None:
@@ -144,10 +139,9 @@ def test_gateway_does_not_load_stale_in_tree_venv(journey: Journey) -> None:
     loaded = sorted(journey.results["loaded_by_gateway"])
     log = m.hermes_home / "logs" / "gateway.log"
     deaths = _WORKER_DEATH.findall(log.read_text(encoding="utf-8", errors="replace")) if log.is_file() else []
-    with known_gate(KNOWN, "stale_venv"):
-        assert not loaded and not published, fail_with(
-            m, f"the gateway loaded the stale pre-PM in-tree venv {stale} (site dir added by pids "
-               f"{loaded}, gateway pid {info['pid']}; published via {published or 'nothing'}; worker deaths: {deaths[:3]})")
+    assert not loaded and not published, fail_with(
+        m, f"the gateway loaded the stale pre-PM in-tree venv {stale} (site dir added by pids "
+           f"{loaded}, gateway pid {info['pid']}; published via {published or 'nothing'}; worker deaths: {deaths[:3]})")
     assert not deaths, fail_with(m, f"gateway supervised workers died: {deaths[:5]}")
 
 

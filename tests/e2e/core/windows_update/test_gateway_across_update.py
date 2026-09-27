@@ -14,7 +14,7 @@ import re
 import psutil
 import pytest
 
-from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.windows._helpers import wait_until
 from tests.e2e.core.windows_update._machine import (
     REQUIRES_OPT_IN,
@@ -27,15 +27,8 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
-_INVISIBLE = ("gated on #124318 (same root as #123430/#123463/#123490): the updater relaunches the "
-              "gateway as `python -I -c ...`, a form Windows gateway discovery rejects, so the live "
-              "gateway is invisible")
-KNOWN = {
-    "update_restart": (r"^hermes update with a running gateway reported a failed gateway restart", _INVISIBLE),
-    "discoverable": (r"^after update the serving gateway \(pid \d+\) is invisible", _INVISIBLE),
-    "next_update": (r"^the next hermes update is blocked at the gateway pause step", _INVISIBLE),
-    "stop": (r"^after update `hermes gateway stop` left the serving gateway \(pid \d+\) running", _INVISIBLE),
-}
+_INVISIBLE = ("gated on #124318: the gateway the updater relaunches holds its lock without gateway.pid "
+              "metadata, so `hermes gateway status`/`stop` and the next update's pause cannot see it")
 _RESTART_FAILURE = re.compile(
     r"^.*(recovery failed|restart could not be verified|restart incomplete|not verified alive).*$", re.M)
 _STATUS_LINE = re.compile(r"^.*[✓✗].*[Gg]ateway.*$", re.M)
@@ -95,7 +88,8 @@ def journey(tmp_path_factory):
 
 def test_launcher_started_gateway_is_visible_before_update(journey: Journey) -> None:
     m, state, status = journey.machine, journey["state_before"], journey["status_before"]
-    assert status.returncode == 0 and "running" in _status_line(status.stdout).lower(), fail_with(
+    line = _status_line(status.stdout)
+    assert status.returncode == 0 and line.startswith("✓") and str(state.get("pid")) in line, fail_with(
         m, f"the launcher-started gateway (pid {state.get('pid')}) is invisible to `hermes gateway status` "
            f"before any update: {_status_line(status.stdout)!r}", status)
 
@@ -104,7 +98,9 @@ def test_update_with_running_gateway_succeeds(journey: Journey) -> None:
     m, run = journey.machine, journey["update"]
     journey["state_before"]  # the precondition: a gateway was running when the update began
     failure = _RESTART_FAILURE.search(run.stdout)
-    with known_gate(KNOWN, "update_restart"):
+    with known_failure(r"^hermes update with a running gateway reported a failed gateway restart "
+                       r"\(rc=\d+\): ⚠ Windows gateway restart could not be verified",
+                       _INVISIBLE):
         assert run.returncode == 0 and failure is None, fail_with(
             m, f"hermes update with a running gateway reported a failed gateway restart "
                f"(rc={run.returncode}): {failure.group(0).strip() if failure else '<no restart message>'}", run)
@@ -121,7 +117,8 @@ def test_gateway_discoverable_after_update(journey: Journey) -> None:
     m, state, status = journey.machine, journey["state_after"], journey["status_after"]
     pid, pidfile = int(state.get("pid") or 0), journey["pidfile_after"]
     line = _status_line(status.stdout)
-    with known_gate(KNOWN, "discoverable"):
+    with known_failure(r"^after update the serving gateway \(pid \d+\) is invisible",
+                       _INVISIBLE):
         assert status.returncode == 0 and str(pid) in line and pidfile, fail_with(
             m, f"after update the serving gateway (pid {pid}) is invisible: `hermes gateway status` says "
                f"{line!r}; gateway.pid present={pidfile}", status)
@@ -131,7 +128,9 @@ def test_next_update_is_not_blocked(journey: Journey) -> None:
     m, run = journey.machine, journey["update_again"]
     journey["state_after"]  # a gateway was running (the relaunched one)
     blocked = "Could not map Windows gateway PIDs" in run.stdout
-    with known_gate(KNOWN, "next_update"):
+    with known_failure(r"^the next hermes update is blocked at the gateway pause step \(rc=1, "
+                       r"'Could not map Windows gateway PIDs' printed=True\)",
+                       _INVISIBLE):
         assert run.returncode == 0 and not blocked, fail_with(
             m, f"the next hermes update is blocked at the gateway pause step (rc={run.returncode}, "
                f"'Could not map Windows gateway PIDs' printed={blocked})", run)
@@ -141,7 +140,8 @@ def test_gateway_stop_after_update(journey: Journey) -> None:
     m, stop, state = journey.machine, journey["stop"], journey["state_before_stop"]
     pid = int(state.get("pid") or 0)
     assert pid, fail_with(m, f"no gateway recorded before stop: {state}")
-    with known_gate(KNOWN, "stop"):
+    with known_failure(r"^after update `hermes gateway stop` left the serving gateway \(pid \d+\) running",
+                       _INVISIBLE):
         assert journey["stopped"], fail_with(
             m, f"after update `hermes gateway stop` left the serving gateway (pid {pid}) running", stop)
     assert stop.returncode == 0, fail_with(m, f"hermes gateway stop exited {stop.returncode}", stop)

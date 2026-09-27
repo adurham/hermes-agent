@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.windows_update._machine import (
     NEXT_MARKER,
     REQUIRES_OPT_IN,
@@ -29,13 +29,6 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
-KNOWN = {
-    "update": (
-        r"^hermes update exited 1: ✗ Update failed: \[WinError 2\]",
-        "gated on #124634: on a machine without system Git, the pinned Git that install.ps1 "
-        "staged never reaches `hermes update`'s PATH",
-    ),
-}
 
 
 @pytest.fixture(scope="module")
@@ -82,11 +75,16 @@ def test_first_agent_launch_runs_the_turn(journey: Journey) -> None:
 
 def test_update_moves_checkout_to_next(journey: Journey) -> None:
     m, run = journey.machine, journey["update"]
-    with known_gate(KNOWN, "update"):
-        assert run.returncode == 0, fail_with(m, f"hermes update exited {run.returncode}: {failure_line(run)}", run)
+    with known_failure(r"^hermes update exited 1: ✗ Update failed: \[WinError 2\]",
+                       "gated on #124634: on a machine without system Git, the pinned Git install.ps1 "
+                       "staged never reaches `hermes update`'s PATH"):
+        assert run.returncode == 0, fail_with(
+            m, f"hermes update exited {run.returncode}: {failure_line(run)}", run)
     head = m.installed_head()
-    assert head == m.next, fail_with(m, f"after hermes update the checkout is at {head}, expected NEXT {m.next}", run)
-    assert (m.install_dir / NEXT_MARKER).is_file(), fail_with(m, "NEXT's marker file is missing from the checkout", run)
+    assert head == m.next, fail_with(
+        m, f"after hermes update the checkout is at {head}, expected NEXT {m.next}", run)
+    assert (m.install_dir / NEXT_MARKER).is_file(), fail_with(
+        m, "NEXT's marker file is missing from the checkout", run)
     receipt_path = m.hermes_home / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.is_file() else {}
     assert receipt.get("outcome") == "success", fail_with(
