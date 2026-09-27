@@ -9,7 +9,7 @@ import { watchLinuxTrayHost } from './tray-host'
 
 function bus(hostRegistered: boolean) {
   const connection = Object.assign(new EventEmitter(), { stream: { destroy: vi.fn() } })
-  const invoke = vi.fn(async () => ({ signature: 'b', value: hostRegistered }))
+  const invoke = vi.fn(async (): Promise<unknown> => ({ signature: 'b', value: hostRegistered }))
 
   const instance = {
     connection,
