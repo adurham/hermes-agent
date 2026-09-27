@@ -87,7 +87,6 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
-import { liveRoutedSessionId } from '@/store/session-states'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -302,7 +301,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
 
-  const getRoutedStoredSessionId = useCallback(() => liveRoutedSessionId(routedSessionIdRef.current), [])
+  const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
 
   const clearRoutedSessionIntent = useCallback(() => {
     routedSessionIdRef.current = null
