@@ -148,11 +148,12 @@ test('Update now while a terminal update runs is refused, and the panel is truth
               message: 'the app reports the install current on the new commit'
             })
             .toEqual({ currentSha: target, updateAvailable: false })
-          await openAbout(reopened.page)
-          await expect(reopened.page.getByRole('button', { name: /^update now$/i })).toHaveCount(0, { timeout: 60_000 })
+          // Chat first: the About panel replaces the chat view.
           provider.script(U(1), [{ text: [`${A(1)} `, 'after ', 'terminal ', 'update'] }])
           await send(reopened.page, `${U(1)} still here?`, 'Enter', ws2)
           await expect(reopened.page.getByText(`${A(1)} after terminal update`)).toBeVisible({ timeout: 120_000 })
+          await openAbout(reopened.page)
+          await expect(reopened.page.getByRole('button', { name: /^update now$/i })).toHaveCount(0, { timeout: 60_000 })
         } finally {
           await closeQuietly(reopened.app)
         }

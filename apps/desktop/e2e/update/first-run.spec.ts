@@ -6,7 +6,8 @@
  * straight to chat — on the first launch and on every later one — and never
  * show the first-run setup chooser or start the bootstrap installer
  * (#123888, #123800: the chooser / installer came back on every launch while
- * the local install was healthy).
+ * the local install was healthy). The second launch drops the Desktop
+ * bootstrap marker first: a usable install is recognised off the filesystem.
  *
  * Real entry point: the packaged app the install built, launched with the
  * install's environment and no HERMES_DESKTOP_HERMES_ROOT override, so the app
@@ -66,7 +67,13 @@ test('a healthy local install opens straight to chat on every launch: no setup c
 
   try {
     for (const launch of [1, 2]) {
-      await test.step(`launch ${launch}`, async () => {
+      await test.step(launch === 1 ? 'launch 1' : 'launch 2, bootstrap marker absent', async () => {
+        if (launch === 2) {
+          // A usable install the Desktop bootstrap never stamped (a CLI install from before the
+          // marker, or one whose marker was lost): usability, not the marker, decides.
+          fs.rmSync(path.join(facts.checkout, '.hermes-bootstrap-complete'), { force: true })
+        }
+
         const installer = startInstallerSampler(facts)
         const { app, page, logTail } = await launchInstalledApp(facts, env)
 
@@ -76,6 +83,11 @@ test('a healthy local install opens straight to chat on every launch: no setup c
           await waitForInteractive(app, page, 180_000).catch(error => {
             throw new Error(`${(error as Error).message}\n${diagnostics(facts, logTail())}`)
           })
+
+          expect(
+            await firstRunScreensSeen(page),
+            `launch ${launch} of a healthy install showed the first-run setup chooser\n${diagnostics(facts, logTail())}`
+          ).toEqual([])
 
           // The backend the app started is the user's install, not something it provisioned.
           const serve = backendServeProcesses(facts)
@@ -90,10 +102,6 @@ test('a healthy local install opens straight to chat on every launch: no setup c
           await send(page, `${U(launch)} hello`, 'Enter', ws)
           await expect(page.getByText(`${A(launch)} healthy install`)).toBeVisible({ timeout: 120_000 })
 
-          expect(
-            await firstRunScreensSeen(page),
-            `launch ${launch} of a healthy install showed the first-run setup chooser\n${diagnostics(facts, logTail())}`
-          ).toEqual([])
           expect(
             installer.stop(),
             `launch ${launch} of a healthy install started the bootstrap installer\n${diagnostics(facts, logTail())}`
