@@ -115,6 +115,6 @@ def test_tunnel_cut_to_channel_host_fails_fast_and_changes_nothing(inst):
     finally:
         edge.close()
     assert r.secs < 60, f"a cut tunnel took {r.secs:.0f}s to fail\n" + r.report(inst)
+    S.assert_nothing_changed(inst, before, r, "tunnel cut to the channel host")
     assert "channel" in r.out.lower() and "unavailable" in r.out.lower(), (
         "the failure does not say the release channel was unreachable\n" + r.report(inst))
-    S.assert_nothing_changed(inst, before, r, "tunnel cut to the channel host")

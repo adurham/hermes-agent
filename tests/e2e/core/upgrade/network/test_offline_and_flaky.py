@@ -53,9 +53,9 @@ def test_offline_update_fails_fast_and_changes_nothing(inst):
     before = inst.state()
     r = inst.hermes("update", "--yes", edge=None, timeout=300)
     assert r.secs < FAST, f"an offline update took {r.secs:.0f}s to give up\n" + r.report(inst)
+    S.assert_nothing_changed(inst, before, r, "offline update")
     assert "unavailable" in r.out.lower() or "cannot reach" in r.out.lower(), (
         "the offline failure does not say the network was unreachable\n" + r.report(inst))
-    S.assert_nothing_changed(inst, before, r, "offline update")
 
 
 def test_offline_provisioning_of_a_missing_tool_fails_loudly(inst):
@@ -66,11 +66,11 @@ def test_offline_provisioning_of_a_missing_tool_fails_loudly(inst):
         before = inst.state()
         r = inst.hermes("pm", "install", "ripgrep", edge=None, timeout=300)
         assert r.secs < FAST, f"offline provisioning took {r.secs:.0f}s to give up\n" + r.report(inst)
+        S.assert_nothing_changed(inst, before, r, "offline `hermes pm install ripgrep`")
         assert "ripgrep" in r.out and "download failed" in r.out, (
             "the failure does not name the tool and the failed download\n" + r.report(inst))
         assert not (inst.sb.hermes_home / "tools" / tool["entry"]).exists(), (
             "an offline install left a store entry behind\n" + r.report(inst))
-        S.assert_nothing_changed(inst, before, r, "offline `hermes pm install ripgrep`")
 
 
 def test_channel_503_with_retry_after_is_retried_then_updates(inst):
@@ -105,8 +105,8 @@ def test_channel_outage_fails_truthfully_within_bounds(inst):
     finally:
         edge.close()
     assert r.secs < FAST, f"a persistent 503 took {r.secs:.0f}s to give up\n" + r.report(inst)
-    assert "503" in r.out and "channel" in r.out.lower(), "the failure does not name the 503 from the channel\n" + r.report(inst)
     S.assert_nothing_changed(inst, before, r, "channel outage")
+    assert "503" in r.out and "channel" in r.out.lower(), "the failure does not name the 503 from the channel\n" + r.report(inst)
 
 
 def test_forge_rate_limit_fails_truthfully(inst):
@@ -121,8 +121,8 @@ def test_forge_rate_limit_fails_truthfully(inst):
     finally:
         edge.close()
     assert r.secs < FAST * 2, f"a rate-limited fetch took {r.secs:.0f}s to give up\n" + r.report(inst)
-    assert "429" in r.out or "rate limit" in r.out.lower(), "the failure does not say the forge rate-limited\n" + r.report(inst)
     S.assert_nothing_changed(inst, before, r, "forge rate limit")
+    assert "429" in r.out or "rate limit" in r.out.lower(), "the failure does not say the forge rate-limited\n" + r.report(inst)
 
 
 # Where each tool's pinned artifact is downloaded from, as the PM lock declares it; the edge

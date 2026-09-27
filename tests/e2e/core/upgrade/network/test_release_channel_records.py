@@ -74,9 +74,9 @@ def test_valid_stable_record_lands_exactly_on_its_commit(inst):
 
 
 def _refused(inst: S.Installed, r: S.Result, before: dict, what: str) -> None:
+    S.assert_nothing_changed(inst, before, r, what)
     assert "stable" in r.out and "No update was applied" in r.out, (
         f"{what}: the refusal does not name the stable channel and say nothing was applied\n" + r.report(inst))
-    S.assert_nothing_changed(inst, before, r, what)
 
 
 UNAVAILABLE = {
