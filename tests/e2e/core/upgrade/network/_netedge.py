@@ -182,6 +182,7 @@ class Response:
     status: int
     body: bytes | Iterator[bytes] = b""
     headers: dict[str, str] = field(default_factory=dict)
+    note: str = ""  # diagnostic for the edge log (e.g. a failing backend's stderr)
 
 
 App = Callable[[Request], Response]
@@ -194,9 +195,11 @@ class Hit:
     method: str = ""
     path: str = ""
     status: int = 0
+    note: str = ""
 
     def __str__(self) -> str:
-        return f"{self.kind} {self.host} {self.method} {self.path} -> {self.status}".strip()
+        text = f"{self.kind} {self.host} {self.method} {self.path} -> {self.status}".strip()
+        return f"{text}  [{self.note}]" if self.note else text
 
 
 def static_app(routes: Mapping[str, bytes | Callable[[Request], Response]], *,
@@ -254,7 +257,14 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
         }
         if req.headers.get("content-encoding", "").lower() == "gzip":
             body = gzip.decompress(body)
-        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
+        # The bare origin borrows the developer checkout's objects (``--shared``); a concurrent
+        # repack there can make one backend run miss a pack. That is this fake forge failing, not
+        # the product, so the backend (stateless per request) gets a few quiet re-runs.
+        for _attempt in range(3):
+            cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
+            if cp.returncode == 0:
+                break
+            time.sleep(0.5)
         head, _, payload = cp.stdout.partition(b"\r\n\r\n")
         if not _:
             head, _, payload = cp.stdout.partition(b"\n\n")
@@ -267,9 +277,11 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
                 status = int(v.strip().split()[0])
             else:
                 headers[k.strip()] = v.strip()
-        if cp.returncode != 0 and status == 200:
-            status = 500
-        return Response(status, payload, headers)
+        note = ""
+        if cp.returncode != 0:
+            status = 500 if status == 200 else status
+            note = f"git http-backend rc={cp.returncode}: " + cp.stderr.decode("utf-8", "replace").strip()[-400:]
+        return Response(status, payload, headers, note)
 
     return app
 
@@ -311,7 +323,7 @@ class _SiteHandler(http.server.BaseHTTPRequestHandler):
             resp = self.app(req)
         except Exception as exc:  # a broken fake must be visible, not a hang
             resp = Response(500, f"fake site error: {exc!r}\n".encode())
-        self.hits.append(Hit(self.site_host, "request", self.command, path, resp.status))
+        self.hits.append(Hit(self.site_host, "request", self.command, path, resp.status, resp.note))
         self.send_response(resp.status)
         for k, v in resp.headers.items():
             if k.lower() not in ("content-length", "transfer-encoding", "connection"):
