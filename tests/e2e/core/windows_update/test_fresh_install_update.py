@@ -31,6 +31,13 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 
 
 
+def _installed_state(machine) -> dict:
+    marker = machine.install_dir / ".hermes-bootstrap-complete"
+    pinned = (json.loads(marker.read_text(encoding="utf-8-sig")).get("pinnedCommit")
+              if marker.is_file() else None)
+    return {"head": machine.installed_head(), "marker": marker.is_file(), "pinned": pinned}
+
+
 @pytest.fixture(scope="module")
 def journey(tmp_path_factory):
     with FakeLLMServer() as srv:
@@ -38,6 +45,8 @@ def journey(tmp_path_factory):
         j = Journey(machine)
         try:
             j.step("install", machine.install)
+            # Snapshot what the installer left before the update moves the checkout on.
+            j.step("installed", lambda: _installed_state(machine))
             j.step("version", lambda: machine.hermes("--version"))
             j.step("first_turn", lambda: one_shot_turn(machine, srv, "first-turn"))
             machine.advance()
@@ -51,11 +60,11 @@ def journey(tmp_path_factory):
 def test_install_lands_on_head_and_publishes_hermes(journey: Journey) -> None:
     m, run = journey.machine, journey["install"]
     assert run.returncode == 0, fail_with(m, f"install.ps1 exited {run.returncode}", run)
-    head = m.installed_head()
+    installed = journey["installed"]
+    head = installed["head"]
     assert head == m.head, fail_with(m, f"install.ps1 checked out {head}, expected HEAD {m.head}", run)
-    marker = m.install_dir / ".hermes-bootstrap-complete"
-    assert marker.is_file(), fail_with(m, "install.ps1 reported success but wrote no bootstrap marker", run)
-    pinned = json.loads(marker.read_text(encoding="utf-8-sig")).get("pinnedCommit")
+    assert installed["marker"], fail_with(m, "install.ps1 reported success but wrote no bootstrap marker", run)
+    pinned = installed["pinned"]
     assert pinned == m.head, fail_with(m, f"bootstrap marker pins {pinned}, expected {m.head}", run)
     version = journey["version"]
     assert version.returncode == 0 and "Hermes Agent v" in version.stdout, fail_with(
