@@ -1158,10 +1158,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
-        from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
+        from hermes_cli.kanban_owner_recovery import bound_interpreter_gone, owner_reclaim_paused
         for row in rows:
-            if owner_reclaim_paused(conn, row["id"]):
-                continue
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
                 continue
@@ -1171,6 +1169,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+                continue
+            # An ambiguous owner receipt holds the card while the attempt may still run; once the
+            # interpreter the owner bound to this run is dead nothing can, and it is a crash.
+            if owner_reclaim_paused(conn, row["id"]) and not bound_interpreter_gone(conn, row["id"]):
                 continue
 
             pid = int(row["worker_pid"])
