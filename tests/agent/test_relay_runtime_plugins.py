@@ -187,6 +187,22 @@ def explicit_static_config(tmp_path, monkeypatch):
         (
             {
                 **EMPTY_ACTIVATION_REPORT,
+                "resolved_config": {
+                    "components": [{"kind": "observability", "enabled": False}],
+                },
+            },
+            False,
+        ),
+        (
+            {
+                **EMPTY_ACTIVATION_REPORT,
+                "resolved_config": {"components": [{"kind": "observability"}]},
+            },
+            True,
+        ),
+        (
+            {
+                **EMPTY_ACTIVATION_REPORT,
                 "dynamic_plugins": [{"id": "selected", "selected": True}],
             },
             True,
@@ -1044,10 +1060,32 @@ def test_real_binding_discovers_user_and_ignores_project_config(
     project_root = tmp_path / "project"
     working_directory = project_root / "workspace"
     config_directory = project_root / ".nemo-relay"
+    atof_dir = tmp_path / "atof"
     working_directory.mkdir(parents=True)
     config_directory.mkdir()
     project_config = config_directory / "plugins.toml"
-    project_config.write_text("", encoding="utf-8")
+    project_config.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 3
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "{atof_dir.as_posix()}"
+filename = "events.jsonl"
+mode = "overwrite"
+""".strip(),
+        encoding="utf-8",
+    )
     xdg_config_home = tmp_path / "xdg"
     user_config = xdg_config_home / "nemo-relay" / "plugins.toml"
     user_config.parent.mkdir(parents=True)
@@ -1071,6 +1109,8 @@ def test_real_binding_discovers_user_and_ignores_project_config(
         host.shutdown()
         relay_runtime._reset_for_tests()
 
+    assert not (atof_dir / "events.jsonl").exists()
+
 
 def test_real_binding_explicit_config_replaces_user_and_ignores_project(
     tmp_path,
@@ -1084,13 +1124,57 @@ def test_real_binding_explicit_config_replaces_user_and_ignores_project(
     working_directory = project_root / "workspace"
     config_directory = project_root / ".nemo-relay"
     selected_directory = tmp_path / "selected-config"
+    project_atof_dir = tmp_path / "project-atof"
+    selected_atof_dir = tmp_path / "selected-atof"
     working_directory.mkdir(parents=True)
     config_directory.mkdir()
     selected_directory.mkdir()
     project_config = config_directory / "plugins.toml"
-    project_config.write_text("", encoding="utf-8")
+    project_config.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 3
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "{project_atof_dir.as_posix()}"
+filename = "events.jsonl"
+mode = "overwrite"
+""".strip(),
+        encoding="utf-8",
+    )
     selected_config = selected_directory / "plugins.toml"
-    selected_config.write_text("", encoding="utf-8")
+    selected_config.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 4
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "{selected_atof_dir.as_posix()}"
+filename = "events.jsonl"
+mode = "overwrite"
+""".strip(),
+        encoding="utf-8",
+    )
     xdg_config_home = tmp_path / "xdg"
     user_config = xdg_config_home / "nemo-relay" / "plugins.toml"
     user_config.parent.mkdir(parents=True)
@@ -1104,19 +1188,23 @@ def test_real_binding_explicit_config_replaces_user_and_ignores_project(
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert not host.managed_execution_enabled()
+        assert host.managed_execution_enabled()
         assert (
             host._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.DISABLED
+            is relay_runtime._RelayPluginConfigurationState.ACTIVE
         )
         report = relay_runtime._PLUGIN_CONFIGURATION._activation.report
         config_paths = set(report["config_paths"])
         assert str(selected_config) in config_paths
         assert str(user_config) not in config_paths
         assert str(project_config) not in config_paths
+        host.ensure_session({"session_id": "native-explicit-plugins"})
     finally:
         host.shutdown()
         relay_runtime._reset_for_tests()
+
+    assert (selected_atof_dir / "events.jsonl").is_file()
+    assert not (project_atof_dir / "events.jsonl").exists()
 
 
 def test_real_binding_keeps_two_profile_trajectories_separate_in_shared_exporters(
@@ -1151,13 +1239,13 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{atof_dir}"
+output_directory = "{atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 
 [components.config.atif]
 enabled = true
-output_directory = "{atif_dir}"
+output_directory = "{atif_dir.as_posix()}"
 filename_template = "trajectory-{{session_id}}.json"
 agent_name = "Hermes Native Test"
 agent_version = "test"

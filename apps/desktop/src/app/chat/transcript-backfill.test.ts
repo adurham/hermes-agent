@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import { messagesIfTranscriptBehind } from '@/lib/stale-transcript-guard'
 import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
   _resetTranscriptBackfillForTests,
   backfillOlderTranscriptPage,
+  extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
   transcriptBackfillAvailable
@@ -125,8 +127,22 @@ describe('mergeOlderTranscriptPage', () => {
   it('keeps newer rows after an old tail when a drifting offset returns both overlap and subsequent turns', () => {
     // A page initially ending at row 6 was cached. New turns persisted before
     // the older-page request, so its offset now lands across rows 4–8.
-    const existing = [chat('one', 1), chat('two', 2), chat('three', 3), chat('four', 4), chat('five', 5), chat('six', 6)]
-    const fetched = [chat('four-refetched', 4), chat('five-refetched', 5), chat('six-refetched', 6), chat('seven', 7), chat('eight', 8)]
+    const existing = [
+      chat('one', 1),
+      chat('two', 2),
+      chat('three', 3),
+      chat('four', 4),
+      chat('five', 5),
+      chat('six', 6)
+    ]
+
+    const fetched = [
+      chat('four-refetched', 4),
+      chat('five-refetched', 5),
+      chat('six-refetched', 6),
+      chat('seven', 7),
+      chat('eight', 8)
+    ]
 
     const merged = mergeOlderTranscriptPage(existing, fetched)
 
@@ -164,11 +180,79 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
   })
 
+  it('moves an older row that was glued on after the tail back to stored order', () => {
+    const previous = [chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746), chat('kcsie', 662)]
+    const refreshed = [chat('kcsie', 662), chat('tail-a', 700), chat('tail-b', 701), chat('tail-c', 746)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
+      662, 700, 701, 746
+    ])
+
+    // A page that starts mid-turn opens with a tool fold that has no stored
+    // id. It stays in front of the stored row it preceded.
+    const behindEarlier = [chat('earlier', 500), ...previous]
+    const withFold = [chat('fold-tools'), ...refreshed, chat('next', 747)]
+
+    expect(graftRefreshedTailOntoBackfill(withFold, behindEarlier).map(message => message.id)).toEqual([
+      'earlier',
+      'fold-tools',
+      'kcsie',
+      'tail-a',
+      'tail-b',
+      'tail-c',
+      'next'
+    ])
+  })
+
+  it('keeps the fresh page copy when the same stored id is on both sides', () => {
+    const previous = [chat('tail-a', 700), chat('stale-b', 701), chat('tail-c', 746)]
+    const refreshed = [chat('kcsie', 662), chat('fresh-b', 701), chat('tail-c', 746)]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshed, previous)
+
+    expect(merged.map(message => message.rowId)).toEqual([662, 700, 701, 746])
+    expect(merged.find(message => message.rowId === 701)).toBe(refreshed[1])
+  })
+
+  it('keeps the earlier transcript when a page-local fold precedes a shared durable row', () => {
+    const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
+    const refreshed = [chat('page-local-fold'), chat('reply-refetched', 3), chat('new-reply', 4)]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, undefined, 3, 4])
+  })
+
+  it('does not treat a page that opens on its own orphan tool fold as behind itself (#124311)', () => {
+    const page = [chat('orphan-tools'), chat('user', 122886), chat('assistant', 122887)]
+
+    expect(graftRefreshedTailOntoBackfill(page, page)).toBe(page)
+    expect(messagesIfTranscriptBehind(page, page)).toBeNull()
+
+    const grown = [...page, chat('later', 122890)]
+
+    expect(messagesIfTranscriptBehind(page, grown)).toBe(grown)
+  })
+
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {
     const previous = [chat('a', 1)]
     const refreshed = [chat('a', 1), chat('b', 2)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+})
+
+describe('extendRefreshPageToOverlap', () => {
+  it('reads older pages until a long refresh shares a durable row with the rendered transcript', async () => {
+    const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
+    const readOlderPage = vi.fn().mockResolvedValueOnce([chat('reply-refetched', 3), chat('tool-fold', 4)])
+
+    const extended = await extendRefreshPageToOverlap(
+      [chat('new-tool', 5), chat('new-reply', 6)],
+      previous,
+      readOlderPage
+    )
+
+    expect(readOlderPage).toHaveBeenCalledTimes(1)
+    expect(graftRefreshedTailOntoBackfill(extended, previous).map(message => message.rowId)).toEqual([1, 2, 3, 4, 5, 6])
   })
 })
 
@@ -352,6 +436,7 @@ describe('backfillOlderTranscriptPage', () => {
     truncatedTail()
     let resolvePage!: (value: unknown) => void
     vi.mocked(getOlderSessionMessages).mockReturnValue(
+      // SAFETY: this controlled promise resolves with the exact RPC response shape below.
       new Promise(resolve => {
         resolvePage = resolve
       }) as never
@@ -386,6 +471,7 @@ describe('backfillOlderTranscriptPage', () => {
     let resolvePage: (value: unknown) => void = () => {}
 
     vi.mocked(getOlderSessionMessages).mockReturnValue(
+      // SAFETY: this controlled promise resolves with the exact RPC response shape below.
       new Promise(resolve => {
         resolvePage = resolve
       }) as never
