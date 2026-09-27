@@ -33,7 +33,6 @@ import ssl
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Mapping
@@ -257,14 +256,7 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
         }
         if req.headers.get("content-encoding", "").lower() == "gzip":
             body = gzip.decompress(body)
-        # The bare origin borrows the developer checkout's objects (``--shared``); a concurrent
-        # repack there can make one backend run miss a pack. That is this fake forge failing, not
-        # the product, so the backend (stateless per request) gets a few quiet re-runs.
-        for _attempt in range(3):
-            cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
-            if cp.returncode == 0:
-                break
-            time.sleep(0.5)
+        cp = subprocess.run([git, "http-backend"], input=body, env=env, capture_output=True, timeout=300)
         head, _, payload = cp.stdout.partition(b"\r\n\r\n")
         if not _:
             head, _, payload = cp.stdout.partition(b"\n\n")
@@ -279,6 +271,9 @@ def git_app(project_root: Path, *, faults: list[Response] | None = None) -> App:
                 headers[k.strip()] = v.strip()
         note = ""
         if cp.returncode != 0:
+            # Surfaced in the edge log. ``unable to read <sha>`` means the bare origin (a ``--shared``
+            # clone of the developer checkout) lacks an object: the checkout is a blob-filtered
+            # partial clone. CI checkouts are full clones; locally, fetch the missing objects.
             status = 500 if status == 200 else status
             note = f"git http-backend rc={cp.returncode}: " + cp.stderr.decode("utf-8", "replace").strip()[-400:]
         return Response(status, payload, headers, note)
