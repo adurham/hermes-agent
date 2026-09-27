@@ -453,3 +453,28 @@ def test_other_tools_keep_duration_and_execution_count_as_real_output():
                           "stats": {"execution_count": 100 + i}})
         controller.observe_call("mcp_ci_job_status", args, out, failed=False)
     assert controller.halt_decision is None, "a real change in duration_seconds/execution_count was treated as a replay"
+
+
+def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
+    # #124072: on an interactive surface hard stops are off, so the appended notice is
+    # the only signal the model gets. 186 no-op print("...") cells whose results differed
+    # only in kernel.execution_count / duration_seconds produced zero notices.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="desktop"))
+    args = {"code": 'print("...")'}
+
+    def result(n):
+        return json.dumps({
+            "status": "success", "output": "...\n", "exit_code": 0, "tool_calls_made": 0,
+            "duration_seconds": 0.001 * n,
+            "kernel": {"mode": "session", "reused": True, "execution_count": n, "state_reset": False},
+            "stdout_truncated": False, "stdout_bytes_captured": 4, "stdout_bytes_total": 4,
+            "stdout_bytes_omitted": 0,
+        })
+
+    notices = [
+        controller.observe_call("execute_code", args, result(i), tool_call_id=f"c{i}").notice
+        for i in range(1, 7)
+    ]
+    assert notices[:2] == [None, None]
+    assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
+    assert controller.halt_decision is None, "warn-only surfaces must not halt"
