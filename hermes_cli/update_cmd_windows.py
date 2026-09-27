@@ -833,100 +833,13 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
         raise RuntimeError(detail) from exc
 
 
-def _gateway_process_install_match(pid: int, project_root: Path, home_root: Path | None) -> bool | None:
-    """True/False for proven current/foreign ownership; None when the process cannot prove either."""
-    psutil = _psutil()
-    if psutil is None:
-        return None
-    try:
-        proc = psutil.Process(int(pid))
-    except Exception:
-        return None
-
-    def _under(raw, root: Path | None) -> bool:
-        if not raw or root is None:
-            return False
-        try:
-            Path(raw).resolve().relative_to(root.resolve())
-            return True
-        except (OSError, RuntimeError, ValueError):
-            return False
-
-    home_match = None
-    try:
-        raw_home = (proc.environ() or {}).get("HERMES_HOME")
-        if raw_home and Path(raw_home).is_absolute():
-            home_match = _under(raw_home, home_root)
-            if home_match:
-                return True
-    except Exception:
-        pass
-
-    try:
-        if _under(proc.exe(), project_root):
-            return True
-    except Exception:
-        pass
-    try:
-        argv = proc.cmdline() or []
-        if argv and _under(argv[0], project_root):
-            return True
-    except Exception:
-        pass
-    return False if home_match is False else None
-
-
-def _classify_current_install_gateway_pids(pids, *, known_owned=()) -> tuple[list[int], list[int]]:
-    """Return (owned, unknown); candidates proven foreign are intentionally omitted."""
-    candidates: list[int] = []
-    for value in pids:
-        try:
-            pid = int(value)
-        except (TypeError, ValueError):
-            continue
-        if pid > 0 and pid not in candidates:
-            candidates.append(pid)
-    if not candidates:
-        return [], []
-
-    candidate_set = set(candidates)
-    owned = {int(pid) for pid in known_owned if int(pid) in candidate_set}
-    from hermes_cli.update_cmd import _m
-    project_root = Path(_m().PROJECT_ROOT)
-
-    try:
-        from hermes_cli.process_identity import ledger_entries
-        for entry in ledger_entries(project_root=project_root, verified_only=True):
-            pid = entry.get("pid")
-            if entry.get("purpose") == "gateway" and isinstance(pid, int) and pid in candidate_set:
-                owned.add(pid)
-    except Exception as exc:
-        logger.debug("Could not read current-install gateway ledger: %s", exc)
-
-    try:
-        from hermes_constants import get_default_hermes_root
-        home_root = Path(get_default_hermes_root())
-    except Exception:
-        home_root = None
-
-    unknown: set[int] = set()
-    for pid in candidates:
-        if pid in owned:
-            continue
-        match = _gateway_process_install_match(pid, project_root, home_root)
-        if match is True:
-            owned.add(pid)
-        elif match is None:
-            unknown.add(pid)
-    return (
-        [pid for pid in candidates if pid in owned],
-        [pid for pid in candidates if pid in unknown],
-    )
-
-
-def _current_install_gateway_pids(pids, *, known_owned=()) -> list[int]:
-    """Owned half of the install-scoped gateway classification, suitable for mutation/readiness."""
-    return _classify_current_install_gateway_pids(pids, known_owned=known_owned)[0]
+def _owned_gateway_pids(pids, *, keep=(), quiet: bool = True) -> list[int]:
+    """*pids* whose live home this update owns, plus *keep* (PIDs mapped to this install's profile
+    PID files / services). The same home scope the POSIX fleet restart uses (#93349): a gateway of
+    another Hermes install, or one whose home cannot be read, is named (unless *quiet*) and left
+    running, never paused, force-killed or replayed (#124659)."""
+    from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
+    return _scoped_manual_gateway_pids(list(pids), keep=keep, quiet=quiet)
 
 
 def _discover_windows_gateways():
@@ -939,12 +852,10 @@ def _discover_windows_gateways():
         service_gateways = find_windows_gateway_services(profile_processes=profile_process_list)
     service_gateway_pids = {int(service.gateway_pid) for service in service_gateways}
     with _abort_on_error("Could not discover Windows gateway PIDs before update"):
-        machine_pids = list(dict.fromkeys(
+        # find_gateway_pids(all_profiles=True) is a HOST-wide scan; only this install's fleet is paused.
+        running_pids = _owned_gateway_pids(dict.fromkeys(
             [*find_gateway_pids(all_profiles=True), *sorted(profile_processes), *sorted(service_gateway_pids)]
-        ))
-        running_pids = _current_install_gateway_pids(
-            machine_pids, known_owned=set(profile_processes) | service_gateway_pids
-        )
+        ), keep=set(profile_processes) | service_gateway_pids, quiet=False)
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
@@ -1136,16 +1047,8 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
         from hermes_cli import gateway_windows
         from hermes_cli.gateway import find_gateway_pids
     with _abort_on_error("Could not re-check gateway liveness before cold-start"):
-        owned_pids, unknown_pids = _classify_current_install_gateway_pids(
-            find_gateway_pids(all_profiles=True)
-        )
-        if owned_pids:
-            return True
-        if unknown_pids:
-            logger.debug(
-                "Skipping Windows gateway cold-start: ownership is indeterminate for PID(s) %s",
-                ", ".join(map(str, unknown_pids)),
-            )
+        # Another install's live gateway must not suppress this install's cold start (#124659).
+        if _owned_gateway_pids(find_gateway_pids(all_profiles=True)):
             return True
     token = token or {}
     generation = token.get("attested_generation")
@@ -1361,7 +1264,7 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         from hermes_cli import gateway_windows
     timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
     ready_pids = gateway_windows._wait_for_gateway_ready(
-        timeout_s=timeout_s, all_profiles=True, pid_filter=_current_install_gateway_pids
+        timeout_s=timeout_s, all_profiles=True, pid_filter=_owned_gateway_pids
     )
     if not ready_pids:
         token["profiles"] = dict(profiles)
