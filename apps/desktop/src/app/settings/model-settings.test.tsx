@@ -281,6 +281,41 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('matches a saved custom:<key> main provider to its catalog row', async () => {
+    // model.info reports a user-defined provider as `custom:<key>`, while the
+    // catalog row carries the bare key as its slug plus the alias list.
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'custom:lab', model: 'lab-large' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Lab',
+          slug: 'lab',
+          aliases: ['custom:lab', 'lab'],
+          models: ['lab-small', 'lab-large'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://lab.local/v1'
+        }
+      ]
+    })
+
+    renderModelSettings()
+
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toBe('Lab'))
+    expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'lab-large',
+        provider: 'custom:lab',
+        scope: 'main',
+        base_url: 'http://lab.local/v1'
+      })
+    )
+  })
+
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
     // The cached record is a default-expanded snapshot; a CLI pin made after it
     // loaded is not in it. Echoing the whole record back would reset that
