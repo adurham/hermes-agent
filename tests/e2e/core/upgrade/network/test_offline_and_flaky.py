@@ -84,8 +84,8 @@ def test_channel_503_with_retry_after_is_retried_then_updates(inst):
         edge.close()
     reads = [h for h in edge.proxy.requests(S.ASSETS) if h.path == MAIN_RECORD]
     with known_failure(
-        r"Channel read unavailable: HTTP 503",
-        "gated on #NEW_CHANNEL_RETRY: the channel record read makes one attempt, so a single 503 "
+        r"\(1 channel read\(s\)\)[\s\S]*Channel read unavailable: HTTP 503",
+        "gated on #124653: the channel record read makes one attempt, so a single 503 "
         "with Retry-After aborts `hermes update`",
     ):
         assert r.rc == 0 and inst.head() == new, (

@@ -106,7 +106,7 @@ def test_npm_registry_mirror_serves_pm_npm_download(inst):
                 edge.close()
             public = _public_index_hits(edge)
             with known_failure(
-                r"registry\.npmjs\.org",
+                r"reached the public registry \['refused registry\.npmjs\.org",
                 "gated on #123132: PM downloads npm-hosted tools from a hardcoded registry.npmjs.org "
                 "URL and ignores the configured npm registry",
             ):

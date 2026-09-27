@@ -97,7 +97,7 @@ def test_update_with_corporate_root_only_in_ssl_cert_file(inst):
     with known_failure(
         r"unable to access 'https://github\.com/NousResearch/hermes-agent\.git/': "
         r"(SSL certificate|server certificate verification failed|SSL certificate problem)",
-        "gated on #NEW_SSLCERT: the updater's git fetch ignores SSL_CERT_FILE, so a corporate root "
+        "gated on #124654: the updater's git fetch ignores SSL_CERT_FILE, so a corporate root "
         "supplied that way passes the channel read and then fails at `Fetching updates`",
     ):
         _assert_updated_through_proxy(inst, r, new)
