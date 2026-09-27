@@ -208,15 +208,28 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # stitched as a "partial delivery" nobody received (classic -q parity).
                     raise _NoStreamConsumer()
 
+        local_viewer_route = getattr(ctx.source, "platform", None) == Platform.LOCAL
+
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            unseen = False
+            if local_viewer_route and not already_streamed and str(text or "").strip():
+                # LocalSessionAdapter.send publishes nothing, so unstreamed commentary handed to the
+                # consumer would be recorded as delivered while no viewer saw it. A codex app-server
+                # final that arrives with no deltas then suppresses the reply (message.complete "").
+                # Publish the in-process TUI's message.interim contract instead, and count the text
+                # as delivered only when a viewer or observer actually took it.
+                payload = {"text": text, "already_streamed": False}
+                unseen = not self._publish_execution("message.interim", payload)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
                 stts.on_delta(None)
                 if not already_streamed:
                     stts.on_delta(text)
                     stts.on_delta(None)
+            if unseen:
+                return
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
