@@ -39,7 +39,7 @@ function assertIsolated(): void {
 export default function globalSetup(): void {
   assertIsolated()
 
-  if (process.env.HERMES_E2E_UPDATE_REUSE === '1' && fs.existsSync(path.join(UPDATE_ROOT, 'golden'))) {
+  if (process.env.HERMES_E2E_UPDATE_REUSE === '1' && fs.existsSync(path.join(UPDATE_ROOT, 'install.json'))) {
     return
   }
 

@@ -52,6 +52,7 @@ def _fail(what: str, cp: subprocess.CompletedProcess) -> None:
 def install(root: Path) -> None:
     p = _paths(root)
     root.mkdir(parents=True, exist_ok=True)
+    p["facts"].unlink(missing_ok=True)
     for key in ("sb", "origin", "golden"):
         shutil.rmtree(p[key], ignore_errors=True)
     head = os.environ.get("HERMES_E2E_UPDATE_INSTALL_REF") or I.head_sha()
@@ -75,10 +76,11 @@ def install(root: Path) -> None:
         "env": sb.env,
         "headSha": head,
     }
-    p["facts"].write_text(json.dumps(facts, indent=1), encoding="utf-8")
     p["golden"].mkdir()
     for key in ("sb", "origin"):
         subprocess.run(["cp", "-a", str(p[key]), str(p["golden"] / key)], check=True)
+    # Written last: its presence means the snapshot is complete (REUSE keys on it).
+    p["facts"].write_text(json.dumps(facts, indent=1), encoding="utf-8")
     print(json.dumps(facts))
 
 
