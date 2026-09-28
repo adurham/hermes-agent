@@ -201,13 +201,16 @@ def is_base64_media(line: str) -> bool:
 # ── (5)/(6) alternation tokens inside string or regex literals in code ──────────────────────
 # ``sudo`` in ``/clarify|approval|sudo|secret/.test(value)`` classifies an event name; ``env|``
 # in ``re.compile(r"(?:api[_-]?key|…|env|headers)")`` is a redaction regex; ``"printenv",`` in
-# ``_READ_ONLY_COMMANDS = frozenset({"pwd", "ls", …, "printenv"})`` is a denylist/allowlist entry.
+# ``_READ_ONLY_COMMANDS = frozenset({"pwd", "ls", …, "printenv"})`` is a denylist/allowlist entry;
+# ``mkfs`` in ``re.compile(r"\b(?:rm|rmdir|shred|mkfs|dd)\b")`` is a guard plugin's OWN denylist
+# (an un-overridable ``dangerous`` on the plugin whose job is to refuse that command).
 # The shape that is inert is narrow: the word sits inside a quoted string or regex literal AND is
 # either an alternation member (``|sudo|``, ``(sudo|``, ``|env|``) or the ENTIRE literal
 # (``"printenv"``, ``'sudo'``) on a line that executes nothing. A command string such as
-# ``"sudo apt install x"`` or ``"env | grep KEY"`` inside a ``subprocess.run(...)`` literal is how
-# an attack is written and never qualifies. Only word-shaped patterns are eligible.
-LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env"}
+# ``"sudo apt install x"``, ``"env | grep KEY"`` or ``"mkfs.ext4 /dev/sda1"`` inside a
+# ``subprocess.run(...)`` literal is how an attack is written and never qualifies. Only
+# word-shaped patterns are eligible.
+LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env", "format_filesystem"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
     r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
@@ -215,7 +218,10 @@ _LITERAL_SPANS = re.compile(
 # The regex-literal branch accepts only real JS flags: with ``[a-z]*`` a bare Unix path lexed as a
 # literal (``/etc/`` + flags ``passwd``) and an unquoted ``cat /etc/passwd | curl …`` in a test
 # script scored as inert data.
-_PATTERN_TOKEN = {"sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|")}
+_PATTERN_TOKEN = {
+    "sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|"),
+    "format_filesystem": re.compile(r"\bmkfs\b"),
+}
 
 
 def _is_alternation_member(line: str, start: int, end: int) -> bool:
@@ -310,9 +316,63 @@ def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
     return bool(hits) and all(prose(h) for h in hits)
 
 
+# ── (9) ``\xHH`` escapes inside a regex character class ──────────────────────────────────────
+# ``hex_encoded_string`` (three ``\xHH`` escapes on one line) describes an obfuscated payload —
+# ``eval("\x63\x75\x72\x6c")``. A control-character or ANSI-escape *filter* is written with the
+# same escapes as RANGES inside a bracket class: ``/[\x00-\x1F\x7F]/``, ``[\x1b\x9b][[\]()#;?]*``.
+# Bytes named inside ``[...]`` are matched, never assembled into a string, so when every escape
+# on the line sits inside a character class the finding is informational. One ``\xHH`` outside a
+# class (a payload beside a filter) keeps the pattern's severity.
+_HEX_ESCAPE = re.compile(r"\\x[0-9a-fA-F]{2}")
+_CHAR_CLASS = re.compile(r"\[(?:[^\]\\\n]|\\.)*\]")
+
+
+def is_hex_in_char_class(finding: Finding, line: str) -> bool:
+    """Every ``\\xHH`` on the line is inside a ``[...]`` regex character class."""
+    if finding.pattern_id != "hex_encoded_string":
+        return False
+    classes = [m.span() for m in _CHAR_CLASS.finditer(line)]
+    hits = list(_HEX_ESCAPE.finditer(line))
+    return bool(hits) and all(any(a <= h.start() and h.end() <= b for a, b in classes) for h in hits)
+
+
+# ── (10) loopback ``curl``/``wget`` target on a shell continuation line ──────────────────────
+# ``env_exfil_curl`` / ``env_exfil_wget`` already exempt a same-line loopback destination
+# (``curl -H "Bearer $KEY" http://localhost:8080/health`` produces no finding). A README health
+# check writes the same command over two lines with a trailing ``\``, so the scanner sees only
+# ``curl -H "Authorization: Bearer $KEY" \`` and the loopback URL never enters the regex. Re-run
+# the pattern over the logical line (the finding's line plus its ``\``-continuations): when it no
+# longer matches AND every ``http(s)://`` host on the logical line is loopback, the finding is
+# informational. A routable host anywhere on the logical line keeps the severity.
+_CONTINUATION_PATTERN_IDS = {"env_exfil_curl", "env_exfil_wget"}
+_URL_HOST = re.compile(r"https?://(\[[0-9a-fA-F:]+\]|[^\s/:\"'`)\]]+)")
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]"}    # the pattern's own same-line exemption
+
+
+def logical_line(lines: list[str], index: int) -> str:
+    """``lines[index]`` joined with the lines a trailing backslash continues onto (max 8)."""
+    out = [lines[index]]
+    i = index
+    while i + 1 < len(lines) and len(out) <= 8 and lines[i].rstrip().endswith("\\"):
+        i += 1
+        out.append(lines[i])
+    return " ".join(part.rstrip().rstrip("\\") for part in out)
+
+
+def is_loopback_continuation(finding: Finding, line: str, joined: str) -> bool:
+    """The line continues with ``\\``, the finding's own pattern stops matching on the logical
+    line, and every ``http(s)://`` host on it is loopback."""
+    if finding.pattern_id not in _CONTINUATION_PATTERN_IDS or not line.rstrip().endswith("\\"):
+        return False
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    hosts = [m.group(1).lower() for m in _URL_HOST.finditer(joined)]
+    return rx is not None and rx.search(joined) is None and bool(hosts) and all(h in _LOOPBACK_HOSTS for h in hosts)
+
+
 __all__ = [
     "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
     "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
     "is_inert_fixture_line", "is_base64_media",
     "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
+    "is_hex_in_char_class", "logical_line", "is_loopback_continuation",
 ]

@@ -207,8 +207,11 @@ THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),
     (r'you\s+are\s+(?:\w+\s+)*now\s+', "role_hijack", "high", "injection", "attempts to override the agent's role"),
-    # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms").
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
+    # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
+    # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
+    # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
+    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!\s+to\s+["\'\u201c\u2018])'
+     r'(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
      "sys_prompt_override", "critical", "injection", "attempts to override the system prompt"),
