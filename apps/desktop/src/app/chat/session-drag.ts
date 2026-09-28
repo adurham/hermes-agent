@@ -49,8 +49,8 @@ import {
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
 import { requestFreshSession } from '@/store/profile'
+import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile, type TileDock } from '@/store/session-states'
 

@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane } from '@/components/pane-shell/tree/store'
-import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
 import { requestFreshSession } from '@/store/profile'
+import { moveSessionToProject, projectIdForCwd } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile } from '@/store/session-states'
 
