@@ -205,22 +205,18 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     if exe is None:
         return None
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
-        # Older drivers may reject the identity field; preserve their memory probe.
-        for fields in ("memory.total,memory.free,name,pci.device_id",
-                       "memory.total,memory.free,name"):
-            out = subprocess.run(
-                [exe, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-            if out.returncode != 0:
-                continue
-            if not out.stdout.strip():
-                return None
-            row = next(csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-            total_mib, free_mib, name = row[:3]
-            pci_id = None
-            with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-                pci_id = int(row[3], 16) if len(row) > 3 else None
-            return int(total_mib) << 20, int(free_mib) << 20, name.strip(), pci_id
+        out = subprocess.run(
+            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        total_mib, free_mib, name, raw_id = next(
+            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+        pci_id = None
+        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+            pci_id = int(raw_id, 16)
+        return int(total_mib) << 20, int(free_mib) << 20, name.strip(), pci_id
     return None
 
 

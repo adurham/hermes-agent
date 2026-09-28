@@ -68,7 +68,7 @@ def test_pci_identity_controls_recommendations_without_changing_memory(
 
 
 @pytest.mark.parametrize("integrated", [False, True])
-def test_unsupported_pci_query_preserves_memory_and_name_fallback(monkeypatch, integrated):
+def test_unavailable_pci_id_preserves_memory_and_name_fallback(monkeypatch, integrated):
     calls = []
     monkeypatch.setattr(hardware, "_nvidia_smi_path", lambda: "nvidia-smi")
     monkeypatch.setattr(hardware, "_ram_bytes", lambda: (64 << 30, 22 << 30))
@@ -77,10 +77,8 @@ def test_unsupported_pci_query_preserves_memory_and_name_fallback(monkeypatch, i
 
     def run(argv, **kwargs):
         calls.append(argv)
-        if argv[1].endswith(",pci.device_id"):
-            return SimpleNamespace(returncode=1, stdout="")
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name"
-        return SimpleNamespace(returncode=0, stdout=f"32704, 31423, {name}\n")
+        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id"
+        return SimpleNamespace(returncode=0, stdout=f"32704, 31423, {name}, N/A\n")
 
     monkeypatch.setattr(hardware.subprocess, "run", run)
     budget = hardware.probe_budget(planning=True)
@@ -91,4 +89,4 @@ def test_unsupported_pci_query_preserves_memory_and_name_fallback(monkeypatch, i
     usable = int(total * .8) if integrated else total - max(2 << 30, int(total * .09))
     assert budget.total_device_bytes == total
     assert budget.usable_vram_bytes == usable
-    assert len(calls) == 2
+    assert len(calls) == 1
