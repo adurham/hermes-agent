@@ -46,6 +46,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
+import { $showModelPricing } from '@/store/model-pricing'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -217,6 +218,7 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const showPricing = useStore($showModelPricing)
   const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
@@ -782,7 +784,7 @@ export function ModelCatalogMenu({
                               </span>
                             </span>
                           ) : null}
-                          {pricing ? <ModelPrice pricing={pricing} /> : null}
+                          {showPricing && pricing ? <ModelPrice pricing={pricing} /> : null}
                           {isCurrent ? (
                             <Codicon
                               className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
