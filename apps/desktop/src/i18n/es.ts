@@ -5360,6 +5360,7 @@ export const esOverrides = {
     hideTabStrip: 'Ocultar pestañas',
     showStripTab: title => `Mostrar ${title}`,
     hideStripTab: title => `Ocultar ${title}`,
+    zoneMenuLabel: title => `Opciones de zona para ${title}`,
     lastTabKeptTitle: 'La última pestaña permanece',
     lastTabKeptBody:
       'Esta zona necesita al menos una pestaña visible. Muestra otra pestaña primero, o colapsa toda la barra lateral.',
