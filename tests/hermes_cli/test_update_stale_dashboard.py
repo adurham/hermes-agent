@@ -523,8 +523,8 @@ class TestManualBackendRespawn:
 
     def test_pre_takeover_interpreter_launcher_argv_is_rebuilt(self, tmp_path, monkeypatch):
         """A kernel-captured ``[old venv python, launcher, ...]`` argv is respawned through
-        the running install's interpreter + ``hermes`` entry instead of being replayed
-        verbatim after the PM takeover rewrote the launcher into a shell shim (#124778)."""
+        this install's launcher command instead of being replayed verbatim after the PM
+        takeover rewrote the launcher into a shell shim (#124778)."""
         live = self._live()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         spawned: list[list[str]] = []
@@ -540,14 +540,17 @@ class TestManualBackendRespawn:
             "/old/venv/bin/python", "/home/u/.local/bin/hermes",
             "dashboard", "--no-open", "--host", "127.0.0.1", "--port", "34553",
         ]
+        from hermes_cli import _launchers
+        from hermes_cli._launchers import runtime_command
+
         with patch.object(live.subprocess, "Popen", _FakePopen), \
-             patch.object(live.time, "sleep"):
+             patch.object(live.time, "sleep"), \
+             patch.object(_launchers, "resolve_store_python", return_value=None):
             failed = live._respawn_dashboard_processes([captured])
+            expected = runtime_command(Path(live.__file__).resolve().parents[1], captured[2:])
 
         assert failed == []
-        entry = Path(live.__file__).resolve().parents[1] / "hermes"
-        assert spawned == [[sys.executable, str(entry),
-                            "dashboard", "--no-open", "--host", "127.0.0.1", "--port", "34553"]]
+        assert spawned == [expected]
 
     def test_child_exiting_within_the_grace_window_is_a_reported_failure(
             self, tmp_path, monkeypatch, capsys):

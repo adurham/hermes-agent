@@ -381,26 +381,20 @@ _RESPAWN_LIVENESS_GRACE_SECONDS = 1.0
 
 
 def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
-    """Collapse a captured ``[interpreter, launcher, ...]`` argv onto the running install.
+    """Rebuild a captured ``[<interpreter>, <hermes launcher>, ...]`` argv on this install's launcher.
 
     A pre-PM-takeover install left ``~/.local/bin/hermes`` as a symlink to a Python console
-    script, so the kernel recorded a manual backend as
-    ``[<old venv python>, <launcher path>, dashboard, ...]``. The takeover then rewrote that
-    launcher into a POSIX shell shim, and replaying the captured argv verbatim asks the old
-    interpreter to parse a shell script — the child dies at parse time while the updater
-    prints ``✓ restarted`` (#124778). Any ``python <entry>`` pair is rebuilt against the
-    ``hermes`` entry of the code that is running now; other shapes replay unchanged.
+    script, so the kernel recorded a manual backend as ``[<old venv python>, <launcher>, dashboard,
+    ...]``. The takeover then rewrote that launcher into a POSIX shell shim, and replaying the
+    captured argv verbatim asks the old interpreter to parse a shell script (#124778). This
+    checkout's own ``hermes`` entry script stays Python, so it and every other shape replay unchanged.
     """
-    interpreter_name = os.path.basename(argv[0]) if argv else ""
-    if len(argv) <= 2 or not interpreter_name.startswith("python") or argv[1].startswith("-"):
-        return list(argv)
-    entry = Path(__file__).resolve().parents[1] / "hermes"
-    if not entry.is_file():
-        return list(argv)
-    current_interpreter = sys.executable or argv[0]
-    rebuilt = [current_interpreter, str(entry)]
-    rebuilt.extend(argv[2:])
-    return rebuilt
+    root = Path(__file__).resolve().parents[1]
+    if (len(argv) > 2 and os.path.basename(argv[0]).startswith("python")
+            and os.path.basename(argv[1]) == "hermes" and Path(argv[1]) != root / "hermes"):
+        from hermes_cli._launchers import runtime_command
+        return runtime_command(root, argv[2:])
+    return list(argv)
 
 
 def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
