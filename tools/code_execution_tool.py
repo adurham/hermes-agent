@@ -30,7 +30,7 @@ from tools.registry import registry, tool_error
 from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import (
-    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop,
+    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
 )
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 
@@ -576,6 +576,8 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
                             kernel=kernel_result.get("kernel", {"remote": True}))
+    if kernel_result.get("tool_errors"):
+        result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
                                "killed and its state was lost. The next call starts fresh.")
@@ -596,7 +598,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
-    tool_call_counter, stop_event, rpc_thread = [0], threading.Event(), None
+    tool_call_counter, tool_call_log, stop_event, rpc_thread = [0], [], threading.Event(), None
     try:
         # Private dirs: the sandbox lives under a shared temp dir and carries the
         # RPC token (in req files) and tool results. Fail closed on setup
@@ -612,7 +614,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # See #30882.
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
-            args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
+            args=(env, f"{sandbox_dir}/rpc", effective_task_id, tool_call_log, tool_call_counter,
                   max_tool_calls, sandbox_tools, stop_event, rpc_token))
         rpc_thread.start()
         # The token travels in a sourced env file, never in argv. No umask on
@@ -639,6 +641,9 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
                             {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+    tool_errors = tool_errors_since(tool_call_log)
+    if tool_errors:
+        result["tool_errors"] = tool_errors
     if status == "timeout":
         _apply_timeout(result, f"Script timed out after {timeout}s and was killed.")
         logger.warning("execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
@@ -858,7 +863,7 @@ _TOOL_DOC_LINES = [
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
     ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file."),
+    ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
     ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
