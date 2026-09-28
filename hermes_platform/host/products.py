@@ -13,7 +13,7 @@ _NVIDIA_SOC_MODEL_MARKERS = ("N1X", "SPARK")
 
 
 def is_nvidia_n1x_pci_id(pci_id: int) -> bool:
-    """Recognize N1X / GB20B; NVML packs device above the 16-bit vendor ID."""
+    """Recognize N1X; NVML packs device above the 16-bit vendor ID."""
     return pci_id & 0xFFFF == 0x10DE and 0x2E00 <= pci_id >> 16 <= 0x2E3F
 
 
