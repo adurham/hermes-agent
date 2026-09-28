@@ -679,11 +679,12 @@ class TestRunEvents:
                 raise RuntimeError("prepare failed")
 
         with patch.object(api_server_runs.web, "StreamResponse", FailingResponse):
-            await api_server_runs._handle_run_events(
-                adapter, request, _api_server=api_server_module)
+            with pytest.raises(RuntimeError, match="prepare failed"):
+                await api_server_runs._handle_run_events(
+                    adapter, request, _api_server=api_server_module)
 
         assert stream.subscribers == set()
-        assert run_id not in adapter._run_streams
+        assert adapter._run_streams[run_id] is stream
 
     @pytest.mark.asyncio
     async def test_two_subscribers_each_receive_every_event_and_survive_one_disconnect(self, adapter):
