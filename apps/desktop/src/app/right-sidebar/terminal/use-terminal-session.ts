@@ -963,6 +963,15 @@ export function useTerminalSession({
         webgl.onContextLoss(() => {
           webgl.dispose()
           webglRef.current = null
+          // The DOM renderer takes over, but the lost WebGL frame can leave
+          // the viewport black while the buffer stays intact: force a fit +
+          // full-row repaint so the buffered output shows again (#98273).
+          try {
+            fitAndResize()
+            term.refresh(0, term.rows - 1)
+          } catch {
+            // Best-effort repaint; the next resize repaints anyway.
+          }
         })
         term.loadAddon(webgl)
         webglRef.current = webgl

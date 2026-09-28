@@ -139,6 +139,14 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
         webgl.onContextLoss(() => {
           webgl.dispose()
           webglRef.current = null
+          // Same as the user terminal: repaint the buffered rows with the DOM
+          // renderer so the viewport doesn't stay black after a context loss.
+          try {
+            fitRef.current?.()
+            term.refresh(0, term.rows - 1)
+          } catch {
+            // Best-effort repaint; the next resize repaints anyway.
+          }
         })
         term.loadAddon(webgl)
         webglRef.current = webgl

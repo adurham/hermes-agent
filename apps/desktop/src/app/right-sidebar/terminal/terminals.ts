@@ -33,7 +33,11 @@ export function registerWebglRefresh(
   getWebgl: () => WebglAddon | null
 ): () => void {
   webglClearFns.set(term, () => {
-    getWebgl()?.clearTextureAtlas()
+    try {
+      getWebgl()?.clearTextureAtlas()
+    } catch {
+      // WebGL context lost or uninitialized — the DOM fallback has no atlas.
+    }
   })
   webglRefreshFns.set(term, () => {
     term.refresh(0, term.rows - 1)
@@ -88,6 +92,18 @@ export function redrawAllTerminals(skipTerm?: Terminal): void {
 
       refresh()
     }
+  })
+}
+
+// An OS resume can evict the GPU's glyph textures without ever firing
+// 'webglcontextlost' (common on macOS after sleep/wake): every terminal then
+// paints from an empty atlas. The main process broadcasts powerMonitor
+// 'resume'/'unlock-screen' as 'hermes:power-resume'; rebuild every registered
+// terminal's atlas + render model when it arrives. Import-for-side-effect,
+// same pattern as store/power.ts.
+if (typeof window !== 'undefined') {
+  window.hermesDesktop?.onPowerResume?.(() => {
+    redrawAllTerminals()
   })
 }
 
