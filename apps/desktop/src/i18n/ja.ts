@@ -1352,6 +1352,7 @@ export const ja = defineLocale({
       restartFailed: 'バックエンドを再起動できませんでした',
       auxiliaryTitle: '補助モデル',
       resetAllToMain: 'すべてメインにリセット',
+      staleAuxDismiss: '今後表示しない',
       auxiliaryDesc:
         'ヘルパータスクはデフォルトでメインモデルで実行されます。タスクに専用モデルを割り当てることでオーバーライドできます。',
       setToMain: 'メインに設定',

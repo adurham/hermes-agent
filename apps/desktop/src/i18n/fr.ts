@@ -2073,6 +2073,7 @@ export const frOverrides = {
       restartFailed: 'Impossible de redémarrer le backend',
       auxiliaryTitle: 'Modèles auxiliaires',
       resetAllToMain: 'Tout réinitialiser au principal',
+      staleAuxDismiss: 'Ne plus afficher',
       auxiliaryDesc:
         "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
       setToMain: 'Définir comme principal',

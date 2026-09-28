@@ -2069,6 +2069,7 @@ export const deOverrides = {
       restartFailed: 'Das Backend konnte nicht neu gestartet werden',
       auxiliaryTitle: 'Hilfsmodelle',
       resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
+      staleAuxDismiss: 'Nicht erneut anzeigen',
       auxiliaryDesc:
         'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
       setToMain: 'Auf Hauptmodell setzen',

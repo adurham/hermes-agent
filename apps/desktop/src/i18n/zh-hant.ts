@@ -1379,6 +1379,7 @@ export const zhHant = defineLocale({
       restartFailed: '無法重新啟動後端',
       auxiliaryTitle: '輔助模型',
       resetAllToMain: '全部重設為主要模型',
+      staleAuxDismiss: '不再顯示',
       auxiliaryDesc: '輔助任務預設使用主要模型。您可以為任何任務指定專用模型。',
       setToMain: '設為主要模型',
       change: '變更',
