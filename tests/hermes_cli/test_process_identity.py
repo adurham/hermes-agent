@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -40,10 +42,9 @@ def _fake_psutil(procs: dict[int, float]):
         proc = MagicMock()
         proc.pid = pid
         proc.create_time.return_value = procs[pid]
-        proc.status.return_value = "running"
         return proc
 
-    return types.SimpleNamespace(Process=_process, NoSuchProcess=_FakeNoSuchProcess, STATUS_ZOMBIE="zombie")
+    return types.SimpleNamespace(Process=_process, NoSuchProcess=_FakeNoSuchProcess)
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,29 @@ def test_ledger_entries_filters_dead_reused_and_foreign(tmp_path):
     assert [e["pid"] for e in live] == [100]
 
 
+@pytest.mark.platforms("posix")
+def test_ledger_entries_excludes_a_killed_but_unreaped_process(tmp_path):
+    """A zombie is dead even though it keeps its create_time until reaped: ``hermes update``
+    books the stopped dashboard gone, then must not find it again as a pre-update survivor."""
+    import psutil
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        created = psutil.Process(child.pid).create_time()
+        child.terminate()
+        deadline = time.monotonic() + 10
+        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
+            assert time.monotonic() < deadline, "child never became a zombie"
+            time.sleep(0.05)
+        ledger = tmp_path / "spawn-ledger.json"
+        ledger.write_text(json.dumps([_entry(child.pid, created, purpose="dashboard")]), encoding="utf-8")
+        with patch.object(pi, "_ledger_path", return_value=ledger):
+            assert pi.ledger_entries(project_root=Path("/x/install")) == []
+    finally:
+        child.kill()
+        child.wait()
+
+
 def test_spawner_is_dead_tristate():
     fake = _fake_psutil({500: 5.0})
     with patch.dict(sys.modules, {"psutil": fake}):
@@ -285,25 +309,3 @@ def test_desktop_ssh_backend_spawn_shape_is_desktop_owned(monkeypatch):
     assert pi.is_desktop_owned_backend() is True
     # The bare inherited flag (a Desktop terminal pane running `hermes serve`) is still not ownership.
     assert pi.is_desktop_owned_backend(["serve", "--host", "127.0.0.1", "--port", "0"]) is False
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="zombies are a POSIX process state")
-def test_an_exited_unreaped_child_is_not_alive():
-    """A zombie runs nothing and holds nothing, but psutil still resolves it with its original
-    create_time. Read as alive, a dashboard the updater had just stopped stayed a "pre-update
-    survivor" until its parent happened to reap it, and the update exited 1 (handoff e2e)."""
-    import subprocess
-    import time
-
-    import psutil
-
-    child = subprocess.Popen([sys.executable, "-c", "pass"])
-    try:
-        created = psutil.Process(child.pid).create_time()
-        deadline = time.monotonic() + 10
-        while psutil.Process(child.pid).status() != psutil.STATUS_ZOMBIE:
-            assert time.monotonic() < deadline, "child never exited"
-            time.sleep(0.02)
-        assert pi._pid_alive_matches(child.pid, created) is False
-    finally:
-        child.wait()
