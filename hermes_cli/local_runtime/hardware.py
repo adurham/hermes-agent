@@ -199,20 +199,31 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int, str] | None:
-    """(total bytes, free bytes, name) from the same nvidia-smi query, or None."""
+def _nvidia_vram() -> tuple[int, int, str, tuple[int, int] | None] | None:
+    """Memory, name and optional (vendor, device) from the same GPU row."""
     exe = _nvidia_smi_path()
     if exe is None:
         return None
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free,name",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-        if out.returncode != 0 or not out.stdout.strip():
-            return None
-        total_mib, free_mib, name = next(csv.reader(out.stdout.strip().splitlines()))
-        return int(total_mib) << 20, int(free_mib) << 20, name.strip()
+        # Older drivers may reject the identity field; preserve their memory probe.
+        for fields in ("memory.total,memory.free,name,pci.device_id",
+                       "memory.total,memory.free,name"):
+            out = subprocess.run(
+                [exe, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+            if out.returncode != 0:
+                continue
+            if not out.stdout.strip():
+                return None
+            row = next(csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+            total_mib, free_mib, name = row[:3]
+            raw_id = row[3].strip() if len(row) == 4 else ""
+            pci_id = None
+            if re.fullmatch(r"(?:0[xX])?[0-9a-fA-F]{8}", raw_id):
+                # NVML packs device in the high 16 bits and vendor in the low 16.
+                packed = int(raw_id, 16)
+                pci_id = (packed & 0xFFFF, packed >> 16)
+            return int(total_mib) << 20, int(free_mib) << 20, name.strip(), pci_id
     return None
 
 
@@ -305,10 +316,12 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
-def _uma_budget(base: int, total: int, *, gpu_name: str = "") -> HardwareBudget:
+def _uma_budget(base: int, total: int, *, gpu_name: str = "",
+                gpu_pci_id: tuple[int, int] | None = None) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
-                          ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform)
+                          ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,
+                          gpu_pci_id=gpu_pci_id)
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -342,19 +355,20 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
             live = (vram[1] + ram_avail) if vram else ram_avail
             base = min(unified, live)
-        return _uma_budget(base, unified, gpu_name=vram[2] if vram else "")
+        return _uma_budget(base, unified, gpu_name=vram[2] if vram else "",
+                           gpu_pci_id=vram[3] if vram else None)
 
     if vram is None:
         # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
         # Silicon) — conservative for discrete AMD until a vendor probe lands.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
-    total, free, gpu_name = vram
+    total, free, gpu_name, gpu_pci_id = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False, gpu_name=gpu_name, platform=sys.platform)
+                          uma=False, gpu_name=gpu_name, platform=sys.platform, gpu_pci_id=gpu_pci_id)
 
 
 def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBudget | None:
@@ -376,7 +390,7 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
     vram = _nvidia_vram()
     if vram is None:
         return None
-    total, free, _name = vram
+    total, free, _name, _pci_id = vram
     others = max(0, total - free - max(0, own_bytes))
     usable = min(capacity.usable_vram_bytes, max(0, total - others - _LAUNCH_HEADROOM))
     return replace(capacity, usable_vram_bytes=usable)

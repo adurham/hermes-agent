@@ -20,6 +20,7 @@ from hermes_cli.local_runtime.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
 from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
 from hermes_cli.local_runtime.gguf import model_id_from_stem
+from hermes_platform.host.products import is_nvidia_n1x_pci_id
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ PLEASANT_FLOOR_TOK_S = 20.0
 # 18.82 tok/s: this is a baseline estimate, not a context-independent guarantee.
 # Unmatched hardware, backend, quant or draft depth retains the bandwidth estimate.
 _MEASURED_DECODE_TOK_S = {
-    ("win32", "cuda", "NVIDIA RTX Spark N1X",
+    ("win32", "cuda", "n1x",
      "qwen3.8-27b", "UD-Q4_K_M", 2): 21.9,
 }
 
@@ -189,11 +190,16 @@ _MEASURED_DECODE_TOK_S = {
 def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
                            spilled: bool = False, backend: str = "auto") -> float:
     """Shipped measured baseline where matched, otherwise the memory-bound estimate."""
-    # A named NVIDIA device uses CUDA under the normal automatic backend policy.
-    effective_backend = "cuda" if backend == "auto" and budget.gpu_name else backend
-    # Drivers may append a parenthesized description to the stable device name.
-    gpu_name = budget.gpu_name.partition(" (")[0]
-    key = (budget.platform, effective_backend, gpu_name, entry.id, variant.quant, entry.mtp_draft_depth)
+    # PCI identity is authoritative. Names are only a fallback for unavailable IDs.
+    if budget.gpu_pci_id is not None:
+        nvidia = budget.gpu_pci_id[0] == 0x10DE
+        n1x = is_nvidia_n1x_pci_id(budget.gpu_pci_id)
+    else:
+        nvidia = bool(budget.gpu_name)
+        n1x = budget.gpu_name.partition(" (")[0] == "NVIDIA RTX Spark N1X"
+    effective_backend = "cuda" if backend == "auto" and nvidia else backend
+    family = "n1x" if n1x else ""
+    key = (budget.platform, effective_backend, family, entry.id, variant.quant, entry.mtp_draft_depth)
     if budget.uma and entry.mtp and not spilled and (measured := _MEASURED_DECODE_TOK_S.get(key)) is not None:
         return measured
     bandwidth = (_HOST_BANDWIDTH_GB_S if spilled
