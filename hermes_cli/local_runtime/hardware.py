@@ -200,7 +200,7 @@ def _nvidia_smi_path() -> str | None:
 
 
 def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
-    """Memory, name and optional packed PCI ID from the same GPU row."""
+    """(total bytes, free bytes, name, optional packed PCI ID) from the same nvidia-smi query, or None."""
     exe = _nvidia_smi_path()
     if exe is None:
         return None
