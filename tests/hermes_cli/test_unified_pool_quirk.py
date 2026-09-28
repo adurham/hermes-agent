@@ -210,7 +210,7 @@ def test_memory_probe_carries_identity_without_another_process(monkeypatch):
     monkeypatch.setattr(hw.subprocess, "run", run)
     budget = hw.probe_budget(planning=True)
     assert budget.gpu_name == name
-    assert budget.gpu_pci_id == (0x10DE, 0x2E03)
+    assert budget.gpu_pci_id == 0x2E0310DE
     assert budget.platform == sys.platform
     assert budget.total_device_bytes == UMA_POOL
     assert budget.usable_vram_bytes == int(UMA_POOL * .8)

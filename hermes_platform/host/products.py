@@ -12,10 +12,9 @@ _NVIDIA_SOC_VENDOR = "NVIDIA"
 _NVIDIA_SOC_MODEL_MARKERS = ("N1X", "SPARK")
 
 
-def is_nvidia_n1x_pci_id(pci_id: tuple[int, int]) -> bool:
-    """Recognize N1X / GB20B by (vendor, device), independent of driver branding."""
-    vendor, device = pci_id
-    return vendor == 0x10DE and 0x2E00 <= device <= 0x2E3F
+def is_nvidia_n1x_pci_id(pci_id: int) -> bool:
+    """Recognize N1X / GB20B; NVML packs device above the 16-bit vendor ID."""
+    return pci_id & 0xFFFF == 0x10DE and 0x2E00 <= pci_id >> 16 <= 0x2E3F
 
 
 def looks_like_nvidia_arm_soc(*, native_arch: str, cpu_model: str, cpu_vendor: str) -> bool:

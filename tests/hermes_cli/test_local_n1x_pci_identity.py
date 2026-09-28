@@ -21,6 +21,8 @@ from hermes_cli.local_runtime import catalog, hardware
     ("0x2E8610DE", "NVIDIA RTX Spark N1X", False),
     ("0x2E031002", "NVIDIA RTX Spark N1X", False),
     ("0x00000000", "NVIDIA RTX Spark N1X", False),
+    ("-0x2E0310DE", "NVIDIA RTX Spark N1X", False),
+    ("0x12E0310DE", "NVIDIA RTX Spark N1X", False),
     ("N/A", "NVIDIA RTX Spark N1X (updated description)", True),
     ("[Not Supported]", "NVIDIA RTX Spark N1X", True),
     ("malformed", "Renamed GPU", False),

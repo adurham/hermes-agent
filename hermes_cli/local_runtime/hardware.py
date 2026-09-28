@@ -199,8 +199,8 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int, str, tuple[int, int] | None] | None:
-    """Memory, name and optional (vendor, device) from the same GPU row."""
+def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
+    """Memory, name and optional packed PCI ID from the same GPU row."""
     exe = _nvidia_smi_path()
     if exe is None:
         return None
@@ -217,12 +217,9 @@ def _nvidia_vram() -> tuple[int, int, str, tuple[int, int] | None] | None:
                 return None
             row = next(csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
             total_mib, free_mib, name = row[:3]
-            raw_id = row[3].strip() if len(row) == 4 else ""
             pci_id = None
-            if re.fullmatch(r"(?:0[xX])?[0-9a-fA-F]{8}", raw_id):
-                # NVML packs device in the high 16 bits and vendor in the low 16.
-                packed = int(raw_id, 16)
-                pci_id = (packed & 0xFFFF, packed >> 16)
+            with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+                pci_id = int(row[3], 16) if len(row) > 3 else None
             return int(total_mib) << 20, int(free_mib) << 20, name.strip(), pci_id
     return None
 
@@ -317,7 +314,7 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
 
 
 def _uma_budget(base: int, total: int, *, gpu_name: str = "",
-                gpu_pci_id: tuple[int, int] | None = None) -> HardwareBudget:
+                gpu_pci_id: int | None = None) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
                           ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform,

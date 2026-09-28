@@ -91,7 +91,7 @@ class HardwareBudget:
     uma: bool = False
     gpu_name: str = ""          # display name; legacy fallback for performance estimates
     platform: str = ""          # sys.platform of the machine being priced
-    gpu_pci_id: tuple[int, int] | None = None  # (vendor, device); None when unavailable
+    gpu_pci_id: int | None = None  # nvidia-smi's packed PCI device/vendor ID
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
