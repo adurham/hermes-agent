@@ -388,38 +388,36 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
 
 # ── Escape-drift guards ──────────────────────────────────────────────────
 
-_CONTROL_LITERAL_SUSPECTS = (("\\n", "\n", "newline"), ("\\r", "\r", "carriage return"))
+def _detect_newline_literal_drift(content: str, matches: list[Span],
+                                  old_string: str, new_string: str) -> Optional[str]:
+    """Error string when a literal two-character ``\\n`` in the arguments stands in
+    for a real line break in the file (arguments JSON-escaped one extra time), else None.
 
-
-def _detect_control_char_literal_drift(matched_regions: str, old_string: str,
-                                       new_string: str) -> Optional[str]:
-    """Error string when new_string carries a literal two-character ``\\n``/``\\r``
-    sequence that should have been a real control character, else None.
-
-    Mirrors the quote-suspect check above exactly (present in both old_string and
-    new_string, absent from the matched file region) rather than the broader
-    _maybe_unescape_new_string rewrite, which deliberately excludes ``\\n``
-    entirely: a source file legitimately containing the literal text ``\\n``
-    (a string literal, a regex) is common, and rewriting every occurrence would
-    mangle it. Requiring the SAME literal sequence in both old_string and
-    new_string, with the file's matched region showing the real control
-    character in its place and no literal occurrence of the escape sequence
-    at all, keeps this to the same narrow "this exact tool call was JSON-escaped
-    one extra time" signature the quote check already uses -- not a general
-    text scan for ``\\n`` anywhere in the call.
+    Fires when some matched region contains a real newline and old_string holds MORE
+    literal ``\\n`` than that region. old_string is copied from the file, so a genuine
+    edit has equal counts even when the code legitimately contains ``"\\n"``; only the
+    surplus is drift. Regions are compared one by one because joining them would
+    multiply the file-side count under replace_all. new_string must carry a literal
+    ``\\n`` too: that is what gets written in place of a line break, since
+    _maybe_unescape_new_string deliberately never rewrites ``\\n``. ``\\r`` needs no
+    guard here -- that helper converts it whenever the region has a real CR. Drift in
+    new_string alone is indistinguishable from an edit that adds a ``\\n`` literal.
     """
-    for literal, control, name in _CONTROL_LITERAL_SUSPECTS:
-        if (literal in new_string and literal in old_string
-                and literal not in matched_regions and control in matched_regions):
+    if "\\n" not in new_string:
+        return None
+    old_literals = old_string.count("\\n")
+    for start, end in matches:
+        region = content[start:end]
+        if "\n" in region and old_literals > region.count("\\n"):
             return (
-                f"Escape-drift detected: old_string and new_string contain the "
-                f"literal sequence {literal!r} but the matched region of the file "
-                f"has a real {name} character there instead, with no backslash at "
-                f"all. This is almost always a tool-call serialization artifact "
-                f"where a real line break got doubled into its own escape "
-                f"sequence. Re-read the file with read_file and pass "
-                f"old_string/new_string with actual line breaks, not "
-                f"backslash-escaped {literal!r}.")
+                "Escape-drift detected: old_string contains more literal "
+                "'\\\\n' sequences than the matched region of the file, which "
+                "has real line breaks there instead. This is almost always a "
+                "tool-call serialization artifact where a line break got escaped "
+                "one extra time; new_string would write it as backslash + n. "
+                "Re-read the file with read_file and pass old_string/new_string "
+                "with actual line breaks, keeping only the '\\\\n' sequences "
+                "that appear literally in the file.")
     return None
 
 
@@ -427,13 +425,9 @@ def _detect_escape_drift(content: str, matches: list[Span],
                          old_string: str, new_string: str) -> Optional[str]:
     """Error string when new_string carries tool-call escape artifacts, else None:
     ``\\'``/``\\"`` in both strings but not the matched region, doubled backslash
-    runs, or a literal ``\\n``/``\\r`` standing in for a real control character."""
+    runs, or a literal ``\\n`` standing in for a real line break."""
     has_quote_suspects = "\\'" in new_string or '\\"' in new_string
-    has_control_suspects = (
-        ("\\n" in new_string and "\\n" in old_string)
-        or ("\\r" in new_string and "\\r" in old_string)
-    )
-    if not has_quote_suspects and not has_control_suspects and "\\" not in old_string:
+    if not has_quote_suspects and "\\" not in old_string:
         return None
 
     matched_regions = _matched_regions(content, matches)
@@ -449,10 +443,9 @@ def _detect_escape_drift(content: str, matches: list[Span],
                     f"prefixed with a spurious backslash. Re-read the file with "
                     f"read_file and pass old_string/new_string without "
                     f"backslash-escaping {plain!r} characters.")
-    if has_control_suspects:
-        control_drift = _detect_control_char_literal_drift(matched_regions, old_string, new_string)
-        if control_drift:
-            return control_drift
+    newline_drift = _detect_newline_literal_drift(content, matches, old_string, new_string)
+    if newline_drift:
+        return newline_drift
     return _detect_backslash_doubling(matched_regions, old_string, new_string)
 
 
