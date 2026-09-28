@@ -1,4 +1,13 @@
-"""N1X recommendations follow PCI identity through the real memory-budget path."""
+"""Verify N1X recommendations use PCI identity rather than driver display names.
+
+Simulated nvidia-smi output feeds the production memory probe, HardwareBudget and
+catalog recommender. N1X IDs must still qualify after a name change; conflicting
+IDs must not qualify through a matching name. Unavailable IDs retain the existing
+name fallback without changing memory budgets or recipe eligibility.
+
+Only the hardware responses are simulated. These are functional regression tests,
+not physical-device validation or performance benchmarks.
+"""
 
 from dataclasses import replace
 from types import SimpleNamespace
