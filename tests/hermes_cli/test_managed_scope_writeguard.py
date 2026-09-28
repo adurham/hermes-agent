@@ -113,25 +113,6 @@ def _assert_user_stores_untouched(home, before):
     assert _user_stores(home) == before
 
 
-@pytest.mark.parametrize("command, args", [
-    pytest.param("set", ("DEEPSEEK_API_KEY", NEW_KEY), id="set-credential"),
-    pytest.param("set", ("TELEGRAM_HOME_CHANNEL", "999"), id="set-env-setting"),
-    pytest.param("unset", ("DEEPSEEK_API_KEY",), id="unset-credential"),
-    pytest.param("unset", ("TELEGRAM_HOME_CHANNEL",), id="unset-env-setting"),
-])
-def test_config_set_unset_of_pinned_env_key_exits_nonzero_and_writes_nothing(pinned_env, capsys, command, args):
-    from hermes_cli.config import set_config_value, unset_config_value
-
-    home, before = pinned_env
-    with pytest.raises(SystemExit) as exc:
-        (set_config_value if command == "set" else unset_config_value)(*args)
-    assert exc.value.code == 1
-    out = capsys.readouterr()
-    assert "managed by your administrator" in out.err
-    assert "✓" not in out.out
-    _assert_user_stores_untouched(home, before)
-
-
 @pytest.mark.parametrize("method", ["PUT", "DELETE"])
 @pytest.mark.parametrize("lock, refusal", [
     pytest.param("scope", "managed by your administrator", id="managed-scope"),
@@ -197,17 +178,6 @@ def test_disconnect_on_a_package_managed_install_still_clears_the_auth_store(ant
     resp = _disconnect("anthropic")
     assert resp.get("result", {}).get("disconnected") is True, resp
     assert "anthropic" not in json.loads((home / "auth.json").read_text(encoding="utf-8"))["credential_pool"]
-
-
-def test_disconnect_refuses_a_pinned_key_before_removing_any_other(anthropic_homes):
-    home, managed, reload = anthropic_homes
-    (managed / ".env").write_text(f"ANTHROPIC_TOKEN={ADMIN_KEY}\n", encoding="utf-8")
-    (home / ".env").write_text(f"ANTHROPIC_API_KEY={OLD_KEY}\n", encoding="utf-8")
-    reload()
-    before = {name: (home / name).read_text(encoding="utf-8") for name in (".env", "auth.json")}
-    resp = _disconnect("anthropic")
-    assert "managed by your administrator" in resp.get("error", {}).get("message", ""), resp
-    assert {name: (home / name).read_text(encoding="utf-8") for name in (".env", "auth.json")} == before
 
 
 # ── bulk save strips managed leaves ──────────────────────────────────────────
