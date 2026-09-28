@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { BrandMark } from '@/components/brand-mark'
 import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton, writeClipboardText } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -25,10 +25,10 @@ import type {
   UpdaterMechanismClient
 } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, formatFullChangelogText, type CommitGroup } from '@/lib/commit-changelog'
+import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -295,14 +295,7 @@ function IdleView({
     copy: u
   })
 
-  const [logCopied, setLogCopied] = useState(false)
-
-  const handleCopyFullLog = () => {
-    void writeClipboardText(formatFullChangelogText(commits, behind, status.branch)).then(() => {
-      setLogCopied(true)
-      window.setTimeout(() => setLogCopied(false), 1800)
-    })
-  }
+  const handleCopyFullLog = () => formatFullChangelogText(commits, behind, status.branch)
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -330,23 +323,15 @@ function IdleView({
       </div>
 
       {commits.length > 0 && (
-        <button
-          className="group flex w-full items-center justify-center gap-2 rounded-lg border border-border/50 bg-transparent px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:border-border hover:bg-muted/30 hover:text-foreground"
-          onClick={handleCopyFullLog}
-          type="button"
+        <CopyButton
+          buttonSize="sm"
+          buttonVariant="outline"
+          className="w-full font-medium"
+          label={u.copyFullLog}
+          text={handleCopyFullLog}
         >
-          {logCopied ? (
-            <>
-              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              {u.copied}
-            </>
-          ) : (
-            <>
-              <Copy className="size-3.5" />
-              {u.copyFullLog}
-            </>
-          )}
-        </button>
+          {u.copyFullLog}
+        </CopyButton>
       )}
 
       <div className="grid gap-2">
