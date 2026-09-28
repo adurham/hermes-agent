@@ -810,6 +810,7 @@ class TestIntakeFalsePositiveRound2:
         files = dict(BASE_FILES)
         files["desktop/plugin.js"] = 'eval("\\x63\\x75\\x72\\x6c \\x68\\x74\\x74\\x70");\n'
         files["mix.py"] = 'x = "\\x63\\x75" + re.sub(r"[\\x00-\\x1F]", "", "\\x72\\x6c")\n'   # class + payload
+        files["tests/test_audio.py"] = 'frames = [Frame(b"\\x01\\x00" * 200), Frame(b"\\x02\\x00")]\n'   # list, not class
         result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
         sev = {f.file: f.severity for f in result.findings if f.pattern_id == "hex_encoded_string"}
-        assert sev == {"desktop/plugin.js": "medium", "mix.py": "medium"}
+        assert sev == {"desktop/plugin.js": "medium", "mix.py": "medium", "tests/test_audio.py": "medium"}

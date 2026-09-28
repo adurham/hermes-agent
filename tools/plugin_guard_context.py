@@ -322,9 +322,10 @@ def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
 # same escapes as RANGES inside a bracket class: ``/[\x00-\x1F\x7F]/``, ``[\x1b\x9b][[\]()#;?]*``.
 # Bytes named inside ``[...]`` are matched, never assembled into a string, so when every escape
 # on the line sits inside a character class the finding is informational. One ``\xHH`` outside a
-# class (a payload beside a filter) keeps the pattern's severity.
+# class (a payload beside a filter) keeps the pattern's severity, and so does a bracket span that
+# holds a quote — ``[b"\x01\x00" * 200]`` is a Python LIST of byte strings, not a class.
 _HEX_ESCAPE = re.compile(r"\\x[0-9a-fA-F]{2}")
-_CHAR_CLASS = re.compile(r"\[(?:[^\]\\\n]|\\.)*\]")
+_CHAR_CLASS = re.compile(r"\[(?:[^\]\\\n\"'`]|\\.)*\]")
 
 
 def is_hex_in_char_class(finding: Finding, line: str) -> bool:
