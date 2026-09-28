@@ -943,6 +943,24 @@
       }
     },
     {
+      "name": "display.switchSandboxImage",
+      "summary": "Decide the pending default sandbox image switch for this profile; refused when none is pending.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplaySwitchSandboxImageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplaySwitchSandboxImageResult"
+        }
+      }
+    },
+    {
       "name": "display.thumbnail",
       "summary": "One JPEG grab of the bot's screen; read-only, never changes the lease.",
       "params": [
@@ -12079,6 +12097,31 @@
         "title": "DispatchType",
         "type": "string"
       },
+      "DisplayImageSwitch": {
+        "additionalProperties": false,
+        "description": "A persisted Docker sandbox kept on the previous default image; the user decides the switch.",
+        "properties": {
+          "current_image": {
+            "title": "Current Image",
+            "type": "string"
+          },
+          "target_image": {
+            "title": "Target Image",
+            "type": "string"
+          },
+          "containers": {
+            "title": "Containers",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "current_image",
+          "target_image",
+          "containers"
+        ],
+        "title": "DisplayImageSwitch",
+        "type": "object"
+      },
       "DisplayInstallDonePayload": {
         "additionalProperties": false,
         "properties": {
@@ -12486,6 +12529,22 @@
             "default": null,
             "title": "Memory Limit Mb"
           },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
           },
@@ -12649,6 +12708,22 @@
             "default": null,
             "title": "Memory Limit Mb"
           },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
           },
@@ -12795,6 +12870,22 @@
             ],
             "default": null,
             "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
@@ -12974,6 +13065,22 @@
             "default": null,
             "title": "Memory Limit Mb"
           },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
           },
@@ -12998,6 +13105,198 @@
           "stopped"
         ],
         "title": "DisplayStopResult",
+        "type": "object"
+      },
+      "DisplaySwitchSandboxImageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "approve": {
+            "default": true,
+            "title": "Approve",
+            "type": "boolean"
+          }
+        },
+        "title": "DisplaySwitchSandboxImageParams",
+        "type": "object"
+      },
+      "DisplaySwitchSandboxImageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "docker_image": {
+            "title": "Docker Image",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key",
+          "docker_image"
+        ],
+        "title": "DisplaySwitchSandboxImageResult",
         "type": "object"
       },
       "DisplayThumbnailResult": {
