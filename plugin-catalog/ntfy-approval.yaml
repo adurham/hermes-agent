@@ -1,28 +1,31 @@
 name: ntfy-approval
 repo: https://github.com/AhmetArif0/hermes-ntfy-approval
-sha: e6d557073d7034002503c27113b80df1c64b3485
+sha: 95d3a4b838073d6908c578ca1a9f04154349a2cf
 subdir: ntfy-approval
 description: >-
   Answer Hermes' approval prompts from your phone: once selected with
   security.approval.transport: ntfy, each dangerous-command prompt arrives as an ntfy push
   notification with Approve once, Approve for session and Deny buttons, and no answer still
-  means deny. Disclosure — registers the ntfy approval transport (inactive until selected) and
-  the `hermes ntfy-approval setup|test` command; only while an approval (or `test`) is pending
-  it connects to the configured ntfy server (https://ntfy.sh by default) to publish one
-  notification (Hermes' reason, the command as Hermes redacted it unless send_command is false,
-  and one-time answer codes), read the reply topic and then delete the notification; reads
-  NTFY_APPROVAL_TOPIC and NTFY_APPROVAL_TOKEN from the profile's .env and never puts the token
-  in a notification; writes no files, starts no processes or threads, and follows no redirects.
+  means deny. Disclosure — registers the ntfy approval transport (inactive until selected), the
+  `hermes ntfy-approval setup|test` command and a post_approval_response hook that only
+  withdraws the notification of a request Hermes stopped waiting for; only while an approval (or
+  `test`) is pending it connects to the configured ntfy server (https://ntfy.sh by default) to
+  publish one notification (Hermes' reason, the command as Hermes redacted it unless
+  send_command is false, and one-time answer codes), read the reply topic and then delete the
+  notification; reads NTFY_APPROVAL_TOPIC and NTFY_APPROVAL_TOKEN from the profile's .env and
+  never puts the token in a notification; writes no files, starts no processes or threads, and
+  follows no redirects.
 maintainer: AhmetArif0
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/AhmetArif0/hermes-ntfy-approval
-version: "1.0.0"
+version: "1.0.1"
 image: https://raw.githubusercontent.com/AhmetArif0/hermes-ntfy-approval/e6d557073d7034002503c27113b80df1c64b3485/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []
-  provides_hooks: []
+  provides_hooks:
+  - post_approval_response
   provides_middleware: []
   requires_env: []
