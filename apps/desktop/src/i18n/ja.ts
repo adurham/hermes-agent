@@ -2797,6 +2797,8 @@ export const ja = defineLocale({
     restoredDraftNotice: '未送信のメッセージを復元しました',
     restoredDraftUndo: '元に戻す',
     queueEdit: '編集',
+    queueExpand: '展開',
+    queueCollapse: '折りたたむ',
     queueSendNext: '次に送信',
     queueSteer: 'ステア — 現在のターンを今すぐ修正',
     queueSend: '送信',

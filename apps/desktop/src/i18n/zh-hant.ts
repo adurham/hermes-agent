@@ -3009,6 +3009,8 @@ export const zhHant = defineLocale({
     restoredDraftNotice: '已還原你未送出的訊息',
     restoredDraftUndo: '復原',
     queueEdit: '編輯',
+    queueExpand: '展開',
+    queueCollapse: '收起',
     queueSendNext: '下一個',
     queueSteer: '引導 — 立即修正目前回合',
     queueSend: '傳送',

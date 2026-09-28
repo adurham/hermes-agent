@@ -4276,6 +4276,8 @@ export const esOverrides = {
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
     queueEdit: 'Editar',
+    queueExpand: 'Expandir',
+    queueCollapse: 'Contraer',
     queueSendNext: 'Próximo',
     queueSteer: 'Redirigir — encauzar el turno en vivo ahora',
     queueSend: 'Enviar',

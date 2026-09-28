@@ -2385,6 +2385,8 @@ export const ar = defineLocale({
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
     queueEdit: 'تحرير الرسالة المجدولة',
+    queueExpand: 'توسيع',
+    queueCollapse: 'طي',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',

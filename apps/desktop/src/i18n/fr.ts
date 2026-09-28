@@ -4296,6 +4296,8 @@ export const frOverrides = {
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
     queueEdit: 'Modifier',
+    queueExpand: 'Déplier',
+    queueCollapse: 'Replier',
     queueSendNext: 'Suivant',
     queueSteer: 'Diriger — réorienter maintenant le tour en cours',
     queueSend: 'Envoyer',
