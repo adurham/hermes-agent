@@ -10,7 +10,7 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
-import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
+import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'

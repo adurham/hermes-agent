@@ -2987,7 +2987,7 @@ agent:
   clarify_timeout: 3600        # Seconds to wait for user clarification response (0 or less = unlimited)
 ```
 
-When the timeout expires, the agent unblocks with a "user did not respond" sentinel and continues on its own. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
+When the timeout expires, the agent unblocks with `"outcome": "timed_out"` (answers the user already locked are kept) and continues on its own. A clarify prompt is never cut by the generic per-tool deadline (`timeouts.tools.sequential_call`); only `agent.clarify_timeout` bounds the wait.
 
 ## Context Files (SOUL.md, AGENTS.md)
 
