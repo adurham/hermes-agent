@@ -299,7 +299,12 @@ class _SlashWorker:
             if text := line.rstrip("\n"):
                 self.stderr_tail = (self.stderr_tail + [text])[-80:]
 
-    def run(self, command: str) -> str:
+    def run(self, command: str) -> tuple[str, str]:
+        """Run one command → ``(output, seed)``.
+
+        ``seed`` is a next-turn prompt a command like /prompt parked on the worker's
+        CLI (``_pending_agent_seed``); empty for old workers that don't reply one.
+        """
         if self.proc.poll() is not None:
             raise RuntimeError("slash worker exited")
         with self._lock:
@@ -318,7 +323,7 @@ class _SlashWorker:
                     continue
                 if not msg.get("ok"):
                     raise RuntimeError(msg.get("error", "slash worker failed"))
-                return str(msg.get("output", "")).rstrip()
+                return str(msg.get("output", "")).rstrip(), str(msg.get("seed", "") or "")
             raise RuntimeError(
                 f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
 

@@ -63,7 +63,7 @@ def test_slash_exec_spawns_with_the_live_agent_provider(monkeypatch):
             self.stderr_tail = []
 
         def run(self, command):
-            return "ok"
+            return "ok", ""
 
         def close(self):
             pass

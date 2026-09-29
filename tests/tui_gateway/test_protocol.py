@@ -1397,7 +1397,7 @@ class _BannerWorker:
 
     def run(self, command):
         self.calls.append(command)
-        return "⚡ Loading skill: grilling"
+        return "⚡ Loading skill: grilling", ""
 
     def close(self):
         self.closed = True
@@ -1511,7 +1511,7 @@ def test_slash_exec_skill_scan_raise_still_runs_registry_commands(server):
 
         def run(self, command):
             self.calls.append(command)
-            return "verbose ok"
+            return "verbose ok", ""
 
         def close(self):
             pass

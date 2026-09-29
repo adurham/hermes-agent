@@ -97,10 +97,17 @@ def _refuse_skill_slash(command: str) -> None:
         raise SkillSlashRefused(base)
 
 
-def _run(cli: HermesCLI, command: str) -> str:
+def _run(cli: HermesCLI, command: str) -> dict:
+    """Run one command; return ``{"output", "seed"}``.
+
+    ``seed`` is the one-shot ``_pending_agent_seed`` a command like /prompt or
+    /blueprint parks for "run this as the next agent turn". The interactive REPL
+    loop consumes it (cli.py); this worker has no REPL, so the seed is harvested
+    here and routed back to the gateway, which sends it as the next turn (#107800).
+    """
     cmd = (command or "").strip()
     if not cmd:
-        return ""
+        return {"output": "", "seed": ""}
     _refuse_skill_slash(cmd)
     buf = io.StringIO()
     # Rich Console captures its file handle at construction, so redirect_stdout won't affect it; swap
@@ -118,7 +125,9 @@ def _run(cli: HermesCLI, command: str) -> str:
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
-    return strip_ansi(buf.getvalue().rstrip())
+    output = strip_ansi(buf.getvalue().rstrip())
+    seed, cli._pending_agent_seed = getattr(cli, "_pending_agent_seed", None) or "", None
+    return {"output": output, "seed": seed}
 
 
 def _sw_log(reason: str) -> None:
@@ -167,7 +176,8 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            _reply(id=rid, ok=True, output=_run(cli, req.get("command", "")))
+            result = _run(cli, req.get("command", ""))
+            _reply(id=rid, ok=True, output=result["output"], seed=result["seed"])
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

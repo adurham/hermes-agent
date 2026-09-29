@@ -1061,7 +1061,12 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        payload = {"output": worker.run(cmd) or "(no output)"}
+        output, seed = worker.run(cmd)
+        if seed:
+            # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
+            # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
+            return _ok(rid, {"type": "send", "message": seed})
+        payload = {"output": output or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
