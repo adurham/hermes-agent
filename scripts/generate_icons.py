@@ -25,9 +25,10 @@ Sources of truth — two axes, composed per target:
   squircle on Apple's 824x824 (r=185.4) grid — centered in 1024 with 100px
   margins — so the icon matches the size of Apple-template neighbors.
   macOS 26 additionally gets apps/desktop/assets/icon.icon, an Icon Composer
-  package of canvas-filling layers (border band + girl, light/dark) that the
-  system masks into its own squircle; electron-builder compiles it to
-  Assets.car next to the .icns, which macOS <= 15 keeps showing.
+  package of canvas-filling layers (girl light/dark, plus a grayscale mono
+  layer for Clear and Tinted) that the system masks into its own squircle;
+  electron-builder compiles it to Assets.car next to the .icns, which
+  macOS <= 15 keeps showing.
 
 Desktop build identity comes from HERMES_PAYLOAD_TAG / HERMES_BUILD_COMMIT:
 Canary uses yellow/dark-yellow backgrounds. Commit builds use red/dark-red
@@ -36,9 +37,9 @@ Only apps/desktop outputs use this identity. Website, bootstrap, dashboard,
 and the shared master SVGs retain the default brand.
 
 The girl's position and uniform scale are registered to the reference artwork.
-She renders in front of the border, clipped only to the outer rounded silhouette.
-Only nodes near her bottom edge extend to the border; the fitted face and hair stay fixed.
-Standalone wordmarks remain centered and have no border.
+She is clipped only to the outer rounded silhouette. Only nodes near her bottom
+edge are dragged down (past the edge, or to the ring when BORDER_ENABLED); the
+fitted face and hair stay fixed. Standalone wordmarks remain centered.
 
 GENERATED OUTPUTS ARE COMMITTED. Regular builds and installs consume them and
 never render; flavored release bundles (canary/commit) render to a product dir.
@@ -51,7 +52,7 @@ Dependencies:
     Pillow and resvg-py are core runtime dependencies; run this file with a
     Hermes runtime interpreter (scripts/generate-icons.mjs uses HERMES_PYTHON).
 
-Outputs (40 files):
+Outputs (39 files):
   assets/icon-master.svg                              generated light master
   assets/icon-master-dark.svg                         generated dark master
   apps/desktop/assets/icon.png                        1024x1024 squircle (light)
@@ -61,8 +62,8 @@ Outputs (40 files):
   apps/desktop/assets/icon-dark.ico                   16,24,32,48,64,128,256
   apps/desktop/assets/icon-dark.icns                  16..1024 (real ICNS)
   apps/desktop/assets/icon.icon/icon.json             Icon Composer manifest (macOS 26)
-  apps/desktop/assets/icon.icon/Assets/border-*.png   1024 border band, light/dark ink
   apps/desktop/assets/icon.icon/Assets/art-*.png      1024 girl (+ commit badge), light/dark
+  apps/desktop/assets/icon.icon/Assets/mono.png       1024 Clear/Tinted material (grayscale + opacity)
   apps/desktop/assets/appx/Wide310x150Logo.png        310x150, squircle 100 centered
   apps/desktop/assets/appx/StoreLogo.png              50x50 squircle
   apps/desktop/assets/appx/Square44x44Logo.png        44x44 squircle
@@ -123,6 +124,13 @@ _CANARY_TAG_RE = re.compile(
 DARK_HEX = "#0d1117"
 DARK_RGB = (13, 17, 23)
 BORDER_FRACTION = 0.0407747197
+# The brand ring is switched off everywhere (tiles and the macOS 26 layers):
+# flat plate + girl read better beside macOS 26's own icons. The ring code
+# stays so it can be turned back on in one place.
+BORDER_ENABLED = False
+# Without a ring the girl's lowest nodes are dragged past the tile edge (in
+# 1024ths of the tile) so the outline crops her instead of leaving a gap.
+EDGE_OVERSHOOT = 48 / 1024
 
 # Portrait boxes fitted to the reference at equal visible tile width, with
 # uniform scaling about the tile center followed by an up-left translation.
@@ -130,10 +138,10 @@ BORDER_FRACTION = 0.0407747197
 GIRL_BOXES = {
     "squircle-light.svg": (72.149433, 104.703674, 872.767801, 872.767801),
     "squircle-dark.svg": (72.149433, 104.703674, 872.767801, 872.767801),
-    # Mac: the girl scaled 1.12x about the plate center; the plate stays on the
+    # Mac: the girl scaled 1.06x about the plate center; the plate stays on the
     # 824 grid, but a white tile with a ring reads small beside full-color peers.
-    "squircle-mac-light.svg": (122.43, 144.84, 786.83, 786.83),
-    "squircle-mac-dark.svg": (122.43, 144.84, 786.83, 786.83),
+    "squircle-mac-light.svg": (140.19, 164.44, 744.68, 744.68),
+    "squircle-mac-dark.svg": (140.19, 164.44, 744.68, 744.68),
 }
 # The macOS 26 layered icon's canvas is the plate itself (the system maps it
 # onto the 824 grid), so the same mac portrait lands in plate coordinates.
@@ -147,8 +155,9 @@ GIRL_VIEWBOX = 5487.0615
 CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
     "apps/desktop/assets/icon.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon-dark.png": ("PNG", (1024, 1024)),
-    "apps/desktop/assets/icon.icon/Assets/border-light.png": ("PNG", (1024, 1024)),
-    "apps/desktop/assets/icon.icon/Assets/border-dark.png": ("PNG", (1024, 1024)),
+    **({"apps/desktop/assets/icon.icon/Assets/border-light.png": ("PNG", (1024, 1024)),
+        "apps/desktop/assets/icon.icon/Assets/border-dark.png": ("PNG", (1024, 1024))} if BORDER_ENABLED else {}),
+    "apps/desktop/assets/icon.icon/Assets/mono.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon.icon/Assets/art-light.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon.icon/Assets/art-dark.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/appx/Wide310x150Logo.png": ("PNG", (310, 150)),
@@ -186,10 +195,11 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/desktop/assets/icon-dark.ico", "ico_dark", [16, 24, 32, 48, 64, 128, 256]),
     ("apps/desktop/assets/icon-dark.icns", "icns_dark", None),
     ("apps/desktop/assets/icon.icon/icon.json", "icon_manifest", None),
-    ("apps/desktop/assets/icon.icon/Assets/border-light.png", "icon_border", "#000000"),
-    ("apps/desktop/assets/icon.icon/Assets/border-dark.png", "icon_border", "#ffffff"),
+    *([("apps/desktop/assets/icon.icon/Assets/border-light.png", "icon_border", "#000000"),
+       ("apps/desktop/assets/icon.icon/Assets/border-dark.png", "icon_border", "#ffffff")] if BORDER_ENABLED else []),
     ("apps/desktop/assets/icon.icon/Assets/art-light.png", "icon_art", "black"),
     ("apps/desktop/assets/icon.icon/Assets/art-dark.png", "icon_art", "white"),
+    ("apps/desktop/assets/icon.icon/Assets/mono.png", "icon_mono", None),
     ("apps/desktop/assets/appx/Wide310x150Logo.png", "wide", (310, 150)),
     ("apps/desktop/assets/appx/StoreLogo.png", "png", 50),
     ("apps/desktop/assets/appx/Square44x44Logo.png", "png", 44),
@@ -397,18 +407,23 @@ def compose_svg(art: IconArt, girl: str, bg: str) -> str:
     tile = background.find("{http://www.w3.org/2000/svg}rect")
     assert tile is not None, f"no background rectangle in {bg}"
     geometry = {key: float(tile.attrib[key]) for key in ("x", "y", "width", "height", "rx")}
-    thickness = geometry["width"] * BORDER_FRACTION
-    # An inward stroke keeps the outer platform geometry unchanged. Subtracting
-    # the same inset from rx (not scaling rx) keeps the corner thickness uniform.
-    inset = {"x": 1, "y": 1, "width": -2, "height": -2, "rx": -1}
     silhouette = ET.Element("rect", {key: str(value) for key, value in geometry.items()})
-    for key, value in geometry.items():
-        tile.set(key, str(value + inset[key] * thickness / 2))
-    tile.set("stroke", "#000000" if girl == "black" else "#ffffff")
-    tile.set("stroke-width", str(thickness))
+    bottom = geometry["y"] + geometry["height"]
+    if BORDER_ENABLED:
+        thickness = geometry["width"] * BORDER_FRACTION
+        # An inward stroke keeps the outer platform geometry unchanged. Subtracting
+        # the same inset from rx (not scaling rx) keeps the corner thickness uniform.
+        inset = {"x": 1, "y": 1, "width": -2, "height": -2, "rx": -1}
+        for key, value in geometry.items():
+            tile.set(key, str(value + inset[key] * thickness / 2))
+        tile.set("stroke", "#000000" if girl == "black" else "#ffffff")
+        tile.set("stroke-width", str(thickness))
+        join_bottom = bottom - thickness + 10
+    else:
+        join_bottom = bottom + geometry["width"] * EDGE_OVERSHOOT
     inner = "".join(ET.tostring(child, encoding="unicode") for child in background)
     clip = ET.tostring(silhouette, encoding="unicode")
-    portrait = portrait_layer(art, girl, bg, geometry["y"] + geometry["height"] - thickness + 10)
+    portrait = portrait_layer(art, girl, bg, join_bottom)
     badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">\n'
@@ -542,9 +557,9 @@ def icon_border_svg(ink: str) -> str:
 def icon_art_svg(art: IconArt, girl: str) -> str:
     """Art layer: the girl registered as on the canvas-filling squircle, joined
     to the border band; the commit badge rides along for commit builds."""
-    thickness = ICON_CANVAS * BORDER_FRACTION
     bg = "icon.icon"  # the plate is the canvas; the system supplies the grid
-    portrait = portrait_layer(art, girl, bg, ICON_CANVAS - thickness + 10)
+    join_bottom = ICON_CANVAS - ICON_CANVAS * BORDER_FRACTION + 10 if BORDER_ENABLED else ICON_CANVAS * (1 + EDGE_OVERSHOOT)
+    portrait = portrait_layer(art, girl, bg, join_bottom)
     badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {ICON_CANVAS} {ICON_CANVAS}">\n'
@@ -561,28 +576,65 @@ def icon_color(hex_color: str) -> str:
     return f"srgb:{r:.5f},{g:.5f},{b:.5f},1.00000"
 
 
+# Mono (Clear/Tinted) materials, as luminance + opacity: the dark-ink parts of
+# the girl become a near-black frosted glass instead of black, her white parts
+# stay white, and the ring (when enabled) is a soft light glass.
+MONO_INK = (0.13, 0.90)
+MONO_RING = (0.82, 0.75)
+
+
+def icon_mono_image(art: IconArt) -> Image.Image:
+    """The single grayscale layer behind Clear light/dark and Tinted light/dark
+    (Apple's "tinted" specialization). One image, each pixel painted once, so
+    translucent materials never stack where the girl meets the ring."""
+    def coverage(svg: str) -> Image.Image:
+        return render_svg(svg, ICON_CANVAS).convert("RGBA").getchannel("A")
+
+    def material(tone: float, opacity: float, alpha: Image.Image) -> Image.Image:
+        grey = round(tone * 255)
+        layer = Image.new("RGBA", alpha.size, (grey, grey, grey, 0))
+        layer.putalpha(alpha.point(lambda v: round(v * opacity)))
+        return layer
+
+    out = Image.new("RGBA", (ICON_CANVAS, ICON_CANVAS), (0, 0, 0, 0))
+    paints = [(coverage(icon_art_svg(art, "black")), MONO_INK), (coverage(icon_art_svg(art, "white")), (1.0, 1.0))]
+    if BORDER_ENABLED:
+        paints.append((coverage(icon_border_svg("#ffffff")), MONO_RING))
+    for alpha, (tone, opacity) in paints:
+        # paste, not composite: a later material replaces an earlier one
+        out.paste(material(tone, opacity, alpha), (0, 0), alpha.point(lambda v: 255 if v > 127 else 0))
+    return out
+
+
 def icon_manifest(art: IconArt) -> str:
-    """icon.json: flat brand fill (flavoured for canary/commit builds), a
-    border layer and an art layer, each with a dark-appearance variant."""
+    """icon.json: flat brand fill (flavoured for canary/commit builds), the
+    art layer (and ring, when enabled) with light/dark variants, and the mono
+    layer that replaces them under Clear and Tinted."""
     light, dark = art.colors or ("#ffffff", DARK_HEX)
 
     def layer(name: str) -> dict:
         # No fixed "image-name": actool treats it as the image for every
         # appearance and drops the specializations, so the dark variant would
         # never reach Assets.car (black girl on the dark fill).
-        # "tinted" is the single mono annotation behind Clear light/dark and
-        # Tinted light/dark: the system reads luminance as visibility and
-        # tints it, so those modes need the white ink, not the black.
         return {
             "name": name,
             "image-name-specializations": [
                 {"value": f"{name}-light.png"},
                 {"appearance": "dark", "value": f"{name}-dark.png"},
-                {"appearance": "tinted", "value": f"{name}-dark.png"},
             ],
             "glass": False,
-            "hidden": False,
+            "hidden-specializations": [{"value": False}, {"appearance": "tinted", "value": True}],
         }
+
+    # "tinted" is the single mono annotation behind Clear light/dark and
+    # Tinted light/dark: the system reads luminance as visibility and tints it.
+    mono = {
+        "name": "mono",
+        "image-name": "mono.png",
+        "glass": True,
+        "hidden-specializations": [{"value": True}, {"appearance": "tinted", "value": False}],
+    }
+    layers = ([layer("border")] if BORDER_ENABLED else []) + [layer("art"), mono]
 
     manifest = {
         "fill-specializations": [
@@ -595,7 +647,7 @@ def icon_manifest(art: IconArt) -> str:
             "translucency": {"enabled": False, "value": 0},
             "shadow": {"kind": "none", "opacity": 0},
             "blur-material": None,
-            "layers": [layer("border"), layer("art")],
+            "layers": layers,
         }],
         "supported-platforms": {"squares": "shared"},
     }
@@ -689,6 +741,8 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
         save_png(render_svg(icon_border_svg(arg), ICON_CANVAS), buf)
     elif kind == "icon_art":
         save_png(render_svg(icon_art_svg(art, arg), ICON_CANVAS), buf)
+    elif kind == "icon_mono":
+        save_png(icon_mono_image(art), buf)
     elif kind == "ico":
         img = render(art.master, max(arg))
         img.save(buf, format="ICO", sizes=[(s, s) for s in arg])

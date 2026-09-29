@@ -2,6 +2,7 @@
 import colorsys
 import io
 import itertools
+import math
 import os
 import shutil
 from pathlib import Path
@@ -238,49 +239,56 @@ def manifest_fills(package):
         prefix, _, channels = spec["value"]["solid"].partition(":")
         assert prefix == "srgb"
         fills[spec.get("appearance", "light")] = tuple(float(v) for v in channels.split(","))[:3]
-    layers = [layer for group in manifest["groups"] for layer in group["layers"]]
+    layers = {layer["name"]: layer for group in manifest["groups"] for layer in group["layers"]}
+    assert "border" not in layers, "the ring is disabled everywhere"
     # A fixed "image-name" makes actool ignore the per-appearance images, so
-    # every layer must pick its image through specializations only, with a
-    # dark one (else dark mode shows the black girl on the dark fill) and a
-    # tinted one — the mono annotation behind Clear and Tinted, which the
-    # system reads as luminance, so it must be the white ink.
-    assert not any("image-name" in layer for layer in layers)
-    for layer in layers:
-        specs = {spec.get("appearance"): spec["value"] for spec in layer["image-name-specializations"]}
-        assert set(specs) >= {None, "dark", "tinted"}
-        assert specs["tinted"] == specs["dark"]
-    referenced = {spec["value"] for layer in layers for spec in layer["image-name-specializations"]}
+    # the art layer picks its image through specializations only, with a dark
+    # one (else dark mode shows the black girl on the dark fill). Clear and
+    # Tinted come from the single mono layer, shown only under "tinted" while
+    # the art layer hides there.
+    art, mono = layers["art"], layers["mono"]
+    assert "image-name" not in art
+    art_specs = {spec.get("appearance"): spec["value"] for spec in art["image-name-specializations"]}
+    assert set(art_specs) == {None, "dark"}
+    assert art["hidden-specializations"] == [{"value": False}, {"appearance": "tinted", "value": True}]
+    assert mono["hidden-specializations"] == [{"value": True}, {"appearance": "tinted", "value": False}]
+    assert mono["glass"] is True
+    referenced = set(art_specs.values()) | {mono["image-name"]}
     assert referenced == {p.name for p in (package / "Assets").iterdir()}, "every layer image is referenced, none dangle"
     return fills["light"], fills["dark"]
 
 
-def test_layered_macos_icon_border_hugs_the_system_mask_and_flavor_stays_in_the_fill(generate, monkeypatch):
-    """macOS 26 masks the layers itself: the border layer must be a band of the
-    brand thickness measured perpendicular to Apple's mask everywhere along it,
-    reaching the canvas edge so the mask supplies the outline. Build flavors
-    recolour the fill in icon.json only; the ring and the girl never change."""
+def test_layered_macos_icon_mono_layer_and_flavor_stays_in_the_fill(generate, monkeypatch):
+    """macOS 26 masks the layers itself. The girl is dragged past the plate edge
+    so the mask crops her (no gap below), the mono layer is one image of two
+    materials — near-black frosted ink and white — so nothing stacks, and build
+    flavors recolour the fill in icon.json only; the layers never change."""
     module = load_generator(monkeypatch)
     stable = generate("v1.2.3") / "apps/desktop/assets" / LAYERED_ICON
     canary = generate("v1.2.3+canary.20260911T010203Z") / "apps/desktop/assets" / LAYERED_ICON
     commit = generate(commit="0123456" + "a" * 33) / "apps/desktop/assets" / LAYERED_ICON
 
     canvas = module.ICON_CANVAS
-    thickness = canvas * module.BORDER_FRACTION
-    outline = module.mac_mask_outline(float(canvas), 160)
-    for name, ink in (("border-light.png", (0, 0, 0)), ("border-dark.png", (255, 255, 255))):
+    for name in ("art-light.png", "art-dark.png"):
         layer = Image.open(stable / "Assets" / name).convert("RGBA")
         assert layer.size == (canvas, canvas)
-        assert layer.getpixel((0, 0))[3] == 255 and layer.getpixel((canvas - 1, canvas - 1))[3] == 255
-        for (xi, yi), (xo, yo) in zip(module.offset_inward(outline, thickness - 1.5),
-                                      module.offset_inward(outline, thickness + 1.5), strict=True):
-            inside = layer.getpixel((int(xi), int(yi)))
-            assert inside[3] >= 250 and inside[:3] == ink, (name, xi, yi, inside)
-            assert layer.getpixel((int(xo), int(yo)))[3] <= 5, (name, xo, yo)
+        bottom_row = layer.crop((0, canvas - 1, canvas, canvas)).getchannel("A").getbbox()
+        assert bottom_row is not None, f"{name}: the girl must reach the plate edge"
+    mono = Image.open(stable / "Assets" / "mono.png").convert("RGBA")
+    ink_tone = round(module.MONO_INK[0] * 255)
+    tones = {px[0] for px in mono.getdata() if px[3] > 127}
+    assert tones == {ink_tone, 255}, tones
+    light_art = Image.open(stable / "Assets" / "art-light.png").convert("RGBA")
+    dark_art = Image.open(stable / "Assets" / "art-dark.png").convert("RGBA")
+    for x, y in ((canvas // 2, canvas // 2), (canvas // 3, canvas // 3), (2 * canvas // 3, canvas // 2)):
+        px = mono.getpixel((x, y))
+        if dark_art.getpixel((x, y))[3] > 200:      # the girl's white parts stay white and opaque
+            assert px[:3] == (255, 255, 255) and px[3] == 255, (x, y, px)
+        elif light_art.getpixel((x, y))[3] > 200:   # her black parts become the frosted ink
+            assert px[0] == ink_tone and abs(px[3] - round(module.MONO_INK[1] * 255)) <= 1, (x, y, px)
 
-    for name in ("border-light.png", "border-dark.png", "art-light.png", "art-dark.png"):
+    for name in ("art-light.png", "art-dark.png", "mono.png"):
         assert (stable / "Assets" / name).read_bytes() == (canary / "Assets" / name).read_bytes(), name
-    for name in ("border-light.png", "border-dark.png"):
-        assert (stable / "Assets" / name).read_bytes() == (commit / "Assets" / name).read_bytes(), name
     for name in ("art-light.png", "art-dark.png"):
         # The commit badge is the only difference, and it lives in the top quarter.
         plain = Image.open(stable / "Assets" / name).convert("RGBA")
@@ -306,3 +314,18 @@ def test_layered_macos_icon_border_hugs_the_system_mask_and_flavor_stays_in_the_
 ])
 def test_invalid_or_conflicting_build_identity_cannot_emit_icons(generate, tag, commit):
     generate(tag=tag, commit=commit, rejected=True)
+
+
+def test_mac_mask_offset_keeps_the_ring_geometry_honest(monkeypatch):
+    """The ring is disabled, but its geometry stays available: the inward
+    offset of Apple's fitted mask must sit exactly one thickness inside the
+    outline at every sample, or re-enabling BORDER_ENABLED ships a wobbly band."""
+    module = load_generator(monkeypatch)
+    canvas = float(module.ICON_CANVAS)
+    thickness = canvas * module.BORDER_FRACTION
+    outline = module.mac_mask_outline(canvas, 160)
+    inner = module.offset_inward(outline, thickness)
+    assert len(inner) == len(outline) >= 160
+    for (ox, oy), (ix, iy) in zip(outline, inner, strict=True):
+        assert math.hypot(ox - ix, oy - iy) == pytest.approx(thickness, abs=1e-6)
+        assert 0 <= ox <= canvas and 0 <= oy <= canvas

@@ -27,24 +27,6 @@
       "blur-material": null,
       "layers": [
         {
-          "name": "border",
-          "image-name-specializations": [
-            {
-              "value": "border-light.png"
-            },
-            {
-              "appearance": "dark",
-              "value": "border-dark.png"
-            },
-            {
-              "appearance": "tinted",
-              "value": "border-dark.png"
-            }
-          ],
-          "glass": false,
-          "hidden": false
-        },
-        {
           "name": "art",
           "image-name-specializations": [
             {
@@ -53,14 +35,32 @@
             {
               "appearance": "dark",
               "value": "art-dark.png"
-            },
-            {
-              "appearance": "tinted",
-              "value": "art-dark.png"
             }
           ],
           "glass": false,
-          "hidden": false
+          "hidden-specializations": [
+            {
+              "value": false
+            },
+            {
+              "appearance": "tinted",
+              "value": true
+            }
+          ]
+        },
+        {
+          "name": "mono",
+          "image-name": "mono.png",
+          "glass": true,
+          "hidden-specializations": [
+            {
+              "value": true
+            },
+            {
+              "appearance": "tinted",
+              "value": false
+            }
+          ]
         }
       ]
     }
