@@ -605,6 +605,7 @@ import {
   WindowConnectionRouteRegistry
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
+import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
@@ -6945,11 +6946,16 @@ function sendOpenUpdatesRequested() {
 
   webContents.send('hermes:open-updates')
 
+  // #83998: never pump the Windows foreground from an ambient surface —
+  // showInactive + a guarded focus keep the raise from dismissing another
+  // app's native dialog.
   if (!mainWindow.isVisible()) {
-    mainWindow.show()
+    mainWindow.showInactive()
   }
 
-  mainWindow.focus()
+  if (shouldFocusToTakeKeyboard(mainWindow)) {
+    mainWindow.focus()
+  }
 }
 
 // Push titlebar/fullscreen chrome state to a window's renderer. Defaults to the
@@ -13801,11 +13807,18 @@ function focusWindow(win) {
     win.restore()
   }
 
-  if (!win.isVisible()) {
-    win.show()
+  // #83998: show() and focus() both seize the Windows OS foreground,
+  // dismissing other apps' native save/confirm dialogs while Hermes streams
+  // in the background. Reveal without activation, and only take the keyboard
+  // when the window doesn't already have focus — a redundant focus() still
+  // pumps SetForegroundWindow.
+  if (revealAction(win.isVisible()) === 'showInactive') {
+    win.showInactive()
   }
 
-  win.focus()
+  if (shouldFocusToTakeKeyboard(win)) {
+    win.focus()
+  }
 }
 
 function spawnSecondaryWindow({
@@ -19006,7 +19019,12 @@ function handleDeepLink(url) {
       mainWindow.restore()
     }
 
-    mainWindow.focus()
+    // #83998: a deep link must deliver without re-pumping the Windows
+    // foreground when the window already has focus.
+    if (shouldFocusToTakeKeyboard(mainWindow)) {
+      mainWindow.focus()
+    }
+
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
