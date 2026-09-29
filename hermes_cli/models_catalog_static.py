@@ -59,8 +59,6 @@ _OPENROUTER_ONLY = {
     "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
     "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
     "stealth/union-alpha",
-    # Not on the Portal catalog yet (2026-09-29, launch day); drop once /v1/models lists them.
-    "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro",
 }
 
 
