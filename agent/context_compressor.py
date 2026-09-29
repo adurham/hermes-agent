@@ -1719,6 +1719,17 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
 
 
+# Runtime notices that clarify producers persisted as user_response before per-response
+# status existed. Only status-less (legacy) entries are checked; explicit status wins.
+_CLARIFY_NON_RESPONSE_PREFIXES = (
+    "The user did not provide a response",  # tools/clarify_tool.TIMEOUT_RESPONSE
+    "[user did not respond",  # gateway clarify delivery timeout
+    "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
+    "[oneshot mode:",  # hermes_cli/oneshot.py
+    "The user cancelled",  # classic CLI Ctrl+C
+)
+
+
 def _sum_clarify(name, args, content, content_len, line_count):
     response_prefix = "[clarify] user responded: "
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
@@ -1741,10 +1752,8 @@ def _sum_clarify(name, args, content, content_len, line_count):
             # Pre-status sessions also stored timeout/delivery notices as user_response.
             # Only those legacy records need the old sentinel check; explicit status wins.
             if "status" not in entry and any(
-                isinstance(item, str) and item.lstrip().startswith((
-                    "The user did not provide a response", "[user did not respond",
-                    "[clarify prompt could not be delivered", "[oneshot mode:",
-                )) for item in values
+                isinstance(item, str) and item.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+                for item in values
             ):
                 continue
             answers.extend(values)

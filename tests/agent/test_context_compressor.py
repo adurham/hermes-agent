@@ -57,7 +57,6 @@ class TestLegacyClarifyResults:
     def test_answers_reach_summary_after_repeated_pruning(self, monkeypatch, shape, question_size, answer):
         import agent.context_compressor as module
 
-        print("compressor module:", module.__file__)
         answers = answer if isinstance(answer, list) else [answer]
         entry = {"question": "Which environment? " + "q" * question_size,
                  "choices_offered": ["staging", "production"], "user_response": answer}
@@ -100,6 +99,7 @@ class TestLegacyClarifyResults:
         "[user did not respond within 60m]",
         "[clarify prompt could not be delivered]",
         "[oneshot mode: no user available]",
+        "The user cancelled. Use your best judgement to proceed.",
     ])
     def test_legacy_sentinels_are_not_answers_but_explicit_status_is_authoritative(self, sentinel):
         for value in (sentinel, ["production", "  " + sentinel]):
