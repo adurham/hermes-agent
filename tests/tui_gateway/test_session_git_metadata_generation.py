@@ -73,12 +73,21 @@ def test_missing_db_claim_never_starts_git_probe(monkeypatch):
     assert probed == []
 
 
-def test_lazy_desktop_row_with_explicit_cwd_is_enriched_on_hydration(monkeypatch, tmp_path):
+def test_persisted_row_missing_git_metadata_is_enriched_on_hydration(monkeypatch, tmp_path):
+    """A row that already carries its cwd but no git metadata is healed on resume (#108784).
+
+    The lazy-row path enriches on the first submit, so this covers the OTHER way a row reaches
+    hydration with a cwd and no branch: one written before the enrichment existed, or by a writer
+    that stamped only the cwd. The row is built directly rather than through
+    ``_ensure_session_db_row`` so the two paths stay independently covered.
+    """
     db = SessionDB(db_path=tmp_path / "state.db")
     repo = tmp_path / "repo"
     repo.mkdir()
+    key = "desktop-session"
+    db.create_session(key, source="desktop", model="test-model", cwd=str(repo))
     session = {
-        "session_key": "desktop-session",
+        "session_key": key,
         "source": "desktop",
         "cwd": str(repo),
         "explicit_cwd": True,
@@ -86,18 +95,16 @@ def test_lazy_desktop_row_with_explicit_cwd_is_enriched_on_hydration(monkeypatch
     sid = "live-desktop-session"
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
-    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server.git_probe, "branch", lambda _cwd: "feature/session-metadata")
     monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: str(repo))
     server._sessions[sid] = session
     try:
-        assert server._ensure_session_db_row(session) is True
-        assert db.get_session("desktop-session")["git_branch"] is None
+        assert db.get_session(key)["git_branch"] is None
 
-        server._hydrate_session_cwd(sid, "desktop-session", db, None)
+        server._hydrate_session_cwd(sid, key, db, None)
 
-        row = db.get_session("desktop-session")
+        row = db.get_session(key)
         assert row["cwd"] == str(repo)
         assert row["git_branch"] == "feature/session-metadata"
         assert row["git_repo_root"] == str(repo)
