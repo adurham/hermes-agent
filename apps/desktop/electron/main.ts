@@ -457,7 +457,14 @@ import {
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
-import { type ActiveWork, backendOwnedByApp, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import {
+  type ActiveWork,
+  backendOwnedByApp,
+  mergeActiveWork,
+  normalizeActiveWork,
+  quitPromptFor,
+  shouldGuardWindowClose
+} from './quit-guard'
 import {
   backendQuitNeedsWait,
   backendTeardownOptions,
@@ -13565,6 +13572,7 @@ function spawnSecondaryWindow({
 
   // Chat-surface registration: applyWindowTranslucency swaps this window's
   // backing between opaque-themed and alpha-0 when glass toggles.
+  registerChatWindow(win)
   minimizeToTray.registerWindow(win)
   translucencyBackedWindows.add(win)
 
@@ -13768,6 +13776,7 @@ function createInstanceWindow(
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  registerChatWindow(win)
   instanceWindows.add(win)
   minimizeToTray.registerWindow(win)
   recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
@@ -14855,6 +14864,7 @@ function createWindow() {
 
   const createdMainWindow = mainWindow
   minimizeToTray.registerWindow(createdMainWindow, { closeToTray: true })
+  registerChatWindow(createdMainWindow)
   const defaultRoute = desktopProfilePreferences.getDefault()
 
   if (defaultRoute) {
@@ -17651,6 +17661,23 @@ ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWat
 // merged picture. Keyed by webContents id so a closed window stops counting.
 const activeWorkByWebContents = new Map<number, ActiveWork>()
 
+// Synchronous, webContents-independent cache of the most recent active-work
+// summary we heard from *any* renderer. The per-webContents map above is
+// dropped the moment a webContents is destroyed (a stream can reload its
+// webContents mid-turn), so at quit time it can read empty even though a turn
+// is live. This cached value survives that and is what the quit guard falls
+// back to. It is only ever refreshed by real publishes, so an idle app
+// (count=0) clears it — no false positives after a turn ends.
+let lastActiveWorkSeen: ActiveWork = { count: 0, titles: [] }
+
+// Every window that hosts a chat surface (primary, session, instance). The
+// last-window close guard below is installed centrally for all of them.
+const chatWindows = new Set<BrowserWindow>()
+
+function hasOtherChatWindows(window: BrowserWindow): boolean {
+  return [...chatWindows].some(candidate => candidate !== window && !candidate.isDestroyed())
+}
+
 // The same merged picture drives background throttling: chat windows run
 // unthrottled while any turn is in flight (streaming must paint while hidden)
 // and fall back to Chromium's default throttling at idle. See stream-throttle.ts.
@@ -17670,7 +17697,9 @@ ipcMain.on('hermes:active-work', (event, payload) => {
     })
   }
 
-  activeWorkByWebContents.set(id, normalizeActiveWork(payload))
+  const work = normalizeActiveWork(payload)
+  activeWorkByWebContents.set(id, work)
+  lastActiveWorkSeen = work
   updateStreamThrottleFromActiveWork()
 })
 
@@ -18983,11 +19012,12 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
     return true
   }
 
-  const prompt = quitPromptFor(
-    mergeActiveWork(activeWorkByWebContents.values()),
-    isQuittingForHandoff,
-    quitStopsBackendWork()
-  )
+  // The per-webContents map can read empty at quit time even though a turn
+  // is live (a stream can reload its webContents mid-turn, dropping the entry
+  // before the guard runs), so merge in the last summary any renderer sent.
+  const work = mergeActiveWork([...activeWorkByWebContents.values(), lastActiveWorkSeen])
+
+  const prompt = quitPromptFor(work, isQuittingForHandoff, quitStopsBackendWork())
 
   // A tray quit with live work still needs the ordinary visible confirmation.
   if (prompt && minimizeToTray.status().available) {
@@ -19030,6 +19060,35 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
     })
 
   return true
+}
+
+// Intercept the close of the LAST chat window while the window and its
+// active-work report are still alive. On Windows/Linux the primary quit
+// gesture is the title-bar close button: closing the final window destroys
+// its webContents (clearing the active-work map) BEFORE window-all-closed
+// reactively calls app.quit() — by the time before-quit runs, heldQuitForActiveWork
+// finds nothing and the app exits silently (#96139). Running the same guard
+// here, on the close event itself, catches it in time; "Quit Anyway" re-enters
+// before-quit with the latch set and falls through.
+function registerChatWindow(window: BrowserWindow) {
+  chatWindows.add(window)
+  window.on('close', (event: Electron.Event) => {
+    // The tray's close-to-tray handler runs first (registered first) and
+    // absorbs the close into a hide — the work keeps running, so there is
+    // nothing to confirm.
+    if (event.defaultPrevented) {
+      return
+    }
+
+    const work = mergeActiveWork(activeWorkByWebContents.values())
+
+    if (!shouldGuardWindowClose(work, isQuittingForHandoff, IS_MAC, hasOtherChatWindows(window))) {
+      return
+    }
+
+    heldQuitForActiveWork(event)
+  })
+  window.once('closed', () => chatWindows.delete(window))
 }
 
 app.on('before-quit', event => {
