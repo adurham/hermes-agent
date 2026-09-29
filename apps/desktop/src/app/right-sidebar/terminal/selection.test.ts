@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMacPlatform, shouldOwnAddSelectionShortcut } from './selection'
-
 import { isComposerChord } from '@/lib/keybinds/chords'
+
+import { isMacPlatform, shouldOwnAddSelectionShortcut } from './selection'
 
 const key = (init: Partial<KeyboardEvent> & { key: string }) =>
   ({
