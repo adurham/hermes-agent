@@ -295,6 +295,31 @@ describe('clarify request stream hydration', () => {
     expect($clarifyRequests.get()[SID]).toBeUndefined()
   })
 
+  it('keeps a live clarify card through a stale session.info running=false snapshot (#83319)', () => {
+    mountStream()
+
+    // The state a reconnect replays from: the turn was live (busy) when the
+    // backend parked the clarify request. The session.info snapshot riding
+    // the reconnect predates the clarify, so its running=false is stale —
+    // the same wipe class as the spurious turn-end/error clears.
+    const state = createClientSessionState()
+    state.busy = true
+    state.awaitingResponse = true
+    stream.states.set(SID, state)
+
+    clarifyRequest({ choices: ['a', 'b'], question: 'Pick', request_id: 'req-live' })
+
+    act(() =>
+      stream.handleEvent({ payload: { running: false }, session_id: SID, type: 'session.info' })
+    )
+
+    expect($clarifyRequests.get()[SID]?.requestId).toBe('req-live')
+
+    // And the clear still fires once the request truly settles.
+    clarifyExpire('req-live')
+    expect($clarifyRequests.get()[SID]).toBeUndefined()
+  })
+
   it('merges a BATCH tool.start row with its clarify.request (no top-level question)', () => {
     mountStream()
 
