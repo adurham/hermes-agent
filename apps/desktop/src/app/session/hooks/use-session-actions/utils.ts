@@ -555,6 +555,47 @@ const hasStreamedContent = (message: ChatMessage): boolean =>
   chatMessageText(message).trim().length > 0 || hasStructuralParts(message)
 
 /**
+ * #80151: the store's flat projection and the streamed parts join the same
+ * segments with different separators (blank lines around folded tool rounds,
+ * reference lines), so byte-prefix pairing misses the same turn. Compare the
+ * answer text with reference lines stripped and separators folded away.
+ */
+const foldAnswerTextForCompare = (text: string): string => textWithoutReferenceLines(text).replace(/\s+/g, '')
+
+/**
+ * #80151: may a still-pending local stream claim a COMMITTED row whose answer
+ * text the stream provably holds? With the turn proven by shared tool-call
+ * ids (call ids are unique to the turn), the committed text is the mid-turn
+ * segment the store flushed — it must be one of the stream's own folded text
+ * segments, or a prefix of one (a mid-segment flush). Without that proof the
+ * whole folded answer must strictly extend the committed text, mirroring the
+ * live-shell prefix rule. An empty-text committed row is never claimable
+ * here: empty prose carries no identity (#114543); the settled-final shell
+ * case is preserveLocalPendingTurnMessages' own rule (#123047).
+ */
+const streamedAnswerHoldsCommittedText = (local: ChatMessage, authoritative: ChatMessage): boolean => {
+  const foldedAuthoritative = foldAnswerTextForCompare(chatMessageText(authoritative))
+
+  if (!foldedAuthoritative.length) {
+    return false
+  }
+
+  const authoritativeToolIds = toolCallIdsOf(authoritative)
+
+  if (authoritativeToolIds.length > 0 && authoritativeToolIds.every(id => toolCallIdsOf(local).includes(id))) {
+    const localSegments = local.parts.flatMap(part =>
+      part.type === 'text' ? [foldAnswerTextForCompare(part.text)] : []
+    )
+
+    return localSegments.some(segment => segment.startsWith(foldedAuthoritative))
+  }
+
+  const foldedLocal = foldAnswerTextForCompare(chatMessageText(local))
+
+  return foldedLocal.length > foldedAuthoritative.length && foldedLocal.startsWith(foldedAuthoritative)
+}
+
+/**
  * May the cached local row stand in for this authoritative assistant?
  *
  * Only for a live projection of the SAME reply that the local copy is further
@@ -563,25 +604,45 @@ const hasStreamedContent = (message: ChatMessage): boolean =>
  * — or the stream id — of a genuine stored reply. A retained failure snapshot
  * (`inflight.error`, projected with empty text) is never a shell: repainting it
  * from the local partial would hide the error and mark the turn healthy again.
+ *
+ * #80151: a COMMITTED row at the same ordinal can be this turn's mid-turn
+ * partial — the backend persists segments while the turn runs, so switching
+ * chats mid-stream and back hydrates the store's flat projection next to the
+ * still-streaming local copy, and that projection need not be a byte prefix of
+ * the streamed text. Only a still-PENDING local row may claim it, and only
+ * with same-turn proof: every tool-call id the committed row names also
+ * streams locally (call ids are unique to the turn, so a different turn at
+ * the same ordinal — a resent prompt answered earlier — cannot pass), or the
+ * committed answer text is a strict folded prefix of the streamed text. In
+ * both arms the streamed copy must cover the committed text, so a complete
+ * earlier answer is never traded for a shorter local row.
  */
 const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage): boolean => {
   if (local.role !== 'assistant' || !isLiveTailRow(local)) {
     return false
   }
 
-  if (!isLiveTailRow(authoritative) || authoritative.error) {
+  if (authoritative.error) {
     return false
   }
 
   const authoritativeText = chatMessageText(authoritative).trim()
 
-  if (!authoritativeText.length) {
-    return hasStreamedContent(local)
+  if (isLiveTailRow(authoritative)) {
+    if (!authoritativeText.length) {
+      return hasStreamedContent(local)
+    }
+
+    const localText = chatMessageText(local).trim()
+
+    return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
   }
 
-  const localText = chatMessageText(local).trim()
+  if (local.pending !== true) {
+    return false
+  }
 
-  return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
+  return hasStreamedContent(local) && streamedAnswerHoldsCommittedText(local, authoritative)
 }
 
 const answerText = (message: ChatMessage) => textWithoutReferenceLines(chatMessageText(message)).trim()
