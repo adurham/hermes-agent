@@ -565,11 +565,15 @@ def icon_manifest(art: IconArt) -> str:
         # No fixed "image-name": actool treats it as the image for every
         # appearance and drops the specializations, so the dark variant would
         # never reach Assets.car (black girl on the dark fill).
+        # "tinted" is the single mono annotation behind Clear light/dark and
+        # Tinted light/dark: the system reads luminance as visibility and
+        # tints it, so those modes need the white ink, not the black.
         return {
             "name": name,
             "image-name-specializations": [
                 {"value": f"{name}-light.png"},
                 {"appearance": "dark", "value": f"{name}-dark.png"},
+                {"appearance": "tinted", "value": f"{name}-dark.png"},
             ],
             "glass": False,
             "hidden": False,

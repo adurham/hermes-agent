@@ -240,12 +240,15 @@ def manifest_fills(package):
         fills[spec.get("appearance", "light")] = tuple(float(v) for v in channels.split(","))[:3]
     layers = [layer for group in manifest["groups"] for layer in group["layers"]]
     # A fixed "image-name" makes actool ignore the per-appearance images, so
-    # every layer must pick its image through specializations only, and each
-    # must carry a dark one — otherwise dark mode shows the black girl on the
-    # dark fill.
+    # every layer must pick its image through specializations only, with a
+    # dark one (else dark mode shows the black girl on the dark fill) and a
+    # tinted one — the mono annotation behind Clear and Tinted, which the
+    # system reads as luminance, so it must be the white ink.
     assert not any("image-name" in layer for layer in layers)
     for layer in layers:
-        assert {spec.get("appearance") for spec in layer["image-name-specializations"]} >= {None, "dark"}
+        specs = {spec.get("appearance"): spec["value"] for spec in layer["image-name-specializations"]}
+        assert set(specs) >= {None, "dark", "tinted"}
+        assert specs["tinted"] == specs["dark"]
     referenced = {spec["value"] for layer in layers for spec in layer["image-name-specializations"]}
     assert referenced == {p.name for p in (package / "Assets").iterdir()}, "every layer image is referenced, none dangle"
     return fills["light"], fills["dark"]

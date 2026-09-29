@@ -35,6 +35,10 @@
             {
               "appearance": "dark",
               "value": "border-dark.png"
+            },
+            {
+              "appearance": "tinted",
+              "value": "border-dark.png"
             }
           ],
           "glass": false,
@@ -48,6 +52,10 @@
             },
             {
               "appearance": "dark",
+              "value": "art-dark.png"
+            },
+            {
+              "appearance": "tinted",
               "value": "art-dark.png"
             }
           ],
