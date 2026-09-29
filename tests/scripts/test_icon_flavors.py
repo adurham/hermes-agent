@@ -16,6 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 LAYERED_ICON = "icon.icon"  # apps/desktop/assets/icon.icon: the macOS 26 Icon Composer package
+DMG_VOLUME = Path("apps/desktop/packaging/dmg-volume.icns")  # hand-made drive artwork, not a tile
 
 
 @pytest.fixture(scope="module")
@@ -142,8 +143,8 @@ def test_canary_changes_only_desktop_background_preserving_art_and_native_geomet
     stable = generate("v1.2.3")
     canary = generate("v1.2.3+canary.20260911T010203Z")
     for path in (stable / "apps/desktop").rglob("*"):
-        if not path.is_file() or LAYERED_ICON in path.parts:
-            continue  # the layered macOS icon carries its flavor in icon.json, tested below
+        if not path.is_file() or LAYERED_ICON in path.parts or path.relative_to(stable) == DMG_VOLUME:
+            continue  # the layered macOS icon carries its flavor in icon.json; the DMG volume art is unflavoured (both tested below)
         original_frames = list(frames(path))
         canary_frames = list(frames(canary / path.relative_to(stable)))
         assert len(original_frames) == len(canary_frames)
@@ -170,8 +171,8 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
             continue
         rel = path.relative_to(first)
         assert path.read_bytes() == (same_prefix / rel).read_bytes(), rel
-        if LAYERED_ICON in path.parts:
-            continue  # the layered macOS icon carries its flavor in icon.json, tested below
+        if LAYERED_ICON in path.parts or rel == DMG_VOLUME:
+            continue  # the layered macOS icon carries its flavor in icon.json; the DMG volume art is unflavoured (both tested below)
         first_frames = list(frames(path))
         other_frames = list(frames(changed / rel))
         stable_frames = list(frames(stable / rel))
@@ -289,6 +290,16 @@ def test_layered_macos_icon_mono_layer_and_flavor_stays_in_the_fill(generate, mo
 
     for name in ("art-light.png", "art-dark.png", "mono.png"):
         assert (stable / "Assets" / name).read_bytes() == (canary / "Assets" / name).read_bytes(), name
+
+    # The DMG volume icon is the hand-made drive artwork, shipped as a full ICNS
+    # and never flavoured: an installer's disk looks the same for every channel.
+    volume = stable.parents[3] / DMG_VOLUME
+    for other in (canary, commit):
+        assert volume.read_bytes() == (other.parents[3] / DMG_VOLUME).read_bytes()
+    icns = Image.open(volume)
+    assert {w * scale for w, h, scale in icns.info["sizes"]} == {32, 64, 128, 256, 512, 1024}  # same reps as the app icns
+    assert ImageChops.difference(icns.icns.getimage((512, 512, 2)).convert("RGBA"),
+                                 Image.open(ROOT / "assets/dmg-volume.png").convert("RGBA")).getbbox() is None
     for name in ("art-light.png", "art-dark.png"):
         # The commit badge is the only difference, and it lives in the top quarter.
         plain = Image.open(stable / "Assets" / name).convert("RGBA")

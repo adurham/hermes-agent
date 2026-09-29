@@ -248,7 +248,9 @@ jobs:
           test ${#dmgs[@]} -eq 1
           mkdir -p "$RUNNER_TEMP/out"
           dmg="$RUNNER_TEMP/out/Hermes-Setup.dmg"
-          cp "${dmgs[0]}" "$dmg"
+          # Tauri always uses the app icns as the volume icon; give the DMG the
+          # same drive artwork as the desktop installer before signing.
+          scripts/bundles/set_dmg_volume_icon.sh "${dmgs[0]}" apps/desktop/packaging/dmg-volume.icns "$dmg"
           codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
           xcrun notarytool submit "$dmg" --wait \
             --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
@@ -273,6 +275,9 @@ jobs:
           codesign --verify --verbose=2 "$dmg"
           xcrun stapler validate "$dmg"
           spctl -a -vv -t open --context context:primary-signature "$dmg"
+          mount=$(hdiutil attach -nobrowse -readonly "$dmg" | awk -F'\t' '/\/Volumes\//{print $NF; exit}')
+          test -f "$mount/.VolumeIcon.icns"
+          hdiutil detach "$mount"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

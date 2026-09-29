@@ -52,7 +52,7 @@ Dependencies:
     Pillow and resvg-py are core runtime dependencies; run this file with a
     Hermes runtime interpreter (scripts/generate-icons.mjs uses HERMES_PYTHON).
 
-Outputs (43 files):
+Outputs (44 files):
   assets/icon-master.svg                              generated light master
   assets/icon-master-dark.svg                         generated dark master
   apps/desktop/assets/icon.png                        1024x1024 squircle (light)
@@ -61,6 +61,7 @@ Outputs (43 files):
   apps/desktop/assets/icon-dark.png                   1024x1024 squircle (dark)
   apps/desktop/assets/icon-dark.ico                   16,24,32,48,64,128,256
   apps/desktop/assets/icon-dark.icns                  16..1024 (real ICNS)
+  apps/desktop/packaging/dmg-volume.icns                 16..1024, from assets/dmg-volume.png (DMG volume)
   apps/desktop/assets/icon.icon/icon.json             Icon Composer manifest (macOS 26)
   apps/desktop/assets/icon.icon/Assets/art-*.png      1024 girl (+ commit badge), light/dark
   apps/desktop/assets/icon.icon/Assets/mono.png       1024 Clear/Tinted material (grayscale + opacity)
@@ -156,6 +157,7 @@ GIRL_VIEWBOX = 5487.0615
 CHECK_SIZES: dict[str, tuple[str, tuple[int, int]]] = {
     "apps/desktop/assets/icon.png": ("PNG", (1024, 1024)),
     "apps/desktop/assets/icon-dark.png": ("PNG", (1024, 1024)),
+    "apps/desktop/packaging/dmg-volume.icns": ("ICNS", (1024, 1024)),
     **({"apps/desktop/assets/icon.icon/Assets/border-light.png": ("PNG", (1024, 1024)),
         "apps/desktop/assets/icon.icon/Assets/border-dark.png": ("PNG", (1024, 1024))} if BORDER_ENABLED else {}),
     "apps/desktop/assets/icon.icon/Assets/mono.png": ("PNG", (1024, 1024)),
@@ -198,6 +200,9 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/desktop/assets/icon-dark.png", "png_dark", 1024),
     ("apps/desktop/assets/icon-dark.ico", "ico_dark", [16, 24, 32, 48, 64, 128, 256]),
     ("apps/desktop/assets/icon-dark.icns", "icns_dark", None),
+    # The DMG volume icon: our own drive artwork with the girl on its face,
+    # one artwork for light and dark (volume icons have no appearance variants).
+    ("apps/desktop/packaging/dmg-volume.icns", "icns_from_png", "assets/dmg-volume.png"),
     ("apps/desktop/assets/icon.icon/icon.json", "icon_manifest", None),
     *([("apps/desktop/assets/icon.icon/Assets/border-light.png", "icon_border", "#000000"),
        ("apps/desktop/assets/icon.icon/Assets/border-dark.png", "icon_border", "#ffffff")] if BORDER_ENABLED else []),
@@ -248,6 +253,7 @@ class IconArt:
 
     def __init__(self, source: Path, *, colors: tuple[str, str] | None = None, commit: str = ""):
         assets = source / "assets"
+        self.source = source
         self.colors = colors
         self.commit = commit
         self.girls = {color: assets / f"nous-girl-{color}.svg" for color in ("black", "white")}
@@ -767,6 +773,12 @@ def target_bytes(art: IconArt, kind: str, arg: object) -> bytes:
         img = render(art.master_mac_dark, 1024)
         frames = [img.resize((s, s), Image.LANCZOS) for s in (16, 32, 64, 128, 256, 512, 1024)]
         img.save(buf, format="ICNS", append_images=frames[1:])
+    elif kind == "icns_from_png":
+        # Hand-made artwork (the DMG volume: girl on a drive) shipped as ICNS.
+        img = Image.open(art.source / arg).convert("RGBA")
+        assert img.size == (1024, 1024), f"{arg} must be 1024x1024"
+        frames = [img.resize((s, s), Image.LANCZOS) for s in (16, 32, 64, 128, 256, 512, 1024)]
+        img.save(buf, format="ICNS", append_images=frames[1:])
     elif kind == "wide":
         w, h = arg
         canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -836,7 +848,7 @@ def cmd_write(source: Path, out: Path) -> int:
                 except Exception:
                     sizes = [im.size]
                 print(f"  {rel}: ICO {sorted(set(sizes))}")
-            elif kind in ("icns", "icns_dark"):
+            elif kind in ("icns", "icns_dark", "icns_from_png"):
                 print(f"  {rel}: ICNS {im.size} (container)")
             else:
                 print(f"  {rel}: {im.format} {im.size}")
