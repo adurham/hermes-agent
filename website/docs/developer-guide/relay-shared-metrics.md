@@ -59,13 +59,23 @@ This choice is read from the profile's own `config.yaml`. A machine-managed
 configuration overlay cannot enable or disable shared metrics on the profile's
 behalf.
 
-Hermes uses Relay's normal process-wide plugin discovery. Without an explicit
-selection, Relay loads the user `plugins.toml` and then the machine-wide system
-configuration at higher precedence. `HERMES_NEMO_RELAY_PLUGINS_TOML` replaces
-the user file with an explicit file; the system configuration still applies
-above it. Repository-local configuration is ignored. If an explicitly selected
-file cannot be loaded, Hermes reports the error and continues without Relay
-plugins rather than falling back to another configuration.
+Hermes uses Relay's normal process-wide plugin discovery. Relay reads these
+files, lowest precedence first:
+
+| Layer | Linux and macOS | Windows |
+|-------|-----------------|---------|
+| User | `$XDG_CONFIG_HOME/nemo-relay/plugins.toml`, or `~/.config/nemo-relay/plugins.toml` | `%USERPROFILE%\.config\nemo-relay\plugins.toml` (`XDG_CONFIG_HOME` and then `HOME` take precedence when set) |
+| System | `/etc/nemo-relay/plugins.toml` | `%ProgramData%\nemo-relay\plugins.toml` |
+
+`HERMES_NEMO_RELAY_PLUGINS_TOML` replaces the user file with an explicit file;
+the system file still applies above it. Repository-local configuration is
+ignored. If an explicitly selected file cannot be loaded, Hermes reports the
+error and continues without Relay plugins rather than falling back to another
+configuration.
+
+Run `hermes doctor` to see which files apply. Its **NeMo Relay Plugins**
+section lists each file Relay resolves, whether any plugin is enabled, and any
+problem Relay reports, without loading plugin code.
 
 ## Session-Span Segmentation for Continuous Sessions
 
@@ -111,10 +121,10 @@ Relay plugin configuration is a process-level deployment choice, not a Hermes
 profile setting. The first hosted profile triggers lazy initialization, and
 every additional profile hosted by that Hermes process shares the resulting
 static middleware, dynamic plugins, subscribers, exporters, and guardrail
-policy. After initialization succeeds, Hermes logs:
+policy. After initialization succeeds, Hermes logs the files it loaded:
 
 ```text
-The Relay plugin host is active process-wide and applies to all profiles hosted by this Hermes process.
+The Relay plugin host is active process-wide and applies to all profiles hosted by this Hermes process. Configuration files: /home/user/.config/nemo-relay/plugins.toml; /etc/nemo-relay/plugins.toml
 ```
 
 Profile scopes still preserve causal isolation inside that shared policy.

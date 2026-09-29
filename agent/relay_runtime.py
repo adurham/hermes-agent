@@ -162,7 +162,25 @@ class _RelayPluginConfigurationLoadError(RuntimeError):
 
 
 def _activation_requires_managed_execution(activation: Any) -> bool:
-    """Return whether Relay activated any static or dynamic plugin behavior.
+    """Return whether Relay activated any static or dynamic plugin behavior."""
+    try:
+        report = getattr(activation, "report", None)
+    except Exception:
+        report = None
+    return _report_requires_managed_execution(report)
+
+
+def _activation_config_paths(activation: Any) -> list[str]:
+    """Return the plugins.toml files an activation loaded, lowest precedence first."""
+    try:
+        paths = getattr(activation, "report", {}).get("config_paths")
+    except Exception:
+        return []
+    return [str(path) for path in paths] if isinstance(paths, list) else []
+
+
+def _report_requires_managed_execution(report: Any) -> bool:
+    """Return whether a Relay plugin-host report enables any static or dynamic plugin.
 
     Relay owns the report contract. An unfamiliar report stays fail-safe by
     retaining Hermes managed execution instead of silently bypassing plugins.
@@ -170,14 +188,11 @@ def _activation_requires_managed_execution(activation: Any) -> bool:
 
     def keep_enabled() -> bool:
         logger.warning(
-            "Hermes could not determine whether the Relay activation is empty; keeping managed execution enabled"
+            "Hermes could not determine whether the Relay plugin configuration is empty; keeping managed "
+            "execution enabled"
         )
         return True
 
-    try:
-        report = getattr(activation, "report", None)
-    except Exception:
-        return keep_enabled()
     if not isinstance(report, dict):
         return keep_enabled()
     resolved = report.get("resolved_config")
@@ -292,7 +307,8 @@ class _ProcessRelayPluginConfiguration:
                 if self._state is _RelayPluginConfigurationState.ACTIVE:
                     logger.info(
                         "The Relay plugin host is active process-wide and applies to all profiles hosted by this "
-                        "Hermes process."
+                        "Hermes process. Configuration files: %s",
+                        "; ".join(_activation_config_paths(self._activation)) or "none reported",
                     )
             self._owners.add(id(owner))
             return self._state
@@ -1300,17 +1316,23 @@ def _load_nemo_relay() -> Any:
 
 def _configured_plugin_inputs() -> Path | None:
     """Return the parseable explicit override, or ``None`` to use Relay discovery."""
+    config_path = _explicit_plugins_toml()
+    if config_path is None and (legacy_vars := configured_legacy_relay_env_vars(os.environ)):
+        logger.warning(
+            "Legacy NeMo Relay exporter variables are set but no %s was provided. %s no longer configure "
+            "Relay exporters; any standard user or system plugins.toml still applies. Run `hermes migrate "
+            "relay` (or `hermes update`, which runs it for every profile) to generate %s and select it in .env.",
+            RELAY_PLUGINS_CONFIG_ENV,
+            ", ".join(legacy_vars),
+            get_hermes_home() / "relay-plugins.toml",
+        )
+    return config_path
+
+
+def _explicit_plugins_toml() -> Path | None:
+    """Return the file selected by ``HERMES_NEMO_RELAY_PLUGINS_TOML`` after checking that it parses."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
-        if legacy_vars := configured_legacy_relay_env_vars(os.environ):
-            logger.warning(
-                "Legacy NeMo Relay exporter variables are set but no %s was provided. %s no longer configure "
-                "Relay exporters; any standard user or system plugins.toml still applies. Run `hermes migrate "
-                "relay` (or `hermes update`, which runs it for every profile) to generate %s and select it in .env.",
-                RELAY_PLUGINS_CONFIG_ENV,
-                ", ".join(legacy_vars),
-                get_hermes_home() / "relay-plugins.toml",
-            )
         return None
     config_path = Path(configured).expanduser()
     try:
@@ -1323,6 +1345,37 @@ def _configured_plugin_inputs() -> Path | None:
         raise _RelayPluginConfigurationLoadError(
             f"Hermes Relay plugin configuration could not be loaded from {config_path}; continuing without Relay plugins"
         ) from exc
+
+
+@dataclass(frozen=True)
+class RelayPluginSources:
+    """The plugin configuration Relay resolves for this process, as its validator reports it."""
+
+    config_paths: tuple[str, ...]  # lowest precedence first
+    enabled: bool  # whether any static component or dynamic plugin is switched on
+    errors: tuple[str, ...]  # initialization would refuse the configuration
+    warnings: tuple[str, ...]
+
+
+def resolve_plugin_sources(relay: Any = None) -> RelayPluginSources:
+    """Resolve the plugins.toml layers this process would load, without loading plugin code.
+
+    Relay's validator reads the same layers as initialization but does not take the process-wide host.
+    Raises when a file cannot be read or parsed.
+    """
+    relay = relay or _load_nemo_relay()
+    report = relay.plugin.validate({}, additional_plugins_toml=_explicit_plugins_toml())
+    diagnostics = [d for d in (report.get("config") or {}).get("diagnostics") or [] if isinstance(d, dict)]
+    return RelayPluginSources(
+        config_paths=tuple(str(path) for path in report.get("config_paths") or []),
+        enabled=_report_requires_managed_execution(report),
+        errors=tuple(str(d.get("message")) for d in diagnostics if d.get("level") == "error"),
+        # Relay adds one "configuration_inherited" note per discovered file; config_paths already names them.
+        warnings=tuple(
+            str(d.get("message")) for d in diagnostics
+            if d.get("level") == "warning" and d.get("code") != "plugin.configuration_inherited"
+        ),
+    )
 
 
 # Relay 0.9 exposes no active-host query; only initialize's two Conflict messages signal one.
