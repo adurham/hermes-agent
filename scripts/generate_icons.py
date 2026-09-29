@@ -135,6 +135,11 @@ GIRL_BOXES = {
     "squircle-mac-light.svg": (122.43, 144.84, 786.83, 786.83),
     "squircle-mac-dark.svg": (122.43, 144.84, 786.83, 786.83),
 }
+# The macOS 26 layered icon's canvas is the plate itself (the system maps it
+# onto the 824 grid), so the same mac portrait lands in plate coordinates.
+_mx, _my, _mw, _mh = GIRL_BOXES["squircle-mac-light.svg"]
+_plate = 1024.0 / 824.0
+GIRL_BOXES["icon.icon"] = ((_mx - 100.0) * _plate, (_my - 100.0) * _plate, _mw * _plate, _mh * _plate)
 # The brand-kit SVG canvas (both girl svgs share this viewBox).
 GIRL_VIEWBOX = 5487.0615
 
@@ -538,7 +543,7 @@ def icon_art_svg(art: IconArt, girl: str) -> str:
     """Art layer: the girl registered as on the canvas-filling squircle, joined
     to the border band; the commit badge rides along for commit builds."""
     thickness = ICON_CANVAS * BORDER_FRACTION
-    bg = "squircle-light.svg"  # canvas-filling registration; the system supplies the grid
+    bg = "icon.icon"  # the plate is the canvas; the system supplies the grid
     portrait = portrait_layer(art, girl, bg, ICON_CANVAS - thickness + 10)
     badge = f"  {commit_layer(art.commit, bg)}\n" if art.commit else ""
     return (
