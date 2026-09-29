@@ -1061,8 +1061,8 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        output, seed = worker.run(cmd)
-        if seed:
+        output = worker.run(cmd)
+        if seed := (worker.pop_seed() if hasattr(worker, "pop_seed") else ""):
             # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
             # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
             return _ok(rid, {"type": "send", "message": seed})

@@ -97,17 +97,18 @@ def _refuse_skill_slash(command: str) -> None:
         raise SkillSlashRefused(base)
 
 
-def _run(cli: HermesCLI, command: str) -> dict:
-    """Run one command; return ``{"output", "seed"}``.
+def _run(cli: HermesCLI, command: str) -> str:
+    """Run one command; return its captured, ANSI-stripped output.
 
-    ``seed`` is the one-shot ``_pending_agent_seed`` a command like /prompt or
-    /blueprint parks for "run this as the next agent turn". The interactive REPL
-    loop consumes it (cli.py); this worker has no REPL, so the seed is harvested
-    here and routed back to the gateway, which sends it as the next turn (#107800).
+    A command like /prompt or /blueprint parks the composed text on the one-shot
+    ``_pending_agent_seed`` for the interactive REPL loop (cli.py) — but this
+    worker has no REPL, so the seed is harvested here onto ``cli._harvested_seed``
+    and routed back to the gateway, which sends it as the next turn (#107800).
     """
+    cli._harvested_seed = ""  # one-shot: a fresh run never re-sends a stale seed
     cmd = (command or "").strip()
     if not cmd:
-        return {"output": "", "seed": ""}
+        return ""
     _refuse_skill_slash(cmd)
     buf = io.StringIO()
     # Rich Console captures its file handle at construction, so redirect_stdout won't affect it; swap
@@ -126,8 +127,8 @@ def _run(cli: HermesCLI, command: str) -> dict:
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
     from tools.ansi_strip import strip_ansi
     output = strip_ansi(buf.getvalue().rstrip())
-    seed, cli._pending_agent_seed = getattr(cli, "_pending_agent_seed", None) or "", None
-    return {"output": output, "seed": seed}
+    cli._harvested_seed, cli._pending_agent_seed = getattr(cli, "_pending_agent_seed", None) or "", None
+    return output
 
 
 def _sw_log(reason: str) -> None:
@@ -176,8 +177,8 @@ def main():
         try:
             req = json.loads(line)
             rid = req.get("id")
-            result = _run(cli, req.get("command", ""))
-            _reply(id=rid, ok=True, output=result["output"], seed=result["seed"])
+            output = _run(cli, req.get("command", ""))
+            _reply(id=rid, ok=True, output=output, seed=getattr(cli, "_harvested_seed", "") or "")
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 class _FakeCLI:
     console = None
-    _pending_agent_seed = None
 
     def process_command(self, cmd: str) -> None:
         import sys
@@ -20,6 +19,5 @@ def test_run_strips_ansi_from_output():
 
     out = slash_worker._run(_FakeCLI(), "/anything")
 
-    assert "\x1b[" not in out["output"]
-    assert out["output"] == "colored plain"
-    assert out["seed"] == ""
+    assert "\x1b[" not in out
+    assert out == "colored plain"
