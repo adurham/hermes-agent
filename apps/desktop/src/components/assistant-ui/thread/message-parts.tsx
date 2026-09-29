@@ -29,7 +29,7 @@ import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
-import { isCardTool } from '@/lib/tool-render-class'
+import { type CardToolName, isCardTool, isCardToolName } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
@@ -77,6 +77,33 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
+const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
+  // Stopped on this question, never answered: history. ClarifyTool reads
+  // the session's live clarify request, so a later turn's question would
+  // otherwise paint onto this row as a second live card.
+  if (settledWithoutResult(props)) {
+    return <ToolFallback {...props} />
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
+      <ClarifyTool {...props} />
+    </>
+  )
+}
+
+const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
+  mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
+
+const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
+  clarify: ClarifyToolPart,
+  delegate_task: DelegateToolPart,
+  image_generate: ImageGenerateTool,
+  manage_catalog: CatalogInstallTool,
+  manage_connections: ConnectionsToolPart
+}
+
 // A failure the user still has to see. The gateway's tool.complete carries the
 // failure inside `result`, never as the top-level error that sets isError, so
 // this reads the body like the run summary does. A non-zero exit_code counts
@@ -115,40 +142,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return null
   }
 
-  if (props.toolName === 'delegate_task') {
-    return <DelegateToolPart {...props} />
-  }
+  if (isCardToolName(props.toolName)) {
+    const ToolCard = TOOL_CARDS[props.toolName]
 
-  if (props.toolName === 'image_generate') {
-    return <ImageGenerateTool {...props} />
-  }
-
-  if (props.toolName === 'clarify') {
-    // Stopped on this question, never answered: history. ClarifyTool reads
-    // the session's live clarify request, so a later turn's question would
-    // otherwise paint onto this row as a second live card.
-    if (settledWithoutResult(props)) {
-      return <ToolFallback {...props} />
-    }
-
-    return (
-      <>
-        <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
-        <ClarifyTool {...props} />
-      </>
-    )
-  }
-
-  if (props.toolName === 'manage_catalog') {
-    return <CatalogInstallTool {...props} />
-  }
-
-  if (mcpTargets(props.toolName, props.args).length > 0) {
-    return <McpSetupTool {...props} />
-  }
-
-  if (props.toolName === 'manage_connections') {
-    return <ConnectorTool {...props} />
+    return <ToolCard {...props} />
   }
 
   if (toolLabels(props.args).length > 0) {
