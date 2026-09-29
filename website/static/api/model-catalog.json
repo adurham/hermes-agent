@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-28T19:38:29Z",
+  "updated_at": "2026-09-29T18:25:05Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -75,6 +75,14 @@
         {
           "id": "openai/gpt-6-astra-pro-flex",
           "description": "0.5x price, flex tier"
+        },
+        {
+          "id": "openai/gpt-6.1-sol",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-6.1-sol-pro",
+          "description": ""
         },
         {
           "id": "openai/gpt-6-sol",
@@ -318,6 +326,12 @@
         },
         {
           "id": "openai/gpt-6-astra-pro-flex"
+        },
+        {
+          "id": "openai/gpt-6.1-sol"
+        },
+        {
+          "id": "openai/gpt-6.1-sol-pro"
         },
         {
           "id": "openai/gpt-6-sol"
