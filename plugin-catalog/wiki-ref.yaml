@@ -1,0 +1,22 @@
+name: wiki-ref
+repo: https://github.com/EloquentBrush0x/hermes-context-refs
+sha: e0395d483a6002250839f6a86a4427d57de40373
+subdir: wiki-ref
+description: >-
+  @wiki:<title> context references: attach the lead section of a Wikipedia article to a message,
+  with title autocomplete in the TUI and Desktop composer. Disclosure — sends HTTPS GET requests to
+  <language>.wikipedia.org/w/api.php only (the referenced title and the typed autocomplete prefix
+  leave the machine); no API key, no files written, no subprocess; register() only adds the @wiki:
+  reference provider.
+maintainer: EloquentBrush0x
+tier: community
+category: web
+requires_hermes: ">=0.21"
+docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/wiki-ref
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
