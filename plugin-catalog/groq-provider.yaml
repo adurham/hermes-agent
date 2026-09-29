@@ -1,6 +1,6 @@
 name: groq-provider
 repo: https://github.com/AhmetArif0/hermes-groq-provider
-sha: f12f178fd9cf3d29bfc2b518957b4ba5cec71602
+sha: b5be0388c2b4cae8ed6a30c7371aaa1330731ee8
 subdir: groq-provider
 description: >-
   Groq as a Hermes model provider (`--provider groq`, or Groq in `hermes model`): reasoning effort
@@ -18,6 +18,7 @@ category: models
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/AhmetArif0/hermes-groq-provider
 version: "1.0.0"
+image: https://raw.githubusercontent.com/AhmetArif0/hermes-groq-provider/b5be0388c2b4cae8ed6a30c7371aaa1330731ee8/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []
