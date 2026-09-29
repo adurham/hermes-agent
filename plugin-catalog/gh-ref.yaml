@@ -1,6 +1,6 @@
 name: gh-ref
 repo: https://github.com/EloquentBrush0x/hermes-context-refs
-sha: eaa593ffe5f3ec6feba1b60a1aabe255ad84531e
+sha: bb0001012c5b213ce5a09b5905d859635c440c17
 subdir: gh-ref
 description: >-
   @gh:owner/repo#123 context references: attach a public GitHub issue or pull request to a
@@ -15,6 +15,7 @@ category: web
 requires_hermes: ">=0.21"
 docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/gh-ref
 version: "1.0.0"
+image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/bb0001012c5b213ce5a09b5905d859635c440c17/docs/gh-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []
