@@ -1384,7 +1384,7 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 // Electron's own overlay drifts its hit-region under RAIL, so the renderer
 // paints its own min/max/close (wslg-window-controls.tsx) over the
 // hermes:window-control IPC channel. See titleBarOverlayOptions.
-function getTitleBarOverlayOptions() {
+function getTitleBarOverlayOptions(win?) {
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
     darwinMajor: DARWIN_MAJOR,
@@ -1392,7 +1392,10 @@ function getTitleBarOverlayOptions() {
     color: TITLEBAR_OVERLAY_COLOR,
     foreground:
       rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
-    dark: nativeTheme.shouldUseDarkColors
+    dark: nativeTheme.shouldUseDarkColors,
+    // The native WCO buttons don't scale with the page; scale the overlay so
+    // its height tracks the zoomed renderer titlebar (#81086).
+    zoomFactor: win?.webContents?.getZoomFactor?.()
   })
 }
 
@@ -1401,7 +1404,7 @@ function getTitleBarOverlayOptions() {
 // returns false; the try/catch additionally guards builds where
 // setTitleBarOverlay isn't supported.
 function applyTitleBarOverlay(win) {
-  const options = getTitleBarOverlayOptions()
+  const options = getTitleBarOverlayOptions(win)
 
   if (!options || typeof options !== 'object') {
     return
@@ -7080,6 +7083,10 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   // changes made via the keyboard shortcuts or the View menu.
   const next = applyZoomLevel(window.webContents, zoomLevel)
 
+  // The native window-controls overlay doesn't scale with the page; re-apply
+  // it at the new zoom so its height tracks the zoomed titlebar (#81086).
+  applyTitleBarOverlay(window)
+
   // Primary store: main-process JSON (survives crash recovery — #56726).
   writeZoomState(next)
   // Secondary mirror: renderer localStorage (legacy store; kept in sync so a
@@ -7118,6 +7125,7 @@ function restorePersistedZoomLevel(window) {
     }
 
     applyZoomLevel(window.webContents, saved)
+    applyTitleBarOverlay(window)
 
     return
   }
@@ -7126,6 +7134,7 @@ function restorePersistedZoomLevel(window) {
   // doesn't flash Chromium 100%, then try localStorage for pre-JSON installs
   // and overwrite if a legacy value is there.
   applyZoomLevel(window.webContents, DEFAULT_ZOOM_LEVEL)
+  applyTitleBarOverlay(window)
 
   window.webContents
     .executeJavaScript(
@@ -7139,6 +7148,7 @@ function restorePersistedZoomLevel(window) {
       const level = stored == null ? DEFAULT_ZOOM_LEVEL : Number(stored)
       const applied = applyZoomLevel(window.webContents, level)
       writeZoomState(applied)
+      applyTitleBarOverlay(window)
     })
     .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
 }
