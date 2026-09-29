@@ -197,6 +197,10 @@ module.exports = {
   dmg: {
     // Avoid the failing optional APFS shrink pass; keep compressed conversion.
     shrink: false,
+    // The volume icon defaults to the packager's icns, which is actool's 256px
+    // fallback whenever `mac.icon` is the Icon Composer package; the DMG is a
+    // Finder volume, not a Dock icon, so it gets the full-resolution .icns.
+    icon: 'assets/icon.icns',
     title: 'Hermes Agent Installer',
     // A prebuilt .tiff on purpose, not a PNG plus a @2x sibling: dmg-builder's
     // PNG path runs `tiffutil -cathidpicheck`, which on macOS 26 rewrites both
