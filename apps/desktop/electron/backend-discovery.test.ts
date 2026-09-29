@@ -5,9 +5,9 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { spawnOrAttach } from './backend-discovery'
 import { attachOrReserveSpawn, attachToHostBackend } from './host-backend-attach'
 import { claimHostSpawnGate } from './host-spawn-gate'
-import { spawnOrAttach } from './backend-discovery'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
 
 const LEDGER = JSON.stringify([
