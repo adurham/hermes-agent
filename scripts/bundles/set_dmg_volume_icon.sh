@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Replace the volume icon of a finished DMG (the same .VolumeIcon.icns +
 # custom-icon flag dmgbuild sets). Tauri's bundler always uses the app's
 # .icns as the volume icon and offers no override, so the bootstrap
