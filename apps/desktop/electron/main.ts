@@ -204,7 +204,6 @@ import type { RosterProfileMetadata } from './connection-registry'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
-import { removeStaleSingletonLock } from './singleton-lock'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
@@ -512,6 +511,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
+import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 import { resolveSourcePython } from './source-python'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
@@ -951,6 +951,7 @@ if (INSTALL_STAMP) {
 }
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
+
 // Only the lock-owning destination may adopt a workspace or start a backend.
 // #78101: on Linux/X11 a zombie/defunct Electron process leaves the
 // SingletonLock symlink behind with a PID that still answers kill(pid, 0),
@@ -958,11 +959,15 @@ const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), '
 // app silently exits. Clear a provably-dead owner and retry once; always log
 // when the lock is legitimately lost so the exit is diagnosable.
 function acquireSingleInstanceLock(): boolean {
-  if (app.requestSingleInstanceLock()) return true
+  if (app.requestSingleInstanceLock()) {
+    return true
+  }
 
   const stalePid = removeStaleSingletonLock(app.getPath('userData'))
+
   if (stalePid !== null) {
     console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+
     return app.requestSingleInstanceLock()
   }
 
