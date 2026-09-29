@@ -51,17 +51,65 @@ def compressor():
 
 
 class TestLegacyClarifyResults:
-    def test_old_batch_shape_preserves_answers(self):
-        content = json.dumps({"responses": [{"question": "env", "user_response": "production"}]})
-        summary = _sum_clarify("clarify", {}, content, len(content), 1)
-        assert "production" in summary
-        assert summary.startswith("[clarify] user responded: ")
+    @pytest.mark.parametrize("shape", ["single", "batch", "current"])
+    @pytest.mark.parametrize("question_size", [300, 4500])
+    @pytest.mark.parametrize("answer", ["production, but only after 18:00 UTC", ["staging", "production"]])
+    def test_answers_reach_summary_after_repeated_pruning(self, monkeypatch, shape, question_size, answer):
+        import agent.context_compressor as module
 
-    def test_old_top_level_shape_preserves_answer(self):
-        content = json.dumps({"question": "env", "user_response": "staging"})
-        summary = _sum_clarify("clarify", {}, content, len(content), 1)
-        assert "staging" in summary
-        assert summary.startswith("[clarify] user responded: ")
+        print("compressor module:", module.__file__)
+        answers = answer if isinstance(answer, list) else [answer]
+        entry = {"question": "Which environment? " + "q" * question_size,
+                 "choices_offered": ["staging", "production"], "user_response": answer}
+        if shape == "current":
+            entry["status"] = "answered"
+        payload = entry if shape == "single" else {"responses": [entry]}
+        content = json.dumps(payload)
+        c = ContextCompressor(model="test/model", config_context_length=100000,
+                              protect_first_n=1, protect_last_n=2, quiet_mode=True)
+        c.tail_token_budget = 50
+        messages = [
+            {"role": "system", "content": "Test fixture"},
+            {"role": "user", "content": "Implement the task"},
+            {"role": "assistant", "tool_calls": [{"id": "clarify-1", "type": "function",
+                "function": {"name": "clarify", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+        ]
+        for i in range(12):
+            messages.extend([{"role": "assistant", "content": f"Finished step {i}"},
+                             {"role": "user", "content": f"Continue step {i}"}])
+        messages.append({"role": "assistant", "content": "Current step finished"})
+        pruned, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        pruned, _ = c._prune_old_tool_results(pruned, protect_tail_count=2)
+        assert all(item in pruned[3]["content"] for item in answers)
+        requests = []
+
+        def summarize(**kwargs):
+            requests.append(kwargs)
+            return {"choices": [{"message": {"content": "## Progress\nWork is in progress."},
+                                 "finish_reason": "stop"}]}
+
+        monkeypatch.setattr(module, "call_llm", summarize)
+        c.compress(messages, force=True)
+        assert requests, "exercise the public compression path, not a no-op window"
+        assert all(item in json.dumps(requests[0]) for item in answers)
+        assert messages[3]["content"] == content
+
+    @pytest.mark.parametrize("sentinel", [
+        "The user did not provide a response within the time limit.",
+        "[user did not respond within 60m]",
+        "[clarify prompt could not be delivered]",
+        "[oneshot mode: no user available]",
+    ])
+    def test_legacy_sentinels_are_not_answers_but_explicit_status_is_authoritative(self, sentinel):
+        for value in (sentinel, ["production", "  " + sentinel]):
+            for payload in ({"user_response": value}, {"responses": [{"user_response": value}]}):
+                content = json.dumps(payload)
+                assert not _sum_clarify("clarify", {}, content, len(content), 1).startswith("[clarify] user responded:")
+        for status in ("answered", "skipped", "unanswered"):
+            content = json.dumps({"responses": [{"status": status, "user_response": sentinel}]})
+            summary = _sum_clarify("clarify", {}, content, len(content), 1)
+            assert (sentinel in summary) == (status == "answered")
 
 
 class TestSummarizeToolResultWebExtract:

@@ -1737,7 +1737,17 @@ def _sum_clarify(name, args, content, content_len, line_count):
             or ("status" not in entry and "user_response" in entry)
         ):
             value = entry.get("user_response")
-            answers.extend(value if isinstance(value, list) else [value])
+            values = value if isinstance(value, list) else [value]
+            # Pre-status sessions also stored timeout/delivery notices as user_response.
+            # Only those legacy records need the old sentinel check; explicit status wins.
+            if "status" not in entry and any(
+                isinstance(item, str) and item.lstrip().startswith((
+                    "The user did not provide a response", "[user did not respond",
+                    "[clarify prompt could not be delivered", "[oneshot mode:",
+                )) for item in values
+            ):
+                continue
+            answers.extend(values)
     answers = [answer for answer in answers if isinstance(answer, str) and answer]
     if not answers:
         return "[clarify] asked user a question"
