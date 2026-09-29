@@ -1,6 +1,6 @@
 name: wiki-ref
 repo: https://github.com/EloquentBrush0x/hermes-context-refs
-sha: 4a5a257ca745d2ddb1ff57ea09ef79d0be8e7486
+sha: 3cc483529b2eaa5cfcd6cadab304357e9ed5d0ee
 subdir: wiki-ref
 description: >-
   @wiki:<title> context references: attach the lead section of a Wikipedia article to a message,
@@ -13,8 +13,8 @@ tier: community
 category: web
 requires_hermes: ">=0.21"
 docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/wiki-ref
-version: "1.0.0"
-image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/4a5a257ca745d2ddb1ff57ea09ef79d0be8e7486/docs/card.png
+version: "1.0.1"
+image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/3cc483529b2eaa5cfcd6cadab304357e9ed5d0ee/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []
