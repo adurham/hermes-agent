@@ -728,6 +728,9 @@ class WakeWordDetector:
                     if not self._stop.is_set():
                         cap = self._recover_capture(frame_length, retries)
                     if cap is not None:
+                        # Re-arm the halt hook: _halt_thread aborts whatever
+                        # self._cap points at, and recovery replaced the capture.
+                        self._cap = cap
                         continue
                     failed = not self._stop.is_set()
                     break

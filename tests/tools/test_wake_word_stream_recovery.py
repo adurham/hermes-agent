@@ -1,6 +1,7 @@
 """Regression for #118001: a read error must not permanently disarm wake detection."""
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -85,3 +86,45 @@ def test_capture_recovery_is_bounded_and_cancellable(monkeypatch, failure):
         assert len(calls) == 4, "reopening must consume a finite per-arm retry budget"
     assert len(closed) == (4 if failure == "read" else 1)
     assert failures == ([] if failure == "cancel" else [detector])
+
+
+def test_halt_releases_reader_wedged_in_recovered_capture(monkeypatch):
+    """Interaction of #118001 recovery with the #118552 halt hook: after a read
+    failure reopens the microphone, a reader wedged in the NEW capture must still
+    be released by pause() — the halt hook must follow the recovered capture."""
+    recovered = threading.Event()
+    opened, closed = [], []
+    engine = SimpleNamespace(frame_length=1280, reset=lambda: None,
+                             close=lambda: None, process=lambda frame: False)
+    detector = ww.WakeWordDetector(engine, lambda: None)
+
+    class WedgedCapture:
+        def __init__(self):
+            self._unblock = threading.Event()
+
+        def read(self, stop):
+            if not recovered.is_set():
+                recovered.set()
+                raise OSError("transient microphone disconnect")
+            self._unblock.wait(30)
+            return None
+
+        def close(self):
+            closed.append(self)
+            self._unblock.set()
+
+    monkeypatch.setattr(detector, "_open_capture", lambda frame_length: opened.append(WedgedCapture()) or opened[-1])
+    monkeypatch.setattr(ww, "_HALT_JOIN_SECONDS", 0.2)
+    detector.start()
+    try:
+        assert recovered.wait(3), "listener never hit the transient read failure"
+        deadline = time.monotonic() + 3
+        while len(opened) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(opened) == 2, "listener never recovered a fresh capture"
+        t0 = time.monotonic()
+        detector.pause()
+        assert time.monotonic() - t0 < 2.5, "pause() must abort the wedged recovered reader, not block on it"
+        assert opened[1] in closed, "halt must abort the RECOVERED capture, not the dead one"
+    finally:
+        detector.stop()
