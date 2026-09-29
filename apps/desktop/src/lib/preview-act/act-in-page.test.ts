@@ -731,27 +731,43 @@ describe('scroll', () => {
   // Regression: drive_preview type must work on React controlled inputs,
   // contenteditable rich-text editors, and submit-with-Enter forms (#98048).
   describe('type (regression #98048)', () => {
-    it('contenteditable uses execCommand insertText', () => {
-      const execSpy = vi.spyOn(document, 'execCommand').mockImplementation(() => true)
-      const holder = page('<div id="ced" contenteditable="true"></div>')
-      const ref = firstRef(holder)
-      const result = actInPage(document, holder, { kind: 'type', ref, text: 'hello' })
-      expect(execSpy).toHaveBeenCalledWith('insertText', false, 'hello')
+    it('contenteditable uses execCommand insertText so rich editors see the insertion', () => {
+      const execSpy = vi.fn(() => true)
+      document.execCommand = execSpy as unknown as typeof document.execCommand
+
+      try {
+        const holder = page('<div id="ced" contenteditable="true" aria-label="Body"></div>')
+        const result = actInPage(document, holder, { kind: 'type', ref: firstRef(holder), text: 'hello' })
+
+        expect(execSpy).toHaveBeenCalledWith('insertText', false, 'hello')
+        expect(result.success).toBe(true)
+      } finally {
+        delete (document as { execCommand?: unknown }).execCommand
+      }
+    })
+
+    it('falls back to a textContent write when execCommand is unavailable', () => {
+      const holder = page('<div id="ced" contenteditable="true" aria-label="Body"></div>')
+
+      const result = actInPage(document, holder, { kind: 'type', ref: firstRef(holder), text: 'hello' })
+
+      expect(document.getElementById('ced')!.textContent).toBe('hello')
       expect(result.success).toBe(true)
     })
 
     it('input elements dispatch InputEvent with data property', () => {
-      const $el = document.createElement('input')
-      $el.setAttribute('type', 'text')
-      document.body.appendChild($el)
-      const holder: PreviewActHolder = {
-        handles: [{ ref: 'inp-1', label: 'Name', node: $el, selector: null }],
-        lastInventoryAt: null,
-      }
+      const holder = page('<input id="name" placeholder="Name" />')
+      const ref = firstRef(holder)
+      const input = document.getElementById('name') as HTMLInputElement
       const dispatched: Event[] = []
-      $el.dispatchEvent = vi.fn((ev: Event) => { dispatched.push(ev) })
-      const result = actInPage(document, holder, { kind: 'type', ref: 'inp-1', text: 'test' })
+      input.dispatchEvent = vi.fn((ev: Event) => {
+        dispatched.push(ev)
+        return true
+      })
+
+      const result = actInPage(document, holder, { kind: 'type', ref, text: 'test' })
       const inputEv = dispatched.find(e => e.type === 'input') as InputEvent | undefined
+
       expect(inputEv).toBeDefined()
       expect(inputEv?.data).toBe('test')
       expect(inputEv?.inputType).toBe('insertText')
@@ -759,18 +775,22 @@ describe('scroll', () => {
     })
 
     it('submit KeyboardEvent includes keyCode 13', () => {
-      const $el = document.createElement('input')
-      $el.setAttribute('type', 'text')
-      document.body.appendChild($el)
-      const holder: PreviewActHolder = {
-        handles: [{ ref: 'inp-1', label: 'Name', node: $el, selector: null }],
-        lastInventoryAt: null,
-      }
+      const holder = page('<input id="name" placeholder="Name" />')
+      const ref = firstRef(holder)
+      const input = document.getElementById('name') as HTMLInputElement
       const dispatched: KeyboardEvent[] = []
-      $el.dispatchEvent = vi.fn((ev: Event) => { if (ev instanceof KeyboardEvent) dispatched.push(ev) })
-      actInPage(document, holder, { kind: 'type', ref: 'inp-1', text: 'test', submit: true })
+      input.dispatchEvent = vi.fn((ev: Event) => {
+        if (ev instanceof KeyboardEvent) {
+          dispatched.push(ev)
+        }
+        return true
+      })
+
+      actInPage(document, holder, { kind: 'type', ref, submit: true, text: 'test' })
+
       expect(dispatched.length).toBeGreaterThanOrEqual(2)
       expect(dispatched[0].keyCode).toBe(13)
       expect(dispatched[0].which).toBe(13)
     })
   })
+})
