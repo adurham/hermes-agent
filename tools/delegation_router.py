@@ -139,6 +139,30 @@ DEFAULT_PROVIDERS = ("anthropic",)
 _MAX_TASK_CHARS_DEFAULT = 1500
 _TIMEOUT_DEFAULT = 20
 
+# Cause strings already logged at WARNING this process — a per-turn delegation
+# on a broken classifier must not repeat the same line every time. Cleared
+# only by a process restart (the point is "you have been told once").
+_CLASSIFIER_FAILURE_WARNED: set = set()
+
+
+def _warn_classifier_failure(reason: str) -> None:
+    """Log a classifier FAILURE at WARNING, once per process per cause.
+
+    Fail-open is correct, but until now the only trace of a completely
+    non-functional classifier was a DEBUG line — invisible in a normal run,
+    and therefore indistinguishable from "auto-route had nothing to do".
+    """
+    key = reason.split(":", 1)[0].strip().lower()
+    if key in _CLASSIFIER_FAILURE_WARNED:
+        return
+    _CLASSIFIER_FAILURE_WARNED.add(key)
+    logger.warning(
+        "delegation auto-route classifier unavailable (%s); tasks fall back to the "
+        "configured delegation default. Further occurrences of this cause are logged at DEBUG.",
+        reason,
+    )
+
+
 # Per-persona description excerpt length in the catalog sent to the
 # classifier -- keeps the prompt bounded even with ~90 personas.
 _PERSONA_DESC_CHARS = 100
@@ -356,6 +380,7 @@ def route_task_models(
     role_model_map: Dict[str, Any],
     delegation_cfg: dict,
     active_provider: Optional[str],
+    diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Classify unrouted tasks and return per-index model/persona routing.
 
@@ -375,6 +400,16 @@ def route_task_models(
             can send children to a different provider than the parent's;
             ``delegation.auto_route.providers`` lists the providers whose
             SESSIONS want auto-routing, so the gate must see the parent's.
+        diagnostics: optional caller-owned dict. When the router does NOT
+            return routes, it is filled with ``{"skipped": <reason>}`` and
+            cause-specific keys, so the caller can say WHY routing did not
+            happen instead of only reporting the fallback that ran. Reasons:
+            ``"auto_route disabled"``, ``"provider gate closed"`` (with
+            ``provider`` + ``allowed``), ``"no tier role has a model"``,
+            ``"no routable task"``, ``"classifier returned nothing"`` (with
+            ``classifier_error``), ``"no route could be resolved"`` and
+            ``"auto-route failed"`` (with ``classifier_error``). Never
+            contains a reason when routes WERE returned.
 
     Returns:
         ``{task_index: {"model": ..., "tier": ..., "role": ..., "reason": ...,
@@ -394,10 +429,16 @@ def route_task_models(
         equal-or-lower recommendation yields no entry at all, leaving the
         stated choice untouched.
     """
+    def _skip(reason: str, **extra: Any) -> Dict[int, Dict[str, Any]]:
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update({"skipped": reason, **extra})
+        return {}
+
     try:
         ar = _auto_route_cfg(delegation_cfg)
         if not ar.get("enabled", True):
-            return {}
+            return _skip("auto_route disabled")
 
         providers_raw = ar.get("providers")
         providers = (
@@ -406,7 +447,10 @@ def route_task_models(
             else DEFAULT_PROVIDERS
         )
         if (active_provider or "").strip().lower() not in providers:
-            return {}
+            return _skip(
+                "provider gate closed",
+                provider=(active_provider or ""), allowed=list(providers),
+            )
 
         # Escalate-only checking for tasks that DID state an agent_type.
         # On by default; delegation.auto_route.escalate_only: false restores
@@ -435,7 +479,7 @@ def route_task_models(
             elif escalate_only:
                 escalate[i] = stated
         if not pending and not escalate:
-            return {}
+            return _skip("no routable task")
 
         tier_roles_raw = ar.get("tier_roles")
         tier_roles = dict(DEFAULT_TIER_ROLES)
@@ -449,7 +493,7 @@ def route_task_models(
             logger.debug(
                 "delegation auto-route: no tier role has a model_by_role entry; skipping"
             )
-            return {}
+            return _skip("no tier role has a model")
 
         max_chars = ar.get("max_chars")
         max_chars = (
@@ -470,13 +514,18 @@ def route_task_models(
         # with full-route tasks, so adding the check costs zero extra API
         # calls and zero extra latency.
         classify_indices = sorted(set(pending) | set(escalate))
+        classify_failure: Dict[str, Any] = {}
         results = _classify(
             [(i, _excerpt(task_list[i], max_chars)) for i in classify_indices],
             timeout=float(timeout),
             persona_catalog=persona_catalog,
+            failure=classify_failure,
         )
         if not results:
-            return {}
+            return _skip(
+                "classifier returned nothing",
+                classifier_error=classify_failure.get("error") or "no usable verdicts",
+            )
 
         # Ladder maps resolved ONCE per delegation (each is a live config
         # read), only when there is actually an escalate-check to run.
@@ -565,11 +614,15 @@ def route_task_models(
                     idx, agent_type,
                 )
             routes[idx] = route
+        if not routes:
+            # Classified, but no task got a usable route (unmapped role, unknown
+            # indices, ...) — say so rather than reporting "classifier ran".
+            return _skip("no route could be resolved")
         return routes
-    except Exception:
+    except Exception as exc:
         # Absolute fail-open: a router bug must never break delegation itself.
         logger.debug("delegation auto-route failed; inheriting defaults", exc_info=True)
-        return {}
+        return _skip("auto-route failed", classifier_error=f"{type(exc).__name__}: {exc}")
 
 
 def _classify(
@@ -577,22 +630,37 @@ def _classify(
     *,
     timeout: float,
     persona_catalog: Optional[List[Tuple[str, str, str]]] = None,
+    failure: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Tuple[str, str, str]]:
     """One auxiliary LLM call classifying every pending task.
 
     Returns ``{index: (tier, reason, agent_type)}``; ``agent_type`` is ""
-    when no persona was picked. Empty dict on any failure.
+    when no persona was picked. Empty dict on any failure — the cause (when
+    there is one) is written to ``failure["error"]`` so the caller can report
+    WHY nothing was routed instead of silently falling back. A classifier
+    FAILURE (call raised, client unavailable, unparsable reply) also logs a
+    WARNING once per process per cause: fail-open is correct, but a router
+    that never runs is indistinguishable from one that has nothing to do.
+
+    Deliberately does NOT change the classifier model, prompt, max_tokens or
+    timeout — this function's job is the routing decision, not the model.
     """
+    def _failed(reason: str) -> Dict[int, Tuple[str, str, str]]:
+        if failure is not None:
+            failure["error"] = reason
+        _warn_classifier_failure(reason)
+        return {}
+
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
-    except Exception:
-        return {}
+    except Exception as exc:
+        return _failed(f"auxiliary client import failed: {exc}")
     try:
         client, model = get_text_auxiliary_client(AUX_TASK)
-    except Exception:
-        return {}
+    except Exception as exc:
+        return _failed(f"auxiliary client resolution failed: {exc}")
     if client is None or not model:
-        return {}
+        return _failed("no auxiliary client available")
 
     lines = [f"Task {i}:\n{text}" for i, text in pending]
     user_msg = "\n\n---\n\n".join(lines)
@@ -620,14 +688,14 @@ def _classify(
             timeout=timeout,
         )
         text = (resp.choices[0].message.content or "") if resp.choices else ""
-    except Exception:
+    except Exception as exc:
         logger.debug("delegation auto-route classifier call failed", exc_info=True)
-        return {}
+        return _failed(f"classifier call failed: {type(exc).__name__}: {exc}")
 
     parsed = _parse_classifier_json(text)
     if parsed is None:
         logger.debug("delegation auto-route: unparsable classifier reply: %.200s", text)
-        return {}
+        return _failed(f"unparsable classifier reply: {text[:200]!r}")
 
     out: Dict[int, Tuple[str, str, str]] = {}
     for item in parsed:
