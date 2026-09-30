@@ -415,11 +415,22 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
     )
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
-    """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
-    ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
-    None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
-    with a user-facing message."""
+    """Child credential bundle from the ``delegation`` config section. ``delegation.by_provider.<parent provider>``
+    is resolved FIRST (case-insensitive exact match against the parent's live provider): a matching dict block
+    REPLACES ``cfg`` wholesale for this spawn, so one config can route children per main-provider. Three branches
+    after that: ``base_url`` set → direct endpoint (``api_key`` None means inherit the parent's key, so providers
+    keyed outside OPENAI_API_KEY work); ``provider`` set → full bundle via the runtime provider system (same path
+    as CLI/gateway startup); neither → None values, child inherits everything. ``request_overrides`` is honored on
+    every branch. Raises ValueError with a user-facing message."""
+    # Provider-scoped config first (delegation.by_provider.<main_provider>). An empty block is meaningful: it
+    # selects the "inherit the parent" branch for that provider, deliberately overriding the top-level keys.
+    by_provider = cfg.get("by_provider") or {}
+    if isinstance(by_provider, dict) and by_provider:
+        mp_lower = (getattr(parent_agent, "provider", None) or "").strip().lower()
+        for key, block in by_provider.items():
+            if isinstance(key, str) and key.strip().lower() == mp_lower and isinstance(block, dict):
+                cfg = block
+                break
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
