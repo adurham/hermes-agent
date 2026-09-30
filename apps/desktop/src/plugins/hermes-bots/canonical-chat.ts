@@ -60,6 +60,12 @@ interface CanonicalChatRow extends CanonicalSession {
   readonly live_message_count?: SessionListRow['live_message_count']
 }
 
+/** A Bot Chat tile left on an old compression segment: titled as the canonical
+ *  chat but keyed to none of the lineage ids the owner currently resolves to. */
+export const isStaleBotChatTile =
+  (canonicalIds: readonly string[]) => (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
+    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE && !canonicalIds.includes(String(tile.storedSessionId))
+
 /** Should the open wait for a painted transcript? The paintable row count
  *  decides when the gateway reports it; the denormalized total is the only
  *  fallback older gateways offer, and no count at all means the row is
@@ -153,16 +159,7 @@ async function openStoredBotChat(
   // old-segment tile is discarded here or it survives beside the tip
   // (hermes-agent#120810). Same owner-scoped probe the roster click runs.
   const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
-
-  try {
-    host.focusOpenWorkspaceSession?.(
-      ownerKey,
-      tile => tile.workspaceTabTitle === CANONICAL_CHAT_TITLE && !canonicalIds.includes(String(tile.storedSessionId)),
-      canonicalIds
-    )
-  } catch {
-    // Older shells: the tip open below still lands.
-  }
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), canonicalIds)
 
   await host.openSession(storedId, {
     ...(route

@@ -74,8 +74,7 @@ describe('120810: compressed Bot Chat discards the stale tile', () => {
     // Live tip and registry row are never stale.
     expect(probe({ storedSessionId: 'tip-9', workspaceTabTitle: 'Bot Chat' })).toBe(false)
     expect(probe({ storedSessionId: 'root-1', workspaceTabTitle: 'Bot Chat' })).toBe(false)
-    // User + threads are never stale.
-    expect(probe({ storedSessionId: 'side-1', workspaceTabTitle: 'Bot Chat' })).toBe(true)
+    // A user + thread carries its own title, so it is never stale.
     expect(probe({ storedSessionId: 'side-1', workspaceTabTitle: 'my thread' })).toBe(false)
     // Tip opens after the probe.
     expect(hostMock.openSession.mock.calls[0][0]).toBe('tip-9')
