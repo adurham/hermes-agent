@@ -345,6 +345,43 @@ def _run_search_single(query: str, limit: int) -> dict:
     return _memoized_search(provider, query, limit)
 
 
+def _chain_provider_available(provider) -> bool:
+    """Availability gate for a chain entry: keyed-capable OR keyless-capable.
+
+    ``_run_search_chain`` is a FORK feature with a different contract from the
+    legacy preference walk: the user names every entry explicitly, in order, and
+    expects each to be tried. The base ``is_available()`` is deliberately
+    keyed-only ("must never make is_available True or the legacy preference walk
+    would route keyed users onto a higher-priority backend's free tier"), so
+    gating the chain on it alone made ``search_chain: [brave-free, exa]``
+    dead-end on "Provider 'exa' not available" even though exa's anonymous
+    free tier was serving calls fine — the chain could not reach any
+    keyless-capable vendor without a paid key.
+
+    That preference-walk concern does not apply here: an explicit chain entry is
+    a deliberate user selection, exactly like pinning ``web.search_backend: exa``
+    (which already works keyless). So a chain entry passes when the provider is
+    keyed-available, or when it reports ``is_keyless_available()`` — the same
+    probe the ring itself uses, and the same one ``hermes tools`` shows.
+
+    Note this only decides whether to TRY the entry. Whether the call actually
+    goes keyless is each provider's own ``use_keyless()`` decision, so a provider
+    pinned ``web.provider_tier.<name>: paid`` still fails over loudly on the
+    missing key rather than silently spending the free tier.
+    """
+    try:
+        if provider.is_available():
+            return True
+    except Exception as exc:  # noqa: BLE001 — a broken probe must not abort the walk
+        logger.warning("web_search chain: '%s'.is_available() raised %s; skipping", getattr(provider, "name", "?"), exc)
+        return False
+    try:
+        return bool(provider.is_keyless_available())
+    except Exception as exc:  # noqa: BLE001 — older/custom providers predate the probe
+        logger.debug("web_search chain: %s has no usable keyless probe: %s", getattr(provider, "name", "?"), exc)
+        return False
+
+
 def _run_search_chain(chain: tuple[str, ...], query: str, limit: int) -> dict:
     """Walk the configured search provider chain with failover.
 
@@ -384,7 +421,7 @@ def _run_search_chain(chain: tuple[str, ...], query: str, limit: int) -> dict:
             last_response = {"success": False, "error": f"Provider '{name}' does not support search"}
             continue
         try:
-            available = provider.is_available()
+            available = _chain_provider_available(provider)
         except Exception as exc:  # noqa: BLE001
             logger.warning("web_search chain: '%s'.is_available() raised %s; skipping", name, exc)
             last_response = {"success": False, "error": f"Provider '{name}' availability check failed: {exc}"}

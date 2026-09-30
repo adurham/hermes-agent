@@ -101,12 +101,20 @@ class TestProviderFailed:
 # ---------------------------------------------------------------------------#
 
 
-def _make_provider(name: str, *, supports_search=True, available=True, search_response=None, search_raises=None):
-    """Build a mock provider with the WebSearchProvider-shaped surface."""
+def _make_provider(name: str, *, supports_search=True, available=True, search_response=None, search_raises=None,
+                   keyless_available=False):
+    """Build a mock provider with the WebSearchProvider-shaped surface.
+
+    ``keyless_available`` defaults False so the mock mirrors the base class
+    default (``WebSearchProvider.is_keyless_available()`` → False) instead of a
+    MagicMock's truthy auto-attribute, which would make every provider look
+    keyless-capable.
+    """
     p = MagicMock()
     p.name = name
     p.supports_search.return_value = supports_search
     p.is_available.return_value = available
+    p.is_keyless_available.return_value = keyless_available
     if search_raises is not None:
         p.search.side_effect = search_raises
     else:
@@ -224,6 +232,107 @@ class TestRunSearchChain:
         result = web_tools._run_search_chain(("brave-free", "ddgs"), "query", 5)
         assert result["success"] is True
         ddgs.search.assert_called_once()
+
+
+# ---------------------------------------------------------------------------#
+# Chain keyless gate: an explicitly chained vendor with only its anonymous
+# free tier (exa / parallel / keenable / firecrawl) must still be reachable.
+# ---------------------------------------------------------------------------#
+
+
+class TestChainKeylessGate:
+    """A chain entry passes on keyed OR keyless availability.
+
+    ``WebSearchProvider.is_available()`` is deliberately keyed-only so the legacy
+    preference walk can't route a keyed user onto a free tier. ``_run_search_chain``
+    is the fork's explicit list, where naming a provider IS the deliberate
+    selection, so gating it on ``is_available()`` alone made
+    ``search_chain: [brave-free, exa]`` dead-end on "Provider 'exa' not available"
+    while exa's anonymous tier was serving fine.
+    """
+
+    def test_keyless_only_provider_is_reachable_in_the_chain(self, monkeypatch):
+        """The reported defect: brave 429 → keyless-capable exa must serve, no key."""
+        from tools import web_tools
+
+        brave = _make_provider("brave-free", search_response={"success": False, "error": "Brave Search returned HTTP 429"})
+        exa = _make_provider(
+            "exa", available=False, keyless_available=True,
+            search_response={"success": True, "data": {"web": [{"title": "keyless hit"}]}},
+        )
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"brave-free": brave, "exa": exa}.get(n))
+
+        result = web_tools._run_search_chain(("brave-free", "exa"), "query", 5)
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "keyless hit"
+        exa.search.assert_called_once()
+
+    def test_unavailable_and_not_keyless_is_still_skipped(self, monkeypatch):
+        """The gate must not become a blanket pass: no key AND no keyless tier = skip."""
+        from tools import web_tools
+
+        paid_only = _make_provider("tavily", available=False, keyless_available=False)
+        ddgs = _make_provider("ddgs", search_response={"success": True, "data": {"web": []}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"tavily": paid_only, "ddgs": ddgs}.get(n))
+
+        result = web_tools._run_search_chain(("tavily", "ddgs"), "query", 5)
+        assert result["success"] is True
+        paid_only.search.assert_not_called()
+        ddgs.search.assert_called_once()
+
+    def test_keyless_probe_raising_does_not_abort_the_walk(self, monkeypatch):
+        """A provider predating the probe (or raising in it) is treated as unavailable."""
+        from tools import web_tools
+
+        legacy = _make_provider("legacy", available=False)
+        legacy.is_keyless_available.side_effect = AttributeError("no such probe")
+        ddgs = _make_provider("ddgs", search_response={"success": True, "data": {"web": []}})
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"legacy": legacy, "ddgs": ddgs}.get(n))
+
+        result = web_tools._run_search_chain(("legacy", "ddgs"), "query", 5)
+        assert result["success"] is True
+        ddgs.search.assert_called_once()
+
+    def test_keyless_entry_still_fails_over_when_its_tier_is_rate_limited(self, monkeypatch):
+        """A keyless entry that itself 429s must fall through, not end the walk."""
+        from tools import web_tools
+
+        exa = _make_provider(
+            "exa", available=False, keyless_available=True,
+            search_response={"success": False, "error": "Keyless Exa search failed: rate limit. Set EXA_API_KEY"},
+        )
+        keenable = _make_provider(
+            "keenable", available=False, keyless_available=True,
+            search_response={"success": True, "data": {"web": [{"title": "keenable hit"}]}},
+        )
+        monkeypatch.setattr(web_tools, "_resolve_search_provider", lambda n: {"exa": exa, "keenable": keenable}.get(n))
+
+        result = web_tools._run_search_chain(("exa", "keenable"), "query", 5)
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "keenable hit"
+
+    def test_chain_provider_available_helper_short_circuits_on_keyed(self, monkeypatch):
+        """A keyed provider is accepted without consulting the keyless probe."""
+        from tools import web_tools
+
+        keyed = _make_provider("tavily", available=True, keyless_available=False)
+        assert web_tools._chain_provider_available(keyed) is True
+        keyed.is_keyless_available.assert_not_called()
+
+    def test_real_keyless_vendors_expose_the_probe_bundled(self):
+        """Contract: the vendors the fork advertises as keyless actually answer it.
+
+        Reads the bundled classes directly (no registry/network) so this fails if a
+        vendor drops KEYLESS or a future refactor hides the probe.
+        """
+        from plugins.web.exa.provider import ExaWebSearchProvider
+        from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
+        from plugins.web.keenable.provider import KeenableWebSearchProvider
+        from plugins.web.parallel.provider import ParallelWebSearchProvider
+
+        for cls in (ExaWebSearchProvider, FirecrawlWebSearchProvider,
+                    KeenableWebSearchProvider, ParallelWebSearchProvider):
+            assert cls.KEYLESS is True, f"{cls.__name__} must stay keyless-capable (chain reachability)"
 
 
 # ---------------------------------------------------------------------------#
