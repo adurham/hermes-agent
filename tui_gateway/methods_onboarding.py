@@ -13,6 +13,7 @@ def _(rid, params: dict) -> dict:
             _mirror_launch_credentials(setup.path, {"share_auth": True})
     except Exception as e:
         return _err(rid, 5073, str(e))
+    _start_setup_scan(setup.path)
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "created": setup.created})
 
 
@@ -36,6 +37,7 @@ def _(rid, params: dict) -> dict:
             release_or_close(db)
     except Exception as e:
         return _err(rid, 5075, str(e))
+    _start_setup_scan(setup.path)
     return _ok(rid, {"profile": setup.name, "session_id": row["id"], "empty": not row["message_count"]})
 
 
@@ -69,6 +71,18 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5074, str(e))
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "reset": True})
+
+
+def _start_setup_scan(profile_dir) -> None:
+    """Scan the machine while the fixed beats play, so ``/initiate-setup`` reads the setup
+    home's cache (or joins this scan) instead of scanning on the first model turn."""
+    from agent.initiate_setup_prompt import start_user_scan
+    try:
+        with _session_profile_runtime_scope({"profile_home": str(profile_dir)}, hydrate_secrets=False):
+            start_user_scan()
+    except Exception:
+        # The first turn scans on its own, so a failed prescan costs only time.
+        logger.warning("setup user scan did not start", exc_info=True)
 
 
 def _onboarding_state_result(rid, change) -> dict:

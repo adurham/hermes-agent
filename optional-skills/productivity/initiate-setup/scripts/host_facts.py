@@ -25,6 +25,7 @@ import re
 import sys
 import threading
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,6 +50,10 @@ SCAN_DIR = Path(__file__).resolve().parent / "userscan"
 SCAN_TIER = "T1"
 SCAN_CACHE_MAX_AGE_S = 24 * 3600
 SCAN_DEADLINE_S = 11
+# Another process scanning the same home holds ``profile.json.scanning``. Its scan can overrun a
+# waiter's deadline, so the lease counts as abandoned only after twice that.
+SCAN_LEASE_STALE_S = 2 * SCAN_DEADLINE_S
+_LEASE_POLL_S = 0.1
 SETTLING_DAYS = 120
 
 _NOT_VISIBLE_T1 = [
@@ -325,6 +330,38 @@ def _cache_is_fresh(profile: dict, version: str) -> bool:
             and 0 <= (datetime.now(timezone.utc) - started).total_seconds() < SCAN_CACHE_MAX_AGE_S)
 
 
+def _published(path: Path, seen: datetime | None, version: str) -> dict | None:
+    """The fresh profile another scan wrote to ``path`` after the one started at ``seen``."""
+    done = _read_json(path)
+    return done if done and _started(done) != seen and _cache_is_fresh(done, version) else None
+
+
+def _await_lease(lease: Path, path: Path, seen: datetime | None, version: str) -> None:
+    """Wait while another process scans this home: until it publishes, or its lease is gone or stale."""
+    while _published(path, seen, version) is None:
+        try:
+            age = time.time() - lease.stat().st_mtime
+        except OSError:
+            return
+        if age >= SCAN_LEASE_STALE_S:
+            with suppress(OSError):
+                lease.unlink()
+            return
+        time.sleep(_LEASE_POLL_S)
+
+
+def _full_scan(run, path: Path | None) -> dict:
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    profile = run(max_tier=SCAN_TIER)
+    profile["run"]["started"] = started
+    if path is not None:
+        try:
+            _write_private(path, profile)
+        except OSError:
+            pass
+    return profile
+
+
 def _scan_now() -> tuple[dict, str]:
     if str(SCAN_DIR) not in sys.path:
         sys.path.insert(0, str(SCAN_DIR))
@@ -343,32 +380,53 @@ def _scan_now() -> tuple[dict, str]:
                                                   if p.level == "L1" and p.os in ("any", here)}))
         if _l1_fired(l1) == _l1_fired(cached):
             return cached, "cache"
-    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    profile = run(max_tier=SCAN_TIER)
-    profile["run"]["started"] = started
-    if path is not None:
+    if path is None:
+        return _full_scan(run, None), "fresh"
+    # One full scan per home across processes: the setup RPC and the setup chat run in different
+    # backends on the desktop, and the inline-shell hook runs this file as its own process.
+    lease = path.with_name(f"{path.name}.scanning")
+    seen = _started(cached) if cached else None
+    while (done := _published(path, seen, __version__)) is None:
         try:
-            _write_private(path, profile)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lease, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            _await_lease(lease, path, seen, __version__)
+            continue
         except OSError:
-            pass
-    return profile, "fresh"
-
-
-def _scan() -> tuple[dict | None, str]:
-    box: dict = {}
-
-    def work() -> None:
+            return _full_scan(run, path), "fresh"
         try:
-            box["result"] = _scan_now()
-        except Exception as exc:
-            box["error"] = type(exc).__name__
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid(), "started": time.time()}, handle)
+            return _full_scan(run, path), "fresh"
+        finally:
+            with suppress(OSError):
+                lease.unlink()
+    return done, "cache"
 
-    worker = threading.Thread(target=work, daemon=True)
-    worker.start()
+
+def scan_into(box: dict) -> None:
+    """Scan and put ``result`` or ``error`` in ``box``. The ``/initiate-setup`` builder runs
+    this as its shared background job, so the first turn does not wait for a second scan."""
+    try:
+        box["result"] = _scan_now()
+    except Exception as exc:
+        box["error"] = type(exc).__name__
+
+
+def scan_outcome(worker: threading.Thread, box: dict) -> tuple[dict | None, str]:
+    """Wait up to the deadline for ``worker`` running :func:`scan_into` on ``box``."""
     worker.join(SCAN_DEADLINE_S)
     if "result" in box:
         return box["result"]
     return None, box.get("error", "timeout")
+
+
+def _scan() -> tuple[dict | None, str]:
+    box: dict = {}
+    worker = threading.Thread(target=scan_into, args=(box,), daemon=True)
+    worker.start()
+    return scan_outcome(worker, box)
 
 
 def _value(profile: dict, fid: str) -> dict | None:
@@ -559,12 +617,10 @@ def _machine_state(scan: dict | None, age: int | None) -> tuple[str, int | None]
     return ("fresh" if age <= NEW_MACHINE_DAYS else "settling" if age < SETTLING_DAYS else "established"), age
 
 
-def collect(scan_json: Path | None = None) -> dict:
-    """Return the fact block the ``/initiate-setup`` first turn embeds."""
-    if scan_json is not None:
-        profile, source = _read_json(scan_json), "file"
-    else:
-        profile, source = _scan()
+def collect(scanned: tuple[dict | None, str] | None = None) -> dict:
+    """Return the fact block the ``/initiate-setup`` first turn embeds. ``scanned`` is a
+    ``(profile, source)`` pair from a scan already run; without it this scans now."""
+    profile, source = scanned if scanned is not None else _scan()
     scan = interpret(profile, source) if profile else {"source": "unavailable", "reason": source}
 
     os_family = facts.os_family()
@@ -625,7 +681,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--from-json", type=Path, help="interpret this saved scan instead of scanning")
     args = parser.parse_args()
-    print(json.dumps(collect(args.from_json), ensure_ascii=False, separators=(",", ":")))
+    scanned = (_read_json(args.from_json), "file") if args.from_json else None
+    print(json.dumps(collect(scanned), ensure_ascii=False, separators=(",", ":")))
 
 
 if __name__ == "__main__":
