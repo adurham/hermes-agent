@@ -59,11 +59,6 @@ export function ConnectorsDirectory({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3" data-slot="connectors-directory">
-      <div className="flex shrink-0 items-center gap-3">
-        <h2 className="flex-1 text-sm font-semibold text-(--ui-text-primary)">{copy.title}</h2>
-        {addYourOwn}
-      </div>
-
       {cards.length === 0 ? null : (
         <>
           <div className="flex shrink-0 items-center gap-3 border-b border-(--ui-stroke-tertiary) pb-1.5">
@@ -74,6 +69,7 @@ export function ConnectorsDirectory({
               placeholder={copy.searchPlaceholder(cards.length)}
               value={filter.query}
             />
+            {addYourOwn}
           </div>
 
           {showSegments || segmentFellBack || hiddenMatches > 0 ? (
