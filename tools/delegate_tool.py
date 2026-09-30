@@ -558,7 +558,15 @@ def _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent) -> Di
     """
     try:
         from tools.delegation_router import route_task_models
-        provider = (creds.get("provider") or "").strip() or getattr(parent_agent, "provider", None)
+        # The gate keys on the PARENT's provider, not on the resolved child creds' provider: a
+        # delegation.by_provider block (or a top-level delegation.provider pin) can redirect the
+        # children elsewhere, and the router must still run when the MAIN session's provider is the
+        # one listed in delegation.auto_route.providers. Creds are only a fallback for a parent
+        # with no provider identity at all.
+        provider = (
+            (getattr(parent_agent, "provider", None) or "").strip()
+            or (creds.get("provider") or "").strip()
+        )
         return route_task_models(task_list, role_model_map, cfg, provider) or {}
     except Exception:
         logger.debug("delegate_task: auto-route dispatch failed", exc_info=True)
