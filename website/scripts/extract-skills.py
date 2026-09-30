@@ -252,8 +252,12 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
 
 def extract_local_skills():
     skills = []
-    with open(os.path.join(REPO_ROOT, "apps/shared/src/catalog-artwork.json"), encoding="utf-8") as artwork_file:
-        artwork = json.load(artwork_file)["skills"]
+    try:
+        with open(os.path.join(REPO_ROOT, "apps/shared/src/catalog-artwork.json"), encoding="utf-8") as artwork_file:
+            artwork = json.load(artwork_file)["skills"]
+    except FileNotFoundError:
+        # Artwork is optional; a skills-only checkout still produces a catalog.
+        artwork = {}
 
     for base_dir, source_label in LOCAL_SKILL_DIRS:
         base_path = os.path.join(REPO_ROOT, base_dir)
