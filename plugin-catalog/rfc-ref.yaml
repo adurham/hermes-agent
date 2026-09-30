@@ -1,0 +1,23 @@
+name: rfc-ref
+repo: https://github.com/EloquentBrush0x/hermes-context-refs
+sha: ab179d29b2ac1f7fe5cafb59eac25aded07ffb56
+subdir: rfc-ref
+description: >-
+  @rfc:<number> context references: attach an IETF RFC's record from the RFC Editor to a message
+  (title, status, date, authors, abstract, what it obsoletes and updates and what obsoletes or
+  updates it, errata link). Disclosure — sends one HTTPS GET per reference to
+  www.rfc-editor.org/rfc/rfc<number>.json only (the referenced RFC number leaves the machine); no
+  API key, no caching, no files written, no subprocess; register() only adds the @rfc: reference
+  provider.
+maintainer: EloquentBrush0x
+tier: community
+category: web
+requires_hermes: ">=0.21"
+docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/rfc-ref
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
