@@ -279,6 +279,32 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     ]
 
 
+def test_preserve_prefix_keeps_sent_tool_schemas_byte_identical(monkeypatch):
+    """A between-turns refresh must not rewrite a tool this session already sent.
+
+    The chat template prints every tool schema before the conversation. A local
+    server reuses the previous prompt only when the next one starts with those
+    exact tokens, so a new description on a tool that was already sent makes the
+    follow-up read the whole prompt again. New tools may append at the tail.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+    sent = json.dumps(agent.tools)
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    fresh["function"]["parameters"] = {
+        "type": "object", "properties": {"path": {"type": "string"}},
+    }
+    _serve(monkeypatch, [fresh, _tool("mcp_late")])
+    _registered(monkeypatch, ["read_file", "mcp_late"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools[:1]) == sent
+    assert [t["function"]["name"] for t in agent.tools] == ["read_file", "mcp_late"]
+
+
 def test_explicit_reload_replaces_a_same_name_schema(monkeypatch):
     """``/reload-mcp`` takes the fresh schema when the tool name stays the same.
 
