@@ -53,7 +53,8 @@ def compressor():
 class TestLegacyClarifyResults:
     @pytest.mark.parametrize("shape", ["single", "batch", "current"])
     @pytest.mark.parametrize("question_size", [300, 4500])
-    @pytest.mark.parametrize("answer", ["production, but only after 18:00 UTC", ["staging", "production"]])
+    @pytest.mark.parametrize("answer", ["production, but only after 18:00 UTC", ["staging", "production"],
+                                        "The user cancelled the production rollout; do not restart it."])
     def test_answers_reach_summary_after_repeated_pruning(self, monkeypatch, shape, question_size, answer):
         import agent.context_compressor as module
 
@@ -100,12 +101,16 @@ class TestLegacyClarifyResults:
         "[clarify prompt could not be delivered]",
         "[oneshot mode: no user available]",
         "The user cancelled. Use your best judgement to proceed.",
+        "[single-query mode: no user available to answer 'Deploy?'. "
+        "Make the most reasonable assumption you can and continue.]",
     ])
     def test_legacy_sentinels_are_not_answers_but_explicit_status_is_authoritative(self, sentinel):
-        for value in (sentinel, ["production", "  " + sentinel]):
+        for value, kept in ((sentinel, None), (["production", "  " + sentinel], "production")):
             for payload in ({"user_response": value}, {"responses": [{"user_response": value}]}):
                 content = json.dumps(payload)
-                assert not _sum_clarify("clarify", {}, content, len(content), 1).startswith("[clarify] user responded:")
+                summary = _sum_clarify("clarify", {}, content, len(content), 1)
+                assert sentinel.strip() not in summary
+                assert summary == (f'[clarify] user responded: "{kept}"' if kept else "[clarify] asked user a question")
         for status in ("answered", "skipped", "unanswered"):
             content = json.dumps({"responses": [{"status": status, "user_response": sentinel}]})
             summary = _sum_clarify("clarify", {}, content, len(content), 1)

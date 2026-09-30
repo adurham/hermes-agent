@@ -1726,8 +1726,19 @@ _CLARIFY_NON_RESPONSE_PREFIXES = (
     "[user did not respond",  # gateway clarify delivery timeout
     "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
     "[oneshot mode:",  # hermes_cli/oneshot.py
-    "The user cancelled",  # classic CLI Ctrl+C
+    "[single-query mode: no user available",  # hermes chat -q headless callback
 )
+# Matched whole: as a prefix these would also swallow real answers that start the same way.
+_CLARIFY_NON_RESPONSE_TEXTS = (
+    "The user cancelled. Use your best judgement to proceed.",  # classic CLI Ctrl+C
+)
+
+
+def _is_clarify_non_response(item) -> bool:
+    if not isinstance(item, str):
+        return False
+    text = item.strip()
+    return text in _CLARIFY_NON_RESPONSE_TEXTS or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
 
 
 def _sum_clarify(name, args, content, content_len, line_count):
@@ -1751,11 +1762,9 @@ def _sum_clarify(name, args, content, content_len, line_count):
             values = value if isinstance(value, list) else [value]
             # Pre-status sessions also stored timeout/delivery notices as user_response.
             # Only those legacy records need the old sentinel check; explicit status wins.
-            if "status" not in entry and any(
-                isinstance(item, str) and item.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
-                for item in values
-            ):
-                continue
+            # Drop just the notice items so other selections in the same entry survive.
+            if "status" not in entry:
+                values = [item for item in values if not _is_clarify_non_response(item)]
             answers.extend(values)
     answers = [answer for answer in answers if isinstance(answer, str) and answer]
     if not answers:
