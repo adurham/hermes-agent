@@ -19007,3 +19007,59 @@ the real CLI path, and live `web_extract` on https://freetubeapp.io/ then return
 real Brave 429 in the same run correctly failing over to ddgs. The same live run
 confirmed the reported symptom is gone: `ddgs` and `trafilatura` both installed into
 the `venv` that every running Hermes process uses (`ddgs` 9.14.4, `trafilatura` 2.2.0).
+
+### Fork-only fix — 2026-09-29 (search_chain could not reach any keyless vendor; + ollama-cloud plugin base-URL fix)
+
+**Problem (chain gate):** `web.search_chain` (the fork's ordered failover list) gated
+each entry on `provider.is_available()`, which the provider ABC deliberately keeps
+keyed-only — its docstring: *"Must never make is_available True, or the legacy
+preference walk would route keyed users onto a higher-priority backend's free
+tier."* That rule is correct for the legacy preference walk but wrong for the
+chain, where the user names each entry explicitly. Consequence: a chain entry
+backed only by an anonymous free tier (exa, parallel, keenable, firecrawl — all
+bundled, all serving fine with no key) could never be reached. Observed live:
+`search_chain: [brave-free, exa]` dead-ended on `Provider 'exa' not available`
+after Brave 429'd, even though exa's free tier was answering. Pinning one as the
+sole `web.search_backend` worked keyless, which is what made the chain's exclusion
+an inconsistent-selection bug rather than a design decision.
+
+**Fix (chain gate):** new `tools/web_tools.py::_chain_provider_available(provider)`
+— a chain entry passes when keyed-available OR when it reports
+`is_keyless_available()`, the same probe the keyless ring and `hermes tools` use.
+A provider pinned `web.provider_tier.<name>: paid` still fails over loudly on its
+missing key (each provider's own `use_keyless()` decides whether a call actually
+goes anonymous), so the change only decides whether an entry is TRIED. The two
+probes are error-isolated: a raising `is_keyless_available()` on a legacy/custom
+provider degrades to "not available" instead of aborting the walk.
+
+**Fix (plugin):** the community `web-ollama-cloud` plugin appends its native
+`/api/web_search` + `/api/web_fetch` paths to `OLLAMA_BASE_URL`, but that variable
+is shared with the ollama-cloud MODEL provider, whose OpenAI-compatible base is
+`https://ollama.com/v1` — so every call 404'd on `path "/v1/api/web_search" not
+found` on any host configured for chat completions. Upstream HEAD equals the
+catalog pin (no fix to pull), so the installed plugin carries a local patch:
+`_native_base_url()` strips a trailing `/v1` (or redundant `/api`) before the
+endpoint is appended, making one env var serve both consumers.
+
+**Config:** `web.search_chain` is now
+`[brave-free, ddgs, ollama-cloud, exa, parallel, keenable]` — six independent
+providers, four of them keyless, so Brave's free-tier limit of **1 req/s**
+(the real failure mode; monthly quota was 1726/2000 remaining) no longer ends a
+search.
+
+**Files:** `tools/web_tools.py` (`_chain_provider_available` + call site),
+`tests/tools/test_web_search_chain.py` (`TestChainKeylessGate`, 6 tests; the
+`_make_provider` helper now pins `is_keyless_available` explicitly, because a
+MagicMock's truthy auto-attribute would make every mock look keyless-capable),
+`~/.hermes/plugins/web-ollama-cloud/__init__.py` + that plugin's test file
+(5 tests: suffix-stripping table, config path, endpoint invariant).
+
+**Verification:** 32/32 in `test_web_search_chain.py`; fail-first proven — the two
+reachability tests fail against the pre-fix call site, pass after. Plugin suite
+40/40 (35 upstream + 5 new). Neighbours green: `test_web_tools_config.py` 65/65,
+`test_web_search_provider_plugins.py` 36/36. Live, unmocked, on the real config:
+5/5 varied queries returned results through `model_tools.handle_function_call`, and
+with brave-free + ddgs forced to fail the chain served from **ollama-cloud** (3rd
+hop), **exa** (4th), **parallel** (5th) and **keenable** (6th) in turn — each hop
+returning real results over the network. `web_extract` on the configured backend
+returned 3735 chars.
