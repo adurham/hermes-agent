@@ -90,6 +90,81 @@ The working credential is the `claude-setup-token` item, wired into `~/.hermes/.
 `CLAUDE_CODE_OAUTH_TOKEN` (and `claude` itself falls back to it in-process, which is why an
 interactive session still works).
 
+### Fork-only fix — 2026-09-29 (delegate_task routing: the v2026.9.14 merge silently dropped per-provider delegation; 5 code commits + this entry)
+
+**Symptom:** a `delegate_task` child dispatched with no `agent_type=` and no `model=` ran on the
+PARENT's own model — `claude-sonnet-5` via `claude-subscription-directsdk-experimental` — instead
+of the configured `ollama-cloud` child default. `agent.log`:
+
+```
+delegate_task: task 0 dispatched with no agent_type= and no model=; routing decision: inherited the PARENT's own model/provider
+```
+
+**Root cause — the same class as the 2026-09-26 entry above: the v2026.9.14 god-file split kept the
+fork's helper but the merge dropped its call sites.** `delegation.by_provider` (the fork feature that
+scopes child credentials per main provider — anthropic / `claude-subscription-directsdk-experimental`
+/ ollama-cloud / exo are all configured with blocks) was still read by the model-roster scan and by
+`hermes_cli/model_tiers.py`, but `_resolve_delegation_credentials` (now in
+`tools/delegate_tool_config.py`) no longer consumed it. Verified live: creds resolved to
+`model=None, provider=None` for EVERY parent provider, i.e. "child inherits everything".
+
+**Restored (four commits, each with its own regression test):**
+
+1. **`729499d02b` — `by_provider` consumption.** The old semantics verbatim: case-insensitive exact
+   match of the block key against `parent_agent.provider`; a matched dict block REPLACES `cfg`
+   wholesale; no match leaves `cfg` unchanged. `_resolve_role_credentials` hands in a synthetic cfg
+   with no `by_provider` key, so per-role resolution is unaffected (its test asserts the absence).
+2. **`161cae5b6f` — the auto-route gate keys on the PARENT's provider.** `_auto_route_batch` passed
+   `creds.get("provider") or parent.provider` — the provider the CHILDREN resolved onto. Once fix 1
+   was in, a directsdk parent whose children resolve onto ollama-cloud presented `ollama-cloud` to
+   `delegation.auto_route.providers`, opening or closing the gate on the wrong identity entirely.
+   `route_task_models`'s docstring claimed the same wrong thing ("delegation override if set, else the
+   parent's"); corrected.
+3. **`7c8206f4b1` — a tier-only auto-route carries its role's provider pin.** Proven bug, reproduced
+   red first: a `model_by_role` entry with a `provider` pin (plus fallback) was resolved through the
+   MODEL map only when the classifier routed by tier with no persona pick —
+   `role_cfg_key` stayed None, `_resolve_role_credentials` never ran, and the tier role's model slug
+   went to the batch creds' provider (the parent's when no block matched): a guaranteed
+   wrong-endpoint 404. Fixed by feeding the tier route's role into the same `role_cfg_key` both
+   role-keyed lookups already use. Stated `agent_type` behavior untouched.
+4. **`9eda794760` — `agent_type` and `model` restored in `DELEGATE_TASK_SCHEMA`** (top level AND
+   `tasks.items.properties`). The same merge dropped both; `delegate_task()` and
+   `run_agent._dispatch_delegate_task` still accepted them, so passing them worked — the model was
+   simply never told they exist and could only ever silently inherit. Wording is
+   **model-agnostic** (the pre-merge text named `claude-haiku-4-5` / `sonnet` / `opus` as examples —
+   exactly the invitation to invent a slug that is not a valid (model, provider) pair in the user's
+   config). `agent_type` = a `delegation.model_by_role` role (selects model AND provider, loads the
+   persona, `'auto'` opts into classifier routing, omitting it warns); `model` = exceptional pin
+   validated against the roster, "prefer `agent_type`".
+5. **`b509f073b4` — every auto-route no-op now NAMES its cause.** Fail-open was correct but
+   indistinguishable from "nothing to do": the warning reported only the fallback that ran. 
+   `route_task_models` takes an optional `diagnostics` dict filled with `{'skipped': <reason>}`
+   (+ `provider`/`allowed`, or `classifier_error`) for: auto_route disabled; provider gate closed;
+   no tier role has a model; no routable task; classifier returned nothing (raise / timeout /
+   unparsable); no route could be resolved; auto-route failed. The warning (and its `logger.info`
+   mirror) appends `auto-route did not run: <cause>`. A classifier FAILURE also logs at WARNING once
+   per process per cause (was `logger.debug`). Classifier model, prompt, max_tokens and timeout are
+   deliberately unchanged.
+
+**Tests (all new files, behavior contracts — red-first where they guard a fix):**
+`tests/tools/test_delegate_by_provider_credentials.py` (7), `test_delegate_auto_route_gate.py` (2),
+`test_delegate_tier_role_provider.py` (3, 2 red before the fix),
+`test_delegate_routing_schema.py` (7), `test_delegate_auto_route_diagnostics.py` (15, one per skip
+reason). Re-run unchanged and green: `test_delegate.py` (96),
+`test_delegate_role_provider.py` (25), `test_delegate_role_fallback.py` (15),
+`test_delegation_router.py` (19), `test_delegation_router_escalate_only.py` (22),
+`test_delegate_auto_route_visibility.py` (13), `test_delegate_model_roster_guardrail.py` (13),
+`test_delegate_orchestrator_agent_type_gap.py` (4),
+`test_batch_top_level_model_seeding.py` (6), `test_delegate_group_schema.py` (2),
+`test_delegate_output_schema.py` (21). Full-suite status is CI's call, not verified locally.
+
+**Merge note:** fork-local throughout — `delegation.by_provider` is a fork feature, and the
+`by_provider` + `agent_type`/`model` schema text are the fork's own additions upstream does not
+carry. The tier-only-route bug and the parent-vs-creds gate are generic delegation defects upstream
+likely shares; surfaced here for Adam to decide rather than filed upstream.
+
+---
+
 ### Post-de-fork repair — 2026-09-26 (`/effort` on every surface; 5 merge-dropped wirings; CI red → green)
 
 **Why:** after the v2026.9.24 sync + de-fork slices A–C, `main` CI was red (6 Python shards + JS) and
