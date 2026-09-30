@@ -543,7 +543,9 @@ def _load_role_maps() -> tuple[Dict[str, Any], Dict[str, Any], Any]:
             role_entry_map if isinstance(role_entry_map, dict) else {}, resolve_role_alias)
 
 
-def _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent) -> Dict[int, Dict[str, Any]]:
+def _auto_route_batch(
+    task_list, role_model_map, cfg, creds, parent_agent, diagnostics: Optional[Dict[str, Any]] = None,
+) -> Dict[int, Dict[str, Any]]:
     """Auto-route verdicts for the whole batch in ONE classifier call.
 
     Serves two distinct populations (see tools/delegation_router.py's module docstring):
@@ -553,8 +555,10 @@ def _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent) -> Di
     ladder, never down. A task with an explicit ``model=`` is in neither population and
     is never classified at all.
 
-    Fail-open: on ANY failure this returns {} and every task falls through the existing
-    precedence chain, i.e. exactly the behavior before this module existed.
+    ``diagnostics`` (optional, caller-owned) is filled with the WHY when no routing came
+    back — see route_task_models. Fail-open: on ANY failure this returns {} and every
+    task falls through the existing precedence chain, i.e. exactly the behavior before
+    this module existed.
     """
     try:
         from tools.delegation_router import route_task_models
@@ -567,10 +571,44 @@ def _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent) -> Di
             (getattr(parent_agent, "provider", None) or "").strip()
             or (creds.get("provider") or "").strip()
         )
-        return route_task_models(task_list, role_model_map, cfg, provider) or {}
-    except Exception:
+        return route_task_models(task_list, role_model_map, cfg, provider, diagnostics) or {}
+    except Exception as exc:
         logger.debug("delegate_task: auto-route dispatch failed", exc_info=True)
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update({"skipped": "auto-route dispatch failed", "classifier_error": f"{type(exc).__name__}: {exc}"})
         return {}
+
+
+def _auto_route_skip_cause(diagnostics: Optional[Dict[str, Any]]) -> str:
+    """Human-readable reason auto-route produced no routing decision, or "" when it
+    produced routes / was never asked. Built from ``route_task_models``'s diagnostics
+    so the delegation result NAMES the cause instead of only the fallback that ran."""
+    if not isinstance(diagnostics, dict):
+        return ""
+    reason = str(diagnostics.get("skipped") or "").strip()
+    if not reason:
+        return ""
+    if reason == "provider gate closed":
+        provider = str(diagnostics.get("provider") or "unknown")
+        allowed = diagnostics.get("allowed")
+        allowed_str = ", ".join(str(a) for a in allowed) if isinstance(allowed, (list, tuple)) else "?"
+        return (
+            f"provider gate closed — this session's provider is {provider!r}, but "
+            f"delegation.auto_route.providers allows only [{allowed_str}]"
+        )
+    if reason == "auto_route disabled":
+        return "delegation.auto_route.enabled is false"
+    if reason == "no tier role has a model":
+        return "no delegation.auto_route.tier_roles role has a delegation.model_by_role entry"
+    if reason == "no routable task":
+        return "every task already stated a model= (auto-route never classifies a stated model)"
+    detail = str(diagnostics.get("classifier_error") or "").strip()
+    if reason == "classifier returned nothing":
+        return f"the classifier returned no usable verdicts ({detail})" if detail else "the classifier returned no usable verdicts"
+    if reason == "auto-route dispatch failed":
+        return f"auto-route dispatch failed ({detail})" if detail else "auto-route dispatch failed"
+    return reason
 
 
 def _resolve_task_routes(
@@ -589,7 +627,8 @@ def _resolve_task_routes(
       → auto-route tier→role→model → ``delegation.model``/``by_provider`` → parent's model
     """
     role_model_map, role_entry_map, resolve_role_alias = _load_role_maps()
-    auto_routes = _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent)
+    auto_route_diag: Dict[str, Any] = {}
+    auto_routes = _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent, auto_route_diag)
     # The literal agent_type meaning "auto-route this task" — imported from the router
     # (single source of truth) with a literal fallback so a partially-loaded router
     # module can never break dispatch.
@@ -785,9 +824,18 @@ def _resolve_task_routes(
                 if reason:
                     decision += f" ({reason})"
             elif effective_task_model:
+                # Name WHY auto-route did not run, so "the config default won" is
+                # actionable instead of a dead end (a closed provider gate and a
+                # broken classifier look identical from here otherwise).
                 decision = f"delegation config default → model {effective_task_model!r}"
+                cause = _auto_route_skip_cause(auto_route_diag)
+                if cause:
+                    decision += f" (auto-route did not run: {cause})"
             else:
                 decision = "inherited the PARENT's own model/provider"
+                cause = _auto_route_skip_cause(auto_route_diag)
+                if cause:
+                    decision += f" (auto-route did not run: {cause})"
             roster_warnings.append(
                 f"Task {i}: no agent_type= and no model= were given, so the model was chosen for "
                 f"you: {decision}. To route deliberately, pass agent_type=<role> (resolved through "
