@@ -1,6 +1,6 @@
 import './catalog-discovery.css'
 
-import { PLUGIN_CATEGORIES } from '@hermes/shared'
+import { groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -30,16 +30,16 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
     ?? entries.find(entry => entry.name === FEATURED[kind] && ['bundled', 'official', 'builtin'].includes(entry.source))
 
   const remaining = entries.filter(entry => entry !== featured)
-  const groups = new Map<string, CatalogEntry[]>()
 
-  for (const entry of remaining) {
-    const group = groups.get(entry.category)
-
-    if (group) {group.push(entry)}
-    else {groups.set(entry.category, [entry])}
-  }
-
-  const categories = catalogCategories(remaining, kind)
+  // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
+  const sections: [string, string, CatalogEntry[]][] =
+    kind === 'plugins'
+      ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items])
+      : catalogCategories(remaining, kind).map(([key, meta]) => [
+          key,
+          meta.label,
+          remaining.filter(entry => entry.category === key)
+        ])
 
   return (
     <div className="catalog-discovery">
@@ -47,13 +47,12 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
         <header className="catalog-section-heading"><h2>{t.catalog.discover} {title}</h2></header>
         {card(featured, 0, 'hero')}
       </section>}
-      {categories.slice(0, categoryLimit).map(([category, meta], sectionIndex) => {
-        const items = groups.get(category) ?? []
+      {sections.slice(0, categoryLimit).map(([category, label, items], sectionIndex) => {
         const variant: CatalogCardVariant = items.slice(0, 4).some(entry => entry.imageUrl) || sectionIndex % 3 === 0 ? 'showcase' : sectionIndex % 3 === 2 ? 'horizontal' : 'compact'
 
         return <section data-catalog-section={category} key={category}>
           <header className="catalog-section-heading">
-            <div><h2>{catalogLabel(meta.label)}</h2><p>{kind === 'plugins' ? PLUGIN_CATEGORIES[category]?.blurb : `Skills for ${catalogLabel(meta.label).toLowerCase()}.`}</p></div>
+            <div><h2>{catalogLabel(label)}</h2><p>{kind === 'plugins' ? PLUGIN_CATEGORIES[category]?.blurb : `Skills for ${catalogLabel(label).toLowerCase()}.`}</p></div>
             <Button onClick={() => onCategory(category)} size="inline" variant="text">{t.catalog.seeAll}<Codicon name="arrow-right" /></Button>
           </header>
           <div className={`catalog-collection catalog-collection-${variant}`} data-catalog-hover-group>
@@ -61,7 +60,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
           </div>
         </section>
       })}
-      {categories.length > categoryLimit && <Button onClick={() => setCategoryLimit(value => value + 8)} size="sm" variant="text">{t.catalog.more}</Button>}
+      {sections.length > categoryLimit && <Button onClick={() => setCategoryLimit(value => value + 8)} size="sm" variant="text">{t.catalog.more}</Button>}
       <section data-catalog-section="developer">
         <header className="catalog-section-heading"><h2>Developer Mode</h2></header>
         <div className="catalog-developer">
