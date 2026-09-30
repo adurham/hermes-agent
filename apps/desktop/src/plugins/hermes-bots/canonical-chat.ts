@@ -157,9 +157,11 @@ async function openStoredBotChat(
   // Compression rotates the tip while tiles stay keyed by segment, and hidden
   // Bot Chats never reach the sidebar listing the lineage guard reads, so the
   // old-segment tile is discarded here or it survives beside the tip
-  // (hermes-agent#120810). Same owner-scoped probe the roster click runs.
+  // (hermes-agent#120810). Same owner-scoped probe the roster click runs, but
+  // discard-only (`[]` fronts nothing): a background refresh must never take
+  // the tab strip (#121874), and the openSession below fronts explicit opens.
   const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
-  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), canonicalIds)
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [])
 
   await host.openSession(storedId, {
     ...(route

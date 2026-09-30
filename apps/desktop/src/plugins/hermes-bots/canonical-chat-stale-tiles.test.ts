@@ -68,7 +68,7 @@ describe('120810: compressed Bot Chat discards the stale tile', () => {
     expect(focusMock).toHaveBeenCalledTimes(1)
     const [ownerKey, probe, onlyIds] = focusMock.mock.calls[0]
     expect(ownerKey).toBe('bot:ops')
-    expect(onlyIds).toEqual(expect.arrayContaining(['root-1', 'tip-9']))
+    expect(onlyIds).toEqual([])
     // Stale: Bot Chat-titled tile at an id that is neither registry nor tip.
     expect(probe({ storedSessionId: 'old-segment', workspaceTabTitle: 'Bot Chat' })).toBe(true)
     // Live tip and registry row are never stale.
@@ -78,5 +78,15 @@ describe('120810: compressed Bot Chat discards the stale tile', () => {
     expect(probe({ storedSessionId: 'side-1', workspaceTabTitle: 'my thread' })).toBe(false)
     // Tip opens after the probe.
     expect(hostMock.openSession.mock.calls[0][0]).toBe('tip-9')
+  })
+
+  it('a background refresh discards stale tiles without fronting the live one (#121874)', async () => {
+    const { openBotCanonicalChat } = await loadModule()
+    await openBotCanonicalChat('ops', { background: true })
+
+    expect(focusMock).toHaveBeenCalledTimes(1)
+    const [, probe, onlyIds] = focusMock.mock.calls[0]
+    expect(onlyIds).toEqual([])
+    expect(probe({ storedSessionId: 'old-segment', workspaceTabTitle: 'Bot Chat' })).toBe(true)
   })
 })
