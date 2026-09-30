@@ -121,7 +121,7 @@ def _admit_prompt_turn(
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
     # When the session already holds its lease this is a cheap dict check. See #94778.
-    if (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
+    if not session.get("_closing") and (ownership_refusal := _ensure_active_session_slot(sid, session)) is not None:
         logger.info(
             "Refusing turn for session %s at _run_prompt_submit: %s",
             session.get("session_key") or sid,
@@ -137,6 +137,10 @@ def _admit_prompt_turn(
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             session["running"] = False
             session.pop("_submit_user_row", None)
+            if session.get("_closing"):
+                # Close stops waiting for this thread after a grace and then finalizes. A lease claimed
+                # after that finalize has no other code path that releases it.
+                _release_active_session_slot(session)
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
