@@ -337,6 +337,7 @@ def _finalize_single_query(cli) -> None:
     a successor that acquires and reopens the session can never receive this
     process's stale ``cli_close`` end-stamp, because phase 1 has already run it.
     """
+    import cli as cli_module
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
     try:
         try:
@@ -345,7 +346,9 @@ def _finalize_single_query(cli) -> None:
             logger.debug("one-shot session store flush failed", exc_info=True)
         _notify_single_query_session_finalize(cli)
         try:
-            _shutdown_agent_memory_provider(getattr(cli, "agent", None))
+            # A failed goal-loop re-init leaves cli.agent None while the agent
+            # that ran the turns is still the module's active ref.
+            _shutdown_agent_memory_provider(getattr(cli, "agent", None) or cli_module._active_agent_ref)
         except Exception:
             logger.debug("one-shot memory provider shutdown failed", exc_info=True)
     finally:
