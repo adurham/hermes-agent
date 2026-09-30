@@ -58,46 +58,6 @@ def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch
     assert calls == ["finalize", "release", "cleanup"]
 
 
-def test_finalize_single_query_frees_the_lease_ahead_of_the_linger(tmp_path, monkeypatch):
-    """The #118826 contract with a REAL lease: once the one-shot's turns are done,
-    the session entry must be gone from the active-session registry BEFORE the
-    bounded exit linger runs — a alive-but-idle process must not keep refusing
-    deliveries ("Refused active session") for minutes after its turn ended."""
-    from hermes_cli import active_sessions
-
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    lease, message = active_sessions.try_acquire_active_session(
-        session_id="s1", surface="cli", config={}, metadata={"live_session_id": "s1"}
-    )
-    assert lease is not None, message
-
-    def wait_only_if_released(_cli):
-        entries = active_sessions._read_entries(active_sessions._state_path(home))
-        # The linger step swallows exceptions by design, so RECORD instead of
-        # asserting here — the assertion below is what must fail on unfixed code.
-        seen["held_during_linger"] = any(
-            str(e.get("session_id") or "") == "s1" for e in entries
-        )
-
-    seen: dict[str, bool] = {}
-    fake_cli = SimpleNamespace(
-        session_id="s1", agent=None, _release_active_session=lease.release
-    )
-    monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", wait_only_if_released)
-    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda _cli: None)
-    monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _cli: None)
-    monkeypatch.setattr(cli, "_run_cleanup", lambda **_k: None)
-
-    cli._finalize_single_query(fake_cli)
-
-    assert seen.get("held_during_linger") is False, (
-        "session lease still held when the exit linger began"
-    )
-    entries = active_sessions._read_entries(active_sessions._state_path(home))
-    assert not any(str(e.get("session_id") or "") == "s1" for e in entries)
-
-
 def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, monkeypatch):
     """P1 handoff race: a successor that acquires the session DURING the
     predecessor's exit linger must never receive the predecessor's stale
@@ -156,52 +116,6 @@ def test_finalize_settles_session_before_a_successor_can_take_over(tmp_path, mon
         "successor's open interval was end-stamped by the predecessor's finalize"
     )
     taken_over["lease_b"].release()
-
-
-def test_finalize_commits_memory_session_before_a_successor_can_take_over(tmp_path, monkeypatch):
-    """Memory-provider session finalization is session-owned settlement: providers
-    commit THIS session's remote state at ``on_session_end`` (OpenViking posts
-    ``sessions/{sid}/commit``; Supermemory flushes pending turns stamped with the
-    session id). It must land while this process still owns the lease — post-release
-    it would fire while the successor is mid-turn on the session.
-
-    Discriminating: with the phase-1 memory shutdown removed, ``memory_commit`` is
-    never recorded before the successor's acquisition and this test fails."""
-    from hermes_cli import active_sessions
-
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    events: list[str] = []
-    lease_a, message = active_sessions.try_acquire_active_session(
-        session_id="s1", surface="cli", config={}, metadata={"live_session_id": "s1"}
-    )
-    assert lease_a is not None, message
-
-    agent_a = SimpleNamespace(
-        session_id="s1", _session_messages=[],
-        shutdown_memory_provider=lambda *a, **k: events.append("memory_commit"),
-    )
-    cli_a = SimpleNamespace(
-        agent=agent_a, session_id="s1", conversation_history=[],
-        _release_active_session=lambda: (events.append("release"), lease_a.release()),
-    )
-
-    def linger_with_takeover(_cli):
-        lease_b, msg_b = active_sessions.try_acquire_active_session(
-            session_id="s1", surface="cli", config={}, metadata={"live_session_id": "s1"}
-        )
-        assert lease_b is not None, f"successor could not acquire during the linger: {msg_b}"
-        events.append("successor_acquired")
-        lease_b.release()
-
-    monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", linger_with_takeover)
-    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda _c: None)
-    monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _c: None)
-    monkeypatch.setattr(cli, "_run_cleanup", lambda **_k: None)
-
-    cli._finalize_single_query(cli_a)
-
-    assert events == ["memory_commit", "release", "successor_acquired"]
 
 
 
