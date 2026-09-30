@@ -159,9 +159,21 @@ class GatewayACPAgent(acp.Agent):
             if str(exc) != "stale_generation":
                 raise
             receipt = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id)
-            if receipt["status"] == "started":
+            if receipt["status"] != "started":
+                return
+            try:
                 await client.rpc("session.interrupt", session_id=session_id,
                                  execution_generation=receipt["execution_generation"])
+            except GatewayClientError as interrupt_exc:
+                if str(interrupt_exc) != "stale_generation":
+                    raise
+                # The exact admission may have settled between the receipt and interrupt.
+                # Re-read that admission only; never substitute the session's current
+                # generation, which could already belong to a successor.
+                settled = await client.rpc(
+                    "prompt.receipt", session_id=session_id, admission_id=admission_id)
+                if settled["status"] != "terminal":
+                    raise
 
     async def cancel(self, session_id, **kwargs):
         if session_id not in self._snapshots:
@@ -248,17 +260,20 @@ class GatewayACPAgent(acp.Agent):
             self._submitting.discard(session_id)
         admission_id = receipt["admission_id"]
         self._admissions[session_id] = admission_id
-        if session_id in self._pending_cancels:
-            self._pending_cancels.discard(session_id)
-            await self._cancel_admission(session_id, admission_id)
         try:
+            if session_id in self._pending_cancels:
+                self._pending_cancels.discard(session_id)
+                await self._cancel_admission(session_id, admission_id)
             async with self._changed:
                 await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None)
                 if self._failure:
                     raise self._failure
                 terminal = self._terminals.pop(admission_id)
         finally:
-            self._admissions.pop(session_id, None)
+            # Do not let one prompt tear down a newer mapping if the session has
+            # already advanced while this coroutine unwinds.
+            if self._admissions.get(session_id) == admission_id:
+                self._admissions.pop(session_id, None)
         outcome = terminal.get("outcome")
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
