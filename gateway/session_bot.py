@@ -16,14 +16,54 @@ from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _locked, _read, _write
 
 
+_CANONICAL_RECEIPT_STATUSES = frozenset({
+    'canonical', 'queued', 'claimed', 'ambiguous', 'settled', 'failed', 'cancelled',
+})
+
+
+def _canonical_record_error(path, record):
+    """Return why an admission-backed receipt is unsafe for bulk recovery."""
+    delivery_id = record.get('delivery_id')
+    if not isinstance(delivery_id, str) or delivery_id != path.stem:
+        return 'delivery id does not match filename'
+    try:
+        _delivery_id(delivery_id)
+    except ValueError:
+        return 'delivery id is invalid'
+    required_strings = ('admission_id', 'profile_home', 'session_id', 'principal_id')
+    missing = [key for key in required_strings
+               if not isinstance(record.get(key), str) or not record[key]]
+    if missing:
+        return 'missing canonical fields: ' + ', '.join(missing)
+    if not isinstance(record.get('message'), str):
+        return 'message is not a string'
+    status = record.get('status')
+    if not isinstance(status, str) or status not in _CANONICAL_RECEIPT_STATUSES:
+        return f'unknown canonical status {status!r}'
+    return None
+
+
+def _record_shape_error(path, record):
+    """Validate the known canonical or legacy receipt shape for directory scans."""
+    if 'admission_id' in record or record.get('status') == 'canonical' or 'principal_id' in record:
+        return _canonical_record_error(path, record)
+    if 'owner' in record:
+        from tools.bot_live_delivery import _ticket_shape_error
+        return _ticket_shape_error(path, record)
+    return 'unknown receipt schema'
+
+
 def _scan_records(root):
-    """Bulk mailbox scan: isolate unreadable records without weakening exact-id reads."""
+    """Bulk mailbox scan: isolate unreadable/malformed records; exact-id reads still fail closed."""
     for path in root.glob('*.json'):
         try:
             record = _read(path)
-        except (OSError, ValueError):
+            problem = None if record is None else _record_shape_error(path, record)
+        except (OSError, ValueError) as exc:
+            record, problem = None, str(exc)
+        if problem is not None:
             logging.getLogger(__name__).warning(
-                "Skipping unreadable Bot mailbox receipt %s", path, exc_info=True)
+                "Skipping malformed Bot mailbox receipt %s (%s)", path, problem)
             continue
         if record is not None:
             yield path, record
