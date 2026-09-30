@@ -43,6 +43,17 @@
     --catalog-near 5s ease;
 }
 
+/* Hover paints instantly; only the return eases (DESIGN.md → Motion). That
+   covers the hovered card and the siblings it dims; the pointer-follow lean
+   keeps its glide. The arc below is the one exception and fades both ways. */
+[data-catalog-card]:is(:hover, :focus-within),
+[data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card] {
+  transition:
+    --catalog-x 5s cubic-bezier(0.2, 0.8, 0.2, 1),
+    --catalog-y 5s cubic-bezier(0.2, 0.8, 0.2, 1),
+    --catalog-near 5s ease;
+}
+
 :root.dark [data-catalog-card] {
   --catalog-rest-x: 0%;
   --catalog-rest-y: 0%;
@@ -98,5 +109,10 @@
 @media (prefers-reduced-motion: reduce) {
   [data-catalog-card] {
     transition: border-color 0.1s ease, box-shadow 0.1s ease, opacity 0.15s ease, filter 0.15s ease;
+  }
+
+  [data-catalog-card]:is(:hover, :focus-within),
+  [data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card] {
+    transition: none;
   }
 }

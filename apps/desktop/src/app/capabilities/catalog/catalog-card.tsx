@@ -105,7 +105,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
             <span className="catalog-card-title line-clamp-2 min-w-0 break-words text-lg">{variant === 'default' ? entry.name : catalogLabel(entry.name)}</span>
           </RowButton>
           {variant === 'default' && action && (
-            <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            <span className="relative shrink-0 opacity-[.66] transition-opacity group-hover:opacity-100 group-hover:transition-none group-focus-within:opacity-100 group-focus-within:transition-none">
               {action}
             </span>
           )}
