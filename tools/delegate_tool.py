@@ -616,10 +616,20 @@ def _resolve_task_routes(
         # Auto-route persona pick feeds the SAME task_agent_type variable an explicit
         # agent_type uses, so it fires both existing effects for free (persona-prompt
         # injection AND per-role model resolution). Explicit always wins.
+        tier_route_role = None
         if task_agent_type is None and route:
             auto_agent_type = (route.get("agent_type") or "").strip() or None
             if auto_agent_type:
                 task_agent_type = auto_agent_type
+            else:
+                # TIER-ONLY route (no persona pick): the tier's role is a real
+                # model_by_role key, so it must be resolved EXACTLY like a stated
+                # agent_type is — role_cfg_key below drives both the model lookup and
+                # the per-role credential resolution (provider pin + fallback chain).
+                # Without this the role's model slug was paired with the batch creds'
+                # provider — the parent's, when no by_provider block matched — i.e. a
+                # guaranteed wrong-endpoint 404.
+                tier_route_role = (route.get("role") or "").strip() or None
 
         # Escalate-only override: the task DID state an agent_type and the classifier
         # judged the work to need a strictly DEEPER tier. Replacing task_agent_type makes
@@ -668,9 +678,12 @@ def _resolve_task_routes(
         # role-keyed lookups below (model and credential entry) so the two can never
         # disagree. An explicitly configured alias always wins — the fallback only fires
         # when the dispatched name has no entry of its own.
-        role_cfg_key = task_agent_type
-        if task_agent_type and not (task_agent_type in role_model_map or task_agent_type in role_entry_map):
-            alias_target = resolve_role_alias(task_agent_type)
+        # A TIER-ONLY auto-route has no agent_type to dispatch (no persona prompt), but
+        # the tier's role IS a model_by_role key and is resolved through this same key —
+        # that is what applies the role's provider pin and fallback chain to the route.
+        role_cfg_key = task_agent_type or tier_route_role
+        if role_cfg_key and not (role_cfg_key in role_model_map or role_cfg_key in role_entry_map):
+            alias_target = resolve_role_alias(role_cfg_key)
             if alias_target:
                 role_cfg_key = alias_target
         role_map_model = role_model_map.get(role_cfg_key) if role_cfg_key else None
@@ -701,7 +714,10 @@ def _resolve_task_routes(
             try:
                 task_creds = _resolve_role_credentials(role_entry, parent_agent, role_creds_cache)
             except ValueError as primary_exc:
-                via_alias = f" (dispatched as {task_agent_type!r})" if role_cfg_key != task_agent_type else ""
+                via_alias = (
+                    f" (dispatched as {task_agent_type!r})"
+                    if task_agent_type and role_cfg_key != task_agent_type else ""
+                )
                 if role_fallback_entry is None:
                     # Fail loud: falling back to the batch provider here is exactly the
                     # wrong-model-on-wrong-provider bug this pin exists to prevent. Name
