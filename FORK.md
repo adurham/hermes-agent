@@ -19138,3 +19138,65 @@ with brave-free + ddgs forced to fail the chain served from **ollama-cloud** (3r
 hop), **exa** (4th), **parallel** (5th) and **keenable** (6th) in turn — each hop
 returning real results over the network. `web_extract` on the configured backend
 returned 3735 chars.
+
+### Fork-only cleanup — 2026-09-29 (Slice A/C dead-config follow-through: `anthropic_native_search` + `claude-code` web backends)
+
+**Problem:** the 2026-09-25 Slice A/C retirement deleted
+`agent/fork/anthropic_native_web_search.py` (the `web_search_20250305` swap) and
+`plugins/web/claude_code/` (the `claude -p` web backend), but three config
+families that referenced them survived in every deployment:
+
+- `web.anthropic_native_search` + `web.anthropic_native_search_max_uses` — no
+  reader anywhere in the tree (verified by exhaustive grep across the fork tree,
+  `DEFAULT_CONFIG`, and every plugin); the keys were consumed only by the deleted
+  module.
+- `web.by_provider.<provider>.search_backend/extract_backend: claude-code` — on
+  the MacBook (`anthropic`), on the hlxc machine-root template (`anthropic` +
+  `claude-subscription-directsdk-experimental`), and on the hlxc dashboard
+  template (the directsdk entry). No provider named `claude-code` is registered
+  any more, so each entry shadowed the flat defaults with a name that resolves to
+  nothing. On the dashboard profile this was load-bearing: its main provider IS
+  claude-subscription-directsdk-experimental, so that entry won the
+  `_read_web_config_key` precedence and pointed the profile's web backend
+  selection at a deleted backend.
+
+Silent by construction: unknown config keys and unregistered backend names
+degrade rather than error, so nothing surfaced in logs or the picker.
+
+**Fix:** removed all three families from `~/.hermes/config.yaml` and from both
+homelab ansible templates (`config.yaml.j2`, `dashboard_profile_config.yaml.j2`),
+each carrying a dated REMOVED note with the restore tag so the next sync does not
+re-add them. `web.by_provider` keeps only the two entries that still resolve
+(ollama-cloud, exo → brave-free/trafilatura) and the six-provider `search_chain`.
+
+**Replacement question (answered, nothing to build):** the dead server-side
+native search has no in-tree successor and none is wanted. Upstream has no
+native Anthropic web search at all (`upstream/main` carries neither the config
+keys nor any swap module), so there is nothing to adopt; and the directsdk
+transport that now carries the Claude subscription path cannot host it —
+`directsdk.py` raises `ValueError('Only function tools are supported')` for any
+non-function tool and invokes the CLI with `--tools ''`, i.e. the child is
+deliberately tool-less and Hermes owns every tool. Server-side search would be a
+policy change to that transport, not a config toggle. The user-facing capability
+is covered by the six-provider `search_chain` (which is strictly more resilient
+than the deleted single-vendor swap) plus `trafilatura` for extract.
+
+**Files:** `~/.hermes/config.yaml` (not in-repo), `roles/hermes_gateway/templates/
+{config,dashboard_profile_config}.yaml.j2` + commit `be91627` in adurham/homelab,
+deployed to hermes-gw-01.
+
+**Verification:** parsed-config check on hlxc for BOTH profiles — the keys absent,
+`by_provider` = [ollama-cloud, exo], zero `claude-code` references, six-deep chain
+intact; live `web_search` 3/3 and `web_extract` 3735 chars through the deployed
+gateway; all three systemd units active. Remaining `grep` hits in the deployed
+files are the REMOVED comment text only.
+
+**Upstreamed the same day:** two test-only PRs to NousResearch/hermes-agent from
+this thread — #128793 (`test(web)`: pin `ddgs` availability in the xai-only gate
+test; the assertion is host-shaped and fails on any machine with the optional
+`ddgs` package installed, proven red→green on upstream's own tree) and #128794
+(`test(tools)`: pin the declared-`post_setup`-key contract — every declared key
+resolves to a hook, every python hook is reachable from dispatch, every spec
+carries the fields the installer reads). Both are pure test additions with no
+production behavior change. The ollama-cloud plugin's `OLLAMA_BASE_URL` `/v1`
+fix is PR'd upstream as rriggs/hermes-plugin-ollama-cloud-search#1.
