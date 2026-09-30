@@ -368,8 +368,13 @@ def route_task_models(
             (``{model: ..., provider: ...}``) are tolerated and read via
             their ``model`` key.
         delegation_cfg: the ``delegation`` config block (for ``auto_route``).
-        active_provider: the provider the children will actually run on
-            (delegation override if set, else the parent's provider).
+        active_provider: the provider the routing decision is keyed on — the
+            provider of the SESSION that is dispatching (the parent agent),
+            NOT the provider this batch's children were resolved onto. A
+            ``delegation.by_provider`` block or a ``delegation.provider`` pin
+            can send children to a different provider than the parent's;
+            ``delegation.auto_route.providers`` lists the providers whose
+            SESSIONS want auto-routing, so the gate must see the parent's.
 
     Returns:
         ``{task_index: {"model": ..., "tier": ..., "role": ..., "reason": ...,
