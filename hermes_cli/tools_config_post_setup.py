@@ -208,7 +208,12 @@ _PIP_POST_SETUP_HOOKS: dict = {
         "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...", ["-U", "ddgs", "--quiet"],
         "uv pip install -U ddgs",
         always=("No API key required. DuckDuckGo enforces server-side rate limits.",
-                "Pair with an extract provider if you also need web_extract."))}
+                "Pair with an extract provider if you also need web_extract.")),
+    "trafilatura": _pip_hook(
+        "trafilatura", "trafilatura", "Installing trafilatura (content extraction package)...",
+        ["-U", "trafilatura", "--quiet"], "uv pip install -U trafilatura",
+        always=("No API key required. Fetches pages directly via httpx.",
+                "Pair with a search provider (brave-free, ddgs, searxng) if you also need web_search."))}
 
 
 def _importable(module: str) -> bool:

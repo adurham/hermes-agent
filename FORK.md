@@ -18952,3 +18952,58 @@ filter tracks the state; the registry resolves Up/Down/Escape to the picker
 handlers while open and to none of them while closed; Escape is eager. Existing
 `test_reasoning_command.py` / `test_reasoning_full_command.py` / layout-hook suites
 unaffected.
+
+### Fork-only fix — 2026-09-29 (`trafilatura` post_setup: restore the merge-dropped installer + pin the declared-key contract)
+
+**Problem:** the fork's free `web_extract` backend (`plugins/web/trafilatura`,
+added 5be047056c, 2026-07-18) declares `post_setup: "trafilatura"` so that picking
+it in `hermes tools` pip-installs the `trafilatura` package. That installer was an
+`elif post_setup_key == "trafilatura":` branch in the old if/elif `_run_post_setup`
+ladder; upstream later refactored that ladder into the `_POST_SETUP_HOOKS` table
+(`tools_config_post_setup.py`), and the trafilatura branch did not survive — the
+same merge-drop class as the `/reasoning` picker wiring above. Because
+`valid_post_setup_keys()` derives its allowlist from the providers' own
+`post_setup` declarations, the orphaned key still validated and then hit
+`_POST_SETUP_HOOKS.get(key, lambda: None)` — a silent no-op. Symptom: a user picks
+Trafilatura, the picker prints "Saved", and `web_extract` fails with
+`trafilatura package is not installed — run 'pip install trafilatura'` (observed
+live on this machine, where `web.extract_backend: trafilatura` was configured and
+the package was never installed).
+
+**Fix:** re-added the installer as a `_PIP_POST_SETUP_HOOKS["trafilatura"]` entry
+(the table's current shape, mirroring the `ddgs` hook), which restores three
+derived behaviours at once — the `_POST_SETUP_HOOKS` dispatch, the
+`_POST_SETUP_READY` install-state predicate (`_module_installed("trafilatura")`,
+so the picker row reports ready/needs-setup correctly), and the
+`_RESTORABLE_PYTHON_TOOL_DEPENDENCIES` allowlist (so a managed-runtime replacement
+snapshots and restores the package instead of leaving the backend dead again).
+
+**Fix (contract pin):** new `tests/hermes_cli/test_post_setup_hooks_cover_declared_keys.py`
+asserts the invariant that made this silent — every key in `valid_post_setup_keys()`
+must resolve in `_POST_SETUP_HOOKS` — plus a behavioural test that
+`_run_post_setup("trafilatura")` actually invokes the pip installer. It is a
+relationship between two pieces of data, so it holds for any future no-key provider,
+and it fails on the PRE-fix tree (where it is the only declared key without a hook).
+
+**Fix (test hermeticity):**
+`tests/tools/test_web_tools_config.py::test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded`
+asserted the legacy `firecrawl` "nothing servable" sentinel from `_get_backend()`
+without neutralizing ddgs' package-presence probe, so it passed only on machines
+where `ddgs` was NOT pip-installed — installing ddgs (the point of the fix above)
+flipped `_get_backend()` to `ddgs` and failed the test. Same host-shape class the
+file already fixes at lines ~644/714/988; patched `_ddgs_package_importable` to
+`False` in the same `with` block.
+
+**Files:** `hermes_cli/tools_config_post_setup.py` (one `_PIP_POST_SETUP_HOOKS`
+entry), `tests/hermes_cli/test_post_setup_hooks_cover_declared_keys.py` (new),
+`tests/tools/test_web_tools_config.py` (hermeticity patch).
+
+**Verification:** new suite 2/2; `test_post_setup_gating.py` 9/9;
+`test_tools_config.py` 55 passed/6 skipped; `test_web_search_provider_plugins.py`
+36/36; `test_web_tools_config.py` 65/65; `test_web_search_chain.py` 26/26.
+`hermes tools post-setup trafilatura` run live installed trafilatura 2.2.0 through
+the real CLI path, and live `web_extract` on https://freetubeapp.io/ then returned
+3057 chars of extracted content; live `web_search` verified end-to-end, including a
+real Brave 429 in the same run correctly failing over to ddgs. The same live run
+confirmed the reported symptom is gone: `ddgs` and `trafilatura` both installed into
+the `venv` that every running Hermes process uses (`ddgs` 9.14.4, `trafilatura` 2.2.0).
