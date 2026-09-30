@@ -3546,6 +3546,30 @@ export interface LlmOneshotParams {
 export interface LlmOneshotResult {
   text: string
 }
+/** ``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only). */
+export interface SessionStartChatParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+  args: StartChatArgs
+}
+/** The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``). */
+export interface StartChatArgs {
+  message: string
+  title?: string | null
+  profile?: string | null
+}
+/** ``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same arguments may succeed on another try (``retryable``). A call already retried returns that retry's result. */
+export interface SessionStartChatResult {
+  status: StartChatStatus
+  session_id?: string | null
+  profile?: string | null
+  title?: string | null
+  message?: string | null
+  reason?: string | null
+  retryable?: boolean | null
+}
+export type StartChatStatus = 'started' | 'rejected'
 export interface SystemBatteryParams {
   profile?: string | null
 }
@@ -5297,6 +5321,8 @@ export interface RpcMethods {
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
+  /** Run a start_chat request again from the session that made it (the handoff card's Retry). */
+  'session.start_chat': { params: SessionStartChatParams; result: SessionStartChatResult }
   /** Rendered /status text for the session. */
   'session.status': { params: SessionStatusParams; result: SessionStatusResult }
   /** Inject text into the next tool result without interrupting the turn. */
@@ -5613,6 +5639,7 @@ export const RPC_METHODS = [
   'session.resume',
   'session.save',
   'session.set_hidden',
+  'session.start_chat',
   'session.status',
   'session.steer',
   'session.title',

@@ -13,12 +13,22 @@ import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { parseMaybeObject } from '@/components/assistant-ui/tool/fallback-model/format'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import type { TimelinePartMetadata } from '@/lib/chat-messages/types'
+import { sessionTitle } from '@/lib/chat-runtime'
 import { Loader2, MessageCircle } from '@/lib/icons'
+import { useStoresSelector } from '@/lib/use-session-slice'
 import { notifyError } from '@/store/notifications'
 import { $profiles, profileLabel } from '@/store/profile'
-import { setSessionOwnerHint } from '@/store/session'
+import { $sessions, sessionMatchesStoredId, setSessionOwnerHint } from '@/store/session'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
-import { isStartChatCallerWatched, readStartChatResult, takeLiveStartChat } from '@/store/start-chat'
+import {
+  $startChatRetries,
+  isStartChatCallerWatched,
+  retryStartChat,
+  startChatOutcome,
+  startChatSuperseded,
+  takeLiveStartChat
+} from '@/store/start-chat'
 
 const TITLE_LIMIT = 40
 
@@ -41,19 +51,55 @@ async function openStartedChat(
   }
 }
 
-export function StartChatTool(props: ToolCallMessagePartProps) {
+export function StartChatTool(props: ToolCallMessagePartProps & Pick<TimelinePartMetadata, 'toolResultMetadata'>) {
   const { t } = useI18n()
   const copy = t.assistant.startChat
-  const callerId = useStore(useSessionView().$storedId)
+  const view = useSessionView()
+  const callerId = useStore(view.$storedId)
+  const callerRuntimeId = useStore(view.$runtimeId)
+  const callerBusy = useStore(view.$busy)
   const profiles = useStore($profiles)
+  const sessions = useStore($sessions)
+  const retry = useStore($startChatRetries)[props.toolCallId]
   const navigate = useNavigate()
-  const outcome = useMemo(() => readStartChatResult(props.result), [props.result])
+  const { result, toolResultMetadata } = props
+  const outcome = useMemo(
+    () => startChatOutcome({ result, toolResultMetadata }, retry),
+    [result, retry, toolResultMetadata]
+  )
+
+  const superseded = useStoresSelector(
+    [view.$messages, $startChatRetries],
+    () => outcome?.status === 'rejected' && startChatSuperseded(view.$messages.get(), props.toolCallId)
+  )
+
   const started = outcome?.status === 'started' ? outcome : null
   const args = parseMaybeObject(props.args)
   const message = typeof args.message === 'string' ? args.message.trim() : ''
+  const row = started ? sessions.find(session => sessionMatchesStoredId(session, started.sessionId)) : undefined
 
-  const title =
-    started?.title || (typeof args.title === 'string' && args.title.trim()) || message.slice(0, TITLE_LIMIT) || null
+  const title = row
+    ? sessionTitle(row)
+    : started?.title || (typeof args.title === 'string' && args.title.trim()) || message.slice(0, TITLE_LIMIT) || null
+
+  const retryChat = () => {
+    if (!callerRuntimeId) {
+      return
+    }
+
+    void retryStartChat(props.toolCallId, callerRuntimeId, {
+      message: typeof args.message === 'string' ? args.message : '',
+      profile: typeof args.profile === 'string' ? args.profile : null,
+      title: typeof args.title === 'string' ? args.title : null
+    }).then(
+      next => {
+        if (next?.status === 'started') {
+          void openStartedChat(next, callerId, navigate).catch(error => notifyError(error, copy.openFailed))
+        }
+      },
+      error => notifyError(error, copy.notStarted)
+    )
+  }
 
   useEffect(() => {
     if (!started || !takeLiveStartChat(props.toolCallId)) {
@@ -71,9 +117,25 @@ export function StartChatTool(props: ToolCallMessagePartProps) {
 
   if (outcome?.status === 'rejected') {
     return (
-      <ClarifyShell className="my-1.5 grid gap-0.5" data-slot="start-chat">
-        <span className="font-medium">{copy.notStarted}</span>
-        {outcome.reason ? <span className={CAPTION}>{outcome.reason}</span> : null}
+      <ClarifyShell className="my-1.5 flex items-center gap-2" data-slot="start-chat">
+        <div className="grid min-w-0 flex-1 gap-0.5">
+          <span className="font-medium">{copy.notStarted}</span>
+          {outcome.reason ? <span className={CAPTION}>{outcome.reason}</span> : null}
+        </div>
+        {outcome.retryable && !superseded ? (
+          <Button
+            disabled={retry === 'pending' || callerBusy || !callerRuntimeId}
+            onClick={retryChat}
+            size="xs"
+            type="button"
+            variant="outline"
+          >
+            {retry === 'pending' ? (
+              <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" />
+            ) : null}
+            {copy.retry}
+          </Button>
+        ) : null}
       </ClarifyShell>
     )
   }
