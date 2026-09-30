@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as CanonicalChat from './canonical-chat'
 import type { RosterRow } from './types'
 
 const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
@@ -21,7 +22,7 @@ const { openBotCanonicalChat, prepareBotSource } = vi.hoisted(() => ({
 vi.mock('./canonical-chat', async () => ({
   CANONICAL_CHAT_TITLE: 'Bot Chat',
   ensureBotMetadata: vi.fn(async () => ({})),
-  isStaleBotChatTile: (await vi.importActual<typeof import('./canonical-chat')>('./canonical-chat')).isStaleBotChatTile,
+  isStaleBotChatTile: (await vi.importActual<typeof CanonicalChat>('./canonical-chat')).isStaleBotChatTile,
   notifyBotOpenFailure: vi.fn(),
   openBotCanonicalChat,
   prepareBotSource,
