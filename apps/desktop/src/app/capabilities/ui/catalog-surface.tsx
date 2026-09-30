@@ -1,10 +1,10 @@
+import '../catalog/catalog-discovery.css'
+
 import type { ReactNode } from 'react'
 
 import { CatalogCard, type CatalogCardVariant } from '../catalog/catalog-card'
 import type { CatalogEntry, CatalogKind } from '../catalog/catalog-data'
 import { CatalogDeveloper } from '../catalog/catalog-developer'
-
-import '../catalog/catalog-discovery.css'
 
 export interface CatalogSurfaceItem {
   id: string

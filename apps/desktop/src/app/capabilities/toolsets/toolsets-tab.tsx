@@ -23,9 +23,9 @@ import {
   TOOLSET_MORE_THEME,
   TOOLSET_THEMES,
   toolsetCalls,
-  toolsetTheme,
   TOOLSETS_QUERY_KEY,
-  toolsetsQueryKey
+  toolsetsQueryKey,
+  toolsetTheme
 } from './toolsets-data'
 
 interface ToolsetsTabProps {
@@ -187,7 +187,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
         kind="plugins"
         sections={sections}
       />
-      <Dialog open={selectedToolset !== null} onOpenChange={open => { if (!open) setSelectedToolset(null) }}>
+      <Dialog onOpenChange={open => { if (!open) {setSelectedToolset(null)} }} open={selectedToolset !== null}>
         <DialogContent className="max-w-2xl">
           <DialogTitle className="sr-only">{activeToolset ? toolsetDisplayLabel(activeToolset) : t.skills.tabToolsets}</DialogTitle>
           {activeToolset && (
