@@ -21,17 +21,19 @@ interface CurationRow {
   tier?: string
 }
 
+/** Official identities whose art the curation file owns: a reassignment there
+ *  must win over a feed published with the old mapping. */
+export function curationOwnsArtwork(kind: 'skills' | 'plugins', row: CurationRow): boolean {
+  return kind === 'skills' ? OFFICIAL_SKILL_SOURCES.includes(row.source ?? '') : row.tier === 'bundled'
+}
+
 /** Only first-party catalog identities receive editorial artwork. */
 export function officialCatalogArtwork(kind: 'skills' | 'plugins', row: CurationRow): string | null {
-  if (kind === 'skills') {
-    if (!OFFICIAL_SKILL_SOURCES.includes(row.source ?? '')) {return null}
+  if (!curationOwnsArtwork(kind, row)) {return null}
 
-    return artworkUrl((artwork.skills as Record<string, string>)[`${row.category}/${row.name}`])
-  }
-
-  if (row.tier !== 'bundled') {return null}
-
-  return artworkUrl((artwork.plugins as Record<string, string>)[row.identifier ?? ''])
+  return kind === 'skills'
+    ? artworkUrl((artwork.skills as Record<string, string>)[`${row.category}/${row.name}`])
+    : artworkUrl((artwork.plugins as Record<string, string>)[row.identifier ?? ''])
 }
 
 /** Curated hero rank from the bundled curation file, for feeds published before

@@ -3,7 +3,7 @@ import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { queryClient } from '@/lib/query-client'
 
-import { curatedFeaturedRank, officialCatalogArtwork } from './catalog-curation'
+import { curatedFeaturedRank, curationOwnsArtwork, officialCatalogArtwork } from './catalog-curation'
 
 export type CatalogKind = 'skills' | 'plugins'
 
@@ -146,7 +146,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       docsUrl:
         webUrl(row.docsUrl) ||
         (text(row.docsPath) ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
-      imageUrl: catalogImageUrl(row.image) ?? officialCatalogArtwork(kind, row),
+      imageUrl: curationOwnsArtwork(kind, row) ? officialCatalogArtwork(kind, row) : catalogImageUrl(row.image),
       screenshots:
         kind === 'plugins'
           ? strings(row.screenshots)
