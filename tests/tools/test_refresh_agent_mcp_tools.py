@@ -354,6 +354,27 @@ def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     assert [t["function"]["name"] for t in agent.tools][-1] == "mcp_late_tool"
 
 
+def test_preserve_prefix_keeps_a_deactivated_bridge_tool_in_place(monkeypatch):
+    """The bridge tools are synthesized by ``assemble_tool_defs``, never registered. When the
+    deferred set shrinks under the activation threshold (an MCP server drops), the fresh
+    snapshot carries no ``tool_search`` at all; the sent one must still hold its slot, or
+    every tool after it moves and the prefix re-prefills. Search reads the live catalog."""
+    built = _tool("tool_search")
+    built["function"]["description"] = "Search 21 additional tools."
+    agent = _agent(["read_file"])
+    agent.tools.append(built)
+    agent.tools.append(_tool("terminal"))
+    agent.valid_tool_names.update({"tool_search", "terminal"})
+    before = json.dumps(agent.tools, sort_keys=True)
+
+    _serve(monkeypatch, [_tool("read_file"), _tool("terminal")])
+    _registered(monkeypatch, ["read_file", "terminal"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent, preserve_prefix=True)
+
+    assert json.dumps(agent.tools, sort_keys=True) == before
+
+
 # ---------------------------------------------------------------------------
 # tools[] freeze: eviction rebuild + the /reload-mcp re-probe hatch
 # ---------------------------------------------------------------------------

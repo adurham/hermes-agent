@@ -258,13 +258,18 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     A refreshed schema is not substituted in place. Tool JSON is rendered ahead of the
     conversation, so one changed description means the next prompt no longer starts with the
     previous one and a local prefix cache reads the whole prompt again. An explicit reload
-    (``preserve_prefix`` off) still takes the fresh schemas."""
+    (``preserve_prefix`` off) still takes the fresh schemas.
+
+    The bridge tools are synthesized by ``assemble_tool_defs``, never registered, and a fresh
+    snapshot omits them when the deferred set shrinks under the activation threshold: they
+    keep their slot regardless (search reads the live catalog at dispatch)."""
+    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
     fresh = {_def_name(entry): entry for entry in new_defs if _def_name(entry)}
     merged = []
     for entry in current_defs:
         name = _def_name(entry)
         replacement = fresh.pop(name, None)
-        if replacement is not None or (name and name in registered_names):
+        if replacement is not None or name in BRIDGE_TOOL_NAMES or (name and name in registered_names):
             merged.append(entry)
     merged.extend(fresh.values())
     return merged, {_def_name(t) for t in merged}
