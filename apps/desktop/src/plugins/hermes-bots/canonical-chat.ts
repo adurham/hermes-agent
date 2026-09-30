@@ -10,6 +10,7 @@
 
 import * as sdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
+import type { SessionListRow } from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
 import { botsText } from './i18n'
@@ -54,10 +55,9 @@ export const CANONICAL_CHAT_TITLE = 'Bot Chat'
  *  read through an aliased guard, which TS only narrows for immutable
  *  properties. */
 interface CanonicalChatRow extends CanonicalSession {
-  readonly message_count?: number
-  /** Rows a stored-transcript read can paint (active + compaction-archived);
-   *  absent on older gateways, which only report the denormalized total. */
-  readonly live_message_count?: number
+  readonly message_count?: SessionListRow['message_count']
+  /** Absent on older gateways, which only report the denormalized total. */
+  readonly live_message_count?: SessionListRow['live_message_count']
 }
 
 /** Should the open wait for a painted transcript? The paintable row count
@@ -66,7 +66,7 @@ interface CanonicalChatRow extends CanonicalSession {
  *  guesswork anyway — wait, so an empty paint still surfaces as an error
  *  instead of a silent blank chat. */
 export function resolveExpectHistory(
-  summary: null | undefined | { message_count?: number; live_message_count?: number }
+  summary: null | undefined | Pick<SessionListRow, 'live_message_count' | 'message_count'>
 ): boolean {
   if (typeof summary?.live_message_count === 'number' && Number.isFinite(summary.live_message_count)) {
     return summary.live_message_count > 0

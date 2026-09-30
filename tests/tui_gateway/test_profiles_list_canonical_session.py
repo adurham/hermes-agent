@@ -26,7 +26,11 @@ Contract under test:
 
 from __future__ import annotations
 
+import json
+
 import pytest
+
+from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY
 
 import tui_gateway.server as srv
 
@@ -219,6 +223,21 @@ def test_canonical_session_live_count_zero_when_all_rows_folded(home):
     assert canonical["message_count"] > 0
     # ...while the paintable count says the open must not wait for a transcript.
     assert canonical["live_message_count"] == 0
+
+
+def test_canonical_session_live_count_skips_model_only_rows_like_the_reader(home):
+    """Micro-compaction's model-only rows never paint, so they must not make the open wait."""
+    db = _db(home)
+    _add_session(db, "modelonly", title="Bot Chat", ts=1000, text="for the model", hidden=True)
+    with db._lock:
+        db._conn.execute("UPDATE messages SET display_metadata = ? WHERE session_id = ?",
+                         (json.dumps({MODEL_ONLY_DISPLAY_METADATA_KEY: True}), "modelonly"))
+    painted = db.get_messages_as_conversation("modelonly", include_compacted=True)
+    db.close()
+
+    canonical = _row(_profiles({}), "default")["canonical_session"]
+
+    assert canonical["live_message_count"] == len(painted) == 0
 
 
 def test_canonical_session_live_count_counts_paintable_rows(home):

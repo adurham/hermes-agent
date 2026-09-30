@@ -5,6 +5,7 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -146,9 +147,14 @@ def _resurrect_recoverable_canonical(db, profile_path, session_id):
 
 
 def _live_count_field(db, session_id) -> dict:
-    """``{"live_message_count": n}`` for the row a stored-transcript read can paint, else ``{}``."""
-    live = _display_row_count(db, session_id)
-    return {} if live is None else {"live_message_count": live}
+    """``{"live_message_count": n}`` sized like a stored-transcript read, else ``{}`` (older stores).
+
+    The denormalized ``message_count`` also counts folded rows (orphaned compaction marks, full
+    rewinds, model-only rows), which once made the roster wait for history no reader serves."""
+    try:
+        return {"live_message_count": db.display_message_count(str(session_id))}
+    except sqlite3.Error:
+        return {}
 
 
 def _canonical_session_row(db, profile_path):
@@ -178,17 +184,12 @@ def _canonical_session_row(db, profile_path):
         tip = _try(lambda: db.get_compression_tip(session_id), None) or session_id
         tip_row = db.get_session(tip) or row
         started = row.get("started_at") or 0
-        # live_message_count sizes what a stored-transcript read can actually paint; the
-        # denormalized message_count counts folded rows too (orphaned compaction marks,
-        # full rewinds) and once made the roster demand history no reader serves.
-        live = _display_row_count(db, tip)
         return {
             "id": session_id, "resolved_id": tip, "root_title": row.get("title") or "",
             "title": tip_row.get("title") or "", "preview": _latest_message_preview(db, tip),
             "started_at": tip_row.get("started_at") or started,
             "last_active": tip_row.get("last_activity_at") or tip_row.get("started_at") or started,
-            "message_count": tip_row.get("message_count") or 0,
-            **({} if live is None else {"live_message_count": live})}
+            "message_count": tip_row.get("message_count") or 0, **_live_count_field(db, tip)}
     except Exception:
         return None
 

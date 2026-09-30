@@ -117,38 +117,13 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None, db=None) -> dict:
     """Compact session.list row; ``tip_row``/``resolved_id`` come from the compression tip.
-
-    ``live_message_count`` (present when ``db`` is given) counts exactly the rows a
-    stored-transcript read can paint — the tip's display set (``active = 1 OR
-    compacted = 1``). ``message_count`` is the denormalized total and counts folded
-    rows too, so a session whose rows are all inactive (orphaned compaction marks,
-    fully rewound chats) advertises history no reader serves."""
+    ``db`` adds ``live_message_count`` (see ``_live_count_field``)."""
     tip_row = tip_row or row
-    summary = {"id": row["id"], **({} if resolved_id is None else {"resolved_id": resolved_id}),
-               "title": row.get("title") or "", "preview": tip_row.get("preview") or "",
-               "started_at": row.get("started_at") or 0, "message_count": tip_row.get("message_count") or 0,
-               "source": row.get("source") or ""}
-    if db is not None:
-        live = _display_row_count(db, resolved_id if resolved_id is not None else row["id"])
-        if live is not None:
-            summary["live_message_count"] = live
-    return summary
-
-
-def _display_row_count(db, session_id) -> int | None:
-    """Painted-transcript size of one session segment, or None when unreadable (older stores).
-
-    Mirrors ``_display_rows_from_conn``: the read paints one representative per
-    ``display_order`` group among ``active = 1 OR compacted = 1`` rows (legacy rows
-    without a display order collapse into one group, matching the legacy page)."""
-    try:
-        with db._lock:
-            return int(db._conn.execute(
-                "SELECT COUNT(*) FROM (SELECT DISTINCT display_order FROM messages"
-                " WHERE session_id = ? AND (active = 1 OR compacted = 1))",
-                (str(session_id),)).fetchone()[0])
-    except Exception:
-        return None
+    return {"id": row["id"], **({} if resolved_id is None else {"resolved_id": resolved_id}),
+            "title": row.get("title") or "", "preview": tip_row.get("preview") or "",
+            "started_at": row.get("started_at") or 0, "message_count": tip_row.get("message_count") or 0,
+            "source": row.get("source") or "",
+            **({} if db is None else _live_count_field(db, row["id"] if resolved_id is None else resolved_id))}
 
 
 from hermes_state_sessions import INTERNAL_LISTING_SOURCES
