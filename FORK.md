@@ -3,6 +3,39 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-09-30 (hermes_token_check.py: the daily check was blind to the native credential store)
+
+**Problem:** hermes-gw-01's Claude calls started failing on every request after the box
+rebooted — `ClaudeCodeLoggedOut` / "Failed to authenticate: OAuth session expired and could
+not be refreshed" through the claude-subscription-directsdk provider, while
+`scripts/hermes_token_check.py` (the daily timer) stayed green and `claude -p` in an
+interactive shell worked.
+
+**Root cause:** two consumers, one of them unmonitored. The plugin's fork commit 58b0918
+strips `CLAUDE_CODE_OAUTH_TOKEN` from the spawned CLI's env **by design** (it fixes an
+enterprise-org-pinned login on the Mac), so that provider authenticates ONLY from the CLI's
+own store — `~/.claude/.credentials.json` on the LXC. That file was an EMPTY HUSK
+(accessToken `""`, expiresAt `0`, dated Jul 25) while the .env setup-token was current and
+valid: the old role task "seeded" it once from an unrelated, long-stale vault OAuth pair and
+never re-checked it. It stayed invisible until the reboot because the pre-reboot gateway
+processes were running an older, pop-free plugin build in memory.
+
+**Fix:** `hermes_token_check.py` now runs a SECOND check after the env-token check — it
+reconstructs the provider's child env (plugin `.env` vars, token stripped, config-dir var
+mapped) and runs `claude auth status` against it, failing with a diagnostic naming the fix
+when the native store reports logged-out. Exit code 4 for that case; `--skip-native` for
+hosts without the CLI. Tests: `tests/scripts/test_hermes_token_check.py` (7 cases).
+
+**Codified deploy-side in adurham/homelab** (same day): the role now RENDERS
+`.credentials.json` from the same `vault_hermes_gw_claude_code_oauth_token` that feeds .env
+(managed, `no_log`), plus a deploy-time smoke test that reproduces the stripped-env check and
+fails the play on a logged-out store. The stale `vault_hermes_gw_anthropic_creds_json` var
+was removed from the vault. See `roles/hermes_gateway/tasks/main.yml`.
+
+**Verified live:** husk repaired → bare `claude -p` (no env token) OK; provider child-env
+auth status `loggedIn: true`; real gateway api_server run returned "GW-LIVE-OK" through the
+directsdk provider.
+
 ### Doc-sync — 2026-09-26 (FORK.md corrected against the post-Slice-B tree; no code change)
 
 **Why:** a provider-migration task on the gateway (hermes-gw-01 moved off the built-in `anthropic`
