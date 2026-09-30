@@ -356,7 +356,7 @@ By default a preview channel installs as its own side-by-side app (`Hermes
 NAME`, its own package ID). To test an exact commit as the regular app instead,
 create the channel with `--branding stable`: it copies the published stable
 channel's name, icon and package ID, so the build installs over the official
-app and later updates follow the channel. Branding is fixed when the channel is
+app, shares its desktop settings, and later updates follow the channel. Branding is fixed when the channel is
 created; repeat the flag on every dispatch of that channel and use a new channel
 name to change it. `--branding` needs `--channel`, since a plain one-off commit
 build always carries its `Hermes Agent <sha>` identity.
