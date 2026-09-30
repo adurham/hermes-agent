@@ -14,6 +14,6 @@ export function CatalogSwitch(props: ComponentProps<typeof Switch>) {
       <span className={props.checked ? undefined : 'invisible'}>{t.settings.plugins.disable}</span>
       <span className={props.checked ? 'invisible' : undefined}>{t.settings.plugins.enable}</span>
     </span>
-    <Switch {...props} id={id} />
+    <Switch size="xs" {...props} id={id} />
   </label>
 }

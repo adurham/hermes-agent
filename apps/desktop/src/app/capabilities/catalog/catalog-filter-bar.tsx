@@ -31,7 +31,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const panelId = useId()
   const [mode, setMode] = useState<'categories' | 'sources'>('categories')
   const [expanded, setExpanded] = useState(false)
-  const [allChips, setAllChips] = useState(false)
+  const [more, setMore] = useState(false)
 
   const rows = mode === 'categories'
     ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
@@ -46,12 +46,17 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   return (
     <div className="catalog-filter-bar" data-catalog-filters>
       <div className="catalog-filter-row">
-        <SegmentedControl onChange={setMode} options={[{ id: 'categories', label: c.category, icon: IconCategory }, { id: 'sources', label: c.source, icon: IconDatabase }]} value={mode} />
-        <div className="catalog-filter-chips" data-expanded={allChips}>
+        <SegmentedControl onChange={setMode} options={[{ id: 'categories', label: c.category, icon: IconCategory }, { id: 'sources', label: c.source, icon: IconDatabase }]} sizing="content" value={mode} />
+        <div className="catalog-filter-chips">
           <Button aria-pressed={!selected.length} onClick={() => onSelect(null)} size="xs" variant={!selected.length ? 'default' : 'outline'}>{t.skills.all}</Button>
           <span aria-hidden className="px-1 text-(--ui-text-quaternary)">/</span>
-          {(allChips ? rows : visible).map(row => <Button aria-pressed={selected.includes(row.value)} key={row.value} onClick={() => onSelect(row.value)} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}
-          {!allChips && overflow.length > 0 && <Button aria-expanded={false} aria-label={c.more} onClick={() => setAllChips(true)} size="xs" variant="secondary">{`+${overflow.length}`}</Button>}
+          {visible.map(row => <Button aria-pressed={selected.includes(row.value)} key={row.value} onClick={() => onSelect(row.value)} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}
+          {overflow.length > 0 && <Popover onOpenChange={setMore} open={more}>
+            <PopoverTrigger asChild><Button aria-label={c.more} size="xs" variant="secondary">{`+${overflow.length}`}</Button></PopoverTrigger>
+            <PopoverContent align="start" className="w-72 max-h-80 overflow-y-auto p-2" variant="menu">
+              <div className="flex flex-wrap gap-1.5">{overflow.map(row => <Button aria-pressed={selected.includes(row.value)} key={row.value} onClick={() => onSelect(row.value)} size="xs" variant={selected.includes(row.value) ? 'default' : 'outline'}>{row.label}</Button>)}</div>
+            </PopoverContent>
+          </Popover>}
         </div>
         <div className="catalog-filter-trigger">
           <span className="text-[0.625rem] font-medium uppercase tracking-wider text-(--ui-text-tertiary)" id={`${panelId}-label`}>{c.filters}{activeCount > 0 && ` · ${activeCount}`}</span>

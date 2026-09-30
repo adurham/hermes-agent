@@ -1,6 +1,6 @@
 /* Figma Frame 330's geometry, with the existing desktop card and theme surfaces. */
 /* Reference 121:5782: full-card hard-light artwork, no alpha-mask strip. */
-[data-catalog-card][data-catalog-variant] { background: var(--ui-chat-bubble-background); border-color: transparent; }
+[data-catalog-card][data-catalog-variant] { border-color: transparent; }
 [data-catalog-editorial-art] .catalog-card-description { color: var(--ui-text-primary); }
 :root:not(.dark) [data-catalog-editorial-art] { --catalog-art-shade: 65%; }
 [data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card]:not(:hover) { filter: none; }
