@@ -4,6 +4,7 @@ import { useI18n } from '@/i18n'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
+import { useComposerScope } from '../scope'
 
 import type { VoiceActivityState, VoiceStatus } from '../types'
 
@@ -16,6 +17,9 @@ interface VoiceRecorderOptions {
   onTranscript: (text: string) => void
 }
 
+/** Settles when the STT warm-up issued at mic-open resolves (or never ran). */
+type WarmupBarrier = null | Promise<void>
+
 export function useVoiceRecorder({
   maxRecordingSeconds,
   onTranscribeAudio,
@@ -25,11 +29,23 @@ export function useVoiceRecorder({
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level, recording } = useMicRecorder(voiceCopy)
+  // The scope's session owner (a Bot tile's own connection + profile) pins
+  // the STT lease to the backend that will transcribe this composer's audio.
+  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const startedAtRef = useRef(0)
   const intervalRef = useRef<number | null>(null)
   const timeoutRef = useRef<number | null>(null)
+  // Readiness barrier for the warm-up fired at mic-open (#105955 review):
+  // transcription must not start while the cold model load is still on the
+  // wire — the load would eat the transcription request's own decode budget.
+  // stop() awaits it (bounded by the lease request's 180 s timeout) so the
+  // transcribe POST starts only once warm-up settled (warm, noop, or failed —
+  // a failed warm-up proceeds to transcription, which re-loads server-side).
+  const warmupBarrierRef = useRef<WarmupBarrier>(null)
 
   const clearTimers = () => {
     if (intervalRef.current) {
@@ -64,6 +80,12 @@ export function useVoiceRecorder({
     setVoiceStatus('transcribing')
 
     try {
+      // Readiness first: let the mic-open warm-up settle before handing the
+      // clip to transcription, so a cold model load no longer runs inside the
+      // transcription request's timeout (#105955). syncSttLease never rejects,
+      // and its budget is the lease request's own 180 s timeout — recording
+      // and stop() were never bounded tighter than that for local STT.
+      await warmupBarrierRef.current
       const transcript = (await onTranscribeAudio(result.audio)).trim()
 
       if (!transcript) {
@@ -77,7 +99,7 @@ export function useVoiceRecorder({
       setVoiceStatus('idle')
       // The transcript settled (or failed): this session no longer needs the
       // engine held. The backend keeps the shared model resident regardless.
-      void syncSttLease(VOICE_INPUT_LEASE, false)
+      void syncSttLease(VOICE_INPUT_LEASE, false, ownerRef.current)
       focusInput()
     }
   }
@@ -94,8 +116,12 @@ export function useVoiceRecorder({
       // The mic is open, so a transcript is coming: warm the backend's STT
       // engine now so a cold local model loads while the user is still
       // speaking instead of inside the transcription timeout (#105955).
-      // Fire-and-forget — recording must not wait on (or fail with) warm-up.
-      void syncSttLease(VOICE_INPUT_LEASE, true)
+      // Fire-and-forget for the MIC UX — but keep the promise: stop() awaits
+      // it as the readiness barrier before transcription (see above). Pinned
+      // to this composer's owner so a mid-flight gateway/profile switch
+      // cannot misroute the eventual release; re-warms if a prior warm-up
+      // failed or the idle watcher evicted the model.
+      warmupBarrierRef.current = syncSttLease(VOICE_INPUT_LEASE, true, ownerRef.current)
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')

@@ -10,6 +10,8 @@ gateway/CLI surfaces in the same backend process.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 
@@ -213,3 +215,97 @@ def test_warm_never_raises_on_engine_failure(monkeypatch):
     assert result["warmed"] is False
     assert result["action"] == "error"
     assert "CUDA exploded" in result["error"]
+
+
+def test_warm_only_load_starts_idle_unload_watcher(monkeypatch):
+    """A model loaded ONLY by warm-up (mic open → cancel, no transcription)
+    must still be governed by ``stt.local.unload_after_idle_seconds``.
+
+    Pre-fix, ``_start_idle_unload_watcher`` only ran after a successful
+    ``_transcribe_local``, so the warm-only path left the model resident with
+    no watcher until some later transcription happened. The regression
+    executes the real acquire/load path with a fresh process-like state and
+    asserts the watcher started and eventually evicts the model.
+    """
+    from tools import stt_lease, transcription_tools
+
+    _local_cfg(monkeypatch)
+    monkeypatch.setattr(
+        transcription_tools,
+        "_load_stt_config",
+        lambda: {"local": {"model": "tiny", "unload_after_idle_seconds": 1}},
+    )
+
+    loaded = []
+    monkeypatch.setattr(transcription_tools, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(transcription_tools, "_local_model", None)
+    monkeypatch.setattr(transcription_tools, "_local_model_name", None)
+    monkeypatch.setattr(transcription_tools, "_idle_unload_thread", None)
+    # Backdate the activity so the first watcher cycle (0.01s) already sees
+    # the configured idle window as elapsed.
+    monkeypatch.setattr(transcription_tools, "_last_transcription_time", 0.0)
+    real_model = object()
+    monkeypatch.setattr(
+        transcription_tools,
+        "_get_or_load_local_model",
+        lambda name, cfg: loaded.append(name) or real_model,
+    )
+    # The idle watcher reads the module global, not the warm-up's local ref,
+    # so mirror the singleton the real loader would have written.
+    transcription_tools._local_model = real_model
+    transcription_tools._local_model_name = "tiny"
+
+    result = stt_lease.warm_stt_provider()
+
+    assert result["warmed"] is True
+    assert loaded == ["tiny"]
+    # The watcher is running (fresh process: no prior watcher thread).
+    assert transcription_tools._idle_unload_thread is not None
+    assert transcription_tools._idle_unload_thread.is_alive()
+    # ...and eventually enforces the configured idle lifetime.
+    for _ in range(200):
+        if transcription_tools._local_model is None:
+            break
+        time.sleep(0.02)
+    assert transcription_tools._local_model is None
+
+
+def test_warm_reacquire_after_eviction_restarts_watcher(monkeypatch):
+    """After a prior watcher evicted its model and exited, a warm-up that
+    reloads it must start a NEW watcher — the old thread is gone."""
+    from tools import stt_lease, transcription_tools
+
+    _local_cfg(monkeypatch)
+    monkeypatch.setattr(
+        transcription_tools,
+        "_load_stt_config",
+        lambda: {"local": {"model": "tiny", "unload_after_idle_seconds": 60}},
+    )
+    monkeypatch.setattr(transcription_tools, "_IDLE_UNLOAD_CHECK_INTERVAL", 0.5)
+    # Simulate the post-eviction world: model gone, previous watcher exited.
+    monkeypatch.setattr(transcription_tools, "_local_model", None)
+    monkeypatch.setattr(transcription_tools, "_local_model_name", None)
+    monkeypatch.setattr(
+        transcription_tools, "_idle_unload_thread", type("Dead", (), {"is_alive": lambda self: False})()
+    )
+
+    real_model = object()
+    monkeypatch.setattr(
+        transcription_tools, "_get_or_load_local_model", lambda name, cfg: real_model
+    )
+    transcription_tools._local_model = real_model
+    transcription_tools._local_model_name = "tiny"
+
+    result = stt_lease.warm_stt_provider()
+
+    assert result["warmed"] is True
+    # A NEW watcher is running for the reloaded model.
+    assert transcription_tools._idle_unload_thread is not None
+    assert transcription_tools._idle_unload_thread.is_alive()
+    # Clean up the daemon so it does not leak into other tests.
+    transcription_tools._idle_unload_stop.set()
+    transcription_tools._idle_unload_thread.join(timeout=2)
+    transcription_tools._idle_unload_stop.clear()
+    transcription_tools._local_model = None
+    transcription_tools._local_model_name = None
+    transcription_tools._idle_unload_thread = None

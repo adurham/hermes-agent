@@ -229,11 +229,14 @@ export const AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS = 180_000
 /**
  * Tell the backend a voice-input session started (`active: true`) so it can
  * warm the STT engine, or ended (`active: false`) to drop the lease.
- * `lease` names the session — `desktop:voice-input:<renderer>`.
+ * `lease` names the session — `desktop:voice-input:<renderer>`. `owner` is
+ * the owning connection/profile captured when the intent was registered, so
+ * a queued call is not re-routed by a later gateway/profile switch (omitted
+ * halves → the active scope, like `speakText`).
  */
-export function setSttLease(lease: string, active: boolean): Promise<AudioSttLeaseResponse> {
+export function setSttLease(lease: string, active: boolean, owner?: OwnerScope): Promise<AudioSttLeaseResponse> {
   return hermesApi<AudioSttLeaseResponse>({
-    ...profileScoped(),
+    ...ownerScoped(owner),
     path: '/api/audio/stt-lease',
     method: 'POST',
     body: { active, lease },

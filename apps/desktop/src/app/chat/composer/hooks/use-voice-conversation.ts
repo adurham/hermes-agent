@@ -88,6 +88,12 @@ export function useVoiceConversation({
   const turnClosingRef = useRef(false)
   const meterFailuresRef = useRef(0)
   const awaitingSpokenResponseRef = useRef(false)
+  // Readiness barrier for the warm-up fired when listening starts (#105955
+  // review): transcription must not begin while a cold model load is still on
+  // the wire — the load would eat the transcription request's own decode
+  // budget. Each listen cycle captures its acquire promise; transcription
+  // awaits it (bounded by the lease request's own timeout) before submitting.
+  const warmupBarrierRef = useRef<null | Promise<void>>(null)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
   const speechSessionRef = useRef<null | SpeechStreamSession>(null)
@@ -214,6 +220,11 @@ export function useVoiceConversation({
         }
 
         try {
+          // Readiness first: let the listening-start warm-up settle before
+          // handing the clip to transcription (#105955) — a cold model load
+          // must not run inside the transcription request's decode budget.
+          // syncSttLease never rejects.
+          await warmupBarrierRef.current
           const transcript = (await onTranscribeAudio(result.audio)).trim()
 
           if (!transcript) {
@@ -323,8 +334,12 @@ export function useVoiceConversation({
       setStatus('listening')
       // Same warm-up as push-to-talk dictation: a cold local model loads while
       // the user speaks instead of inside the transcription timeout (#105955).
-      // Deduped with the recorder's lease — one warm-up per renderer.
-      void syncSttLease(VOICE_INPUT_LEASE, true)
+      // Deduped with the recorder's lease — one warm-up per renderer — but
+      // re-warms whenever readiness may have expired (idle eviction during a
+      // long reply/mute, or a failed preload), pinned to this scope's owner.
+      // The promise is kept as the readiness barrier the transcription paths
+      // await before submitting audio.
+      warmupBarrierRef.current = syncSttLease(VOICE_INPUT_LEASE, true, ownerRef.current)
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
       // timer from an earlier cycle survives and later fires handleTurn() in
@@ -407,6 +422,11 @@ export function useVoiceConversation({
       setStatus('transcribing')
 
       try {
+        // Same readiness barrier as handleTurn: the barge capture transcribes
+        // with the warm-up issued when this conversation last started
+        // listening (the monitor is armed through the whole turn, so the
+        // barrier is normally already settled by speech time).
+        await warmupBarrierRef.current
         const transcript = (await onTranscribeAudio(audio)).trim()
 
         if (!transcript) {
@@ -820,8 +840,9 @@ export function useVoiceConversation({
     consumePendingResponse()
     // Conversation over: drop the STT lease. One lease is shared per renderer,
     // so a concurrent dictation session re-acquires on its next start; the
-    // backend keeps the model resident regardless of the count.
-    void syncSttLease(VOICE_INPUT_LEASE, false)
+    // backend keeps the model resident regardless of the count. Released to
+    // the owner that acquired it, not whatever is selected now.
+    void syncSttLease(VOICE_INPUT_LEASE, false, ownerRef.current)
     setMuted(false)
     setStatus('idle')
   }, [consumePendingResponse, handle])

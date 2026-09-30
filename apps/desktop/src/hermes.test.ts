@@ -694,6 +694,45 @@ describe('Hermes REST helpers', () => {
     })
   })
 
+  it('pins an STT lease to an explicit owner scope instead of the ambient selection', async () => {
+    // #105955 review: the lease belongs to the connection/profile that
+    // acquired it — a queued call must carry the captured owner, not whatever
+    // gateway/profile is selected when it finally runs.
+    setApiRequestConnection('gateway-b')
+    setApiRequestProfile('worker_beta')
+    api.mockResolvedValue({ ok: true })
+
+    await setSttLease('desktop:voice-input:abc', true, { connectionId: 'gateway-a', profile: 'worker_alpha' })
+    await setSttLease('desktop:voice-input:abc', false, { connectionId: 'gateway-a', profile: 'worker_alpha' })
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      body: { active: true, lease: 'desktop:voice-input:abc' },
+      connectionId: 'gateway-a',
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      priority: 'foreground',
+      profile: 'worker_alpha',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      body: { active: false, lease: 'desktop:voice-input:abc' },
+      connectionId: 'gateway-a',
+      method: 'POST',
+      path: '/api/audio/stt-lease',
+      priority: 'foreground',
+      profile: 'worker_alpha',
+      timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+    })
+
+    // An explicit 'local' pin stays explicit — a later remote primary must
+    // not reinterpret it.
+    api.mockClear()
+    await setSttLease('desktop:voice-input:abc', true, { connectionId: 'local' })
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'local', path: '/api/audio/stt-lease' })
+    )
+  })
+
   it('defaults model options to configured providers only', async () => {
     await getGlobalModelOptions()
 
