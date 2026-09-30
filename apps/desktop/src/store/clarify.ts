@@ -164,6 +164,29 @@ export const sessionClarifyRequest = (sessionId: string | null) =>
 
 export function setClarifyRequest(request: ClarifyRequest): void {
   $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+  forgetSettledClarify(request.requestId)
+}
+
+/**
+ * Tool results the renderer already knows for requests it answered, keyed by
+ * request id. The card settles from this the moment it is answered, so a skip
+ * or a typed answer never falls back to a bare tool row when the tool's own
+ * `tool.complete` is late or never lands (a stopped turn).
+ */
+export const $settledClarifyResults = atom<Record<string, Record<string, unknown>>>({})
+
+function forgetSettledClarify(requestId: string): void {
+  const settled = $settledClarifyResults.get()
+
+  if (requestId in settled) {
+    const next = { ...settled }
+    delete next[requestId]
+    $settledClarifyResults.set(next)
+  }
+}
+
+function settleClarify(request: ClarifyRequest, result: Record<string, unknown>): void {
+  $settledClarifyResults.set({ ...$settledClarifyResults.get(), [request.requestId]: result })
 }
 
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
@@ -253,12 +276,32 @@ export function clearSettledClarifyRequest(sessionId: string | null): void {
 }
 
 /**
- * The composer uses this when the user types a real message instead of picking
- * an option: a clarify blocks the agent inside its tool batch, so leaving it
- * unanswered would park the follow-up until the server-side clarify timeout
- * — the message looks sent and nothing happens. Skipping lets
- * the tool return and the turn carry on with the user's actual words.
+ * Skip a parked card: clear it, answer its request with no pick, and settle it
+ * as skipped. The card's Skip button uses this, and so does the composer for a
+ * message that cannot be an answer (a slash command, attachments).
  */
+export function skipClarify(request: ClarifyRequest): void {
+  // Clear first: the answer is already decided, and an in-flight RPC must not
+  // leave a live card the user can answer a second time.
+  clearClarifyRequest(request.requestId, request.sessionId)
+
+  respondToServerRequest(request.requestId, {})
+
+  settleClarify(
+    request,
+    request.setup
+      ? { outcome: 'cancelled', picked: null }
+      : {
+          outcome: 'cancelled',
+          responses: request.questions.map(question => ({
+            question: question.question,
+            status: 'unanswered',
+            user_response: null
+          }))
+        }
+  )
+}
+
 export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
 
@@ -266,11 +309,90 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
     return false
   }
 
-  // Clear first: the answer is already decided, and an in-flight RPC must not
-  // leave a live card the user can answer a second time.
-  clearClarifyRequest(request.requestId, request.sessionId)
-
-  respondToServerRequest(request.requestId, {})
+  skipClarify(request)
 
   return true
+}
+
+/**
+ * Answer the card parked on `sessionId` with text the user typed in the
+ * composer. A card blocks the agent inside its tool batch, so the typed words
+ * ARE the answer: the tool returns them and the turn carries on, with no
+ * interrupt. A batch takes the text as its first open question's answer. False when
+ * no card is parked or its request is gone; the caller then sends the words as
+ * an ordinary message.
+ */
+export function answerClarifyRequest(sessionId: string | null | undefined, text: string): boolean {
+  const request = $clarifyRequests.get()[keyFor(sessionId)]
+
+  if (!request) {
+    return false
+  }
+
+  if (request.setup) {
+    // A multi-select picker keeps the rows already staged on the card, the
+    // same as its own Confirm: the typed words are one more pick.
+    const picked = request.setup.multiSelect ? [...setupChooseStage(request.requestId).picked, text] : text
+
+    if (!respondToServerRequest(request.requestId, { picked })) {
+      return false
+    }
+
+    if (request.setup.multiSelect) {
+      commitSetupChoose(request.requestId)
+    }
+
+    clearClarifyRequest(request.requestId, request.sessionId)
+    settleClarify(request, { outcome: 'submitted', picked })
+
+    return true
+  }
+
+  // A reconnect replay can arrive with answers already locked server-side;
+  // the backend merges this response over them, so the typed text goes to
+  // the first question still open and the locks stand.
+  const locked = request.lockedAnswers ?? {}
+  const target = request.questions.find(question => !(question.qid in locked)) ?? request.questions[0]
+  const answers = { [target.qid]: target.multiSelect ? JSON.stringify([text]) : text }
+
+  if (!respondToServerRequest(request.requestId, { answers })) {
+    return false
+  }
+
+  clearClarifyRequest(request.requestId, request.sessionId)
+  settleClarify(request, {
+    outcome: 'submitted',
+    responses: request.questions.map(question => settledResponse(question, { ...locked, ...answers }))
+  })
+
+  return true
+}
+
+/** One row of a clarify result, shaped like `tools/clarify_tool.py::_result`. */
+function settledResponse(question: ClarifyQuestion, answers: Record<string, null | string>) {
+  const raw = answers[question.qid]
+
+  if (!raw) {
+    return {
+      question: question.question,
+      status: question.qid in answers ? 'skipped' : 'unanswered',
+      user_response: null
+    }
+  }
+
+  let answer: string | string[] = raw
+
+  if (question.multiSelect) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+
+      if (Array.isArray(parsed)) {
+        answer = parsed.map(String)
+      }
+    } catch {
+      // A non-JSON multi-select answer stays one value.
+    }
+  }
+
+  return { question: question.question, status: 'answered', user_response: answer }
 }

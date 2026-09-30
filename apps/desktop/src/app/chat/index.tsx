@@ -13,6 +13,7 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
+import { useSetupChatView } from '@/components/onboarding-chat/assembly'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
@@ -525,6 +526,7 @@ const ChatViewContent = memo(function ChatViewContent({
   )
 
   const storedId = useStore(view.$storedId)
+  const setupChat = useSetupChatView()
   // Multi-pane dimming: only the focused surface paints at full strength, so
   // two sessions side by side read as "this one, and that one over there".
   // A selector, not a plain useStore — the focused id changes on click, and a
@@ -805,6 +807,7 @@ const ChatViewContent = memo(function ChatViewContent({
       data-composer-target={composerScope.target}
       data-guide-arrived={isPrimary && guideStarted ? '' : undefined}
       data-session-anchor={sessionAnchor}
+      data-setup-chat={setupChat ? '' : undefined}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
