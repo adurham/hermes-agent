@@ -286,7 +286,10 @@ jobs:
         run: python3 -m scripts.ci.archive_inputs
 
       - name: Set up native identity reader
-        if: inputs.disposable_channel != '' && inputs.disposable_receivers
+        # product_identity() runs apps/desktop/product-identity.cjs: disposable
+        # receivers need it, and so does a stable-branded channel before any
+        # stable release has published a channel record to copy.
+        if: (inputs.disposable_channel != '' && inputs.disposable_receivers) || inputs.branding == 'stable'
         uses: ./.github/actions/setup-pm
         with:
           toolchain: node
