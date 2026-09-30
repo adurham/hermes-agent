@@ -712,59 +712,23 @@ def test_live_dm_wait_rechecks_receipt_when_owner_disappears_at_claim(tmp_path, 
     assert notice["reply"] == "PONG"
 
 
-def test_live_dm_wait_does_not_cancel_a_claim_after_the_last_read(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
-    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="2" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    owner_checked = False
-
-    def owner_gone(_home):
-        nonlocal owner_checked
-        owner_checked = True
-        return None
-
-    monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone)
-    original_read = live.read_delivery_result
-    claimed_during_read = False
-
-    def read_then_claim(home, delivery_id):
-        nonlocal claimed_during_read
-        snapshot = original_read(home, delivery_id)
-        assert snapshot is not None
-        if owner_checked and snapshot["status"] == "queued" and not claimed_during_read:
-            claimed_during_read = True
-            claimed = live.claim_pending_delivery(tmp_path, owner)
-            assert claimed is not None
-            live.complete_delivery(tmp_path, delivery_id, status="settled", reply="PONG")
-        return snapshot
-
-    monkeypatch.setattr(live, "read_delivery_result", read_then_claim)
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
-    notice = json.loads(capsys.readouterr().out)
-    assert claimed_during_read
-    assert notice["status"] == "settled"
-    assert notice["reply"] == "PONG"
-
-
 def test_live_dm_wait_keeps_claimed_turn_until_it_settles(tmp_path, monkeypatch, capsys):
+    """An owner gone after its claim still gets one more window to settle the in-flight turn."""
     from tools import bot_live_delivery as live
 
     owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
     record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="d" * 32)
     assert live.claim_pending_delivery(tmp_path, owner) is not None
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.03)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.5)
     monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
+    settling = threading.Timer(0.02, lambda: live.complete_delivery(
+        tmp_path, record["delivery_id"], status="settled", reply="PONG"))
 
-    def settle_later():
-        time.sleep(0.05)
-        live.complete_delivery(tmp_path, record["delivery_id"], status="settled", reply="PONG")
+    def owner_gone_then_settle(_home):
+        settling.start()
+        return None
 
-    settling = threading.Thread(target=settle_later)
-    settling.start()
+    monkeypatch.setattr(live, "find_canonical_live_owner", owner_gone_then_settle)
     try:
         exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
     finally:
@@ -802,6 +766,46 @@ def test_live_dm_wait_releases_claimed_runner_after_owner_is_gone(tmp_path, monk
     assert notice["status"] == "claimed"
     final = live.read_delivery_result(tmp_path, record["delivery_id"])
     assert final is not None and final["status"] == "claimed"
+
+
+@pytest.mark.parametrize("status", ["queued", "claimed"])
+def test_live_dm_wait_releases_runner_when_owner_lookup_keeps_failing(tmp_path, monkeypatch, capsys, status):
+    """A lookup that always raises is an owner that cannot be confirmed: bounded, never cancelled."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="2" * 32)
+    if status == "claimed":
+        assert live.claim_pending_delivery(tmp_path, owner) is not None
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+
+    def lookup_fails(_home):
+        raise OSError("registry locked")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", lookup_fails)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == status
+    assert "Do not resend" in notice["detail"]
+    assert live.read_delivery_result(tmp_path, record["delivery_id"])["status"] == status
+
+
+def test_live_dm_wait_stops_at_its_deadline_while_the_owner_holds_the_receipt(tmp_path, monkeypatch, capsys):
+    """A live owner that never claims (stalled consumer) or never settles still releases the runner."""
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path), session_id="bot", lease_id="lease", live_session_id="live")
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id="3" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.1)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
+
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "queued"
+    assert "Do not resend" in notice["detail"]
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────

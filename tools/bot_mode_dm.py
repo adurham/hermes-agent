@@ -49,6 +49,9 @@ REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
 _LIVE_WAIT_SECONDS = 300
+# A live owner may run a turn past one wait window, but each waiting runner holds ~46 MB and the
+# sender's notify slot: past this the runner reports pending (do not resend) and exits.
+_LIVE_WAIT_MAX_SECONDS = 30 * 60
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -519,31 +522,23 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
     from tools.bot_failure_reasons import RUNTIME_OFFLINE
-    from tools.bot_live_delivery import (await_delivery, cancel_queued_delivery,
-                                         find_canonical_live_owner, read_delivery_result)
+    from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
-    owner_missing_claimed = False
+    deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
+    missed = 0
     while True:
-        record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
-        if record is None or record["status"] not in ("queued", "claimed"):
+        record = await_delivery(home, delivery_id, max(0.0, min(_LIVE_WAIT_SECONDS, deadline - time.monotonic())))
+        if record is None or record["status"] not in ("queued", "claimed") or time.monotonic() >= deadline:
             break
         try:
-            owner = find_canonical_live_owner(home)
+            held = owner_holds_delivery(home, record)
         except Exception:
-            logger.debug("Could not check live DM owner; keep waiting for receipt", exc_info=True)
+            logger.debug("Could not check live DM owner", exc_info=True)
+            held = None
+        if held:
+            missed = 0
             continue
-        pinned = record["owner"]
-        if owner is not None and all(owner[key] == pinned[key] for key in
-                                     ("profile_home", "lease_id", "live_session_id")):
-            owner_missing_claimed = False
-            continue
-        # A claim or settlement can race the owner lookup. Decide from a fresh
-        # receipt so the runner cannot exit on a stale queued snapshot.
-        record = read_delivery_result(home, delivery_id)
-        if record is None or record["status"] not in ("queued", "claimed"):
-            break
-        if record["status"] == "queued":
-            # The consumer may still have a captured owner and race this read.
+        if held is False and record["status"] == "queued":
             # Under the same mailbox lock as claim, either cancellation wins or
             # the claim wins and we must keep waiting for its outcome.
             record = cancel_queued_delivery(
@@ -551,13 +546,13 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
                 reason=RUNTIME_OFFLINE)
             if record is None or record["status"] != "claimed":
                 break
-            owner_missing_claimed = False
+            missed = 0
             continue
-        if owner_missing_claimed:
-            # A vanished consumer may leave a permanent claim. Allow one more
-            # wait window for an in-flight turn to settle, then release the runner.
+        # A vanished consumer may leave a permanent claim, and an owner we cannot look up
+        # may be gone: allow one more window for an in-flight turn, then release the runner.
+        missed += 1
+        if missed > 1:
             break
-        owner_missing_claimed = True
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)

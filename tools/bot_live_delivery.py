@@ -240,6 +240,12 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         db.close()
 
 
+def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
+    """Whether the canonical live owner is still one that could claim ``record``."""
+    owner = find_canonical_live_owner(profile_home)
+    return owner is not None and _matches(profile_home, record, owner)
+
+
 def claim_pending_delivery(
     profile_home: Path | str, owner: dict[str, Any],
 ) -> dict[str, Any] | None:
