@@ -42,6 +42,7 @@ vi.mock('./shared', () => ({ getPluginCtx: () => null }))
 
 async function loadModule() {
   vi.resetModules()
+
   return import('./canonical-chat')
 }
 
@@ -54,6 +55,7 @@ beforeEach(() => {
     if (method === 'session.list') {
       return { sessions: [{ id: 'root-1', resolved_id: 'tip-9', root_title: 'Bot Chat', title: 'Bot Chat' }] }
     }
+
     return {}
   })
 })
