@@ -35,6 +35,11 @@ def _child_run_active(child_key: str, profile_home) -> bool:
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
+def _emit_child_text(csid: str, clean: str, attachments: list[dict]) -> None:
+    if clean or attachments:
+        _emit("message.delta", csid, {"text": clean, **({"attachments": attachments} if attachments else {})})
+
+
 def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
@@ -56,7 +61,11 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
     csid = live[0]
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "started": False})
+        if key not in _child_mirrors:
+            from agent.media_attachments import MediaStreamSplitter
+            # The child's reply streams like a native one: MEDIA: tags leave as attachments.
+            _child_mirrors[key] = {"seq": 0, "open_tool": None, "started": False, "media": MediaStreamSplitter()}
+        st = _child_mirrors[key]
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
@@ -66,10 +75,16 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
                 mapped = _CHILD_DELTA_EVENTS[event_type]
                 if mapped == "reasoning.delta" and not _session_show_reasoning(csid):
                     return
-                _emit(mapped, csid, {"text": f"{text}\n" if event_type == "subagent.start" else text})
+                text = f"{text}\n" if event_type == "subagent.start" else text
+                if mapped != "message.delta":
+                    _emit(mapped, csid, {"text": text})
+                    return
+                _emit_child_text(csid, *st["media"].feed(text))
             return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
+        # A tool call or the end seals the streamed text: release its held line first.
+        _emit_child_text(csid, *st["media"].flush())
         if st["open_tool"]:
             open_tool = st["open_tool"]
             st["open_tool"] = None
@@ -87,8 +102,9 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         else:
+            from agent.media_attachments import media_text_payload
             summary = str(payload.get("summary") or payload.get("text") or "")
-            _emit("message.complete", csid, {"text": summary})
+            _emit("message.complete", csid, media_text_payload(summary))
             _child_mirrors.pop(key, None)
 
 
@@ -186,8 +202,9 @@ def _agent_cbs(sid: str) -> dict:
     # Interim assistant commentary (text alongside tool calls), gated on display.interim_assistant_
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
+        from agent.media_attachments import media_text_payload
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+            "message.interim", sid, {**media_text_payload(str(text)), "already_streamed": bool(already_streamed)})
     return callbacks
 
 
