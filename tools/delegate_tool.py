@@ -1399,6 +1399,27 @@ DELEGATE_TASK_SCHEMA = {
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
                         ),
+                        "agent_type": _p(
+                            "string",
+                            "Route this child through a role from delegation.model_by_role in config.yaml (the "
+                            "roles /delegation lists). A role selects its configured MODEL and, when its entry "
+                            "pins one, its PROVIDER — so it is always a valid (model, provider) pair from your "
+                            "own config — and loads that role's persona prompt onto the child. Pass the literal "
+                            "'auto' to explicitly opt into automatic routing: a cheap classifier picks the best "
+                            "role/model from this task's goal and context — identical routing to omitting the "
+                            "field, but a deliberate, recorded choice. OMITTING the field also auto-routes, and "
+                            "additionally returns a warning naming the model chosen for you. Prefer this over "
+                            "'model': a role pin cannot go stale.",
+                        ),
+                        "model": _p(
+                            "string",
+                            "Exceptional explicit model pin for THIS task, overriding the top-level model=, the "
+                            "agent_type role map and automatic routing. Validated against the current model "
+                            "roster from config.yaml — an unknown/stale slug is refused at the top level and "
+                            "ignored (role resolution wins) for a nested delegation. Prefer agent_type= unless "
+                            "you need one specific model: a bare model slug does not carry a provider, so "
+                            "prefer a role whenever the model needs a non-default provider.",
+                        ),
                         "output_schema": _p(
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
@@ -1426,6 +1447,26 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            # Top-level model= / agent_type= are BATCH-WIDE DEFAULTS: each task's own
+            # value wins (see the seeding in delegate_task()).
+            "agent_type": _p(
+                "string",
+                "Route EVERY child in this call through a role from delegation.model_by_role in config.yaml "
+                "(overridden per-task by tasks[].agent_type). A role selects its configured MODEL and, when "
+                "its entry pins one, its PROVIDER, and loads that role's persona prompt onto the child. Pass "
+                "the literal 'auto' to explicitly opt every task into automatic routing (identical to "
+                "omitting the field, but a deliberate, recorded choice that suppresses the omission warning). "
+                "OMITTING the field also auto-routes and additionally warns with the model chosen for you. "
+                "Run /delegation in the CLI to browse the configured roles.",
+            ),
+            "model": _p(
+                "string",
+                "Exceptional explicit model pin applied to EVERY child unless that task sets its own model= "
+                "(tasks[].model wins). Overrides the agent_type role map and automatic routing. Validated "
+                "against the current model roster from config.yaml — an unknown/stale slug is refused. Prefer "
+                "agent_type= unless you need one specific model: a bare model slug carries no provider, so "
+                "prefer a role whenever the model needs a non-default provider.",
+            ),
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
