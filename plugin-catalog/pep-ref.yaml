@@ -1,6 +1,6 @@
 name: pep-ref
 repo: https://github.com/EloquentBrush0x/hermes-context-refs
-sha: 4a0ae736ddf2c00367f88e4b5b20d5e48d563c99
+sha: 20c7a0e1f56d6fea9761077f6994ab7b3d174b99
 subdir: pep-ref
 description: >-
   @pep:<number> context references: attach a Python Enhancement Proposal to a message (status, type,
@@ -16,6 +16,7 @@ category: web
 requires_hermes: ">=0.21"
 docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/pep-ref
 version: "1.0.0"
+image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/20c7a0e1f56d6fea9761077f6994ab7b3d174b99/docs/pep-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []
