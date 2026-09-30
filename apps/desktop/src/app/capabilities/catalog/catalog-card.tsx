@@ -2,10 +2,7 @@ import './catalog.css'
 
 import { type ReactNode, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { RowButton } from '@/components/ui/row-button'
-import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
@@ -77,8 +74,6 @@ interface CatalogCardProps {
 }
 
 export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default' }: CatalogCardProps) {
-  const { t } = useI18n()
-
   return (
     <article
       className={cn(
@@ -133,7 +128,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
           onTag={onTag}
         />
       </div>}
-      {variant !== 'default' && <div className="catalog-card-footer"><CatalogHeaderMeta entry={entry} />{(variant === 'hero' || variant === 'showcase') && <span className="catalog-hero-action relative shrink-0">{variant === 'showcase' ? <><Button onClick={() => onOpen(entry)} size="inline" variant="text">{t.catalog.about}<Codicon name="arrow-up-right" /></Button>{action}</> : action}</span>}</div>}
+      {variant !== 'default' && <div className="catalog-card-footer"><CatalogHeaderMeta entry={entry} />{variant === 'hero' && <span className="catalog-hero-action relative shrink-0">{action}</span>}</div>}
       {variant === 'default' && <div className="catalog-card-dates mt-auto px-3 pb-3">
         <CatalogDates entry={entry} />
       </div>}

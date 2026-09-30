@@ -65,8 +65,6 @@
 [data-catalog-variant=showcase] .catalog-card-footer { grid-row: 4; align-self: end; }
 [data-catalog-variant=showcase] .catalog-card-title { font-size: 1.125rem; line-height: 1.4; }
 [data-catalog-variant=showcase] .catalog-card-metadata { padding-inline: 24px; }
-[data-catalog-variant=showcase] .catalog-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-[data-catalog-variant=showcase] .catalog-hero-action { display: flex; align-items: center; gap: 12px; margin-left: auto; }
 [data-catalog-card]:not([data-catalog-variant=default]) .catalog-card-description { -webkit-line-clamp: 3; }
 [data-catalog-card][data-catalog-variant=compact] { height: 220px; min-height: 220px; }
 [data-catalog-variant=compact] .catalog-card-topline { margin-bottom: 0; }
