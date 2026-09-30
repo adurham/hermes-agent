@@ -4324,6 +4324,11 @@ export const deOverrides = {
     editingQueuedInComposer: 'Bearbeitet eingereihten Turn im Composer',
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
+    localSetup: {
+      title: 'Das könnte auf Ihrem Computer laufen',
+      text: (model: string) => `${model} passt auf diesen Rechner. Kostenlos, und Chats bleiben auf Ihrem Computer.`,
+      action: 'Zeigen'
+    },
     queueEdit: 'Bearbeiten',
     queueExpand: 'Ausklappen',
     queueCollapse: 'Einklappen',
@@ -4737,6 +4742,9 @@ export const deOverrides = {
     }
   },
   handoffTour: {
+    localTitle: 'Dieser Rechner kann Modelle lokal ausführen',
+    localText: (model: string) =>
+      `${model} passt zu Ihrer Hardware. Es läuft kostenlos, und Chats verlassen Ihren Computer nie. Wählen Sie es jederzeit hier im Modellmenü.`,
     profileTitle: 'Ihre erste Aufgabe läuft im Standardprofil',
     profileText:
       'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgaben-Session lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
@@ -5041,7 +5049,12 @@ export const deOverrides = {
       free: 'kostenlos',
       cacheRead: 'Cache-Lesung',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
+        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'Lokal ausführen · kostenlos, privat',
+        text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,
+        action: 'Einrichten'
+      }
     },
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
@@ -6157,11 +6170,6 @@ export const deOverrides = {
         title: 'Ein Update für die lokale Engine ist verfügbar',
         text: 'Aktualisieren Sie die Engine, die Ihre lokalen Modelle ausführt. Laufende lokale Anfragen können unterbrochen werden.',
         action: 'Jetzt aktualisieren'
-      },
-      'local-setup': {
-        title: 'Dieses Gerät kann Modelle lokal ausführen',
-        text: 'Ihre Hardware kann ein lokales Modell ausführen. Chats bleiben auf Ihrem Computer und kosten nichts.',
-        action: 'Einrichten'
       },
       'right-pane': {
         title: 'Der Arbeitsbereich',

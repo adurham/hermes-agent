@@ -3271,6 +3271,8 @@ export interface Translations {
     editingQueuedInComposer: string
     restoredDraftNotice: string
     restoredDraftUndo: string
+    /** The local-setup offer above the input after the first finished task. */
+    localSetup: { title: string; text: (model: string) => string; action: string }
     queueEdit: string
     queueExpand: string
     queueCollapse: string
@@ -3650,6 +3652,8 @@ export interface Translations {
     sessionsText: string
     stayTitle: string
     stayText: string
+    localTitle: string
+    localText: (model: string) => string
   }
   /** The app's own tour, run when `gui_tour` starts with no steps. */
   appTour: {
@@ -3915,6 +3919,7 @@ export interface Translations {
       free: string
       cacheRead: string
       priceTitle: (input: string, output: string, cache: string) => string
+      localSetup: { title: string; text: (model: string, size: string) => string; action: string }
     }
     modelOptions: {
       noOptions: string
@@ -4706,7 +4711,6 @@ export interface Translations {
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
       'local-runtime-update': { title: string; text: string; action: string }
-      'local-setup': { title: string; text: string; action: string }
     }
   }
 

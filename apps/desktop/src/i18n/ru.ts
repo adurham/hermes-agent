@@ -2884,6 +2884,20 @@ export const ru = defineLocale({
     },
     markAllRead: 'Отметить все как прочитанные'
   },
+  handoffTour: {
+    profileTitle: 'Первая задача выполняется в профиле по умолчанию',
+    profileText:
+      'Эта панель переключает профили. Сейчас подсвечен default — там сессия задачи. Другой — профиль настройки, там приветственный чат.',
+    sessionsTitle: 'У каждого профиля свои сессии',
+    sessionsText:
+      'Этот список относится к профилю default. «Новая сессия» создаёт её в выбранном профиле. Переключите профиль на панели — и список сменится.',
+    stayTitle: 'Hermes в одном клике',
+    stayText:
+      'Переключитесь на профиль настройки и откройте «Добро пожаловать в Hermes», когда понадобится помощь. Он остаётся там.',
+    localTitle: 'Этот компьютер может запускать модели локально',
+    localText: (model: string) =>
+      `${model} подходит для вашего оборудования. Работает бесплатно, а чаты не покидают ваш компьютер. Выберите её здесь, в меню моделей, когда захотите.`
+  },
   composer: {
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
@@ -3039,6 +3053,12 @@ export const ru = defineLocale({
     editingQueuedInComposer: 'Редактирование хода в очереди в композере',
     restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
     restoredDraftUndo: 'Отменить',
+    localSetup: {
+      title: 'Это может работать на вашем компьютере',
+      text: (model: string) =>
+        `${model} подходит для этого компьютера. Бесплатно, а чаты остаются на вашем компьютере.`,
+      action: 'Показать'
+    },
     queueEdit: 'Изменить',
     queueExpand: 'Раскрыть',
     queueCollapse: 'Свернуть',
@@ -3613,7 +3633,12 @@ export const ru = defineLocale({
       free: 'бесплатно',
       cacheRead: 'чтение из кэша',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : '')
+        `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'Запуск локально · бесплатно, приватно',
+        text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,
+        action: 'Настроить'
+      }
     },
     modelOptions: {
       noOptions: 'Для этой модели нет опций',
