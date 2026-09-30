@@ -18,6 +18,7 @@ builder may also import ``collect()`` and embed its result.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import json
 import os
 import platform
@@ -27,7 +28,9 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
+from typing import Any, Callable
 
 from hermes_platform.host import facts, products, runtime
 
@@ -418,19 +421,42 @@ def scan_into(box: dict) -> None:
         box["error"] = type(exc).__name__
 
 
-def scan_outcome(worker: threading.Thread, box: dict) -> tuple[dict | None, str]:
-    """Wait up to the deadline for ``worker`` running :func:`scan_into` on ``box``."""
-    worker.join(SCAN_DEADLINE_S)
+def scan_outcome(worker: threading.Thread, box: dict, deadline: float) -> tuple[dict | None, str]:
+    """Wait up to the deadline (``time.monotonic``) for ``worker`` running :func:`scan_into` on ``box``."""
+    worker.join(max(0.0, deadline - time.monotonic()))
     if "result" in box:
         return box["result"]
     return None, box.get("error", "timeout")
 
 
-def _scan() -> tuple[dict | None, str]:
+def _in_background(work: Callable[[], Any]) -> Callable[[float], tuple[Any, str]]:
+    """Start ``work`` on a daemon thread under the caller's contextvars (its profile scope). The returned
+    join waits until ``deadline`` (``time.monotonic``) and gives ``(result, "")``, or ``(None, reason)``
+    when the work failed or is still running."""
+    box: dict = {}
+    context = contextvars.copy_context()
+
+    def run() -> None:
+        try:
+            box["result"] = context.run(work)
+        except Exception as exc:
+            box["error"] = type(exc).__name__
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+
+    def join(deadline: float) -> tuple[Any, str]:
+        worker.join(max(0.0, deadline - time.monotonic()))
+        return (box["result"], "") if "result" in box else (None, box.get("error", "timeout"))
+
+    return join
+
+
+def _scan() -> Callable[[float], tuple[dict | None, str]]:
     box: dict = {}
     worker = threading.Thread(target=scan_into, args=(box,), daemon=True)
     worker.start()
-    return scan_outcome(worker, box)
+    return partial(scan_outcome, worker, box)
 
 
 def _value(profile: dict, fid: str) -> dict | None:
@@ -612,6 +638,28 @@ def interpret(profile: dict, source: str) -> dict:
     return block
 
 
+def _blender_declared_state() -> str:
+    """Blender's state as the plugins card and the installer judge it: the resolver over the Blender
+    plugin's pinned ``app:`` declaration. Reading that declaration takes the network, so ``collect``
+    runs this beside the scan and under the same deadline."""
+    from hermes_cli.plugin_catalog import get_live_catalog_entry
+    from hermes_cli.plugin_catalog_presence import presence
+
+    entry = get_live_catalog_entry("blender")
+    return presence(entry).state if entry else "unknown"
+
+
+def _blender_present(declared: str | None, profile: dict | None) -> bool:
+    """Only proof of absence hides the Blender task: the declaration says ``missing_app``, or, when the
+    declaration gave no answer, the scan's app inventory ran and has no Blender. No evidence keeps it."""
+    if declared not in (None, "unknown"):
+        return declared != "missing_app"
+    if not profile or _value(profile, "apps.taxonomy") is None:
+        return True
+    used, unused, _ = _scan_apps(profile)
+    return "Blender" in used + unused
+
+
 def _machine_state(scan: dict | None, age: int | None) -> tuple[str, int | None]:
     if scan and scan.get("machine_state") in ("fresh", "settling", "established"):
         owned = scan.get("owned_days")
@@ -621,10 +669,13 @@ def _machine_state(scan: dict | None, age: int | None) -> tuple[str, int | None]
     return ("fresh" if age <= NEW_MACHINE_DAYS else "settling" if age < SETTLING_DAYS else "established"), age
 
 
-def collect(scanned: tuple[dict | None, str] | None = None) -> dict:
-    """Return the fact block the ``/initiate-setup`` first turn embeds. ``scanned`` is a
-    ``(profile, source)`` pair from a scan already run; without it this scans now."""
-    profile, source = scanned if scanned is not None else _scan()
+def collect(scanned: Callable[[float], tuple[dict | None, str]] | None = None) -> dict:
+    """Return the fact block the ``/initiate-setup`` first turn embeds. ``scanned`` waits until the
+    deadline it is given for the ``(profile, source)`` pair of a scan already started; without it
+    this scans now. The Blender declaration is read beside the scan, under the same deadline."""
+    deadline = time.monotonic() + SCAN_DEADLINE_S
+    blender = _in_background(_blender_declared_state)
+    profile, source = (scanned or _scan())(deadline)
     scan = interpret(profile, source) if profile else {"source": "unavailable", "reason": source}
 
     os_family = facts.os_family()
@@ -643,7 +694,9 @@ def collect(scanned: tuple[dict | None, str] | None = None) -> dict:
     spark = _is_spark(os_family, arch, gpu, cpu)
     leads = spark or looks_new
     kind = _machine_kind(os_family, spark)
-    plugin_tasks = [_NVIDIA_TASK, _BLENDER_TASK] if os_family == "win32" and gpu == "nvidia" else [_BLENDER_TASK]
+    plugin_tasks = [_NVIDIA_TASK] if os_family == "win32" and gpu == "nvidia" else []
+    if _blender_present(blender(deadline)[0], profile):
+        plugin_tasks.append(_BLENDER_TASK)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -685,7 +738,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--from-json", type=Path, help="interpret this saved scan instead of scanning")
     args = parser.parse_args()
-    scanned = (_read_json(args.from_json), "file") if args.from_json else None
+    scanned = (lambda _deadline: (_read_json(args.from_json), "file")) if args.from_json else None
     print(json.dumps(collect(scanned), ensure_ascii=False, separators=(",", ":")))
 
 
