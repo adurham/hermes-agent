@@ -1,6 +1,6 @@
 import './catalog-discovery.css'
 
-import { groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
+import { groupCatalogPlugins, pickFeatured, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -13,11 +13,11 @@ import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-dat
 import { CatalogDeveloper } from './catalog-developer'
 import { catalogCategories } from './catalog-query'
 
-// Reviewed catalog identifiers, not an inferred recommendation or download metric.
-const FEATURED = { plugins: 'hindsight', skills: 'claude-code' } as const
-
 /** Fewest cards a category needs for its own shelf; smaller ones share "More to explore". */
 const MIN_SHELF = 3
+
+/** First-party sources, per kind, for the hero's fallback when the feed curates nothing. */
+const OFFICIAL = { plugins: ['official'], skills: ['built-in', 'bundled', 'optional', 'official'] } as const
 
 export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   entries: CatalogEntry[]
@@ -31,8 +31,14 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   const [looseRows, setLooseRows] = useState(3)
   const title = kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills
 
-  const featured = entries.find(entry => entry.identifier === FEATURED[kind])
-    ?? entries.find(entry => entry.name === FEATURED[kind] && ['bundled', 'official', 'builtin'].includes(entry.source))
+  // Same pick as the website: curated ranks from the feed, rotated weekly.
+  const featured = pickFeatured(entries, entry => ({
+    featured: entry.featured,
+    official: (OFFICIAL[kind] as readonly string[]).includes(entry.source),
+    pictured: Boolean(entry.imageUrl),
+    addedAt: entry.addedAt,
+    stars: entry.stars
+  }))
 
   const remaining = entries.filter(entry => entry !== featured)
 

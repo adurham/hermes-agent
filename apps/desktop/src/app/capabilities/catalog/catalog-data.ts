@@ -3,7 +3,7 @@ import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { queryClient } from '@/lib/query-client'
 
-import { officialCatalogArtwork } from './catalog-artwork'
+import { curatedFeaturedRank, officialCatalogArtwork } from './catalog-curation'
 
 export type CatalogKind = 'skills' | 'plugins'
 
@@ -39,6 +39,8 @@ export interface CatalogEntry {
   addedAt?: string
   updatedAt?: string
   stars: number | null
+  /** 1-based curated hero rank from the catalog feed (`catalog-curation.json`). */
+  featured?: number
   search: string
 }
 
@@ -154,6 +156,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       addedAt: Number.isFinite(Date.parse(text(row.addedAt))) ? text(row.addedAt) : undefined,
       updatedAt: Number.isFinite(Date.parse(text(row.updatedAt))) ? text(row.updatedAt) : undefined,
       stars: typeof row.stars === 'number' && Number.isFinite(row.stars) ? row.stars : null,
+      featured: typeof row.featured === 'number' && row.featured > 0 ? row.featured : curatedFeaturedRank(kind, row),
       search: [
         name,
         description,

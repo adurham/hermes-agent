@@ -493,7 +493,18 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    const install = await screen.findByRole('switch', { name: 'Add gif-search' })
+    // The row settles once installed skills load (the discovery hero can change
+    // as they merge in), so act on the live, enabled switch.
+    await screen.findByRole('switch', { name: 'Add gif-search' })
+
+    const install = await waitFor(() => {
+      const row = screen.getByRole<HTMLButtonElement>('switch', { name: 'Add gif-search' })
+
+      expect(row.disabled).toBe(false)
+
+      return row
+    })
+
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
     expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
     expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added ascii-art' }).disabled).toBe(true)
