@@ -40,6 +40,7 @@ NEW_MACHINE_DAYS = 21
 _NON_NAMES = frozenset({
     "admin", "administrator", "default", "guest", "me", "owner", "root", "test", "user",
 })
+_HANDLE_CHARS = re.compile(r"[\d_@/\\]")
 
 _SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.I)
 
@@ -148,6 +149,9 @@ def _suggested_name(login: str, full: str) -> str | None:
     """A real full name only; a login handle is never offered as the user's name."""
     name = " ".join(full.split())
     if not (2 <= len(name) <= 40) or name.lower() in _NON_NAMES or name.lower() == login.lower():
+        return None
+    # Digits or underscores ("p14", "CD_01.05") or an all-lowercase cased name mark a handle.
+    if _HANDLE_CHARS.search(name) or name == name.lower() != name.upper():
         return None
     return name
 

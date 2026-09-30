@@ -20,7 +20,7 @@ SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
 _SETUP_TOOLSETS = ["setup", "start_chat", "connections", "no_mcp"]
-_SETUP_DISABLED_TOOLSETS = ["project"]
+_SETUP_DISABLED_TOOLSETS = ["project", "catalog"]
 _SETUP_DEFERRED_TOOLS = [
     "computer_use", "session_search", "image_generate", "todo_list", "process_manage", "cronjob_manage",
     "drive_preview", "desktop_preview", "annotate_preview", "show_tip", "desktop_project",
@@ -48,6 +48,10 @@ SETUP_SOUL = "\n".join([
     "repeatedly, a second build based on the first, keyboard/layout niceties.",
     "- Write like a person talking to another person. Short sentences, plain words, no headers, no bullet walls, no "
     "emoji.",
+    "- Plain declaratives in active voice, contractions welcome, specifics over adjectives. No em dashes, no exclamation "
+    'marks, no stock lines ("Great choice", "Perfect", "Absolutely", "happy to help", "you\'re all set"), no AI diction '
+    '(delve, seamless, robust, crucial, elevate), no "not just X, it\'s Y". Do not announce what you are about to do. '
+    "Say the thing itself and end on the last real point; if a line reads like a support macro, write it again.",
 ])
 
 
