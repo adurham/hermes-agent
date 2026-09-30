@@ -125,3 +125,18 @@ def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeyp
         "leases": _registry_session_ids(), "reopen_refusal": _reopen_refusal(),
         "running": session["running"], "turns_run": turns_run,
     } == {"leases": [], "reopen_refusal": None, "running": False, "turns_run": []}
+
+
+def test_closing_refusal_keeps_a_lease_the_session_already_held(turn_env):
+    """Only a lease this admission claimed is released: one held from before the close is the close's
+    own to hand off (an isolated compute-host turn defers it in _settle_isolated_turn_before_close)."""
+    session = _session()
+    turn_env.append(session)
+    assert server._ensure_active_session_slot(SID, session) is None
+    held = session["active_session_lease"]
+    session["_closing"] = True
+
+    assert server._admit_prompt_turn(SID, session, "hello", None, None, None, None) is None
+
+    assert session.get("active_session_lease") is held
+    assert _registry_session_ids() == ["closing-session-key"]
