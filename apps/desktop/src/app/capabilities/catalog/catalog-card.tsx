@@ -1,12 +1,12 @@
 import './catalog.css'
 
-import { type ReactNode, useState } from 'react'
+import { type CSSProperties, type ReactNode, useState } from 'react'
 
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
-import { CatalogDates, CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
+import { CatalogDates, CatalogHeaderMeta, CatalogMetadata, CatalogRating } from './catalog-metadata'
 
 export function catalogIcon(category: string) {
   const icons: Record<string, string> = {
@@ -71,9 +71,10 @@ interface CatalogCardProps {
   onCategory: (category: string) => void
   onTag: (tag: string) => void
   onSearch: (value: string) => void
+  style?: CSSProperties
 }
 
-export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default' }: CatalogCardProps) {
+export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default', style }: CatalogCardProps) {
   return (
     <article
       className={cn(
@@ -84,13 +85,14 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
       data-catalog-editorial-art={(variant !== 'hero' && entry.imageUrl?.includes("official-art")) || undefined}
       data-catalog-variant={variant}
       data-entry-id={entry.id}
+      style={style}
     >
       {variant !== 'hero' && entry.imageUrl && ((variant !== 'compact' && variant !== 'showcase') || entry.imageUrl.includes('official-art')) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl} src={entry.imageUrl} />}
       {variant !== 'default' && <div className="catalog-card-topline">
         <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>{entry.author || catalogLabel(entry.source)}</span>
         {variant !== 'hero' && <span className="relative shrink-0">{action}</span>}
       </div>}
-      <div className="catalog-card-copy flex min-h-0 w-full flex-1 flex-col gap-2 p-3">
+      <div className="catalog-card-copy flex min-h-0 w-full flex-col gap-2 p-3">
         <div className="flex min-w-0 items-center gap-2.5">
           {/* Its ::after stretches over the whole card, so any empty spot opens the
               detail; real controls sit above it (`relative`). One focus stop per card. */}
@@ -113,6 +115,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
           {variant === 'default' && <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
             <CatalogHeaderMeta entry={entry} />
+            <CatalogRating entry={entry} />
           </span>}
           <span className="catalog-card-description line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
             {entry.description}
@@ -128,7 +131,15 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
           onTag={onTag}
         />
       </div>}
-      {variant !== 'default' && <div className="catalog-card-footer"><CatalogHeaderMeta entry={entry} />{variant === 'hero' && <span className="catalog-hero-action relative shrink-0">{action}</span>}</div>}
+      {variant !== 'default' && (
+        <div className="catalog-card-footer">
+          <CatalogHeaderMeta entry={entry} />
+          <span className="flex shrink-0 items-center gap-3">
+            <CatalogRating entry={entry} />
+            {variant === 'hero' && <span className="catalog-hero-action relative shrink-0">{action}</span>}
+          </span>
+        </div>
+      )}
       {variant === 'default' && <div className="catalog-card-dates mt-auto px-3 pb-3">
         <CatalogDates entry={entry} />
       </div>}

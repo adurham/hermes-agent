@@ -216,7 +216,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
     )
   }
 
-  const card = (entry: CatalogEntry, accentIndex: number, variant: CatalogCardVariant = 'default') => (
+  const card = (entry: CatalogEntry, accentIndex: number, variant: CatalogCardVariant = 'default', placement?: React.CSSProperties) => (
     <CatalogCard
       accentIndex={accentIndex}
       action={entryAction(entry)}
@@ -226,6 +226,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
       onOpen={openEntry}
       onSearch={searchFor}
       onTag={filters.toggleTag}
+      style={placement}
       variant={variant}
     />
   )
@@ -310,7 +311,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           </header>
           <CatalogFilterBar
             actions={actions}
-            categories={catalogCategories(visible, kind)}
+            categories={catalogCategories(visible)}
             facets={facets}
             onCategory={filters.toggleCategory}
             onClear={clearFilters}
@@ -354,7 +355,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
               <>
                 <div className="flex h-full min-h-0 flex-col" data-catalog-cards={kind}>
                   <div
-                    className="min-h-0 flex-1 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
+                    className="capabilities-scroll"
                     data-catalog-scroll
                     key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
                   >
