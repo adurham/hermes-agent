@@ -1,3 +1,4 @@
+import type { SetupChooseKind, SetupChooseOption } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { hasOpenServerRequest, respondToServerRequest } from './server-requests'
@@ -10,6 +11,14 @@ export interface ClarifyQuestion {
   multiSelect: boolean
 }
 
+export interface SetupChooseSpec {
+  kind: SetupChooseKind
+  options: SetupChooseOption[] | null
+  multiSelect: boolean
+  /** Row ids the card starts with picked (the backend fills them from the machine scan). */
+  preselected: string[]
+}
+
 export interface ClarifyRequest {
   requestId: string
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
@@ -18,6 +27,7 @@ export interface ClarifyRequest {
   questions: ClarifyQuestion[]
   /** Answers already locked server-side (reconnect replay): qid → answer, null = skipped. */
   lockedAnswers?: Record<string, null | string>
+  setup?: SetupChooseSpec
 }
 
 /**
@@ -101,6 +111,51 @@ export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
   return normalized
 }
 
+export const SETUP_CHOOSE_QID = 'setup_choose'
+
+const SETUP_CHOOSE_KINDS = new Set<unknown>([
+  'accent',
+  'connectors',
+  'fork',
+  'layout',
+  'machine_use',
+  'plugins',
+  'question',
+  'theme',
+  'tour'
+])
+
+export function normalizeSetupChoose(
+  params: Record<string, unknown>
+): Pick<ClarifyRequest, 'questions' | 'setup'> | null {
+  const question = typeof params.question === 'string' ? params.question.trim() : ''
+
+  if (!question || !SETUP_CHOOSE_KINDS.has(params.kind)) {
+    return null
+  }
+
+  const options =
+    Array.isArray(params.options) && params.options.length > 0 ? (params.options as SetupChooseOption[]) : null
+
+  const multiSelect = params.multi_select === true
+
+  const preselected = Array.isArray(params.preselected)
+    ? params.preselected.filter((id): id is string => typeof id === 'string')
+    : []
+
+  return {
+    questions: [
+      {
+        choices: options ? options.map(option => option.label) : null,
+        multiSelect: multiSelect && options !== null,
+        qid: SETUP_CHOOSE_QID,
+        question
+      }
+    ],
+    setup: { kind: params.kind as SetupChooseKind, multiSelect, options, preselected }
+  }
+}
+
 // Pending clarify requests keyed by the runtime session id that raised them.
 // Storing per-session (instead of one shared slot) lets a *background* session
 // park its clarify request while the user is looking at a different chat, then
@@ -125,6 +180,29 @@ export const sessionClarifyRequest = (sessionId: string | null) =>
 
 export function setClarifyRequest(request: ClarifyRequest): void {
   $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+  forgetSettledClarify(request.requestId)
+}
+
+/**
+ * Tool results the renderer already knows for requests it answered, keyed by
+ * request id. The card settles from this the moment it is answered, so a skip
+ * or a typed answer never falls back to a bare tool row when the tool's own
+ * `tool.complete` is late or never lands (a stopped turn).
+ */
+export const $settledClarifyResults = atom<Record<string, Record<string, unknown>>>({})
+
+function forgetSettledClarify(requestId: string): void {
+  const settled = $settledClarifyResults.get()
+
+  if (requestId in settled) {
+    const next = { ...settled }
+    delete next[requestId]
+    $settledClarifyResults.set(next)
+  }
+}
+
+function settleClarify(request: ClarifyRequest, result: Record<string, unknown>): void {
+  $settledClarifyResults.set({ ...$settledClarifyResults.get(), [request.requestId]: result })
 }
 
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
@@ -165,6 +243,61 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
   }
 }
 
+export interface SetupChooseStage {
+  draft: string
+  /** The name each staged row showed, by id, so a typed answer still names the rows staged with it. */
+  labels: Record<string, string>
+  picked: string[]
+  revert: (() => void) | null
+}
+
+export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', labels: {}, picked: [], revert: null }
+
+/**
+ * A card's answer: the picked ids, and the names the user saw for them when any id is a row. The backend
+ * hands both to the model, which would otherwise guess a name from an id such as `#8a2be2`.
+ */
+export function setupChooseAnswer(
+  picked: string | string[],
+  labels: Record<string, string>
+): { label?: string | string[]; picked: string | string[] } {
+  const ids = Array.isArray(picked) ? picked : [picked]
+
+  if (!ids.some(id => Object.hasOwn(labels, id))) {
+    return { picked }
+  }
+
+  const named = ids.map(id => (Object.hasOwn(labels, id) ? labels[id] : id))
+
+  return { label: Array.isArray(picked) ? named : named[0], picked }
+}
+
+export const $setupChooseStages = atom<Record<string, SetupChooseStage>>({})
+
+export const setupChooseStage = (requestId: string): SetupChooseStage =>
+  $setupChooseStages.get()[requestId] ?? EMPTY_SETUP_STAGE
+
+export function stageSetupChoose(requestId: string, patch: Partial<SetupChooseStage>): void {
+  $setupChooseStages.set({ ...$setupChooseStages.get(), [requestId]: { ...setupChooseStage(requestId), ...patch } })
+}
+
+export function commitSetupChoose(requestId: string): void {
+  const next = { ...$setupChooseStages.get() }
+  delete next[requestId]
+  $setupChooseStages.set(next)
+}
+
+$clarifyRequests.listen(requests => {
+  const live = new Set(Object.values(requests).map(request => request.requestId))
+
+  for (const [requestId, stage] of Object.entries($setupChooseStages.get())) {
+    if (!live.has(requestId)) {
+      commitSetupChoose(requestId)
+      stage.revert?.()
+    }
+  }
+})
+
 /** Whether `sessionId` has a clarify parked on it right now (imperative read —
  *  the composer checks this on Enter, not on every render). */
 export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
@@ -180,12 +313,32 @@ export function clearSettledClarifyRequest(sessionId: string | null): void {
 }
 
 /**
- * The composer uses this when the user types a real message instead of picking
- * an option: a clarify blocks the agent inside its tool batch, so leaving it
- * unanswered would park the follow-up until the server-side clarify timeout
- * — the message looks sent and nothing happens. Skipping lets
- * the tool return and the turn carry on with the user's actual words.
+ * Skip a parked card: clear it, answer its request with no pick, and settle it
+ * as skipped. The card's Skip button uses this, and so does the composer for a
+ * message that cannot be an answer (a slash command, attachments).
  */
+export function skipClarify(request: ClarifyRequest): void {
+  // Clear first: the answer is already decided, and an in-flight RPC must not
+  // leave a live card the user can answer a second time.
+  clearClarifyRequest(request.requestId, request.sessionId)
+
+  respondToServerRequest(request.requestId, {})
+
+  settleClarify(
+    request,
+    request.setup
+      ? { outcome: 'cancelled', picked: null }
+      : {
+          outcome: 'cancelled',
+          responses: request.questions.map(question => ({
+            question: question.question,
+            status: 'unanswered',
+            user_response: null
+          }))
+        }
+  )
+}
+
 export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
 
@@ -193,11 +346,91 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
     return false
   }
 
-  // Clear first: the answer is already decided, and an in-flight RPC must not
-  // leave a live card the user can answer a second time.
-  clearClarifyRequest(request.requestId, request.sessionId)
-
-  respondToServerRequest(request.requestId, {})
+  skipClarify(request)
 
   return true
+}
+
+/**
+ * Answer the card parked on `sessionId` with text the user typed in the
+ * composer. A card blocks the agent inside its tool batch, so the typed words
+ * ARE the answer: the tool returns them and the turn carries on, with no
+ * interrupt. A batch takes the text as its first open question's answer. False when
+ * no card is parked or its request is gone; the caller then sends the words as
+ * an ordinary message.
+ */
+export function answerClarifyRequest(sessionId: string | null | undefined, text: string): boolean {
+  const request = $clarifyRequests.get()[keyFor(sessionId)]
+
+  if (!request) {
+    return false
+  }
+
+  if (request.setup) {
+    // A multi-select picker keeps the rows already staged on the card, the
+    // same as its own Confirm: the typed words are one more pick.
+    const stage = setupChooseStage(request.requestId)
+    const answer = setupChooseAnswer(request.setup.multiSelect ? [...stage.picked, text] : text, stage.labels)
+
+    if (!respondToServerRequest(request.requestId, answer)) {
+      return false
+    }
+
+    if (request.setup.multiSelect) {
+      commitSetupChoose(request.requestId)
+    }
+
+    clearClarifyRequest(request.requestId, request.sessionId)
+    settleClarify(request, { outcome: 'submitted', ...answer })
+
+    return true
+  }
+
+  // A reconnect replay can arrive with answers already locked server-side;
+  // the backend merges this response over them, so the typed text goes to
+  // the first question still open and the locks stand.
+  const locked = request.lockedAnswers ?? {}
+  const target = request.questions.find(question => !(question.qid in locked)) ?? request.questions[0]
+  const answers = { [target.qid]: target.multiSelect ? JSON.stringify([text]) : text }
+
+  if (!respondToServerRequest(request.requestId, { answers })) {
+    return false
+  }
+
+  clearClarifyRequest(request.requestId, request.sessionId)
+  settleClarify(request, {
+    outcome: 'submitted',
+    responses: request.questions.map(question => settledResponse(question, { ...locked, ...answers }))
+  })
+
+  return true
+}
+
+/** One row of a clarify result, shaped like `tools/clarify_tool.py::_result`. */
+function settledResponse(question: ClarifyQuestion, answers: Record<string, null | string>) {
+  const raw = answers[question.qid]
+
+  if (!raw) {
+    return {
+      question: question.question,
+      status: question.qid in answers ? 'skipped' : 'unanswered',
+      user_response: null
+    }
+  }
+
+  let answer: string | string[] = raw
+
+  if (question.multiSelect) {
+    try {
+      const parsed: unknown = JSON.parse(raw)
+
+      if (Array.isArray(parsed)) {
+        answer = parsed.map(String)
+      }
+    } catch {
+      // A non-JSON multi-select answer stays one value.
+    }
+  }
+
+  return { question: question.question, status: 'answered', user_response: answer }
 }

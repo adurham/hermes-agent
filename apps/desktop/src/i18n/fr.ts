@@ -6,10 +6,10 @@ import { introFr } from './intro-fr'
 export const frOverrides = {
   sharedMetrics: {
     consentTitle: 'Aider à améliorer Hermes ?',
+    dialogTitle: 'Aider à améliorer Hermes ?',
     consentBody:
       'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
     whatIsCollected: 'Ce qui est collecté',
-    collectedIntro: 'Uniquement des compteurs bornés :',
     collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
     collectedModels: 'Routes de modèles et totaux de tokens',
     collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
@@ -20,15 +20,12 @@ export const frOverrides = {
       "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
     collectedMachine:
       "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
-    installId:
-      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
-    consentWindow:
-      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    sending:
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées. Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment. Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
     readDocs: 'Lire tous les détails',
     share: 'Collecter et envoyer à Nous',
     local: 'Collecter en local uniquement',
     off: 'Non merci',
-    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
     saveFailed: 'Impossible d’enregistrer votre choix',
     collectLabel: 'Collecter les statistiques d’utilisation',
     collectDesc:
@@ -4765,10 +4762,6 @@ export const frOverrides = {
     stayText:
       'Passez au profil de configuration et ouvrez Bienvenue dans Hermes lorsque vous avez besoin d’aide. La conversation y reste disponible.'
   },
-  guidedGreeting: {
-    line: "Salut, entrez ! Je suis Hermes. Donnez-moi deux minutes pour préparer les lieux à votre façon, puis nous nous attaquerons à quelque chose que vous voulez vraiment accomplir.\n\nMais d'abord, comment dois-je vous appeler ?",
-    nameSuggestion: name => `(Je peux aussi simplement vous appeler ${name}, si vous préférez.)`
-  },
   install: {
     stageStates: {
       pending: 'En attente',
@@ -5732,9 +5725,34 @@ export const frOverrides = {
       skipped: 'Ignoré',
       noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
+      oneQuestion: '1 question',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Couleur d’accent',
+        connectors: 'Apps',
+        layout: 'Disposition',
+        plugins: 'Plugins',
+        theme: 'Apparence'
+      },
+      loading: 'Chargement des options…',
+      unavailable: 'Cette liste n’est pas disponible pour le moment. Répondez plutôt dans le chat.',
+      findApp: 'Trouver une app',
+      customColor: 'Couleur personnalisée',
+      plugin: 'Plugin',
+      startsLater: 'Nous les configurerons quand vous commencerez.'
+    },
+    startChat: {
+      starting: title => `Démarrage de « ${title} »…`,
+      startingUntitled: 'Démarrage d’un chat…',
+      untitled: 'Nouveau chat',
+      notStarted: 'Le chat n’a pas démarré',
+      inProfile: profile => `Dans ${profile}`,
+      open: 'Ouvrir',
+      openFailed: 'Impossible d’ouvrir le chat'
     },
     catalogInstall: {
       preparing: 'Préparation de l’installation…',
@@ -5936,6 +5954,12 @@ export const frOverrides = {
           pending: "Recherche dans l'historique de session en cours",
           pendingAction: 'Recherche en cours'
         },
+        setup_choose: {
+          done: 'Question de configuration posée',
+          pending: 'Pose une question de configuration',
+          pendingAction: 'Question en cours'
+        },
+        start_chat: { done: 'Chat démarré', pending: 'Démarrage d’un chat', pendingAction: 'Démarrage' },
         terminal: {
           done: 'Commande exécutée',
           pending: 'Exécution de la commande en cours',

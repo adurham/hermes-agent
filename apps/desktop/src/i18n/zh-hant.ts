@@ -12,10 +12,10 @@ export const zhHant = defineLocale({
   },
   sharedMetrics: {
     consentTitle: '協助改進 Hermes？',
+    dialogTitle: '協助改進 Hermes？',
     consentBody:
       '共享指標只包含有上限的計數，絕不包含提示詞、檔案、路徑或錯誤文字。收集僅在本機進行；傳送給 Nous 需要另行同意。',
     whatIsCollected: '收集哪些內容',
-    collectedIntro: '僅限有上限的計數：',
     collectedActivity: '活動、工作階段長度、結果和錯誤類別',
     collectedModels: '模型路由和 token 總量',
     collectedNames: '內建工具、指令和目錄項名稱',
@@ -25,15 +25,12 @@ export const zhHant = defineLocale({
       'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
     collectedMachine:
       '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊與發行通道、落後的更新數、是否使用本機模型伺服器',
-    installId:
-      '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',
-    consentWindow:
-      '只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。',
+    sending:
+      '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。只有整個收集期間都落在已記錄同意時段內的資料包才會被傳送——你同意之前的資料，或傳送關閉期間的資料，都會留在本機。你可以隨時再次關閉傳送。你可以隨時在 設定 → 安全性 中變更。',
     readDocs: '查看完整說明',
     share: '收集並傳送給 Nous',
     local: '僅在本機收集',
     off: '不用了',
-    changeLater: '你可以隨時在 設定 → 安全性 中變更。',
     saveFailed: '無法儲存你的選擇',
     collectLabel: '收集使用統計',
     collectDesc: '在此裝置上保存有上限的計數。絕不包含提示詞、檔案、路徑或錯誤文字。',
@@ -3378,10 +3375,6 @@ export const zhHant = defineLocale({
     checkingShort: '檢查中…'
   },
 
-  guidedGreeting: {
-    line: '來了，進來吧。我是 Hermes。給我兩分鐘，把這裡按你的習慣整理一下，然後我們找件你真正想做的事來做。\n\n先說，我該怎麼稱呼你？',
-    nameSuggestion: (name: string) => `（如果你願意，我也可以直接叫你 ${name}。）`
-  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -4101,8 +4094,33 @@ export const zhHant = defineLocale({
       skipped: '已略過',
       noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
+      oneQuestion: '1 個問題',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
+    },
+    setupChoose: {
+      kinds: {
+        accent: '強調色',
+        connectors: '應用程式',
+        layout: '版面配置',
+        plugins: '外掛',
+        theme: '外觀'
+      },
+      loading: '正在載入選項…',
+      unavailable: '此清單暫時無法使用，請直接在聊天中回覆。',
+      findApp: '尋找應用程式',
+      customColor: '自訂顏色',
+      plugin: '外掛',
+      startsLater: '開始時我們會幫你設定好這些。'
+    },
+    startChat: {
+      starting: title => `正在啟動「${title}」…`,
+      startingUntitled: '正在啟動聊天…',
+      untitled: '新聊天',
+      notStarted: '聊天未能啟動',
+      inProfile: profile => `位於 ${profile}`,
+      open: '開啟',
+      openFailed: '無法開啟聊天'
     },
     tool: {
       copyCode: '複製程式碼',
@@ -4189,6 +4207,8 @@ export const zhHant = defineLocale({
           pending: '正在搜尋工作階段歷史',
           pendingAction: '正在搜尋'
         },
+        setup_choose: { done: '已提出設定問題', pending: '正在提出設定問題', pendingAction: '正在提問' },
+        start_chat: { done: '已啟動聊天', pending: '正在啟動聊天', pendingAction: '正在啟動' },
         terminal: { done: '已執行指令', pending: '正在執行指令', pendingAction: '正在執行' },
         todo: { done: '已更新待辦', pending: '正在更新待辦', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析圖片', pending: '正在分析圖片', pendingAction: '正在分析' },

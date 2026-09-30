@@ -1,4 +1,5 @@
 import {
+  type DataMessagePartComponent,
   type ReasoningMessagePartComponent,
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
@@ -6,14 +7,16 @@ import {
   useMessagePartReasoning,
   useMessagePartText
 } from '@assistant-ui/react'
+import type { MediaAttachment } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
-import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { MarkdownText, MarkdownTextContent, MediaPathAttachment } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
+import { StartChatTool } from '@/components/assistant-ui/start-chat-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
@@ -25,6 +28,7 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
+import { ATTACHMENT_PART } from '@/lib/chat-messages/parts'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
@@ -93,6 +97,19 @@ const ClarifyToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
+const StartChatToolPart: FC<TimelineToolCallProps> = props => {
+  if (props.isError || settledWithoutResult(props)) {
+    return <ToolFallback {...props} />
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
+      <StartChatTool {...props} />
+    </>
+  )
+}
+
 const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
   mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
 
@@ -101,7 +118,9 @@ const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   delegate_task: DelegateToolPart,
   image_generate: ImageGenerateTool,
   manage_catalog: CatalogInstallTool,
-  manage_connections: ConnectionsToolPart
+  manage_connections: ConnectionsToolPart,
+  setup_choose: ClarifyToolPart,
+  start_chat: StartChatToolPart
 }
 
 // A failure the user still has to see. The gateway's tool.complete carries the
@@ -429,6 +448,13 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   )
 }
 
+// A file the reply's `MEDIA:` tag delivered (see ATTACHMENT_PART).
+const AttachmentPart: DataMessagePartComponent<MediaAttachment> = ({ data }) => (
+  <div className="my-2 flex min-w-0" data-slot="aui_attachment-part">
+    <MediaPathAttachment path={data.path} />
+  </div>
+)
+
 // Module-level constant so the `components` prop on `MessagePrimitive.Parts`
 // has a stable identity across renders. Without this every AssistantMessage
 // render would create a fresh `components` object, invalidating the memo on
@@ -441,5 +467,6 @@ export const MESSAGE_PARTS_COMPONENTS = {
   ReasoningGroup: ReasoningAccordionGroup,
   Text: TimelineMarkdownText,
   ToolGroup: ToolGroupSlot,
+  data: { by_name: { [ATTACHMENT_PART]: AttachmentPart } },
   tools: { Fallback: ChainToolFallback }
 } as const

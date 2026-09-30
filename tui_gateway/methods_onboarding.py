@@ -1,33 +1,107 @@
+import threading
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+
+# These handlers run on the RPC pool. Two overlapping kickoffs must not both find no setup
+# profile and create a second one, or both find an empty setup chat and seed it twice.
+_setup_profile_lock = threading.Lock()
 
 
 @method("onboarding.ensure_setup_profile")
 def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import ensure_setup_profile
     try:
-        setup = ensure_setup_profile()
-        if setup.created:
-            _mirror_launch_credentials(setup.path, {"share_auth": True})
+        with _setup_profile_lock:
+            setup = ensure_setup_profile()
+            if setup.created:
+                _mirror_launch_credentials(setup.path, {"share_auth": True})
     except Exception as e:
         return _err(rid, 5073, str(e))
-    return _ok(rid, {"name": setup.name, "path": str(setup.path), "created": setup.created, "role": "setup"})
+    _start_setup_scan(setup.path)
+    return _ok(rid, {"name": setup.name, "path": str(setup.path), "created": setup.created})
+
+
+@method("onboarding.ensure_setup_session")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import SETUP_CHAT_TITLE, ensure_setup_profile
+    from hermes_state_registry import acquire, release_or_close
+    try:
+        with _setup_profile_lock:
+            setup = ensure_setup_profile()
+            if setup.created:
+                _mirror_launch_credentials(setup.path, {"share_auth": True})
+            db = acquire(setup.path / "state.db")
+            try:
+                row = db.get_session_by_title(SETUP_CHAT_TITLE)
+                if row is None:
+                    row = {"id": db.create_session(new_session_id(), "desktop"), "message_count": 0}
+                    db.set_session_title(row["id"], SETUP_CHAT_TITLE)
+                if not row["message_count"]:
+                    row["message_count"] = db.append_messages_batch(row["id"], _coerce_seed_history(params.get("messages")))
+            finally:
+                release_or_close(db)
+    except Exception as e:
+        return _err(rid, 5075, str(e))
+    _start_setup_scan(setup.path)
+    return _ok(rid, {"profile": setup.name, "session_id": row["id"], "empty": not row["message_count"]})
+
+
+@method("onboarding.state")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import read_state
+    return _onboarding_state_result(rid, read_state)
+
+
+@method("onboarding.record_failed_start")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import record_failed_start
+    return _onboarding_state_result(rid, record_failed_start)
+
+
+@method("onboarding.mark_seen")
+def _(rid, params: dict) -> dict:
+    from hermes_cli.setup_profile import mark_intro_seen
+    return _onboarding_state_result(rid, mark_intro_seen)
 
 
 @method("onboarding.reset_setup_profile")
 def _(rid, params: dict) -> dict:
     from hermes_cli.setup_profile import find_setup_profile, reset_setup_profile
-    found = find_setup_profile()
-    if found is None:
-        return _err(rid, 4072, "no setup profile to reset")
-    _clear_setup_sessions(found[1])
-    try:
-        setup = reset_setup_profile()
-    except Exception as e:
-        return _err(rid, 5074, str(e))
+    with _setup_profile_lock:
+        found = find_setup_profile()
+        if found is None:
+            return _err(rid, 4072, "no setup profile to reset")
+        _clear_setup_sessions(found[1])
+        try:
+            setup = reset_setup_profile()
+        except Exception as e:
+            return _err(rid, 5074, str(e))
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "reset": True})
+
+
+def _start_setup_scan(profile_dir) -> None:
+    """Scan the machine while the fixed beats play, so ``/initiate-setup`` reads the setup
+    home's cache (or joins this scan) instead of scanning on the first model turn."""
+    from agent.initiate_setup_prompt import start_user_scan
+    try:
+        with _session_profile_runtime_scope({"profile_home": str(profile_dir)}, hydrate_secrets=False):
+            start_user_scan()
+    except Exception:
+        # The first turn scans on its own, so a failed prescan costs only time.
+        logger.warning("setup user scan did not start", exc_info=True)
+
+
+def _onboarding_state_result(rid, change) -> dict:
+    from hermes_cli.setup_profile import find_setup_profile, onboarding_eligible
+    try:
+        state = change()
+        found = find_setup_profile()
+    except Exception as e:
+        return _err(rid, 5076, str(e))
+    return _ok(rid, {"eligible": onboarding_eligible(), "profile": found[0] if found else None, **state})
 
 
 def _clear_setup_sessions(profile_dir) -> None:

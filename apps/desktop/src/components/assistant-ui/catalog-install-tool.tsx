@@ -22,7 +22,7 @@ import {
   type ConnectionTarget,
   continueConnectionRequest,
   respondToConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { notifyError } from '@/store/notifications'
 import { profileLabel } from '@/store/profile'
@@ -62,7 +62,7 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   const { t } = useI18n()
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
-  const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
+  const $request = useMemo(() => toolConnectionRequest(runtimeId, props.toolCallId), [props.toolCallId, runtimeId])
   const request = useStore($request)
 
   if (request && connectionRequestOwnsPart(props, request)) {
@@ -307,10 +307,12 @@ function RowOutcome({
   if (target.state === 'initiated' || sending) {
     return (
       <div className="grid min-w-0 gap-1.5" role="status">
-        <p className={cn(CAPTION, 'text-(--ui-text-tertiary) wrap-anywhere')}>
-          {target.state === 'initiated' && target.detail ? target.detail : copy.installing}
-        </p>
+        <p className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.installing}</p>
         <Progress animated aria-label={copy.installing} className="h-0.5 bg-primary/15" indeterminate />
+        {/* The install phase the host is in ("Downloading…", "Installing Python packages…"). */}
+        {target.state === 'initiated' && target.detail ? (
+          <p className={cn(CAPTION, 'text-(--ui-text-quaternary) wrap-anywhere')}>{target.detail}</p>
+        ) : null}
       </div>
     )
   }

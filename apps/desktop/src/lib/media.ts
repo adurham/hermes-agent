@@ -5,7 +5,6 @@ import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
-import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
@@ -426,11 +425,4 @@ export function captureGatewayFileDownload() {
 
   return (path: string, suggestedName: string) =>
     downloadGatewayFileWithFeedback(path, { owner: { connectionId, profile }, suggestedName })
-}
-
-export function mediaDisplayLabel(path: string): string {
-  const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
-  const kind = mediaKind(path)
-
-  return `${capitalize(kind)}: ${escaped}`
 }

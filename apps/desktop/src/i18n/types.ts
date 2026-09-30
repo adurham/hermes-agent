@@ -42,6 +42,8 @@ export type ToolTitleKey =
   | 'read_file'
   | 'search_files'
   | 'session_search_recall'
+  | 'setup_choose'
+  | 'start_chat'
   | 'terminal'
   | 'todo'
   | 'vision_analyze'
@@ -69,9 +71,9 @@ export interface Translations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string
+    dialogTitle: string
     consentBody: string
     whatIsCollected: string
-    collectedIntro: string
     collectedActivity: string
     collectedModels: string
     collectedNames: string
@@ -79,13 +81,11 @@ export interface Translations {
     collectedReliability: string
     collectedUsage: string
     collectedMachine: string
-    installId: string
-    consentWindow: string
+    sending: string
     readDocs: string
     share: string
     local: string
     off: string
-    changeLater: string
     saveFailed: string
     collectLabel: string
     collectDesc: string
@@ -1207,6 +1207,11 @@ export interface Translations {
       disableF12Desc: string
       alwaysExternalLinksTitle: string
       alwaysExternalLinksDesc: string
+      developerTitle: string
+      resetOnboardingTitle: string
+      resetOnboardingDesc: string
+      resetOnboardingAction: string
+      resetOnboardingFailed: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -3646,9 +3651,16 @@ export interface Translations {
     stayTitle: string
     stayText: string
   }
-  guidedGreeting: {
-    line: string
-    nameSuggestion: (name: string) => string
+  /** The app's own tour, run when `gui_tour` starts with no steps. */
+  appTour: {
+    sessions: { title: string; text: string }
+    composer: { title: string; text: string }
+    newSession: { title: string; text: string }
+    model: { title: string; text: string }
+    modelLocal: string
+    capabilities: { title: string; text: string }
+    messaging: { title: string; text: string }
+    rightPane: { title: string; text: string }
   }
   install: {
     stageStates: Record<string, string>
@@ -4429,8 +4441,28 @@ export interface Translations {
       skipped: string
       noAnswer: string
       confirmAndContinueLabel: string
+      oneQuestion: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
+    }
+    setupChoose: {
+      kinds: Record<'accent' | 'connectors' | 'layout' | 'plugins' | 'theme', string>
+      loading: string
+      unavailable: string
+      findApp: string
+      customColor: string
+      plugin: string
+      startsLater: string
+    }
+    startChat: {
+      starting: (title: string) => string
+      startingUntitled: string
+      untitled: string
+      notStarted: string
+      retry: string
+      inProfile: (profile: string) => string
+      open: string
+      openFailed: string
     }
     catalogInstall: {
       preparing: string

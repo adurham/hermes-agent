@@ -3225,6 +3225,7 @@
               "enum": [
                 "bot_room",
                 "browser",
+                "catalog",
                 "clarify",
                 "code_execution",
                 "coding",
@@ -3276,6 +3277,7 @@
                 "setup",
                 "skills",
                 "spotify",
+                "start_chat",
                 "terminal",
                 "todo",
                 "tts",
@@ -4285,6 +4287,7 @@
                 "read_window_below",
                 "search_files",
                 "session_search",
+                "setup_choose",
                 "show_tip",
                 "skill_manage",
                 "skill_view",
