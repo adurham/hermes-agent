@@ -100,6 +100,12 @@ _SCAN_APPS = {
     "Steam": ("steam",),
 }
 
+# Scan app labels that are also connector ids on the connectors card; the card drops ids it does not list.
+_SCAN_CONNECTORS = {
+    "Discord": "discord", "Figma": "figma", "Notion": "notion", "Obsidian": "obsidian", "Outlook": "outlook",
+    "Slack": "slack", "Spotify": "spotify", "Teams": "microsoft_teams", "Zoom": "zoom",
+}
+
 _AGENT_NAMES = {"claude_code": "Claude Code", "codex": "Codex", "hermes": "Hermes"}
 
 _BROWSERS = frozenset({
@@ -684,6 +690,16 @@ def _blender_present(declared: str | None, profile: dict | None) -> bool:
     return "Blender" in used + unused
 
 
+def _blender_seen(declared: str | None, profile: dict | None) -> bool:
+    """Proof of presence only: the declaration found Blender, or, when it gave no answer, the scan saw it."""
+    if declared in ("present", "app_not_running"):
+        return True
+    if declared == "missing_app" or not profile:
+        return False
+    used, unused, _ = _scan_apps(profile)
+    return "Blender" in used + unused
+
+
 def _machine_state(scan: dict | None, age: int | None) -> tuple[str, int | None]:
     if scan and scan.get("machine_state") in ("fresh", "settling", "established"):
         owned = scan.get("owned_days")
@@ -719,7 +735,8 @@ def collect(scanned: Callable[[float], tuple[dict | None, str]] | None = None) -
     leads = spark or looks_new
     kind = _machine_kind(os_family, spark)
     plugin_tasks = [_NVIDIA_TASK] if os_family == "win32" and gpu == "nvidia" else []
-    if _blender_present(blender(deadline)[0], profile):
+    blender_state = blender(deadline)[0]
+    if _blender_present(blender_state, profile):
         plugin_tasks.append(_BLENDER_TASK)
 
     return {
@@ -746,6 +763,7 @@ def collect(scanned: Callable[[float], tuple[dict | None, str]] | None = None) -
             "looks_new": looks_new,
             "is_spark": spark,
             "has_nvidia_gpu": gpu == "nvidia",
+            "has_blender": _blender_seen(blender_state, profile),
             "machine_setup_leads": leads,
             "description": _description(
                 looks_new=looks_new, age=setup_age, spark=spark, gpu=gpu, cpu=cpu,
@@ -755,6 +773,42 @@ def collect(scanned: Callable[[float], tuple[dict | None, str]] | None = None) -
         "plugin_tasks": plugin_tasks,
         "fork": _fork(kind, leads, plugin_tasks),
         "scan": scan,
+    }
+
+
+def _handoff(facts: dict) -> dict:
+    """The handoff message's parts and its two plans from ``templates/handoff.md``, the machine plan cut to
+    this computer, so the model reads them only when it reaches the handoff."""
+    text = (Path(__file__).resolve().parent.parent / "templates" / "handoff.md").read_text(encoding="utf-8")
+    sections = dict(re.findall(r"^## (\S+)\n\n(.*?)\n*(?=^## |\Z)", text, re.M | re.S))
+    machine, scan = facts["machine"], facts.get("scan") or {}
+    arm = str(machine["native_arch"]).lower() in ("arm64", "aarch64")
+    crashes = scan.get("crash_30d")
+    parts = [
+        sections["machine"].replace("<description>", facts["signals"]["description"]),
+        sections["machine-crashes"].replace("<crash_30d>", str(crashes)) if isinstance(crashes, int) and crashes else "",
+        sections["machine-nvidia"] if machine["gpu_class"] == "nvidia" else "",
+        sections["machine-plan"],
+        sections.get(f"machine-drivers-{machine['os_family']}", ""),
+        sections["machine-arm"] if arm else "",
+        sections.get(f"machine-arm-nvidia-{machine['os_family']}", "") if arm and machine["gpu_class"] == "nvidia" else "",
+        sections["machine-end"],
+    ]
+    return {"message": sections["message"], "build": sections["build"],
+            "machine": '"' + " ".join(part for part in parts if part) + '"'}
+
+
+def setup_cards(facts: dict) -> dict:
+    """What the setup cards take from these facts: the fork rows, the rows the apps and plugins cards start
+    with picked (apps seen in use; Blender when it is here), and the handoff text the fork result carries."""
+    used = (facts.get("scan") or {}).get("apps_used") or []
+    return {
+        "fork": facts["fork"],
+        "preselected": {
+            "connectors": [_SCAN_CONNECTORS[app] for app in used if app in _SCAN_CONNECTORS],
+            "plugins": ["blender"] if facts["signals"].get("has_blender") else [],
+        },
+        "handoff": _handoff(facts),
     }
 
 

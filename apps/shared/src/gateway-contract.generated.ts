@@ -4386,8 +4386,9 @@ export interface SetupChooseRequestParams {
   question: string
   options?: SetupChooseOption[] | null
   multi_select?: boolean
+  preselected?: string[] | null
 }
-export type SetupChooseKind = 'question' | 'accent' | 'theme' | 'layout' | 'connectors' | 'plugins'
+export type SetupChooseKind = 'question' | 'accent' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'fork' | 'machine_use'
 export interface SetupChooseOption {
   id: string
   label: string

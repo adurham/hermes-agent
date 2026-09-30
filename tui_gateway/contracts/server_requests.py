@@ -61,6 +61,9 @@ class SetupChooseKind(WireEnum):
     layout = "layout"
     connectors = "connectors"
     plugins = "plugins"
+    tour = "tour"
+    fork = "fork"
+    machine_use = "machine_use"
 
 
 class SetupChooseOption(Params):
@@ -74,6 +77,8 @@ class SetupChooseRequestParams(ServerRequestParams):
     question: str
     options: list[SetupChooseOption] | None = None
     multi_select: bool = False
+    # Row ids the card starts with picked: apps and plugins the machine scan saw.
+    preselected: list[str] | None = None
 
 
 class SetupChooseResult(Result):

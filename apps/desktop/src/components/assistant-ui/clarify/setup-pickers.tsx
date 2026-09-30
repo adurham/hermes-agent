@@ -29,9 +29,15 @@ export interface SetupPickerProps {
   rows: SetupRow[]
 }
 
+/** Kinds drawn as a picker; question, tour, fork and machine_use are drawn as question pills. */
+export type SetupPickerKind = Exclude<SetupChooseKind, 'fork' | 'machine_use' | 'question' | 'tour'>
+
+export const isSetupPickerKind = (kind: SetupChooseKind): kind is SetupPickerKind =>
+  kind !== 'question' && kind !== 'tour' && kind !== 'fork' && kind !== 'machine_use'
+
 const SEARCH_THRESHOLD = 12
 
-export const PICKER_COLUMNS: Record<Exclude<SetupChooseKind, 'question'>, (rows: SetupRow[]) => number> = {
+export const PICKER_COLUMNS: Record<SetupPickerKind, (rows: SetupRow[]) => number> = {
   accent: rows => rows.length,
   connectors: () => 3,
   layout: () => 2,
@@ -207,7 +213,7 @@ function PluginPicker(props: SetupPickerProps) {
   )
 }
 
-export const SETUP_PICKERS: Record<Exclude<SetupChooseKind, 'question'>, FC<SetupPickerProps>> = {
+export const SETUP_PICKERS: Record<SetupPickerKind, FC<SetupPickerProps>> = {
   accent: AccentPicker,
   connectors: ConnectorPicker,
   layout: LayoutPicker,

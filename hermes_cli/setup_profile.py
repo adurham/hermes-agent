@@ -19,6 +19,7 @@ SETUP_PROFILE_DESCRIPTION = "Where Hermes met you — walks your first run, then
 SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
+_CARDS_DIR = "setup-cards"
 _SETUP_TOOLSETS = ["setup", "start_chat", "connections", "no_mcp"]
 _SETUP_DISABLED_TOOLSETS = ["project", "catalog"]
 _SETUP_DEFERRED_TOOLS = [
@@ -137,6 +138,21 @@ def mark_intro_seen() -> dict:
 def mark_completed() -> dict:
     completed_at = datetime.now(timezone.utc).isoformat()
     return _change_state(lambda state: {**state, "intro": "seen", "completed_at": completed_at})
+
+
+def _cards_path(session_id: str) -> Path:
+    return get_hermes_home() / _CARDS_DIR / f"{session_id}.json"
+
+
+def record_cards(session_id: str, cards: dict) -> None:
+    """Keep one setup conversation's card facts: what its ``/initiate-setup`` turn embedded, and where it is."""
+    from utils import atomic_json_write
+    atomic_json_write(_cards_path(session_id), cards)
+
+
+def read_cards(session_id: str) -> dict:
+    from utils import read_json_or_empty
+    return read_json_or_empty(_cards_path(session_id))
 
 
 def _free_setup_profile_name() -> str:
