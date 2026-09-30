@@ -349,6 +349,11 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     await renderSkills()
 
+    // Toolset settings open in a dialog from the toolset's card.
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Vision / Image Analysis' }))
+    })
+
     const link = await screen.findByRole('button', { name: /Choose vision model in Settings/ })
 
     await act(async () => {
