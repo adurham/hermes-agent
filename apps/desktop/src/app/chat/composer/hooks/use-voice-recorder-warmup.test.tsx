@@ -124,9 +124,9 @@ describe('useVoiceRecorder STT readiness barrier', () => {
     })
 
     // User stops after a short clip — but the cold load is still in flight.
-    let stopping: Promise<void> | undefined
+    let stopping: Promise<void> = Promise.resolve()
     await act(async () => {
-      stopping = hook.result.current.dictate() ?? undefined
+      stopping = hook.result.current.dictate() ?? Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -181,7 +181,7 @@ describe('useVoiceRecorder STT readiness barrier', () => {
 
     // The release also carries the captured owner, not a re-read of ambient
     // selection at settle time.
-    const releaseCall = syncSttLeaseSpy.mock.calls.find(([, active]) => active === false)
+    const releaseCall = syncSttLeaseSpy.mock.calls.find(call => call[1] === false)
     expect(releaseCall).toEqual(['desktop:voice-input:test', false, { connectionId: undefined, profile: undefined }])
   })
 })

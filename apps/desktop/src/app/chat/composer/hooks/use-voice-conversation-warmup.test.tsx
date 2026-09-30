@@ -61,8 +61,8 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
-vi.mock('@/store/voice-playback', () => {
-  const { atom } = require('nanostores') as never as { atom: (v: unknown) => unknown }
+vi.mock('@/store/voice-playback', async () => {
+  const { atom } = await import('nanostores')
 
   return { $voicePlayback: atom({ sequence: 0, status: 'idle' }) }
 })
@@ -156,7 +156,7 @@ describe('useVoiceConversation STT readiness barrier', () => {
     })
 
     // The VAD silence callback fires a turn while the cold load is in flight.
-    let turnPromise: Promise<void> | undefined
+    let turnPromise: Promise<void> = Promise.resolve()
     await act(async () => {
       micHandle.stop.mockImplementation(async () => ({ audio: new Blob(), durationMs: 900, heardSpeech: true }))
       turnPromise = Promise.resolve(hook.result.current.stopTurn())

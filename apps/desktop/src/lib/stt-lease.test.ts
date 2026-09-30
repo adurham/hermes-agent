@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const setSttLease = vi.fn(
-  async (_lease: string, _active: boolean, _owner?: { connectionId?: null | string; profile?: null | string }) => ({
-    ok: true
-  })
+  async (
+    _lease: string,
+    _active: boolean,
+    _owner?: { connectionId?: null | string; profile?: null | string }
+  ) => ({ ok: true }) as { ok: boolean; action?: string; warmed?: boolean }
 )
 
 vi.mock('@/hermes', () => ({
