@@ -1,5 +1,13 @@
 /* The one content column every Capabilities tab sits in: search, filters,
    sections and directory rows all share these edges. */
+:root {
+  /* Shared vertical rhythm, the same on every tab. */
+  --capabilities-gap-controls: 16px; /* search → its filter / segment row */
+  --capabilities-gap-lead: 20px; /* last control row → first section heading */
+  --capabilities-gap-section: 48px; /* one section → the next section's heading */
+  --capabilities-gap-heading: 20px; /* section heading → its cards or rows */
+}
+
 .capabilities-page,
 .catalog-search-header,
 .catalog-filter-bar,

@@ -2,12 +2,10 @@ import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ErrorState } from '@/components/ui/error-state'
 import { Masonry } from '@/components/ui/masonry'
-import { SearchField } from '@/components/ui/search-field'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -15,6 +13,7 @@ import { cn } from '@/lib/utils'
 
 import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
 import { PanelEmpty } from '../../overlays/panel'
+import { CapabilitySearch } from '../ui/capability-search'
 
 import { CatalogAlert } from './catalog-alert'
 import { CatalogCard, type CatalogCardVariant } from './catalog-card'
@@ -43,6 +42,8 @@ interface CatalogBrowserProps {
   kind: CatalogKind
   query?: string
   onQueryChange?: (value: string) => void
+  /** Data-derived "Try …" placeholder nudges for the search field. */
+  searchHints?: string[]
   isInstalled: (entry: CatalogEntry) => boolean
   onInstall: (entry: CatalogEntry) => void
   isInstalling?: (entry: CatalogEntry) => boolean
@@ -122,7 +123,8 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   renderInstalledAction,
   selectedEntryId,
   query,
-  onQueryChange
+  onQueryChange,
+  searchHints
 }: CatalogBrowserProps) {
   const { t } = useI18n()
   const c = t.catalog
@@ -281,32 +283,28 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             className="catalog-search-header shrink-0"
             data-catalog-header
           >
-            <SearchField
-              containerClassName="w-full min-w-0 rounded-2xl bg-(--dt-card)"
-              leadingContent={<Badge size="xs" variant="muted">{kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills}</Badge>}
+            <CapabilitySearch
+              actions={<>
+                {headerActions}
+                <Tip label={viewToggleLabel}>
+                  <Button
+                    aria-label={viewToggleLabel}
+                    onClick={() => {
+                      setDetailOpen(false)
+                      $catalogCardView.set(!cardView)
+                    }}
+                    size="icon-xs"
+                    variant="ghost"
+                  >
+                    <Codicon name={cardView ? 'list-unordered' : 'extensions'} />
+                  </Button>
+                </Tip>
+              </>}
+              hints={searchHints}
               onChange={value => onQueryChange?.(value)}
               placeholder={kind === 'plugins' ? c.searchPlugins : c.searchSkills}
-              trailingAction={<div
-              className="flex min-w-0 flex-wrap items-center justify-end gap-3 justify-self-end"
-              data-catalog-actions
-            >
-              {headerActions}
-              <Tip label={viewToggleLabel}>
-                <Button
-                  aria-label={viewToggleLabel}
-                  onClick={() => {
-                    setDetailOpen(false)
-                    $catalogCardView.set(!cardView)
-                  }}
-                  size="icon-xs"
-                  variant="ghost"
-                >
-                  <Codicon name={cardView ? 'list-unordered' : 'extensions'} />
-                </Button>
-              </Tip>
-            </div>}
+              scope={kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills}
               value={query ?? ''}
-              variant="box"
             />
           </header>
           <CatalogFilterBar
@@ -362,7 +360,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     {discover ? (
                       <CatalogDiscovery actions={actions} card={card} entries={filtered} kind={kind} onCategory={filters.chooseCategory} />
                     ) : (
-                      <div className="catalog-filtered-results py-2">
+                      <div className="catalog-filtered-results pt-(--capabilities-gap-lead) pb-2">
                         {CATALOG_MASONRY ? (
                           <Masonry data-catalog-hover-group>{filtered.slice(0, limit).map((entry, index) => card(entry, index))}</Masonry>
                         ) : (

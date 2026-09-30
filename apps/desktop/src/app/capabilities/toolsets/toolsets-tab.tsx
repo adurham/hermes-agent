@@ -13,6 +13,7 @@ import type { ToolsetInfo } from '@/types/hermes'
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
 import { CatalogSwitch } from '../catalog/catalog-switch'
 import { CapabilityEmpty } from '../primitives'
+import { CapabilitySearch } from '../ui/capability-search'
 import { CatalogSurface, type CatalogSurfaceItem, type CatalogSurfaceSection } from '../ui/catalog-surface'
 
 import { useToolCalls } from './tool-calls'
@@ -34,11 +35,14 @@ interface ToolsetsTabProps {
   /** The (connection, profile) scope every read and write routes to. */
   profile: ProfileScope
   query: string
+  onQueryChange: (query: string) => void
+  /** Data-derived "Try …" placeholder nudges. */
+  hints?: string[]
 }
 
 /** THE Tools tab: toolsets as a catalog (feature row, themed lists, developer
  *  banner) with each toolset's settings in a dialog. */
-export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
+export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: ToolsetsTabProps) {
   const { t } = useI18n()
   const toolCalls = useToolCalls(profile)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -121,8 +125,22 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     }
   }
 
+  // Same search row as every other Capabilities tab; it stays put when a query
+  // empties the list.
+  const search = (
+    <header className="catalog-search-header shrink-0">
+      <CapabilitySearch
+        hints={hints}
+        onChange={onQueryChange}
+        placeholder={t.skills.searchToolsets}
+        scope={t.skills.tabToolsets}
+        value={query}
+      />
+    </header>
+  )
+
   if (visibleToolsets.length === 0) {
-    return <CapabilityEmpty noun="tools" query={query} />
+    return <div className="flex h-full min-h-0 flex-col">{search}<CapabilityEmpty noun="tools" query={query} /></div>
   }
 
   const item = (toolset: ToolsetInfo, layout: CatalogSurfaceSection['layout']): CatalogSurfaceItem => {
@@ -174,7 +192,8 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
   ]
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
+      {search}
       <CatalogSurface
         actions={
           <CatalogSwitch
@@ -195,6 +214,6 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
           )}
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   )
 }

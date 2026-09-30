@@ -21,11 +21,12 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   onTabChange?: (id: string) => void
   /** Secondary filters shown full-width on their own row below (expands). */
   filters?: ReactNode
-  onSearchChange: (value: string) => void
-  searchPlaceholder: string
+  /** Header search; a shell that hides it (or whose tabs own their search) omits these. */
+  onSearchChange?: (value: string) => void
+  searchPlaceholder?: string
   /** Data-derived rotating placeholder nudges (see SearchField.hints). */
   searchHints?: string[]
-  searchValue: string
+  searchValue?: string
   /** Hide the search field when there's nothing to search (empty dataset). */
   searchHidden?: boolean
   tabsAlign?: 'center' | 'start'
@@ -97,13 +98,13 @@ export function PageSearchShell({
         {(hasTabs || !searchHidden) && (
           <div className={cn('grid items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]', tabsAlign === 'start' ? 'grid-cols-[minmax(0,1fr)_auto_auto] px-6 pt-[calc(var(--titlebar-height)+1.5rem)]' : 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]')}>
             <div className={cn('flex min-w-0 items-center justify-start', tabsAlign === 'start' ? 'col-start-2 row-start-1 justify-end' : '', searchHidden && tabsAlign === 'start' && 'hidden')}>
-              {!searchHidden && (
+              {!searchHidden && onSearchChange && (
                 <SearchField
                   containerClassName="max-w-[45vw]"
                   hints={searchHints}
                   onChange={onSearchChange}
-                  placeholder={searchPlaceholder}
-                  value={searchValue}
+                  placeholder={searchPlaceholder ?? ''}
+                  value={searchValue ?? ''}
                 />
               )}
             </div>
