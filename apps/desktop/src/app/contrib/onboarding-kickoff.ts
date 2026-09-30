@@ -2,23 +2,17 @@ import type { OnboardingEnsureSetupProfileResult, OnboardingEnsureSetupSessionRe
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
-import {
-  $chatOnboardingThreadIds,
-  endChatOnboardingSolo,
-  pickOnboardingGreeting,
-  takeGuideShape
-} from '@/components/onboarding-chat/assembly'
-import { $setupSession, guideSourceConnectionId, SETUP_CHAT_TITLE } from '@/components/onboarding-chat/setup-profile'
-import { chatMessageText } from '@/lib/chat-messages'
+import { $chatOnboardingThreadIds, endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
+import { $introTurnSent, openIntro, rememberLaunchSource } from '@/components/onboarding-chat/intro'
+import { $setupSession, guideSourceConnectionId } from '@/components/onboarding-chat/setup-profile'
+import type { ChatMessagePart } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { prefetchConnectorCatalog } from '@/store/connector-catalog'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
-import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
-import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { $setupProfileName, type GuideKickoffResult } from '@/store/onboarding-gate'
+import { $introView } from '@/store/onboarding-intro'
 import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
-import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
   $activeGatewayProfile,
   $newChatProfile,
@@ -26,7 +20,7 @@ import {
   ensureGatewayAgent,
   ensureGatewayProfile
 } from '@/store/profile'
-import { $activeSessionId, $messages, $selectedStoredSessionId } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
@@ -38,8 +32,12 @@ function prefetchGuideCatalogs(storedId: null | string): void {
   }
 }
 
+/** Runs a slash command as if typed; `hidden` keeps its user row out of every transcript. */
+export type KickoffSlashCommand = (command: string, options: { hidden: true; sessionId: string }) => Promise<void>
+
 export interface OnboardingKickoffOptions extends Pick<ReturnType<typeof useSessionActions>, 'resumeSession'> {
   requestGateway: AmbientGatewayRequest
+  runSlashCommand: KickoffSlashCommand
 }
 
 interface SetupStatus {
@@ -48,42 +46,64 @@ interface SetupStatus {
   free_tier_route?: boolean
 }
 
-interface GuideSession {
-  id: string
-  message_count?: number
-  resolved_id?: string
+const answeredSetupCard = (part: ChatMessagePart) =>
+  part.type === 'tool-call' && part.toolName === 'setup_choose' && part.result !== undefined
+
+/**
+ * Where the setup chat's opening stands after a relaunch. `blank`: no assistant words yet. `stalled`: no
+ * live turn, and nothing after the last answered card drives the chat on — the backend's name and accent
+ * cards were not both answered, or the model never spoke after the last answer (the app quit mid-turn).
+ */
+function setupChatOpening(runtimeId: string): { blank: boolean; stalled: boolean } {
+  const state = $sessionStates.get()[runtimeId]
+  const parts = (state?.messages ?? []).filter(m => m.role === 'assistant' && !m.hidden).flatMap(m => m.parts)
+  const blank = !parts.some(part => part.type === 'text' && part.text.trim())
+
+  if (!state || state.busy || state.awaitingResponse || state.turnLive || state.needsInput) {
+    return { blank, stalled: false }
+  }
+
+  const answers = parts.flatMap((part, index) => (answeredSetupCard(part) ? [index] : []))
+
+  if (answers.length < 2) {
+    return { blank, stalled: true }
+  }
+
+  const spoke = parts
+    .slice(answers[answers.length - 1] + 1)
+    .some(part => part.type === 'tool-call' || (part.type === 'text' && part.text.trim()))
+
+  return { blank, stalled: !spoke }
 }
 
 export async function adoptGuideSession(
   setupProfile: string,
-  canonical: GuideSession,
+  storedId: string,
   freeTierRoute: SetupStatus['free_tier_route'],
   resumeSession: OnboardingKickoffOptions['resumeSession'],
   guideRequest: AmbientGatewayRequest
-): Promise<void> {
-  await resumeSession(canonical.resolved_id ?? canonical.id, true)
+): Promise<string> {
+  await resumeSession(storedId, true)
   const adoptedRuntimeId = $activeSessionId.get()
   const state = adoptedRuntimeId ? $sessionStates.get()[adoptedRuntimeId] : undefined
 
   if (
     !adoptedRuntimeId ||
     !state?.storedSessionId ||
-    ![canonical.id, canonical.resolved_id].includes(state.storedSessionId) ||
     $selectedStoredSessionId.get() !== state.storedSessionId ||
-    $activeGatewayProfile.get() !== setupProfile ||
-    !$messages.get().some(message => message.role === 'assistant' && !message.hidden && chatMessageText(message).trim())
+    $activeGatewayProfile.get() !== setupProfile
   ) {
     throw new Error('The welcome conversation could not be loaded. Please try again.')
   }
 
-  $chatOnboardingThreadIds.set([canonical.id, adoptedRuntimeId])
+  $chatOnboardingThreadIds.set([...new Set([storedId, state.storedSessionId, adoptedRuntimeId])])
   $setupSession.set({
-    connectionId: guideSourceConnectionId(canonical.id),
+    connectionId: guideSourceConnectionId(storedId),
     profile: setupProfile,
     runtimeId: adoptedRuntimeId,
-    storedId: canonical.id
+    storedId
   })
-  prefetchGuideCatalogs(canonical.id)
+  prefetchGuideCatalogs(storedId)
 
   if (freeTierRoute) {
     await guideRequest('config.set', {
@@ -92,9 +112,11 @@ export async function adoptGuideSession(
       value: 'minimal'
     })
   }
+
+  return adoptedRuntimeId
 }
 
-export function useOnboardingKickoff({ requestGateway, resumeSession }: OnboardingKickoffOptions) {
+export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCommand }: OnboardingKickoffOptions) {
   return useCallback(async (): Promise<GuideKickoffResult> => {
     if (!isOnboardingEnabled()) {
       return 'off'
@@ -122,52 +144,50 @@ export function useOnboardingKickoff({ requestGateway, resumeSession }: Onboardi
         return 'off'
       }
 
+      // The gate gave up waiting (its deadline): the app is already on its normal layout.
+      const stillStarting = () => {
+        if ($introView.get() !== 'starting') {
+          throw new Error('The welcome chat took too long to open.')
+        }
+      }
+
+      stillStarting()
+      takeGuideShape()
+      rememberLaunchSource()
       swapped = true
       $newChatRoute.set(null)
       $newChatProfile.set(setupProfile)
       await ensureGatewayProfile(setupProfile)
-
-      takeGuideShape()
-      await loadMachineProfile()
+      stillStarting()
 
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(setupProfile, method, params, timeout)
 
-      const registryHit = await guideRequest<{ sessions?: GuideSession[] }>('session.list', {
-        include_hidden: true,
-        title: SETUP_CHAT_TITLE
-      })
+      // Finds the setup chat by title or creates it; `empty` is true only before its first turn.
+      const setupChat = await requestGateway<OnboardingEnsureSetupSessionResult>('onboarding.ensure_setup_session', {})
 
-      const canonical = registryHit?.sessions?.[0]
-
-      if (canonical?.message_count) {
-        await adoptGuideSession(setupProfile, canonical, record.free_tier_route, resumeSession, guideRequest)
-
-        return 'started'
-      }
-
-      const capabilities = await readOnboardingCapabilities({
-        connectionId: previousConnectionId,
-        profile: setupProfile
-      })
-
-      const seedMessages = buildChatOnboardingSeedMessages(
-        pickOnboardingGreeting(),
-        record.free_tier_route !== true,
-        capabilities
-      )
-
-      const setupChat = await requestGateway<OnboardingEnsureSetupSessionResult>('onboarding.ensure_setup_session', {
-        messages: seedMessages
-      })
-
-      await adoptGuideSession(
+      const runtimeId = await adoptGuideSession(
         setupProfile,
-        { id: setupChat.session_id },
+        setupChat.session_id,
         record.free_tier_route,
         resumeSession,
         guideRequest
       )
+
+      stillStarting()
+
+      // A relaunch reopens the same setup chat; one whose opening was cut off is sent the command again.
+      const opening = setupChat.empty ? { blank: true, stalled: true } : setupChatOpening(runtimeId)
+
+      openIntro(opening.blank)
+      $introTurnSent.set(!opening.stalled)
+
+      if (opening.stalled) {
+        // The skill turn: the backend plays the fixed cards, then the model takes over.
+        void runSlashCommand('/initiate-setup', { hidden: true, sessionId: runtimeId }).finally(() =>
+          $introTurnSent.set(true)
+        )
+      }
 
       return 'started'
     } catch (error) {
@@ -196,5 +216,5 @@ export function useOnboardingKickoff({ requestGateway, resumeSession }: Onboardi
 
       return 'failed'
     }
-  }, [requestGateway, resumeSession])
+  }, [requestGateway, resumeSession, runSlashCommand])
 }

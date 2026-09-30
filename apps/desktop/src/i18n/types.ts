@@ -1205,6 +1205,11 @@ export interface Translations {
       disableF12Desc: string
       alwaysExternalLinksTitle: string
       alwaysExternalLinksDesc: string
+      developerTitle: string
+      resetOnboardingTitle: string
+      resetOnboardingDesc: string
+      resetOnboardingAction: string
+      resetOnboardingFailed: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -3654,10 +3659,6 @@ export interface Translations {
     capabilities: { title: string; text: string }
     messaging: { title: string; text: string }
     rightPane: { title: string; text: string }
-  }
-  guidedGreeting: {
-    line: string
-    nameSuggestion: (name: string) => string
   }
   install: {
     stageStates: Record<string, string>

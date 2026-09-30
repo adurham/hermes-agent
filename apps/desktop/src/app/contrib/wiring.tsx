@@ -92,7 +92,7 @@ import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -169,7 +169,7 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useOnboardingHandoff } from './onboarding-handoff'
-import { useOnboardingKickoff } from './onboarding-kickoff'
+import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
 import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -707,11 +707,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [navigate, resumeSession]
   )
 
-  const kickoffFirstChat = useOnboardingKickoff({
-    requestGateway: ambientRequestGateway,
-    resumeSession: adoptSessionRoute
-  })
-
   useOnboardingHandoff({
     activeSessionIdRef,
     ensureSessionState,
@@ -793,6 +788,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
+  })
+
+  const runKickoffSlash = useCallback<KickoffSlashCommand>(
+    (command, options) => executeSlashCommand(command, { ...options, typed: false }),
+    [executeSlashCommand]
+  )
+
+  const kickoffFirstChat = useOnboardingKickoff({
+    requestGateway: ambientRequestGateway,
+    resumeSession: adoptSessionRoute,
+    runSlashCommand: runKickoffSlash
   })
 
   // Runs outside the selected ChatBar so queues belonging to background
@@ -1371,7 +1377,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && (
+      {isMainWindow() && (
         <OnboardingChatGate
           enabled={gatewayState === 'open'}
           onKickoff={kickoffFirstChat}

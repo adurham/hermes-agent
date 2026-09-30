@@ -1436,6 +1436,12 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
+      developerTitle: 'Developer',
+      resetOnboardingTitle: 'Reset onboarding',
+      resetOnboardingDesc:
+        'Delete the setup chats, rebuild the setup profile and run the first-run setup again. Your own profiles, chats and plugins stay.',
+      resetOnboardingAction: 'Reset',
+      resetOnboardingFailed: 'Could not reset onboarding',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -4362,10 +4368,6 @@ export const en: Translations = {
     capabilities: { title: 'Capabilities', text: 'Skills, tools and plugins Hermes can use. Add more here.' },
     messaging: { title: 'Messaging', text: 'Reach Hermes from Telegram, Slack, Discord and more.' },
     rightPane: { title: 'The working pane', text: 'Opens files, terminal, review and the in-app browser on the right.' }
-  },
-  guidedGreeting: {
-    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
-    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
   },
   install: {
     stageStates: {
