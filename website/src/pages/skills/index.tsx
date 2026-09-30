@@ -8,6 +8,7 @@ interface Skill {
   name: string;
   description: string;
   overview?: string;
+  image?: string;
   category: string;
   categoryLabel: string;
   source: string;
@@ -310,6 +311,7 @@ function SkillCard({
       onClick={onToggle}
       style={style}
     >
+      {skill.image && <img src={skill.image} alt="" loading="lazy" decoding="async" style={{ width: "100%", aspectRatio: "2 / 1", objectFit: "cover", display: "block" }} />}
       <div className={styles.cardAccent} style={{ background: src.color }} />
 
       <div className={styles.cardInner}>

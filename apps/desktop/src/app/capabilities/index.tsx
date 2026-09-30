@@ -186,6 +186,7 @@ export function CapabilitiesView({
         { id: 'connectors', label: t.connectorsPage.title },
         { id: 'plugins', label: t.skills.tabPlugins }
       ]}
+      tabsAlign="start"
     >
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}

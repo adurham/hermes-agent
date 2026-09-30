@@ -1,0 +1,13 @@
+{
+  "skills": {
+    "autonomous-ai-agents/computer-use": "official-art-feature.jpg",
+    "autonomous-ai-agents/claude-code": "official-art-card-one.jpg",
+    "autonomous-ai-agents/codex": "official-art.jpg",
+    "autonomous-ai-agents/hermes-agent": "official-art-hermes-hero.jpg"
+  },
+  "plugins": {
+    "desktop:kanban": "official-art.jpg",
+    "desktop:hermes-bots": "official-art-card-two.jpg",
+    "desktop:hermes-radio": "official-art-card-one.jpg"
+  }
+}

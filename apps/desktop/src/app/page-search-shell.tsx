@@ -28,6 +28,7 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   searchValue: string
   /** Hide the search field when there's nothing to search (empty dataset). */
   searchHidden?: boolean
+  tabsAlign?: 'center' | 'start'
   /** Right-aligned control in the header's trailing cell (e.g. a refresh button)
    *  so mouse users get a visible affordance for the refresh hotkey. */
   searchTrailingAction?: ReactNode
@@ -36,18 +37,20 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
 function ShellTabs({
   tabs,
   activeTab,
-  onTabChange
+  onTabChange,
+  align
 }: {
   tabs: PageShellTab[]
   activeTab?: string
   onTabChange?: (id: string) => void
+  align?: 'center' | 'start'
 }) {
   return (
     <ResponsiveTabs
       onChange={id => onTabChange?.(id)}
       tabs={tabs}
       value={activeTab ?? tabs[0]?.id ?? ''}
-      wideClassName="justify-center"
+      wideClassName={align === 'start' ? 'justify-start' : 'justify-center'}
     />
   )
 }
@@ -64,6 +67,7 @@ export function PageSearchShell({
   searchHints,
   searchValue,
   searchHidden = false,
+  tabsAlign = 'center',
   searchTrailingAction,
   ...props
 }: PageSearchShellProps) {
@@ -91,8 +95,8 @@ export function PageSearchShell({
       */}
       <div className="shrink-0">
         {(hasTabs || !searchHidden) && (
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]">
-            <div className="flex min-w-0 items-center justify-start">
+          <div className={cn('grid items-center gap-3 px-3 pb-2 pt-[calc(var(--titlebar-height)+0.5rem)]', tabsAlign === 'start' ? 'grid-cols-[minmax(0,1fr)_auto] px-6 pt-[calc(var(--titlebar-height)+1.5rem)]' : 'grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]')}>
+            <div className={cn('flex min-w-0 items-center justify-start', searchHidden && tabsAlign === 'start' && 'hidden')}>
               {!searchHidden && (
                 <SearchField
                   containerClassName="max-w-[45vw]"
@@ -104,8 +108,8 @@ export function PageSearchShell({
               )}
             </div>
             {hasTabs ? (
-              <div className="flex min-w-0 items-center justify-center" data-tour="page-tabs">
-                <ShellTabs activeTab={activeTab} onTabChange={onTabChange} tabs={tabs!} />
+              <div className={cn('flex min-w-0 items-center', tabsAlign === 'start' ? 'justify-start' : 'justify-center')} data-tour="page-tabs">
+                <ShellTabs activeTab={activeTab} align={tabsAlign} onTabChange={onTabChange} tabs={tabs!} />
               </div>
             ) : (
               <span />
