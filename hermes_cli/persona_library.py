@@ -1,11 +1,10 @@
-"""Persona discovery + curated per-role model policy.
+"""Persona discovery.
 
 Ported from the standalone ``hermes-swarm`` package's
 ``swarm.persona_library`` module (2026-08-09), which was retired along with
 the rest of hermes-swarm's multi-agent coordination code. This module is
-the sole surviving piece: persona markdown discovery and the curated
-``SUGGESTED_ROLE_MODELS`` table used by ``delegate_task``'s ``agent_type``
-parameter. Nothing else from hermes-swarm (state.db, messaging, tasks,
+the sole surviving piece: persona markdown discovery used by ``delegate_task``'s
+``agent_type`` parameter. Nothing else from hermes-swarm (state.db, messaging, tasks,
 votes, lifecycle) is used by hermes-agent and none of it was ported.
 
 Personas live as markdown files with YAML frontmatter under
@@ -15,7 +14,6 @@ Public surface:
 
   * :class:`Persona` — discovered persona record.
   * :func:`discover_personas`, :func:`lookup_persona`, :func:`group_by_category`.
-  * :data:`SUGGESTED_ROLE_MODELS` — curated persona -> model mapping.
   * :func:`get_personas_path` — env+default resolver (no config read; the
     wrapper in :mod:`hermes_cli.personas` additionally reads
     ``delegation.personas_path`` from config.yaml).
@@ -231,109 +229,9 @@ def group_by_category(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Curated per-role model defaults
-# ---------------------------------------------------------------------------
-#
-# Mapping rules:
-#   Haiku  — cheap retrieval / triage / monitors / scanners / glue.
-#            Anything that mostly reads state, routes work, emits status.
-#   Sonnet — balanced default for code work: coders, testers, reviewers,
-#            research roles that fan out across multiple sources (the
-#            1M-context tier prevents mid-task compaction).
-#   Opus   — deep reasoning: architecture, security, novel algorithm
-#            design, complex consensus, multi-step planning under
-#            uncertainty.
-#
-# The concrete model strings are NOT hardcoded here. Each role maps to a
-# last-known-good literal that also encodes its tier family
-# (``claude-haiku-*`` / ``claude-sonnet-*`` / ``claude-opus-*``); the actual
-# model string written/displayed is re-resolved at call time from the live
-# delegation config roster by :mod:`hermes_cli.model_tiers` (see
-# ``resolve_tier_model``), falling back to these literals when the roster has
-# nothing for a family. This is the single source of truth shared with
-# :mod:`hermes_cli.delegation_stats`, so a generation bump can never leave
-# one surface writing stale models while the other silently stops firing.
-
-from hermes_cli.model_tiers import LAST_KNOWN_GOOD_TIERS
-
-_HAIKU = LAST_KNOWN_GOOD_TIERS["haiku"]
-_SONNET = LAST_KNOWN_GOOD_TIERS["sonnet"]
-_OPUS = LAST_KNOWN_GOOD_TIERS["opus"]
-
-SUGGESTED_ROLE_MODELS: Dict[str, str] = {
-    # ── Haiku — pure retrieval / triage / monitors / scanners / glue ──────
-    "pii-detector": _HAIKU,
-    "project-board-sync": _HAIKU,
-    "sync-coordinator": _HAIKU,
-    "performance-monitor": _HAIKU,
-    "resource-allocator": _HAIKU,
-    "base-template-generator": _HAIKU,
-    "release-manager": _HAIKU,
-    "workflow-automation": _HAIKU,
-    "load-balancer": _HAIKU,
-    "test-long-runner": _HAIKU,
-    "aidefence-guardian": _HAIKU,
-    "claims-authorizer": _HAIKU,
-
-    # ── Sonnet — balanced default for code work + research roles ─────────
-    "researcher": _SONNET,
-    "scout-explorer": _SONNET,
-    "code-analyzer": _SONNET,
-    "analyze-code-quality": _SONNET,
-    "issue-tracker": _SONNET,
-    "pr-manager": _SONNET,
-    "coder": _SONNET,
-    "tester": _SONNET,
-    "reviewer": _SONNET,
-    "planner": _SONNET,
-    "github-modes": _SONNET,
-    "dev-backend-api": _SONNET,
-    "data-ml-model": _SONNET,
-    "ops-cicd-github": _SONNET,
-    "docs-api-openapi": _SONNET,
-    "spec-mobile-react-native": _SONNET,
-    "production-validator": _SONNET,
-    "test-architect": _SONNET,
-    "python-specialist": _SONNET,
-    "typescript-specialist": _SONNET,
-    "database-specialist": _SONNET,
-    "project-coordinator": _SONNET,
-    "topology-optimizer": _SONNET,
-    "benchmark-suite": _SONNET,
-    "performance-benchmarker": _SONNET,
-    # SPARC stages — mostly tactical (architecture stage is in Opus below).
-    "specification": _SONNET,
-    "pseudocode": _SONNET,
-    "refinement": _SONNET,
-    # Memory subsystem (storage/index work; not novel design)
-    "memory-specialist": _SONNET,
-    # Goal planning (tactical)
-    "agent": _SONNET,
-    "goal-planner": _SONNET,
-    "code-goal-planner": _SONNET,
-    "performance-optimizer": _SONNET,
-
-    # ── Opus — deep reasoning, architecture, security, novel design ───────
-    "arch-system-design": _OPUS,
-    "architecture": _OPUS,  # SPARC architecture stage
-    "adr-architect": _OPUS,
-    "security-architect": _OPUS,
-    "security-architect-aidefence": _OPUS,
-    "security-auditor": _OPUS,
-    "ddd-domain-expert": _OPUS,
-    "performance-engineer": _OPUS,
-    "sparc-orchestrator": _OPUS,
-    "injection-analyst": _OPUS,
-    "repo-architect": _OPUS,
-    "reasoningbank-learner": _OPUS,
-}
-
-
 __all__ = [
     "DEFAULT_PERSONAS_PATH",
     "Persona",
-    "SUGGESTED_ROLE_MODELS",
     "discover_personas",
     "get_personas_path",
     "group_by_category",

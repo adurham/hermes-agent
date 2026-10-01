@@ -3,11 +3,9 @@
 Two independent ladders feed ``suggest_retunes``:
 
   * The **Anthropic ladder** — the three tier anchors (haiku / sonnet /
-    opus). Backbone of two surfaces:
-      * ``hermes_cli.persona_library.SUGGESTED_ROLE_MODELS`` — the curated
-        per-role model defaults written into ``delegation.model_by_role``.
-      * ``hermes_cli.delegation_stats.suggest_retunes`` — promote/demote
-        suggestions keyed on the tier a role's current model belongs to.
+    opus). Backbone of
+    ``hermes_cli.delegation_stats.suggest_retunes`` — promote/demote
+    suggestions keyed on the tier a role's current model belongs to.
   * The **local ladder** — a non-Anthropic model ladder (e.g. the user's
     ollama-cloud roster: gemma4:31b / deepseek-v4-flash:0731 / glm-5.3)
     resolved live from ``delegation.model_by_role`` via explicit role
@@ -16,11 +14,10 @@ Two independent ladders feed ``suggest_retunes``:
 Historically each file hardcoded its own copy of the three Anthropic model
 literals (``claude-haiku-4-5`` / ``claude-sonnet-4-6`` / ``claude-opus-4-7``).
 When the live config roster moved to a new generation, the hardcoded literals
-silently went stale: ``apply_suggested_defaults`` kept writing the old
-generation into the user's config, and ``suggest_retunes`` silently stopped
-firing because the roster's current models no longer matched the hardcoded
-tier map. This module is the single source of truth both surfaces share, so
-a generation bump can never again leave one surface stale. The local ladder
+silently went stale: ``suggest_retunes`` silently stopped firing because the
+roster's current models no longer matched the hardcoded tier map. This module
+is the single source of truth for the tier anchors, so a generation bump can
+never again leave one surface stale. The local ladder
 extends the same call-time resolution to non-Anthropic models so promote /
 demote / escalate suggestions fire for them too.
 

@@ -502,141 +502,6 @@ def _read_by_role(tmp_path) -> dict:
     return cfg.get("delegation", {}).get("model_by_role", {})
 
 
-# ── apply_suggested_defaults ──────────────────────────────────────────────
-
-
-def test_apply_suggested_defaults_fills_empties(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    applied, skipped = personas.apply_suggested_defaults()
-    assert applied == len(personas.SUGGESTED_ROLE_MODELS)
-    assert skipped == 0
-    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    # Researcher: promoted to Sonnet 2026-05-04 (multi-source scans blow
-    # past Haiku's 200K context).  See SUGGESTED_ROLE_MODELS docstring.
-    assert "researcher: claude-sonnet-4-6" in written
-    assert "security-architect: claude-opus-4-7" in written
-    # A role that's still Haiku — just to prove the test exercises both.
-    assert "pii-detector: claude-haiku-4-5" in written
-
-
-def test_apply_suggested_defaults_preserves_user_pins(monkeypatch, tmp_path):
-    user_pin = "claude-opus-4-7"  # not the suggested default for researcher
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"delegation": {"model_by_role": {"researcher": user_pin}}},
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(
-        f"delegation:\n  model_by_role:\n    researcher: {user_pin}\n",
-        encoding="utf-8",
-    )
-    applied, skipped = personas.apply_suggested_defaults(overwrite=False)
-    assert skipped >= 1
-    assert applied == len(personas.SUGGESTED_ROLE_MODELS) - 1
-    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert f"researcher: {user_pin}" in written
-
-
-def test_apply_suggested_defaults_force_overwrites(monkeypatch, tmp_path):
-    user_pin = "claude-opus-4-7"
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"delegation": {"model_by_role": {"researcher": user_pin}}},
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text(
-        f"delegation:\n  model_by_role:\n    researcher: {user_pin}\n",
-        encoding="utf-8",
-    )
-    applied, skipped = personas.apply_suggested_defaults(overwrite=True)
-    assert applied == len(personas.SUGGESTED_ROLE_MODELS)
-    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    # Suggested default for researcher is now Sonnet (promoted 2026-05-04
-    # because multi-source research scans hit Haiku's context cap).
-    assert "researcher: claude-sonnet-4-6" in written
-    assert f"researcher: {user_pin}" not in written
-
-
-def test_apply_suggested_defaults_idempotent(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    applied1, _ = personas.apply_suggested_defaults()
-
-    map_after_first = dict(personas.SUGGESTED_ROLE_MODELS)
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"delegation": {"model_by_role": map_after_first}},
-    )
-    applied2, skipped2 = personas.apply_suggested_defaults()
-    assert applied2 == 0
-    assert skipped2 == len(personas.SUGGESTED_ROLE_MODELS)
-    assert applied1 == len(personas.SUGGESTED_ROLE_MODELS)
-
-
-def test_apply_suggested_defaults_preserves_dict_form_entry(monkeypatch, tmp_path):
-    """A provider-pinned role must round-trip through a defaults sweep.
-
-    Regression guard: the merge used to be built from the flattened
-    role->model map, so saving it back would rewrite the user's dict entry
-    as a bare string and silently drop the provider.
-    """
-    pinned = {"model": "qwen3-coder:480b-cloud", "provider": "ollama-cloud"}
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {
-            "delegation": {
-                "model_by_role": {
-                    "jr-coder": dict(pinned),
-                    "researcher": "claude-opus-4-7",
-                }
-            }
-        },
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    applied, _ = personas.apply_suggested_defaults(overwrite=False)
-    assert applied > 0  # the sweep really did write the config back
-    written = _read_by_role(tmp_path)
-    assert written["jr-coder"] == pinned
-    # The bare-string neighbour keeps its historical shape too.
-    assert written["researcher"] == "claude-opus-4-7"
-
-
-def test_apply_suggested_defaults_skips_dict_entry_matching_suggestion(
-    monkeypatch, tmp_path
-):
-    """The 'already equals the suggestion' skip compares the entry's model."""
-    role, suggested = next(iter(personas.SUGGESTED_ROLE_MODELS.items()))
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {
-            "delegation": {
-                "model_by_role": {
-                    role: {"model": suggested, "provider": "ollama-cloud"}
-                }
-            }
-        },
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    applied, _ = personas.apply_suggested_defaults(overwrite=True)
-    # Every other role is applied; the matching dict entry is skipped, and
-    # its provider survives.
-    assert applied == len(personas.SUGGESTED_ROLE_MODELS) - 1
-    written = _read_by_role(tmp_path)
-    assert written[role] == {"model": suggested, "provider": "ollama-cloud"}
-
-
-def test_suggested_role_models_only_uses_known_models():
-    """Sanity: every suggested model is one of the three curated choices."""
-    valid = {"claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7"}
-    bad = {
-        role: model
-        for role, model in personas.SUGGESTED_ROLE_MODELS.items()
-        if model not in valid
-    }
-    assert not bad, f"Unknown model in defaults: {bad}"
-
-
 # ── Back-compat shim ──────────────────────────────────────────────────────
 
 
@@ -648,7 +513,6 @@ def test_ruflo_agents_shim_reexports():
     # Public API
     assert ruflo_agents.Persona is personas.Persona
     assert ruflo_agents.RufloAgent is personas.Persona
-    assert ruflo_agents.SUGGESTED_ROLE_MODELS is personas.SUGGESTED_ROLE_MODELS
     assert ruflo_agents.discover_ruflo_agents is personas.discover_ruflo_agents
     assert ruflo_agents.lookup_agent is personas.lookup_agent
     assert ruflo_agents.get_role_model_map is personas.get_role_model_map
@@ -657,7 +521,23 @@ def test_ruflo_agents_shim_reexports():
     assert ruflo_agents.set_role_model is personas.set_role_model
     assert ruflo_agents.lookup_model_for_role is personas.lookup_model_for_role
     assert ruflo_agents.lookup_provider_for_role is personas.lookup_provider_for_role
-    assert ruflo_agents.apply_suggested_defaults is personas.apply_suggested_defaults
     # Private helpers re-exported for older test imports
     assert ruflo_agents._parse_frontmatter is personas._parse_frontmatter
     assert ruflo_agents._strip_frontmatter is personas._strip_frontmatter
+
+
+# ── No bulk gap-fill of model_by_role ─────────────────────────────────────
+
+
+def test_no_bulk_default_fill_of_model_by_role():
+    """Pruned roles must never be re-materialized by a bulk 'curated defaults' command.
+
+    The fork's routing source of truth is the rendered delegation.model_by_role; a
+    second curated table + `/delegation defaults` used to re-add every pruned role as a
+    bare Claude-tier string (no provider pin, no cross-provider fallback)."""
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    assert not hasattr(personas, "apply_suggested_defaults")
+    assert not hasattr(personas, "SUGGESTED_ROLE_MODELS")
+    delegation = next(c for c in COMMAND_REGISTRY if c.name == "delegation")
+    assert "defaults" not in delegation.subcommands

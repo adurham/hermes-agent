@@ -3,6 +3,26 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only retirement — 2026-10-01 (`SUGGESTED_ROLE_MODELS` + `/delegation defaults` removed: they re-added pruned roles as Claude-first bare strings)
+
+`delegation.model_by_role` was pruned from 62 roles to 12 (homelab `968cca1`). `/delegation defaults`
+(`apply_suggested_defaults`, fed by the curated `SUGGESTED_ROLE_MODELS` table in `persona_library.py`)
+would have silently put the ~50 pruned roles back, each as a bare Claude tier string with no provider pin
+and no cross-provider fallback — the opposite of the ollama-first routing policy. Trimming the table to
+the 12 kept roles was rejected (consult): a `str -> tier` map cannot express the real entries (ollama
+primary + cross-provider fallback; `sr-coder`/`consultant` Claude-primary), and it would stay a second
+source of truth that contradicts the rendered config. Removed instead: `SUGGESTED_ROLE_MODELS`,
+`apply_suggested_defaults`, the `/delegation defaults [--force]` subcommand and its help, the shim
+re-exports in `ruflo_agents.py`, and 12 tests that pinned the old behaviour. Kept: `ROLE_TIER_GROUPS`,
+`LAST_KNOWN_GOOD_TIERS`, `suggest_retunes`, `/delegation list|stats|parallel|depth|<role> <model>`.
+The single source for role routing is homelab `ansible/roles/hermes_gateway/vars/model_routing.yml`.
+
+**Verified:** 310 tests pass, 3 skipped, across the personas / ruflo shim / model_tiers / role_aliases /
+delegation_stats / commands / delegate suites. New guard
+`tests/hermes_cli/test_personas.py::test_no_bulk_default_fill_of_model_by_role`. `grep` for
+`SUGGESTED_ROLE_MODELS|apply_suggested_defaults` over all `.py`/`.md` outside FORK.md returns nothing.
+**Not yet live:** needs a gateway restart.
+
 ### Fork-only fix — 2026-10-01 (delegate_task: unknown `agent_type` silently ran on the parent model; per-role stats had stopped recording; persona prompts claimed stale models)
 
 Three independent defects in the delegation role machinery, all fork-only code (upstream has none of

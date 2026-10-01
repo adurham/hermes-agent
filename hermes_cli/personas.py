@@ -7,8 +7,7 @@ persona discovery and the curated model table were the only pieces
 hermes-agent depended on). This module is a thin wrapper that:
 
   * Re-exports the library's persona discovery + curated-policy surface
-    (:class:`Persona`, :func:`discover_personas`, :data:`SUGGESTED_ROLE_MODELS`,
-    etc.) so the existing public API in hermes-agent keeps working without
+    (:class:`Persona`, :func:`discover_personas`,     etc.) so the existing public API in hermes-agent keeps working without
     churn for ``tools/delegate_tool.py``, ``cli.py``, slash commands, etc.
   * Adds the hermes-runtime config bits — reading/writing
     ``delegation.model_by_role`` in ``~/.hermes/config.yaml`` and the
@@ -68,8 +67,6 @@ Public surface:
     the personas directory.
   * :func:`lookup_agent` — find one by name.
   * :func:`group_by_category` — bucket by subdir.
-  * :data:`SUGGESTED_ROLE_MODELS` and :func:`apply_suggested_defaults` —
-    curated per-role model defaults.
   * :func:`get_role_model_map`, :func:`get_role_entry_map`,
     :func:`get_role_provider_map`, :func:`set_role_model`,
     :func:`lookup_model_for_role`, :func:`lookup_provider_for_role` —
@@ -86,7 +83,6 @@ from typing import Optional
 from hermes_cli.persona_library import (
     DEFAULT_PERSONAS_PATH,
     Persona,
-    SUGGESTED_ROLE_MODELS,
     discover_personas,
     group_by_category,
 )
@@ -352,63 +348,6 @@ def sync_from_ruflo(
 # Reading/writing user pins is a hermes-runtime concern — the library
 # stays config-free.  These helpers persist ``delegation.model_by_role``.
 # ---------------------------------------------------------------------------
-
-
-def apply_suggested_defaults(*, overwrite: bool = False) -> tuple[int, int]:
-    """Bulk-apply :data:`SUGGESTED_ROLE_MODELS` to ``delegation.model_by_role``.
-
-    Each suggested value is a last-known-good literal that also encodes its
-    tier family (``claude-haiku-*`` / ``claude-sonnet-*`` / ``claude-opus-*``).
-    Before writing, the family is parsed from the literal and re-resolved
-    against the LIVE delegation config roster via
-    :func:`hermes_cli.model_tiers.resolve_tier_model`, so the value written
-    is the roster-current model for that tier when one exists — never a
-    silently stale generation. When the roster has nothing for a family, the
-    last-known-good literal itself is written (unchanged behavior).
-
-    Args:
-        overwrite: When True, replace existing assignments.  When False
-            (default), only fill in roles that have no current assignment —
-            user-customised pins are preserved.
-
-    Returns:
-        ``(applied, skipped)`` — counts of roles updated and roles whose
-        existing assignment was kept (or that weren't in the suggested map).
-    """
-    from hermes_cli.model_tiers import family_of, resolve_tier_model
-
-    current = get_role_entry_map()
-    merged: dict[str, object] = {}
-    for role, entry in current.items():
-        # Preserve the raw shape: a provider-bearing entry round-trips as a
-        # dict, a plain one collapses back to the bare-string form it came in
-        # as.  Flattening everything to a string here would silently drop the
-        # user's provider pins on save.
-        if set(entry) == {"model"}:
-            merged[role] = entry["model"]
-        else:
-            merged[role] = dict(entry)
-    applied = 0
-    skipped = 0
-    for role, model in SUGGESTED_ROLE_MODELS.items():
-        # Derive the tier family from the literal and refresh it against the
-        # live roster so we never write a stale generation into the config.
-        family = family_of(model)
-        if family is not None:
-            model = resolve_tier_model(family)
-        if not overwrite and role in current:
-            skipped += 1
-            continue
-        if current.get(role, {}).get("model") == model:
-            skipped += 1
-            continue
-        merged[role] = model
-        applied += 1
-    if applied == 0:
-        return (0, skipped)
-    if not _save_to_config_yaml("delegation.model_by_role", merged):
-        return (0, skipped)
-    return (applied, skipped)
 
 
 # Keys a dict-form ``model_by_role`` entry may carry.  Mirrors the shape of a
@@ -814,8 +753,6 @@ __all__ = [
     "Persona",
     "ROLE_ALIASES",
     "RufloAgent",
-    "SUGGESTED_ROLE_MODELS",
-    "apply_suggested_defaults",
     "discover_personas",
     "discover_ruflo_agents",
     "get_personas_path",

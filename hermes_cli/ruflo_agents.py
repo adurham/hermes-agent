@@ -17,10 +17,8 @@ from hermes_cli.personas import (
     Persona,
     Persona as RufloAgent,  # legacy name for the dataclass
     ROLE_ALIASES,
-    SUGGESTED_ROLE_MODELS,
     _parse_frontmatter,  # re-exported for legacy callers
     _strip_frontmatter,  # re-exported for legacy callers
-    apply_suggested_defaults,
     discover_personas,
     discover_ruflo_agents,
     get_personas_path,
@@ -46,8 +44,6 @@ __all__ = [
     "Persona",
     "ROLE_ALIASES",
     "RufloAgent",
-    "SUGGESTED_ROLE_MODELS",
-    "apply_suggested_defaults",
     "discover_personas",
     "discover_ruflo_agents",
     "get_personas_path",
