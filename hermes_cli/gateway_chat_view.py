@@ -7,6 +7,11 @@ import uuid
 from hermes_cli.gateway_client import GatewayClientError
 
 
+_BLOCKING_CONTROL_EVENTS = frozenset({
+    "approval.request", "approval.settled", "clarify.request", "clarify.settled",
+})
+
+
 class GatewayChatView:
     def __init__(self, client, snapshot, *, quiet=False, emitter=None, usage_file=None):
         self.usage_file = usage_file
@@ -71,10 +76,17 @@ class GatewayChatView:
                 self.changed.set()
                 return
             admission = params.get("admission_id") or payload.get("admission_id")
+            if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
+                # Approval/clarification gates block the session FIFO, not merely one
+                # admission's output. Track them even when another admission owns the
+                # event so a queued one-shot can detach instead of waiting forever.
+                self._dispatch_event(kind, admission, payload)
+                self.changed.set()
+                continue
             if self.finite and admission:
                 if self.finite_admission is None:
                     # The owner can publish before prompt.submit's receipt reaches this client.
-                    # Hold admission-scoped events until we know which admission this invocation owns.
+                    # Hold admission-scoped output until we know which admission this invocation owns.
                     self._finite_events.append((kind, admission, payload))
                     continue
                 if admission != self.finite_admission:
@@ -145,7 +157,10 @@ class GatewayChatView:
 
     def _request(self, admission, payload):
         self.prompts[payload["prompt_id"]] = payload
-        self.show_prompt(payload)
+        # Finite invocations only need the session-blocking state so they can
+        # detach cleanly; do not print another admission's control details.
+        if not self.finite:
+            self.show_prompt(payload)
 
     def _settled(self, admission, payload):
         self.prompts.pop(payload["prompt_id"], None)
