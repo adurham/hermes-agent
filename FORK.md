@@ -3,6 +3,33 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-10-01 (Claude session-limit 429 burned the full context every turn)
+
+**Problem:** every Claude-subscription session-limit hit cost a full-context retry storm. DirectSDK
+raises the 429 as a `RuntimeError` ending `You've hit your session limit · resets 12:30pm
+(America/Chicago)`; the shared reset parser (`agent/retry_utils.reset_delay_from_message`) knew only
+delta grammars ("resets in 4hr 5min", `quotaResetDelay`, `retry_after`, `resets_in_seconds`), so
+`extract_api_error_context` carried no `reset_at`, `_arm_rate_limit_cooldown` armed the generic 60 s
+backoff, and `restore_primary_runtime` "restored" the spent primary one minute later — observed as
+4 identical 429s in one morning, each re-uploading a ~500K-token conversation for another rejection
+(Mac session 20260930_174305_67dcbe; gateway session 20260928_135554_966728 at 16:28 UTC).
+
+**Fix:** `agent/retry_utils.py` gains a wall-clock grammar (`_RESETS_CLOCK_RE` /
+`_resets_clock_seconds`), tried last in `RETRY_DELAY_PATTERNS` so every consumer — the retry
+cooldown, the credential pool, the gateway's reset hint — agrees on the same wait. The zone is
+REQUIRED (`(America/Chicago)`, `(UTC)`): a bare "resets 5pm" is somebody's local clock and guessing
+can be hours wrong; unknown zones fail open to the previous behavior. Semantics: next occurrence of
+that wall-clock time in the named zone, with a 30-minute just-past tolerance (an error surfacing at
+12:30:05 must not wait ~24 h) and a 24 h cap.
+
+**Verified:** 15 parser tests incl. the exact DirectSDK RuntimeError text through
+`extract_api_error_context` (`tests/agent/test_retry_delay_parsers_shared.py` class
+`TestClaudeWallClockReset`); live in-process arm of the cooldown on the real error string →
+1940 s (the true window) instead of 60 s; `restore_primary_runtime` gated during it; 208 + 72 + 12
+tests in the neighbouring classifier/cooldown/run-agent suites green; one live one-shot through the
+provider returned "pong" (window had reopened). No code change was needed in the plugin — its
+native-error hook stays scoped to dead logins.
+
 ### Fork-only fix — 2026-09-30 (hermes_token_check.py: the daily check was blind to the native credential store)
 
 **Problem:** hermes-gw-01's Claude calls started failing on every request after the box
