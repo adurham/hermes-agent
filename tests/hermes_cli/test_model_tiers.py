@@ -3,13 +3,12 @@
 These are the loud tripwires for the stale-constants bug class. The three
 tier anchors (haiku/sonnet/opus) used to be hardcoded in BOTH
 ``persona_library.py`` and ``delegation_stats.py``; when the live config
-roster moved to a new generation, ``apply_suggested_defaults`` kept writing
-the old generation into the user's config and ``suggest_retunes`` silently
-stopped firing. The resolver here is the single source of truth both
+roster moved to a new generation, ``suggest_retunes`` silently stopped
+firing. The resolver here is the single source of truth both
 surfaces share, resolved at CALL TIME from the live roster.
 
 The drift test seeds a NEXT-GENERATION roster and asserts the resolver,
-``apply_suggested_defaults``, and ``suggest_retunes`` all track it — so if
+and ``suggest_retunes`` track it — so if
 anyone reintroduces a hardcoded literal, this file fails loudly at the next
 generation bump.
 """
@@ -182,7 +181,7 @@ def test_rank_maps_are_call_time_and_roster_current(monkeypatch):
 # ── DRIFT TRIPWIRE: next-generation roster ────────────────────────────────
 #
 # Seeds a gen-6 roster in a sandboxed HERMES_HOME and asserts the resolver,
-# apply_suggested_defaults, and suggest_retunes all track it. This is the
+# and suggest_retunes track it. This is the
 # test that fails loudly at the next generation bump if anyone reintroduces
 # hardcoded drift.
 
@@ -219,27 +218,6 @@ def test_drift_resolver_returns_gen6_models(monkeypatch, tmp_path):
     assert mt.resolve_tier_model("opus") == "claude-opus-6"
 
 
-def test_drift_apply_suggested_defaults_writes_gen6(monkeypatch, tmp_path):
-    """(ii) apply_suggested_defaults writes gen-6 models into the config."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _seed_gen6_roster(tmp_path)
-    applied, skipped = personas.apply_suggested_defaults()
-    # pii-detector is pre-seeded to the gen-6 haiku model, so it's skipped
-    # (already matches the resolved suggestion); every other role is applied.
-    assert applied == len(personas.SUGGESTED_ROLE_MODELS) - 1
-    assert skipped == 1
-    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    # A Haiku-tier role, a Sonnet-tier role, and an Opus-tier role all land
-    # as the gen-6 model — never the stale last-known-good literal.
-    assert "pii-detector: claude-haiku-6-20260101" in written
-    assert "researcher: claude-sonnet-6" in written
-    assert "security-architect: claude-opus-6" in written
-    # And the stale gen-4 literals must NOT appear anywhere.
-    assert "claude-haiku-4-5" not in written
-    assert "claude-sonnet-4-6" not in written
-    assert "claude-opus-4-7" not in written
-
-
 def test_drift_suggest_retunes_fires_for_gen6(monkeypatch, tmp_path):
     """(iii) suggest_retunes produces promote/demote for gen-6 tier models."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -268,22 +246,6 @@ def test_drift_suggest_retunes_fires_for_gen6(monkeypatch, tmp_path):
 
 
 # ── Fallback consistency: empty roster behaves exactly as today ───────────
-
-
-def test_fallback_apply_suggested_defaults_writes_last_known_good(
-    monkeypatch, tmp_path
-):
-    """Empty roster → apply_suggested_defaults writes the last-known-good
-    literals, exactly as the pre-refactor code did."""
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    applied, skipped = personas.apply_suggested_defaults()
-    assert applied == len(personas.SUGGESTED_ROLE_MODELS)
-    assert skipped == 0
-    written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    assert "researcher: claude-sonnet-4-6" in written
-    assert "security-architect: claude-opus-4-7" in written
-    assert "pii-detector: claude-haiku-4-5" in written
 
 
 def test_fallback_suggest_retunes_uses_last_known_good(monkeypatch):

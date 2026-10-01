@@ -78,11 +78,6 @@ class TestResolveRoleAlias:
                 "is a chained alias"
             )
 
-    def test_no_alias_shadows_a_real_curated_role(self):
-        """An alias name must not collide with a curated persona role."""
-        for alias in personas.ROLE_ALIASES:
-            assert alias not in personas.SUGGESTED_ROLE_MODELS
-
 
 # ---------------------------------------------------------------------------
 # Model / provider resolution through the alias
