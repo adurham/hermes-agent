@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pm import paths
+from pm.filesystem import long_root
 from pm.lock import Facts
 from pm.package import InstallError
 from pm.registry import get_package
@@ -35,7 +36,8 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
                 return None
             raise InstallError(name, "pinned tool is unavailable", "run `hermes pm install`")
         if name == "python" and target.startswith("win32") and sealed():
-            writable = paths.writable_store_root()
+            # Spelled like Store spells its root, so the comparison and the copy's file calls agree.
+            writable = long_root(paths.writable_store_root())
             if location[1].root != writable:
                 copied = _installed_location(package, lockfile, target, verify=explicit, roots=(writable,))
                 if copied is None:
