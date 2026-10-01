@@ -22,7 +22,6 @@ import {
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $notifications, dismissNotification } from '@/store/notifications'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import {
@@ -32,6 +31,7 @@ import {
   retainGatewayForAgent
 } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $notifications, dismissNotification } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $newChatConnectionId,
@@ -6949,6 +6949,7 @@ describe('branchStoredSession failure retry', () => {
 
   it('surfaces a retry action when session.create fails, and retry succeeds', async () => {
     let createCallCount = 0
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.create' || method === 'session.branch_stored') {
         createCallCount += 1
@@ -7004,6 +7005,7 @@ describe('branchStoredSession failure retry', () => {
   it('passes the same idempotency_key on retry as on the first attempt', async () => {
     const seenKeys: string[] = []
     let createCallCount = 0
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'session.create' || method === 'session.branch_stored') {
         createCallCount += 1
@@ -7056,6 +7058,7 @@ describe('branchStoredSession failure retry', () => {
     // Long raw message that should be replaced by the fallback via
     // summarizeErrorMessage (>180 chars → fallback).
     const longRawMessage = 'x'.repeat(200)
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create' || method === 'session.branch_stored') {
         throw new Error(longRawMessage)
