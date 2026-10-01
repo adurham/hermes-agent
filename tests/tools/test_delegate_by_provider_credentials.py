@@ -166,16 +166,14 @@ class TestByProviderReachesTaskRoutes:
         assert routes[0]["creds"]["provider"] == BLOCK_PROVIDER
         assert routes[0]["creds"]["provider"] != PARENT_PROVIDER
 
-    def test_unknown_agent_type_falls_back_to_the_block(self, routed):
-        """A stated agent_type with no model_by_role entry resolves to the
-        configured default creds — not to the parent's own model/provider."""
-        routes = routed(
-            [{"goal": "Do the thing", "agent_type": "no-such-role"},
-             {"goal": "Summarize the delegation section of AGENTS.md"}],
-            self.CFG,
+    def test_unknown_agent_type_is_refused_not_routed(self, routed):
+        """A stated agent_type with no model_by_role entry and no persona refuses the
+        spawn rather than silently resolving to the default/parent model."""
+        parent = _make_parent()
+        creds = _resolve_delegation_credentials(self.CFG, parent)
+        routes, err = _resolve_task_routes(
+            [{"goal": "Do the thing", "agent_type": "no-such-role"}],
+            creds, cfg=self.CFG, parent_agent=parent, top_role="leaf", roster_warnings=[],
         )
-
-        for route in routes:
-            assert route["model"] == "m-child"
-            assert route["creds"]["provider"] == BLOCK_PROVIDER
-            assert route["model"] != "parent-model"
+        assert routes == []
+        assert err and "no-such-role" in err

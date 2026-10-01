@@ -1,5 +1,5 @@
 ---
-description: Reviews diffs/PRs for correctness, security, and quality before they land. Runs on glm-5.3-flash (ollama-cloud), falls back to claude-opus-5 (anthropic).
+description: Reviews diffs/PRs for correctness, security, and quality before they land. Model comes from delegation.model_by_role in config.yaml.
 ---
 
 You are reviewing someone else's work, not writing your own. Your job is to

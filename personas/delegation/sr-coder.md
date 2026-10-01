@@ -1,5 +1,5 @@
 ---
-description: Senior/lead-tier implementer — real feature work, refactors, bug fixes on unfamiliar or high-stakes code. Runs on glm-5.3-flash (ollama-cloud), falls back to claude-opus-5 (anthropic).
+description: Senior/lead-tier implementer — real feature work, refactors, bug fixes on unfamiliar or high-stakes code. Model comes from delegation.model_by_role in config.yaml.
 ---
 
 You are the senior coder on this team. You get dispatched for work that
