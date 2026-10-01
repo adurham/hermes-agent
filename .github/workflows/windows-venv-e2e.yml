@@ -85,7 +85,9 @@ jobs:
         # The runner image turns LongPathsEnabled on; 0 is the Windows default
         # most users have. A process reads the value when it starts, so only
         # later steps see it. Keep this step after every lane that expects the
-        # image's setting.
+        # image's setting. It does not depend on those lanes passing.
+        id: long_paths_off
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           reg add 'HKLM\SYSTEM\CurrentControlSet\Control\FileSystem' /v LongPathsEnabled /t REG_DWORD /d 0 /f
@@ -96,6 +98,7 @@ jobs:
         # The test first asserts RtlAreLongPathsEnabled() is false in its own
         # process, so this step cannot pass if the step above did not take.
         # ``-m`` replaces pyproject's addopts, which deselect ``integration``.
+        if: ${{ !cancelled() && steps.long_paths_off.outcome == 'success' }}
         shell: bash
         run: |
           set -uo pipefail
