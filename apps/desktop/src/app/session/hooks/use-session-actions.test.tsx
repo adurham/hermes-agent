@@ -3428,7 +3428,8 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'tile-runtime',
-      count: 2
+      count: 2,
+      idempotency_key: expect.any(String)
     })
   })
 
