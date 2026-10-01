@@ -89,27 +89,22 @@ class TestClaudeWallClockReset:
     """
 
     @staticmethod
-    def _seconds_until_clock(hour12: int, minute: int, meridiem: str, tz_name: str) -> float:
-        tz = ZoneInfo(tz_name)
-        now = datetime.now(tz)
-        hour = hour12 % 12 + (12 if meridiem == "pm" else 0)
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        return (target - now).total_seconds()
+    def _clock_text(moment: datetime) -> str:
+        """The message spelling of ``moment`` (``2:37pm``); the regex reads 1-2 hour digits."""
+        return moment.strftime("%I:%M%p").lower().lstrip("0")
 
     def test_named_zone_resolves_to_that_zones_next_occurrence(self):
-        """The delay is measured in the NAMED zone, not the host's — a host on UTC must still read
-        ``resets 5:30pm (UTC)`` as ~its own evening and ``12:30pm (America/Chicago)`` in Chicago."""
-        for hour12, minute, meridiem, tz_name in (
-            (12, 30, "pm", "America/Chicago"),
-            (5, 30, "pm", "UTC"),
-            (5, 0, "pm", "America/Chicago"),
-        ):
-            message = f"You've hit your session limit · resets {hour12}:{minute:02d}{meridiem} ({tz_name})"
-            expected = self._seconds_until_clock(hour12, minute, meridiem, tz_name)
-            actual = reset_delay_from_message(message)
-            assert actual == pytest.approx(expected, abs=5), message
+        """The wait is measured in the NAMED zone, not the host's: a target built from that zone's
+        own clock must come back as the same delta on a host in any timezone. Runs both a DST zone
+        and UTC so at least one case discriminates against whatever zone the test host is in."""
+        for tz_name in ("America/Chicago", "UTC"):
+            for ahead in (timedelta(hours=2, minutes=37), timedelta(minutes=25)):
+                target = datetime.now(ZoneInfo(tz_name)) + ahead
+                message = f"You've hit your session limit · resets {self._clock_text(target)} ({tz_name})"
+                actual = reset_delay_from_message(message)
+                assert actual is not None, message
+                # The spelling truncates seconds, so the measured wait is up to a minute shorter.
+                assert actual == pytest.approx(ahead.total_seconds(), abs=65), message
 
     def test_zone_is_required_and_invalid_zones_fail_open(self):
         """A bare ``resets 5pm`` is somebody's local clock and guessing it can be hours wrong;
@@ -119,43 +114,48 @@ class TestClaudeWallClockReset:
         assert reset_delay_from_message("resets (America/Chicago)") is None
 
     def test_just_past_instant_is_not_rolled_a_whole_day(self):
-        """An error surfacing seconds after the stated minute means the window just reopened.
+        """An error surfacing within a minute of the stated minute means the window just reopened.
         Rolling to "next occurrence" would wait ~24h for a limit that is already over."""
         now_ct = datetime.now(ZoneInfo("America/Chicago"))
-        message = f"resets {now_ct.strftime('%I:%M%p').lower()} (America/Chicago)"
+        message = f"resets {self._clock_text(now_ct)} (America/Chicago)"
         assert reset_delay_from_message(message) == 0.0
 
     def test_clearly_past_instant_rolls_to_next_day_within_the_cap(self):
-        """A stale error re-read the next day still describes a forward-looking window; the
-        roll-forward must stay bounded (<= 24h) rather than inflate beyond a day."""
+        """A stale error re-read later still describes a forward-looking window; the roll-forward
+        must stay bounded (<= 24h) rather than inflate beyond a day."""
         an_hour_ago = datetime.now(ZoneInfo("America/Chicago")) - timedelta(hours=1)
-        message = f"resets {an_hour_ago.strftime('%I:%M%p').lower()} (America/Chicago)"
+        message = f"resets {self._clock_text(an_hour_ago)} (America/Chicago)"
         seconds = reset_delay_from_message(message)
         assert seconds is not None
-        assert 22 * 3600 <= seconds <= 24 * 3600
+        assert seconds == pytest.approx(23 * 3600, abs=65)
 
     def test_resets_at_variant_and_existing_grammars_are_unchanged(self):
-        assert reset_delay_from_message("resets at 12:30pm (America/Chicago)") is not None
+        target = datetime.now(ZoneInfo("America/Chicago")) + timedelta(minutes=45)
+        assert reset_delay_from_message(f"resets at {self._clock_text(target)} (America/Chicago)") is not None
         assert reset_delay_from_message("Weekly usage limit reached. Resets in 6hr 29min.") == 6 * 3600 + 29 * 60
 
     def test_directsdk_runtimeerror_text_survives_into_the_reset_context(self):
         """End-to-end through the exact text DirectSDK's relay raises: the extractor the retry
         loop consults (``extract_api_error_context``) must carry ``reset_at`` so
         ``_arm_rate_limit_cooldown`` gates primary restoration until the named reopen."""
+        import time
         from agent.agent_runtime_helpers import extract_api_error_context
         from agent.fallback_cooldown import _provider_reset_delay
 
+        ahead = timedelta(minutes=40)
+        target = datetime.now(ZoneInfo("America/Chicago")) + ahead
         message = (
             "Incomplete upstream response (first upstream attempt: status 429, capture incomplete, "
             "native retries denied: 0, upstream said: This request would exceed your account's rate limit. "
-            "Please try again later.): You've hit your session limit \u00b7 resets 12:30pm (America/Chicago)"
+            f"Please try again later.): You've hit your session limit \u00b7 resets {self._clock_text(target)} (America/Chicago)"
         )
         ctx = extract_api_error_context(RuntimeError(message))
         assert "reset_at" in ctx
-        expected = self._seconds_until_clock(12, 30, "pm", "America/Chicago")
         delay = _provider_reset_delay(ctx["reset_at"])
         assert delay is not None
-        assert delay == pytest.approx(expected, abs=5)
-        # The cooldown it arms is the real window (tens of minutes to hours), nowhere near the 60s
-        # default that made the primary look re-usable a minute after the limit fired.
+        assert delay == pytest.approx(ahead.total_seconds(), abs=65)
+        # The cooldown it arms is the real window, nowhere near the 60s default that made the
+        # primary look re-usable a minute after the limit fired.
         assert delay > 60
+        # The extractor's own fallback path (message-based) agrees with the delay.
+        assert abs(ctx["reset_at"] - (time.time() + delay)) < 5
