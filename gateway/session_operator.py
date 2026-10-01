@@ -1,4 +1,4 @@
-"""Private provenance for already-authorized local operator input.
+"""Private provenance for already-authorized operator input.
 
 Operator access is profile-local, not account linking or a change of authorship.
 It never claims unowned legacy history: that still requires the native migration

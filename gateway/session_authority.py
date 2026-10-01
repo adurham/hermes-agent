@@ -303,11 +303,12 @@ class SessionAuthority:
         finite = admit_finite(request.payload)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_attachments(request.payload.get('attachments'))}
-        from gateway.config import Platform
         source = self.sessions[request.ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
+        if source is not None and source.user_id != actor.subject:
             # Durable server authorization, not a client payload field. The original
             # principal remains the admission/retry identity across owner restarts.
+            # Operator provenance is about who was authorized at this boundary, not
+            # whether the bound session happens to use the LOCAL transport.
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}

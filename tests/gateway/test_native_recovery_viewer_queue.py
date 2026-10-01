@@ -1,4 +1,4 @@
-"""Native restart recovery accepts already-authorized local viewer work in the same FIFO."""
+"""Native restart recovery accepts viewer work actually admitted by the authority."""
 
 from __future__ import annotations
 
@@ -6,63 +6,105 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_authority import SessionAuthority
+from gateway.session import SessionSource
+from gateway.session_authority import LiveSession, SessionAuthority
+from gateway.session_contract import Principal, SessionRef, Submission
+from gateway.config import Platform
+from hermes_state import SessionDB
+from hermes_state_runtime import (
+    admit_session_input,
+    begin_runtime_epoch,
+    claim_session_input,
+    list_session_admissions,
+    settle_session_input,
+)
+
+
+def _runner():
+    return SimpleNamespace(_draining=False, session_store=SimpleNamespace())
+
+
+def _source():
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat",
+        user_id="native-user",
+        profile="default",
+    )
+
+
+def _native_row(db, epoch, sid, route):
+    admitted = admit_session_input(
+        db,
+        epoch=epoch,
+        principal_id="messaging:native",
+        session_id=sid,
+        request_id="native",
+        payload={"native_text_v1": {"source": {}, "route": route}},
+    )
+    started = claim_session_input(db, epoch=epoch, session_id=sid)
+    settle_session_input(
+        db,
+        epoch=epoch,
+        admission_id=admitted["admission_id"],
+        generation=started["generation"],
+        outcome="completed",
+    )
 
 
 @pytest.mark.asyncio
-async def test_recovery_validates_queued_viewer_payload_instead_of_rejecting_it(monkeypatch):
-    from gateway.config import Platform
-    from gateway.platforms.event import SessionSource
-
+async def test_submit_persists_viewer_provenance_and_restart_accepts_it(monkeypatch, tmp_path):
     sid = "native-session"
-    source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id="chat", user_id="native-user", profile="default")
     route = "telegram:default:chat"
-    native = {
-        "status": "terminal",
-        "payload": {"native_text_v1": {"source": {}, "route": route}},
-        "principal_id": "messaging:native",
-        "request_id": "native",
-    }
-    viewer = {
-        "status": "queued",
-        "payload": {
-            "text": "viewer follow-up",
-            "local_operator_v1": {
-                "profile_id": "default",
-                "session_id": sid,
-                "principal_id": "authenticated-viewer",
-            },
-        },
-        "principal_id": "authenticated-viewer",
-        "request_id": "viewer",
-    }
+    source = _source()
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session(sid, source="telegram")
+        epoch = begin_runtime_epoch(db, instance_id="first")
+        _native_row(db, epoch, sid, route)
 
-    monkeypatch.setattr(
-        "gateway.session_authority.list_session_admissions",
-        lambda db, session_id, pending_only=False: [native, viewer],
-    )
+        authority = SessionAuthority(
+            _runner(), profile_id="default", instance_id="first", db=db, epoch=epoch)
+        authority.sessions[sid] = LiveSession(source, route)
+        authority._publish_pending = lambda ref: None
+        authority._schedule = lambda ref: None
 
-    async def check_native_route(runner, payload, target, available_source, adapter):
-        return source, route
+        actor = Principal(
+            "authenticated-viewer", "default", frozenset({"session:submit"}), "viewer")
+        await authority.submit(
+            actor,
+            Submission(
+                request_id="viewer",
+                ref=SessionRef("default", sid),
+                payload={"text": "viewer follow-up"},
+                intent="queue",
+            ),
+        )
 
-    monkeypatch.setattr("gateway.session_envelope.check_native_route", check_native_route)
+        rows = list_session_admissions(db, session_id=sid, pending_only=False)
+        viewer = next(row for row in rows if row["request_id"] == "viewer")
+        assert viewer["payload"]["local_operator_v1"] == {
+            "profile_id": "default",
+            "session_id": sid,
+            "principal_id": "authenticated-viewer",
+        }
 
-    scheduled = []
-    fake = SimpleNamespace(
-        db=object(),
-        profile_id="default",
-        runner=SimpleNamespace(session_store=SimpleNamespace()),
-        sessions={},
-        physical_target=lambda ref: "physical",
-        _require_admission_open=lambda: None,
-        _schedule=lambda ref: scheduled.append(ref.session_id),
-    )
+        async def check_native_route(runner, payload, target, available_source, adapter):
+            return source, route
 
-    result = await SessionAuthority.recover_native_sessions(
-        fake, [(sid, source, object())])
+        monkeypatch.setattr(
+            "gateway.session_envelope.check_native_route", check_native_route)
 
-    assert result == {sid: "ready"}
-    assert fake.sessions[sid].source is source
-    assert fake.sessions[sid].route == route
-    assert scheduled == [sid]
+        recovered = SessionAuthority(
+            _runner(), profile_id="default", instance_id="restart", db=db, epoch=epoch)
+        scheduled = []
+        recovered._schedule = lambda ref: scheduled.append(ref.session_id)
+
+        result = await recovered.recover_native_sessions([(sid, source, object())])
+
+        assert result == {sid: "ready"}
+        assert recovered.sessions[sid].source is source
+        assert recovered.sessions[sid].route == route
+        assert scheduled == [sid]
+    finally:
+        db.close()
