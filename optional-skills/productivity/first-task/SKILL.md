@@ -1,7 +1,7 @@
 ---
 name: first-task
 description: "Run the first task chat that setup hands off."
-version: 0.1.0
+version: 0.3.0
 author: "Siddharth Balyan (alt-glitch) + Hermes Agent"
 license: MIT
 platforms: [linux, macos, windows]
@@ -14,7 +14,7 @@ metadata:
 
 # First Task Skill
 
-Runs the first chat after setup, the one `start_chat` opened. The top of this message is the user's ask, then "What setup learned about me" (their picks and the scan), then these rules and a JSON block. The goal: they see work within one minute and hold a finished, useful result within five.
+Runs the first chat after setup. This message holds the user's ask, then "What setup learned about me" (their picks and the scan), then these rules and a JSON block. Goal: visible work within one minute, a finished, useful result within five.
 
 ## When to Use
 
@@ -23,13 +23,21 @@ Runs the first chat after setup, the one `start_chat` opened. The top of this me
 
 ## Prerequisites
 
-The task chat's own tools: `manage_connections`, `manage_catalog`, `clarify`, `terminal`, the file tools, the browser, `tool_search`, `skill_view`, and `desktop_preview` in the desktop app. Use only tools that are in your tool list. A tool named here but missing from your list, often `manage_catalog`, is deferred: run it through `tool_call`, as in the Quick Reference, never by its bare name.
+Tools: `manage_connections`, `manage_catalog`, `clarify`, `terminal`, the file tools, the browser, `tool_search`, `skill_view`, and `desktop_preview` in the desktop app. A tool named here but missing from your tool list, often `manage_catalog`, is deferred: run it through `tool_call`, never by its bare name.
 
 ## How to Run
 
-The JSON block at the end holds `connect`, the connector ids of the apps they picked in setup, and `install`, the catalog plugin ids they picked or their first task brings. The ids are exact: skip search and status checks.
+Obey these limits. They win over every other line.
 
-The "What setup learned" lines are your recon. Do not survey the machine first: no system scan, no update search, no inventory of installed tools. Look at one thing only when the next step needs it.
+1. Your first reply is one short line of text and a tool call, in the same reply.
+2. The JSON block holds `connect` (connector ids) and `install` (plugin ids). The ids are exact. Run the forms below directly, with no search, describe or status step first.
+3. A check is any read-only command (`ls`, `which`, `find`, `cat`, a probe) or a file read. At most 2 checks before you make something. Put several checks in one command.
+4. Never search the whole disk (`find /`) and never read files outside the task's folder. "What setup learned" is the survey.
+5. At most one question before work, and only for a vague ask.
+6. Never run the same call twice. Change a failed call once. If it fails again, say so and go on.
+7. Every first slice makes a thing: a file, a page in the preview, an install, or a brief from real data. A chat summary of what you looked at is not a result.
+8. Every first slice ends with the close card, copied exactly from the Quick Reference, also after a failure.
+9. Say plainly what failed and what you did not test. Never mock or invent data.
 
 ## Quick Reference
 
@@ -38,82 +46,92 @@ The "What setup learned" lines are your recon. Do not survey the machine first: 
 | 1 | One line on what you start with | none |
 | 2 | Connect the picked apps | `manage_connections` connect, every id in `connect`, once |
 | 3 | Install the picked plugins | `manage_catalog` install (through `tool_call` when deferred), every id in `install`, once |
-| 4 | Specific ask: start it. Vague ask: three options | `clarify`, three choices |
+| 4 | Specific ask: start it. Vague ask: one card, three options | `clarify` |
 | 5 | The first slice, finished in five minutes | the task's own tools |
-| 6 | Show the result, offer the next step | `clarify`: Looks right, Change something, Take it further |
+| 6 | One line on the result, then the close card | `clarify`, close card below |
 
 ```
 manage_connections  {"action":"connect","connectors":["<id>", ...]}
 manage_catalog      {"action":"install","items":[{"kind":"plugin","id":"<id>"}, ...],"reason":"<one line>"}
 tool_call           {"calls":[{"name":"manage_catalog","arguments":{"action":"install","items":[{"kind":"plugin","id":"<id>"}],"reason":"<one line>"}}]}   (when manage_catalog is deferred)
 clarify             {"questions":[{"question":"<short question>","choices":["<option>","<option>","<option>"]}]}
+close card          {"questions":[{"question":"How does this look?","choices":["Looks right","Change something","Take it further"]}]}
 ```
+
+Put one entry in `calls` for each `tool_call`. Copy the close card exactly: never rename, add or mark a choice. Your next-step idea goes in the text line.
 
 ## Procedure
 
 ### 1. Connect first
 
-Your first reply is one short line on what you will start with, then steps 2 and 3 back to back, before any other work. Skip a step whose list is empty. A skipped or failed row never blocks: say in one line what it would have added, go on without it, and never offer it again in this chat.
+Run steps 2 and 3 back to back, right after your first line. Skip a step whose list is empty.
 
-Each step runs once. When a later step fails, fix that step and go on; never go back and redo an earlier one. The connect card's answer is final for this chat: use the apps that connected, and do not connect or ask about the others again (an app left unconnected after Continue counts as skipped). Say once, when you close the first slice, that they can connect the rest later.
+Each step runs once. Never redo an earlier step. The connect card's answer is final for this chat: use the apps that connected, and never connect or ask about the others again. An app left unconnected after Continue counts as skipped. Say once, at the close, that they can connect the rest later from the Connections menu.
 
-### 2. Ask only when vague
+### 2. First move for each ask
 
-- A specific ask (a named outcome such as "A daily brief from Linear and Slack", "Install a few apps for this Spark", a scene in Blender): start it now, with no confirming question.
-- A vague ask ("I have something in mind", "Let's figure out a first task together", "help with my work"): one `clarify` card with three options, then start the pick. Text they type instead is the pick.
+| Ask | First move |
+|---|---|
+| A daily brief / work apps | Connect. Find the connected apps' tools with `tool_search`, then write the brief in the chat. None connected: section 3. |
+| Set up this Mac / install apps | One `clarify` app card, then section 4. |
+| Make something in a plugin app (Blender) | Install. Then `skill_view` the plugin's skill by its id and build one small thing. Install not `connected`: section 3. |
+| Automate something / a script | Section 5. If the ask names no task, one card first: "Rename my screenshots by date", "Sort my Downloads by type", "Clear old files off my Desktop". |
+| Vague ("I have something in mind", "Let's figure it out") | One `clarify` card with three options from the list below. Then start the pick. |
 
-Options are outcomes of a few words, each finishable in five minutes, built from their picks and the scan. Name only apps they picked or the scan saw in use.
+Options for a vague ask. Each one makes a thing in five minutes. Name only apps they picked or the scan saw. Never offer "find", "review", "audit" or "clean up my <app>": these make a survey, not a thing.
 
-- Work apps picked (Linear, Slack, Gmail, Calendar): "A daily brief from Linear and Slack", "A summary of my week", "Learn how I work from my tools".
+- Work apps picked: "A daily brief from Linear and Slack", "A summary of my week".
 - An NVIDIA or Spark machine: "Install a few apps for this Spark", "Set up a local model".
-- A plugin picked: one small thing in that app, such as "A simple scene in Blender".
-- Nothing picked: "A small HTML page about <something from the scan>", a quick useful script.
+- A plugin picked: "A simple scene in Blender".
+- Otherwise: "A small HTML page about <something from the scan>", "A start page with links to my apps", "A quick script that tidies my Downloads".
 
-### 3. Time box
+The first option always makes a page or a file. Text they type instead of a choice is the pick. If they answer "surprise me", "idk" or "any", start the first option now: write the file and open it, with no checks first.
 
-- Within one minute they see work: a file being written, a page opening, a first install.
-- Within five minutes they hold a finished result: a page open in the preview, a brief in the chat, apps installed.
-- A big ask gets cut to a first slice. Say so in one line ("Setting up the whole Spark is big; first I'll install a few apps you'll want."), finish that slice, then offer the next one.
-- A step that runs long (a large download, an update search, a full build) is never the first slice: offer it as the next step.
-- No written plan before work, except the machine interview below.
+### 3. When a connect or an install fails
 
-### 4. Machine setup is an interview
+Do not stop with nothing.
 
-For "Help me set up this <machine>" or "Install a few apps":
+1. No app connected, for a brief: say so in one line. Run one check, `gh auth status`. If it is logged in, write a brief from GitHub (open PRs, review requests, assigned issues) and say it comes from GitHub. If not, make a start page or a script that needs no account.
+2. An install whose state is not `connected`, or that errors: say so in one line. Do not look for the plugin on disk, read its source or write your own client. Make the nearest thing without it. For Blender: write `~/hermes-first-task/first_scene.py`, a script that builds the scene, and give the command `blender --python <path>`.
+3. End with the close card. Offer to try again in the text line.
 
-1. Two or three short `clarify` cards, one at a time, two to four choices each: "These apps?" (three to five everyday apps that fit their use and the apps they named), "Install the NVIDIA tools?" (NVIDIA machines only), "A local model?" (a Spark or a strong GPU only).
-2. Then the smallest useful part: install the apps they chose with the official package manager, one line per install.
-3. On Arm, check each install has a native arm64 build and say when only an x64 one exists.
-4. Anything that needs a password, a licence or a payment goes on a short list for them. Never disable security settings or overwrite config without asking.
+### 4. Machine setup
 
-Finish with what changed and one offer for the next slice (drivers, a local model, developer tools).
+1. One `clarify` app card: three to five everyday apps that fit their use, multi-pick. Never offer an app the scan saw: it is installed already.
+2. Check 1, one command, shaped like this: `which brew && ls -d "/Applications/Slack.app" "/Applications/Zoom.app" 2>&1`
+3. Install only the picks the check did not find, one app per command: `brew install --cask <app>`. Say "already installed" for the others. Never reinstall.
+4. On Arm, after the installs, one `lipo -archs` command for the new apps. Say when an app is x64 only.
+5. List for them anything that needs a password, a licence or a payment. Never disable security settings.
+6. One line on what changed and the next slice (developer tools, drivers, a local model), then the close card.
 
-### 5. Build rules
+### 5. Automations
 
-- Real data only: from connected apps (find their tools with `tool_search`) or tools already signed in on this computer, such as a logged-in `gh` (say so in one line). Never mock or sample data. Never route around a connector: no IMAP client, app password or scraping into the same account.
-- Ask before sending, deleting or scheduling anything. Set up no recurring job unless they asked.
+1. Write the script at once with `write_file` in `~/hermes-first-task/`. No checks first.
+2. By default the script only prints what it would do. A flag such as `--apply` makes the changes.
+3. Run it once in preview mode on the real folder, for example `python3 ~/hermes-first-task/tidy_downloads.py ~/Downloads`, and show the output. If you could not run it, say it is untested.
+4. If the folder is missing or empty, say so. Never make test files or test folders (`mkdir`, `touch`, `SetFile`).
+5. Give the one command that does it for real. Set up no recurring job unless they asked.
+
+### 6. Build rules
+
+- Real data only: from connected apps or tools signed in on this computer, such as a logged-in `gh` (say so). Never route around a connector: no IMAP, app password or scraping.
+- Ask before sending, deleting or scheduling anything.
 - A generated page is one self-contained HTML file, opened with `desktop_preview`.
-- A plugin's tools: find them with `tool_search`, and read its skill with `skill_view` by its exact name. If its app is not running, say so plainly.
-- When "What setup learned" says they are new to AI agent apps: explain a feature in one plain sentence when it first matters, with no jargon. The first time you act on the computer, say once that you ask for permission as you go and they can say no.
+- Save every new file in `~/hermes-first-task/`, never in the current folder. Do not copy files around. Say where each file is.
+- Find a plugin's tools with `tool_search` after the install. If its app is not running, say so.
+- Cut a big ask to a first slice and say so in one line. A long step (a large download, a full build) is never the first slice.
+- New to AI agent apps: explain a feature in one plain sentence when it first matters. Say once that you ask for permission and they can say no.
 
-### 6. Close the first slice
+### 7. Close the first slice
 
-One short line on what you made and where it is, then a `clarify` card with "Looks right", "Change something" and "Take it further". Act on the pick.
+One short line on what you made and where it is, then the close card. Act on the pick.
 
 ## Pitfalls
 
-- A survey of the machine before any work. The facts block is the survey.
-- A plan question when the ask was already specific.
-- A 30-minute job as the first slice.
-- Offering again an app they skipped or left unconnected.
-- Running connect again after a later step fails.
-- Calling a deferred tool by its bare name instead of through `tool_call`.
-- Reading the facts block back to them.
+- A chat report in place of a file, a page or an install.
 - Stiff words: write short, plain, warm sentences, with no filler, em dashes or exclamation marks.
 
 ## Verification
 
-- The first reply holds one line of text, then the connect and install calls.
-- Visible work starts within one minute and the first result lands within five.
-- A vague ask got one three-option card; a specific ask got none.
-- The first slice ends with the Looks right, Change something, Take it further card.
+- The first reply is one line of text and a tool call. Only a vague ask got a card.
+- The first slice ends with the exact close card, also after a failure.
