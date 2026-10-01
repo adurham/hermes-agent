@@ -16,10 +16,10 @@ from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
 from tools.plugin_guard_context import (
-    STEP_DOWN, catalog_cap, is_agent_facing, is_base64_media, is_ci_workflow, is_data_decode, is_doc_prose,
-    is_hex_in_char_class, is_inert_fixture_line, is_locale_catalog, is_loopback_continuation,
-    is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token, is_self_uninstall_doc,
-    is_test_tree, logical_line, prose_cap)
+    STEP_DOWN, catalog_cap, is_agent_facing, is_base64_media, is_ci_workflow, is_coin_name_only, is_data_decode,
+    is_doc_prose, is_hex_in_char_class, is_inert_fixture_line, is_json_prose_value, is_locale_catalog,
+    is_loopback_continuation, is_loopback_only, is_pip_install_in_prose_literal, is_regex_alternation_token,
+    is_self_uninstall_doc, is_test_tree, logical_line, prose_cap)
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
@@ -227,10 +227,12 @@ def _context_severity(f: Finding, rel_path: str, line: str, joined: str, doc_pro
         sev = (catalog_cap(f) if locale_catalog else prose_cap(f)) or sev
         if is_self_uninstall_doc(f, line):
             sev = _at_most(sev, "medium")
+    elif is_json_prose_value(f, rel_path, line):
+        sev = prose_cap(f) or sev    # `"en": "Bare sudo commands are …"` in a tips/translation table
     if is_test_tree(rel_path):
         # A key-shaped literal or quoted-only hostile string in a fixture is the corpus the
         # plugin's own tests reject (#89610): a note. Executable test code steps down once.
-        inert = f.category == "credential_exposure" or is_inert_fixture_line(f, line, is_code)
+        inert = f.category == "credential_exposure" or is_inert_fixture_line(f, line, is_code, rel_path)
         sev = _at_most(sev, "medium") if inert else STEP_DOWN.get(sev, sev)
     if f.pattern_id == "encoded_exfil" and is_base64_media(line):
         sev = "low"
@@ -244,6 +246,8 @@ def _context_severity(f: Finding, rel_path: str, line: str, joined: str, doc_pro
         sev = "low"    # `curl -H "Bearer $KEY" \` + `http://localhost:8080/health`: local health check
     if is_hex_in_char_class(f, line):
         sev = "low"    # `[\x00-\x1F\x7F]`: a control-char filter, not an assembled payload
+    if is_coin_name_only(f, line):
+        sev = _at_most(sev, "medium")    # "monero gateway" in a connector index, no miner on the line
     if is_code and is_pip_install_in_prose_literal(f, line):
         sev = "low"    # "no pip install is needed" in a user-facing message
     return sev

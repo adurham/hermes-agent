@@ -109,14 +109,15 @@ def catalog_cap(finding: Finding) -> Optional[str]:
 
 
 # A README "Uninstall" section removing the plugin's OWN install directory
-# (``rm -rf "$HOME/.hermes/plugins/<name>"``) is the one destructive shape that is harmless by
-# construction: one ``rm``, one argument rooted at ``$HOME/.hermes/plugins/`` or ``skills/``
+# (``rm -rf "$HOME/.hermes/plugins/<name>"``, ``rm -rf ~/.hermes/plugins/<name>`` before a reinstall
+# ``cp``) is the one destructive shape that is harmless by construction: one ``rm``, one argument
+# rooted at ``$HOME``/``${HOME}``/``~`` + ``/.hermes/plugins/`` or ``skills/``
 # with a plain leaf — no glob, no ``..``, nothing chained. It lands at medium (a note). Any
 # wider target (``$HOME``, ``$HOME/.hermes``, ``$HOME/.hermes/plugins/*``) only gets the
 # generic prose step (high, caution) and the same line in a ``.sh`` stays critical (#115353).
 _SELF_UNINSTALL_RM = re.compile(
     r'^(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
-    r'(?P<q>["\']?)\$HOME/\.hermes/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
+    r'(?P<q>["\']?)(?:\$HOME|\$\{HOME\}|~)/\.hermes/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
     r'\s*(?:#.*)?$'
 )
 
@@ -148,11 +149,24 @@ _EXEC_ON_LINE = re.compile(
     r"|spawnSync|child_process|source|os\.startfile|open)\s*\(|\$\(|(?<![\w\\])`", re.IGNORECASE)
 
 
-def is_inert_fixture_line(finding: Finding, line: str, is_code: bool) -> bool:
+# In Python/JS/TS a quote never runs a command, so ``$(whoami)`` or a backtick INSIDE a string
+# literal (``'; rm -rf / ; $(whoami) `id`'`` in a hostile-input table) is data, not an exec marker;
+# the call that would run it (``os.system(``, ``exec(``) sits outside the literal and still counts.
+# Shell-like files keep the raw line: there ``"$(id)"`` executes inside double quotes.
+_QUOTES_NEVER_EXECUTE_SUFFIXES = {".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"}
+
+
+def _executes(line: str, rel_path: str) -> bool:
+    if Path(rel_path).suffix.lower() in _QUOTES_NEVER_EXECUTE_SUFFIXES:
+        line = _LITERAL_SPANS.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], line)
+    return _EXEC_ON_LINE.search(line) is not None
+
+
+def is_inert_fixture_line(finding: Finding, line: str, is_code: bool, rel_path: str = "") -> bool:
     """The finding's text is quoted test data on a line that does not execute anything."""
     if not is_code:
         return True
-    if _EXEC_ON_LINE.search(line):
+    if _executes(line, rel_path):
         return False
     rx = _PATTERN_BY_ID.get(finding.pattern_id)
     hits = list(rx.finditer(line)) if rx else []
@@ -370,10 +384,76 @@ def is_loopback_continuation(finding: Finding, line: str, joined: str) -> bool:
     return rx is not None and rx.search(joined) is None and bool(hosts) and all(h in _LOOPBACK_HOSTS for h in hosts)
 
 
+# ── (11) prose string values in a JSON data file ────────────────────────────────────────────
+# A translation table or tips file (``tips_zh.json``: ``"en": "Bare sudo commands are
+# auto-rewritten …"`` and a ``"tips": [ … ]`` list of sentences) is read with ``json.load`` and
+# shown to a human. On a ``"key": "value"`` line whose key is a sentence or a plain data name, or a
+# bare string list element, a token in the MIDDLE of the string is prose
+# and takes the README prose cap for a ``high`` finding (one step down; agent-facing shapes keep
+# full severity, and a ``critical`` stays critical — data a plugin's code may still hand to a
+# shell can lose a confirm prompt here, never a block). A string
+# that starts with the command (``"cleanup": "rm -rf /"``) or names it after a shell separator or
+# ``sudo``/``exec`` (``"sudo",`` in an ``args`` array), keys that name something executed
+# (``"command"``, ``"postinstall"``, ``"run"``, ``"args"`` …) and ``package.json`` (npm runs its
+# ``scripts``) keep the severity.
+_JSON_STRING_LINE = re.compile(r'^\s*(?:"(?P<k>(?:[^"\\]|\\.)*)"\s*:\s*)?"(?P<v>(?:[^"\\]|\\.)*)"\s*,?\s*$')
+_JSON_COMMAND_KEY = re.compile(r"cmd|command|script|exec|run|shell|install|hook|arg|entry|bin|start|setup", re.IGNORECASE)
+_JSON_EXECUTED_FILES = {"package.json"}
+_COMMAND_POSITION = re.compile(r"(?:^|[;&|`(]|\$\(|\b(?:sudo|exec|eval|do|then|xargs|bash|sh|-c))\s*$", re.IGNORECASE)
+
+
+def is_json_prose_value(finding: Finding, rel_path: str, line: str) -> bool:
+    """Every hit sits mid-sentence inside the key or value of a ``"key": "string"`` pair (or a bare
+    string list element) in a ``.json`` data file, under a key that does not name something executed."""
+    p = Path(rel_path)
+    if finding.severity != "high" or p.suffix.lower() != ".json" or p.name.lower() in _JSON_EXECUTED_FILES:
+        return False
+    m = _JSON_STRING_LINE.match(line)
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    if m is None or rx is None:
+        return False
+    key = m.group("k")
+    if key is not None and not re.search(r"\s", key) and _JSON_COMMAND_KEY.search(key):
+        return False
+
+    def prose(h: "re.Match[str]") -> bool:
+        part = next((g for g in ("k", "v") if m.start(g) <= h.start() and h.end() <= m.end(g)), None)
+        return part is not None and _COMMAND_POSITION.search(line[m.start(part):h.start()]) is None
+
+    hits = list(rx.finditer(line))
+    return bool(hits) and all(prose(h) for h in hits)
+
+
+# ── (12) a coin NAME without any mining machinery ───────────────────────────────────────────
+# ``crypto_mining`` keys on miner software and pool protocols (``xmrig``, ``stratum+tcp``,
+# ``coinhive``, ``cryptonight``) plus the bare coin name ``monero``. The name alone is a keyword
+# in a connector catalog or search index (``"monero gateway"``, ``… monero multimodal …``), not a
+# miner: with no miner binary, pool, algorithm or mining verb on the line it lands at medium
+# (reported, verdict-neutral). Any of those beside it keeps the pattern's severity.
+_MINING_MACHINERY = re.compile(
+    r"xmrig|stratum|coinhive|cryptonight|randomx|cpuminer|minerd|nicehash|hashrate|donate-level"
+    r"|\bmin(?:e[sd]?|ers?|ing)\b|--(?:coin|algo)\b", re.IGNORECASE)
+
+
+def _is_standalone_coin_name(line: str, start: int, end: int) -> bool:
+    return (line[start:end].lower() == "monero" and (start == 0 or not line[start - 1].isalnum())
+            and (end == len(line) or not line[end].isalnum()))
+
+
+def is_coin_name_only(finding: Finding, line: str) -> bool:
+    """Every ``crypto_mining`` hit on the line is the standalone word ``monero`` and nothing on
+    the line names mining software, a pool or the act of mining."""
+    if finding.pattern_id != "crypto_mining" or _MINING_MACHINERY.search(line):
+        return False
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    hits = list(rx.finditer(line)) if rx else []
+    return bool(hits) and all(_is_standalone_coin_name(line, h.start(), h.end()) for h in hits)
+
+
 __all__ = [
     "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
     "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
     "is_inert_fixture_line", "is_base64_media",
     "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
-    "is_hex_in_char_class", "logical_line", "is_loopback_continuation",
+    "is_hex_in_char_class", "logical_line", "is_loopback_continuation", "is_json_prose_value", "is_coin_name_only",
 ]
