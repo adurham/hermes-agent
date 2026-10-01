@@ -1733,13 +1733,15 @@ _CLARIFY_NON_RESPONSE_TEXTS = (
 )
 
 
-# Complete historical headless callback envelopes. A prefix alone can also be
-# user-entered text; the suffix distinguishes the runtime's instruction to proceed.
+# Historical callbacks used repr(question) and repr(list[str]). Quoted fields
+# must close before a suffix counts: user text can contain the suffix itself.
+_CLARIFY_QUOTED_TEXT = r"(?:'[^'\\]*(?:\\.[^'\\]*)*'|\"[^\"\\]*(?:\\.[^\"\\]*)*\")"
 _CLARIFY_HEADLESS_NOTICE = re.compile(
     r"\[(?:oneshot mode: no user available\. |"
-    r"single-query mode: no user available to answer .+\. )"
+    rf"single-query mode: no user available to answer {_CLARIFY_QUOTED_TEXT}\. )"
     r"(?:Make the most reasonable assumption you can and continue\.|"
-    r"Pick the best (?:option|subset) from \[.*\] using your own judgment and continue\.)\]",
+    rf"Pick the best (?:option|subset) from \[{_CLARIFY_QUOTED_TEXT}"
+    rf"(?:,\s*{_CLARIFY_QUOTED_TEXT})*\] using your own judgment and continue\.)\]",
     re.DOTALL,
 )
 
@@ -1751,6 +1753,34 @@ def _is_clarify_non_response(item) -> bool:
     return (text in _CLARIFY_NON_RESPONSE_TEXTS
             or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
             or _CLARIFY_HEADLESS_NOTICE.fullmatch(text) is not None)
+
+
+def _filter_legacy_clarify_answers(values):
+    """Remove complete notices, including contiguous comma-normalized fragments."""
+    answers = []
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if isinstance(item, str) and item.strip().startswith((
+            "[oneshot mode: no user available.",
+            "[single-query mode: no user available to answer ",
+        )):
+            text = ""
+            notice_end = None
+            for end in range(index, len(values)):
+                if not isinstance(values[end], str):
+                    break
+                text += ("," if end > index else "") + values[end].strip()
+                if _CLARIFY_HEADLESS_NOTICE.fullmatch(text):
+                    notice_end = end
+                    break
+            if notice_end is not None:
+                index = notice_end + 1
+                continue
+        if not _is_clarify_non_response(item):
+            answers.append(item)
+        index += 1
+    return answers
 
 
 def _sum_clarify(name, args, content, content_len, line_count):
@@ -1776,13 +1806,9 @@ def _sum_clarify(name, args, content, content_len, line_count):
             # Only those legacy records need the old sentinel check; explicit status wins.
             # Drop just the notice items so other selections in the same entry survive.
             if "status" not in entry:
-                # The old multi-select normalizer split non-JSON callback text on
-                # commas. Recognize the complete envelope before filtering items,
-                # or its prefix-less trailing fragments become alleged answers.
-                if (isinstance(value, list) and all(isinstance(item, str) for item in values)
-                        and _CLARIFY_HEADLESS_NOTICE.fullmatch(",".join(item.strip() for item in values))):
-                    continue
-                values = [item for item in values if not _is_clarify_non_response(item)]
+                # Scan complete envelopes, not the whole list: genuine selections
+                # can surround a notice split by the old multi-select normalizer.
+                values = _filter_legacy_clarify_answers(values)
             answers.extend(values)
     answers = [answer for answer in answers if isinstance(answer, str) and answer]
     if not answers:
