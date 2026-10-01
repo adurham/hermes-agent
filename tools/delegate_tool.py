@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
     _ABANDON_POLL_INTERVAL, _ChildRun, _DelegationAbandoned, _attach_child, _build_child_goal_message,
-    _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry, _record_delegation_stat,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
@@ -465,6 +465,7 @@ def _run_single_child(
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
+        _record_delegation_stat(child, entry)
         return run.attach_worktree(entry)
     except Exception as exc:
         # Close steer acceptance before any completion callback (see _merge_late_steer).
@@ -611,6 +612,16 @@ def _auto_route_skip_cause(diagnostics: Optional[Dict[str, Any]]) -> str:
     return reason
 
 
+def _persona_exists(name: str) -> bool:
+    """True when a persona markdown file named ``name`` is discoverable."""
+    try:
+        from hermes_cli.personas import lookup_agent
+        return lookup_agent(name) is not None
+    except Exception:
+        logger.debug("delegate_task: persona lookup failed", exc_info=True)
+        return True  # cannot tell -> do not reject
+
+
 def _resolve_task_routes(
     task_list, creds, *, cfg, parent_agent, top_role, roster_warnings,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
@@ -726,6 +737,27 @@ def _resolve_task_routes(
             if alias_target:
                 role_cfg_key = alias_target
         role_map_model = role_model_map.get(role_cfg_key) if role_cfg_key else None
+
+        # A STATED agent_type that names neither a model_by_role entry nor a persona would
+        # silently run on the default/parent model (the expensive one) — refuse the whole
+        # spawn instead. Fail-open only when no roster is configured at all (nothing to be
+        # unknown AGAINST). Auto-route picks and tier roles are config-derived, not stated.
+        if (
+            task_agent_type is not None
+            and not agent_type_is_auto
+            and role_model_map
+            and task_agent_type == stated_agent_type
+            and not (role_cfg_key in role_model_map or role_cfg_key in role_entry_map)
+            and not resolve_role_alias(task_agent_type)
+            and not _persona_exists(task_agent_type)
+        ):
+            known = ", ".join(sorted(role_model_map))
+            return [], (
+                f"Task {i}: agent_type={task_agent_type!r} is not a delegation.model_by_role "
+                f"role and has no persona file, so it would silently run on the default/parent "
+                f"model. Known roles: {known}. Pass a known role, agent_type='auto', or an "
+                f"explicit model=."
+            )
 
         # The classifier's model is only a FALLBACK for tasks it was allowed to route:
         # ones that stated no agent_type (or opted in with "auto"), plus escalations

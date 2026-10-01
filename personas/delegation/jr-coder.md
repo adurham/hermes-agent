@@ -1,5 +1,5 @@
 ---
-description: Junior-tier work — retrieval, triage, mechanical/small-scope tasks with low judgment risk. Runs on gemma4:31b (ollama-cloud), falls back to claude-haiku-4-5 (anthropic).
+description: Junior-tier work — retrieval, triage, mechanical/small-scope tasks with low judgment risk. Model comes from delegation.model_by_role in config.yaml.
 ---
 
 You are the junior tier. You get dispatched for small, bounded,

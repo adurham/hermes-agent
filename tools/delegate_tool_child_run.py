@@ -649,6 +649,32 @@ def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
                 tool_trace[-1].update(result_meta)  # no tool_call_id: pair with the latest call
     return tool_trace
 
+def _record_delegation_stat(child: Any, entry: Dict[str, Any]) -> None:
+    """Append this child's outcome to delegation_stats.json (feeds /delegation stats and
+    retune suggestions). Best-effort: telemetry must never fail a delegation."""
+    try:
+        from hermes_cli.delegation_stats import DelegationStat, record
+
+        api_calls = int(_num(entry.get("api_calls", 0)))
+        max_iter = int(_num(getattr(child, "max_iterations", 0)))
+        tokens = entry.get("tokens") or {}
+        record(DelegationStat(
+            role=str(entry.get("agent_type") or ""),
+            model=str(entry.get("model") or ""),
+            status=str(entry.get("status") or ""),
+            exit_reason=str(entry.get("exit_reason") or ""),
+            duration_seconds=float(entry.get("duration_seconds") or 0.0),
+            input_tokens=int(_num(tokens.get("input", 0))),
+            output_tokens=int(_num(tokens.get("output", 0))),
+            cost_usd=float(entry.get("cost_usd") or 0.0),
+            api_calls=api_calls,
+            max_iterations=max_iter,
+            hit_max_iter=max_iter > 0 and api_calls >= max_iter,
+        ))
+    except Exception:
+        logger.debug("delegation stats record failed", exc_info=True)
+
+
 def _build_result_entry(
     child: Any, result: Dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
 ) -> Dict[str, Any]:

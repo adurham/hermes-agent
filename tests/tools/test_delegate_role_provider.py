@@ -687,13 +687,14 @@ class TestCoderDispatchUnaffected:
         )
         assert _by_agent_type(captured, "jr-coder")["model"] == "qwen3-coder:480b-cloud"
 
-    def test_unknown_agent_type_still_falls_through(self, dispatch):
-        """A non-alias, unconfigured role behaves exactly as before."""
-        _result, captured = dispatch(
+    def test_unknown_agent_type_is_refused(self, dispatch):
+        """A stated agent_type that is neither a configured role, an alias, nor a
+        persona must refuse the spawn instead of silently running on the batch model."""
+        result, captured = dispatch(
             [{"goal": "Do the thing", "agent_type": "no-such-role"}, TASK_BARE],
             self.ENTRY_MAP,
         )
 
-        child = _by_agent_type(captured, "no-such-role")
-        assert child["model"] == "claude-sonnet-4-6"  # batch cfg model
-        assert child["override_provider"] == BATCH_PROVIDER
+        assert captured == [] or not captured
+        assert "no-such-role" in str(result)
+        assert "not a delegation.model_by_role" in str(result)
