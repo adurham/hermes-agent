@@ -20,6 +20,7 @@
 
 import { THEME_PRESET_PALETTES } from '@hermes/shared'
 
+import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
 
 // Color-emoji fonts to append to every stack as a last resort. None of the UI
@@ -339,6 +340,31 @@ export const nousAltTheme: DesktopTheme = {
 }
 
 /**
+ * Classic Hermes — the CLI's stock `default` skin (gold on navy), offered as a
+ * Desktop pick under its OWN id. Never `default`: stock config ships
+ * `display.skin: default`, and Desktop reads that as "no pick" (→ nous), so a
+ * user only ever gets Classic by choosing it (#76579). The palette goes through
+ * the same converter a backend skin takes, fed the colors it reads from
+ * `hermes_cli/skin_engine.py`'s `default`, so it paints what the CLI paints.
+ */
+export const classicTheme: DesktopTheme = {
+  ...(skinToDesktopTheme({
+    name: 'classic',
+    colors: {
+      status_bar_bg: '#1a1a2e',
+      banner_text: '#FFF8DC',
+      ui_accent: '#FFBF00',
+      banner_border: '#CD7F32',
+      banner_dim: '#B8860B',
+      ui_error: '#ef5350',
+      completion_menu_bg: '#1a1a2e'
+    }
+  }) as DesktopTheme),
+  label: 'Classic Hermes',
+  description: 'Classic Hermes — gold and kawaii'
+}
+
+/**
  * Midnight — deep blue-violet, near-monotone. Dark only: it has no light
  * palette because the whole idea is the dark end of the spectrum.
  */
@@ -402,6 +428,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   everforest: everforestTheme,
   solarized: solarizedTheme,
   'nous-alt': nousAltTheme,
+  classic: classicTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
