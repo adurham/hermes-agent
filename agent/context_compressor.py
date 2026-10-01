@@ -1726,7 +1726,6 @@ _CLARIFY_NON_RESPONSE_PREFIXES = (
     "[user did not respond",  # gateway clarify delivery timeout
     "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
     "[oneshot mode:",  # hermes_cli/oneshot.py
-    "[single-query mode: no user available",  # hermes chat -q headless callback
 )
 # Matched whole: as a prefix these would also swallow real answers that start the same way.
 _CLARIFY_NON_RESPONSE_TEXTS = (
@@ -1734,11 +1733,24 @@ _CLARIFY_NON_RESPONSE_TEXTS = (
 )
 
 
+# Complete historical headless callback envelopes. A prefix alone can also be
+# user-entered text; the suffix distinguishes the runtime's instruction to proceed.
+_CLARIFY_HEADLESS_NOTICE = re.compile(
+    r"\[(?:oneshot mode: no user available\. |"
+    r"single-query mode: no user available to answer .+\. )"
+    r"(?:Make the most reasonable assumption you can and continue\.|"
+    r"Pick the best (?:option|subset) from \[.*\] using your own judgment and continue\.)\]",
+    re.DOTALL,
+)
+
+
 def _is_clarify_non_response(item) -> bool:
     if not isinstance(item, str):
         return False
     text = item.strip()
-    return text in _CLARIFY_NON_RESPONSE_TEXTS or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+    return (text in _CLARIFY_NON_RESPONSE_TEXTS
+            or text.startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+            or _CLARIFY_HEADLESS_NOTICE.fullmatch(text) is not None)
 
 
 def _sum_clarify(name, args, content, content_len, line_count):
@@ -1764,6 +1776,12 @@ def _sum_clarify(name, args, content, content_len, line_count):
             # Only those legacy records need the old sentinel check; explicit status wins.
             # Drop just the notice items so other selections in the same entry survive.
             if "status" not in entry:
+                # The old multi-select normalizer split non-JSON callback text on
+                # commas. Recognize the complete envelope before filtering items,
+                # or its prefix-less trailing fragments become alleged answers.
+                if (isinstance(value, list) and all(isinstance(item, str) for item in values)
+                        and _CLARIFY_HEADLESS_NOTICE.fullmatch(",".join(item.strip() for item in values))):
+                    continue
                 values = [item for item in values if not _is_clarify_non_response(item)]
             answers.extend(values)
     answers = [answer for answer in answers if isinstance(answer, str) and answer]
