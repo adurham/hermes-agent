@@ -3,6 +3,32 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-10-01 (delegate_task: unknown `agent_type` silently ran on the parent model; per-role stats had stopped recording; persona prompts claimed stale models)
+
+Three independent defects in the delegation role machinery, all fork-only code (upstream has none of
+`persona_library.py`, `personas.py`, `model_tiers.py`, `delegation_stats.py`, `personas/delegation/`, or `model_by_role`).
+
+1. **Unknown `agent_type` fell through silently.** A stated `agent_type` that was not a `model_by_role`
+   key, a `ROLE_ALIASES` synonym, or a persona file ran on the default/parent model with no error — on
+   this install, the expensive Claude model. `_resolve_task_routes` (`tools/delegate_tool.py`) now refuses
+   the whole spawn with an error that lists the known roles. Unaffected: `agent_type='auto'`,
+   auto-route picks, tier roles, aliases (`sr-coder` -> `coder`), and installs with no roster configured
+   (fail-open). The two tests that asserted the old fall-through now assert the refusal.
+   Consequence for config: removing a `model_by_role` key is now loud, which is what makes pruning the
+   ~49 never-dispatched roles safe (62 roles, 5 persona files, ~13 ever referenced).
+2. **`delegation_stats.json` stopped growing on 2026-09-16.** The `record()` call lived in the old
+   monolithic `delegate_tool.py` and was not carried into the Sep-2026 sibling split. Restored as
+   `_record_delegation_stat` (`tools/delegate_tool_child_run.py`), called after `emit_complete` in
+   `_run_single_child`. Usage counts quoted from that file for 09-16 onward are missing, not zero.
+3. **Persona descriptions hardcoded "Runs on <model>, falls back to <model>"** and had drifted on all five
+   files. Replaced with a pointer to `delegation.model_by_role`.
+
+**Verified:** 197 delegate/persona tests pass, 3 skipped (`tests/tools/test_delegate*.py`,
+`tests/hermes_cli/test_delegation_stats.py`, `test_personas.py`). Each new behaviour was reverted and its
+test confirmed to FAIL: the refusal tests (2) with the guard removed, and
+`tests/tools/test_delegate_stats_recorded.py::test_run_single_child_leaves_a_stats_row` with the call site
+removed. **Not yet verified live:** a gateway restart is needed before the running process picks this up.
+
 ### Fork-only fix — 2026-10-01 (Claude session-limit 429 burned the full context every turn)
 
 **Problem:** every Claude-subscription session-limit hit cost a full-context retry storm. DirectSDK
