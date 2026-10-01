@@ -3302,9 +3302,11 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'live-parent',
-      count: 2
+      count: 2,
+      // Stable per-attempt key (#65410): present but opaque to this test.
+      idempotency_key: expect.any(String)
     })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    expect(branchParams).toMatchObject({ session_id: 'live-parent', count: 2, idempotency_key: expect.any(String) })
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
@@ -3348,7 +3350,7 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchCurrentSession!()).resolves.toBe(true)
 
     expect(getAllSessionMessages).not.toHaveBeenCalled()
-    expect(branchParams).toEqual({ session_id: 'live-parent' })
+    expect(branchParams).toMatchObject({ session_id: 'live-parent', idempotency_key: expect.any(String) })
   })
 
   it('aborts if the active runtime changes while the branch transcript is hydrating', async () => {

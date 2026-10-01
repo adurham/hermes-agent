@@ -3000,6 +3000,7 @@ export interface SessionBranchStoredParams {
   cols?: number | null
   source?: string | null
   cwd?: string | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchStoredResult {
   session_id: string
@@ -3263,6 +3264,7 @@ export interface SessionBranchParams {
   profile?: string | null
   name?: string | null
   count?: number | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchResult {
   session_id: string
@@ -3277,6 +3279,7 @@ export interface SessionBranchWholeParams {
   session_id: string
   profile?: string | null
   name?: string | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchWholeResult {
   session_id: string

@@ -155,6 +155,10 @@ class SessionBranchStoredParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #65410: the desktop's whole-session branch rides the same create plumbing and
+    # now always sends the caller's stable key (its retry path reuses it). Optional
+    # so an older client that omits it keeps the historic behaviour.
+    idempotency_key: str | None = None
 
 
 class SessionBranchStoredResult(Result):
@@ -392,6 +396,9 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
+    # lost-response retry returns the SAME child instead of a duplicate.
+    idempotency_key: str | None = None
 
 
 class SessionBranchResult(Result):
@@ -410,6 +417,8 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
 
 class SessionBranchWholeParams(SessionParams):
     name: str | None = None
+    # #65410: same retry contract as session.branch.
+    idempotency_key: str | None = None
 
 
 class SessionBranchWholeResult(Result):

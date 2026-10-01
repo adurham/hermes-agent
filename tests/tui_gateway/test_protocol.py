@@ -2077,3 +2077,50 @@ def test_session_create_idempotency_key_expires_with_session(server, monkeypatch
     assert "error" not in second
     assert second["result"]["session_id"] != first_sid
     assert len(server._sessions) == 1
+
+
+def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
+    """The desktop's whole-session branch (session.branch_stored) rides the same
+    create plumbing and sends idempotency_key on EVERY branch (#65410): the
+    contract must accept it, the create must succeed (the lineage-sidebar e2e
+    failed with a 4000 because SessionBranchStoredParams forbade the key), and a
+    retried branch_stored with the SAME key must return the SAME child instead
+    of a duplicate."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+
+    params = {
+        "cols": 96,
+        "parent_session_id": "parent",
+        "source": "desktop",
+        "idempotency_key": "branch-stored-retry-abc",
+    }
+    first = server.handle_request({"id": "b1", "method": "session.branch_stored", "params": dict(params)})
+    assert "error" not in first, first.get("error")
+    first_sid = first["result"]["session_id"]
+    assert len(server._sessions) == 1
+
+    # A lost-response retry: same key, same params, same child.
+    second = server.handle_request({"id": "b2", "method": "session.branch_stored", "params": dict(params)})
+    assert "error" not in second, second.get("error")
+    assert second["result"]["session_id"] == first_sid
+    assert len(server._sessions) == 1

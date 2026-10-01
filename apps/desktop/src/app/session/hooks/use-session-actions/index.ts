@@ -2781,6 +2781,9 @@ export function useSessionActions({
         if (!createFlight) {
           const branchParams = {
             session_id: sourceSessionId,
+            // Stable per-attempt key: a lost-response retry of session.branch /
+            // session.branch_whole returns the SAME child (#65410).
+            idempotency_key: key,
             ...(branchCount !== undefined ? { count: branchCount } : {})
           }
 
