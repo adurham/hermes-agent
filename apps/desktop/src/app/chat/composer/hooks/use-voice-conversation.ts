@@ -580,7 +580,7 @@ export function useVoiceConversation({
         }
       }
     },
-    [consumePendingResponse, onTranscribeAudio, voiceCopy.transcriptionFailed]
+    [consumePendingResponse, focusInput, onTranscribeAudio, parkText, voiceCopy.transcriptionFailed]
   )
 
   /**
