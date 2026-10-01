@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from pm.filesystem import native
+from pm.filesystem import long_root, native
 from pm.package import (
     DebPackage,
     InstallError,
@@ -324,13 +324,16 @@ def uv_cache_dir() -> Path:
         try:
             from pm.paths import store_root
 
-            payload_cache = store_root().parent / "uv-cache"
+            # uv's cache trees run deep; both roots get the long spelling so
+            # the copy is not cut at MAX_PATH. The returned path stays ordinary.
+            payload_cache = long_root(store_root().parent / "uv-cache")
             if payload_cache.is_dir():
-                machine_cache.mkdir(parents=True, exist_ok=True)
+                seeded = long_root(machine_cache)
+                seeded.mkdir(parents=True, exist_ok=True)
                 for entry in payload_cache.iterdir():
                     if entry.name == ".seeded":
                         continue
-                    dest = machine_cache / entry.name
+                    dest = seeded / entry.name
                     if not dest.exists():
                         (
                             shutil.copytree(entry, dest)

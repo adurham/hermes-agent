@@ -91,7 +91,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
         store = Store(root)
         facts = _facts() if root == paths.store_root() else Facts(root / "facts.json")
         fact = facts.get(package.name)
-        if not fact or not facts.installed(package.name, None, root):
+        if not fact or not facts.installed(package.name, None, store.root):
             continue
         binary = package.binary(store.entry(fact["entry"]), target)
         if binary is not None and not binary.is_file():
@@ -100,7 +100,7 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue
-        if facts.installed(package.name, lockfile.version(package.name), root,
+        if facts.installed(package.name, lockfile.version(package.name), store.root,
                            _identity(lockfile, package.name, target)):
             return facts, store
         if (allow_outdated and fact.get("target") == target
@@ -564,7 +564,7 @@ def ensure(
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
     if missing:
         store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
-        facts = _facts() if store.root == paths.store_root() else Facts(store.root / "facts.json")
+        facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
         for package in missing:
             # Publication may change entries; do not carry observations across it.
             checked.clear()

@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 from types import MappingProxyType
 
-from pm.filesystem import native
+from pm.filesystem import long_root, native
 from pm.install import InstalledPackage
 from pm.lock import Lockfile
 from pm.package import InstallError
@@ -164,6 +164,8 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
     source_store = Path(source_store).resolve()
     if not (source_store / "facts.json").is_file():
         raise InstallError("tools", f"source facts missing: {source_store}")
+    # Admission walks and digests whole tool trees: spell the root like Store does.
+    source_store = long_root(source_store)
     facts = Facts(source_store / "facts.json", strict=True)
     lock = lock if lock is not None else _lockfile()
     entries, envs = {}, []
