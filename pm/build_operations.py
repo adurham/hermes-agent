@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from types import MappingProxyType
 
+from pm.filesystem import native
 from pm.install import InstalledPackage
 from pm.lock import Lockfile
 from pm.package import InstallError
@@ -127,7 +128,7 @@ def _copy_links(package, entry: Path) -> None:
             if path.is_symlink() or is_junction(path):
                 if (Path(os.readlink(path)).is_absolute() or not path.exists()
                         or not path.resolve().is_relative_to(entry)):
-                    raise InstallError(package.name, f"tool copy link escapes entry: {path}")
+                    raise InstallError(package.name, f"tool copy link escapes entry: {native(path)}")
 
 
 @dataclass(frozen=True)
@@ -187,7 +188,9 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
         if ((binary is not None and (not binary.is_file() or not binary.resolve().is_relative_to(entry)))
                 or facts.env_for(package.name, source_store) != env):
             raise InstallError(package.name, "tool source failed verification: binary or environment")
-        entries[package.name] = InstalledPackage(entry, version, binary)
+        # The selection leaves PM (bundle scripts compare and execute it): ordinary spelling.
+        entries[package.name] = InstalledPackage(Path(native(entry)), version,
+                                                 Path(native(binary)) if binary is not None else None)
         envs.append(env)
     return VerifiedTools(MappingProxyType(entries), tuple(envs))
 

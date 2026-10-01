@@ -15,7 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
-from pm.filesystem import remove_tree, retry_held
+from pm.filesystem import native, remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -128,7 +128,10 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     facts, store = location
     fact = facts.get(name)
     entry = store.entry(fact["entry"])
-    return InstalledPackage(entry, fact["version"], package.binary(entry, target))
+    binary = package.binary(entry, target)
+    # Callers execute and compare these paths outside PM: the ordinary spelling, not the store's.
+    return InstalledPackage(Path(native(entry)), fact["version"],
+                            Path(native(binary)) if binary is not None else None)
 
 
 def uv_launcher(name: str) -> Path | None:
@@ -145,7 +148,7 @@ def uv_launcher(name: str) -> Path | None:
     facts, store = location
     binary = package.binary(store.entry(facts.get("uv")["entry"]), target)
     launcher = binary.with_name(name + binary.suffix) if binary is not None else None
-    return launcher if launcher is not None and launcher.is_file() else None
+    return Path(native(launcher)) if launcher is not None and launcher.is_file() else None
 
 
 def _identity(lockfile: Lockfile, name: str, target: str):
@@ -936,8 +939,8 @@ def _store_path_dirs() -> list[str]:
         if isinstance(path_dirs, str):
             path_dirs = [path_dirs]
         for directory in path_dirs:
-            if directory and directory not in dirs:
-                dirs.append(str(directory))
+            if directory and native(directory) not in dirs:
+                dirs.append(native(directory))
     return dirs
 
 
