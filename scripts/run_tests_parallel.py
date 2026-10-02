@@ -1211,6 +1211,9 @@ def main() -> int:
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
     slice_raw = args.slice or os.environ.get("HERMES_TEST_SLICE")
+    # Read once, here: test processes inherit this env, and a runner they start (the
+    # runner's own probe tests) must run its whole file set, not "its" slice of it.
+    os.environ.pop("HERMES_TEST_SLICE", None)
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
