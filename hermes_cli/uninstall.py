@@ -729,6 +729,8 @@ def run_gui_uninstall(args):
         print(color("Kept intact:", Colors.GREEN, Colors.BOLD))
         print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
         print(f"  • Your config, sessions, and secrets under {hermes_home}")
+        if (shared_modules := hermes_home / "hermes-agent" / "node_modules").exists():
+            print(f"  • Shared workspace dependencies at {shared_modules}")
         print()
 
     if bool(getattr(args, "dry_run", False)):

@@ -70,3 +70,11 @@ def test_gui_dry_run_never_confirms_or_removes_installed_state(installation, mon
     main.main()
     for path, data in {**protected, **gui_files}.items():
         assert path.read_bytes() == data
+
+
+def test_gui_removal_keeps_agent_data_and_shared_workspace_dependencies(installation, monkeypatch):
+    protected, gui_files, _ = installation
+    _run(monkeypatch, "--yes")
+    for path, data in protected.items():
+        assert path.read_bytes() == data
+    assert all(not path.exists() for path in gui_files)
