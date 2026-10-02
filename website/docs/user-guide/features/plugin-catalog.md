@@ -274,7 +274,7 @@ catalog for discovery.
 
 Submissions are pull requests that add one `plugin-catalog/<name>.yaml` file.
 The complete guidelines live in
-**[Submitting to the plugin catalog](/developer-guide/plugins/catalog-submission)**:
+**[Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md)**:
 what to check before you submit, how the PR and review work, every admission
 rule, and how pin updates, delisting and removal work. That page mirrors the
 canonical rules in the

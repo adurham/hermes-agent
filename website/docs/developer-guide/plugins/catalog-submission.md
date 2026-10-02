@@ -6,7 +6,7 @@ description: "The full admission guidelines for the Hermes plugin catalog: what 
 
 # Submitting to the Plugin Catalog
 
-The [plugin catalog](/user-guide/features/plugin-catalog) is a human-reviewed
+The [plugin catalog](../../user-guide/features/plugin-catalog.md) is a human-reviewed
 directory of Hermes plugins. Being listed is the trust signal: users install a
 catalog plugin by name, at the exact commit a maintainer read. This page holds
 the complete guidelines for getting a plugin in and keeping it there.
@@ -25,10 +25,10 @@ for word, and a test fails the build if the two drift apart.
   `desktop/plugin.js` (Desktop), `plugin.json` (portable Agent Plugin) or
   `dashboard/manifest.json` (web dashboard). If the plugin lives in a monorepo,
   point `subdir` at its directory. The
-  [plugin developer guide](/developer-guide/plugins) covers the layout.
+  [plugin developer guide](./index.md) covers the layout.
 - **Public surfaces only.** Extend Hermes through hooks, middleware, the
   `ctx.register_*` APIs, provider plugins and the
-  [Desktop plugin SDK](/developer-guide/desktop-plugin-sdk). Never patch Hermes
+  [Desktop plugin SDK](../desktop-plugin-sdk.md). Never patch Hermes
   code or Desktop markup at runtime. If the hook you need is missing, see
   [Asking for a hook](#asking-for-a-hook).
 - **Validation passes locally.** Run the same check catalog CI runs, against a
@@ -51,7 +51,7 @@ for word, and a test fails the build if the two drift apart.
    [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent).
    The fields are documented in the README's
    [entry schema](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md#entry-schema)
-   and in [What's in an entry](/user-guide/features/plugin-catalog#whats-in-an-entry).
+   and in [What's in an entry](../../user-guide/features/plugin-catalog.md#whats-in-an-entry).
    Pin `sha` to a full 40-character commit, and quote `version`.
 2. In the PR description, say what the plugin does, which Hermes surfaces it
    uses, and everything rule 13 asks you to disclose. Add screenshots for
