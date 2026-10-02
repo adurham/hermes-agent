@@ -17,9 +17,8 @@ from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMA
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_cli.status_auth import (  # section renderers + the --short provider list
-    _connected_provider_labels, _render_api_keys, _render_apikey_providers,
-    _render_auth_providers, _render_nous_gateway)
+from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
+    _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
 
 
@@ -209,16 +208,11 @@ def _render_platforms(ctx):
         home_channel = os.getenv(home_var, "") if home_var else ""
         _row(name, has_token, _configured(has_token) + (f" (home: {home_channel})" if home_channel else ""))
 
-    try:  # Plugin-registered platforms
+    try:  # Plugin platforms: the gateway's own verdict, never the check_fn "SDK importable" probe
         from gateway.platform_registry import platform_registry
+        connected = {p.value for p in _connected_platforms()}
         for entry in platform_registry.plugin_entries():
-            # Per-entry guard: one raising probe must not abort the listing of every remaining
-            # plugin platform (matches the other check_fn sites).
-            try:
-                configured = bool(entry.check_fn())
-            except Exception:
-                configured = False
-            _row(entry.label, configured, f"{_configured(configured)} (plugin)")
+            _row(entry.label, entry.name in connected, f"{_configured(entry.name in connected)} (plugin)")
     except Exception:
         pass
 
@@ -361,75 +355,63 @@ def _render_footer(ctx):
     print()
 
 
-def _short_gateway_value():
-    """``(running, text)`` for the short gateway row; ``(None, "unknown")`` when unavailable."""
+def _connected_platforms() -> list:
+    """Platforms the gateway would start (``GatewayConfig.get_connected_platforms``)."""
+    from gateway.config import load_gateway_config
+    return load_gateway_config().get_connected_platforms()
+
+
+def _connected_platform_labels() -> list:
+    from gateway.platform_registry import platform_registry
+    return [getattr(platform_registry.get(p.value), "label", p.value) for p in _connected_platforms()]
+
+
+def _authenticated_provider_names() -> list:
+    """The providers the /model picker offers: cached catalogs only, no endpoint probes."""
+    from hermes_cli.inventory import load_picker_context
+    from hermes_cli.model_switch import list_authenticated_providers
+    pick = load_picker_context()
+    return [row["name"] for row in list_authenticated_providers(
+        user_providers=pick.user_providers, custom_providers=pick.custom_providers,
+        excluded_providers=pick.excluded_providers, max_models=0, non_blocking_catalogs=True,
+        probe_custom_providers=False)]
+
+
+def _gateway_state() -> tuple:
+    from hermes_cli.gateway import get_gateway_runtime_snapshot, named_profile_served_by_running_multiplexer
+    if get_gateway_runtime_snapshot().running:
+        return True, "running"
+    if named_profile_served_by_running_multiplexer():  # satellite profile: no gateway.pid of its own
+        return True, "running (via the default-profile multiplexer)"
+    return False, "stopped"
+
+
+def _summary_row(label: str, probe, empty: str) -> None:
+    """One summary row; a failing probe degrades only its own row."""
     try:
-        from hermes_cli.gateway import (
-            get_gateway_runtime_snapshot, named_profile_served_by_running_multiplexer)
-        snapshot = get_gateway_runtime_snapshot()
-        # A satellite profile has no gateway.pid of its own; the default multiplexer is
-        # its live process (same rule as the full Gateway Service section).
-        if not snapshot.running and named_profile_served_by_running_multiplexer():
-            return True, "running (via the default-profile multiplexer)"
-        return (True, "running") if snapshot.running else (False, "stopped")
+        values = list(dict.fromkeys(probe()))
     except Exception:
-        return None, "unknown"
+        values = None
+    _kv(label, "unknown" if values is None else ", ".join(values) or empty)
 
 
-def _short_platform_configured(entry) -> bool:
-    """Plugin platform configured? Prefer the ``is_connected`` hook over the deps probe.
-
-    ``check_fn`` is a passive dependency probe that reads True for every bundled plugin,
-    so it must never override a configured-credentials verdict (same rule as ``hermes
-    setup`` and the #102183 fix).
-    """
-    try:
-        if entry.is_connected is not None:
-            from gateway.config import PlatformConfig
-            return bool(entry.is_connected(PlatformConfig(enabled=True)))
-        return bool(entry.check_fn())
-    except Exception:
-        return False
-
-
-def _short_platform_names() -> list:
-    """Configured messaging platform names: env table plus plugin-registry entries."""
-    names = []
-    for name, (token_var, _home_var) in _PLATFORMS.items():
-        if os.getenv(token_var, ""):
-            names.append(name)
-    try:
-        from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            if _short_platform_configured(entry):
-                names.append(entry.label)
-    except Exception:
-        pass
-    return names
-
-
-def _render_short(ctx):
-    """Compact ``hermes status --short``: model, providers, gateway, platforms, jobs."""
-    _banner(("☤ Hermes Agent status (short)",), Colors.BOLD)
-    paused = _estop_status_line()
-    if paused:
-        _banner((paused,), Colors.YELLOW, Colors.BOLD)
+def _render_summary(ctx):
+    """Default ``hermes status``: one line per component; ``--full`` prints every section."""
+    _render_header(ctx)
+    print()
     _load_ctx_config(ctx)
     _kv("Model:", _configured_model_label(ctx.config))
     _kv("Provider:", _effective_provider_label())
+    _summary_row("Providers:", _authenticated_provider_names, "none connected")
     try:
-        labels = _connected_provider_labels(ctx)
+        running, text = _gateway_state()
+        _kv_flag("Gateway:", running, text, text)
     except Exception:
-        labels = []
-    _kv("Providers:", ", ".join(dict.fromkeys(labels)) if labels else "none connected")
-    running, gateway_text = _short_gateway_value()
-    if running is None:
-        _kv("Gateway:", gateway_text)
-    else:
-        _kv_flag("Gateway:", running, gateway_text, "stopped")
-    names = _short_platform_names()
-    _kv("Platforms:", ", ".join(dict.fromkeys(names)) if names else "none configured")
+        _kv("Gateway:", "unknown")
+    _summary_row("Platforms:", _connected_platform_labels, "none configured")
     _kv("Jobs:", _cron_summary())
+    _banner(("  Run 'hermes status --full' for every section",), Colors.DIM)
+    print()
 
 
 # Print order of `hermes status`; each renderer takes the shared _StatusContext.
@@ -440,13 +422,10 @@ _SECTIONS = (
 
 
 def show_status(args):
-    """Show status of all Hermes Agent components."""
+    """One-screen summary by default; ``--full``/``--deep`` print every section."""
     # Shared by section renderers: config, --deep, and the Nous login facts Auth Providers derives
     # for the later Nous Tool Gateway section.
     ctx = SimpleNamespace(deep=getattr(args, 'deep', False), config={}, nous_logged_in=False,
                           nous_inference_present=False, nous_account_info=None)
-    if getattr(args, 'short', False):
-        _render_short(ctx)
-        return
-    for render in _SECTIONS:
+    for render in _SECTIONS if getattr(args, 'full', False) or ctx.deep else (_render_summary,):
         render(ctx)

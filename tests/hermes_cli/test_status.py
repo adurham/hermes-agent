@@ -9,7 +9,7 @@ def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, 
     sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_123456"
     monkeypatch.setenv("KEENABLE_API_KEY", sentinel)
 
-    show_status(SimpleNamespace(all=True, deep=False))
+    show_status(SimpleNamespace(full=True, deep=False))
 
     output = capsys.readouterr().out
     assert "Keenable" in output
@@ -21,7 +21,7 @@ def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tm
     sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_TAVILY_123456"
     monkeypatch.setenv("TAVILY_API_KEY", sentinel)
 
-    show_status(SimpleNamespace(all=True, deep=False))
+    show_status(SimpleNamespace(full=True, deep=False))
 
     output = capsys.readouterr().out
     assert "Tavily" in output
@@ -51,7 +51,7 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
 
     monkeypatch.setattr(subprocess, "run", _unexpected_systemctl)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
 
     output = capsys.readouterr().out
     assert "systemd (user)" not in output
@@ -75,7 +75,7 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
 
     output = capsys.readouterr().out
     assert "vercel_sandbox" in output
@@ -123,7 +123,7 @@ class TestShowStatusXaiOAuth:
                             lambda: {"logged_in": True, "auth_store": "/home/u/.hermes/auth.json"},
                             raising=False)
 
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, deep=False))
         out = capsys.readouterr().out
 
         assert "Auth file:  /home/u/.hermes/auth.json" in out
@@ -150,7 +150,7 @@ class TestShowStatusXaiOAuth:
                             lambda: {"logged_in": True}, raising=False)
         monkeypatch.delattr(auth_mod, "get_xai_oauth_auth_status", raising=False)
 
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, deep=False))
         out = capsys.readouterr().out
 
         assert "Nous Portal" in out
@@ -166,7 +166,7 @@ class TestShowStatusXaiOAuth:
 
         monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", _raises, raising=False)
 
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, deep=False))
         out = capsys.readouterr().out
 
         assert "◆ Auth Providers" in out
@@ -178,7 +178,7 @@ class TestShowStatusXaiOAuth:
         monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status",
                             lambda: None, raising=False)
 
-        status_mod.show_status(SimpleNamespace(all=False, deep=False))
+        status_mod.show_status(SimpleNamespace(full=True, deep=False))
         out = capsys.readouterr().out
 
         assert "xAI OAuth" in out
@@ -220,137 +220,50 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
 
     monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
     output = capsys.readouterr().out
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
 
 
-# ── `hermes status --short` ────────────────────────────────────────────────
-
-
-def _short_env(monkeypatch, tmp_path):
-    """Quiet, hermetic environment for --short runs; returns (status_mod, auth_mod, gateway_mod)."""
-    from hermes_cli import status as status_mod
-    import hermes_cli.auth as auth_mod
-    import hermes_cli.gateway as gateway_mod
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "test-model"}, raising=False)
-    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "test", raising=False)
-    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "test", raising=False)
-    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "Test Provider", raising=False)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status_local", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
-    monkeypatch.setattr(
-        gateway_mod, "get_gateway_runtime_snapshot",
-        lambda: SimpleNamespace(running=False, manager="unknown", gateway_pids=[],
-                                has_process_service_mismatch=False, service_installed=False,
-                                service_running=False),
-        raising=False)
-    monkeypatch.setattr(gateway_mod, "named_profile_served_by_running_multiplexer", lambda: False, raising=False)
-    return status_mod, auth_mod, gateway_mod
-
-
-def test_status_parser_accepts_short_flag():
+def _status_args(*argv):
     import argparse
     from hermes_cli.subcommands.status import build_status_parser
 
     parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers()
-    build_status_parser(subparsers, cmd_status=lambda args: None)
-
-    assert parser.parse_args(["status", "--short"]).short is True
-    assert parser.parse_args(["status"]).short is False
-    both = parser.parse_args(["status", "--all", "--deep"])
-    assert both.all is True and both.deep is True
+    build_status_parser(parser.add_subparsers(), cmd_status=None)
+    return parser.parse_args(["status", *argv])
 
 
-def test_short_reports_model_provider_and_connected_providers(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, _ = _short_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True}, raising=False)
-    monkeypatch.setenv("GLM_API_KEY", "glm-key-1234567890")
+def test_status_defaults_to_summary_and_full_or_all_prints_every_section(monkeypatch, capsys, tmp_path):
+    import hermes_cli.model_switch as model_switch
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    out = capsys.readouterr().out
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_: [{"name": "Acme AI"}])
 
-    assert "status (short)" in out
-    assert "Model:        test-model" in out
-    assert "Provider:     Test Provider" in out
-    assert "Providers:    Nous Portal, Z.AI / GLM" in out
-    assert "none connected" not in out
-    assert "hermes doctor" not in out and "hermes setup" not in out
-
-
-def test_short_new_registry_provider_appears_when_env_var_set(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, _ = _short_env(monkeypatch, tmp_path)
-    fake = auth_mod.ProviderConfig("acme", "Acme AI", "api_key", api_key_env_vars=("ACME_API_KEY",))
-    monkeypatch.setattr(auth_mod, "PROVIDER_REGISTRY", {**auth_mod.PROVIDER_REGISTRY, "acme": fake}, raising=False)
-    monkeypatch.delenv("ACME_API_KEY", raising=False)
-
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    assert "Acme AI" not in capsys.readouterr().out
-
-    monkeypatch.setenv("ACME_API_KEY", "acme-key-1234567890")
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    assert "Acme AI" in capsys.readouterr().out
+    show_status(_status_args())
+    summary = capsys.readouterr().out
+    assert "Providers:    Acme AI" in summary
+    assert "◆ Environment" not in summary
+    for flag in ("--full", "--all"):
+        show_status(_status_args(flag))
+        assert "◆ Environment" in capsys.readouterr().out
 
 
-def test_short_shows_none_connected_without_credentials(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, _ = _short_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(auth_mod, "PROVIDER_REGISTRY", {}, raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    out = capsys.readouterr().out
-    assert "Providers:    none connected" in out
-
-
-def test_short_does_not_print_key_values(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, _ = _short_env(monkeypatch, tmp_path)
-    sentinel = "NONSECRET_SENTINEL_VALUE_DO_NOT_PRINT_SHORT_123456"
-    monkeypatch.setenv("GLM_API_KEY", sentinel)
-
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    out = capsys.readouterr().out
-    assert "Z.AI / GLM" in out
-    assert sentinel not in out
-
-
-def test_short_gateway_row_reflects_snapshot(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, gateway_mod = _short_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        gateway_mod, "get_gateway_runtime_snapshot",
-        lambda: SimpleNamespace(running=True, manager="systemd (user)", gateway_pids=[123],
-                                has_process_service_mismatch=False, service_installed=True,
-                                service_running=True),
-        raising=False)
-
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    out = capsys.readouterr().out
-    assert "Gateway:" in out and "running" in out
-    assert "stopped" not in out
-
-
-def test_short_platforms_row_lists_configured_only(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, _ = _short_env(monkeypatch, tmp_path)
-    monkeypatch.setattr(status_mod, "_PLATFORMS", {"TestNet": ("TESTNET_TOKEN", None)}, raising=False)
-    monkeypatch.setenv("TESTNET_TOKEN", "token-123")
+def test_platform_rows_follow_the_gateway_verdict_not_check_fn(monkeypatch, capsys, tmp_path):
+    """check_fn only says the SDK imports; a bundled plugin with no token is not configured."""
+    import gateway.config as gateway_config
     from gateway.platform_registry import platform_registry
-    monkeypatch.setattr(platform_registry, "plugin_entries", lambda: [], raising=False)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False, short=True))
-    out = capsys.readouterr().out
-    assert "Platforms:    TestNet" in out
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    entries = [SimpleNamespace(name=n, label=n.title(), check_fn=lambda: True) for n in ("telegram", "discord")]
+    monkeypatch.setattr(platform_registry, "plugin_entries", lambda: entries)
+    monkeypatch.setattr(gateway_config, "load_gateway_config", lambda: SimpleNamespace(
+        get_connected_platforms=lambda: [SimpleNamespace(value="telegram")]))
 
-
-def test_full_status_output_unchanged_without_short_attr(monkeypatch, capsys, tmp_path):
-    status_mod, auth_mod, _ = _short_env(monkeypatch, tmp_path)
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
-    out = capsys.readouterr().out
-    assert "☤ Hermes Agent Status" in out
-    assert "◆ Environment" in out
+    show_status(SimpleNamespace(full=True, deep=False))
+    plugin_rows = [line for line in capsys.readouterr().out.splitlines() if "(plugin)" in line]
+    assert any("Discord" in line and "not configured" in line for line in plugin_rows)
+    show_status(SimpleNamespace())
+    assert "Platforms:    Telegram\n" in capsys.readouterr().out
