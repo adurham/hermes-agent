@@ -146,11 +146,25 @@ def _resolve_keychain_service() -> Optional[str]:
                 candidates.append(value)
     if not candidates:
         return None
-    # Prefer the exact legacy (un-suffixed) name if present; otherwise take
-    # the first suffixed match found.
+    # Prefer the exact legacy (un-suffixed) name if present.
     if KEYCHAIN_SERVICE in candidates:
         return KEYCHAIN_SERVICE
-    return candidates[0]
+    # Every /login can leave behind a new suffixed entry; dump order is
+    # arbitrary, so taking the first match picks stale (dead refresh token)
+    # entries. Choose the most recently modified one.
+    def _mdat(service: str) -> str:
+        try:
+            out = subprocess.run(
+                ["security", "find-generic-password", "-s", service],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        for ln in out.splitlines():
+            if '"mdat"<timedate>=' in ln:
+                return ln.rsplit('"', 2)[-2] if ln.count('"') >= 2 else ""
+        return ""
+    return max(dict.fromkeys(candidates), key=_mdat)
 
 
 def _keychain_account(service: str) -> Optional[str]:
@@ -204,7 +218,17 @@ class CredStore:
         # refreshes anyway.
         self._account = None
         self._service = KEYCHAIN_SERVICE
-        if path.exists():
+        # Dedicated login: CC_PROXY_KEYCHAIN_SERVICE pins one keychain entry
+        # (e.g. from `CLAUDE_CONFIG_DIR=<dir> claude auth login`) so the shim
+        # never shares a refresh chain with interactive `claude`.
+        pinned = os.environ.get("CC_PROXY_KEYCHAIN_SERVICE")
+        if pinned and platform.system() == "Darwin":
+            self._service = pinned
+            self._account = _keychain_account(pinned)
+            if not self._account:
+                raise RuntimeError(f"CC_PROXY_KEYCHAIN_SERVICE '{pinned}' not found in Keychain")
+            self._backend = "keychain"
+        elif path.exists():
             self._backend = "file"
         elif platform.system() == "Darwin":
             resolved_service = _resolve_keychain_service()

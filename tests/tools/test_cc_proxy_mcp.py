@@ -111,6 +111,76 @@ class TestResolveKeychainService:
         assert service is None
 
 
+    @pytest.mark.macos_only
+    def test_prefers_most_recently_modified_when_multiple_suffixed(self):
+        """Dump order is arbitrary; the newest entry must win over a stale husk.
+
+        A dead ``/login`` husk (empty refresh token) sorted before the live
+        dedicated-login entry used to win, producing "No refreshToken
+        available to renew expired credentials" on every connector server.
+        """
+        dump_output = (
+            '    "svce"<blob>="Claude Code-credentials-38014592"\n'
+            '    "svce"<blob>="Claude Code-credentials-bb7ba64f"\n'
+        )
+        mdats = {
+            "Claude Code-credentials-38014592": (
+                '    "mdat"<timedate>=0x32303236303733313036303430355A00  "20260731060405Z\\000"'
+            ),
+            "Claude Code-credentials-bb7ba64f": (
+                '    "mdat"<timedate>=0x32303236313030323138343130355A00  "20261002184105Z\\000"'
+            ),
+        }
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["security", "dump-keychain"]:
+                return _fake_run_result(0, dump_output)
+            svc = cmd[cmd.index("-s") + 1]
+            return _fake_run_result(0, mdats[svc])
+
+        with patch("platform.system", return_value="Darwin"), \
+             patch("subprocess.run", side_effect=fake_run):
+            service = cc_proxy_mcp._resolve_keychain_service()
+        assert service == "Claude Code-credentials-bb7ba64f"
+
+
+class TestCredStorePinnedService:
+    """``CC_PROXY_KEYCHAIN_SERVICE`` gives the shim a dedicated login chain.
+
+    Pinning (e.g. from ``CLAUDE_CONFIG_DIR=<dir> claude auth login``) means
+    the shim never shares a refresh chain with an interactive ``claude`` and
+    never dump-order-races several login husks.
+    """
+
+    @pytest.mark.macos_only
+    def test_env_pin_selects_that_entry_even_with_file_present(self, tmp_path, monkeypatch):
+        creds_file = tmp_path / ".credentials.json"
+        creds_file.write_text('{"claudeAiOauth": {"accessToken": "from-file"}}')
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["security", "find-generic-password"]:
+                return _fake_run_result(0, '    "acct"<blob>="adam.durham"\n')
+            return _fake_run_result(1, "", "not found")
+
+        monkeypatch.setenv("CC_PROXY_KEYCHAIN_SERVICE", "Claude Code-credentials-bb7ba64f")
+        with patch("platform.system", return_value="Darwin"), \
+             patch("subprocess.run", side_effect=fake_run):
+            store = cc_proxy_mcp.CredStore(creds_file)
+        assert store._backend == "keychain"
+        assert store._service == "Claude Code-credentials-bb7ba64f"
+
+    @pytest.mark.macos_only
+    def test_missing_pinned_entry_raises(self, tmp_path, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return _fake_run_result(1, "", "not found")
+
+        monkeypatch.setenv("CC_PROXY_KEYCHAIN_SERVICE", "Claude Code-credentials-deadbeef")
+        with patch("platform.system", return_value="Darwin"), \
+             patch("subprocess.run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="deadbeef"):
+                cc_proxy_mcp.CredStore(tmp_path / "missing" / ".credentials.json")
+
+
 class TestCredStoreKeychainBackend:
     """CredStore must use the resolved (possibly suffixed) service name for
     every keychain operation, not the bare KEYCHAIN_SERVICE constant."""
