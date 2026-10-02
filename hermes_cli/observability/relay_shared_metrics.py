@@ -669,22 +669,33 @@ class _Runtime:
         return self.host.run_in_session(session.relay_session, callback, *args, **kwargs)
 
     def _schedule_flush_and_export(self, failure_message: str) -> None:
-        """Schedule the process-wide Relay flush without blocking the finishing turn."""
+        """Schedule the process-wide Relay flush without blocking the finishing turn.
+
+        ``flush()`` also waits for every managed tool/LLM call in flight in ANY session, so on a
+        turn thread one session finishing stalls behind another session's long tool. One worker
+        per runtime (= per profile); triggers landing while it runs coalesce into one more pass.
+        """
+        from agent.memory_provider import spawn_context_thread
+
         with self._flush_lock:
             self._flush_pending = True
-            if self._flush_thread is None or not self._flush_thread.is_alive():
-                self._flush_thread = threading.Thread(
-                    target=self._run_flush_worker,
-                    args=(failure_message,),
-                    name="hermes-shared-metrics-flush",
-                    daemon=True,
-                )
-                self._flush_thread.start()
+            if self._flush_thread is not None:
+                return
+            # Context copy: the export reads the profile's send/consent config via contextvars.
+            thread = spawn_context_thread(
+                self._run_flush_worker, name="hermes-shared-metrics-flush", args=(failure_message,)
+            )
+            # The worker's first act is taking this lock, so it cannot clear the slot before it is set.
+            thread.start()
+            self._flush_thread = thread
 
     def _run_flush_worker(self, failure_message: str) -> None:
         while True:
             with self._flush_lock:
                 if not self._flush_pending:
+                    # Cleared under the lock that schedulers check: a trigger can never land on a
+                    # worker that has already decided to exit.
+                    self._flush_thread = None
                     return
                 self._flush_pending = False
             self._flush_and_export(failure_message)
