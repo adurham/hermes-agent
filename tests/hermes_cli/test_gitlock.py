@@ -285,6 +285,28 @@ def test_fold_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_see
     assert len(_packs(clone)) == 1
 
 
+def test_maintenance_keys_leave_gits_own_fold_running(tmp_path: Path) -> None:
+    """Between updates, git's post-lazy-fetch auto maintenance is what folds packs (git <= 2.53).
+
+    The keys stop the commit-graph write without switching that fold off: ``maintenance.auto=false``
+    let the packs pile up until the next ``hermes update``. Compared against a stock-config clone
+    because newer git (2.55) does not fold lazy-fetch packs on its own at all.
+    """
+    def lazy_packs(name: str, keys: bool) -> int:
+        (tmp_path / name).mkdir()
+        _seed, _up, clone = _blobless_clone(tmp_path / name, 3)
+        for key, value in (("gc.autoPackLimit", "2"), ("gc.autoDetach", "false"), ("maintenance.autoDetach", "false")):
+            _run_git("config", key, value, cwd=clone)  # git's own auto gc, in the foreground
+        if keys:
+            _run_git("config", "maintenance.auto", "false", cwd=clone)  # what the first cut persisted
+            disable_tree0_auto_maintenance(clone)
+        for path in ("d0/f.txt", "d1/f.txt", "d2/f.txt"):
+            _run_git("cat-file", "-p", _run_git("rev-parse", f"HEAD:{path}", cwd=clone), cwd=clone)
+        return len(_packs(clone))
+
+    assert lazy_packs("keys", keys=True) <= lazy_packs("stock", keys=False)
+
+
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     assert consolidate_lazy_fetch_packs(repo) == 0
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,

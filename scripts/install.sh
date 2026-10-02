@@ -474,8 +474,8 @@ stage_repository() {
                 fi
             done
             # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
-            git -C "$INSTALL_DIR" config maintenance.auto false \
-                || log_warn "could not disable maintenance.auto in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+                || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
             git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
                 || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
             git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
@@ -600,8 +600,8 @@ stage_repository() {
         # changed-path data that lazy-fetches the trees of every unseen commit, in a
         # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with
         # `gc --auto`.
-        git -C "$INSTALL_DIR" config maintenance.auto false \
-            || log_warn "could not disable maintenance.auto in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config maintenance.commit-graph.enabled false \
+            || log_warn "could not disable maintenance.commit-graph.enabled in $INSTALL_DIR"
         git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
             || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
         git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \

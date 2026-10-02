@@ -141,23 +141,25 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
 # write over commits it has not seen yet needs their trees: one lazy fetch (and one pack) per commit,
 # and each lazy fetch spawns ``git maintenance`` again, which is the unbounded loop of #127711. gc,
 # ``maintenance run --task=commit-graph`` and ``fetch.writeCommitGraph`` all write one (git
-# 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. ``gc.auto`` stays
-# at its default on purpose: ``gc --auto`` is how consolidate_lazy_fetch_packs folds the lazy-fetch
-# packs, and ``gc.auto=0`` turns that into a no-op.
+# 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. Automatic
+# maintenance itself stays on: on git <= 2.53 its post-fetch ``gc --auto`` is what keeps the
+# lazy-fetch packs folded between updates. ``gc.auto`` stays at its default for the same reason
+# (``gc.auto=0`` turns consolidate_lazy_fetch_packs into a no-op).
 _TREE0_MAINTENANCE_OFF = (
-    ("maintenance.auto", "false"),
+    ("maintenance.commit-graph.enabled", "false"),
     ("gc.writeCommitGraph", "false"),
     ("fetch.writeCommitGraph", "false"),
 )
 
 
 def disable_tree0_auto_maintenance(repo_root: Path) -> None:
-    """Keep git from writing a commit-graph or running automatic maintenance in a partial clone.
+    """Keep git from writing a commit-graph in a partial clone, from gc, fetch or maintenance.
 
     Idempotent (a value already in place is not rewritten, so concurrent git never meets a config
     lock from this) and never raises: a read-only config must not turn fetch recovery into a
     traceback, matching mark_unmarked_packs_promisor above.
     """
+    _restore_auto_maintenance(repo_root)
     for key, value in _TREE0_MAINTENANCE_OFF:
         try:
             current = subprocess.run(
@@ -177,6 +179,23 @@ def disable_tree0_auto_maintenance(repo_root: Path) -> None:
             )
         except Exception:
             logger.warning("Could not set %s=%s in %s", key, value, repo_root)
+
+
+def _restore_auto_maintenance(repo_root: Path) -> None:
+    """Undo the ``maintenance.auto=false`` an earlier cut of _TREE0_MAINTENANCE_OFF persisted.
+
+    It also switched off git's own post-fetch fold (git <= 2.53), so packs piled up until the next
+    update. The install checkout is Hermes-owned; only the exact value it wrote is removed.
+    """
+    try:
+        if _git_stdout_lines(repo_root, ["config", "--local", "--get", "maintenance.auto"]) == ["false"]:
+            subprocess.run(
+                ["git", "config", "--local", "--unset", "maintenance.auto"],
+                cwd=str(repo_root), check=True, capture_output=True, timeout=30,
+                creationflags=windows_hide_flags(),
+            )
+    except Exception:
+        logger.warning("Could not restore maintenance.auto in %s", repo_root)
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
