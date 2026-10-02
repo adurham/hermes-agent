@@ -28,10 +28,10 @@ eslint.config.*                 @NousResearch/hermes-agent-core
 /usercustomize.py               @NousResearch/hermes-agent-core
 *.pth                           @NousResearch/hermes-agent-core
 
-# Resolved dependency pins and the image build: a lockfile or Dockerfile edit
+# Resolved dependency pins and image builds (every *Dockerfile, any depth): a lockfile or Dockerfile edit
 # changes what gets installed and run without touching any reviewed source.
 # Unanchored patterns match at any depth (pm/uv.lock, website/package-lock.json, ...).
 uv.lock                         @NousResearch/hermes-agent-core
 package-lock.json               @NousResearch/hermes-agent-core
 /pm/lock.json                   @NousResearch/hermes-agent-core
-/Dockerfile                     @NousResearch/hermes-agent-core
+*Dockerfile                     @NousResearch/hermes-agent-core
