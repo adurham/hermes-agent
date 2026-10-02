@@ -388,6 +388,8 @@ These controls are hidden for Nix, bundled/Light packages, and other externally 
 
 For self-managed installations, you can do the same from the terminal — `hermes uninstall --gui` for the GUI alone, or `hermes uninstall` / `hermes uninstall --full` for the agent too.
 
+Preview GUI cleanup with `hermes uninstall --gui --dry-run`. It lists the removal targets and returns without prompting or removing anything, including when `--yes` is also supplied.
+
 :::note
 Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) also removes the workspace `node_modules` and `apps/desktop/{dist,release}` build output, since those are GUI build artifacts. They're recoverable with `hermes desktop` (or `npm install` + a rebuild) — but if you're actively hacking on the desktop app, expect to reinstall dependencies afterward.
 :::

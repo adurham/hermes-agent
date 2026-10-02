@@ -695,6 +695,7 @@ def run_gui_uninstall(args):
     """
     from hermes_cli.gui_uninstall import (
         agent_is_installed,
+        desktop_install_record,
         gui_install_summary,
         uninstall_gui,
     )
@@ -719,6 +720,8 @@ def run_gui_uninstall(args):
     print(color("Will remove:", Colors.YELLOW, Colors.BOLD))
     for p in (*summary["source_built_artifacts"], *summary["packaged_app_paths"]):
         print(f"  • {p}")
+    if (install_record := desktop_install_record()).exists():
+        print(f"  • {install_record}  (desktop install record)")
     if summary["userdata_exists"]:
         print(f"  • {summary['userdata_dir']}  (desktop app data)")
     print()
