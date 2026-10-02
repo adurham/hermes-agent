@@ -19306,3 +19306,39 @@ resolves to a hook, every python hook is reachable from dispatch, every spec
 carries the fields the installer reads). Both are pure test additions with no
 production behavior change. The ollama-cloud plugin's `OLLAMA_BASE_URL` `/v1`
 fix is PR'd upstream as rriggs/hermes-plugin-ollama-cloud-search#1.
+
+### Fix — 2026-10-02 (`cc_proxy_mcp.py` dedicated-login isolation restored: newest-entry resolution + `CC_PROXY_KEYCHAIN_SERVICE` pin)
+
+**Problem:** in fresh sessions every connector-based MCP server failed to register —
+`slack`, `notion`, `tanium-gateway`, `StackOverflowTeams`, `pagerduty`, `microsoft365`,
+`tanium-provisioner` — with `RuntimeError: No refreshToken available to renew expired
+credentials`. Only the two local servers (salesforce, tanium-help) came up: 43 tools from
+2 of 9 servers. The shim's `_resolve_keychain_service()` took the *first* suffixed
+candidate in `security dump-keychain` order — arbitrary — which on this box is the dead
+husk `Claude Code-credentials-38014592` (empty refresh token) instead of the live
+dedicated-login entry `Claude Code-credentials-bb7ba64f` that `~/.hermes/config.yaml`
+already pins per server via `env: CC_PROXY_KEYCHAIN_SERVICE`.
+
+**Why it regressed:** the fix had been living as *uncommitted* working-tree changes in
+this checkout; a `hermes update` run autostashed them (`stash@{0}` / `{1}`, identical
+blobs) and the restore prompt was answered "skip", so the committed shim came back while
+config.yaml kept the pins. The pinned env var was inert: the committed code never read it.
+
+**Fix (restored from `stash@{0}`, now committed):**
+- `_resolve_keychain_service()` selects the most recently modified candidate
+  (`max(..., key=_mdat)`), so a stale husk cannot win a dump-order race.
+- `CredStore.__init__` honors `CC_PROXY_KEYCHAIN_SERVICE` first on Darwin — one pinned
+  entry regardless of any JSON file — raising `RuntimeError` when the pinned entry is
+  absent (loud, not a silent fallback to a dead husk).
+
+**Files:** `tools/bridges/cc_proxy_mcp.py`, `tests/tools/test_cc_proxy_mcp.py`.
+
+**Verification:** `tests/tools/test_cc_proxy_mcp.py` green including three new cases
+(newest-entry selection; env pin wins over a present JSON file; missing pin raises);
+live on this box the pinned-entry `CredStore` refresh path mints a working access token
+and `GET /v1/mcp_servers` returns the connector list, after which a fresh session
+registers all nine servers.
+
+**Lesson:** fork-only *uncommitted* fixes on the corp checkout are autostash bait —
+`hermes update` will stash them and a skipped restore silently reverts behavior that
+config still depends on. Commit fork fixes on the main checkout, push, and pull here.
