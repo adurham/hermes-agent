@@ -622,6 +622,19 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
     return reasoning_echo_family(provider, model, base_url) is not None
 
 
+# Aggregator hosts whose backend accepts the replayed reasoning_content (so the SEND-side
+# echo policy must keep attaching it) but does NOT count those bytes in the prompt-token
+# accounting the compaction TRIGGER guards against. Observed on the live ollama-cloud route
+# (model deepseek-v4.1-flash): the replayed stale thinking alone estimated ~950K tokens, yet
+# the provider reported ~528,988 real prompt tokens for the same request — the echoed field
+# is ignored by the backend's counter. Charging it made the TRIGGER (1,385,064) run ~2.6x the
+# provider's real prompt and fired compaction far too early on reasoning-heavy sessions.
+# These routes are estimated newest-turn-only (like every non-echo route); the SEND-side echo
+# is UNTOUCHED — ``needs_reasoning_echo`` still matches, so no request changes shape.
+# FORK: aggregator-host estimate exclusion (compaction-trigger overcharge fix; see FORK.md)
+_ESTIMATE_IGNORES_STALE_THINKING_HOSTS = ("ollama.com",)
+
+
 def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
@@ -629,8 +642,22 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     walks must share: if they disagree, a reasoning-heavy session can look over-threshold
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
+
+    This is the ESTIMATOR-facing billing predicate, distinct from the send-side protocol
+    predicate ``needs_reasoning_echo``: a route can echo the field (send policy must keep it)
+    while the provider's accounting ignores it (estimator must not charge it). Aggregator
+    re-exports where the two diverge are excluded here — see
+    ``_ESTIMATE_IGNORES_STALE_THINKING_HOSTS``.
     """
-    return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+    if (api_mode or "") == "codex_responses":
+        return False
+    if not needs_reasoning_echo(provider, model, base_url):
+        return False
+    from utils import base_url_host_matches
+
+    return not any(
+        base_url_host_matches(base_url, host) for host in _ESTIMATE_IGNORES_STALE_THINKING_HOSTS
+    )
 
 
 # ---------------------------------------------------------------------------

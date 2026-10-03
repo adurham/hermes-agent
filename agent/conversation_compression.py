@@ -1466,12 +1466,20 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
 
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
+    commit_started_at: float | None = None, telemetry: dict | None = None,
 ) -> None:
-    """Emit one content-free JSON log line for a compression attempt."""
+    """Emit one content-free JSON log line for a compression attempt.
+
+    ``telemetry`` is the attempt's payload captured BEFORE a rotation commit: the session
+    boundary (``ContextCompressor.on_session_end``) runs during the rotation and resets
+    ``_last_compression_telemetry`` to ``None``, so reading the attribute here would log only
+    the 10-key stub instead of the full 38-key attempt record. Pass the snapshot so the
+    rotated commit's line retains what the attempt actually measured; omitted for in-place
+    commits, where the attribute is intact.
+    """
     with _swallow('failed to emit compression attempt telemetry: %s'):
         compressor = agent.context_compressor
-        telemetry = getattr(compressor, "_last_compression_telemetry", None)
+        telemetry = telemetry if isinstance(telemetry, dict) else getattr(compressor, "_last_compression_telemetry", None)
         if not isinstance(telemetry, dict):
             telemetry = {}
         payload = dict(telemetry)
@@ -4180,6 +4188,13 @@ def compress_context(
         _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
+        # Snapshot the attempt's telemetry before the commit: a rotation commit runs the session
+        # boundary (on_session_end) mid-way, which clears _last_compression_telemetry to None, so
+        # reading it at emit time would log only the 10-key stub for rotated_committed lines while
+        # in-loop/in-place attempts log all 38 keys. The dict is fully populated by now and the
+        # emitter copies it, so holding the reference is enough.
+        # FORK: rotated-commit telemetry snapshot (compaction-trigger overcharge fix; see FORK.md)
+        _attempt_telemetry = getattr(agent.context_compressor, "_last_compression_telemetry", None)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
@@ -4213,7 +4228,7 @@ def compress_context(
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
-            commit_started_at=commit.commit_started_at,
+            commit_started_at=commit.commit_started_at, telemetry=_attempt_telemetry,
         )
         return compressed, new_system_prompt
     finally:
