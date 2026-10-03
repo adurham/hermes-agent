@@ -211,6 +211,8 @@ class TestDockSurfaceInvariants:
 class TestPureRenderHelpers:
     @pytest.mark.parametrize("seconds,expected", [
         (0, "0s"), (5, "5s"), (59, "59s"), (60, "1m00s"), (65, "1m05s"), (729, "12m09s"),
+        # Minutes roll into hours past 60m (was "60m01s" / "284m41s").
+        (3600, "1h00m"), (3601, "1h00m"), (4200, "1h10m"), (17081, "4h44m"),
     ])
     def test_elapsed_format(self, seconds, expected):
         assert format_elapsed(seconds) == expected

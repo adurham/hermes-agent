@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 def _age_label(seconds: float) -> str:
     if seconds < 90:
         return f"{int(seconds)}s ago"
-    if seconds < 5400:
+    if seconds < 3600:
         return f"{int(seconds // 60)}m ago"
     return f"{seconds / 3600:.1f}h ago"
 

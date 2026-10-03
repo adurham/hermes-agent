@@ -74,12 +74,20 @@ _GLYPH = {"running": "⚙", "done": "✔", "failed": "✘", "killed": "✘", "lo
 
 def process_activity(row: dict) -> str:
     """The trailing ``· …`` part of a dock line: elapsed + latest output while running, the exit
-    verdict + age once finished."""
+    verdict + age once finished.
+
+    Elapsed/age roll over to ``MmSSs`` past a minute (via the dock's shared
+    ``format_elapsed``) so a long-running process never renders a bare
+    ``696s``/``300s`` — the "seconds displayed >= 60" defect the dock used to
+    show while every other TUI counter had already switched to minutes.
+    """
+    from hermes_cli.cli_subagent_monitor import format_elapsed
+
     if row["status"] == "running":
-        return f"{row['elapsed']}s · " + (f"last: {row['detail']}" if row["detail"] else "starting")
+        return f"{format_elapsed(row['elapsed'])} · " + (f"last: {row['detail']}" if row["detail"] else "starting")
     verdict = {"done": f"exit {row['exit_code']}", "failed": f"exit {row['exit_code']}",
                "killed": "killed", "lost": "lost"}[row["status"]]
-    return f"{verdict} · {row['since_exit']}s ago"
+    return f"{verdict} · {format_elapsed(row['since_exit'])} ago"
 
 
 def process_glyph(row: dict) -> str:
