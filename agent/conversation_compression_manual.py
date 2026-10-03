@@ -59,11 +59,14 @@ def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> i
     """Transcript + system prompt + tool schemas: a transcript-only figure understates real request pressure
     and can even appear to grow after a dense handoff summary replaces many short turns (#6217)."""
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.turn_context import _agent_stale_thinking_on_wire
+
     if not messages:
         return 0
     return estimate_request_tokens_rough(
         list(messages), system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
-        tools=getattr(agent, "tools", None) or None)
+        tools=getattr(agent, "tools", None) or None,
+        charge_stale_thinking=_agent_stale_thinking_on_wire(agent))
 
 
 def compress_now(
