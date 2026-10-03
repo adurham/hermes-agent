@@ -6,7 +6,7 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 """
 
 import logging
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import suppress
 import os
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
@@ -29,7 +29,7 @@ from pm.receipt import accept_worker_receipt as _accept_completion_pm_receipt
 from hermes_cli import update_receipt as _completion_receipt, update_cmd_config as _completion_config
 from hermes_cli._old_updater import stop_for_relaunch
 from hermes_cli._early_recovery import git_operation_in_progress, interrupted_pull_marker
-from hermes_cli import update_pause_record as _pause_record
+from hermes_cli import update_cmd_commit as _commit
 from hermes_cli import update_cmd_check as _check
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
@@ -99,7 +99,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
-    _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
+    _prune_orphan_rescue_refs, _push_synced_fork, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _clear_stale_sqlite_sidecars,
@@ -488,6 +488,9 @@ def _should_zip_fallback_on_update_error(exc: BaseException) -> bool:
         isinstance(exc, subprocess.CalledProcessError)
         and _m()._is_windows()
         and _called_process_error_is_git(exc)
+        # Only from an untouched checkout: the ZIP overlay replaces every top-level entry, so
+        # after git already stashed, switched or half-moved the tree it would bury that state.
+        and _commit.run_checkout_untouched(_m().PROJECT_ROOT)
     )
 
 
@@ -902,7 +905,7 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
         sys.exit(1)
 
 
-def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=None, _windows_gateway_resume=None) -> None:
+def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=None) -> None:
     """Post-pull syntax guard: roll back to *pre_pull_sha* and ``sys.exit(1)`` when a critical
     file no longer compiles (a bad admin-merge past CI must not brick the CLI)."""
     syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(_m().PROJECT_ROOT)
@@ -926,18 +929,23 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=N
         else:
             rollback_args = ["reset", "--hard", pre_pull_sha]
         print(f"→ Rolling back to {rollback_branch if parked else pre_pull_sha[:10]}...")
-        with _checkout_move(_windows_gateway_resume, pre_pull_sha):
+        with _best_effort('Could not write the interrupted-pull marker: %s'):
+            _commit.arm_tree_move(git_cmd, _m().PROJECT_ROOT, pre=_capture_head_sha(git_cmd, _m().PROJECT_ROOT),
+                                  target=pre_pull_sha, stash=None)
+        rollback_result = _git_run(git_cmd, rollback_args)
+        if rollback_result.returncode != 0 and parked:
+            # The parked branch can be unavailable (e.g. checked out in another worktree): restore
+            # its commit detached so the install still boots the code it ran before.
+            print(f"  ✗ Could not check out {rollback_branch}; restoring its commit detached.")
+            rollback_args = ["checkout", "--detach", pre_pull_sha]
             rollback_result = _git_run(git_cmd, rollback_args)
-            if rollback_result.returncode != 0 and parked:
-                # The parked branch can be unavailable (e.g. checked out in another worktree): restore
-                # its commit detached so the install still boots the code it ran before.
-                print(f"  ✗ Could not check out {rollback_branch}; restoring its commit detached.")
-                rollback_args = ["checkout", "--detach", pre_pull_sha]
-                rollback_result = _git_run(git_cmd, rollback_args)
         if rollback_result.returncode == 0:
+            interrupted_pull_marker(_m().PROJECT_ROOT).unlink(missing_ok=True)
+            _commit.disarm_commit_obligations()  # back on the code this run started from
             print("  ✓ Rollback complete — your install is unchanged.")
             print("  Try ``hermes update`` again later once a fix lands.")
         else:
+            _commit.settle_failed_tree_move(_m().PROJECT_ROOT)
             print("  ✗ Rollback failed. Recover manually with:")
             print(f"    cd {_m().PROJECT_ROOT} && git {shlex.join(rollback_args)}")
             if rollback_result.stderr.strip():
@@ -961,111 +969,10 @@ def _update_movement_baseline(git_cmd, pre_pull_sha, pre_sync_sha, rollback_bran
     return pre_sync_sha or pre_pull_sha
 
 
-def _resolved_commit(git_cmd, ref: str) -> str:
-    """The commit *ref* names now, or ``""`` when it names none."""
-    return (_git_run(git_cmd, ["rev-parse", "-q", "--verify", f"{ref}^{{commit}}"]).stdout or "").strip()
-
-
-@contextmanager
-def _checkout_move(token, *targets, paths=(), revert=False):
-    """Run one checkout-writing git step (switch, merge, reset, upstream sync, rollback, stash) with
-    the paused gateways' tree gate bound to it BEFORE git writes a file: the commit(s) it can move
-    to and the tracked *paths* it rewrites in place (stash push/apply, ``reset --hard``,
-    ``checkout -- <paths>``; *revert*: every tracked change it finds, put back to HEAD), on a
-    baseline taken at the HEAD it starts from. Without that, a step
-    git leaves half-written at an unmoved HEAD is judged against whatever refs a later fetch left,
-    or against no baseline at all once an earlier step moved HEAD. A failed record write raises:
-    the step must not run.
-
-    The first step from the pause's own HEAD extends the pause's baseline (it knows the edits that
-    were already there). A later step gets a baseline of its own, retired once git returns with the
-    tree whole: HEAD moved and every file the move wrote holds the new commit, the tree exactly as
-    the step found it, or the step reported ``whole`` on the dict this yields (a stash restore that
-    applied cleanly changes the tree by design). A move is judged the moment git returns (see
-    ``_settle_checkout_move``)."""
-    step: dict = {}
-    targets = sorted({t for t in targets if t})
-    pause_id = (token or {}).get("pause_id")
-    root = _pause_record.install_root() if pause_id and (targets or paths or revert) else None
-    found = _pause_record.tree_state(root) if root else None
-    if found is None:  # nothing paused, nothing bound, or not a git checkout: no tree gate to bind
-        yield step
-        return
-    paths = {*paths, *(found["dirty_at_pause"] or [] if revert else ())}
-    baselines = token.setdefault("baselines", [])
-    move_id = f"{pause_id}@{found['pre_sha']}"
-    baseline = next((b for b in baselines if b.get("pre_sha") == found["pre_sha"]
-                     and b.get("pause_id") in (pause_id, move_id)), None)
-    if baseline is None:
-        baseline = {"pause_id": move_id, **found}
-        baselines.append(baseline)
-    for key, bound in (("move_targets", targets), ("move_paths", paths)):
-        if bound:
-            baseline[key] = sorted({*baseline.get(key, []), *bound})
-    _pause_record.write({**token, "resume_needed": True})
-    try:
-        yield step
-    finally:
-        _settle_checkout_move(token, baseline, found, root, step)
-
-
-def _moves_for(token):
-    """``_checkout_move`` bound to *token*: the ``checkout_move`` the git and stash helpers take."""
-    return lambda *targets, **bound: _checkout_move(token, *targets, **bound)
-
-
-def _settle_checkout_move(token: dict, baseline: dict, found: dict, root, step: dict) -> None:
-    """Record what the returned step left. A moved HEAD gets its verdict now: git can move HEAD
-    past a file it failed to write, and only now are the move's paths untouched by later steps
-    (dependency syncs, stash restores). A step's own baseline is retired when the tree is whole."""
-    now = _pause_record.tree_state(root)
-    moved = now["pre_sha"] != found["pre_sha"]
-    torn = _pause_record.torn_by_move(root, found, now["dirty_at_pause"]) if moved else None
-    if moved and torn is not None:  # unknown stays unjudged: the gate judges it at resume time
-        baseline.setdefault("landed", {})[now["pre_sha"]] = torn
-    whole = torn == [] if moved else step.get("whole") or all(now[key] == found[key] for key in found)
-    if baseline["pause_id"] != token["pause_id"] and whole:
-        token["baselines"] = [b for b in token["baselines"] if b is not baseline]
-    _pause_record.write({**token, "resume_needed": True})
-
-
-def _move_checkout_to(git_cmd, branch, merge_ref, pre_pull_sha) -> None:
-    """The principal pull's one checkout move onto *merge_ref*; exits when it cannot be made."""
-    # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
-    # SECOND network fetch; identical in effect given the fresh tracking ref.
-    if merge_ref != f"origin/{branch}":
-        # Keep detached local commits reachable, too. Named branches are
-        # untouched by checkout --detach; an autostash protects dirty files.
-        _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
-        _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
-    else:
-        merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
-        if merge_result.returncode != 0:
-            ancestry = _git_run(
-                git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
-            if ancestry.returncode == 1:
-                _reconcile_diverged_checkout(
-                    git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
-            else:
-                print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
-                detail = (merge_result.stderr or merge_result.stdout or "").strip()
-                if detail:
-                    print(f"  {detail}")
-                if ancestry.returncode == 0:
-                    print(f"  HEAD is still an ancestor of {merge_ref}.")
-                else:
-                    print(f"  Could not verify whether HEAD is an ancestor of {merge_ref}.")
-                    ancestry_detail = (ancestry.stderr or ancestry.stdout or "").strip()
-                    if ancestry_detail:
-                        print(f"  {ancestry_detail}")
-                print("  Resolve the Git error and re-run `hermes update`; no reset was attempted.")
-                sys.exit(1)
-
-
 def _pull_updates(
     git_cmd, branch, auto_stash_ref, *, prompt_for_restore, gw_input_fn, discard_local_changes,
     keep_stash, target_ref=None, pre_sync_sha=None, rollback_branch=None, sync_upstream=False, assume_yes=False,
-    in_place_update=False, _windows_gateway_resume=None):
+    in_place_update=False, _windows_gateway_resume=None, expected_sha=None):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> rescue ref then reset; a
     post-pull syntax error in a critical file rolls back. Exits on failure; returns the SHA HEAD had to move off."""
@@ -1082,21 +989,57 @@ def _pull_updates(
     target_sha = (_git_run(git_cmd, ["rev-parse", f"{merge_ref}^{{commit}}"]).stdout or "").strip()
     movement_baseline = _update_movement_baseline(
         git_cmd, pre_pull_sha, pre_sync_sha, rollback_branch, target_sha)
+    if expected_sha and target_sha and target_sha != expected_sha:
+        # Channel verification is a precondition: refuse before anything moves.
+        print(f"✗ {merge_ref} resolves to {target_sha[:10]}, not the selected channel commit "
+              f"{expected_sha[:10]}. No update was applied.")
+        sys.exit(1)
+    # The commit point: the tail and the fleet restart are owed BEFORE git writes a file.
+    _commit.arm_commit_obligations(_m().PROJECT_ROOT, target_sha)
     with _best_effort('Could not write the interrupted-pull marker: %s'):
-        pull_marker.write_text(
-            f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
-            encoding="utf-8")
+        _commit.arm_tree_move(git_cmd, _m().PROJECT_ROOT, pre=pre_pull_sha, target=target_sha,
+                              stash=auto_stash_ref)
     try:
         try:
-            # The paused gateways' tree gate must know this move's target before git writes a file.
-            with _checkout_move(_windows_gateway_resume, target_sha):
-                _move_checkout_to(git_cmd, branch, merge_ref, pre_pull_sha)
+            # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
+            # SECOND network fetch; identical in effect given the fresh tracking ref.
+            if merge_ref != f"origin/{branch}":
+                # Keep detached local commits reachable, too. Named branches are
+                # untouched by checkout --detach; an autostash protects dirty files.
+                _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
+                _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
+            else:
+                merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
+                if merge_result.returncode != 0:
+                    ancestry = _git_run(
+                        git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
+                    if ancestry.returncode == 1:
+                        _reconcile_diverged_checkout(
+                            git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+                    else:
+                        print("✗ Fast-forward failed; refusing to reset because history divergence was not proven.")
+                        detail = (merge_result.stderr or merge_result.stdout or "").strip()
+                        if detail:
+                            print(f"  {detail}")
+                        if ancestry.returncode == 0:
+                            print(f"  HEAD is still an ancestor of {merge_ref}.")
+                        else:
+                            print(f"  Could not verify whether HEAD is an ancestor of {merge_ref}.")
+                            ancestry_detail = (ancestry.stderr or ancestry.stdout or "").strip()
+                            if ancestry_detail:
+                                print(f"  {ancestry_detail}")
+                        print("  Resolve the Git error and re-run `hermes update`; no reset was attempted.")
+                        sys.exit(1)
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
         except BaseException:
-            pull_marker.unlink(missing_ok=True)  # git exited on its own (sys.exit on conflict/reset failure)
+            # git exited on its own (sys.exit on conflict/reset failure, a locked or read-only file):
+            # put back what it wrote; the marker stays until the tree is verified whole.
+            if (_commit.settle_failed_tree_move(_m().PROJECT_ROOT)
+                    and _capture_head_sha(git_cmd, _m().PROJECT_ROOT) == (pre_sync_sha or pre_pull_sha)):
+                _commit.disarm_commit_obligations()
             raise
-        pull_marker.unlink(missing_ok=True)  # git is done: the tree is whole again
+        pull_marker.unlink(missing_ok=True)  # git exited 0: the tree is whole at the target
         if sync_upstream:
             # Do not let a second mutation hide a failed origin merge or move an
             # unexpected branch. Keep local edits parked through the final check.
@@ -1104,15 +1047,16 @@ def _pull_updates(
                 git_cmd, branch, movement_baseline, in_place_update=in_place_update,
                 _windows_gateway_resume=_windows_gateway_resume)
             _m()._sync_with_upstream_if_needed(
-                git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn,
-                checkout_move=_moves_for(_windows_gateway_resume))
+                git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
         # Refuse an unexpected branch before syntax rollback can reset its ref.
         _verify_head_after_pull(
             git_cmd, branch, movement_baseline, in_place_update=in_place_update,
             _windows_gateway_resume=_windows_gateway_resume)
         _rollback_if_pulled_syntax_error(
-            git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch,
-            _windows_gateway_resume=_windows_gateway_resume)
+            git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch)
+        if sync_upstream:
+            # Only a validated update is published to the fork (#97052 sync, after the commit point).
+            _push_synced_fork(git_cmd, _m().PROJECT_ROOT)
         update_succeeded = True
     finally:
         if auto_stash_ref is not None:
@@ -1130,8 +1074,57 @@ def _pull_updates(
             else:
                 _m()._restore_stashed_changes(
                     git_cmd, _m().PROJECT_ROOT, auto_stash_ref, prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
+                    input_fn=gw_input_fn)
     return movement_baseline
+
+
+def _switch_branch_at_commit_point(git_cmd, branch, target_ref, *, pre, stash):
+    """CP0: switch the parked checkout to *branch* under the interrupted-pull marker and the armed
+    obligations, so a kill mid-switch is restored by the next launch like a killed pull."""
+    root = _m().PROJECT_ROOT
+
+    def resolve(ref):
+        return (_git_run(git_cmd, ["rev-parse", "-q", "--verify", f"{ref}^{{commit}}"]).stdout or "").strip()
+
+    attempts = [(["checkout", branch], resolve(branch)),
+                (["checkout", "-B", branch, f"origin/{branch}"], resolve(f"origin/{branch}"))]
+    result = None
+    for args, target in attempts:
+        if not target:
+            result = _git_run(git_cmd, args)  # unresolvable: git fails before touching the tree
+            if result.returncode == 0:
+                interrupted_pull_marker(root).unlink(missing_ok=True)
+                return result
+            continue
+        _commit.arm_commit_obligations(root, resolve(target_ref) or target)
+        with _best_effort('Could not write the interrupted-pull marker: %s'):
+            _commit.arm_tree_move(git_cmd, root, pre=pre, target=target, stash=stash)
+        try:
+            result = _git_run(git_cmd, args)
+        except KeyboardInterrupt:
+            raise
+        except BaseException:
+            _commit.settle_failed_tree_move(root)
+            raise
+        if result.returncode == 0:
+            interrupted_pull_marker(root).unlink(missing_ok=True)  # git exited 0: whole at *target*
+            return result
+        if not _commit.settle_failed_tree_move(root):
+            return result  # torn and unrestorable now: the marker stays for the next launch
+    if _capture_head_sha(git_cmd, root) == pre:
+        _commit.disarm_commit_obligations()
+    return result
+
+
+def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) -> None:
+    """Preconditions that used to fail AFTER the swap: refuse with the install untouched."""
+    reason = _commit.preflight_refusal(git_cmd, _m().PROJECT_ROOT, target_ref, _UPDATE_CRITICAL_FILES)
+    if reason is None:
+        return
+    print(reason)
+    print("  No update was applied; your install is unchanged.")
+    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    sys.exit(1)
 
 
 @dataclass
@@ -1217,8 +1210,7 @@ def _prepare_checkout_for_update(
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
         # Before the stash: its refs/stash would contain HEAD until it is dropped.
         _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
-    auto_stash_ref = _m()._stash_local_changes_if_needed(
-        git_cmd, _m().PROJECT_ROOT, checkout_move=_moves_for(_windows_gateway_resume))
+    auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
     moved_from_sha = None
     rollback_branch = None
     if not release_tag and not in_place_update and current_branch != branch:
@@ -1226,18 +1218,13 @@ def _prepare_checkout_for_update(
         # Keep the running code AND its branch identity for syntax rollback.
         moved_from_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         rollback_branch = current_branch
-        # The switch (or its -B fallback) is this update's first tree write: bind both commits first.
-        with _checkout_move(_windows_gateway_resume, *(_resolved_commit(git_cmd, ref) for ref in (
-                f"refs/heads/{branch}", f"origin/{branch}"))):
-            track_result = _git_run(git_cmd, ["checkout", branch])
-            if track_result.returncode != 0:
-                track_result = _git_run(git_cmd, ["checkout", "-B", branch, f"origin/{branch}"])
+        track_result = _switch_branch_at_commit_point(
+            git_cmd, branch, target_ref, pre=moved_from_sha, stash=auto_stash_ref)
         if track_result.returncode != 0:
             # Restore the stash before bailing so the user isn't stranded.
             if auto_stash_ref is not None:
                 _m()._restore_stashed_changes(
-                    git_cmd, _m().PROJECT_ROOT, auto_stash_ref, prompt_user=False, input_fn=gw_input_fn,
-                    checkout_move=_moves_for(_windows_gateway_resume))
+                    git_cmd, _m().PROJECT_ROOT, auto_stash_ref, prompt_user=False, input_fn=gw_input_fn)
             print(f"✗ Branch '{branch}' does not exist locally or on origin.")
             if track_result.stderr.strip():
                 print(f"  {track_result.stderr.strip().splitlines()[0]}")
@@ -1292,8 +1279,7 @@ def _prepare_checkout_for_update(
     if commit_count == 0 and is_fork and branch == "main" and not release_tag:
         pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         upstream_checked = _m()._sync_with_upstream_if_needed(
-            git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn,
-            checkout_move=_moves_for(_windows_gateway_resume))
+            git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
         post_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         if pre_sync_sha and post_sync_sha and pre_sync_sha != post_sync_sha:
             synced_count = _count_commits_between(
@@ -1398,10 +1384,9 @@ def _record_update_initiator() -> None:
             _completion_receipt.record_fact("initiator", "desktop")
 
 
-def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
+def _prepare_git_command() -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
-    on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters).
-    *checkout_move* binds the churn cleanups' file writes to the paused gateways' tree gate."""
+    on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters)."""
     git_dir = _m().PROJECT_ROOT / ".git"
     use_zip_update = not git_dir.exists()
     if use_zip_update and sys.platform != "win32":
@@ -1426,8 +1411,8 @@ def _prepare_git_command(*, checkout_move=None) -> tuple[bool, list, bool]:
 
     # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
     # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT, checkout_move=checkout_move)
+    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
+    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
 
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -1530,17 +1515,15 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 
 def _finish_already_up_to_date(
-    git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict,
-    _windows_gateway_resume=None) -> None:
-    """"Already up to date" path: restore stash, repair the checkout, catch up the fleet.
+    git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict) -> None:
+    """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
-    # A parked branch the update switched off stays on the target: re-parking on the stale branch
-    # recreates the incident. No other checkout left current_branch (in-place and release updates
-    # never switch), so there is nothing to switch back to.
+    # Restore stash and switch back if we moved. EXCEPTION: a parked branch verified clean +
+    # fully merged stays on the target — re-parking on the stale branch recreates the incident.
     if _plan.auto_stash_ref is not None:
         _m()._restore_stashed_changes(
             git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
-            input_fn=gw_input_fn, checkout_move=_moves_for(_windows_gateway_resume))
+            input_fn=gw_input_fn)
     if _plan.parked_branch_switched:
         if _plan.switch_block_reason.startswith("unmerged:"):
             _count = _plan.switch_block_reason.split(":", 1)[1]
@@ -1549,6 +1532,8 @@ def _finish_already_up_to_date(
                 f"{_count} unmerged commit(s) kept on '{current_branch}'.")
         else:
             print(f"  ✓ Checkout was parked on '{current_branch}' (fully merged) — switched back to {branch}.")
+    elif current_branch not in {branch, "HEAD"}:
+        _git_run(git_cmd, ["checkout", current_branch])
 
     if completion_request is not None:
         # Same code, same host obligation: an SHA-less arm would REPLACE the standing record
@@ -1622,7 +1607,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         or _m()._desktop_dist_exists(desktop_dir)
         or bool(_m()._installed_desktop_apps()))
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command(checkout_move=_moves_for(_windows_gateway_resume))
+    use_zip_update, git_cmd, is_fork = _prepare_git_command()
 
     completion_request = _source_completion_request(
         opts, _pre_update_plan, pre_update_snapshot_id, _windows_gateway_resume,
@@ -1732,6 +1717,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
         current_branch = _current_branch_name(git_cmd, check=True)
+        _commit.record_run_start(git_cmd, _m().PROJECT_ROOT)
+        _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume)
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
@@ -1741,7 +1728,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if commit_count == 0:
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, gw_input_fn=gw_input_fn,
-                completion_request=completion_request, _windows_gateway_resume=_windows_gateway_resume)
+                completion_request=completion_request)
             return
 
         if release_sha:
@@ -1761,7 +1748,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
             rollback_branch=_plan.rollback_branch,
             sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
-            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume,
+            expected_sha=completion_request.get("expected_sha"))
         _apply_pulled_update(
             git_cmd, branch, movement_baseline, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
