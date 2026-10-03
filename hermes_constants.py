@@ -1449,6 +1449,23 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
         if isinstance(model_cfg, dict):
             model_cfg = model_cfg.get("default") or model_cfg.get("model") or ""
         model = model_cfg.strip() if isinstance(model_cfg, str) else ""
+
+    # FORK: ``agent.reasoning_effort_by_model`` is the per-model choice the CLI UI writes (cli.py
+    # ``/effort`` + its model-switch memory) and cli.py reads directly. Every OTHER surface
+    # (switch_model, fallback re-resolution, tui_gateway, gateway, cron) comes through here, so
+    # without this consultation a pin is silently clobbered back to the global on switch/fallback.
+    # Match semantics mirror cli.py::_resolve_reasoning_for_model exactly: case-insensitive
+    # (strip().lower()) equality on the full model string, first match wins.
+    by_model = agent_cfg.get("reasoning_effort_by_model")
+    if isinstance(by_model, dict) and model:
+        target = model.strip().lower()
+        for saved_model, saved_effort in by_model.items():
+            if isinstance(saved_model, str) and saved_model.strip().lower() == target:
+                pinned = parse_reasoning_effort(saved_effort)
+                if pinned is not None:  # malformed value falls through to overrides/global
+                    return pinned
+                break
+
     per_model = resolve_per_model_reasoning_effort(model, agent_cfg.get("reasoning_overrides") or {})
     if per_model is not None:
         return per_model
