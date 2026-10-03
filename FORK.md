@@ -19431,3 +19431,16 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 - `pr/compaction-aggregator-echo` → **#132442** (DRAFT): `_ESTIMATOR_IGNORES_REPLAYED_THINKING_PROVIDERS` (provider-ID-keyed) excludes re-export providers from the stale-thinking ESTIMATE charge; send-side `needs_reasoning_echo` untouched. Restructured from the fork's host-tuple per external review (provider-keyed matches upstream's own sets; probe demoted to motivation). Verified: 96 tests green on upstream/main, 4-failure mutation teeth, ruff clean.
 - **Not filed:** the rotated-commit telemetry retention. Instrumented both trees (spy on `_reset_session_compaction_state` + `on_session_end` around a real rotation with a real SessionDB): no reset fires mid-rotation, telemetry stayed at 38 keys — the claimed clearing mechanism does not reproduce. Fork-side only until a real repro exists.
 - **Gate status correction:** #131859 closed (other accounts recovered) but OUR account remains non-draft-gated: `gh pr create` non-draft → CreatePullRequest permission error, `gh pr ready` → markPullRequestReadyForReview permission error, `--draft` succeeds. Drafts stay our only path; a maintainer must flip them ready.
+
+## 2026-10-03 — resolve_reasoning_config ignored reasoning_effort_by_model (per-model pin clobbered to global on switch/fallback)
+
+**Problem:** with `agent.reasoning_effort: ultra` global and a per-model pin
+`agent.reasoning_effort_by_model: {dealignai/DeepSeek-V4.1-Flash-UNCENSORED-EXL3-2.9bpw: xhigh}`, a `/model` switch onto the exo model set the CLI field to `xhigh` (via `_apply_reasoning_for_new_model`) but `agent.switch_model()` re-resolved through `hermes_constants.resolve_reasoning_config()`, which only consulted `agent.reasoning_overrides` then the global — never the by-model map — and returned `ultra`. The custom provider profile clamped `ultra` to `max` on the wire, and exo answered HTTP 422 (`reasoning_effort: Input should be none/minimal/low/medium/high/xhigh`). Log evidence: `agent.log` for session `20261003_164330_f6af11` showed `reasoning_config resolved: {'enabled': True, 'effort': 'ultra'}` on the live route.
+
+**Fix:** `resolve_reasoning_config()` (the documented single chokepoint for CLI/gateway/TUI/cron/`/model`/fallback) now consults `agent.reasoning_effort_by_model` AFTER model-default resolution and BEFORE `reasoning_overrides`, so precedence is **by_model > reasoning_overrides > global**. Matching mirrors `cli.py::_resolve_reasoning_for_model` exactly — case-insensitive `strip().lower()` equality on the full model string, first match wins, dict-form values via `parse_reasoning_effort`. Guards: skip when the map is absent/not a dict/empty or model is empty; a matching entry whose value fails to parse falls through to the overrides/global path (never returns `None` for a malformed pin).
+
+**Files:** `hermes_constants.py` (`resolve_reasoning_config`), `tests/test_resolve_reasoning_config_by_model.py` (new, 8 tests).
+
+**Verification:** RED-first — 4 by-model-wins tests failed on base (returned `ultra`/`low`); GREEN after the fix (8 passed). Regression: `tests/test_hermes_constants.py` 52 passed/21 skipped, `tests/hermes_cli/test_reasoning_effort.py` 10 passed. ruff clean.
+
+**Upstreamable:** no — fork-only feature (upstream has no `reasoning_effort_by_model` key).
