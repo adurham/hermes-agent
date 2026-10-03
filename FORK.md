@@ -3,6 +3,23 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-10-03 (scratch prune: the once-per-process flag was burned before the stamp check, so long-lived processes never pruned again)
+
+**Problem:** `_prune_scratch_dir_once` (`hermes_constants.py`) set its module global `_scratch_pruned_once = True`
+*before* checking the `.last_prune` stamp's age. A long-lived process whose first call arrived while the stamp
+was still fresh returned early having already spent its once-per-process allowance — it could never prune again
+for its entire lifetime. Real incident: a gateway process ran 38h with zero prunes, 76 stale scratch entries
+accumulated, and the disk quota was exhausted.
+
+**Fix:** replaced the boolean with `_scratch_prune_last_attempt` (a timestamp). The function now allows at most
+one prune attempt per hour **per process** and the `.last_prune` stamp still throttles actual scans to at most one
+per hour **across processes**; a process deferred by a fresh stamp retries after the hour instead of never.
+Updated the `get_scratch_dir()` docstring to match ("at most once per hour per process").
+
+**Test:** `tests/test_scratch_dir.py::test_prune_once_retries_after_hour_when_first_attempt_was_deferred` — asserts
+entry survives a stamp-deferred first call, then is pruned on the retry once the hour has passed. Fail-first
+verified: reverting only the `hermes_constants.py` hunks makes it fail; restored, it passes.
+
 ### Fork-only retirement — 2026-10-01 (`SUGGESTED_ROLE_MODELS` + `/delegation defaults` removed: they re-added pruned roles as Claude-first bare strings)
 
 `delegation.model_by_role` was pruned from 62 roles to 12 (homelab `968cca1`). `/delegation defaults`
