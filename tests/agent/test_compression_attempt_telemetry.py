@@ -1,9 +1,13 @@
 import json
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.conversation_compression import compress_context
+from agent.conversation_compression import (
+    _emit_compression_attempt_telemetry,
+    compress_context,
+)
 from agent.context_compressor import ContextCompressor
 
 
@@ -198,3 +202,76 @@ def test_aux_call_telemetry_records_content_free_phase_timings():
         "commit_ms": 11,
     }
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in json.dumps(payload)
+
+
+class TestRotationTelemetryRetention:
+    """The rotated commit's telemetry line must retain the full attempt payload.
+
+    Root cause: a rotation commit runs the session boundary
+    (``ContextCompressor.on_session_end``) midway through ``_commit_compaction``, and that
+    boundary resets ``_last_compression_telemetry``/``_active_compression_telemetry`` to
+    ``None``. Reading the attribute at emit time therefore logged only the ~10-key stub for
+    ``split_status='rotated_committed'`` lines while in-place/in-loop attempts logged all 38
+    keys. The attempt payload is now snapshotted before the commit and handed to the emitter
+    explicitly.
+    """
+
+    def _compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            return ContextCompressor(
+                model="test/main-model", provider="test-provider", threshold_percent=0.50,
+                quiet_mode=True, config_context_length=100_000,
+            )
+
+    def test_attribute_is_none_after_session_boundary(self):
+        """Pin the root cause: the boundary reset really does clear the attribute."""
+        compressor = self._compressor()
+        populated = compressor._begin_compression_telemetry(current_tokens=75_000)
+        compressor._record_compression_regions(
+            head_messages=[{"role": "system", "content": "s"}],
+            middle_messages=[{"role": "user", "content": "m" * 400}],
+            tail_messages=[{"role": "assistant", "content": "t"}],
+        )
+        assert len(populated) == 38
+        compressor.on_session_end("old-session", [])
+        assert compressor._last_compression_telemetry is None
+
+    def test_rotated_commit_keeps_full_payload(self, caplog):
+        compressor = self._compressor()
+        populated = compressor._begin_compression_telemetry(current_tokens=75_000)
+        compressor._record_compression_regions(
+            head_messages=[{"role": "system", "content": "s"}],
+            middle_messages=[{"role": "user", "content": "m" * 400}],
+            tail_messages=[{"role": "assistant", "content": "t"}],
+        )
+        snapshot = getattr(compressor, "_last_compression_telemetry", None)
+        # Simulate the rotation boundary running before the emitter reads state.
+        compressor.on_session_end("old-session", [])
+        agent = _Agent(compressor)
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            _emit_compression_attempt_telemetry(
+                agent, started_at=time.monotonic(), commit_status="committed",
+                split_status="rotated_committed", telemetry=snapshot,
+            )
+        payload = _extract_telemetry(caplog)
+        assert len(payload) >= 38
+        assert payload["split_status"] == "rotated_committed"
+        assert payload["protected_head_tokens"] is not None
+        assert payload["middle_window_tokens"] is not None
+
+    def test_without_snapshot_the_stub_is_still_emitted(self, caplog):
+        """Backward-compatible: omitting ``telemetry`` falls back to the attribute."""
+        compressor = self._compressor()
+        compressor._begin_compression_telemetry(current_tokens=75_000)
+        compressor.on_session_end("old-session", [])
+        agent = _Agent(compressor)
+
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            _emit_compression_attempt_telemetry(
+                agent, started_at=time.monotonic(), commit_status="committed",
+                split_status="rotated_committed",
+            )
+        payload = _extract_telemetry(caplog)
+        assert payload["split_status"] == "rotated_committed"
+        assert len(payload) < 20  # the pre-fix stub behavior, unchanged when no snapshot passed
