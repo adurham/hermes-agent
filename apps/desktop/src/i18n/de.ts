@@ -6,10 +6,10 @@ import { introDe } from './intro-de'
 export const deOverrides = {
   sharedMetrics: {
     consentTitle: 'Hermes verbessern helfen?',
+    dialogTitle: 'Hermes verbessern helfen?',
     consentBody:
       'Geteilte Metriken enthalten nur begrenzte Zähler. Niemals Prompts, Dateien, Pfade oder Fehlertexte. Die Erfassung bleibt lokal. Das Senden an Nous ist eine separate Zustimmung.',
     whatIsCollected: 'Was erfasst wird',
-    collectedIntro: 'Nur begrenzte Zähler:',
     collectedActivity: 'Aktivität, Session-Länge, Ergebnisse und Fehlerklassen',
     collectedModels: 'Modellrouten und Token-Summen',
     collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
@@ -20,15 +20,12 @@ export const deOverrides = {
       'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
     collectedMachine:
       'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter und Kanal der Hermes-Version, Anzahl ausstehender Updates, ob ein lokaler Modellserver genutzt wird',
-    installId:
-      'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
-    consentWindow:
-      'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
+    sending:
+      'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners. Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten. Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
     readDocs: 'Alle Details lesen',
     share: 'Erfassen und an Nous senden',
     local: 'Nur lokal erfassen',
     off: 'Nein, danke',
-    changeLater: 'Sie können das jederzeit unter Einstellungen → Sicherheit ändern.',
     saveFailed: 'Ihre Auswahl konnte nicht gespeichert werden',
     collectLabel: 'Nutzungsstatistiken erfassen',
     collectDesc: 'Begrenzte Zähler auf diesem Gerät. Niemals Prompts, Dateien, Pfade oder Fehlertexte.',
@@ -4335,6 +4332,11 @@ export const deOverrides = {
     editingQueuedInComposer: 'Bearbeitet eingereihten Turn im Composer',
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
+    localSetup: {
+      title: 'Das könnte auf Ihrem Computer laufen',
+      text: (model: string) => `${model} passt auf diesen Rechner. Kostenlos, und Chats bleiben auf Ihrem Computer.`,
+      action: 'Zeigen'
+    },
     queueEdit: 'Bearbeiten',
     queueExpand: 'Ausklappen',
     queueCollapse: 'Einklappen',
@@ -4748,6 +4750,9 @@ export const deOverrides = {
     }
   },
   handoffTour: {
+    localTitle: 'Dieser Rechner kann Modelle lokal ausführen',
+    localText: (model: string) =>
+      `${model} passt zu Ihrer Hardware. Es läuft kostenlos, und Chats verlassen Ihren Computer nie. Wählen Sie es jederzeit hier im Modellmenü.`,
     profileTitle: 'Ihre erste Aufgabe läuft im Standardprofil',
     profileText:
       'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgaben-Session lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
@@ -4757,10 +4762,6 @@ export const deOverrides = {
     stayTitle: 'Hermes ist einen Klick entfernt',
     stayText:
       'Wechseln Sie ins Einrichtungsprofil und öffnen Sie „Willkommen bei Hermes“, wenn Sie Hilfe brauchen. Es bleibt dort.'
-  },
-  guidedGreeting: {
-    line: 'Hallo und willkommen. Ich bin Hermes. Geben Sie mir zwei Minuten, um alles für Sie einzurichten, dann setzen wir mich auf etwas an, das Sie wirklich erledigt haben möchten.\\n\\nAber zuerst: Wie soll ich Sie nennen?',
-    nameSuggestion: name => `(Ich kann Sie auch einfach ${name} nennen, wenn Ihnen das lieber ist.)`
   },
   install: {
     stageStates: {
@@ -5060,7 +5061,12 @@ export const deOverrides = {
       free: 'kostenlos',
       cacheRead: 'Cache-Lesung',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
+        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'Lokal ausführen · kostenlos, privat',
+        text: (model: string, size: string) => `${model} passt auf diesen Rechner · ${size} Download`,
+        action: 'Einrichten'
+      }
     },
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',
@@ -5739,9 +5745,34 @@ export const deOverrides = {
       confirmAndContinueLabel: 'Bestätigen und fortfahren',
       singleSelectHint: 'Eines auswählen',
       multiSelectHint: 'Alle Treffer auswählen',
+      oneQuestion: '1 Frage',
       questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
       notDelivered:
         'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Akzentfarbe',
+        connectors: 'Apps',
+        layout: 'Layout',
+        plugins: 'Plugins',
+        theme: 'Erscheinungsbild'
+      },
+      loading: 'Optionen werden geladen…',
+      unavailable: 'Diese Liste ist gerade nicht verfügbar. Antworten Sie stattdessen im Chat.',
+      findApp: 'App suchen',
+      customColor: 'Eigene Farbe',
+      plugin: 'Plugin',
+      startsLater: 'Wir richten sie ein, wenn Sie loslegen.'
+    },
+    startChat: {
+      starting: title => `„${title}“ wird gestartet…`,
+      startingUntitled: 'Chat wird gestartet…',
+      untitled: 'Neuer Chat',
+      notStarted: 'Der Chat wurde nicht gestartet',
+      inProfile: profile => `In ${profile}`,
+      open: 'Öffnen',
+      openFailed: 'Der Chat konnte nicht geöffnet werden'
     },
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',
@@ -5943,6 +5974,12 @@ export const deOverrides = {
           pending: 'Durchsucht Session-Verlauf',
           pendingAction: 'Durchsucht'
         },
+        setup_choose: {
+          done: 'Einrichtungsfrage gestellt',
+          pending: 'Stellt eine Einrichtungsfrage',
+          pendingAction: 'Fragt'
+        },
+        start_chat: { done: 'Chat gestartet', pending: 'Startet einen Chat', pendingAction: 'Startet' },
         terminal: {
           done: 'Befehl ausgeführt',
           pending: 'Führt Befehl aus',
@@ -6154,11 +6191,6 @@ export const deOverrides = {
         title: 'Ein Update für die lokale Engine ist verfügbar',
         text: 'Aktualisieren Sie die Engine, die Ihre lokalen Modelle ausführt. Laufende lokale Anfragen können unterbrochen werden.',
         action: 'Jetzt aktualisieren'
-      },
-      'local-setup': {
-        title: 'Dieses Gerät kann Modelle lokal ausführen',
-        text: 'Ihre Hardware kann ein lokales Modell ausführen. Chats bleiben auf Ihrem Computer und kosten nichts.',
-        action: 'Einrichten'
       },
       'right-pane': {
         title: 'Der Arbeitsbereich',

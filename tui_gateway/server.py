@@ -171,7 +171,9 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # Desktop-polled and under GIL pressure block the WS read loop (false "needs setup", stalled
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
-# render (up to sessions.max_export_messages rows, ~0.8s at the default cap).
+# render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
+# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
+# session creation + a prompt.submit.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -186,6 +188,8 @@ _LONG_HANDLERS = frozenset({
     "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
+    "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
+    "session.start_chat",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
@@ -1969,7 +1973,7 @@ def _load_tool_progress_mode() -> str:
 
 
 def _gui_surface_toolsets(platform: str) -> set[str]:
-    """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
+    """Toolsets that exist because of the CLIENT (off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
     from toolsets import CLIENT_SURFACE_TOOLSETS
@@ -1978,23 +1982,19 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
 
 def _with_session_toolsets(selection, platform: str | None) -> list[str]:
     """*selection* plus what the session carries whatever its config says (the client surface's
-    toolsets when *platform* is given; the ones its PROFILE's role reserves, from the backend-written
-    profile.yaml under the session's home override), minus toolsets reserved for another role.
+    toolsets when *platform* is given).
 
     The fold-in happens after ``_get_platform_tools`` already subtracted ``agent.disabled_toolsets``,
     so the same subtraction is applied to the fold-in itself — otherwise ``disabled_toolsets:
     [project]`` is a no-op on desktop/TUI, the only surfaces where the client toolsets exist
     (#54433). ``desktop_ui`` is kept regardless: it is the client's own control surface, not a
     model toolset."""
-    from toolsets import profile_role_toolsets
-    granted, denied = profile_role_toolsets()
     surface = _gui_surface_toolsets(platform) if platform is not None else set()
-    kept = [name for name in selection if name not in denied]
-    fold_in = (surface | granted) - set(kept)
+    fold_in = surface - set(selection)
     disabled = set(_load_disabled_toolsets() or [])
     if disabled:
         fold_in -= disabled - {"desktop_ui"}
-    return [*kept, *sorted(fold_in)]
+    return [*selection, *sorted(fold_in)]
 
 
 def _tui_notice(text: str) -> None:
@@ -2055,6 +2055,10 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             from agent.coding_context import coding_selection
             selection = coding_selection(platform=session_platform)
             if selection is not None:
+                from hermes_cli.config import load_config
+                from hermes_cli.tools_config import _get_platform_tools
+                from toolsets import TOOLSET_SESSION_PLATFORMS
+                selection += sorted(_get_platform_tools(load_config(), "cli") & TOOLSET_SESSION_PLATFORMS.keys())
                 return sorted(_with_session_toolsets(selection, session_platform))
     try:
         from toolsets import validate_toolset
@@ -2063,8 +2067,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     if explicit and validate_toolset is not None:
         resolved = _resolve_explicit_toolsets(explicit, validate_toolset)
         if resolved is not False:
-            # An operator pin replaces the surface fold-in but never strips the profile's own role toolsets.
-            return resolved if resolved is None else _with_session_toolsets(resolved, None)
+            return resolved
         fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
     try:
         from hermes_cli.config import load_config
@@ -2132,7 +2135,7 @@ def _tool_progress_enabled(sid: str) -> bool:
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({
     "clarify", "manage_connections", "setup_mcp",
-    "image_generate", "manage_catalog", "delegate_task",
+    "image_generate", "manage_catalog", "delegate_task", "setup_choose", "start_chat",
     # File edits are the turn's deliverable — the diff card the user reviews.
     "edit_file", "patch", "write_file",
 })
@@ -2311,9 +2314,12 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     agent = session.get("agent")
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
-             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
+             or getattr(agent, "model", "") or override.get("model"))
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
                 or getattr(agent, "provider", "") or override.get("provider") or "")
+    if not model:
+        model, default_provider = _session_default_route(session)
+        provider = provider or default_provider
     return str(model), str(provider or "")
 
 
@@ -2827,10 +2833,12 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 
 def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
+    if not model:
+        model, default_provider = _session_default_route({"profile_home": _profile_home(profile)})
+        provider = provider or default_provider
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _session_default_model({"profile_home": _profile_home(profile)}),
-        "tools": {}, "skills": {}, "lazy": True,
+        "model": model, "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
         **({"provider": provider} if provider else {}),
     }
@@ -3090,9 +3098,11 @@ def _fallback_session_info(session: dict) -> dict:
     # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
     # above already follows.
     cwd = _session_cwd(session)
+    model, provider = _session_default_route(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "model": model, "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        **({"provider": provider} if provider else {}),
     }
 
 
@@ -3541,7 +3551,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
     "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
-    "init", "compress", "compact",
+    "init", "compress", "compact", "initiate-setup", "initiate_setup",
 })
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
@@ -3654,7 +3664,7 @@ from . import (  # noqa: E402
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
     methods_onboarding as _methods_onboarding, methods_i18n as _methods_i18n,
-    methods_shared_metrics as _methods_shared_metrics)
+    methods_shared_metrics as _methods_shared_metrics, methods_start_chat as _methods_start_chat)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3666,6 +3676,6 @@ for _m in (
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
     _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
-    _methods_i18n, _methods_shared_metrics):
+    _methods_i18n, _methods_shared_metrics, _methods_start_chat):
     _m.register(sys.modules[__name__])
 del _m

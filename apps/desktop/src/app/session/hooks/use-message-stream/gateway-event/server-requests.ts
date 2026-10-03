@@ -17,7 +17,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, normalizeQuestions, normalizeSetupChoose, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import type { PreviewOwner } from '@/store/preview-ownership'
@@ -293,42 +293,8 @@ const notifyInput = (ctx: ServerRequestContext, body: string) => {
 // user focuses that chat. The Python side blocks on the response frame; without a
 // handler the channel answers -32601 and the tool fails fast instead of stalling.
 
-const clarify: Handler = ctx => {
+const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) => {
   const { deps, request, sessionId } = ctx
-  const p = request.params
-
-  if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({})
-
-    return
-  }
-
-  const questions = normalizeQuestions(p.questions)
-
-  // `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
-  const lockedAnswers =
-    typeof p.answers === 'object' && p.answers !== null
-      ? Object.fromEntries(
-          Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
-          )
-        )
-      : undefined
-
-  if (questions.length === 0) {
-    request.respond({})
-
-    return
-  }
-
-  const clarifyRequest = {
-    lockedAnswers,
-    questions,
-    receivedAt: Date.now() / 1000,
-    requestId: request.id,
-    sessionId: sessionId || null
-  }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -361,7 +327,58 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.map(q => q.question).join(' · '))
+  notifyInput(ctx, clarifyRequest.questions.map(q => q.question).join(' · '))
+}
+
+const clarify: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const p = request.params
+
+  if (sessionId && deps.sessionInterrupted(sessionId)) {
+    request.respond({})
+
+    return
+  }
+
+  const questions = normalizeQuestions(p.questions)
+
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
+  const lockedAnswers =
+    typeof p.answers === 'object' && p.answers !== null
+      ? Object.fromEntries(
+          Object.entries(p.answers as Record<string, unknown>).filter(
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
+          )
+        )
+      : undefined
+
+  if (questions.length === 0) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
+  })
+}
+
+const setupChoose: Handler = ctx => {
+  const { deps, request, sessionId } = ctx
+  const setup = normalizeSetupChoose(request.params)
+
+  if (!setup || (sessionId && deps.sessionInterrupted(sessionId))) {
+    request.respond({})
+
+    return
+  }
+
+  parkClarify(ctx, { ...setup, receivedAt: Date.now() / 1000, requestId: request.id, sessionId: sessionId || null })
 }
 
 const approval: Handler = ctx => {
@@ -635,23 +652,31 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
     return
   }
 
-  void import('@/lib/tour')
-    .then(({ runTour }) =>
-      runTour(
-        {
-          kind: (str(p.action) || 'stop') as TourAction['kind'],
-          selector: p.selector as never,
-          side: p.side as TourStep['side'],
-          startAt: p.step_index as never,
-          steps: p.steps as TourStep[] | undefined,
-          text: p.text as never,
-          title: p.title as never
-        },
-        p.surface === 'preview' ? 'preview' : 'app',
-        previewOwnerFor(sessionId)
-      )
-    )
-    .then(
+  const kind = (str(p.action) || 'stop') as TourAction['kind']
+
+  // start with no steps is the app's own tour: one call, the app owns the stops.
+  const run =
+    kind === 'start' && !Array.isArray(p.steps)
+      ? import('@/app/chat/built-in-tour').then(({ runBuiltInTour }) =>
+          runBuiltInTour(p.preset === 'quick' ? 'quick' : 'full')
+        )
+      : import('@/lib/tour').then(({ runTour }) =>
+          runTour(
+            {
+              kind,
+              selector: p.selector as never,
+              side: p.side as TourStep['side'],
+              startAt: p.step_index as never,
+              steps: p.steps as TourStep[] | undefined,
+              text: p.text as never,
+              title: p.title as never
+            },
+            p.surface === 'preview' ? 'preview' : 'app',
+            previewOwnerFor(sessionId)
+          )
+        )
+
+  void run.then(
       result => answerValue(request, result),
       error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
     )
@@ -665,6 +690,7 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,
+  setup_choose: setupChoose,
   sudo,
   'terminal.read': terminalRead,
   tour,

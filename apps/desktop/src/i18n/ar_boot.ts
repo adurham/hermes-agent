@@ -198,12 +198,7 @@ export const arBoot = {
       failed: 'فشل تحديث الواجهة الخلفية.',
       noReturn: 'لم تعد الواجهة الخلفية إلى الاتصال. قد لا يكون التحديث قد اكتمل — تحقق من مضيف الواجهة الخلفية.'
     }
-  },
-  guidedGreeting: {
-    line: 'أهلا، تفضل بالدخول. أنا Hermes. امنحني دقيقتين لأرتب المكان حولك، ثم نبدأ بشيء تريد إنجازه فعلا.\n\nبداية، بماذا أناديك؟',
-    nameSuggestion: (name: string) => `(يمكنني أن أناديك ${name} إن كنت تفضل ذلك.)`
-  },
-  install: {
+  },  install: {
     stageStates: {
       pending: 'قيد الانتظار',
       running: 'جار التثبيت',
@@ -326,5 +321,5 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'updates' | 'guidedGreeting' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'updates' | 'install' | 'onboarding'
 >

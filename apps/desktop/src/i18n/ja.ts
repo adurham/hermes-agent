@@ -12,10 +12,10 @@ export const ja = defineLocale({
   },
   sharedMetrics: {
     consentTitle: 'Hermes の改善に協力しますか？',
+    dialogTitle: 'Hermes の改善に協力しますか？',
     consentBody:
       '共有メトリクスは上限付きのカウンターだけです。プロンプト、ファイル、パス、エラーテキストは含みません。収集はローカルで行われ、Nous への送信は別途オプトインです。',
     whatIsCollected: '収集される内容',
-    collectedIntro: '上限付きのカウンターのみ：',
     collectedActivity: 'アクティビティ、セッションの長さ、結果、エラーの分類',
     collectedModels: 'モデルのルートとトークン合計',
     collectedNames: '組み込みツール、コマンド、カタログの名前',
@@ -26,15 +26,12 @@ export const ja = defineLocale({
       'Hermes の使われ方：エージェントの精度と効率（編集の適用結果、ループ、エラーからの回復、タスクごとのトークン数とツール呼び出し数、キャッシュの破棄）、画面・Desktop モードごとのアクティブ時間、アプリのどの領域・操作・設定が使われ、すぐ閉じられ、オフにされたか、プロバイダー設定の結果',
     collectedMachine:
       '大まかなマシン情報：RAM の範囲、GPU の種類、Hermes バージョンの古さとリリースチャネル、未適用の更新数、ローカルモデルサーバーの使用有無',
-    installId:
-      '送信すると、日次パッケージが Nous のテレメトリサービスにアップロードされます。パッケージにはこのプロファイルのインストール ID（個人情報を含まない固定のランダム UUID。共有メトリクスのディレクトリを削除するとリセット）が付きます。',
-    consentWindow:
-      '収集期間全体が記録済みの同意期間内に収まるパッケージだけが送信されます。オプトイン前のデータや、送信オフ中のデータはこのマシンに残ります。送信はいつでもオフに戻せます。',
+    sending:
+      '送信すると、日次パッケージが Nous のテレメトリサービスにアップロードされます。パッケージにはこのプロファイルのインストール ID（個人情報を含まない固定のランダム UUID。共有メトリクスのディレクトリを削除するとリセット）が付きます。収集期間全体が記録済みの同意期間内に収まるパッケージだけが送信されます。オプトイン前のデータや、送信オフ中のデータはこのマシンに残ります。送信はいつでもオフに戻せます。設定 → 安全性 からいつでも変更できます。',
     readDocs: '詳細を読む',
     share: '収集して Nous に送信する',
     local: 'ローカルでのみ収集する',
     off: '共有しない',
-    changeLater: '設定 → 安全性 からいつでも変更できます。',
     saveFailed: '選択を保存できませんでした',
     collectLabel: '利用統計を収集する',
     collectDesc:
@@ -2643,6 +2640,26 @@ export const ja = defineLocale({
     }
   },
 
+  handoffTour: {
+    profileTitle: '最初のタスクはデフォルトのプロファイルで実行されます',
+
+    profileText:
+      'このレールでプロファイルを切り替えます。いま点灯しているのが default で、タスクのセッションはここにあります。もう一方はセットアップ用のプロファイルで、ウェルカムチャットはそちらにあります。',
+
+    sessionsTitle: 'プロファイルごとにセッションが分かれています',
+
+    sessionsText:
+      'この一覧は default プロファイルのものです。「新しいセッション」は選択中のプロファイルで始まります。レールでプロファイルを切り替えると一覧も変わります。',
+
+    stayTitle: 'Hermes はワンクリックで呼べます',
+
+    stayText:
+      '手を借りたいときは、セットアッププロファイルに切り替えて「Hermes へようこそ」を開いてください。いつでもそこにあります。',
+    localTitle: 'このマシンはローカルでモデルを実行できます',
+    localText: (model: string) =>
+      `${model} はお使いのハードウェアで動きます。無料で、チャットはこのコンピューターから出ません。いつでもここ、モデルメニューから選べます。`
+  },
+
   composer: {
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
@@ -2797,6 +2814,11 @@ export const ja = defineLocale({
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
     restoredDraftNotice: '未送信のメッセージを復元しました',
     restoredDraftUndo: '元に戻す',
+    localSetup: {
+      title: 'このコンピューターで実行できます',
+      text: (model: string) => `${model} はこのマシンで動きます。無料で、チャットはこのコンピューターから出ません。`,
+      action: '見てみる'
+    },
     queueEdit: '編集',
     queueExpand: '展開',
     queueCollapse: '折りたたむ',
@@ -3146,10 +3168,6 @@ export const ja = defineLocale({
     checkingShort: '確認中…'
   },
 
-  guidedGreeting: {
-    line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
-    nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
-  },
   install: {
     stageStates: {
       pending: '待機中',
@@ -3361,7 +3379,12 @@ export const ja = defineLocale({
       free: '無料',
       cacheRead: 'キャッシュ読み取り',
       priceTitle: (input: string, output: string, cache: string) =>
-        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : '')
+        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'ローカルで実行 · 無料・プライベート',
+        text: (model: string, size: string) => `${model} はこのマシンで動きます · ${size} をダウンロード`,
+        action: '設定する'
+      }
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',
@@ -3916,9 +3939,34 @@ export const ja = defineLocale({
       confirmAndContinueLabel: '確定して続行',
       singleSelectHint: '1つ選ぶ',
       multiSelectHint: '該当するものをすべて選択',
+      oneQuestion: '1問',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'アクセントカラー',
+        connectors: 'アプリ',
+        layout: 'レイアウト',
+        plugins: 'プラグイン',
+        theme: '外観'
+      },
+      loading: 'オプションを読み込み中…',
+      unavailable: 'このリストは現在利用できません。代わりにチャットで返信してください。',
+      findApp: 'アプリを検索',
+      customColor: 'カスタムカラー',
+      plugin: 'プラグイン',
+      startsLater: '始めるときに設定します。'
+    },
+    startChat: {
+      starting: title => `「${title}」を開始中…`,
+      startingUntitled: 'チャットを開始中…',
+      untitled: '新しいチャット',
+      notStarted: 'チャットを開始できませんでした',
+      inProfile: profile => `${profile} 内`,
+      open: '開く',
+      openFailed: 'チャットを開けませんでした'
     },
     tool: {
       copyCode: 'コードをコピー',
@@ -4029,6 +4077,8 @@ export const ja = defineLocale({
           pending: 'セッション履歴を検索中',
           pendingAction: '検索中'
         },
+        setup_choose: { done: '設定の質問をしました', pending: '設定の質問をしています', pendingAction: '質問中' },
+        start_chat: { done: 'チャットを開始しました', pending: 'チャットを開始中', pendingAction: '開始中' },
         terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
         todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
         vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },
@@ -4226,11 +4276,6 @@ export const ja = defineLocale({
         title: 'ローカルエンジンの更新があります',
         text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
         action: '今すぐ更新'
-      },
-      'local-setup': {
-        title: 'このマシンはローカルでモデルを実行できます',
-        text: 'お使いのハードウェアでローカルモデルを動かせます。会話はこのコンピュータから出ず、料金もかかりません。',
-        action: 'セットアップ'
       },
       'right-pane': {
         title: '作業用ペイン',

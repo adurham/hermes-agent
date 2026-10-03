@@ -169,6 +169,8 @@ interface ModelCatalogMenuProps {
   controller: ModelMenuController
   /** Rows appended under the catalog (Refresh Models, Edit Models, …). */
   footer?: ReactNode
+  /** Rows above the search, outside the keyboard list (the local-setup offer). */
+  header?: ReactNode
   gateway?: HermesGateway
   /** Owner-routed RPC for catalog reads. Preferred over `gateway.request` so
    *  a tile's menu queries the session owner's backend, not chrome's. */
@@ -202,6 +204,7 @@ interface ProviderGroup {
 export function ModelCatalogMenu({
   controller,
   footer,
+  header,
   gateway,
   includeMoa = false,
   ownerConnectionId,
@@ -253,7 +256,7 @@ export function ModelCatalogMenu({
   // (it unmounts on close); errors read as "nothing loading" — remote-only
   // installs have no local-models routes.
   const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
-  const localStatus = useLocalModelsStatus(owner, localModelsEnabled)
+  const localStatus = useLocalModelsStatus(owner, localModelsEnabled, true)
 
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 
@@ -671,6 +674,7 @@ export function ModelCatalogMenu({
 
   return (
     <>
+      {header}
       <DropdownMenuSearch
         aria-label={copy.search}
         onKeyDown={event => {

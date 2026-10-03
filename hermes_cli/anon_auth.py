@@ -47,7 +47,7 @@ ANON_SECRET_HEADER = "x-anonymous-api-secret"
 ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
 # Launch gate for the whole free tier while it is pre-GA: exactly "1" turns it on for this process
 # (CLI, gateway, serve backend alike); anything else leaves every surface behaving as if the free
-# tier did not exist. ``guest_enabled`` is the only reader. Not a user preference: never written to
+# tier did not exist. Not a user preference: never written to
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
@@ -142,7 +142,7 @@ def anon_failure_copy(code: str, *, retry_after: Any = None) -> str:
 
 def guest_enabled() -> bool:
     """The free tier is on for this process: the launch gate is set AND ``nous.guest`` (default
-    True) has not switched it off. The only place either is read."""
+    True) has not switched it off."""
     if (os.environ.get(GUEST_ONBOARDING_ENV) or "").strip() != "1":
         return False
     try:
@@ -534,7 +534,8 @@ def ensure_portal_identity(
     store has none. Returns the ``providers.nous`` state, or None (disabled / failed once already).
 
     ``explicit`` is required and must be True: the only callers are the boot bootstrap
-    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, and the
+    (``free_tier_bootstrap.run_bootstrap``), the desktop's ``free_tier.provision`` retry, the setup
+    chat's apps card (``setup_choose_tool._connectors_closed``, one attempt), and the
     dead-credential replacements (``auth_nous.resolve_nous_runtime_credentials``,
     ``managed_tool_gateway._replace_dead_guest_token``). Nothing creates an identity as a side effect
     of reading status, resolving a provider or fetching a connector bearer (NS-845 Q1.2).
@@ -635,6 +636,9 @@ _WELCOME_ROUTE_REFUSALS = (
     ("anonymous accounts must use", "anon_on_paid_host"),
     ("serves anonymous hermes agent accounts only", "named_on_welcome_host"),
     ("anonymous accounts are not accepted", "tier_disabled"),
+    # The gateway's answer to an expired or unreadable bearer: the credential, not the tier. A
+    # retry that waited out a long rate limit outlives the 15-minute free-tier JWT and lands here.
+    ("invalid jwt", "session_expired"),
 )
 _WELCOME_ROUTE_COPY = {
     # Only reachable when the route heal (``turn_recovery._recover_welcome_tier``) could not move
@@ -644,6 +648,9 @@ _WELCOME_ROUTE_COPY = {
     "named_on_welcome_host": "This Nous account needs to reconnect. {model_hint}",
     "tier_disabled": "Using Hermes without signing in is switched off right now. "
                      "Sign in to keep chatting, it's free. {signin}",
+    # Only reachable when re-exchanging the free credential failed (``turn_recovery._recover_welcome_tier``).
+    "session_expired": "Hermes couldn't renew its connection to the free model. "
+                       "Send your message again, or sign in to keep chatting, it's free. {signin}",
 }
 # The sign-in door, phrased for a chat surface (slash command) and for a terminal.
 _SIGNIN_CHAT = "To sign in: /login."
@@ -714,6 +721,7 @@ def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Op
     ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"named_on_welcome_host"``: an
     account or API key reached the free tier's host. ``"tier_disabled"``: the tier is dark
     (``WELCOME_MODE=off``). Each is deterministic for the request: retrying cannot help.
+    ``"session_expired"``: the 403 names the bearer (``invalid jwt``); a fresh credential heals it.
 
     The dark-tier 403 is keyed on the ROUTE, not the message: the gateway's permission error
     carries only its generic sentence (the detail stays in its logs), so any 403 answered by the

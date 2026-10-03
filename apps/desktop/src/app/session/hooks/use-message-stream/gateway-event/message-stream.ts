@@ -1,6 +1,7 @@
 import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
+import { $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
@@ -10,12 +11,14 @@ import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { reportLocalSetupTurnComplete } from '@/store/local-setup-offer'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
+import { storedSessionIdForRuntimeId } from '@/store/session-states'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -169,7 +172,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt, payload?.attachments)
     }
 
     return true
@@ -184,8 +187,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       flushQueuedDeltas(sessionId)
       const text = coerceGatewayText(payload?.text)
 
-      if (text) {
-        finalizeInterimAssistantMessage(sessionId, text, occurredAt)
+      if (text || payload?.attachments?.length) {
+        finalizeInterimAssistantMessage(sessionId, text, occurredAt, payload?.attachments)
       }
     }
 
@@ -373,12 +376,26 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       occurredAt,
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
-      typeof payload?.status === 'string' ? payload.status : undefined
+      typeof payload?.status === 'string' ? payload.status : undefined,
+      payload?.attachments
     )
 
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).
     reportFirstBuildTurnComplete(sessionId, finalText)
+
+    // The whole agent loop has returned: the end of a task, not a step in one.
+    // Only the session on screen counts, which drops subagent mirrors (child ids).
+    if (isActiveEvent) {
+      const setupThreads = $chatOnboardingThreadIds.get()
+      const storedId = storedSessionIdForRuntimeId(sessionId)
+
+      reportLocalSetupTurnComplete({
+        failed: payload?.status !== 'complete',
+        sessionId,
+        setupChat: setupThreads.includes(sessionId) || (storedId !== null && setupThreads.includes(storedId))
+      })
+    }
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.

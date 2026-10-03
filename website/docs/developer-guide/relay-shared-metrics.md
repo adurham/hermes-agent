@@ -616,7 +616,9 @@ Both keys are asked once per profile, with the same three answers everywhere
 
 "No thanks" is the default in the terminal, so pressing Enter never opts
 anyone in. Esc in the terminal and the dashboard banner's ✕ leave the question
-open, so it is asked again next time. Answering on any surface writes both keys
+open, so it is asked again next time. The Desktop strip appears only after
+first-run onboarding is finished or skipped, and never in the internal setup
+profile that hosts the welcome chat. Answering on any surface writes both keys
 to the profile's `config.yaml`, and a profile that already carries either key is
 never asked again. A managed install is never offered. To change the answer
 later, use `hermes setup telemetry`, `hermes tools`, or Desktop's Settings ›

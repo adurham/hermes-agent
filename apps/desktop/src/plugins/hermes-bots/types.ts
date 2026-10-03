@@ -9,7 +9,7 @@
  * required is a claim that every one of those paths supplies it.
  */
 
-import type { ProfileSessionPreview } from '@hermes/plugin-sdk'
+import type { MediaAttachment, ProfileSessionPreview } from '@hermes/plugin-sdk'
 
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
@@ -181,6 +181,8 @@ export interface GroupMessage {
   /** Milliseconds. */
   at: number
   from: GroupMessageAuthor
+  /** Files a member's reply delivered through `MEDIA:` tags (gateway paths). */
+  attachments?: MediaAttachment[]
   id?: string
   images?: Attachment[]
   text: string

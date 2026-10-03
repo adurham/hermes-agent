@@ -39,7 +39,6 @@ export const ar = defineLocale({
   composer: arChat.composer,
   statusStack: arChat.statusStack,
   updates: arBoot.updates,
-  guidedGreeting: arBoot.guidedGreeting,
   install: arBoot.install,
   onboarding: arBoot.onboarding,
   modelPicker: arSettings.modelPicker,
@@ -55,5 +54,18 @@ export const ar = defineLocale({
   desktop: arChat.desktop,
   errors: arDiagnostics.errors,
   tips: arChat.tips,
-  ui: arCommon.ui
+  ui: arCommon.ui,
+  handoffTour: {
+    profileTitle: 'مهمتك الأولى تعمل على الملف الشخصي الافتراضي',
+    profileText:
+      'يبدّل هذا الشريط بين الملفات الشخصية. المضاء الآن هو الافتراضي، حيث توجد جلسة المهمة. والآخر هو ملف الإعداد، حيث توجد محادثة الترحيب.',
+    sessionsTitle: 'لكل ملف شخصي جلساته الخاصة',
+    sessionsText:
+      'هذه القائمة تخص الملف الافتراضي. «جلسة جديدة» تبدأ جلسة على الملف المحدد. بدّل الملف من الشريط فتتغير القائمة معه.',
+    stayTitle: 'Hermes على بُعد نقرة',
+    stayText: 'انتقل إلى ملف الإعداد وافتح «مرحبًا بك في Hermes» متى احتجت إلى مساعدة. ستبقى هناك.',
+    localTitle: 'يمكن لهذا الجهاز تشغيل النماذج محليًا',
+    localText: (model: string) =>
+      `${model} يناسب أجهزتك. يعمل مجانًا، ولا تغادر المحادثات جهازك. اختره من هنا، من قائمة النماذج، متى شئت.`
+  }
 })

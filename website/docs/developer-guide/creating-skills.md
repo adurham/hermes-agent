@@ -283,12 +283,13 @@ If your skill produces a high-resolution screenshot, chart, or any image where l
 
 #### Referencing bundled scripts from SKILL.md
 
-When a skill is loaded, the activation message exposes the absolute skill directory as `[Skill directory: /abs/path]` and also substitutes two template tokens anywhere in the SKILL.md body:
+When a skill is loaded, the activation message exposes the absolute skill directory as `[Skill directory: /abs/path]` and also substitutes three template tokens anywhere in the SKILL.md body:
 
 | Token | Replaced with |
 |---|---|
 | `${HERMES_SKILL_DIR}` | Absolute path to the skill's directory |
 | `${HERMES_SESSION_ID}` | The active session id (left in place if there is no session) |
+| `${HERMES_PYTHON}` | A shell-quoted command prefix that runs a Python script the way Hermes runs itself: this install's interpreter, its live code and dependencies, lazy installs off. Write it unquoted: `${HERMES_PYTHON} scripts/tool.py` |
 
 So a SKILL.md can tell the agent to run a bundled script directly with:
 

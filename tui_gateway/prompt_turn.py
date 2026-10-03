@@ -621,13 +621,12 @@ def _install_has_prior_sessions(session: dict) -> bool:
         return False
 
 
-def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bool) -> None:
+def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bool, message: str) -> None:
     """Stage the install's first-message onboarding note for THIS turn (#82750).
 
-    The messaging gateway appends the consent-gated profile-build directive to
+    The messaging gateway appends the directive to
     the very first message ever (``_hmwa_first_contact_notes``); the
-    TUI/Desktop surface never did, so a fresh install's first Desktop chat
-    skipped the opt-in profile flow entirely. Stage the same note through
+    TUI/Desktop surface never did. Stage the same note through
     ``agent._gateway_turn_context_notes`` — consumed by
     ``agent.turn_context`` on the user message — never the ephemeral system
     prompt, which must stay byte-stable for the conversation (prompt-cache
@@ -644,6 +643,7 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
             get_hermes_home() / "config.yaml",
             session_history_empty=history_empty,
             install_has_prior_sessions=_install_has_prior_sessions(session),
+            message=message,
         )
         if not note:
             return
@@ -695,7 +695,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         st.history_version = int(session.get("history_version", 0))
     # Install-first-message onboarding (#82750): gateway parity for the TUI/Desktop
     # surface — no-op unless this is the install's very first message ever.
-    _stage_first_contact_onboarding_note(session, agent, not st.history)
+    _stage_first_contact_onboarding_note(session, agent, not st.history, text if isinstance(text, str) else "")
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -722,12 +722,13 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()
-    # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
+    # Per-turn API-message notes: barge mid-speech, reactions, card retries, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
     from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
+    run_message = _prepend_note(run_message, _pending_tool_retry_notes(session))
     return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
 
 
@@ -743,6 +744,24 @@ def _invoke_agent(
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
     hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
+    # MEDIA: tags leave the stream here: clients get clean text plus attachments (as soon as a
+    # tag's line completes), never a tag to parse.
+    from agent.media_attachments import MediaStreamSplitter, media_text_payload
+    media = MediaStreamSplitter()
+
+    def _emit_delta(delta: str, attachments: list[dict]) -> None:
+        if not delta and not attachments:
+            return
+        with session["history_lock"]:
+            _append_inflight_delta(session, delta, attachments)
+        payload: dict = {"text": delta}
+        if attachments:
+            payload["attachments"] = attachments
+        if delta and streamer and (r := streamer.feed(delta)) is not None:
+            payload["rendered"] = r
+        if delta and st.tts_queue is not None:
+            st.tts_queue.put(delta)
+        _emit("message.delta", sid, payload)
 
     def _stream(delta):
         if getattr(agent, "_mute_notification_reply", False):
@@ -754,21 +773,19 @@ def _invoke_agent(
                 hold["held"] += delta
                 return
             delta, hold["held"] = hold["held"] + delta, ""
-        with session["history_lock"]:
-            _append_inflight_delta(session, delta)
-        payload = {"text": delta}
-        if streamer and (r := streamer.feed(delta)) is not None:
-            payload["rendered"] = r
-        if st.tts_queue is not None and isinstance(delta, str):
-            st.tts_queue.put(delta)
-        _emit("message.delta", sid, payload)
+        _emit_delta(*media.feed("" if delta is None else str(delta)))
+
+    def _flush_stream() -> None:
+        if not getattr(agent, "_mute_notification_reply", False):
+            _emit_delta(*media.flush())
 
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         if getattr(agent, "_mute_notification_reply", False):
             return
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        _flush_stream()
+        _emit("message.interim", sid, {**media_text_payload(text), "already_streamed": already_streamed})
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -790,6 +807,12 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    if "prelude" in run_params:
+        from agent.initiate_setup_prompt import initiate_setup_prelude
+        prelude = initiate_setup_prelude(
+            text, _resolve_agent_platform(_session_source(session)), agent.valid_tool_names, st.history)
+        if prelude is not None:
+            run_kwargs["prelude"] = prelude
     _adopt_submit_user_row(session, agent, run_kwargs["persist_user_message"], text)
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
@@ -800,6 +823,7 @@ def _invoke_agent(
         from agent.notification_presentation import notification_turn, event_presentation_muted
         with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
+            _flush_stream()
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
@@ -935,7 +959,13 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
-    payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    # Clients get the final text without MEDIA: tags (``attachments`` carries the files); ``raw``
+    # stays for the persisted-row receipt, the interim match and the hosted-room relay.
+    from agent.media_attachments import split_media
+    text, attachments = split_media(raw)
+    payload = {"text": text, "usage": _get_usage(agent), "status": status}
+    if attachments:
+        payload["attachments"] = attachments
     if receipt := _persisted_turn_receipt(st, raw, status):
         payload["persisted_turn"] = receipt
     if last_reasoning:
@@ -955,7 +985,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block
         payload["failure_reason"] = result.get("failure_reason")
-    if rendered := render_message(raw, cols):
+    if rendered := render_message(text, cols):
         payload["rendered"] = rendered
     error_value = result.get("error")
     final_text = result.get("final_response")
@@ -968,7 +998,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             # failure if this frame is lost to a disconnect.
             if has_partial_text and not (session.get("inflight_turn") or {}).get("assistant"):
                 # Non-streaming results need a replay body too; keep existing streamed segments intact.
-                _append_inflight_delta(session, raw)
+                _append_inflight_delta(session, text, attachments)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
             st.error_retained = True
             st.error_detail = _turn_failure_detail(

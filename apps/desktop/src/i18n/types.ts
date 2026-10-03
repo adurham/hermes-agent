@@ -42,6 +42,8 @@ export type ToolTitleKey =
   | 'read_file'
   | 'search_files'
   | 'session_search_recall'
+  | 'setup_choose'
+  | 'start_chat'
   | 'terminal'
   | 'todo'
   | 'vision_analyze'
@@ -69,9 +71,9 @@ export interface Translations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string
+    dialogTitle: string
     consentBody: string
     whatIsCollected: string
-    collectedIntro: string
     collectedActivity: string
     collectedModels: string
     collectedNames: string
@@ -79,13 +81,11 @@ export interface Translations {
     collectedReliability: string
     collectedUsage: string
     collectedMachine: string
-    installId: string
-    consentWindow: string
+    sending: string
     readDocs: string
     share: string
     local: string
     off: string
-    changeLater: string
     saveFailed: string
     collectLabel: string
     collectDesc: string
@@ -1054,6 +1054,9 @@ export interface Translations {
       dangerZone: string
       checkingInstalled: string
       uninstallHermes: string
+      managedBody: string
+      dataKept: (path: string) => string
+      openAppsSettings: string
       chooseHowMuch: string
       confirmUninstall: string
       confirmBody: (what: string) => string
@@ -1151,6 +1154,11 @@ export interface Translations {
       disableF12Desc: string
       alwaysExternalLinksTitle: string
       alwaysExternalLinksDesc: string
+      developerTitle: string
+      resetOnboardingTitle: string
+      resetOnboardingDesc: string
+      resetOnboardingAction: string
+      resetOnboardingFailed: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -3225,6 +3233,8 @@ export interface Translations {
     editingQueuedInComposer: string
     restoredDraftNotice: string
     restoredDraftUndo: string
+    /** The local-setup offer above the input after the first finished task. */
+    localSetup: { title: string; text: (model: string) => string; action: string }
     queueEdit: string
     queueExpand: string
     queueCollapse: string
@@ -3608,10 +3618,19 @@ export interface Translations {
     sessionsText: string
     stayTitle: string
     stayText: string
+    localTitle: string
+    localText: (model: string) => string
   }
-  guidedGreeting: {
-    line: string
-    nameSuggestion: (name: string) => string
+  /** The app's own tour, run when `gui_tour` starts with no steps. */
+  appTour: {
+    sessions: { title: string; text: string }
+    composer: { title: string; text: string }
+    newSession: { title: string; text: string }
+    model: { title: string; text: string }
+    modelLocal: string
+    capabilities: { title: string; text: string }
+    messaging: { title: string; text: string }
+    rightPane: { title: string; text: string }
   }
   install: {
     stageStates: Record<string, string>
@@ -3870,6 +3889,7 @@ export interface Translations {
       free: string
       cacheRead: string
       priceTitle: (input: string, output: string, cache: string) => string
+      localSetup: { title: string; text: (model: string, size: string) => string; action: string }
     }
     modelOptions: {
       noOptions: string
@@ -4404,10 +4424,30 @@ export interface Translations {
       skipped: string
       noAnswer: string
       confirmAndContinueLabel: string
-      singleSelectHint: string
-      multiSelectHint: string
+      singleSelectHint: string;
+      multiSelectHint: string;
+      oneQuestion: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
+    }
+    setupChoose: {
+      kinds: Record<'accent' | 'connectors' | 'layout' | 'plugins' | 'theme', string>
+      loading: string
+      unavailable: string
+      findApp: string
+      customColor: string
+      plugin: string
+      startsLater: string
+    }
+    startChat: {
+      starting: (title: string) => string
+      startingUntitled: string
+      untitled: string
+      notStarted: string
+      retry: string
+      inProfile: (profile: string) => string
+      open: string
+      openFailed: string
     }
     catalogInstall: {
       preparing: string
@@ -4656,7 +4696,6 @@ export interface Translations {
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
       'local-runtime-update': { title: string; text: string; action: string }
-      'local-setup': { title: string; text: string; action: string }
     }
   }
 

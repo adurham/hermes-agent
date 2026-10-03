@@ -12,10 +12,10 @@ export const zh = defineLocale({
   },
   sharedMetrics: {
     consentTitle: '帮助改进 Hermes？',
+    dialogTitle: '帮助改进 Hermes？',
     consentBody:
       '共享指标只包含有上限的计数，绝不包含提示词、文件、路径或错误文本。收集仅在本地进行；发送给 Nous 需要另行同意。',
     whatIsCollected: '收集哪些内容',
-    collectedIntro: '仅限有上限的计数：',
     collectedActivity: '活动、会话时长、结果和错误类别',
     collectedModels: '模型路由和 token 总量',
     collectedNames: '内置工具、命令和目录项名称',
@@ -25,15 +25,12 @@ export const zh = defineLocale({
       'Hermes 的使用方式：代理的准确度与效率（编辑是否成功、循环、错误后的恢复、每个任务的 token 与工具调用数、缓存中断），各界面与 Desktop 模式的活跃时间，哪些应用区域、操作与设置被使用、很快关闭或被关闭，以及提供商设置的结果',
     collectedMachine:
       '概略的机器信息：内存范围、GPU 类型、Hermes 版本新旧与发布通道、落后的更新数、是否使用本地模型服务器',
-    installId:
-      '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。',
-    consentWindow:
-      '只有整个收集周期都落在已记录同意时段内的数据包才会被发送——你同意之前的数据，或发送关闭期间的数据，都会留在本机。你可以随时再次关闭发送。',
+    sending:
+      '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。只有整个收集周期都落在已记录同意时段内的数据包才会被发送——你同意之前的数据，或发送关闭期间的数据，都会留在本机。你可以随时再次关闭发送。你可以随时在 设置 → 安全 中更改。',
     readDocs: '查看完整说明',
     share: '收集并发送给 Nous',
     local: '仅在本地收集',
     off: '不用了',
-    changeLater: '你可以随时在 设置 → 安全 中更改。',
     saveFailed: '无法保存你的选择',
     collectLabel: '收集使用统计',
     collectDesc: '在此设备上保存有上限的计数。绝不包含提示词、文件、路径或错误文本。',
@@ -3506,6 +3503,25 @@ export const zh = defineLocale({
     markAllRead: '全部标记为已读'
   },
 
+  handoffTour: {
+    profileTitle: '你的第一个任务在默认配置文件中运行',
+
+    profileText:
+      '这条栏用于切换配置文件。现在亮着的是 default，任务会话就在这里。另一个是设置配置文件，欢迎聊天在那里。',
+
+    sessionsTitle: '每个配置文件都有自己的会话',
+
+    sessionsText:
+      '这个列表属于 default 配置文件。“新会话”会在当前选中的配置文件中开始。在栏上切换配置文件，列表也会随之变化。',
+
+    stayTitle: 'Hermes 一键可达',
+
+    stayText: '需要帮忙时，切换到设置配置文件并打开“欢迎使用 Hermes”。它会一直在那里。',
+    localTitle: '这台电脑可以在本地运行模型',
+    localText: (model: string) =>
+      `${model} 适合你的硬件。免费运行，对话不会离开你的电脑。随时在这里的模型菜单中选择它。`
+  },
+
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -3668,6 +3684,11 @@ export const zh = defineLocale({
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
+    localSetup: {
+      title: '这可以在你的电脑上运行',
+      text: (model: string) => `${model} 适合这台电脑。免费，对话留在你的电脑上。`,
+      action: '带我看看'
+    },
     queueEdit: '编辑',
     queueExpand: '展开',
     queueCollapse: '收起',
@@ -4063,10 +4084,6 @@ export const zh = defineLocale({
     versionDetailsUncommittedChanges: '未提交的变更'
   },
 
-  guidedGreeting: {
-    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
-    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
-  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -4316,7 +4333,12 @@ export const zh = defineLocale({
       free: '免费',
       cacheRead: '缓存读取',
       priceTitle: (input: string, output: string, cache: string) =>
-        `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : '')
+        `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : ''),
+      localSetup: {
+        title: '本地运行 · 免费、私密',
+        text: (model: string, size: string) => `${model} 适合这台电脑 · 下载 ${size}`,
+        action: '设置'
+      }
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',
@@ -4867,8 +4889,33 @@ export const zh = defineLocale({
       confirmAndContinueLabel: '确认并继续',
       singleSelectHint: '选一个',
       multiSelectHint: '可多选',
+      oneQuestion: '1 个问题',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
+    },
+    setupChoose: {
+      kinds: {
+        accent: '强调色',
+        connectors: '应用',
+        layout: '布局',
+        plugins: '插件',
+        theme: '外观'
+      },
+      loading: '正在加载选项…',
+      unavailable: '此列表暂不可用，请直接在对话中回复。',
+      findApp: '查找应用',
+      customColor: '自定义颜色',
+      plugin: '插件',
+      startsLater: '开始时我们会帮你设置好这些。'
+    },
+    startChat: {
+      starting: title => `正在启动“${title}”…`,
+      startingUntitled: '正在启动对话…',
+      untitled: '新对话',
+      notStarted: '对话未能启动',
+      inProfile: profile => `位于 ${profile}`,
+      open: '打开',
+      openFailed: '无法打开对话'
     },
     catalogInstall: {
       preparing: '正在准备安装…',
@@ -4991,6 +5038,8 @@ export const zh = defineLocale({
         read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
         search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
         session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
+        setup_choose: { done: '已提出设置问题', pending: '正在提出设置问题', pendingAction: '正在提问' },
+        start_chat: { done: '已启动对话', pending: '正在启动对话', pendingAction: '正在启动' },
         terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
         todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },
@@ -5176,11 +5225,6 @@ export const zh = defineLocale({
         title: '本地引擎有可用更新',
         text: '更新运行本地模型的引擎。正在进行的本地请求可能会中断。',
         action: '立即更新'
-      },
-      'local-setup': {
-        title: '这台电脑可以本地运行模型',
-        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
-        action: '立即设置'
       },
       'right-pane': {
         title: '工作面板',

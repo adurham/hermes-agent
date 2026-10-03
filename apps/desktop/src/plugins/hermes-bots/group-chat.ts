@@ -9,7 +9,7 @@
  * store, one writer.
  */
 
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom, host, type MediaAttachment } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
@@ -54,6 +54,10 @@ const GROUP_CHAT_SYNC_MESSAGES = 16
 const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
 const GROUP_CHAT_SYNC_TRUNCATION_MARK = '… [truncated]'
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
+// Delivered files ride the projection as paths only, so another client keeps
+// the file card a member's reply showed (the text arrives without the tag).
+const GROUP_CHAT_SYNC_ATTACHMENTS = 8
+const GROUP_CHAT_SYNC_PATH_CHARS = 1024
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 
 /** One room inside the bounded ui_meta projection: a compacted log plus the
@@ -333,6 +337,13 @@ export function groupChatSyncSnapshot(
         },
         text: compacted.text,
         at: Number(entry?.at || 0),
+        ...(Array.isArray(entry?.attachments) && entry.attachments.length
+          ? {
+              attachments: entry.attachments
+                .slice(0, GROUP_CHAT_SYNC_ATTACHMENTS)
+                .map(attachment => ({ path: String(attachment?.path || '').slice(0, GROUP_CHAT_SYNC_PATH_CHARS) }))
+            }
+          : {}),
         ...(entry?.thread
           ? {
               thread: String(entry.thread).slice(0, 128)
@@ -1730,7 +1741,8 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  attachments?: MediaAttachment[]
 ): GroupMessage {
   const entry: GroupMessage = {
     id: groupChatEntryId(),
@@ -1748,6 +1760,11 @@ export function appendGroupChatEntry(
     entry.images = images
   }
 
+  if (attachments?.length) {
+    // Files a member's reply delivered (paths on that member's gateway).
+    entry.attachments = attachments
+  }
+
   // #93127 insurance: a residual double-append path (stale loop + fresh
   // loop both committing the same member reply) lands back-to-back and
   // byte-identical. Drop the echo instead of flooding the room. User
@@ -1755,7 +1772,7 @@ export function appendGroupChatEntry(
   const priorLog = ($groupChats.get()[group] || {}).log || []
   const lastEntry = priorLog[priorLog.length - 1]
 
-  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
+  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread, entry.attachments)) {
     return lastEntry
   }
 
@@ -1826,7 +1843,7 @@ export function shouldCommitMemberTurn(epochAtDispatch: number, currentEpoch: nu
 
 /** #93127 insurance: byte-identical member echo detection. TRUE only when
  *  the immediately-preceding log entry has the same author (kind + name +
- *  source), same thread, and identical text, within a short recency window —
+ *  source), same thread, and identical text and files, within a short recency window —
  *  a residual double-append fires back-to-back; two legitimately identical
  *  replies hours apart (or with anything in between) are never dropped. */
 const GROUP_DUPLICATE_APPEND_WINDOW_MS = 10 * 60 * 1000
@@ -1836,6 +1853,7 @@ function isDuplicateGroupAppend(
   from: GroupMessageAuthor,
   text: string,
   thread: null | string | undefined,
+  attachments: MediaAttachment[] = [],
   now = Date.now()
 ): boolean {
   if (!lastEntry || !from || from.kind !== 'member' || lastEntry.from?.kind !== 'member') {
@@ -1858,7 +1876,9 @@ function isDuplicateGroupAppend(
     return false
   }
 
-  return String(lastEntry.text || '') === String(text || '').trim()
+  const paths = (files: MediaAttachment[] = []) => files.map(file => file.path).join('\n')
+
+  return String(lastEntry.text || '') === String(text || '').trim() && paths(lastEntry.attachments) === paths(attachments)
 }
 
 // --- end room-turn decision helpers ---

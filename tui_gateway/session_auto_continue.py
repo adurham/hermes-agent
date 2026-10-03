@@ -68,6 +68,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
+    from agent.initiate_setup_prompt import intro_resends
+    if intro_resends(marker["prompt"]):
+        clear_turn_marker(home, session_key)  # the desktop intro sends /initiate-setup again itself
+        return None
     # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
     # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
     # clearing it would cancel the live turn's own account of itself. See #94778.
@@ -530,6 +534,8 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
+    if isinstance(attachments := turn.get("attachments"), list) and attachments:
+        snapshot["attachments"] = list(attachments)
     if isinstance(display_kind := turn.get("display_kind"), str) and display_kind:
         snapshot["display_kind"] = display_kind
     if isinstance(display_metadata := turn.get("display_metadata"), dict):
@@ -568,6 +574,7 @@ def _emit_terminal_turn_error(
         _fail_inflight_turn(session, error, error_surface=error_surface)
         turn = session.get("inflight_turn") or {}
         message, partial = str(turn.get("error") or "turn failed"), str(turn.get("assistant") or "")
+        attachments = list(turn.get("attachments") or [])
         cols = int(session.get("cols", 80))
     text = partial or turn_error_text(message, error_surface)
     rendered = ""
@@ -575,7 +582,8 @@ def _emit_terminal_turn_error(
         rendered = render_message(text, cols)
     payload = {"text": text, "usage": _get_usage(agent) if agent is not None else {}, "status": "error",
                "error": message, "recoverable": True, **({"error_surface": error_surface} if error_surface else {}),
-               **({"partial": True} if partial else {}), **({"rendered": rendered} if rendered else {})}
+               **({"partial": True} if partial else {}), **({"rendered": rendered} if rendered else {}),
+               **({"attachments": attachments} if attachments else {})}
     if retire_marker:
         _retire_turn_marker(session)
     _emit("message.complete", sid, payload)

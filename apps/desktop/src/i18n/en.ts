@@ -14,38 +14,33 @@ export const en: Translations = {
     }
   },
   sharedMetrics: {
-    consentTitle: 'Help improve Hermes?',
+    consentTitle: 'Share usage stats?',
+    dialogTitle: 'Usage stats',
     consentBody:
-      'Shared metrics contain only bounded counters. Never prompts, files, paths or error text. Collection is local. Sending them to Nous is a separate opt-in.',
-    whatIsCollected: 'What is collected',
-    collectedIntro: 'Only bounded counters:',
-    collectedActivity: 'Activity, session length, outcomes and error classes',
-    collectedModels: 'Model routes and token totals',
-    collectedNames: 'Built-in tool, command and catalog names',
-    collectedMilestones: 'Bucketed setup counts',
-    collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
-    collectedUsage:
-      'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
-    collectedMachine:
-      'Coarse machine facts: RAM range, GPU type, Hermes version age and release channel, updates behind, whether a local model server is used',
-    installId:
-      'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
-    consentWindow:
-      'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
+      'Hermes can count how you use it: session length, which models and tools run, and when something fails. It never records your messages, files, paths or error text.',
+    whatIsCollected: 'What is counted',
+    collectedActivity: 'Sessions: length, outcome, error type, active time per day',
+    collectedModels: 'Models: which ones, token totals',
+    collectedNames: 'Features: built-in tools, commands, app areas and settings used or turned off',
+    collectedMilestones: 'Setup: which steps finished, provider connections, how many skills, plugins and jobs',
+    collectedReliability: 'App health: crashes, startup and reply speed, updates, messaging connections',
+    collectedUsage: 'Agent quality: missed edits, broken tool calls, stuck loops, cost per task',
+    collectedMachine: 'Machine: OS, RAM range, GPU type, Hermes version, local model use',
+    sending:
+      'Stats stay on this computer unless you choose Share. Shared stats go to Nous once a day with a random ID for this profile. Stats from before you opted in are never sent. Change this anytime in Settings.',
     readDocs: 'Read the full details',
-    share: 'Collect and send to Nous',
-    local: 'Collect locally only',
+    share: 'Share with Nous',
+    local: 'Keep on this computer',
     off: 'No thanks',
-    changeLater: 'You can change this any time in Settings → Safety.',
     saveFailed: 'Couldn’t save your choice',
     collectLabel: 'Collect usage stats',
-    collectDesc: 'Bounded counters kept on this device. Never prompts, files, paths or error text.',
-    sendLabel: 'Send usage stats to Nous',
+    collectDesc: 'Counts only, kept on this computer. Never your messages, files, paths or error text.',
+    sendLabel: 'Share usage stats with Nous',
     sendDesc:
-      'Upload each daily package to the Nous telemetry service. Only data from inside a consent window is sent. Needs collection on.',
+      'Sends stats to Nous once a day with a random ID for this profile. Stats from before you opted in are never sent. Needs collection on.',
     unavailable: 'Update the Hermes backend to change this setting.',
-    stripBody: 'Bounded counters only, never prompts or files.',
-    stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
+    stripBody: 'Counts only. Never your messages or files.',
+    stripChoices: { share: 'Share with Nous', local: 'Keep on this computer', off: 'No thanks' },
     stripDetails: 'Details'
   },
   // English editorial copy stays in the shipped JSONL; other locales override it.
@@ -1273,6 +1268,9 @@ export const en: Translations = {
       dangerZone: 'Danger zone',
       checkingInstalled: 'Checking what’s installed…',
       uninstallHermes: 'Uninstall Hermes',
+      managedBody: 'This install is managed by your system, so Hermes cannot remove itself.',
+      dataKept: path => `Your config, chats, and secrets live in ${path}. Removing the app does not delete them.`,
+      openAppsSettings: 'Open Apps settings',
       chooseHowMuch:
         'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
       confirmUninstall: 'Confirm uninstall',
@@ -1389,6 +1387,12 @@ export const en: Translations = {
       alwaysExternalLinksTitle: 'Always open links in external browser',
       alwaysExternalLinksDesc:
         'Open every link you click in your system browser instead of the in-app browser. "Open in in-app browser" in the right-click menu still works.',
+      developerTitle: 'Developer',
+      resetOnboardingTitle: 'Reset onboarding',
+      resetOnboardingDesc:
+        'Delete the setup chats, rebuild the setup profile and run the first-run setup again. Your own profiles, chats and plugins stay.',
+      resetOnboardingAction: 'Reset',
+      resetOnboardingFailed: 'Could not reset onboarding',
       attachmentSizeTitle: 'Max preview / image load size',
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
@@ -3905,6 +3909,11 @@ export const en: Translations = {
     editingQueuedInComposer: 'Editing queued turn in composer',
     restoredDraftNotice: 'Restored your unsent message',
     restoredDraftUndo: 'Undo',
+    localSetup: {
+      title: 'This could run on your computer',
+      text: (model: string) => `${model} fits this machine. Free, and chats stay on your computer.`,
+      action: 'Show me'
+    },
     queueEdit: 'Edit',
     queueExpand: 'Expand',
     queueCollapse: 'Collapse',
@@ -4326,11 +4335,20 @@ export const en: Translations = {
     sessionsText:
       'This list belongs to the default profile. New session starts one on whichever profile is selected. Switch profiles on the rail and the list changes with it.',
     stayTitle: 'Hermes is one click away',
-    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.'
+    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.',
+    localTitle: 'This machine can run models locally',
+    localText: (model: string) =>
+      `${model} fits your hardware. It runs free, and chats never leave your computer. Pick it here, in the model menu, whenever you want.`
   },
-  guidedGreeting: {
-    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
-    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
+  appTour: {
+    sessions: { title: 'Your chats', text: 'Every conversation lives here. Search, pin or reopen any of them.' },
+    composer: { title: 'Ask here', text: 'Say what you want done. Type @ to bring in a file.' },
+    newSession: { title: 'Start fresh', text: 'A new session gets its own context. Use one per job.' },
+    model: { title: 'Model picker', text: 'Chooses which model answers you.' },
+    modelLocal: 'This computer can run one locally: Settings > Providers > Local Models.',
+    capabilities: { title: 'Capabilities', text: 'Skills, tools and plugins Hermes can use. Add more here.' },
+    messaging: { title: 'Messaging', text: 'Reach Hermes from Telegram, Slack, Discord and more.' },
+    rightPane: { title: 'The working pane', text: 'Opens files, terminal, review and the in-app browser on the right.' }
   },
   install: {
     stageStates: {
@@ -4622,7 +4640,12 @@ export const en: Translations = {
       free: 'free',
       cacheRead: 'cached read',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : '')
+        `Input ${input}/Mtok · Output ${output}/Mtok` + (cache ? ` · Cached read ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'Run locally · free, private',
+        text: (model: string, size: string) => `${model} fits this machine · ${size} download`,
+        action: 'Set up'
+      }
     },
     modelOptions: {
       noOptions: 'No options for this model',
@@ -5305,9 +5328,35 @@ export const en: Translations = {
       confirmAndContinueLabel: 'Confirm and continue',
       singleSelectHint: 'Pick one',
       multiSelectHint: 'Select all that apply',
+      oneQuestion: '1 question',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       notDelivered:
         "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Accent color',
+        connectors: 'Apps',
+        layout: 'Layout',
+        plugins: 'Plugins',
+        theme: 'Appearance'
+      },
+      loading: 'Loading options…',
+      unavailable: "This list isn't available right now. Reply in chat instead.",
+      findApp: 'Find an app',
+      customColor: 'Custom color',
+      plugin: 'Plugin',
+      startsLater: "We'll set these up when you start."
+    },
+    startChat: {
+      starting: title => `Starting “${title}”…`,
+      startingUntitled: 'Starting a chat…',
+      untitled: 'New chat',
+      notStarted: "Couldn't start that chat.",
+      retry: 'Retry',
+      inProfile: profile => `In ${profile}`,
+      open: 'Open',
+      openFailed: "Couldn't open the chat"
     },
     catalogInstall: {
       preparing: 'Preparing the install…',
@@ -5442,6 +5491,8 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
+        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
+        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },
@@ -5637,11 +5688,6 @@ export const en: Translations = {
         title: 'A local engine update is available',
         text: 'Update the engine that runs your local models. Active local requests may be interrupted.',
         action: 'Update now'
-      },
-      'local-setup': {
-        title: 'This machine can run models locally',
-        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
-        action: 'Set it up'
       },
       'right-pane': {
         title: 'The working pane',

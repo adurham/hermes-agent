@@ -6,10 +6,10 @@ import { introEs } from './intro-es'
 export const esOverrides = {
   sharedMetrics: {
     consentTitle: '¿Nos ayudas a mejorar Hermes?',
+    dialogTitle: '¿Nos ayudas a mejorar Hermes?',
     consentBody:
       'Las métricas compartidas solo contienen contadores acotados. Nunca prompts, archivos, rutas ni textos de error. La recopilación es local. Enviarlas a Nous es una aceptación aparte.',
     whatIsCollected: 'Qué se recopila',
-    collectedIntro: 'Solo contadores acotados:',
     collectedActivity: 'Actividad, duración de sesiones, resultados y clases de error',
     collectedModels: 'Rutas de modelo y totales de tokens',
     collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
@@ -20,15 +20,12 @@ export const esOverrides = {
       'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
     collectedMachine:
       'Datos generales del equipo: rango de RAM, tipo de GPU, antigüedad y canal de la versión de Hermes, actualizaciones pendientes, si se usa un servidor de modelos local',
-    installId:
-      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
-    consentWindow:
-      'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
+    sending:
+      'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas. Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras. Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
     readDocs: 'Leer todos los detalles',
     share: 'Recopilar y enviar a Nous',
     local: 'Recopilar solo en local',
     off: 'No, gracias',
-    changeLater: 'Puedes cambiarlo cuando quieras en Ajustes → Seguridad.',
     saveFailed: 'No se pudo guardar tu elección',
     collectLabel: 'Recopilar estadísticas de uso',
     collectDesc:
@@ -4328,6 +4325,11 @@ export const esOverrides = {
     editingQueuedInComposer: 'Editando turno en cola en el compositor',
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
+    localSetup: {
+      title: 'Esto podría ejecutarse en este equipo',
+      text: (model: string) => `${model} cabe en este equipo. Gratis, y los chats se quedan en este equipo.`,
+      action: 'Muéstrame'
+    },
     queueEdit: 'Editar',
     queueExpand: 'Expandir',
     queueCollapse: 'Contraer',
@@ -4742,6 +4744,9 @@ export const esOverrides = {
     }
   },
   handoffTour: {
+    localTitle: 'Este equipo puede ejecutar modelos localmente',
+    localText: (model: string) =>
+      `${model} encaja con tu hardware. Funciona gratis y los chats nunca salen de este equipo. Elígelo aquí, en el menú de modelos, cuando quieras.`,
     profileTitle: 'Tu primera tarea se ejecuta en el perfil predeterminado',
     profileText:
       'Esta barra cambia de perfil. El que está iluminado ahora es el predeterminado, donde está la sesión de la tarea. El otro es el perfil de configuración, donde está el chat de bienvenida.',
@@ -4750,10 +4755,6 @@ export const esOverrides = {
       'Esta lista pertenece al perfil predeterminado. Nueva sesión crea una en el perfil que esté seleccionado. Cambia de perfil en la barra y la lista cambia con él.',
     stayTitle: 'Hermes está a un clic',
     stayText: 'Cambia al perfil de configuración y abre Bienvenida a Hermes siempre que necesites ayuda. Se queda ahí.'
-  },
-  guidedGreeting: {
-    line: 'Hola, pasa. Soy Hermes. Dame dos minutos para prepararlo todo a tu medida y luego me pondremos a trabajar en algo que de verdad quieras hacer.\n\nPero antes, ¿cómo quieres que te llame?',
-    nameSuggestion: (name: string) => `(También puedo llamarte simplemente ${name}, si lo prefieres.)`
   },
   install: {
     stageStates: {
@@ -5052,7 +5053,12 @@ export const esOverrides = {
       free: 'gratis',
       cacheRead: 'lectura en caché',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : '')
+        `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'Ejecutar en local · gratis, privado',
+        text: (model: string, size: string) => `${model} cabe en este equipo · descarga de ${size}`,
+        action: 'Configurar'
+      }
     },
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',
@@ -5731,9 +5737,34 @@ export const esOverrides = {
       confirmAndContinueLabel: 'Confirmar y continuar',
       singleSelectHint: 'Elige una',
       multiSelectHint: 'Elige todas las que correspondan',
+      oneQuestion: '1 pregunta',
       questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
       notDelivered:
         'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Color de acento',
+        connectors: 'Apps',
+        layout: 'Diseño',
+        plugins: 'Plugins',
+        theme: 'Apariencia'
+      },
+      loading: 'Cargando opciones…',
+      unavailable: 'Esta lista no está disponible ahora. Responde en el chat.',
+      findApp: 'Buscar una app',
+      customColor: 'Color personalizado',
+      plugin: 'Plugin',
+      startsLater: 'Los configuraremos cuando empieces.'
+    },
+    startChat: {
+      starting: title => `Iniciando «${title}»…`,
+      startingUntitled: 'Iniciando un chat…',
+      untitled: 'Chat nuevo',
+      notStarted: 'El chat no se inició',
+      inProfile: profile => `En ${profile}`,
+      open: 'Abrir',
+      openFailed: 'No se pudo abrir el chat'
     },
     catalogInstall: {
       preparing: 'Preparando la instalación…',
@@ -5935,6 +5966,12 @@ export const esOverrides = {
           pending: 'Buscar en el historial de sesiones',
           pendingAction: 'Buscando'
         },
+        setup_choose: {
+          done: 'Hizo una pregunta de configuración',
+          pending: 'Haciendo una pregunta de configuración',
+          pendingAction: 'Preguntando'
+        },
+        start_chat: { done: 'Inició un chat', pending: 'Iniciando un chat', pendingAction: 'Iniciando' },
         terminal: {
           done: 'Comando ejecutado',
           pending: 'Ejecutar comando',
@@ -6145,11 +6182,6 @@ export const esOverrides = {
         title: 'Hay una actualización del motor local',
         text: 'Actualiza el motor que ejecuta tus modelos locales. Las solicitudes locales activas pueden interrumpirse.',
         action: 'Actualizar ahora'
-      },
-      'local-setup': {
-        title: 'Este equipo puede ejecutar modelos localmente',
-        text: 'Tu hardware puede servir un modelo local. Los chats se quedan en tu equipo y no cuestan nada.',
-        action: 'Configurarlo'
       },
       'right-pane': {
         title: 'El panel de trabajo',

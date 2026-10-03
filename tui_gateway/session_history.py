@@ -305,7 +305,9 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
+            # A setup handoff's first message carries the first-task skill after what the user sees.
+            from agent.first_task_prompt import visible_text
+            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn, tc_id = tc.get("function", {}), tc.get("id", "")
@@ -399,14 +401,16 @@ def _start_inflight_turn(
     session["inflight_turn"] = turn
 
 
-def _append_inflight_delta(session: dict, delta: Any) -> None:
+def _append_inflight_delta(session: dict, delta: Any, attachments: Optional[list] = None) -> None:
     text = "" if delta is None else str(delta)
-    if not text:
+    if not text and not attachments:
         return
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
         turn = {"assistant": "", "streaming": True, "user": ""}
     turn.update(assistant=f"{turn.get('assistant') or ''}{text}", streaming=True, updated_at=time.time())
+    if attachments:
+        turn["attachments"] = [*(turn.get("attachments") or []), *attachments]
     session["inflight_turn"] = turn
 
 
