@@ -19385,3 +19385,43 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 **Filing gotcha (GitHub) — CORRECTED 2026-10-03 by resume session:** NOT a PR-creation abuse throttle. The 11.5h-persistent block is a GitHub-side, per-account gate on NON-DRAFT pull request creation for this repo, hitting multiple established external contributors (kuehnberger, liuhao1024, AgilityHacker, maebahesioru, + us) with rolling onsets from 2026-10-02 ~21:00 UTC; tracked in **NousResearch/hermes-agent#131859**. Exact matrix (all reproduced): non-draft create → GraphQL `does not have the correct permissions to execute CreatePullRequest` + REST `POST /pulls` masked 404; **draft create (`--draft`) succeeds**; `markPullRequestReadyForReview` (`gh pr ready`) rejected; own-fork PRs / pushes / comments / reads normal; `rate_limit` shows full quota. Ruled out: repo policy `ALL`; the repo creation-cap setting (non-collaborators with 47 open PRs still file non-drafts; closing stale PRs does not lift it); repo-wide interaction limits (first-time contributors file fine concurrently). Workaround in effect: the four pending PRs were filed as **drafts** (#132227-#132230) — a maintainer must flip them ready, or the gate must lift. If the gate persists at next check, ask a maintainer to check `interaction-limits/pulls/creation-cap` + bypass list, and/or escalate on issue #131859. Skill reference updated: `upstreaming-fork-patches/references/pr-creation-abuse-throttle.md`.
 
 **Kept load-bearing (no upstream equivalent):** #82095 pin_anthropic_token, #72164 exit-summary-before-cleanup, #72153 nerd-font stacks, #72151 raf-throttle flush, #72087 estimator dedup, #25234 orphan web-search audit; plus the whole hard-fork set (agent/fork/*, cc_proxy_mcp, consult, delegation by_provider/model_by_role, search_chain, trafilatura backend, stream recovery).
+
+## 2026-10-03 — Compaction-trigger overcharge on aggregator reasoning-echo routes (+ status-bar timer rollover fixes)
+
+### Fork-only fix — 2026-10-03 (compaction trigger charged stale reasoning the ollama.com backend never counts)
+
+**Problem:** user reported "I feel like there is an auto-compaction bug" for reasoning-heavy sessions on the live route (provider `ollama-cloud`, model `deepseek-v4.1-flash`). Reproduction: session `20261003_092105_ada7ef` (533 msgs, real prompt 528,988 tokens) logged `context compression started … tokens=~1,415,136` — the trigger estimate ran ~2.6x the provider's own prompt count, firing compactions far below any configured threshold ratio.
+
+**Root cause (three layers):**
+1. `message_sanitization.stale_thinking_reaches_wire` is the estimator-facing predicate driving `charge_stale_thinking` on BOTH sides (trigger + tail walk, per upstream #84371). It returned True whenever the route matched a reasoning-echo FAMILY — and the `deepseek` family matches by bare model substring, so the aggregator route `ollama-cloud/deepseek-v4.1-flash` qualified.
+2. The ollama.com backend does NOT count replayed `reasoning_content` in `prompt_tokens`. Verified live against the API: a ~24k-token `reasoning_content` replay moved `prompt_tokens` by **0** (42 → 42). So charging every historical copy double-counted gigabytes of bytes the provider ignores.
+3. Because the send-side predicate shares the same family table, the naive "charge newest-turn-only" fix (my initial writeup) would have reversed #84371 and undercharged genuine deepseek-native routes.
+
+**Fix:** `_ESTIMATE_IGNORES_STALE_THINKING_HOSTS = ("ollama.com",)` — `stale_thinking_reaches_wire` returns False on aggregator hosts (host-scoped via `base_url_host_matches`, not substring). Send-side `needs_reasoning_echo` is UNTOUCHED, so requests do not change shape; genuine deepseek-native/openrouter routes keep the full charge. Also: `conversation_compression_manual.estimate_request_tokens` (manual `/compress` figures + `approx_tokens` fed into `_compress_context`) now consults the same route predicate; and rotated-commit compactions keep their full 38-key telemetry payload — the rotation commit's session boundary reset `_last_compression_telemetry` to None before the emitter read it, so `rotated_committed` lines logged only the 10-key stub while in-loop attempts logged all 38.
+
+**Tests:** `tests/agent/test_compaction_estimator_aggregator_echo.py` (new, 11 tests: aggregator excluded, send-side echo intact, native/openrouter still charged, codex never charged, host-scoping not substring, trigger/walk lockstep, newest-turn still charged, compressor route predicate both ways, manual estimate route-aware) + `TestRotationTelemetryRetention` (3 tests, incl. pinning that the boundary reset really clears the attribute) + `test_conversation_compression_manual.py` neighbors.
+
+**Verification:** 51 focused tests green via `scripts/run_tests.sh`; ruff clean; numeric replay against the live transcript — pre-fix 1,385,064 → post-fix 424,129 (walk side 424,129, ratio 1.0; provider-real 528,988 incl. system+tools ⇒ full request lands ~529K, i.e. onto the real number).
+
+**Files:** `agent/message_sanitization.py`, `agent/conversation_compression.py`, `agent/conversation_compression_manual.py`, `tests/agent/test_compaction_estimator_aggregator_echo.py`, `tests/agent/test_compression_attempt_telemetry.py`.
+
+**Upstreamable:** yes — candidate for the PR pipeline (the host-exclusion constant and the telemetry-snapshot fix are both generic; the aggregator list starts with ollama.com).
+
+### Fork-only fix — 2026-10-03 (status-bar timers: minute/hour rollover, boundary-safe unit selection, dock widths)
+
+**Problem:** user repeatedly reported status-bar timer defects — minutes ≥ 60 (`284m41s`, `60m00s`), seconds at 60 (`60s`), bare-seconds process-dock rows (`696s`), and `11m36ss`-looking artifacts. A previous session misdiagnosed this as a transient redraw artifact; it was real arithmetic plus one width bug.
+
+**Root causes & fixes:**
+- `_render_spinner_text`, `cli_subagent_monitor.format_elapsed`, `turn_summary.format_elapsed`, `runtime_footer._format_latency`, `update_cmd_drain_report._fmt_elapsed`: `divmod(_, 60)` grew minutes without bound — 17081s rendered `284m41s`. All now roll minutes into hours (`1h00m` style) past 3600s.
+- `format_duration_compact` (BOTH copies: `cli.py` and `agent/usage_pricing.py`): rounded the raw value BEFORE comparing to the unit boundary — 59.5s rendered `60s`, 3570–3599s rendered `60m`. Unit now selected from the ROUNDED value.
+- `cli_process_dock.process_activity`: rendered bare `f"{elapsed}s"` with no rollover; now routes through the dock's `format_elapsed`.
+- `cross_session_tool._age_label` (found by independent review): `seconds < 5400` window showed `60m ago`..`89m ago`; boundary moved to 3600.
+- `cli_subagent_monitor` width measurement: raw `get_cwidth` undercounts emoji + U+FE0F (2 cells) letting dock rows exceed budget and wrap; now routes through `agent.display.display_cwidth`. Repaint sites were already space-padded (no `\033[K`), verified.
+
+**Tests:** `tests/hermes_cli/test_statusbar_timer_rollover.py` (new: exact-string boundary walk 59→60→61, 599→600, 3599→3600, 17081; no-clear repaint stale-tail demonstration with teeth; KawaiiSpinner pad covers previous frame) + boundary params added to `test_turn_summary.py`, `test_runtime_footer.py`, `test_subagent_dock_signals.py`, `test_cli_status_bar.py`, `test_process_dock.py` (dock rollover + VS-16 width), `test_cross_session_integration.py` (age-label rollover).
+
+**Verification:** 171 focused tests green; reviewer independently reproduced every claimed defect on base (stash) and confirmed all fixed (pop), swept 0–4000s across all seven formatters with 0 violations, and mutation-checked the new tests (reverted formatter ⇒ new tests fail). Known-flaky `test_dock_paints_processes_under_agents_and_retires_finished_rows` (leaked SIGKILLed helper, order-dependent) is pre-existing — reproduces on base.
+
+**Files:** `agent/turn_summary.py`, `agent/usage_pricing.py`, `cli.py`, `gateway/runtime_footer.py`, `hermes_cli/cli_status_bar_mixin.py`, `hermes_cli/cli_subagent_monitor.py`, `hermes_cli/cli_process_dock.py`, `hermes_cli/update_cmd_drain_report.py`, `tools/cross_session_tool.py` + the test files above.
+
+**Upstreamable:** yes — the arithmetic fixes (hour rollover, rounded-unit selection) are generic.
