@@ -169,6 +169,25 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_duration_segment_never_shows_seconds_or_minutes_at_60(self):
+        """The status-bar ``⏲ duration`` segment must never read ``60s``/``60m``.
+
+        Regression for the user-reported "seconds/minutes displayed >= 60"
+        defect: the old ``format_duration_compact`` rounded to nearest BEFORE
+        choosing the unit, so 59.5s rendered ``60s`` and 3599s rendered ``60m``.
+        """
+        for seconds, expected in [
+            (59, "59s"), (59.4, "59s"), (59.5, "1m"), (59.9, "1m"),
+            (60, "1m"), (90, "2m"), (3540, "59m"), (3569, "59m"),
+            (3570, "59m"), (3599, "59m"), (3599.9, "59m"), (3600, "1h"),
+        ]:
+            got = cli_mod.format_duration_compact(seconds)
+            assert got == expected, f"{seconds}s -> {got!r}, expected {expected!r}"
+            assert not got.endswith("60s")
+            assert got != "60m"
+        # The status bar's own snapshot feeds the segment through this formatter.
+        cli_obj = _make_cli()  # session_start is 14m32s ago
+        assert cli_obj._get_status_bar_snapshot()["duration"] == "15m"
 
     def test_input_height_counts_prompt_only_on_first_wrapped_row(self):
         # Regression for prompt_toolkit classic CLI resize glitches: the prompt

@@ -53,6 +53,54 @@ def test_dock_paints_processes_under_agents_and_retires_finished_rows(monkeypatc
         process_registry.kill_process(slow_id)
 
 
+def test_process_activity_rolls_over_to_mins_past_60():
+    """A long-running process must not render a bare ``696s``/``300s``.
+
+    Regression for the "seconds displayed >= 60" dock defect: the process row
+    rendered raw ``f"{elapsed}s"`` while every other TUI counter had already
+    switched to ``MmSSs`` past a minute (the same 7m01s-form the user reported
+    from the retired swarm board, now on the process rows too)."""
+    from hermes_cli.cli_process_dock import process_activity
+
+    assert process_activity({"status": "running", "elapsed": 59, "detail": ""}) == "59s · starting"
+    assert process_activity({"status": "running", "elapsed": 90, "detail": ""}) == "1m30s · starting"
+    assert process_activity({"status": "running", "elapsed": 300, "detail": ""}) == "5m00s · starting"
+    # 696s was the user's exact "11m36s"-style example.
+    assert process_activity({"status": "running", "elapsed": 696, "detail": ""}) == "11m36s · starting"
+    # Finished row: the "N s ago" age rolls over too.
+    assert process_activity(
+        {"status": "done", "exit_code": 0, "elapsed": 0, "since_exit": 300}
+    ) == "exit 0 · 5m00s ago"
+    # No bare-seconds field >= 60 anywhere in the rendered line.
+    for el in (60, 61, 599, 600, 3599, 3600):
+        line = process_activity({"status": "running", "elapsed": el, "detail": ""})
+        assert "ss" not in line and not any(
+            tok.endswith("s") and tok[:-1].isdigit() and int(tok[:-1]) >= 60 for tok in line.split(" · ")
+        ), line
+
+
+def test_process_dock_clips_on_true_display_width_not_get_cwidth():
+    """A VS-16 glyph in a dock row must not push the row one cell past budget.
+
+    The dock measured every width with raw ``prompt_toolkit.utils.get_cwidth``,
+    which reports 1 cell for an emoji base + U+FE0F (e.g. ``⚙️``/``⚠️``) that
+    kitty renders as 2. An undercounted ``_clip``/pad lets the row exceed the
+    terminal budget and wrap onto a second line — the "wrapped continuation
+    overlaps the row below / duplicated digit" mechanism in FORK.md. Every
+    measurement now routes through ``agent.display.display_cwidth``.
+    """
+    from agent.display import display_cwidth
+    from hermes_cli.cli_subagent_monitor import _clip
+
+    vs16 = "\u2699\ufe0f"  # GEAR + VARIATION SELECTOR-16
+    text = "x" * 38 + vs16
+    clipped = _clip(text, 39)
+    assert display_cwidth(clipped) <= 39, "clipped row must fit the display budget"
+    # And a plainly-too-long string still fills the budget exactly.
+    long = "y" * 60
+    assert display_cwidth(_clip(long, 39)) == 39
+
+
 def test_monitor_controls_stop_processes_and_never_steer_them():
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
     from tools.process_registry import process_registry

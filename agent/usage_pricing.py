@@ -770,15 +770,29 @@ def has_known_pricing(
 
 
 def format_duration_compact(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.0f}s"
+    """Compact duration for the status bar's ``duration`` segment.
+
+    Keeps round-to-nearest for the displayed value, but selects the unit from
+    the ROUNDED value so a field can never land ON its own boundary: ``59.9s``
+    reads ``1m`` (never ``60s``) and a value rounded to ``60`` minutes is
+    carried into the hour branch (never ``60m``). The previous code rounded the
+    raw value and then compared it to the unit boundary, so ``59.5s`` rendered
+    ``60s`` and ``3599s`` rendered ``60m`` — exactly the user-reported
+    "seconds/minutes displayed >= 60" status-bar defect.
+    """
+    seconds = max(0.0, float(seconds))
+    if round(seconds) < 60:
+        return f"{seconds:.0f}s"  # round() <= 59 ⇒ never prints 60s
     minutes = seconds / 60
-    if minutes < 60:
-        return f"{minutes:.0f}m"
+    if round(minutes) < 60:
+        return f"{minutes:.0f}m"  # round() <= 59 ⇒ never prints 60m
     hours = minutes / 60
-    if hours < 24:
+    hours_whole = int(hours)
+    if hours_whole < 1:
+        return "59m"  # 3570–3599s rounds up to the hour boundary; keep minutes < 60
+    if hours_whole < 24:
         remaining_min = int(minutes % 60)
-        return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
+        return f"{hours_whole}h {remaining_min}m" if remaining_min else f"{hours_whole}h"
     return f"{hours / 24:.1f}d"
 
 
