@@ -19342,3 +19342,22 @@ registers all nine servers.
 **Lesson:** fork-only *uncommitted* fixes on the corp checkout are autostash bait —
 `hermes update` will stash them and a skipped restore silently reverts behavior that
 config still depends on. Commit fork fixes on the main checkout, push, and pull here.
+
+### Fork-maintenance session — 2026-10-02/03 (upstream sync-readiness audit + 5 upstream PRs filed from the fork)
+
+**Context:** user asked "anything upstream we should pull in / anything in our fork to upstream?". Three parallel read-only audit agents over the fetched refs produced: (1) upstream-since-base digest + collision map, (2) fork→upstream candidate sweep re-verified against upstream/main, (3) PR housekeeping for all 14 adurham PRs. Reports durable at `~/.hermes/audits/hermes-agent-upstream-audit-2026-10-02/` (01/02/03 + evidence + sync-runbook.md).
+
+**Sync verdict:** no must-adopt capability beyond the routine sync; next sync should wait for the next STABLE tag (rc.35 for v0.21.5 was in flight 2026-10-02; upstream ~5,900 commits/day, stable cadence 3–7d, 8d since v2026.9.24). Top collision files for the merge: `hermes_cli/update_cmd.py` (72 upstream commits; fork edits all 5 siblings), `hermes_cli/gateway.py` (89), `hermes_cli/main.py` (85), `agent/chat_completion_helpers.py` (83 — upstream now carries `_stale_kill` + `turn_recovery*.py`: behaviorally audit `agent/fork/stream_recovery.py` at sync), `agent/auxiliary_client.py` (59), `gateway/run.py` (57), `agent/context_compressor.py` (56), `tui_gateway/server.py` (59), `agent/anthropic_adapter.py` (28), `hermes_cli/config_defaults.py` (27). Pre-staged baselines: worktrees `/private/tmp/hermes-baseline` (v2026.9.24) + `/private/tmp/premerge-check` (upstream/main); test node `amd-workstation:~/prverify/repo` (py3.14 venv, `upstream` remote added).
+
+**Redundant-at-next-sync (drop fork copies, prefer upstream):** #82245 config-unset comments (upstream `0706dffca1`, all config writers now route through the ruamel round-trip writer), #72155 desktop Anthropic picker (upstream `4ec57d56a9`), #82070 bg-review race (salvaged `35cbad58`), #72152 profile-deletion (`19c68e8c96`/`f1dd8d32a8` landed with authorship), #72054 mcp orphan — PARTIAL (`1f70ba6b` folded only the CancelledError rule).
+
+**Upstream PRs filed this session (all cherry-picked onto upstream/main @ 0ff4c74865, test-verified on amd-workstation, ruff clean, fail-first proven per PR):**
+- `pr/aux-403-fallback` → **#131959** (open): aux `_PAYMENT_KEYWORDS` subscription/entitlement-403 family (four literals absent everywhere upstream; two have main-path precedent in `_is_entitlement_403`).
+- `pr/web-explicit-backend` → **#_pending_ at write time**: `check_web_api_key` gives an explicitly-configured backend its own answerability stage (the #78412 invariant; `_get_backend()` returns stored selections with no fallback, so the OR masks broken configs).
+- `pr/mcp-empty-manifest` → **#_pending_**: `_register_lazy_from_cache` treats an empty manifest as a miss (reachability proven: `_write_schema_cache` can persist `tools=[]` via `should_register` filtering; read-side all-collision also yields `[]`).
+- `pr/retry-wallclock-reset` → **#_pending_**: wall-clock `resets 12:30pm (America/Chicago)` grammar in `retry_utils.RETRY_DELAY_PATTERNS` (zone required, 30min just-past tolerance, 24h cap).
+- `pr/session-id-recognizers` → **#_pending_**: `is_known_session_id` + recognizers for cron_/bg_/room_ derived ids (11.2% of a real store silently dropped by salvage + layout-inference poisoning).
+
+**Filing gotcha (GitHub):** consecutive `gh pr create` from one account hits an abuse throttle disguised as `does not have the correct permissions to execute CreatePullRequest` (REST fallback returns a masked 404; `rate_limit` shows full quota; other users filed fine concurrently). First PR succeeded, then ~1h+ block. Handling + diagnostics captured in the `upstreaming-fork-patches` skill (references/pr-creation-abuse-throttle.md); a bounded retry watcher filed the remainder when the block lifted (log: `/private/tmp/hermes-prs/pr-retry.log`).
+
+**Kept load-bearing (no upstream equivalent):** #82095 pin_anthropic_token, #72164 exit-summary-before-cleanup, #72153 nerd-font stacks, #72151 raf-throttle flush, #72087 estimator dedup, #25234 orphan web-search audit; plus the whole hard-fork set (agent/fork/*, cc_proxy_mcp, consult, delegation by_provider/model_by_role, search_chain, trafilatura backend, stream recovery).
