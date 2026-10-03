@@ -721,15 +721,24 @@ class CLIStatusBarMixin:
         if t0 > 0:
             elapsed = time.monotonic() - t0
             if elapsed >= 60:
-                _m, _s = int(elapsed // 60), int(elapsed % 60)
-                # Fixed-width timer to avoid status-line wrap jitter while
-                # scrolling/repainting (e.g. 1m05s, 12m09s).
-                # Minutes are NOT zero-padded — "02m" looks wrong (#user-feedback).
-                # Left-pad to the same 6-char width as the <60s branch below
-                # so the exact 60s rollover (e.g. "59.9s" -> "1m00s") doesn't
-                # itself cause a one-character width jitter — the single-digit
-                # minute case ("1m05s", 5 chars) was falling one char short.
-                elapsed_str = f"{_m}m{_s:02d}s".rjust(6)
+                total = int(elapsed)
+                _h, _rem = divmod(total, 3600)
+                if _h:
+                    # Past an hour, roll minutes into hours. The old
+                    # f"{_m}m{_s:02d}s" grew _m without bound and rendered
+                    # "60m01s" / "284m41s" (the user-reported "minutes
+                    # displayed >= 60" defect; 17081s is exactly that).
+                    elapsed_str = f"{_h}h{_rem // 60:02d}m"
+                else:
+                    _m, _s = divmod(total, 60)
+                    # Fixed-width timer to avoid status-line wrap jitter while
+                    # scrolling/repainting (e.g. 1m05s, 12m09s).
+                    # Minutes are NOT zero-padded — "02m" looks wrong (#user-feedback).
+                    # Left-pad to the same 6-char width as the <60s branch below
+                    # so the exact 60s rollover (e.g. "59.9s" -> "1m00s") doesn't
+                    # itself cause a one-character width jitter — the single-digit
+                    # minute case ("1m05s", 5 chars) was falling one char short.
+                    elapsed_str = f"{_m}m{_s:02d}s".rjust(6)
             else:
                 # Keep width stable before the 60s rollover as well.
                 elapsed_str = f"{elapsed:5.1f}s"

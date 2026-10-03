@@ -378,6 +378,24 @@ def test_list_agents_empty_registry_message(home):
     assert "No other live Hermes sessions" in out
 
 
+def test_age_label_never_shows_minutes_at_or_above_60():
+    """The listing's age column must roll minutes into hours at 3600s.
+
+    Regression: the old ``seconds < 5400`` window rendered ``60m ago`` (and up
+    to ``89m ago``) for a full hour past the boundary — the same
+    "minutes >= 60" defect class as the status-bar timers."""
+    from tools.cross_session_tool import _age_label
+
+    assert _age_label(89) == "89s ago"
+    assert _age_label(90) == "1m ago"
+    assert _age_label(3599) == "59m ago"
+    assert _age_label(3600) == "1.0h ago"
+    assert _age_label(5399) == "1.5h ago"
+    for seconds in range(0, 7200, 30):
+        out = _age_label(seconds)
+        assert "60m" not in out, f"{seconds}s -> {out!r}"
+
+
 def test_list_agents_now_available_to_subagents_but_read_only(cst, home):
     """Revised scope: list_agents is no longer refused to subagents outright
     -- it's a read-only machine-wide awareness listing now (sessions +
