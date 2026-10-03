@@ -232,6 +232,33 @@ def _is_remote_launch_cwd(session: dict | None) -> bool:
     return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
 
 
+def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` is inside Hermes's own host tree: the Hermes root (``/opt/data`` and its ``/opt/data/home``
+    subprocess home in the Docker image, which also holds every named profile) or the install tree
+    (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
+    from agent.runtime_cwd import _is_install_tree
+    from hermes_constants import get_default_hermes_root
+
+    if not os.path.isabs(cwd):
+        return False
+    try:
+        path = Path(cwd).resolve()
+        home = Path(profile_home or get_hermes_home()).expanduser()
+        roots = {home.resolve(), get_default_hermes_root(home=home).resolve()}
+    except (OSError, RuntimeError):
+        return False
+    return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
+
+
+def _resumable_stored_cwd(cwd, profile_home) -> str:
+    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
+    own host tree (a host launch directory, never a remote workspace)."""
+    cwd = str(cwd or "")
+    if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+        return ""
+    return cwd
+
+
 def _heal_dead_cwd(cwd: str) -> str:
     """Resolve a session cwd inside a now-deleted directory (e.g. a removed linked worktree, which probes to no branch
     while the sidebar folds it to the main lane): walk up to the first existing ancestor and take its common git root.
