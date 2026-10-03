@@ -292,7 +292,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             if db is None:
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
-                            source=source, cwd=record["cwd"],
+                            source=source, cwd=None if _is_remote_launch_cwd(record) else record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
                             model=_session_default_model(record), compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
             record["pending_title"] = None
@@ -2297,7 +2297,8 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         try:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
-            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+            _persist_branch(db, new_key, old_key, title, history, source=source,
+                            cwd=None if _is_remote_launch_cwd(session) else _session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
                             model=_session_default_model(session), copy_fields=_BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",

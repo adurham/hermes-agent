@@ -2734,7 +2734,7 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
                         _persist_session_cwd_and_schedule_git_meta(_sessions[sid], row["cwd"], db=db)
                     except Exception:
                         logger.debug("failed to enrich resumed session git metadata", exc_info=True)
-            elif hasattr(db, "update_session_cwd"):
+            elif hasattr(db, "update_session_cwd") and not _is_remote_launch_cwd(_sessions.get(sid)):
                 try:
                     _persist_session_cwd_and_schedule_git_meta(_sessions[sid], _sessions[sid]["cwd"], db=db)
                 except Exception:

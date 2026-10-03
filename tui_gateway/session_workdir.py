@@ -220,9 +220,16 @@ def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
         return _session_cwd(session)
-    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
+    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE or _is_remote_launch_cwd(session):
         return None
     return str(session.get("cwd") or "") or None  # the session's OWN dir, never _session_cwd's gateway-wide fallback
+
+
+def _is_remote_launch_cwd(session: dict | None) -> bool:
+    """An ssh session's cwd that nobody picked: the gateway's launch directory, a path on THIS host. Host-side context
+    discovery reads it from memory, but it is never persisted: a resume adopts a stored ssh cwd as the remote
+    workspace."""
+    return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
 
 
 def _heal_dead_cwd(cwd: str) -> str:
