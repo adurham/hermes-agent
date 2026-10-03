@@ -6,7 +6,10 @@ from __future__ import annotations
 import json
 import time
 
-from prompt_toolkit.utils import get_cwidth
+try:  # FORK: VS-16-safe display width — a raw get_cwidth undercounts emoji base + U+FE0F
+    from agent.display import display_cwidth as get_cwidth
+except Exception:  # pragma: no cover — agent layer unavailable (partial installs)
+    from prompt_toolkit.utils import get_cwidth
 
 # Per-status glyph. A child sitting inside a blocking nested ``delegate_task``
 # is NOT "running" in the same sense as one doing its own work — without the
@@ -60,12 +63,17 @@ def _clip(value, width):
 
 
 def format_elapsed(seconds):
-    """Elapsed time, switching to ``MmSSs`` past 60s.
+    """Elapsed time: ``42s`` -> ``7m01s`` -> ``1h05m``.
 
     Mirrors ``cli.py::_render_spinner_text``'s rollover format (minutes NOT
     zero-padded, seconds zero-padded — ``1m05s``, ``12m09s``) so every live
     counter in the TUI reads the same way once it crosses a minute, instead of
     the dock being the one place still showing a bare growing ``421s``.
+
+    Past an hour the minutes must roll into hours: the old
+    ``f'{minutes}m{secs:02d}s'`` kept incrementing ``minutes`` without bound, so
+    a long subagent rendered ``284m41s`` (the "minutes displayed >= 60" defect
+    the user reported — 17081s is exactly that string).
     """
     try:
         seconds = max(0.0, float(seconds or 0))
@@ -73,7 +81,11 @@ def format_elapsed(seconds):
         return '0s'
     if seconds < 60:
         return f'{seconds:.0f}s'
-    minutes, secs = divmod(int(seconds), 60)
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    if hours:
+        return f'{hours}h{rem // 60:02d}m'
+    minutes, secs = divmod(total, 60)
     return f'{minutes}m{secs:02d}s'
 
 
