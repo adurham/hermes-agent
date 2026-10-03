@@ -65,6 +65,41 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
     assert not idle.exists() and live.exists() and fresh.exists()
 
 
+def test_prune_once_retries_after_hour_when_first_attempt_was_deferred(tmp_path, monkeypatch):
+    """A long-lived process whose first prune is deferred by a fresh `.last_prune` stamp must
+    still prune once the hour passes. The old once-per-process flag was burned *before* the
+    stamp check, so a process deferred on its first call never pruned again for its lifetime
+    (a gateway ran 38h with 0 prunes; 76 stale entries exhausted the disk quota)."""
+    import hermes_constants
+
+    # Fresh per-process state in case an earlier call in this session already recorded an attempt
+    # (on the old code this attribute did not exist; ``raising=False`` makes the reset a no-op
+    # there, and its once-per-process flag starts False, so the fail-first outcome is unchanged).
+    monkeypatch.setattr(hermes_constants, "_scratch_prune_last_attempt", 0.0, raising=False)
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    stale = scratch / "stale-lane"
+    stale.mkdir()
+    (stale / "f").write_text("x", encoding="utf-8")
+    ancient = time.time() - 30 * 3600
+    for path in (stale, stale / "f"):
+        os.utime(path, (ancient, ancient))
+
+    stamp = scratch / hermes_constants._SCRATCH_PRUNE_STAMP
+    stamp.touch()  # fresh stamp: another process pruned less than an hour ago
+
+    hermes_constants._prune_scratch_dir_once(scratch)
+    assert stale.exists()  # deferred by the fresh stamp — old and new code both defer here
+
+    # The hour passes: this process's last attempt is stale and so is the shared stamp.
+    hermes_constants._scratch_prune_last_attempt -= 7200
+    long_ago = time.time() - 7200
+    os.utime(stamp, (long_ago, long_ago))
+
+    hermes_constants._prune_scratch_dir_once(scratch)
+    assert not stale.exists()  # must prune now, not never
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX directory modes")
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:
