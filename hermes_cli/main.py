@@ -788,6 +788,7 @@ from hermes_cli.model_setup_flows import (
     _model_flow_plugin_provider,
     _is_profile_plugin_flow_provider,
 )
+from hermes_cli.model_setup_flows_local import _model_flow_local
 logger = logging.getLogger(__name__)
 from hermes_cli.main_agent_cmds import (
     cmd_acp,
@@ -2020,6 +2021,7 @@ _PROVIDER_MODEL_FLOWS = {
     "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
     "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
+    "llamacpp": lambda c, m, a: _model_flow_local(c, m),
     "anthropic": lambda c, m, a: _model_flow_anthropic(c, m),
     "kimi-coding": lambda c, m, a: _model_flow_kimi(c, m),
     "stepfun": lambda c, m, a: _model_flow_stepfun(c, m),
