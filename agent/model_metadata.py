@@ -1305,6 +1305,12 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         # Gemini: "input token count is 32825 but model only supports up to
         # 32768" — anchor on the phrase so the input count isn't captured.
         r'supports?\s+(?:only\s+)?up\s+to\s+(\d{4,})',
+        # exo-cluster (local MLX, OpenAI-compatible): "… needs more than the 131072-token cache this
+        # instance was configured for (max_kv_tokens / card context_length)." The capacity IS the
+        # window, so the recovery adopts it (e.g. 1048576 → 131072) before compressing. No generic
+        # pattern above captures it: the figure is glued to "-token cache", and both the preceding
+        # "max_output_tokens" and the trailing "context_length" carry no digits.
+        r'(\d{4,})-token cache\b',
     )
     for match in filter(None, (re.search(pattern, error_lower) for pattern in patterns)):
         limit = int(match.group(1))

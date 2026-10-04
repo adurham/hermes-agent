@@ -1484,6 +1484,28 @@ class TestParseContextLimitFromError:
             "This model's maximum context length is 32768 tokens"
         ) == 32768
 
+    @pytest.mark.parametrize("capacity", [131072, 16384])
+    def test_exo_cache_capacity_is_parsed_as_the_window(self, capacity):
+        """exo-cluster (local MLX) rejects a prompt larger than the running instance's KV cache:
+        "DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the 131072-token cache
+        this instance was configured for (max_kv_tokens / card context_length)." The capacity IS the
+        window, so overflow recovery can adopt it (e.g. 1048576 → 131072) before compressing."""
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = (f"DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the {capacity}-token "
+               f"cache this instance was configured for (max_kv_tokens / card context_length).")
+        assert parse_context_limit_from_error(msg) == capacity
+        assert get_context_length_from_provider_error(msg, 1_048_576) == capacity
+        # A capacity at or above the current window is not a step-down.
+        assert get_context_length_from_provider_error(msg, capacity) is None
+
+    def test_exo_output_cap_only_message_does_not_cache_a_window(self):
+        """Exo's wording names max_output_tokens too — the output-bailout must survive so an
+        output-cap-only exo message is never captured as the context window."""
+        msg = ("DSV4.1: max_output_tokens 200000 needs more than the model output token limit "
+               "this instance was configured for.")
+        assert parse_context_limit_from_error(msg) is None
+
 
 # =========================================================================
 # Persistent context length cache

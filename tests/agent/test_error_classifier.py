@@ -2244,3 +2244,45 @@ class TestAuthErrorNamesOffRouteEndpoint:
         for base_url in ("", "https://api.anthropic.com/v1"):
             result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
             assert result.message == "API keys are not supported by this endpoint.", base_url
+
+
+class TestExoCacheCapOverflow:
+    """The exo-cluster DSV4.1 KV-cache rejection is an INPUT overflow delivered MID-STREAM with no
+    HTTP status: the running instance's KV cache is smaller than the prompt alone, and the server
+    clamps ``max_tokens = min(client, capacity - prompt - 8)`` so the reported ``max_output_tokens``
+    goes NEGATIVE. It must classify as ``context_overflow`` (compress) — never an output cap, never
+    an ambiguous ``unknown`` that dumb-retries and then falls back."""
+
+    _LIT_131072 = ("DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the 131072-token "
+                   "cache this instance was configured for (max_kv_tokens / card context_length).")
+    _LIT_16384 = ("DSV4.1: prompt 24229 + max_output_tokens -7853 needs more than the 16384-token cache "
+                  "this instance was configured for (max_kv_tokens / card context_length).")
+
+    def test_no_status_message_classifies_context_overflow(self):
+        """Plain APIError shape (message only, no status_code, no body) — the mid-stream literal."""
+        result = classify_api_error(MockAPIError(self._LIT_131072), provider="exo", model="DSV4.1")
+        assert result.reason is FailoverReason.context_overflow
+        assert result.should_compress is True
+        assert result.status_code is None
+
+    def test_small_capacity_variant_also_compresses(self):
+        result = classify_api_error(MockAPIError(self._LIT_16384), provider="exo", model="DSV4.1")
+        assert result.reason is FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    @pytest.mark.parametrize("status_code", [400, 500, 502, 503])
+    def test_status_shaped_variants_also_compress(self, status_code):
+        """A proxy can surface the same wording behind a status; every route still compresses."""
+        result = classify_api_error(
+            MockAPIError(self._LIT_131072, status_code=status_code), provider="exo", model="DSV4.1",
+        )
+        assert result.reason is FailoverReason.context_overflow
+        assert result.should_compress is True
+
+    def test_unrelated_500_stays_server_error(self):
+        """Control: the new phrase must not pull an unrelated 5xx into compression."""
+        result = classify_api_error(
+            MockAPIError("Internal server error, please retry later", status_code=500), provider="exo",
+        )
+        assert result.reason is FailoverReason.server_error
+        assert result.should_compress is False
