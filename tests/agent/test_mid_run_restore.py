@@ -3,6 +3,7 @@ and fallback-event recording in try_activate_fallback."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -194,3 +195,69 @@ class TestFallbackEvents:
         agent._try_activate_fallback(reason=FailoverReason.server_error)
         assert _boundaries_until_restore(agent, limit=20) is None
         assert agent._fallback_activated is True
+
+    def test_v1_event_list_is_capped_at_32_keeping_newest(self, two_fallbacks):
+        """The agent-lifetime list is bounded: past 32 activations the OLDEST are dropped."""
+        from agent.chat_completion_helpers import _record_fallback_event
+
+        agent = two_fallbacks
+        for i in range(40):
+            _record_fallback_event(agent, None, f"m{i}", "p", f"m{i + 1}", "p")
+        assert len(agent._fallback_events) == 32
+        assert [e["from_model"] for e in agent._fallback_events] == [f"m{i}" for i in range(8, 40)]
+        # The real activator appends through the same bounded path.
+        agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+        assert len(agent._fallback_events) == 32
+        assert agent._fallback_events[0]["from_model"] == "m9"
+        assert agent._fallback_events[-1]["to_model"] == "gpt-4o"
+
+
+# ── R4 via the real tool-round path: a landed tool round confirms a restored primary ──────
+
+@pytest.fixture
+def transient_primary_agent():
+    """Real AIAgent whose primary is the transient 'pp' stub, with one real fallback."""
+    agent = _make_agent([{"provider": "openai", "model": "gpt-4o"}])
+    agent._primary_runtime.update(model="prim", provider="pp")
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fb_client(), "x")),
+        patch("agent.agent_runtime_helpers._rebuild_primary_client", lambda *a, **k: None),
+    ):
+        yield agent
+
+
+def _empty_caused_fallback(agent):
+    """What the empty-response ladder does: pend the cause, activate, notify the restore policy."""
+    agent._fallback_pending_cause = "empty_response"
+    assert agent._try_activate_fallback() is True
+    efr.note_empty_fallback_activated(agent)
+
+
+def _tool_round_message():
+    call = SimpleNamespace(id="c1", type="function", function=SimpleNamespace(name="web_search", arguments="{}"))
+    return SimpleNamespace(content="checking", tool_calls=[call], reasoning_details=None,
+                           reasoning=None, reasoning_content=None)
+
+
+class TestToolRoundConfirmsRestoredPrimary:
+    def test_r4_tool_round_clears_probe_and_later_fallback_is_fresh(self, transient_primary_agent):
+        from agent.turn_tool_round import stage_tool_call_message
+
+        agent = transient_primary_agent
+        _empty_caused_fallback(agent)
+        assert agent.provider == "openai"
+        assert _boundaries_until_restore(agent) == 1
+        assert (agent.model, agent.provider) == ("prim", "pp")
+        assert agent._empty_restore_probe_active is True
+
+        # The restored primary's probe request lands a tool round (real stage path).
+        stage_tool_call_message(agent, assistant_message=_tool_round_message(),
+                                finish_reason="tool_calls", messages=[])
+        assert agent._empty_restore_probe_active is False
+
+        # A later, unrelated empty streak re-falls-back: that is a FRESH activation
+        # (post-activation skip 1, back-off untouched), not a failed probe cycle (skip 2, next 4).
+        _empty_caused_fallback(agent)
+        assert agent.provider == "openai"
+        assert agent._empty_restore_skip_remaining == 1
+        assert agent._empty_restore_next_skip == efr.FIRST_FAILED_SKIP

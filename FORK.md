@@ -72,8 +72,12 @@ real `AIAgent` + real turn loop against a temp `HERMES_HOME` whose
 `.native_assistant` carrier; scripted client only. Covers: no fallback before budget+floor; fallback
 after the floor (and by hard cap with a frozen clock); mid-run restore at the next boundary with the
 SENT system prompt carrying the restored identity; failed probe → re-fallback with doubled skip; tool
-round ends the streak. **Fail-first (mutation) evidence** — each fix neutered alone, then restored:
-deterministic gate off → 4 policy + 5 e2e fail; budget extension off → 3 policy fail; floor gate off
+round ends the streak. Follow-up coverage in `tests/agent/test_mid_run_restore.py`:
+`TestToolRoundConfirmsRestoredPrimary::test_r4_tool_round_clears_probe_and_later_fallback_is_fresh`
+(a tool round landed via the real `stage_tool_call_message` confirms the restored primary; tool-round
+confirm off → it fails) and `TestFallbackEvents::test_v1_event_list_is_capped_at_32_keeping_newest`
+(event-list bound off → it fails). **Fail-first (mutation) evidence** — each fix neutered alone, then restored:
+deterministic gate off → 4 policy + 6 e2e fail; budget extension off → 3 policy fail; floor gate off
 → 4 policy + 3 e2e fail; carrier filter off → 4 e2e fail; restore call off → 2 e2e fail; prompt
 re-sync off → 1 e2e fail; entry visibility off → 5 visibility fail; event recording off → 2 V1 + 2 e2e
 fail; cause gate off → 2 R1 fail; skip doubling off → 2 R3/R4 fail; transient tool-round reset off → 1
