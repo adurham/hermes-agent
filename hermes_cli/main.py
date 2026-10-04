@@ -105,6 +105,8 @@ _ONESHOT_CLEANUPS = (
     ("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", {}, Exception),
     ("tools.mcp_tool_lifecycle", "shutdown_mcp_servers", {}, BaseException),
     ("agent.auxiliary_client", "shutdown_cached_clients", {}, Exception),
+    # A no-op unless this run booted the managed llama-server (atexit's hook is skipped here).
+    ("hermes_cli.local_runtime.bootstrap", "shutdown_local_runtime", {}, Exception),
 )
 
 

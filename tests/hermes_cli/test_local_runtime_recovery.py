@@ -417,6 +417,63 @@ def test_clock_step_keeps_the_recorded_router(tmp_path, monkeypatch):
         proc.wait(timeout=5)
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("owner", ["exited", "alive"])
+def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner):
+    """Stale-preset replacement and the rescan bounce stop the recorded router only when its owner
+    is gone: a live owner's watchdog would respawn its router next to the replacement. (POSIX: a
+    Windows router dies with its owner's job object, so no orphan exists to stop.)"""
+    from gateway.status import get_process_start_time
+    from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
+
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    router = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        holder_proc, router_proc = psutil.Process(holder.pid), psutil.Process(router.pid)
+        supervisor.state_path().write_text(json.dumps({
+            "base_url": "http://127.0.0.1:59997/v1", "api_key": "test-only",
+            "pid": router.pid, "create_time": router_proc.create_time(),
+            "start_time": get_process_start_time(router.pid), "executable": router_proc.exe(),
+            "owner_pid": holder.pid, "owner_create_time": holder_proc.create_time(),
+            "owner_start_time": get_process_start_time(holder.pid)}))
+        if owner == "exited":
+            holder.kill()
+            holder.wait(timeout=5)
+
+        stopped = bootstrap._stop_state_server()
+
+        assert stopped == (owner == "exited")
+        if stopped:
+            router.wait(timeout=10)
+            assert endpoint._state_endpoint() is None
+        else:
+            assert router.poll() is None
+    finally:
+        for proc in (holder, router):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+
+def test_the_process_that_boots_the_server_stops_it_on_a_clean_exit(tmp_path):
+    """Every surface that boots the managed server (CLI, gateway, desktop backend) frees it when it
+    exits; before, only the desktop backend's shutdown handler did and every other owner orphaned
+    the router and its VRAM."""
+    marker = tmp_path / "stopped"
+    code = (
+        "import sys\n"
+        "from hermes_cli.local_runtime import bootstrap\n"
+        "class Sup:\n"
+        f"    def stop(self): open({str(marker)!r}, 'w').close()\n"
+        "bootstrap._SUPERVISOR = Sup()\n"
+        "bootstrap._stop_at_exit()\n"
+        "sys.exit(0)\n"
+    )
+    subprocess.run([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2], check=True, timeout=60)
+    assert marker.exists()
+
+
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("damage", ["valid", "birth", "exe", "bool-pid", "bool-birth", "nan", "inf", "owner-bool", "owner-nan", "parent", "partial", "list", "invalid", "unreadable"])
 def test_retained_endpoint_validates_identity(tmp_path, monkeypatch, damage):
