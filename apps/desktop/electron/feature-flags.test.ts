@@ -1,6 +1,6 @@
 // feature-flags.ts is the single resolver for which gated surfaces are on in
 // this artifact. These tests pin the flag table: local models ship on Windows,
-// macOS and Linux x64 on every channel; elsewhere the launch argv opts in with
+// macOS and Linux x64/arm64 on every channel; elsewhere the launch argv opts in with
 // --local.
 import assert from 'node:assert/strict'
 
@@ -11,7 +11,7 @@ import { isCanaryTag, resolveFeatureFlags } from './feature-flags'
 const shipsLocalModels: boolean =
   process.platform === 'win32' ||
   process.platform === 'darwin' ||
-  (process.platform === 'linux' && process.arch === 'x64')
+  (process.platform === 'linux' && (process.arch === 'x64' || process.arch === 'arm64'))
 
 test('without --local, local models follow the platform on every channel', () => {
   for (const canary of [false, true]) {
