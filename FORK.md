@@ -23,7 +23,7 @@ fallback marker async_delegation.py/process_registry already read.
 `agent/empty_response_guard.py`, `agent/turn_empty_response.py`, `agent/empty_fallback_restore.py`
 (new), `agent/turn_iteration_prep.py`, `agent/turn_tool_round.py`, `agent/turn_final_response.py`,
 `agent/chat_completion_helpers.py`, `agent/agent_init.py`, `agent/turn_context.py`,
-`tools/delegate_tool_child_run.py` + tests — commit `fix(empty-response): ...` on `main`.
+`tools/delegate_tool_child_run.py` + tests — commits `63aa377e92` (policy + bounded mid-run restore + visibility) and `12fa822ad8` (restrict mid-run restore to transient-policy primaries) on `main`.
 
 **Fix:**
 1. **Policy seam** — `ProviderProfile.empty_completion_policy: str = "refusal_like"` (default = old
