@@ -53,7 +53,8 @@ fallback marker async_delegation.py/process_registry already read.
    cycle; max 4 per turn. State is per turn (`_PER_TURN_RESET_STATE`). After a restore the loop's
    `active_system_prompt` is re-synced through `_sync_failover_system_message` (the restore rewrites
    `_cached_system_prompt`'s Model/Provider lines) — `IterationPrep` gained an `active_system_prompt`
-   field. 429/5xx/auth fallbacks keep turn-start-only restore.
+   field. 429/5xx/auth fallbacks keep turn-start-only restore, and so does ANY fallback whose
+   primary (`_primary_runtime.provider`) is refusal-like — mid-run restore is transient-route only.
 5. **Visibility** — `_build_result_entry` adds `provider, fallback_active, primary_model,
    primary_provider, model_label` (via `failover_state.effective_model_fields`), `fallback_events`
    when non-empty, and prefixes the summary with one line, e.g. `[⚠ this subagent fell back
@@ -74,7 +75,11 @@ deterministic gate off → 4 policy + 5 e2e fail; budget extension off → 3 pol
 → 4 policy + 3 e2e fail; carrier filter off → 4 e2e fail; restore call off → 2 e2e fail; prompt
 re-sync off → 1 e2e fail; entry visibility off → 5 visibility fail; event recording off → 2 V1 + 2 e2e
 fail; cause gate off → 2 R1 fail; skip doubling off → 2 R3/R4 fail; transient tool-round reset off → 1
-e2e fail. Existing `test_empty_response_guard.py` (34) unchanged and green.
+e2e fail; transient-primary gate off → 1 T5 test + the pre-existing
+`test_run_agent.py::TestRunConversation::test_empty_response_triggers_fallback_provider` /
+`::test_empty_response_fallback_also_empty_returns_empty` fail (caught on amd in the first push:
+restore re-probed a refusal-like primary; fixed in the follow-up commit). Existing
+`test_empty_response_guard.py` (34) unchanged and green.
 
 **Merge-conflict guidance:** upstream edits to `agent/turn_empty_response.py` (`_retry_empty`,
 `_has_structured`, the fallback block), `agent/empty_response_guard.py` (`deterministic_empty`,

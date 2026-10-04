@@ -11,8 +11,19 @@ from agent import empty_fallback_restore as efr
 from agent.error_classifier import FailoverReason
 
 
+@pytest.fixture(autouse=True)
+def _transient_primary():
+    """'pp' (the stub primary) declares the transient policy; every other provider does not."""
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name="pp", empty_completion_policy="transient")
+    with patch("providers.get_provider_profile", lambda name: profile if name == "pp" else None):
+        yield
+
+
 class _Agent:
     def __init__(self, restore_ok=True):
+        self._primary_runtime = {"model": "prim", "provider": "pp"}
         self._fallback_activated = True
         self._empty_content_retries = 0
         self.model, self.provider = "fb", "fbp"
@@ -54,6 +65,13 @@ class TestGating:
         agent._fallback_activated = False
         agent._last_fallback_cause = "empty_response"
         assert efr.maybe_restore_primary_mid_run(agent) is False
+        assert agent.restores == 0
+
+    def test_t5_no_mid_run_restore_for_refusal_like_primary(self):
+        agent = _Agent()
+        agent._primary_runtime = {"model": "prim", "provider": "metered"}
+        _empty_fallback(agent)
+        assert _boundaries_until_restore(agent) is None
         assert agent.restores == 0
 
     def test_r2_first_boundary_after_activation_is_skipped(self):
