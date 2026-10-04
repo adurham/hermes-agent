@@ -301,9 +301,18 @@ def classify_tools(tool_defs: List[Dict[str, Any]],
     return visible, deferrable
 
 
-def _deferrable_in(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deferrable subset of pre-assembly ``tool_defs`` under the read-only user config."""
-    return classify_tools(tool_defs, load_config_readonly().effective_defer_tools)[1]
+def _deferrable_in(tool_defs: List[Dict[str, Any]],
+                   config: Optional[ToolSearchConfig] = None) -> List[Dict[str, Any]]:
+    """Deferrable subset of pre-assembly ``tool_defs`` under the given config (defaults to
+    the read-only user config).
+
+    FORK: resolves the FULL ``ToolSearchConfig`` object, NOT just
+    ``.effective_defer_tools`` — the bare frozenset cannot express the
+    ``defer_toolsets`` rule, so passing it here would silently drop toolset-deferred
+    tools from the catalog/describe surface (the bridge half of the defer_toolsets bug).
+    """
+    config = config or load_config_readonly()
+    return classify_tools(tool_defs, config)[1]
 
 
 def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
@@ -645,7 +654,7 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
     raw_limit = args.get("limit")
     limit = (config.search_default_limit if raw_limit is None
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
-    catalog = build_catalog(_deferrable_in(current_tool_defs))
+    catalog = build_catalog(_deferrable_in(current_tool_defs, config))
     remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
     hosted_failure: Optional[str] = None
     if connections_in_scope(current_tool_defs):
@@ -686,7 +695,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         retry_hint="Retry with fewer names per call.")
     if err:
         return err
-    deferrable = _deferrable_in(current_tool_defs)
+    deferrable = _deferrable_in(current_tool_defs, config)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
     remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
 
@@ -705,8 +714,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
                            "parameters": remote_fn.get("parameters", {})}
         elif is_connector_name(name):
             (undescribed if hosted_failure else not_found).append(name)
-        elif _registry_entry(name) is not None and not is_deferrable_tool_name(
-            name, load_config_readonly().effective_defer_tools):
+        elif _registry_entry(name) is not None and not is_deferrable_tool_name(name, config):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
             errors[name] = not_deferrable_error(name)
         else:
@@ -722,16 +730,25 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
     return json.dumps(result, ensure_ascii=False)
 
 
-def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
+def scoped_deferrable_names(tool_defs: List[Dict[str, Any]],
+                            config: Optional[ToolSearchConfig] = None) -> frozenset[str]:
     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
     universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
-    restricted session cannot invoke an out-of-scope tool via the bridge."""
-    defer_tools = load_config_readonly().effective_defer_tools
+    restricted session cannot invoke an out-of-scope tool via the bridge.
+
+    FORK: ``config`` defaults to the FULL ``ToolSearchConfig`` object (via
+    ``load_config_readonly()``), not ``.effective_defer_tools`` — the bare frozenset
+    cannot honor ``defer_toolsets``, which left toolset-deferred tools out of the
+    reachable set and made them fail the scope gate at call time.
+    """
+    config = config or load_config_readonly()
     return frozenset(n for n in _tool_def_names(tool_defs)
-                     if n and is_deferrable_tool_name(n, defer_tools))
+                     if n and is_deferrable_tool_name(n, config))
 
 
-def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
+def resolve_underlying_call(args: Dict[str, Any],
+                            config: Optional[ToolSearchConfig] = None,
+                            ) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
 
     Used by:
@@ -745,8 +762,13 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     sentinel is what planners/display layers see. A single local entry keeps
     the historical single-tool contract unchanged.
 
+    ``config`` (FORK) defaults to the FULL ``ToolSearchConfig`` object so the
+    ``defer_toolsets`` rule is honored; the bare-frozenset convention could not express it
+    and wrongly rejected toolset-deferred tools as "directly-listed".
+
     On parse error, returns ``(None, {}, error_message)``.
     """
+    config = config or load_config_readonly()
     entries, err = normalize_tool_call_entries(args)
     if err:
         return None, {}, err
@@ -758,7 +780,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
 
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
-    if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
+    if not is_deferrable_tool_name(name, config):
         return None, {}, not_deferrable_error(name)
     return name, raw_args, None
 
