@@ -102,6 +102,15 @@ class ProviderProfile:
     # other providers (including an unregistered fallback) get ordinary details only.
     native_reasoning_details_type: str | None = None
 
+    # How the empty-response ladder reads an unsignaled empty completion (success, no
+    # visible output) on this provider. "refusal_like" (default): two same-signature
+    # zero-output empties are deterministic and retries re-bill real money, so the ladder
+    # short-circuits to the fallback chain. "transient": empties are transient hiccups and
+    # retries are free (e.g. subscription-subprocess routes) — no deterministic
+    # short-circuit, a larger same-provider retry budget, and the fallback chain only after
+    # a wall-clock floor (agent.empty_response_guard.transient_* in config.yaml).
+    empty_completion_policy: str = "refusal_like"
+
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
     # describe how to launch it; hermes_cli/auth.py's

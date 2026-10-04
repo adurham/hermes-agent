@@ -576,6 +576,14 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     # sets it; turn_api_request.build_api_request consumes it). Cleared here so an arm
     # that outlives its request (terminal error, abort) can never strip a later turn.
     ("_strip_cache_for_overload", False),
+    # FORK: empty-response fallback provenance + bounded mid-run primary restore
+    # (agent/empty_fallback_restore.py). Per turn: a delegated child is one turn, so the
+    # back-off survives exactly its run; ``_fallback_events`` is NOT reset (agent-lifetime,
+    # bounded) so a child's schema-retry turn keeps the main turn's events.
+    ("_fallback_pending_cause", None), ("_last_fallback_cause", None),
+    ("_empty_restore_attempts", 0), ("_empty_restore_skip_remaining", 0),
+    ("_empty_restore_next_skip", 2), ("_empty_restore_probe_active", False),
+    ("_empty_streak_started_at", None),
 )
 
 

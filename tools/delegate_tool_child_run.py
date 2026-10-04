@@ -675,6 +675,53 @@ def _record_delegation_stat(child: Any, entry: Dict[str, Any]) -> None:
         logger.debug("delegation stats record failed", exc_info=True)
 
 
+def _child_fallback_events(child: Any) -> List[Dict[str, Any]]:
+    """The child's recorded fallback activations (well-formed dicts only; MagicMock-safe)."""
+    events = getattr(child, "_fallback_events", None)
+    if not isinstance(events, list):
+        return []
+    keys = ("from_model", "from_provider", "to_model", "to_provider", "cause")
+    return [{k: e.get(k) for k in keys} for e in events if isinstance(e, dict)]
+
+
+def _fallback_notice(events: List[Dict[str, Any]]) -> str:
+    """One-line summary prefix: first fallback's origin → the last one's target (+ causes)."""
+    first, last = events[0], events[-1]
+    target = str(last.get("to_model") or "?")
+    if last.get("to_provider"):
+        target += f" ({last['to_provider']})"
+    causes = []
+    for e in events:
+        cause = e.get("cause") or "unspecified"
+        if cause not in causes:
+            causes.append(str(cause))
+    hops = f", {len(events)} switches" if len(events) > 1 else ""
+    return (f"[⚠ this subagent fell back {first.get('from_model') or '?'} → {target} "
+            f"({', '.join(causes)}{hops}); work after that point ran on the fallback model]")
+
+
+def _apply_fallback_visibility(child: Any, entry: Dict[str, Any]) -> None:
+    """Additive failover fields on a result entry + the one-line summary notice."""
+    try:
+        from agent.failover_state import effective_model_fields
+        fields = effective_model_fields(child, snapshot_model=getattr(child, "model", None), snapshot_provider=None)
+    except Exception:  # noqa: BLE001 — visibility must never fail a completed child
+        logger.debug("fallback visibility fields unavailable", exc_info=True)
+        fields = {}
+    for key in ("provider", "fallback_active", "primary_model", "primary_provider", "model_label"):
+        if key in fields:
+            entry[key] = fields[key]
+    events = _child_fallback_events(child)
+    if not events:
+        return
+    entry["fallback_events"] = events
+    notice = _fallback_notice(events)
+    if fields.get("fallback_active") is False:
+        notice = notice[:-1] + "; the primary was restored before the run ended]"
+    summary = entry.get("summary") or ""
+    entry["summary"] = f"{notice}\n\n{summary}" if summary else notice
+
+
 def _build_result_entry(
     child: Any, result: Dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
 ) -> Dict[str, Any]:
@@ -777,8 +824,14 @@ def _build_result_entry(
                 "yourself (see schema_errors) rather than re-running the task."
             )
 
+    # Failover visibility: the live effective-model fields (read by the async completion
+    # notification and the ⚠ model label) plus this child's fallback events. When the child
+    # fell back, one line is prepended to the summary TEXT — the orchestrating LLM reads text.
+    _apply_fallback_visibility(child, entry)
+
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.
+    summary = entry["summary"]
     _missed_steer = result.get("pending_steer")
     if isinstance(_missed_steer, str) and _missed_steer.strip():
         entry["missed_steer"] = _missed_steer
