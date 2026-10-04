@@ -86,8 +86,13 @@ def _owner_is_dead(state: dict) -> bool:
             return False
         try:
             owner = psutil.Process(pid)
-            # A newer incarnation proves the recorded owner has exited.
-            return not owner.is_running() or not _same_birth(owner, state, "owner_")
+            if not owner.is_running():
+                return True
+            if _valid_birth(state.get("owner_start_time")):
+                return not _same_birth(owner, state, "owner_")
+            # Records that predate start_time: only a NEWER incarnation proves the owner exited. A
+            # stepped clock (WSL) moves create_time, so inequality alone would bury a live owner.
+            return owner.create_time() > created
         except psutil.NoSuchProcess:
             return True
     except (KeyError, TypeError, ValueError, OverflowError, OSError, psutil.Error):

@@ -421,8 +421,8 @@ def test_clock_step_keeps_the_recorded_router(tmp_path, monkeypatch):
 @pytest.mark.parametrize("owner", ["exited", "alive"])
 def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner):
     """Stale-preset replacement and the rescan bounce stop the recorded router only when its owner
-    is gone: a live owner's watchdog would respawn its router next to the replacement. (POSIX: a
-    Windows router dies with its owner's job object, so no orphan exists to stop.)"""
+    is gone; a live owner's router keeps running (its watchdog would respawn it anyway). POSIX: a
+    Windows router dies with its owner's job object, so no orphan exists to stop."""
     from gateway.status import get_process_start_time
     from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
 
@@ -441,10 +441,9 @@ def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner)
             holder.kill()
             holder.wait(timeout=5)
 
-        stopped = bootstrap._stop_state_server()
+        bootstrap._stop_state_server()
 
-        assert stopped == (owner == "exited")
-        if stopped:
+        if owner == "exited":
             router.wait(timeout=10)
             assert endpoint._state_endpoint() is None
         else:
@@ -454,6 +453,23 @@ def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner)
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+
+
+@pytest.mark.platforms("linux")
+def test_a_stepped_clock_never_buries_a_live_owner_of_an_older_record(monkeypatch):
+    """Records written before start_time compare create_time, which moves with a stepped clock
+    (WSL). Only a newer incarnation proves the owner exited; a live owner must never read as
+    dead, or a newer process would stop the server an older one is still using."""
+    import psutil._pslinux
+    from hermes_cli.local_runtime import recovery
+
+    me = psutil.Process()
+    state = {"owner_pid": me.pid, "owner_create_time": me.create_time()}
+    stepped = psutil._pslinux.boot_time() - 22
+    monkeypatch.setattr(psutil._pslinux, "boot_time", lambda: stepped)
+    assert psutil.Process(me.pid).create_time() != state["owner_create_time"]
+
+    assert recovery._owner_is_dead(state) is False
 
 
 def test_the_process_that_boots_the_server_stops_it_on_a_clean_exit(tmp_path):

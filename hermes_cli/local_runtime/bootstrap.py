@@ -154,11 +154,11 @@ def _presets_stale() -> bool:
     return False
 
 
-def _stop_state_server() -> bool:
-    """Stop the server the state file points at so this process can boot a replacement; False when
-    it must be left alone. Only an orphan (recorded owner gone) is stopped: a live owner's watchdog
-    would respawn its router beside ours. The process comes from the identity-guarded reader, never
-    a bare PID — the endpoint dict callers hold carries no process identity."""
+def _stop_state_server() -> None:
+    """Stop the server the state file points at before this process boots a replacement, but only
+    an orphan (recorded owner gone): a live owner's watchdog would respawn its router, so that one
+    is left running and the replacement boots beside it, as it always has. The process comes from
+    the identity-guarded reader, never a bare PID — the endpoint dict callers hold has none."""
     from hermes_cli.local_runtime.recovery import (
         _owner_is_dead,
         is_modern,
@@ -172,18 +172,17 @@ def _stop_state_server() -> bool:
     if is_modern(state):
         if not _owner_is_dead(state):
             logger.info("llama-server pid=%s belongs to a live Hermes process; leaving it", state.get("pid"))
-            return False
+            return
         proc = recorded_process(state)
     else:
         proc = legacy_recorded_process(state)
     if proc is None:
-        return True
+        return
     try:
         # Waits for the tree to exit, so the port and the GPU are free for the replacement.
         LlamaServerSupervisor._terminate_tree(proc, verified_root=True)
     except Exception as exc:  # noqa: BLE001 - a failed stop must not block the replacement boot
         logger.warning("could not stop the incumbent llama-server (pid=%s): %s", proc.pid, exc)
-    return True
 
 
 def refresh_local_runtime() -> bool:
@@ -200,8 +199,7 @@ def refresh_local_runtime() -> bool:
             state = _state_endpoint()
             if state is None:
                 return False
-            if not _stop_state_server():
-                return False
+            _stop_state_server()
         else:
             shutdown_local_runtime()
         return ensure_local_runtime(load_config(), force=True) is not None
@@ -441,8 +439,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                 return None
             logger.info("running server's presets predate the staged models; "
                         "replacing it so every model launches with a policy")
-            if not _stop_state_server():
-                return None
+            _stop_state_server()
 
         try:
             from hermes_cli.local_runtime.binaries import installed_engine
