@@ -463,7 +463,9 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
         )
         from hermes_cli.auth import get_provider_auth_state
         # Cache-only: a cold cache must not hold the picker open. The Portal unions only append ids;
-        # the on-sale union reads the same cached rows (the background prewarm fills them).
+        # the on-sale union reads the rows the background prewarm filled under the same key the
+        # fetcher registers (base + credential fingerprint), so a logged-in account's cached_only
+        # read finds them.
         pricing = get_pricing_for_provider("nous", cached_only=True) or {}
         try:
             portal = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
