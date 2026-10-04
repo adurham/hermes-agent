@@ -162,7 +162,12 @@ def resolve_transient_settings(section: Any) -> Tuple[int, float]:
 def empty_completion_policy(agent: Any) -> str:
     """The active provider's declared empty-completion policy; refusal-like when the
     provider has no profile, no field, or the lookup fails (fail closed to legacy)."""
-    provider = getattr(agent, "provider", None)
+    return provider_empty_completion_policy(getattr(agent, "provider", None))
+
+
+def provider_empty_completion_policy(provider: Any) -> str:
+    """``empty_completion_policy`` declared by the named provider's profile (refusal-like
+    when unknown)."""
     if not isinstance(provider, str) or not provider:
         return POLICY_REFUSAL_LIKE
     try:

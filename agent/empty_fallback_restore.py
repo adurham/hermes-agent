@@ -4,7 +4,9 @@ Fallback is normally turn-scoped: ``restore_primary_runtime`` runs only at turn 
 delegated child IS one turn, so a child whose primary had a transient empty streak would
 otherwise finish its whole run on the (weaker) fallback model. An empty streak is not a
 provider-failure class (429/5xx/auth keep turn-start-only restore), so after an
-empty-caused fallback the primary is re-tried at iteration boundaries:
+empty-caused fallback FROM A PRIMARY WHOSE PROFILE DECLARES
+``empty_completion_policy="transient"`` the primary is re-tried at iteration boundaries
+(refusal-like primaries keep the legacy turn-scoped behaviour exactly):
 
 * the boundary immediately after activation is skipped (the fallback serves at least one
   request); the next boundary restores the primary and the next real request is the probe
@@ -62,6 +64,16 @@ def _fail_cycle(agent: Any) -> None:
     setattr(agent, ATTR_PROBE_ACTIVE, False)
 
 
+def _primary_is_transient(agent: Any) -> bool:
+    """Mid-run restore only makes sense when the PRIMARY declares its empties transient
+    (``ProviderProfile.empty_completion_policy``); on refusal-like routes an empty streak is
+    treated as deterministic, so re-probing would just re-bill it."""
+    rt = getattr(agent, "_primary_runtime", None)
+    provider = rt.get("provider") if isinstance(rt, dict) else None
+    from agent.empty_response_guard import POLICY_TRANSIENT, provider_empty_completion_policy
+    return provider_empty_completion_policy(provider) == POLICY_TRANSIENT
+
+
 def note_empty_fallback_activated(agent: Any) -> None:
     """Called by the empty-response ladder right after a successful fallback activation."""
     # try_activate_fallback already stamped the cause from _fallback_pending_cause; the
@@ -95,6 +107,8 @@ def maybe_restore_primary_mid_run(agent: Any) -> bool:
         return False
     if getattr(agent, ATTR_LAST_CAUSE, None) != EMPTY_RESPONSE_CAUSE:
         return False  # 429/5xx/auth/etc.: turn-start-only restore
+    if not _primary_is_transient(agent):
+        return False  # refusal-like primary: its empties are deterministic; keep legacy behaviour
     attempts = _int(agent, ATTR_ATTEMPTS, 0)
     if attempts >= MAX_RESTORE_ATTEMPTS:
         return False
