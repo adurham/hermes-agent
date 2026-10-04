@@ -268,6 +268,17 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # exo-cluster (local MLX, OpenAI-compatible endpoint) rejects a prompt larger than the RUNNING
+    # instance's KV cache: "DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the
+    # 131072-token cache this instance was configured for (max_kv_tokens / card context_length)."
+    # The PROMPT ALONE overflows (input overflow — compression fixes it); the negative
+    # max_output_tokens is only a consequence of the server clamping
+    # max_tokens = min(client, capacity - prompt - 8). This is delivered MID-STREAM with NO HTTP
+    # status, so the status-less message path must carry it — and the same wording can surface as a
+    # 5xx through a proxy, which _OVERFLOW_AS_5XX_RULES / _400_TAIL_RULES already read from this
+    # list. The phrase is engine-idiomatic ("… cache this instance was configured for"), disjoint
+    # from the memory-ceiling wordings (which name bytes), so the false-positive surface is nil.
+    "cache this instance was configured for",
 )
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —

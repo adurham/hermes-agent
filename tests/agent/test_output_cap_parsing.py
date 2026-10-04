@@ -250,3 +250,36 @@ class TestParseOpenAiCompletionSplit:
                "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert not is_output_cap_error(msg)
+
+
+class TestExoCacheCapOutputBailout:
+    """Pin the exo-cluster DSV4.1 KV-cache rejection AWAY from the output-cap clamp.
+
+    The server clamps ``max_tokens = min(client, capacity - prompt - 8)``, so when the PROMPT alone
+    exceeds the cache the reported ``max_output_tokens`` goes NEGATIVE ("max_output_tokens -309769").
+    Clamping an output cap cannot fix a prompt that is already over the window — compression can.
+    These helpers must therefore stay neutral; the negative figure must never be captured (its inner
+    ``>= 1`` guards already prevent it, and this pins that against future pattern additions)."""
+
+    _LIT_NEGATIVE = ("DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the 131072-token "
+                     "cache this instance was configured for (max_kv_tokens / card context_length).")
+    _LIT_POSITIVE = ("DSV4.1: prompt 100000 + max_output_tokens 20000 needs more than the 131072-token "
+                     "cache this instance was configured for (max_kv_tokens / card context_length).")
+
+    def test_negative_budget_literal_is_neutral(self):
+        assert parse_available_output_tokens_from_error(self._LIT_NEGATIVE) is None
+        assert is_output_cap_error(self._LIT_NEGATIVE) is False
+
+    def test_positive_budget_literal_is_neutral(self):
+        """A positive max_output_tokens in the same wording is still an INPUT overflow, not an
+        output cap: the prompt (100000) + budget (20000) over a 131072 cache is fixed by compressing."""
+        assert parse_available_output_tokens_from_error(self._LIT_POSITIVE) is None
+        assert is_output_cap_error(self._LIT_POSITIVE) is False
+
+    def test_existing_llama_cpp_clamp_case_untouched(self):
+        """Control: the pre-existing llama.cpp / LM Studio clamp wording still parses."""
+        msg = ("This model's maximum context length is 65536 tokens. However, you requested 65536 "
+               "output tokens and your prompt contains 77409 characters (more than 0 characters, "
+               "which is the upper bound for 0 input tokens).")
+        assert parse_available_output_tokens_from_error(msg) == 39733
+        assert is_output_cap_error("Range of max_tokens should be [1, 65536]") is True

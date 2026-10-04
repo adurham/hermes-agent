@@ -3,6 +3,61 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-10-03 (exo-cluster DSV4.1 KV-cache rejection misclassified as `unknown` — dumb-retried and fell back instead of compressing)
+
+**Motivation:** The local exo MLX cluster (OpenAI-compatible endpoint) rejects any request whose
+PROMPT exceeds the running instance's KV cache. The rejection is delivered **MID-STREAM with no HTTP
+status**, so the Hermes client saw a plain `openai.APIError` carrying only:
+
+```
+DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the 131072-token cache this instance was configured for (max_kv_tokens / card context_length).
+```
+
+(also seen against a 16384-token cache). The PROMPT ALONE overflows — input overflow, which
+compression fixes. The negative `max_output_tokens` is only a consequence of the server clamping
+`max_tokens = min(client, capacity - prompt - 8)`, so `prompt > capacity` yields a negative figure;
+it is NOT a memory ceiling and NOT an output-cap error. No classifier pattern matched, so the verdict
+was `unknown` / `should_compress=False` → 3 dumb retries → provider fallback, with compression never
+running; the session wedged on every turn past ~131K tokens (~88 occurrences in `errors.log`).
+
+**Files / commit:** `agent/error_classifier.py`, `agent/model_metadata.py`,
+`tests/agent/test_error_classifier.py`, `tests/agent/test_output_cap_parsing.py`,
+`tests/agent/test_model_metadata.py`, `tests/agent/test_failed_turn_site_codes.py` — branch
+`fix/dsv41-cachecap-overflow`.
+
+**Fix:**
+1. `agent/error_classifier.py` `_CONTEXT_OVERFLOW_PATTERNS`: added the substring
+   `"cache this instance was configured for"`. This makes BOTH status-less routes match — the
+   `_MESSAGE_TAIL_RULES` stage (`_by_message`, the no-status path) and `_OVERFLOW_AS_5XX_RULES`
+   (consulted by `_status_5xx`/`_classify_400` for status-shaped variants). The phrase is
+   engine-idiomatic and disjoint from the byte-named memory-ceiling wordings, so false-positive
+   surface is nil.
+2. `agent/model_metadata.py` `parse_context_limit_from_error`: added `r'(\d{4,})-token cache\b'` so
+   `131072` (and `16384`) parse from `the {N}-token cache this instance was configured for`, inside
+   the existing 1024..10M sanity range. `get_context_length_from_provider_error` then returns the
+   capacity so `_adopt_provider_context_limit` (`agent/turn_overflow.py`) adopts it into the
+   compressor (1048576 → 131072) BEFORE compression runs.
+
+**Defuse (unchanged behavior, now pinned by tests):** `parse_available_output_tokens_from_error`
+returns `None` for the literal (a negative number must never be captured) and `is_output_cap_error`
+returns `False` — so the shape can never route into the output-cap clamp. `parse_context_limit_from_error`
+also still returns `None` on an output-cap-only message.
+
+**Tests:** `TestExoCacheCapOverflow` (test_error_classifier.py), `TestExoCacheCapOutputBailout`
+(test_output_cap_parsing.py), `TestParseContextLimitFromError::test_exo_cache_capacity_is_parsed_as_the_window`
+/ `::test_exo_output_cap_only_message_does_not_cache_a_window` (test_model_metadata.py), and the
+end-to-end handler test
+`test_exo_cache_rejection_classifies_overflow_and_adopts_capacity_before_compressing`
+(test_failed_turn_site_codes.py: classify → `recover_from_overflow` → compressor adopts 131072 +
+compresses). Fail-first verified: on unmodified code the literal classified `unknown`
+(`should_compress=False`), `parse_context_limit_from_error` returned `None`.
+
+**Merge-conflict guidance:** on the next `upstream/main` merge the conflict lands in
+`agent/error_classifier.py` around `_CONTEXT_OVERFLOW_PATTERNS` and in `agent/model_metadata.py`
+around `parse_context_limit_from_error`. KEEP the `"cache this instance was configured for"` entry
+and the `r'(\d{4,})-token cache\b'` pattern (appended last in the pattern tuple); do NOT let a merge
+drop either, or the exo session wedges again.
+
 ### Fix — 2026-10-03 (soft-fork: `tools.tool_search.defer_toolsets` was honored by assembly but ignored by the bridge call-time/scope gates)
 
 **Motivation:** The fork's `tools.tool_search.defer_toolsets` (force-defer a normally-core

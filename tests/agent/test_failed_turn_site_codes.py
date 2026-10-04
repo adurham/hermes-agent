@@ -98,6 +98,64 @@ def test_hosted_context_rejection_far_below_the_known_window_compresses():
     assert compressed and verdict.action == "break"
 
 
+_EXO_CACHE_REJECTION = (
+    "DSV4.1: prompt 440833 + max_output_tokens -309769 needs more than the 131072-token cache "
+    "this instance was configured for (max_kv_tokens / card context_length)."
+)
+
+
+def _exo_cache_rejection(request_tokens: int = 440_833, window: int = 1_048_576):
+    """Drive the FULL production loop shape for the exo-cluster DSV4.1 KV-cache rejection:
+    ``classify_api_error`` (no status, mid-stream) then ``recover_from_overflow``.
+
+    Returns the verdict, the compression call log, and the compressor mock (whose ``update_model``
+    records the adopted provider-reported capacity)."""
+    from unittest.mock import MagicMock, patch
+
+    from agent.error_classifier import classify_api_error
+    from agent.turn_overflow import recover_from_overflow
+    from agent.turn_retry_state import TurnRetryState
+
+    classified = classify_api_error(Exception(_EXO_CACHE_REJECTION), provider="exo", model="DSV4.1")
+    st = _recovery()
+    compressor = MagicMock()
+    compressor.context_length = window
+    st.agent.max_tokens = None
+    st.agent.context_compressor = compressor
+    st.agent.provider, st.agent.base_url, st.agent.tools = "exo", "http://127.0.0.1:52415/v1", None
+    st.agent.api_mode, st.agent.api_key = "chat_completions", ""
+    st.agent._buffer_vprint = st.agent._buffer_diagnostic_status = lambda *a, **k: None
+    compressed = []
+    st.agent._compress_context = lambda msgs, *a, **k: (compressed.append(1) or [{"role": "user", "content": "x"}], None)
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=request_tokens), \
+         patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=[request_tokens, 10]), \
+         patch("agent.turn_overflow.time.sleep", lambda _: None):
+        verdict = recover_from_overflow(
+            st.agent, Exception(_EXO_CACHE_REJECTION), classified, TurnRetryState(),
+            status_code=None, error_msg=_EXO_CACHE_REJECTION, wrapped_output_cap_budget=None,
+            messages=[], api_messages=[], system_message=None, active_system_prompt=None,
+            conversation_history=None, approx_tokens=request_tokens,
+            compression_attempts=0, max_compression_attempts=3, api_call_count=2,
+            effective_task_id="t",
+        )
+    return classified, verdict, compressed, compressor
+
+
+def test_exo_cache_rejection_classifies_overflow_and_adopts_capacity_before_compressing():
+    """End-to-end: the mid-stream no-status DSV4.1 cache rejection must enter the compression path
+    (not dumb-retry / fall back) AND have the compressor adopt the server-quoted 131072 capacity
+    before it compresses — so a session on an over-declared 1M window steps down instead of
+    repeatedly overflowing."""
+    classified, verdict, compressed, compressor = _exo_cache_rejection()
+
+    assert classified.reason.value == "context_overflow"
+    assert classified.should_compress is True and classified.status_code is None
+    # Adopted the provider-reported capacity …
+    assert compressor.update_model.call_args.kwargs["context_length"] == 131_072
+    # … and compressed + signalled a restart with the compressed transcript.
+    assert compressed and verdict.action == "break"
+
+
 def test_empty_response_exhaustion_has_one_text_everywhere():
     """One constant feeds the CLI explainer and the gateway '(empty)' rewrite; no surface
     asserts 'after processing tool results' or 'inspect the tool output above'."""
