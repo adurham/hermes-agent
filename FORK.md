@@ -27,7 +27,9 @@ fallback marker async_delegation.py/process_registry already read.
 
 **Fix:**
 1. **Policy seam** — `ProviderProfile.empty_completion_policy: str = "refusal_like"` (default = old
-   behaviour). `"transient"` (DirectSDK plugin sets it in a separate plugin change) makes
+   behaviour). `"transient"` (DirectSDK plugin declares it — `hermes-plugin-claude-subscription-directsdk`
+   `aef05048758ae17fcdd3743e0ca761b2cc661f45`, fork branch `fix/dead-login-classification`; new
+   processes only, the profile is loaded at import time) makes
    `deterministic_empty()` return False, raises the empty-retry budget to
    `max(base, agent.empty_response_guard.transient_max_retries=6)` (same jittered backoff, base 5 /
    max 60), and gates fallback: only once retries ≥ budget AND (streak age ≥
