@@ -3,6 +3,31 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Upstream PR — 2026-10-04 (#132889, carrier filter in the thinking-prefill gate; DRAFT filed)
+
+**What:** the fix's upstreamable half — `agent/turn_empty_response.py::recover_empty_response`'s
+`_has_structured` counted ANY truthy `reasoning_details`, so a provider-private replay carrier
+(`ProviderProfile.native_reasoning_details_type`, the `.native_assistant` suffix the chat-completions
+transport already special-cases in `_sanitize_message`) made a carrier-only empty look thinking-only:
+two `_thinking_prefill` calls per empty whose stubs the sanitizer then drops from the API copy — pure
+waste before the first real retry rung. Fix = `_is_native_carrier` + `_model_reasoning_details`
+helpers; real reasoning / reasoning_content / other detail types / inline think still prefill exactly
+as before.
+
+**Upstream branch / commit:** fork `pr/carrier-filter` @ `4eecd3e3` (base = upstream tip `d62fbea7`,
+1 commit, 2 files: `agent/turn_empty_response.py` +20/-1, `tests/agent/test_thinking_prefill_carrier.py`
+new). PR **NousResearch/hermes-agent#132889** (DRAFT — our account can only create drafts, GitHub
+gate; maintainer must flip ready). Red→green proven on upstream's own tree (9 passed patched;
+7 failed/2 passed with the fix reverted — behavioral `assert 1 == 0`); adjacent files green
+(trailing-turn 4, sanitizer 20, guard 34). Scope note in the body: NOT overlapping open #64733
+(that guards the inverse case).
+
+**Fork-side relationship:** this is the standalone half of the 2026-10-04 empty-response work above.
+The `empty_completion_policy` seam + transient retries + mid-run restore + visibility stay fork-only
+(fork-coupled); the carrier filter is generic and lives upstream-clean, so the fork's copy can be
+dropped at the next sync if the PR lands. No fork-side revert needed — identical helper name/semantics
+on both sides, so a merge keeps whichever copy arrives first (they are the same code).
+
 ### Fix — 2026-10-04 (transient empty responses on the subscription route fell back to a weaker model within seconds; fallen-back children never returned; parents never saw it)
 
 **Motivation:** Incident 2026-10-04 (child `sa-0-e7eae653`, `claude-opus-5-5` on
