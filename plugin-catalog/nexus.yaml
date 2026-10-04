@@ -1,0 +1,30 @@
+name: nexus
+repo: https://github.com/Neboy72/nexus-memory
+sha: df0790b16d36c652a7e093e10269f6742c86eabe
+subdir: plugins/memory/nexus
+version: "0.22.12"
+description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Embeddings auto-detect across Voyage, OpenAI, Google, Jina, Ollama and sentence-transformers. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. Runs fully local: no cloud key is required with an Ollama or sentence-transformers setup."
+maintainer: Neboy72
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Neboy72/nexus-memory/blob/df0790b16d36c652a7e093e10269f6742c86eabe/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/df0790b16d36c652a7e093e10269f6742c86eabe/docs/images/nexus-logo-square.png
+capabilities:
+  provides_tools:
+    - nexus_recall
+    - nexus_remember
+    - nexus_forget
+    - nexus_guardrail_check
+    - nexus_guardrail_override
+    - nexus_graph_traverse
+    - nexus_find_entities
+    - nexus_get_subgraph
+    - nexus_get_related
+    - nexus_cost_routing_stats
+    - nexus_cost_routing_explain
+    - nexus_sica_run
+  provides_hooks:
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []
