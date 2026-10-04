@@ -169,6 +169,7 @@ class GatewayProfileReconcileMixin:
             current[name] = live[name]
         claimed = self._live_resource_claims(active)
         transient_failed = set()
+        config_parked = set()
         for name in added + changed:
             # Only acknowledge the configuration observed before connecting;
             # a setup save during an awaited handshake needs another scan.
@@ -176,10 +177,16 @@ class GatewayProfileReconcileMixin:
             try:
                 connected = await self._start_one_profile_adapters(name, current[name], claimed)
             except MultiplexConfigError as exc:
-                # Boot refuses to run with such a profile; at runtime we park just this profile.
+                # Runtime config refusal is a real park, not an adapter-less served profile:
+                # withdraw the authority/tickets, release the reservation and publish the
+                # terminal parked verdict.  A control-socket rescan can explicitly retry it.
                 logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
-                connected = 0
-                sigs[name] = scan_signature
+                home = current.pop(name)
+                await self._unserve_profile(name, home)
+                park_profile(self, name, str(exc))
+                result["parked"].append(name)
+                config_parked.add(name)
+                continue
             except Exception:
                 logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                 connected = 0
@@ -194,6 +201,8 @@ class GatewayProfileReconcileMixin:
             else:
                 logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
                 result["rescanned"].append(name)
+        if config_parked:
+            added = [name for name in added if name not in config_parked]
         self._served_profile_signatures = sigs
         # A profile deleted while an adapter above was still connecting must not be recorded back
         # (the deleter's signal timed out against this lock and rmtree already ran).

@@ -329,7 +329,7 @@ async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, mo
         # The deliberate park stays distinct: a MultiplexConfigError is acknowledged, not retried.
         from gateway.run import MultiplexConfigError
 
-        delta_dir = _mkprofile(home, "delta", "DISCORD_BOT_TOKEN=delta-token\n")
+        _mkprofile(home, "delta", "DISCORD_BOT_TOKEN=delta-token\n")
         parked = []
 
         async def park(name, profile_home, claimed):
@@ -337,10 +337,24 @@ async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, mo
             raise MultiplexConfigError("open dm_policy")
 
         runner._start_one_profile_adapters = park
-        await runner.reconcile_served_profiles()
-        await runner.reconcile_served_profiles()
+        first_park = await runner.reconcile_served_profiles()
+        second_park = await runner.reconcile_served_profiles()
         assert parked == ["delta"]
-        assert runner._served_profile_signatures["delta"] == profile_serve_signature(delta_dir)
+        assert first_park["parked"] == ["delta"]
+        assert "delta" not in first_park["served_profiles"]
+        assert second_park["parked"] == []
+        assert "delta" not in runner._served_profile_signatures
+        assert "delta" in runner.session_runtime_descriptor["parked_profiles"]
+
+        # A previously served profile that becomes invalid is withdrawn through
+        # the same ownership path rather than left routable without adapters.
+        (home / "profiles" / "alpha" / "config.yaml").write_text(
+            "model: {default: changed}\n", encoding="utf-8"
+        )
+        changed_park = await runner.reconcile_served_profiles()
+        assert changed_park["parked"] == ["alpha"]
+        assert "alpha" not in changed_park["served_profiles"]
+        assert "alpha" in runner.session_runtime_descriptor["parked_profiles"]
 
 
 @pytest.mark.asyncio
