@@ -277,12 +277,15 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
 })
 
 test('platform detection preserves typed Windows probe failures', async () => {
-  // `_fail()` (ssh-connection.ts) classifies exec deaths; the kinds that can
+  // `_fail()` (ssh-connection.ts) classifies exec deaths. The kinds that can
   // reach this catch with a probe error are `unknown` (signal death / stderr
-  // classification) and `superseded` (a newer connection attempt took over).
-  // Either must surface as itself — an operational failure — never as the
-  // "unsupported operating system" verdict.
-  for (const kind of ['unknown', 'superseded'] as const) {
+  // classification) and `interactive-auth` (the Tailscale browser check
+  // classifying a non-zero exec); the four TRANSPORT_KINDS are rethrown above.
+  // `superseded` cannot reach it today — `exec()` passes no AbortSignal — but
+  // it is pinned too: if a caller ever threads a signal through, the sentinel
+  // must still surface as itself, never as the "unsupported operating system"
+  // verdict.
+  for (const kind of ['unknown', 'interactive-auth', 'superseded'] as const) {
     const probeErr: any = new Error('PowerShell remote command failed with exit code 1')
     probeErr.kind = kind
 
