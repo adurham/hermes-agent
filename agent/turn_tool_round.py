@@ -279,10 +279,20 @@ def stage_tool_call_message(
     if _had_prefill:
         agent._thinking_prefill_retries = 0
         agent._empty_content_retries = 0
+    elif agent._empty_content_retries:
+        # FORK: on a transient-empty route a landed tool round ends the empty streak even
+        # without a prefill stub to pop (its carrier-only empties no longer prefill), so
+        # isolated hiccups spread across a long run never pool into one fallback-worthy streak.
+        from agent.empty_response_guard import is_transient_route
+        if is_transient_route(agent):
+            agent._empty_content_retries = 0
     # Re-arm the post-tool nudge so it can fire on a LATER tool round; a landed tool call
     # recovers any dropped-tool-call stall, so refresh that budget per stall.
     agent._post_tool_empty_retried = False
     agent._dropped_toolcall_retries = 0
+    # A landed tool round is real output: a primary restored after an empty-fallback is confirmed.
+    from agent.empty_fallback_restore import note_primary_response_ok
+    note_primary_response_ok(agent)
 
     previous_msg = messages[-1] if messages else None
     current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)

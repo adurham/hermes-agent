@@ -3,6 +3,88 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-10-04 (transient empty responses on the subscription route fell back to a weaker model within seconds; fallen-back children never returned; parents never saw it)
+
+**Motivation:** Incident 2026-10-04 (child `sa-0-e7eae653`, `claude-opus-5-5` on
+`claude-subscription-directsdk-experimental`, fallback `glm-5.3`/ollama-cloud): two zero-output
+empties with the same (model, provider, finish_reason) satisfied `deterministic_empty()` → "skipping
+remaining retries" → fallback 11:07:46, while the same session had answered 25 s earlier and a sibling
+ran ~20 more calls on opus (quota 35%). Root causes: (1) the deterministic-empty short-circuit assumes
+refusal-like, re-billed empties — false on this free, transient subscription route; (2) empty-path
+fallback fired on one model's transient empties, not on a provider-failure class; (3) restore runs
+only at turn start, and a delegated child IS one turn, so a fallen-back child stayed on glm-5.3 for its
+whole run; (4) the plugin's provider-private `reasoning_details` carrier
+(`<provider>.native_assistant`, on EVERY response) made every empty look "thinking-only" and burned 2
+prefill calls per retry (the stubs are dropped from the API copy anyway); (5) `_build_result_entry`
+never set provider/fallback_active/primary_*, so completed background children never showed the ⚠
+fallback marker async_delegation.py/process_registry already read.
+
+**Files / commit:** `providers/base.py`, `hermes_cli/config_defaults.py`,
+`agent/empty_response_guard.py`, `agent/turn_empty_response.py`, `agent/empty_fallback_restore.py`
+(new), `agent/turn_iteration_prep.py`, `agent/turn_tool_round.py`, `agent/turn_final_response.py`,
+`agent/chat_completion_helpers.py`, `agent/agent_init.py`, `agent/turn_context.py`,
+`tools/delegate_tool_child_run.py` + tests — commit `fix(empty-response): ...` on `main`.
+
+**Fix:**
+1. **Policy seam** — `ProviderProfile.empty_completion_policy: str = "refusal_like"` (default = old
+   behaviour). `"transient"` (DirectSDK plugin sets it in a separate plugin change) makes
+   `deterministic_empty()` return False, raises the empty-retry budget to
+   `max(base, agent.empty_response_guard.transient_max_retries=6)` (same jittered backoff, base 5 /
+   max 60), and gates fallback: only once retries ≥ budget AND (streak age ≥
+   `transient_fallback_floor_seconds=90` OR hard cap `transient_max_retries+2` reached). The streak
+   start is stamped in `record_empty_attempt` when a new streak begins. New resolver
+   `resolve_transient_settings` (malformed → defaults); `resolve_guard_settings` untouched. On a
+   transient route a landed tool round also ends the empty streak (turn_tool_round), since carrier-only
+   empties no longer leave prefill stubs to trigger the existing reset.
+2. **Carrier filter** — `_has_structured` in `turn_empty_response.py` ignores `reasoning_details`
+   entries whose type ends `.native_assistant` (same convention as the chat-completions transport);
+   real reasoning (reasoning_content / other detail types) still prefills.
+3. **Provenance** — the empty path sets `agent._fallback_pending_cause = "empty_response"` around
+   `_try_activate_fallback()`; `try_activate_fallback` appends
+   `{from_model, from_provider, to_model, to_provider, cause}` to `agent._fallback_events` (cause =
+   `reason.value` if a reason was passed, else the pending cause, else None; bounded to 32; agent
+   lifetime) and stamps `agent._last_fallback_cause`. No FailoverReason member added.
+4. **Bounded mid-run restore** (`agent/empty_fallback_restore.py`) — called at the top of
+   `prepare_iteration` (before `assemble_api_request`), ONLY when `_fallback_activated` and the last
+   cause is `empty_response`. The boundary right after activation is skipped (fallback serves ≥1
+   request); then `restore_primary_runtime()` (reused as-is) and the next real request is the probe. A
+   real response (tool round / final text) confirms it; an empty probe re-falls-back via the ladder and
+   the next restore waits 2, 4, 8 (cap 16) boundaries; a declined/raising restore is also a failed
+   cycle; max 4 per turn. State is per turn (`_PER_TURN_RESET_STATE`). After a restore the loop's
+   `active_system_prompt` is re-synced through `_sync_failover_system_message` (the restore rewrites
+   `_cached_system_prompt`'s Model/Provider lines) — `IterationPrep` gained an `active_system_prompt`
+   field. 429/5xx/auth fallbacks keep turn-start-only restore.
+5. **Visibility** — `_build_result_entry` adds `provider, fallback_active, primary_model,
+   primary_provider, model_label` (via `failover_state.effective_model_fields`), `fallback_events`
+   when non-empty, and prefixes the summary with one line, e.g. `[⚠ this subagent fell back
+   claude-opus-5-5 → glm-5.3 (ollama-cloud) (empty_response); work after that point ran on the fallback
+   model]` (+ "the primary was restored before the run ended" when it came back). Additive only.
+
+**Tests:** `tests/agent/test_empty_response_transient_policy.py` (T1–T5 contracts, `_retry_empty`
+ladder, carrier filter, resolver), `tests/agent/test_mid_run_restore.py` (R1–R5 + V1 against a real
+`AIAgent._try_activate_fallback`), `tests/tools/test_delegate_child_fallback_visibility.py` (V2 incl.
+`_result_model_label` ⚠ rendering), and the e2e `tests/agent/test_empty_response_transient_e2e.py`:
+real `AIAgent` + real turn loop against a temp `HERMES_HOME` whose
+`plugins/model-providers/flaky-sub-e2e` declares `empty_completion_policy="transient"` and a
+`.native_assistant` carrier; scripted client only. Covers: no fallback before budget+floor; fallback
+after the floor (and by hard cap with a frozen clock); mid-run restore at the next boundary with the
+SENT system prompt carrying the restored identity; failed probe → re-fallback with doubled skip; tool
+round ends the streak. **Fail-first (mutation) evidence** — each fix neutered alone, then restored:
+deterministic gate off → 4 policy + 5 e2e fail; budget extension off → 3 policy fail; floor gate off
+→ 4 policy + 3 e2e fail; carrier filter off → 4 e2e fail; restore call off → 2 e2e fail; prompt
+re-sync off → 1 e2e fail; entry visibility off → 5 visibility fail; event recording off → 2 V1 + 2 e2e
+fail; cause gate off → 2 R1 fail; skip doubling off → 2 R3/R4 fail; transient tool-round reset off → 1
+e2e fail. Existing `test_empty_response_guard.py` (34) unchanged and green.
+
+**Merge-conflict guidance:** upstream edits to `agent/turn_empty_response.py` (`_retry_empty`,
+`_has_structured`, the fallback block), `agent/empty_response_guard.py` (`deterministic_empty`,
+`empty_retry_budget`, `record_empty_attempt`), `try_activate_fallback`, `prepare_iteration`'s
+signature/`IterationPrep`, and `_build_result_entry` are the conflict surfaces. KEEP: the transient
+short-circuit in `deterministic_empty`, the `floor_hold` branch in `_retry_empty`, the
+`_model_reasoning_details` filter, the `_fallback_pending_cause` wrapper + `note_empty_fallback_activated`,
+the `maybe_restore_primary_mid_run` call at the top of `prepare_iteration` (must stay BEFORE the
+request is built) and `_record_fallback_event`. The default policy must stay `"refusal_like"`.
+
 ### Fix — 2026-10-03 (exo-cluster DSV4.1 KV-cache rejection misclassified as `unknown` — dumb-retried and fell back instead of compressing)
 
 **Motivation:** The local exo MLX cluster (OpenAI-compatible endpoint) rejects any request whose

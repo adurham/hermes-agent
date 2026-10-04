@@ -1080,6 +1080,12 @@ def _init_fallback_chain(agent, fallback_model):
     agent._fallback_chain = _fallback_entries(fallback_model)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    # Fallback activations this agent has made (try_activate_fallback appends; surfaced on
+    # delegated-child results) + the per-turn empty-fallback restore state.
+    agent._fallback_events = []
+    from agent.empty_fallback_restore import PER_TURN_DEFAULTS as _EMPTY_RESTORE_DEFAULTS
+    for _name, _value in (("_fallback_pending_cause", None), *_EMPTY_RESTORE_DEFAULTS):
+        setattr(agent, _name, _value)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     chain = agent._fallback_chain
@@ -1453,6 +1459,11 @@ def _apply_agent_section(agent, _agent_cfg):
     (
         agent._empty_guard_enabled, agent._empty_guard_cost_threshold_usd
     ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
+    # Transient-route knobs (ProviderProfile.empty_completion_policy == "transient").
+    from agent.empty_response_guard import resolve_transient_settings
+    (
+        agent._empty_guard_transient_max_retries, agent._empty_guard_transient_floor_seconds
+    ) = resolve_transient_settings(_agent_section.get("empty_response_guard"))
 
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")

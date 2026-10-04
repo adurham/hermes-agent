@@ -1907,6 +1907,36 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     )
 
 
+_MAX_FALLBACK_EVENTS = 32
+
+
+def _record_fallback_event(agent, reason, old_model, old_provider, fb_model, fb_provider) -> None:
+    """Append this activation to ``agent._fallback_events`` (surfaced on delegated-child
+    results) and stamp ``agent._last_fallback_cause`` (gates the empty-only mid-run restore).
+
+    Cause: ``reason.value`` when a FailoverReason was passed; otherwise the short-lived
+    ``agent._fallback_pending_cause`` a caller set right before activating (the empty-response
+    ladder sets ``"empty_response"``); otherwise None. The pending cause is consumed here."""
+    pending = getattr(agent, "_fallback_pending_cause", None)
+    agent._fallback_pending_cause = None
+    if reason is not None:
+        cause = getattr(reason, "value", None) or str(reason)
+    else:
+        cause = pending if isinstance(pending, str) and pending else None
+    agent._last_fallback_cause = cause
+    events = getattr(agent, "_fallback_events", None)
+    if not isinstance(events, list):
+        events = agent._fallback_events = []
+    events.append({
+        "from_model": str(old_model or ""), "from_provider": str(old_provider or ""),
+        "to_model": str(fb_model or ""), "to_provider": str(fb_provider or ""), "cause": cause,
+    })
+    # Agent-lifetime list (a delegated child's schema-retry turn must not lose the main
+    # turn's events); bounded so a long-lived gateway agent cannot grow it without limit.
+    if len(events) > _MAX_FALLBACK_EVENTS:
+        del events[:-_MAX_FALLBACK_EVENTS]
+
+
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -2156,6 +2186,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
+            _record_fallback_event(agent, reason, old_model, old_provider, fb_model, fb_provider)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
             _reset_stale_streak(agent)

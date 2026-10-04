@@ -29,13 +29,26 @@ Two independent guards, both failing OPEN to legacy behaviour:
    Unknown pricing, missing usage, or included/subscription routes
    leave the budget untouched.
 
+3. **Empty-completion policy** (``ProviderProfile.empty_completion_policy``). The two
+   guards above assume an unsignaled empty is refusal-like and that each retry re-bills
+   real money. A profile declaring ``"transient"`` (e.g. a subscription-subprocess route
+   whose empties are transient hiccups clustering around tool rounds, and whose retries
+   are free) opts out of the premise: the deterministic short-circuit never fires, the
+   same-provider budget is raised to ``transient_max_retries``, and the fallback chain is
+   entered only once the streak has also lasted ``transient_fallback_floor_seconds``
+   (or a hard cap of ``transient_max_retries + 2`` retries is reached, so a frozen clock
+   can never retry forever). Profiles without the field keep the refusal-like default —
+   byte-identical behaviour.
+
 Configured via the additive ``agent.empty_response_guard`` section in
 ``config.yaml`` (resolved once at agent init by ``agent_init``)::
 
     agent:
       empty_response_guard:
-        enabled: true            # false = legacy fixed 3-retry behaviour
-        cost_threshold_usd: 0.25 # per-attempt cost that halves the budget
+        enabled: true                         # false = legacy fixed 3-retry behaviour
+        cost_threshold_usd: 0.25              # per-attempt cost that halves the budget
+        transient_max_retries: 6              # transient routes only
+        transient_fallback_floor_seconds: 90  # transient routes only
 
 Per project policy, no ``HERMES_*`` environment variables are involved —
 ``.env`` is reserved for credentials; behavioural settings live in
@@ -45,6 +58,7 @@ Per project policy, no ``HERMES_*`` environment variables are involved —
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, List, Optional, Tuple
@@ -56,6 +70,14 @@ REDUCED_EMPTY_RETRY_BUDGET = 1
 DEFAULT_COST_THRESHOLD_USD = Decimal("0.25")
 DEFAULT_GUARD_ENABLED = True
 
+# ProviderProfile.empty_completion_policy values.
+POLICY_REFUSAL_LIKE = "refusal_like"
+POLICY_TRANSIENT = "transient"
+DEFAULT_TRANSIENT_MAX_RETRIES = 6
+DEFAULT_TRANSIENT_FLOOR_SECONDS = 90.0
+# Retries past the transient budget that the wall-clock floor may add before the hard cap.
+TRANSIENT_HARD_CAP_EXTRA = 2
+
 # Agent-object attribute names. State is scoped to one consecutive empty streak: cleared
 # whenever ``_empty_content_retries == 0`` at record time, so every existing counter-reset
 # site (turn start, compaction, tool success, fallback activation) is honoured.
@@ -63,6 +85,14 @@ _ATTEMPTS_ATTR = "_empty_attempt_history"
 _STREAK_COST_ATTR = "_empty_streak_cost_usd"
 _ENABLED_ATTR = "_empty_guard_enabled"
 _THRESHOLD_ATTR = "_empty_guard_cost_threshold_usd"
+_STREAK_STARTED_ATTR = "_empty_streak_started_at"
+_TRANSIENT_RETRIES_ATTR = "_empty_guard_transient_max_retries"
+_TRANSIENT_FLOOR_ATTR = "_empty_guard_transient_floor_seconds"
+
+
+def _monotonic() -> float:
+    """Clock seam for the streak floor (tests patch this, never ``time.monotonic``)."""
+    return time.monotonic()
 
 
 @dataclass(frozen=True)
@@ -102,6 +132,91 @@ def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
         except Exception:  # noqa: BLE001 — malformed config must not break init
             logger.debug("empty-guard: invalid cost_threshold_usd %r, using default", threshold_raw)
     return (enabled, threshold)
+
+
+def resolve_transient_settings(section: Any) -> Tuple[int, float]:
+    """Resolve the transient-route knobs of ``agent.empty_response_guard`` into
+    (max_retries, floor_seconds); malformed input → defaults (6, 90.0)."""
+    max_retries, floor = DEFAULT_TRANSIENT_MAX_RETRIES, DEFAULT_TRANSIENT_FLOOR_SECONDS
+    if not isinstance(section, dict):
+        return (max_retries, floor)
+    raw_retries = section.get("transient_max_retries")
+    if raw_retries is not None and not isinstance(raw_retries, bool):
+        try:
+            candidate = int(str(raw_retries).strip())
+            if candidate >= 1:
+                max_retries = candidate
+        except (TypeError, ValueError):
+            logger.debug("empty-guard: invalid transient_max_retries %r, using default", raw_retries)
+    raw_floor = section.get("transient_fallback_floor_seconds")
+    if raw_floor is not None and not isinstance(raw_floor, bool):
+        try:
+            candidate_floor = float(str(raw_floor).strip())
+            if candidate_floor >= 0 and candidate_floor == candidate_floor:  # rejects NaN
+                floor = candidate_floor
+        except (TypeError, ValueError):
+            logger.debug("empty-guard: invalid transient_fallback_floor_seconds %r, using default", raw_floor)
+    return (max_retries, floor)
+
+
+def empty_completion_policy(agent: Any) -> str:
+    """The active provider's declared empty-completion policy; refusal-like when the
+    provider has no profile, no field, or the lookup fails (fail closed to legacy)."""
+    provider = getattr(agent, "provider", None)
+    if not isinstance(provider, str) or not provider:
+        return POLICY_REFUSAL_LIKE
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:  # noqa: BLE001 — a profile lookup must never break the loop
+        logger.debug("empty-guard: provider profile lookup failed for %r", provider, exc_info=True)
+        return POLICY_REFUSAL_LIKE
+    policy = getattr(profile, "empty_completion_policy", None)
+    return policy if policy == POLICY_TRANSIENT else POLICY_REFUSAL_LIKE
+
+
+def is_transient_route(agent: Any) -> bool:
+    return empty_completion_policy(agent) == POLICY_TRANSIENT
+
+
+def _transient_max_retries(agent: Any) -> int:
+    value = getattr(agent, _TRANSIENT_RETRIES_ATTR, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 \
+        else DEFAULT_TRANSIENT_MAX_RETRIES
+
+
+def _transient_floor_seconds(agent: Any) -> float:
+    value = getattr(agent, _TRANSIENT_FLOOR_ATTR, None)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 \
+        else DEFAULT_TRANSIENT_FLOOR_SECONDS
+
+
+def transient_hard_cap(agent: Any) -> int:
+    """Absolute same-provider retry ceiling on a transient route (budget + 2)."""
+    return _transient_max_retries(agent) + TRANSIENT_HARD_CAP_EXTRA
+
+
+def streak_elapsed_seconds(agent: Any) -> float:
+    started = getattr(agent, _STREAK_STARTED_ATTR, None)
+    if not isinstance(started, (int, float)):
+        return 0.0
+    return max(0.0, _monotonic() - started)
+
+
+def transient_fallback_allowed(agent: Any, budget: int) -> bool:
+    """Whether a transient route's empty streak may leave the primary.
+
+    True on refusal-like routes (no gate). On a transient route, requires the retry budget
+    spent AND either the wall-clock floor elapsed since the streak began or the hard cap
+    reached."""
+    if not is_transient_route(agent):
+        return True
+    retries = getattr(agent, "_empty_content_retries", 0) or 0
+    if retries < budget:
+        return False
+    if retries >= transient_hard_cap(agent):
+        return True
+    return streak_elapsed_seconds(agent) >= _transient_floor_seconds(agent)
 
 
 def guard_enabled(agent: Any) -> bool:
@@ -185,6 +300,9 @@ def record_empty_attempt(
     if getattr(agent, "_empty_content_retries", 0) == 0:
         attempts.clear()
         setattr(agent, _STREAK_COST_ATTR, Decimal("0"))
+        setattr(agent, _STREAK_STARTED_ATTR, _monotonic())
+    elif not isinstance(getattr(agent, _STREAK_STARTED_ATTR, None), (int, float)):
+        setattr(agent, _STREAK_STARTED_ATTR, _monotonic())
 
     usage_present, zero_output = _zero_output(agent, response)
     attempts.append(
@@ -214,6 +332,9 @@ def deterministic_empty(agent: Any) -> bool:
     """
     if not guard_enabled(agent):
         return False
+    # Transient routes: same-signature zero-output empties are hiccups, not refusals.
+    if is_transient_route(agent):
+        return False
     attempts = getattr(agent, _ATTEMPTS_ATTR, None) or []
     if len(attempts) < 2:
         return False
@@ -228,13 +349,16 @@ def deterministic_empty(agent: Any) -> bool:
 
 def empty_retry_budget(agent: Any, response: Any) -> int:
     """Empty-retry budget for the current streak (3, or 1 when a single attempt is
-    estimated to cost more than the configured threshold)."""
-    if not guard_enabled(agent):
-        return DEFAULT_EMPTY_RETRY_BUDGET
-    cost = _estimate_attempt_cost(agent, response)
-    if cost is not None and cost >= _cost_threshold_usd(agent):
-        return REDUCED_EMPTY_RETRY_BUDGET
-    return DEFAULT_EMPTY_RETRY_BUDGET
+    estimated to cost more than the configured threshold). A transient route raises it to
+    at least ``transient_max_retries``."""
+    budget = DEFAULT_EMPTY_RETRY_BUDGET
+    if guard_enabled(agent):
+        cost = _estimate_attempt_cost(agent, response)
+        if cost is not None and cost >= _cost_threshold_usd(agent):
+            budget = REDUCED_EMPTY_RETRY_BUDGET
+    if is_transient_route(agent):
+        budget = max(budget, _transient_max_retries(agent))
+    return budget
 
 
 def streak_cost_usd(agent: Any) -> Optional[Decimal]:

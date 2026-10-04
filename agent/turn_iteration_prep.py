@@ -107,10 +107,13 @@ class IterationPrep:
     messages: Any
     request_logger: Any
     current_turn_user_idx: Any
+    # Rebound when a mid-run primary restore rewrote ``agent._cached_system_prompt``.
+    active_system_prompt: Any = None
 
 
 def prepare_iteration(
     agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None, current_turn_user_idx: Any = None,
+    active_system_prompt: Any = None,
 ) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
@@ -118,6 +121,15 @@ def prepare_iteration(
     from agent.conversation_loop import (
         _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
     )
+
+    # FORK: after an EMPTY-response fallback, re-try the primary at this boundary (bounded,
+    # backed-off; see agent/empty_fallback_restore.py) BEFORE the request is built. A restore
+    # rewrites the cached system prompt's model identity, so the loop's carried prompt is
+    # re-synced here exactly as fallback activation does (_sync_failover_system_message).
+    from agent.empty_fallback_restore import maybe_restore_primary_mid_run
+    if maybe_restore_primary_mid_run(agent):
+        from agent.conversation_loop import _sync_failover_system_message
+        active_system_prompt = _sync_failover_system_message(agent, None, active_system_prompt)
 
     # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
     # before this iteration's request is built and with nothing in flight.
@@ -242,7 +254,7 @@ def prepare_iteration(
         current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
-        current_turn_user_idx=current_turn_user_idx,
+        current_turn_user_idx=current_turn_user_idx, active_system_prompt=active_system_prompt,
     )
 
 

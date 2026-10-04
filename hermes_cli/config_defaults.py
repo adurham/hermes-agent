@@ -130,6 +130,12 @@ DEFAULT_CONFIG = {
             # When one empty attempt's estimated input cost >= this USD, the streak's retry budget
             # drops from 3 to 1. Unknown pricing / missing usage leaves it untouched.
             "cost_threshold_usd": 0.25,
+            # Providers whose profile declares empty_completion_policy="transient" only:
+            # same-provider empty-retry budget (max of this and the base budget) ...
+            "transient_max_retries": 6,
+            # ... and the minimum streak age before the fallback chain may be entered
+            # (hard cap transient_max_retries + 2 attempts bounds it regardless).
+            "transient_fallback_floor_seconds": 90,
         },
         # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
         # turn), "cold" (first turn of a session only).

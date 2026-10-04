@@ -23,6 +23,29 @@ logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
+# Fallback-activation cause recorded for empty-streak fallbacks (agent._fallback_events).
+EMPTY_RESPONSE_CAUSE = "empty_response"
+# Provider-private replay carriers ride reasoning_details as '<provider>.native_assistant'
+# (same convention agent/transports/chat_completions.py filters on the wire).
+_NATIVE_CARRIER_SUFFIX = ".native_assistant"
+
+
+def _is_native_carrier(detail: Any) -> bool:
+    kind = detail.get("type") if isinstance(detail, dict) else getattr(detail, "type", None)
+    return isinstance(kind, str) and kind.endswith(_NATIVE_CARRIER_SUFFIX)
+
+
+def _model_reasoning_details(details: Any) -> bool:
+    """True when ``reasoning_details`` holds actual model reasoning. A provider-private
+    native-history carrier is replay data attached to EVERY response on its route, so a
+    carrier-only empty is NOT thinking-only — counting it burned two useless prefill calls
+    (the prefill stubs are dropped from the API copy) before each real retry."""
+    if not details:
+        return False
+    if isinstance(details, (list, tuple)):
+        return any(not _is_native_carrier(d) for d in details)
+    return not _is_native_carrier(details)
+
 
 @dataclass
 class EmptyResponseVerdict:
@@ -61,14 +84,25 @@ def _retry_empty(
         if empty_candidate else _empty_guard.DEFAULT_EMPTY_RETRY_BUDGET
     )
     deterministic = empty_candidate and _empty_guard.deterministic_empty(agent)
-    if not (empty_candidate and agent._empty_content_retries < budget and not deterministic):
+    # Transient routes (ProviderProfile.empty_completion_policy == "transient") keep retrying
+    # the SAME provider past the budget until the streak has lasted the wall-clock floor,
+    # bounded by a hard attempt cap; refusal-like routes are never gated here.
+    within_budget = agent._empty_content_retries < budget
+    floor_hold = (
+        empty_candidate and not within_budget
+        and not _empty_guard.transient_fallback_allowed(agent, budget)
+    )
+    if not (empty_candidate and (within_budget or floor_hold) and not deterministic):
         return None, None, deterministic
     agent._empty_content_retries += 1
     n = agent._empty_content_retries
+    if floor_hold:
+        budget = _empty_guard.transient_hard_cap(agent)
     wait_time = jittered_backoff(n, base_delay=5.0, max_delay=60.0)
     logger.warning(
-        "Empty response (no content or reasoning) — retry %d/%d in %.1fs (model=%s)",
+        "Empty response (no content or reasoning) — retry %d/%d in %.1fs (model=%s)%s",
         n, budget, wait_time, agent.model,
+        " [transient route: holding primary until the fallback floor]" if floor_hold else "",
     )
     _budget_note = (
         " — high-cost request, reduced retry budget"
@@ -220,7 +254,7 @@ def recover_empty_response(
     _has_structured = bool(
         getattr(assistant_message, "reasoning", None)
         or getattr(assistant_message, "reasoning_content", None)
-        or getattr(assistant_message, "reasoning_details", None)
+        or _model_reasoning_details(getattr(assistant_message, "reasoning_details", None))
         or _has_inline_thinking
     )
     if _has_structured and agent._thinking_prefill_retries < 2:
@@ -268,7 +302,16 @@ def recover_empty_response(
             agent._empty_content_retries, agent.model, agent.provider,
         )
         agent._buffer_diagnostic_status("⚠️ Model returning empty responses — " "switching to fallback provider...")
-        if agent._try_activate_fallback():
+        # Provenance for try_activate_fallback's event record (it pops this); cleared after
+        # the call too so a stubbed activator can never leak it into a later activation.
+        agent._fallback_pending_cause = EMPTY_RESPONSE_CAUSE
+        try:
+            _activated = agent._try_activate_fallback()
+        finally:
+            agent._fallback_pending_cause = None
+        if _activated:
+            from agent.empty_fallback_restore import note_empty_fallback_activated
+            note_empty_fallback_activated(agent)
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0
             agent._buffer_diagnostic_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
