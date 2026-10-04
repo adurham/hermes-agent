@@ -8,7 +8,8 @@ Code here is **not intended for upstream contribution.** See "Why a fork" below.
 Fable-ruled re-mining of the July PRs closed on 2026-09-08 as housekeeping (NOT wontfix — maintainers had rated the premises valid). Both re-derived fresh on current upstream tip (`8d256ff184`-era), draft-only per the account gate.
 
 - **#132899** `fix(cli): print the exit summary before cleanup so the watchdog can't swallow it`
-  — fork `pr/exit-summary-order` @ `fb13b4073c`; 4 files (`cli.py`, `hermes_cli/cli_session_mixin.py`,
+  — fork `pr/exit-summary-order` @ `fb13b4073c` + follow-up `2de0344faa` (try/finally port from the
+  July review; 4 files (`cli.py`, `hermes_cli/cli_session_mixin.py`,
   `hermes_cli/cli_tui_runtime_mixin.py`, new `tests/hermes_cli/test_exit_summary_ordering.py`).
   Verified defect on current main: both interactive exit paths did `_run_cleanup()` → `_print_exit_summary()`;
   cleanup arms the watchdog, so a wedged cleanup (memory-provider `on_session_end`, MCP teardown) silently
