@@ -3,6 +3,33 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Upstream PRs — 2026-10-04 (resurrection batch #2: exit-summary ordering #132899, estimator dedup #132900; both DRAFT)
+
+Fable-ruled re-mining of the July PRs closed on 2026-09-08 as housekeeping (NOT wontfix — maintainers had rated the premises valid). Both re-derived fresh on current upstream tip (`8d256ff184`-era), draft-only per the account gate.
+
+- **#132899** `fix(cli): print the exit summary before cleanup so the watchdog can't swallow it`
+  — fork `pr/exit-summary-order` @ `fb13b4073c`; 4 files (`cli.py`, `hermes_cli/cli_session_mixin.py`,
+  `hermes_cli/cli_tui_runtime_mixin.py`, new `tests/hermes_cli/test_exit_summary_ordering.py`).
+  Verified defect on current main: both interactive exit paths did `_run_cleanup()` → `_print_exit_summary()`;
+  cleanup arms the watchdog, so a wedged cleanup (memory-provider `on_session_end`, MCP teardown) silently
+  swallows the cost report + resume hint. Fix = shared `_finish_interactive_exit()` epilogue (summary →
+  cleanup → optional lease release). Red→green call-order contract (RED `['cleanup','summary']` → GREEN 3 passed).
+  Resurrected from #72164 (maintainer had rated premise valid / salvageability=high at filing).
+- **#132900** `fix(estimator): stop counting interleaved-thinking duplicates`
+  — fork `pr/estimator-interleaved` @ `4491b942dc`; 2 files (`agent/model_metadata.py`,
+  `tests/agent/test_model_metadata.py`). REPRODUCED on tip: `_wire_message_shadow` skipped the legacy
+  `_anthropic_content_blocks` (underscore) but not the real `anthropic_content_blocks` ordered channel, so an
+  interleaved row charged the same thinking twice — generic estimator 14702 vs 7696 blocks-only (1.91x; probe row),
+  test-assertion row 14136 vs 7122 bound. Native preflight seam already green (7337/7337) — the generic
+  estimator was red. Fix mirrors `native_anthropic_accounting_projection` (ordered channel displaces
+  reasoning/reasoning_content/reasoning_details). Red→green: 2 fail unpatched → 6 pass patched; ~30 adjacent
+  test files green (one-per-invocation). Resurrected from #72087. PR body explicitly asks whether the generic
+  estimator is intentionally conservative; flags `bedrock_content_blocks`/`codex_reasoning_items` as an
+  unscoped-out but noted risk. #73306 (closed) covered only the `reasoning_details` half — non-overlap noted.
+
+**Held per Fable:** #82245 (config unset comment-block fix — trivial repro, file after the queue clears);
+#82070 (skip — another author's merged cancel fix covers the area); #82095 (skip — personal corp workflow).
+
 ### Upstream PR — 2026-10-04 (#132889, carrier filter in the thinking-prefill gate; DRAFT filed)
 
 **What:** the fix's upstreamable half — `agent/turn_empty_response.py::recover_empty_response`'s
