@@ -15,7 +15,7 @@ vi.mock('@/hermes', () => ({
 
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions, applySessionTitle, touchSessionActivity } from '@/store/session'
 
 import { $unconfirmedPinWrites, forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
@@ -416,6 +416,73 @@ describe('watchSessionPins remote pull', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('does not let a value-copied painted row confirm the guard while the PATCH is in flight', async () => {
+    // applyRowPinned paints the local intent onto a row object, but SessionInfo
+    // rows are re-spread by value on ordinary user paths (touchSessionActivity on
+    // send, applySessionTitle on rename). A copy carries the painted `pinned`
+    // but not the optimistic marker, so it used to read as "a page agreeing
+    // with what we wrote" and released the write guard while the PATCH was
+    // still in flight — the exact revert this fix exists to close.
+    let settle: (v: { ok: boolean }) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $sessions.set([row('in-use', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['in-use'])
+
+    // User unpins; the PATCH is held in flight so the guard stays armed.
+    $pinnedSessionIds.set([])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('in-use', false, undefined)
+
+    // The very next message re-spreads the painted row by VALUE.
+    touchSessionActivity('in-use', { at: 12345, preview: 'next message' })
+    await flush()
+
+    // The copied row agrees with what we wrote, but it is still OUR intent,
+    // not a server confirmation. The guard must stay armed...
+    expect($unconfirmedPinWrites.get().has('in-use')).toBe(true)
+    // ...and a stale pre-PATCH page landing now must not resurrect the pin.
+    $sessions.set([row('in-use', { pinned: true }), row('other')])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('in-use')
+
+    settle({ ok: true })
+    await flush()
+    await flush()
+  })
+
+  it('does not let a title-applied copy of a painted row confirm the guard', async () => {
+    // Same class, rename path: applySessionTitle re-spreads every matching row.
+    let settle: (v: { ok: boolean }) => void = () => {}
+
+    patch.mockImplementationOnce(() => new Promise(resolve => (settle = resolve)))
+
+    $sessions.set([row('renamed', { pinned: true })])
+    await flush()
+    expect($pinnedSessionIds.get()).toEqual(['renamed'])
+
+    $pinnedSessionIds.set([])
+    await flush()
+    expect(patch).toHaveBeenCalledWith('renamed', false, undefined)
+
+    applySessionTitle('renamed', 'New Title')
+    await flush()
+
+    expect($unconfirmedPinWrites.get().has('renamed')).toBe(true)
+
+    $sessions.set([row('renamed', { pinned: true, title: 'New Title' })])
+    await flush()
+
+    expect($pinnedSessionIds.get()).not.toContain('renamed')
+
+    settle({ ok: true })
+    await flush()
+    await flush()
   })
 
   it('keeps the pin and retries when the write itself fails', async () => {

@@ -49,10 +49,21 @@ const pending = new Set<string>()
 // write. Hold the guard until a page actually CONFIRMS the written value,
 // with a cooldown so a row that never comes back can't fence itself forever.
 const unconfirmed = new Map<string, { at: number; value: boolean }>()
-// Rows this module rewrote to match a local toggle. They carry OUR intent, not
-// the server's, so they may never confirm (release) a write guard — only a row
-// a real list page delivered can do that.
-const optimisticRows = new WeakSet<SessionInfo>()
+// Marker stamped on rows this module repainted to match a local toggle. They
+// carry OUR intent, not the server's, so they may never confirm (release) a
+// write guard — only a row a real list page delivered can do that. It is an
+// enumerable symbol so a value copy (`{ ...row }`) carries it too: rows are
+// re-spread on ordinary user paths (touchSessionActivity on send,
+// applySessionTitle on rename), and identity-keyed tracking would drop
+// exactly those copies, letting our own painted value read as a remote
+// confirmation and release the guard mid-flight.
+const optimisticPin = Symbol('optimisticPin')
+
+type OptimisticSessionRow = SessionInfo & { [optimisticPin]?: true }
+
+function isOptimisticRow(row: SessionInfo): boolean {
+  return (row as OptimisticSessionRow)[optimisticPin] === true
+}
 
 /**
  * The ids `unconfirmed` currently fences, for readers outside this module.
@@ -167,8 +178,7 @@ function applyRowPinned(pinId: string, pinned: boolean, profile?: null | string)
       }
 
       changed = true
-      const updated = { ...row, pinned }
-      optimisticRows.add(updated)
+      const updated: OptimisticSessionRow = { ...row, pinned, [optimisticPin]: true }
 
       return updated
     })
@@ -196,9 +206,10 @@ function writePin(id: string, pinned: boolean, profile?: null | string): Promise
     (err: unknown) => {
       // A failed write leaves the server on the old value, so the guard would
       // be fencing out the truth. Drop it and let the page win.
-      // The painted rows are left as-is: a failed pin is retried by the caller
-      // (repainting here would fire a reconcile before that retry is booked
-      // and drop the pin), and the next real page replaces them anyway.
+      // The painted rows are left as-is (pin or unpin alike): a failed pin is
+      // retried by the caller (repainting here would fire a reconcile before
+      // that retry is booked and drop the pin), a failed unpin keeps the local
+      // value until the next real page, and the next page replaces them anyway.
       unconfirmed.delete(id)
       publishUnconfirmed()
       throw err
@@ -238,10 +249,11 @@ function pullRemotePins(): void {
     const guard = guardKey ? unconfirmed.get(guardKey) : undefined
 
     if (guard && guardKey) {
-      if (optimisticRows.has(row)) {
-        // Our own painted row agrees by construction, so it is not a
-        // confirmation. Let the cooldown retire the guard as usual; the row
-        // then matches the local set and the checks below are a no-op.
+      if (isOptimisticRow(row)) {
+        // Our own painted row agrees by construction (as does any value copy
+        // of it — the marker is enumerable and spreads with the row), so it is
+        // not a confirmation. Let the cooldown retire the guard as usual; the
+        // row then matches the local set and the checks below are a no-op.
         if (Date.now() - guard.at >= WRITE_GUARD_MS) {
           unconfirmed.delete(guardKey)
         }
