@@ -1737,7 +1737,9 @@ describe('resumeSession failure recovery', () => {
     clearSessionTodos('runtime-1')
     // Persisted owner hints are global module state; the hint-hygiene tests
     // below write them and must not leak into later describes' resumes.
-    _resetSessionOwnerHintsForTests()
+    // storage: true also clears the persisted copy (cf. the integrations test
+    // file) — this suite's hint writes must not survive into a fresh suite run.
+    _resetSessionOwnerHintsForTests({ storage: true })
     // Same for this describe's source-override: mockReset() restores the
     // default-preserving spy (the real registry read), unlike
     // restoreAllMocks() below, which is a no-op for factory-created vi.fn().
@@ -2628,14 +2630,17 @@ describe('resumeSession failure recovery', () => {
   // rows), but every pathname-driven resume (boot auto-restore, reconnect
   // re-resume, stranded-view self-heal) funnels through here and used to
   // trust the hint verbatim — dialing the Mac backend for a remote session
-  // and dying with "session not found". A hint naming a connection that is
-  // not this window's live primary is stale by definition and must be
-  // dropped, not honored.
-  it('drops a legacy local owner hint when the window primary is a remote connection (#97809)', async () => {
-    _resetSessionOwnerHintsForTests()
+  // and dying with "session not found". The row is the authority (same
+  // predicate as openStoredSession): a hint that disagrees with a
+  // connection-tagged row is stale by definition and must be dropped, not
+  // honored — repaired in the map too, so the poison does not survive into
+  // the next resume or any session-scoped RPC dispatch.
+  it('drops a legacy local owner hint when the row is untagged (#97809)', async () => {
+    _resetSessionOwnerHintsForTests({ storage: true })
     setSessionOwnerHint('stored-1', { connectionId: 'local', profile: 'default' })
-    // The window's live primary is the SSH connection, not `local`.
-    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-proxmox')
+    // The row carries no connection tag: the session belongs to whichever
+    // backend served the list, so an explicit `local` hint is stale.
+    setSessions([storedSession({ id: 'stored-1', profile: 'default' })])
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
@@ -2662,10 +2667,14 @@ describe('resumeSession failure recovery', () => {
     expect(getSessionOwnerHint('stored-1')).toBeUndefined()
   })
 
-  it('keeps a current owner hint that names the live primary connection', async () => {
-    _resetSessionOwnerHintsForTests()
+  it('keeps a current owner hint that agrees with the row\'s connection tag', async () => {
+    _resetSessionOwnerHintsForTests({ storage: true })
     setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })
-    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-proxmox')
+    // A connection-tagged row is the authority: the hint naming the same
+    // connection is current and must survive the resume. This is the case
+    // the foreground-socket predicate got wrong — the hint legitimately
+    // names a connection the window is not currently looking at.
+    setSessions([storedSession({ connection_id: 'ssh-proxmox', id: 'stored-1', profile: 'default' })])
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
@@ -2687,6 +2696,34 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect(getSessionOwnerHint('stored-1')).toMatchObject({ connectionId: 'ssh-proxmox' })
+  })
+
+  it('drops a remembered hint whose connection disagrees with the row\'s tag', async () => {
+    _resetSessionOwnerHintsForTests({ storage: true })
+    // The hint names a different connection than the row: the row wins.
+    setSessionOwnerHint('stored-1', { connectionId: 'ssh-proxmox', profile: 'default' })
+    setSessions([storedSession({ connection_id: 'ssh-vps', id: 'stored-1', profile: 'default' })])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
+
+    await runResume(requestGateway)
+
+    expect(getSessionOwnerHint('stored-1')).toBeUndefined()
   })
 })
 

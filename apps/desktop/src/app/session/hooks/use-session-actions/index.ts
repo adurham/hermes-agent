@@ -39,7 +39,6 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
   $gateway,
-  activeGatewayConnectionId,
   isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
@@ -1434,28 +1433,31 @@ export function useSessionActions({
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
       //
-      // A persisted owner hint is only trustworthy when the connection it
-      // names is still this window's live primary. Current builds mint hints
-      // from the real registry id at create/resume time, but older builds
-      // persisted `local` for rows that actually live on a remote primary
-      // (the legacy primary-SSH path): an auto-restored resume that trusts
-      // that hint dials the Mac backend and dies with "session not found"
-      // (#97809). The click path (openStoredSession) already drops such hints
-      // for untagged rows; every OTHER pathname-driven resume funnels through
-      // here, so the same hygiene applies at this seam. The hint is repaired,
-      // not just ignored: a stale route left in the map re-poisons the next
-      // resume, the row ladder and every session-scoped RPC dispatch.
+      // A persisted owner hint is only trustworthy when it agrees with the
+      // best cached row for the session — the same predicate the click path
+      // (openStoredSession) and the boot auto-restore (repairOwnerHintsForRestore)
+      // use, so a session is not repaired on one path and destroyed on
+      // another. Comparing against the live foreground socket (the original
+      // #97809 draft) is wrong in exactly the case the hint exists for: hints are
+      // minted from the AMBIENT connection at create/open time (sdk openSession),
+      // which in the all-profiles view is not the foreground, and resumeSession
+      // itself moves the foreground below — so "names a connection that isn't
+      // active" is true for correct hints. The row is the authority: a
+      // connection-tagged row pins the hint's route (older builds persisted
+      // `local` for rows that actually live on a remote primary — the legacy
+      // #97809 repro), and an untagged or absent row leaves no basis to trust an
+      // explicit persisted hint, so it is dropped rather than dialed.
       //
       // An explicitly captured owner (requestSessionResume with a row route,
       // a plugin open) is authoritative as given; only the REMEMBERED hint
       // is validated, never the caller's capture.
       const rememberedHint = capturedOwner ? undefined : getSessionOwnerHint(storedSessionId)
+      const rowOwnerRoute = sessionOwnerRouteFromRow(cachedSessionRow(storedSessionId))
 
-      const rememberedOwner = rememberedHint
-        ? rememberedHint.connectionId === (activeGatewayConnectionId() ?? 'local')
+      const rememberedOwner =
+        rememberedHint && rowOwnerRoute && rememberedHint.connectionId === rowOwnerRoute.connectionId
           ? rememberedHint
           : undefined
-        : undefined
 
       if (rememberedHint && !rememberedOwner) {
         forgetSessionOwnerHintsForSession(storedSessionId)
