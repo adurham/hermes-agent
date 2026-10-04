@@ -3,6 +3,46 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-10-03 (soft-fork: `tools.tool_search.defer_toolsets` was honored by assembly but ignored by the bridge call-time/scope gates)
+
+**Motivation:** The fork's `tools.tool_search.defer_toolsets` (force-defer a normally-core
+toolset behind the tool_search/describe/call bridge, e.g. `["vision","browser"]`) was applied
+at *assembly* time (`classify_tools` → the model-visible array strips those tools) but NOT at
+the four call-time gates, which passed the bare frozenset `load_config_readonly().effective_defer_tools`.
+A bare frozenset cannot express a toolset rule (documented by design in
+`is_deferrable_tool_name`), so a toolset-deferred tool was stripped from the wire AND then
+refused by the bridge — **unreachable both ways**. Live symptom with `defer_toolsets: [vision]`:
+`tool_call {"name":"vision_analyze"}` → *"'vision_analyze' is a directly-listed tool, not a
+deferred one"*, while calling `vision_analyze` directly → *"Tool 'vision_analyze' does not exist"*.
+
+**Files / commit:** `tools/tool_search.py`, `tests/tools/test_tool_search.py` — commit
+`b0f821b753` (branch `fix/defer-toolsets-bridge-gates`).
+
+**Fix:** thread the FULL `ToolSearchConfig` object through every call-time gate instead of the
+frozenset:
+1. `_deferrable_in()` — new optional `config` param (default `load_config_readonly()`);
+   `dispatch_tool_search` / `dispatch_tool_describe` pass their own `config`.
+2. `dispatch_tool_describe`'s not-deferrable check now uses the function's `config` param.
+3. `scoped_deferrable_names()` and `resolve_underlying_call()` — new optional `config` param,
+   defaulting to the FULL object, so the config-less production callers (`model_tools.py`,
+   `agent/tool_executor.py`, `agent/tool_dispatch_helpers.py`) pick up the fix unchanged.
+
+Genuinely-core tools not named in `defer_toolsets` still hit `not_deferrable_error`; the
+frozenset convention still works for any other caller/test.
+
+**Test:** `tests/tools/test_tool_search.py::TestForkDeferToolsetsBridgeGates` (5 cases:
+resolve_underlying_call, scoped_deferrable_names, dispatch_tool_describe, the default/no-config
+path, and a no-defer_toolsets control). Fail-first verified — 4 of 5 fail on unmodified code,
+all 5 pass after.
+
+**Merge-conflict guidance:** on the next `upstream/main` merge the conflict lands in
+`tools/tool_search.py` around `_deferrable_in` / `dispatch_tool_search` / `dispatch_tool_describe`
+/ `scoped_deferrable_names` / `resolve_underlying_call`. KEEP the fork's full-config threading;
+do NOT revert any of those five gates to `load_config_readonly().effective_defer_tools` — that
+reintroduces the unreachable-both-ways bug. Keep the `config` params on `scoped_deferrable_names`
+and `resolve_underlying_call` (callers pass positionally/none), and keep
+`TestForkDeferToolsetsBridgeGates`.
+
 ### Fix — 2026-10-03 (scratch prune: the once-per-process flag was burned before the stamp check, so long-lived processes never pruned again)
 
 **Problem:** `_prune_scratch_dir_once` (`hermes_constants.py`) set its module global `_scratch_pruned_once = True`
@@ -10378,7 +10418,7 @@ forwarders. The conflict surface on these files is now mostly forwarder lines.
 | `agent/title_generator.py` | +133 / -41 | Title generation fixes, thinking block stripping. |
 | `agent/tool_executor.py` | +129 / -12 | Skill-recall hooks, hermes_load_tools dispatch. (`swarm_run` dispatch this line originally described was retired with `swarm_tool.py` — see 2026-08-18 de-fork audit.) |
 | `hermes_cli/banner.py` | +117 / -107 | Thin forwarders to `fork_banner.py`; git-state plumbing, `_skin_branding`, `_resolve_repo_dir`. |
-| `tools/tool_search.py` | +108 / -11 | Core toolset deferral (`defer_toolsets`/`defer_tools`/`keep_eager_tools`), explicit-intent activation. |
+| `tools/tool_search.py` | +108 / -11 | Core toolset deferral (`defer_toolsets`/`defer_tools`/`keep_eager_tools`), explicit-intent activation. 2026-10-03 (soft-fork): the bridge call-time/scope gates (`_deferrable_in`, `dispatch_tool_describe`, `scoped_deferrable_names`, `resolve_underlying_call`) now resolve the FULL config object so `defer_toolsets` is honored at call time too (was assembly-only → toolset-deferred tools were unreachable both ways). Keep the config threading on upstream merge. |
 | `agent/insights.py` | +101 / -4 | Fork insights (account billing, usage stats). |
 | `hermes_cli/models.py` | +95 / -1 | Provider-client cache fingerprint fix, bare `/model` config provider resolution, `claude-sonnet-5` in model catalog. |
 | `agent/transports/anthropic.py` | +88 / -8 | Transport-level Anthropic wire format adjustments. |
