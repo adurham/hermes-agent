@@ -347,6 +347,103 @@ class TestForkActivationIntent:
         assert not should_activate(cfg, deferrable_tokens=5_000, context_length=200_000)
 
 
+class TestForkDeferToolsetsBridgeGates:
+    """FORK bug: ``defer_toolsets`` was honored by assembly (``classify_tools``) but
+    IGNORED by the bridge call-time / scope gates. A tool deferred only by toolset was
+    thus stripped from the model-visible array AND then refused by the bridge, leaving
+    it reachable neither directly nor via ``tool_call``.
+
+    Root cause: the gates passed ``load_config_readonly().effective_defer_tools`` (a
+    bare frozenset, which by design cannot express a toolset rule) instead of the full
+    ``ToolSearchConfig`` object. The fix threads the config object through
+    ``resolve_underlying_call`` / ``scoped_deferrable_names`` / ``_deferrable_in`` /
+    ``dispatch_tool_describe``; with no explicit config the default resolves the FULL
+    object, so the production callers that pass none pick up the fix too.
+    """
+
+    # ``vision_analyze`` is a core tool (toolsets._HERMES_CORE_TOOLS), so it is NOT
+    # deferrable except through defer_toolsets — the exact shape of the bug.
+    _VISION = {"vision_analyze": "vision"}
+
+    @staticmethod
+    def _patch_registry(monkeypatch, mapping):
+        import tools.registry as _reg
+
+        def _fake_get_entry(name):
+            ts = mapping.get(name)
+            return _FakeEntry(ts) if ts is not None else None
+
+        monkeypatch.setattr(_reg.registry, "get_entry", _fake_get_entry)
+
+    def test_resolve_underlying_call_honors_defer_toolsets(self, monkeypatch):
+        """(a) The call-time bridge gate accepts a toolset-deferred core tool."""
+        from tools.tool_search import (
+            ToolSearchConfig, is_deferrable_tool_name, resolve_underlying_call,
+        )
+        self._patch_registry(monkeypatch, self._VISION)
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["vision"]})
+        assert is_deferrable_tool_name("vision_analyze", cfg) is True
+        name, args, err = resolve_underlying_call(
+            {"name": "vision_analyze", "arguments": {}}, config=cfg)
+        assert (name, args, err) == ("vision_analyze", {}, None)
+
+    def test_scoped_deferrable_names_honors_defer_toolsets(self, monkeypatch):
+        """(b) The executor scope gate admits the toolset-deferred tool."""
+        from tools.tool_search import ToolSearchConfig, scoped_deferrable_names
+        self._patch_registry(monkeypatch, self._VISION)
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["vision"]})
+        defs = [_td("vision_analyze", "Analyze an image."), _td("terminal", "Shell.")]
+        names = scoped_deferrable_names(defs, config=cfg)
+        assert "vision_analyze" in names
+        assert "terminal" not in names  # core tool not named by any defer list stays eager
+
+    def test_dispatch_tool_describe_honors_defer_toolsets(self, monkeypatch):
+        """(c) tool_describe no longer mislabels the tool as 'directly-listed'."""
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        self._patch_registry(monkeypatch, self._VISION)
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["vision"]})
+        defs = [_td("vision_analyze", "Analyze an image.")]
+        result = json.loads(dispatch_tool_describe(
+            {"names": ["vision_analyze"]}, current_tool_defs=defs, config=cfg))
+        assert "errors" not in result, result.get("errors")
+        assert "vision_analyze" in result["tools"]
+
+    def test_default_path_honors_defer_toolsets(self, monkeypatch):
+        """Production callers (model_tools, tool_executor) pass no config; the default
+        path must resolve the FULL config object so defer_toolsets is honored."""
+        from tools import tool_search
+        from tools.tool_search import (
+            ToolSearchConfig, resolve_underlying_call, scoped_deferrable_names,
+        )
+        self._patch_registry(monkeypatch, self._VISION)
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": ["vision"]})
+        monkeypatch.setattr(tool_search, "load_config_readonly", lambda: cfg)
+        defs = [_td("vision_analyze", "Analyze an image.")]
+        assert resolve_underlying_call(
+            {"name": "vision_analyze", "arguments": {}}) == ("vision_analyze", {}, None)
+        assert "vision_analyze" in scoped_deferrable_names(defs)
+
+    def test_default_path_without_defer_toolsets_still_rejects(self, monkeypatch):
+        """(d) Regression: with no defer_toolsets, a core tool stays non-deferrable
+        through every gate — the fix must not open the door for genuinely-core tools."""
+        from tools import tool_search
+        from tools.tool_search import (
+            ToolSearchConfig, dispatch_tool_describe, is_deferrable_tool_name,
+            resolve_underlying_call, scoped_deferrable_names,
+        )
+        self._patch_registry(monkeypatch, self._VISION)
+        cfg = ToolSearchConfig.from_raw({"defer_toolsets": []})
+        monkeypatch.setattr(tool_search, "load_config_readonly", lambda: cfg)
+        defs = [_td("vision_analyze", "Analyze an image.")]
+        assert is_deferrable_tool_name("vision_analyze", cfg) is False
+        _, _, err = resolve_underlying_call({"name": "vision_analyze", "arguments": {}})
+        assert err is not None
+        assert "vision_analyze" not in scoped_deferrable_names(defs)
+        result = json.loads(dispatch_tool_describe(
+            {"names": ["vision_analyze"]}, current_tool_defs=defs))
+        assert "vision_analyze" in result.get("errors", {})
+
+
 # ---------------------------------------------------------------------------
 # Token estimation + threshold gate
 # ---------------------------------------------------------------------------
