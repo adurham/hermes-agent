@@ -563,8 +563,9 @@ def cmd_install(
     if no_deps:
         console.print("[dim]--no-deps: skipping dependency consent; the plugin stays disabled.[/dim]")
     # A memory provider activates through memory.provider alone; the loader never reads plugins.enabled.
+    # Decide from the installed tree: catalog category "memory" also holds hooks, context engines and skills.
     from plugins.memory import _is_memory_provider_dir
-    is_memory_provider = (entry.category == "memory") if entry is not None else _is_memory_provider_dir(target)
+    is_memory_provider = _is_memory_provider_dir(target)
     if should_enable is None and not already_active:
         should_enable = _pc()._is_tty() and _pc()._ask_yes(
             f"  Use '{installed_name}' as the memory provider now? [y/N]: " if is_memory_provider
@@ -636,15 +637,22 @@ def _select_memory_provider(name: str, console, *, select: bool) -> None:
             f"(or set memory.provider: {name}) to use it.[/dim]")
         return
     from hermes_cli.memory_setup import prepare_memory_provider_dependencies
+    from plugins.memory import find_provider_dir
+    if find_provider_dir(name) is None:  # never save a provider name the loader cannot resolve
+        console.print(f"[red]✗[/red] {name} does not resolve as a memory provider; memory.provider is unchanged.")
+        return
     try:
         prepare_memory_provider_dependencies(name)
     except Exception as exc:  # resolver conflict, network, PM refusal: report, leave the selection alone
+        logger.debug("memory provider %s dependency preparation failed", name, exc_info=True)
         console.print(f"[red]✗[/red] Could not prepare {name}'s dependencies: {exc}")
         console.print("[dim]memory.provider is unchanged; run `hermes memory setup` after resolving it.[/dim]")
         return
+    previous = _pc()._get_current_memory_provider()
     _pc()._save_memory_provider(name)
     console.print(
-        f"[green]✓[/green] [bold]{name}[/bold] set as memory.provider. "
+        f"[green]✓[/green] [bold]{name}[/bold] set as memory.provider"
+        f"{f' (replacing {previous})' if previous and previous != name else ''}. "
         f"Run `hermes memory setup {name}` to configure it; new sessions use it.")
 
 

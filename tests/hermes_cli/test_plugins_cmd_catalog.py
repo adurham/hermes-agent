@@ -332,14 +332,17 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
 
 
-@pytest.mark.parametrize("enable", [True, False])
-def test_memory_category_install_activates_via_memory_provider_not_plugins_enable(world, monkeypatch, enable):
-    """A category:memory install activates through memory.provider alone — the loader never consults
+@pytest.mark.parametrize("provider,enable", [(True, True), (True, False), (False, True)])
+def test_memory_category_install_activates_via_memory_provider_not_plugins_enable(world, monkeypatch,
+                                                                                  provider, enable):
+    """A memory provider activates through memory.provider alone — the loader never consults
     plugins.enabled — so "Enable now?" must select the provider, and a decline must point at
-    `hermes memory setup`, never at the dead-end `plugins enable` hint."""
+    `hermes memory setup`, never at the dead-end `plugins enable` hint. Catalog category "memory" also
+    holds hook plugins: those enable normally and leave the user's memory.provider alone."""
     repo = world["repo"]
-    (repo / "__init__.py").write_text("def register_memory_provider(ctx):\n    pass\n")
-    world["state"]["pin"] = _commit(repo, "memory provider contract")
+    (repo / "__init__.py").write_text("def register_memory_provider(ctx):\n    pass\n" if provider
+                                      else "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n")
+    world["state"]["pin"] = _commit(repo, "memory category plugin")
 
     def _memory_entries():
         return [pc_cat.PluginCatalogEntry(name="cat-plugin", repo=repo.as_uri(), sha=world["state"]["pin"],
@@ -354,6 +357,11 @@ def test_memory_category_install_activates_via_memory_provider_not_plugins_enabl
     monkeypatch.setattr(pc, "_console",
                         lambda: type("C", (), {"print": staticmethod(_capture)})())
 
+    if not provider:
+        pc._save_memory_provider("honcho")
+        pc.cmd_install("cat-plugin", enable=enable)
+        assert (pc._get_current_memory_provider(), pc._get_enabled_set()) == ("honcho", {"cat-plugin"})
+        return
     pc.cmd_install("cat-plugin", enable=enable)
     assert pc._get_current_memory_provider() == ("cat-plugin" if enable else "")
     assert pc._get_enabled_set() == set()
