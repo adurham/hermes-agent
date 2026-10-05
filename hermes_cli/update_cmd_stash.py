@@ -492,7 +492,11 @@ def _restore_stashed_changes(
     syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(cwd, restored_python)
     if not syntax_ok:
         reject(failing_path or "restored Python source", syntax_error)
-    for module, error in _critical_module_import_failures(cwd, report_runtime_errors=True).items():
+    # Only restored Python can be blamed for an import failure. Probe outcomes also move with
+    # install state between the two runs (launch preparation, dependency sync), so a restore
+    # that touched no Python source must not be rejected on that difference (#130101).
+    for module, error in (_critical_module_import_failures(cwd, report_runtime_errors=True).items()
+                          if restored_python else ()):
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break
