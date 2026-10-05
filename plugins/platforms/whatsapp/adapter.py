@@ -267,12 +267,14 @@ def check_whatsapp_requirements() -> bool:
 def _import_aiohttp():
     import aiohttp
     if not hasattr(aiohttp, "ClientSession"):  # half-removed install leaves a namespace shell (#71308)
-        raise ImportError(f"aiohttp at {list(aiohttp.__path__)} is an incomplete install")
+        where = getattr(aiohttp, "__file__", None) or list(getattr(aiohttp, "__path__", ()))  # a plain aiohttp.py has no __path__
+        raise ImportError(f"aiohttp at {where} is an incomplete install")
     return aiohttp
 
 
-def ensure_aiohttp() -> Optional[str]:
-    """None once aiohttp imports (PM installs the ``sms`` extra, which is exactly aiohttp, when it is missing), else why not.
+def ensure_aiohttp() -> Optional[tuple[str, bool]]:
+    """None once aiohttp imports (PM installs the ``sms`` extra, which is exactly aiohttp, when it is missing), else
+    (why not, retryable).
 
     Every bridge call imports aiohttp; a sealed env without it used to fail each /health poll silently and loop
     forever on "did not start in 15s" while the bridge was healthy (#126358).
@@ -282,15 +284,28 @@ def ensure_aiohttp() -> Optional[str]:
         return None
     except ImportError as exc:
         if not isinstance(exc, ModuleNotFoundError):
-            return str(exc)  # present but broken: PM sees it as installed, reinstalling is the user's call
-    try:
-        from pm.extras import ensure_import
+            return str(exc), False  # present but broken: PM sees it as installed, reinstalling is the user's call
+    from pm.environments import running_from_selected_environment
+    from pm.environments_adopt import restart_needed
+    from pm.extras import ensure_import
+    from pm.install import lazy_installs_allowed
+    from pm.paths import repo_root
 
+    # Read before the sync moves the selection. A foreign interpreter (dev venv, Nix) can never lazy-install; one an
+    # update left on an older generation can after a restart.
+    root = repo_root()
+    installable = lazy_installs_allowed() and (running_from_selected_environment(root) or restart_needed(root) is not None)
+    try:
         ensure_import("sms")
+    except (RuntimeError, OSError, ValueError) as exc:  # InstallError/DownloadError; anything else escapes as transient
+        # Only policy or a foreign interpreter is final. A busy dependency lock, a failed download and "installed;
+        # restart Hermes to activate it" stay retryable: as final errors they exit the gateway 78 and keep it down.
+        return str(exc) or type(exc).__name__, installable
+    try:
         _import_aiohttp()
         return None
-    except Exception as exc:
-        return str(exc) or type(exc).__name__
+    except ImportError as exc:
+        return f"{exc} after installing the sms extra", False
 
 
 # Env vars bridge.js consumes; injected because a multiplexed subprocess's os.environ lacks the secondary profile's .env.
@@ -558,7 +573,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     def _preflight(self) -> bool:
-        """Node + bridge script + creds.json present, else a non-retryable fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
+        """Node + bridge script + creds.json + aiohttp present, else a named fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
         checks = (
@@ -575,6 +590,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 logger.warning(*warn_args)
                 self._set_fatal_error(code, message, retryable=False)
                 return False
+        if (missing := ensure_aiohttp()) is not None:  # may install it: connect runs this off the event loop
+            why, retryable = missing
+            message = (f"aiohttp is unavailable ({why}); the WhatsApp bridge client needs it. "
+                       "Run `hermes pm install --extra sms` (it ships aiohttp; `hermes pm repair` for a damaged install), "
+                       "then restart `hermes gateway`.")
+            logger.warning("[%s] %s", self.name, message)
+            self._set_fatal_error("whatsapp_aiohttp_missing", message, retryable=retryable)
+            return False
         logger.info("[%s] Bridge found at %s", self.name, bridge_path)
         return True
 
@@ -601,14 +624,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     f"{exc}. Set platforms.whatsapp.extra.bridge_port to a distinct free port; "
                     "or stop the process holding it.", retryable=False)
                 return False
-        if not self._preflight():
-            return False
-        if (why := await asyncio.to_thread(ensure_aiohttp)) is not None:
-            message = (f"aiohttp is unavailable ({why}); the WhatsApp bridge client needs it. "
-                       "Run `hermes pm install --extra sms` (it ships aiohttp; `hermes pm repair` for a damaged install), "
-                       "then restart `hermes gateway`.")
-            logger.warning("[%s] %s", self.name, message)
-            self._set_fatal_error("whatsapp_aiohttp_missing", message, retryable=False)
+        if not await asyncio.to_thread(self._preflight):
             return False
         bridge_path = Path(self._bridge_script)
         lock_acquired = False
