@@ -591,31 +591,28 @@ class PluginDispatchMixin:
     def invoke_middleware(
         self, kind: str, *, _payload_key: Optional[str] = None, **kwargs: Any
     ) -> List[Any]:
-        """Dispatch middleware; request rewrites compose only after a valid return.
+        """Call middleware callbacks for *kind* (each isolated); return non-``None`` results.
 
-        Request callbacks receive a copy of the last accepted payload, so a
-        failing/observer callback cannot mutate an earlier accepted rewrite.
-        Each callback also receives its own pre-middleware snapshot.
+        Request middleware passes ``_payload_key``: a dict returned under it becomes the payload the
+        next callback sees, so rewrites compose, and each callback gets its own copy of the payload and
+        of ``original_<key>`` so an in-place edit cannot leak.
         """
         from hermes_cli.middleware import _safe_copy
 
-        copy_keys = {"original_request", "original_args"}
-        if _payload_key is not None:
-            copy_keys.add(_payload_key)
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
+            call_kwargs = kwargs
+            if _payload_key:
+                original_key = "original_" + _payload_key
+                call_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key]),
+                               original_key: _safe_copy(kwargs[original_key])}
             try:
-                callback_kwargs = {
-                    key: _safe_copy(value) if key in copy_keys else value
-                    for key, value in kwargs.items()
-                }
-                ret = cb(**callback_kwargs)
+                ret = cb(**call_kwargs)
                 if ret is not None:
-                    if (_payload_key is not None and isinstance(ret, dict)
-                            and isinstance(ret.get(_payload_key), dict)):
-                        ret = {**ret, _payload_key: _safe_copy(ret[_payload_key])}
-                        kwargs[_payload_key] = ret[_payload_key]
                     results.append(ret)
+                    if _payload_key and isinstance(ret, dict) and isinstance(ret.get(_payload_key), dict):
+                        kwargs[_payload_key] = ret[_payload_key]
             except (Exception, SystemExit) as exc:
+                # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
         return results
