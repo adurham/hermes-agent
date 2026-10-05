@@ -264,12 +264,33 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
-def _aiohttp_available() -> bool:
+def _import_aiohttp():
+    import aiohttp
+    if not hasattr(aiohttp, "ClientSession"):  # half-removed install leaves a namespace shell (#71308)
+        raise ImportError(f"aiohttp at {list(aiohttp.__path__)} is an incomplete install")
+    return aiohttp
+
+
+def ensure_aiohttp() -> Optional[str]:
+    """None once aiohttp imports (PM installs the ``sms`` extra, which is exactly aiohttp, when it is missing), else why not.
+
+    Every bridge call imports aiohttp; a sealed env without it used to fail each /health poll silently and loop
+    forever on "did not start in 15s" while the bridge was healthy (#126358).
+    """
     try:
-        import aiohttp  # noqa: F401
-        return True
-    except ImportError:
-        return False
+        _import_aiohttp()
+        return None
+    except ImportError as exc:
+        if not isinstance(exc, ModuleNotFoundError):
+            return str(exc)  # present but broken: PM sees it as installed, reinstalling is the user's call
+    try:
+        from pm.extras import ensure_import
+
+        ensure_import("sms")
+        _import_aiohttp()
+        return None
+    except Exception as exc:
+        return str(exc) or type(exc).__name__
 
 
 # Env vars bridge.js consumes; injected because a multiplexed subprocess's os.environ lacks the secondary profile's .env.
@@ -489,10 +510,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
         return bridge_env
 
-    def _bridge_died(self, detail: str) -> bool:
+    def _bridge_died(self, detail: str, code: str = "whatsapp_bridge_exited") -> bool:
         print(f"[{self.name}] {detail}")
         print(f"[{self.name}] Check log: {self._bridge_log}")
         self._close_bridge_log()
+        # Named so the reconnect status and connect telemetry say why instead of an unclassified failure.
+        self._set_fatal_error(code, f"{detail} (see {self._bridge_log})", retryable=True)
         return False
 
     async def _poll_bridge_health(self, died_msg: str) -> tuple[Optional[bool], bool, dict]:
@@ -522,7 +545,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if connected is False:
             return False
         if not http_ready:
-            return self._bridge_died("Bridge HTTP server did not start in 15s")
+            return self._bridge_died("Bridge HTTP server did not start in 15s", "whatsapp_bridge_timeout")
         if data.get("status") != "connected":
             print(f"[{self.name}] Bridge HTTP ready, waiting for WhatsApp connection...")
             connected, _, _ = await self._poll_bridge_health("Bridge process died during connection")
@@ -535,18 +558,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     def _preflight(self) -> bool:
-        """Node + aiohttp + bridge script + creds.json present, else a non-retryable fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
+        """Node + bridge script + creds.json present, else a non-retryable fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
         checks = (
             (check_whatsapp_requirements, ("[%s] Node.js not found. WhatsApp requires Node.js.", self.name),
              "whatsapp_node_missing", "Node.js is not installed — install Node.js and re-run `hermes gateway`."),
-            # Every bridge health poll imports aiohttp; a sealed env that shipped a partial messaging extra
-            # used to swallow the ModuleNotFoundError and loop forever on "did not start in 15s" (#126358).
-            (_aiohttp_available, ("[%s] aiohttp not installed — the WhatsApp bridge health probe needs it.", self.name),
-             "whatsapp_aiohttp_missing",
-             "aiohttp is not installed — the WhatsApp bridge health probe needs it. "
-             "Run `hermes update` (or `uv pip install \"aiohttp==3.14.3\"`), then restart `hermes gateway`."),
             (bridge_path.exists, ("[%s] Bridge script not found: %s", self.name, bridge_path),
              "whatsapp_bridge_missing", f"WhatsApp bridge script missing at {bridge_path}."),
             (creds_path.exists, ("[%s] WhatsApp is enabled but not paired (no creds.json at %s). Pair from the dashboard or run "
@@ -585,6 +602,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "or stop the process holding it.", retryable=False)
                 return False
         if not self._preflight():
+            return False
+        if (why := await asyncio.to_thread(ensure_aiohttp)) is not None:
+            message = (f"aiohttp is unavailable ({why}); the WhatsApp bridge client needs it. "
+                       "Run `hermes pm install --extra sms` (it ships aiohttp; `hermes pm repair` for a damaged install), "
+                       "then restart `hermes gateway`.")
+            logger.warning("[%s] %s", self.name, message)
+            self._set_fatal_error("whatsapp_aiohttp_missing", message, retryable=False)
             return False
         bridge_path = Path(self._bridge_script)
         lock_acquired = False
