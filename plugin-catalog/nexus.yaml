@@ -1,6 +1,6 @@
 name: nexus
 repo: https://github.com/Neboy72/nexus-memory
-sha: 3be00e534c3a16e22e58b5e3f380df5f688ac65d
+sha: bffedaaf0f947fdcb5c4df0ec577e3d389c8c25e
 subdir: plugins/memory/nexus
 version: "0.22.12"
 description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Runs fully local with Ollama or sentence-transformers embeddings; cloud embedders (Voyage, OpenAI, Google, Jina) are opt-in via their own API keys, and query rewriting plus paid consolidation stations stay off until enabled. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. See the README for the complete list of network paths."
@@ -8,8 +8,8 @@ maintainer: Neboy72
 tier: community
 category: memory
 requires_hermes: ">=0.19"
-docs_url: https://github.com/Neboy72/nexus-memory/blob/3be00e534c3a16e22e58b5e3f380df5f688ac65d/plugins/memory/nexus/README.md
-image: https://raw.githubusercontent.com/Neboy72/nexus-memory/3be00e534c3a16e22e58b5e3f380df5f688ac65d/docs/images/nexus-logo-square.png
+docs_url: https://github.com/Neboy72/nexus-memory/blob/bffedaaf0f947fdcb5c4df0ec577e3d389c8c25e/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/bffedaaf0f947fdcb5c4df0ec577e3d389c8c25e/docs/images/nexus-logo-square.png
 capabilities:
   provides_tools:
     - nexus_recall
