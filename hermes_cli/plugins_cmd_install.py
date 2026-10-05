@@ -594,7 +594,9 @@ def cmd_install(
         )
         should_enable = False
 
-    if already_active:
+    # already_active is PM's selection (plugins.enabled): it settles dependency consent, not memory.provider.
+    # An explicit --enable still selects the provider, repairing installs that listed it in plugins.enabled.
+    if already_active and not (is_memory_provider and enable):
         console.print("[dim]Replacement installed; plugin selection was not changed.[/dim]")
     elif is_memory_provider:
         _select_memory_provider(target.name, console, select=should_enable)
@@ -648,6 +650,18 @@ def _select_memory_provider(name: str, console, *, select: bool) -> None:
         console.print(f"[red]✗[/red] Could not prepare {name}'s dependencies: {exc}")
         console.print("[dim]memory.provider is unchanged; run `hermes memory setup` after resolving it.[/dim]")
         return
+    # The loader refuses a provider parked in plugins.disabled; lift that through the same admission transaction.
+    from hermes_cli.plugins_admission import AdmissionRefused
+    expected_config = _pc()._plugin_selection_version()
+    disabled, aliases = _pc()._get_disabled_set(), _pc()._plugin_aliases(name)
+    if disabled & aliases:
+        try:
+            _pc()._admit_and_save_plugin_sets(_pc()._get_enabled_set(), disabled - aliases,
+                                              console=console, action=f"Re-enable '{name}'",
+                                              expected_config=expected_config)
+        except AdmissionRefused:
+            console.print("[dim]memory.provider is unchanged.[/dim]")
+            return
     previous = _pc()._get_current_memory_provider()
     _pc()._save_memory_provider(name)
     console.print(

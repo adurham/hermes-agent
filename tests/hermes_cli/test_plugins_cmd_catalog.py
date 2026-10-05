@@ -369,9 +369,15 @@ def test_memory_category_install_activates_via_memory_provider_not_plugins_enabl
     assert not any("plugins enable cat-plugin" in line for line in printed)
 
 
-def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_path, monkeypatch):
+@pytest.mark.parametrize("prior", [None, "disabled", "enabled"])
+def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_path, monkeypatch, prior):
     """A URL (non-catalog) install whose tree satisfies the memory-provider contract gets the same
-    provider activation path — the catalog category is a shortcut, not the only trigger."""
+    provider activation path — the catalog category is a shortcut, not the only trigger. An explicit
+    --enable must leave the provider loadable: a plugins.disabled entry would make the loader refuse it,
+    and a reinstall must repair the old state that listed the provider in plugins.enabled instead."""
+    from hermes_cli.config import load_config, save_config
+    from plugins.memory import _explicitly_disabled, find_provider_dir
+
     repo = tmp_path / "mem-repo"
     repo.mkdir()
     (repo / "plugin.yaml").write_text("name: mem-plugin\nversion: 1.0.0\ndescription: d\n")
@@ -387,9 +393,16 @@ def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_
     monkeypatch.setattr(pc, "_console",
                         lambda: type("C", (), {"print": staticmethod(_capture)})())
 
-    pc.cmd_install(repo.as_uri(), enable=True)
+    if prior == "enabled":
+        pc.cmd_install(repo.as_uri(), enable=False)
+    if prior:
+        cfg = load_config()
+        cfg.setdefault("plugins", {})[prior] = ["mem-plugin"]
+        save_config(cfg)
+    pc.cmd_install(repo.as_uri(), enable=True, force=prior == "enabled")
     assert pc._get_current_memory_provider() == "mem-plugin"
-    assert pc._get_enabled_set() == set()
+    assert pc._get_enabled_set() == ({"mem-plugin"} if prior == "enabled" else set())
+    assert not _explicitly_disabled("mem-plugin", find_provider_dir("mem-plugin"))
     assert any("memory.provider" in line for line in printed)
 
 
