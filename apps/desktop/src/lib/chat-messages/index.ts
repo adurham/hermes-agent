@@ -12,6 +12,7 @@ export {
   isAttachmentPart,
   mergeFinalAssistantText,
   normalizeWs,
+  partsText,
   reasoningPart,
   reasoningTextFromDetails,
   textPart,

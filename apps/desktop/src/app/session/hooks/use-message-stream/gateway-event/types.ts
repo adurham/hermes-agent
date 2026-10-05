@@ -29,7 +29,8 @@ export interface GatewayEventDeps {
     persistedTurn?: PersistedTurn | null,
     responseTransformed?: boolean,
     status?: string,
-    attachments?: MediaAttachment[] | null
+    attachments?: MediaAttachment[] | null,
+    responseReused?: boolean
   ) => void
   failAssistantMessage: (
     sessionId: string,
