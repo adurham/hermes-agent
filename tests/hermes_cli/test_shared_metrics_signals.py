@@ -345,6 +345,70 @@ def test_cancel_or_lapsed_code_is_never_a_failure_and_poller_errors_keep_their_c
     ]
 
 
+def _wire(status, body):
+    """A real httpx client whose every POST gets one canned response (JSON dict, else raw text)."""
+    import httpx
+
+    def reply(request):
+        if isinstance(body, Exception):
+            raise body
+        return httpx.Response(status, request=request, **({"json": body} if isinstance(body, dict) else {"text": body}))
+
+    return httpx.Client(transport=httpx.MockTransport(reply))
+
+
+def _poll(provider, status, body):
+    """The real device-code poll loop on a fake clock (each sleep advances it)."""
+    def run(monkeypatch):
+        from hermes_cli import auth_device_flow
+        from hermes_cli.auth_xai import _xai_oauth_poll_device_token
+
+        clock = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + max(s, 1)))
+        monkeypatch.setattr(auth_device_flow, "time", fake_time)
+        if provider == "nous":
+            return auth_device_flow._poll_for_token(_wire(status, body), "https://p", "c", "d", 30, 1)
+        return _xai_oauth_poll_device_token(
+            _wire(status, body), token_endpoint="https://x/token", device_code="d", expires_in=30, poll_interval=1)
+    return run
+
+
+def _codex_start(status, body):
+    """The dashboard start route: the worker thread's failure crosses into an HTTPException."""
+    def run(monkeypatch):
+        import asyncio
+
+        import hermes_cli.web_routers.oauth as routes
+
+        client = _wire(status, body)
+        monkeypatch.setattr(routes, "_codex_post", lambda _httpx, url, **kw: client.post(url, **kw))
+        asyncio.run(routes._start_codex_device_code(None))
+    return run
+
+
+@pytest.mark.parametrize("producer, ending", [
+    (_poll("nous", 400, {"error": "authorization_pending"}), ("abandoned", "none")),  # code left unapproved
+    (_poll("nous", 503, "<html>503 unavailable</html>"), ("failed", "network")),  # outage until it ran out
+    (_poll("xai", 400, {"error": "access_denied"}), ("abandoned", "none")),  # consent declined
+    (_poll("xai", 400, {"error": "expired_token"}), ("abandoned", "none")),  # the server let the code lapse
+    (_poll("xai", 400, {"error": "invalid_client"}), ("failed", "auth")),
+    (_codex_start(401, {"error": "invalid_client"}), ("failed", "auth")),
+    (_codex_start(0, ConnectionRefusedError("down")), ("failed", "network")),
+], ids=["nous-pending", "nous-503", "xai-denied", "xai-expired", "xai-refused", "codex-401", "codex-down"])
+def test_wire_failures_keep_the_producers_class_to_the_recorded_end(marks, monkeypatch, producer, ending):
+    """Real poll loops / start route against wire responses: a lapse or a decline is a walk-away, an
+    outage or a refusal stays a failure, across the worker -> HTTPException boundary too."""
+    import asyncio
+
+    import hermes_cli.web_routers.oauth as routes
+
+    monkeypatch.setattr(setup_metrics, "web_setup_surface", lambda: "desktop")
+    flow = setup_metrics.begin_oauth_setup("nous", None)
+    with pytest.raises(Exception) as ended:
+        producer(monkeypatch)
+    asyncio.run(routes._end_oauth_setup_metric(flow, ended.value))
+    assert [r[2:] for r in _setup_rows(marks.rows)] == [("started", "none"), ending]
+
 def test_pending_oauth_session_does_not_settle(marks, monkeypatch):
     monkeypatch.setattr(setup_metrics, "web_setup_surface", lambda: "dashboard")
     sess = {"status": "pending"}

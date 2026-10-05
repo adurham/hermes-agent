@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
+from hermes_cli.auth_constants import _codex_err
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_oauth import (
     _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
@@ -215,8 +216,8 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
         httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
         headers=_JSON_HEADERS,
     )
-    if resp.status_code != 200:
-        raise RuntimeError(_codex_device_code_start_error(resp))
+    if resp.status_code != 200:  # a 401/403 is OpenAI refusing this account/client
+        raise (_codex_err if resp.status_code in {401, 403} else RuntimeError)(_codex_device_code_start_error(resp))
     device_data = resp.json()
     device_data["interval"] = max(3, int(device_data.get("interval", "5")))
     if not device_data.get("user_code") or not device_data.get("device_auth_id"):
@@ -279,7 +280,8 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     if token_resp.status_code != 200:
-        raise RuntimeError(f"token exchange returned {token_resp.status_code}")
+        raise (_codex_err if token_resp.status_code in {401, 403} else RuntimeError)(
+            f"token exchange returned {token_resp.status_code}")
     tokens = token_resp.json()
     if not tokens.get("access_token"):
         raise RuntimeError("token exchange did not return access_token")
@@ -517,7 +519,10 @@ async def _start_codex_device_code(profile: Optional[str]) -> Dict[str, Any]:
     with _oauth_sessions_lock:
         s = _oauth_sessions.get(sid, {})
     if s.get("status") == "error":
-        raise HTTPException(status_code=500, detail=s.get("error_message") or "device-auth failed")
+        from hermes_cli.observability.shared_metrics_setup import _OAUTH_FAILURE_KEY
+        err = HTTPException(status_code=500, detail=s.get("error_message") or "device-auth failed")
+        err.setup_failure_class = s.get(_OAUTH_FAILURE_KEY) or "other"  # the worker's class, not "500"
+        raise err
     if not s.get("user_code"):
         raise HTTPException(status_code=504, detail="device-auth timed out before returning a user code")
     return {

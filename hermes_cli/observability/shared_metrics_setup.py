@@ -114,13 +114,16 @@ def setup_failure_class(exc: BaseException) -> str:
     from hermes_cli.auth_error_copy import is_cancelled, is_device_code_expired, is_network_error
 
     names = {cls.__name__ for cls in type(exc).__mro__}
+    if isinstance(getattr(exc, "setup_failure_class", None), str):  # classified where it was raised
+        return exc.setup_failure_class
     # Esc in the setup menus, or consent declined on the provider's page.
     if is_cancelled(exc) or "_SetupCancelled" in names or getattr(exc, "oauth_error_code", "") == "access_denied":
         return "cancelled"
-    if is_device_code_expired(exc):
-        return "expired"
+    # Before the expiry check: a code that ran out while the service kept failing is an outage.
     if is_network_error(exc) or (exc.__cause__ is not None and is_network_error(exc.__cause__)):
         return "network"
+    if is_device_code_expired(exc):
+        return "expired"
     if names & _AUTH_ERROR_TYPES:
         return "auth"
     return "other"
