@@ -378,9 +378,8 @@ class TestClassicCliPromptsFireGatewayTwinHooks:
             approval_module.unregister_gateway_notify(isolated_session)
         assert result == approved
 
-        # Classic CLI: the panel callback (protected write) or stdin (consent) answers "once".
+        # Classic CLI: the prompt_toolkit panel callback registered on the agent thread answers "once".
         monkeypatch.delenv("HERMES_GATEWAY_SESSION")
-        monkeypatch.setattr("builtins.input", lambda _prompt="": "o")
         set_approval_callback(lambda *_a, **_kw: "once")
         try:
             result, cli_hooks = _capture_hooks(run)
