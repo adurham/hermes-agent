@@ -61,7 +61,7 @@ def test_fallen_back_route_names_main_for_micro_and_never_rides_into_a_pin():
 
     assert (captured.get("model"), captured.get("provider")) == ("main-model", "main-provider")
 
-    # A stall-fallback pin replaces the whole route: the main key never reaches another host.
+    # A KEYLESS stall-fallback pin (local server) replaces the whole route: the main key never rides along.
     pin = {"provider": "custom", "model": "llama3", "base_url": "http://other-host:8080/v1", "api_key": None}
     with patch("agent.context_compressor.call_llm", side_effect=_capture), pin_summary_route(pin):
         compressor._call_summary_llm("prompt", 0.0)
@@ -69,3 +69,4 @@ def test_fallen_back_route_names_main_for_micro_and_never_rides_into_a_pin():
     assert {k: captured.get(k) for k in ("provider", "model", "base_url", "api_key")} == {
         "provider": "custom", "model": "llama3", "base_url": "http://other-host:8080/v1", "api_key": None,
     }
+    assert "sk-MAIN-SECRET" not in repr({k: v for k, v in captured.items() if k != "main_runtime"})

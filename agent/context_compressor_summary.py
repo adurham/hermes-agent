@@ -37,6 +37,9 @@ class SummaryDispatchMixin:
         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
         """
         if pinned:
+            # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
+            for key in ("provider", "model", "base_url", "api_key", "api_mode"):
+                call_kwargs.pop(key, None)
             call_kwargs.update(pinned)
             return
         if self.summary_model:
