@@ -234,9 +234,9 @@ def test_cli_flow_classifies_landed_backed_out_failed_and_raised(marks, monkeypa
             pass
     ends = [r for r in _setup_rows(marks.rows) if r[2] != "started"]
     assert ends == [
-        ("cli_setup", "anthropic", "completed", "none"), ("cli_setup", "anthropic", "failed", "cancelled"),
+        ("cli_setup", "anthropic", "completed", "none"), ("cli_setup", "anthropic", "abandoned", "none"),
         ("cli_setup", "nous", "failed", "no_models"), ("cli_setup", "gemini", "completed", "none"),
-        ("cli_setup", "xai", "failed", "cancelled"), ("cli_setup", "xai", "failed", "network"),
+        ("cli_setup", "xai", "abandoned", "none"), ("cli_setup", "xai", "failed", "network"),
     ]
     setup_metrics.note_provider_setup_saved()  # outside a flow: inert
 
@@ -267,11 +267,11 @@ def test_cli_setup_navigation_esc_cancels_and_back_resumes_one_flow(marks, monke
     with setup_metrics.provider_setup_surface("cli_setup"):
         pass  # ...and leaving the entry point without resuming it ends it
     assert _setup_rows(marks.rows) == [
-        ("cli_model", "xai", "started", "none"), ("cli_model", "xai", "failed", "cancelled"),
+        ("cli_model", "xai", "started", "none"), ("cli_model", "xai", "abandoned", "none"),
         ("cli_model", "anthropic", "started", "none"), ("cli_model", "anthropic", "completed", "none"),
-        ("cli_model", "nous", "started", "none"), ("cli_model", "nous", "failed", "cancelled"),
+        ("cli_model", "nous", "started", "none"), ("cli_model", "nous", "abandoned", "none"),
         ("cli_model", "gemini", "started", "none"), ("cli_model", "gemini", "completed", "none"),
-        ("cli_setup", "xai", "started", "none"), ("cli_setup", "xai", "failed", "cancelled"),
+        ("cli_setup", "xai", "started", "none"), ("cli_setup", "xai", "abandoned", "none"),
     ]
 
 
@@ -280,8 +280,9 @@ def test_cli_setup_navigation_esc_cancels_and_back_resumes_one_flow(marks, monke
     ({"status": "expired"}, ("abandoned", "none")),
     ({"status": "error", "reason": "timeout"}, ("abandoned", "none")),
     ({"status": "denied"}, ("failed", "auth")),
-    ({"status": "denied", "reason": "user_declined"}, ("failed", "cancelled")),
-    ({"status": "pending", "cancelled": True}, ("failed", "cancelled")),
+    ({"status": "denied", "reason": "user_declined"}, ("abandoned", "none")),
+    ({"status": "pending", "cancelled": True}, ("abandoned", "none")),
+    ({"status": "error", "reason": "anon_unreachable"}, ("failed", "network")),
 ])
 def test_oauth_session_endings(marks, monkeypatch, sess, ending):
     monkeypatch.setattr(setup_metrics, "web_setup_surface", lambda: "desktop")
@@ -290,6 +291,58 @@ def test_oauth_session_endings(marks, monkeypatch, sess, ending):
     setup_metrics.settle_oauth_setup(sess)
     setup_metrics.settle_oauth_setup(sess)
     assert [r[2:] for r in _setup_rows(marks.rows)] == [("started", "none"), ending]
+
+
+def test_cancel_or_lapsed_code_is_never_a_failure_and_poller_errors_keep_their_class(marks, monkeypatch):
+    """A user cancel / a sign-in code left to run out is ``abandoned`` on every surface; a dashboard
+    poller's exception keeps its closed class instead of the bare session ``error`` -> ``other``."""
+    import httpx
+
+    from hermes_cli.auth_constants import _codex_err, _xai_err
+    from hermes_cli.auth_device_flow import _poll_for_token
+    from hermes_cli.auth_error_copy import device_flow_error
+    from hermes_cli.web_server_oauth import _oauth_poller, _oauth_sessions
+
+    monkeypatch.setattr(setup_metrics, "web_setup_surface", lambda: "desktop")
+    with setup_metrics.provider_setup_surface("cli_model"):  # CLI: Ctrl-C mid sign-in
+        with pytest.raises(KeyboardInterrupt), setup_metrics.cli_provider_setup("nous"):
+            raise KeyboardInterrupt
+    flow = setup_metrics.begin_oauth_setup("openai-codex", None)  # web start route: cancelled pre-response
+    setup_metrics.finish_provider_setup(flow, "failed", setup_metrics.setup_failure_class(KeyboardInterrupt()))
+
+    class Pending:  # the real Nous poll loop running out of time on authorization_pending
+        status_code = 400
+
+        def json(self):
+            return {"error": "authorization_pending"}
+
+    with pytest.raises(TimeoutError) as lapsed:
+        _poll_for_token(SimpleNamespace(post=lambda *a, **k: Pending()), "https://p", "c", "d", 0, 1)
+    dropped = _xai_err("xAI OIDC discovery failed", "xai_discovery_failed")
+    dropped.__cause__ = httpx.ConnectError("down")
+    for provider, exc in [
+        ("nous", lapsed.value), ("xai-oauth", _xai_err("Timed out", "device_code_timeout")),
+        ("openai-codex", _codex_err("Login timed out after 15 minutes.", "device_code_timeout")),
+        ("nous", device_flow_error("access_denied", "declined")), ("xai-oauth", dropped),
+        ("nous", device_flow_error("invalid_client", "nope")),
+    ]:
+        sess = {"status": "pending", "profile": None}
+        _oauth_sessions["probe"] = sess
+        setup_metrics.attach_oauth_setup(sess, setup_metrics.begin_oauth_setup(provider, None))
+
+        @_oauth_poller(provider)
+        def poller(_sid, _sess, exc=exc):
+            raise exc
+
+        poller("probe")
+        setup_metrics.settle_oauth_setup(sess)
+    _oauth_sessions.pop("probe", None)
+    assert [r for r in _setup_rows(marks.rows) if r[2] != "started"] == [
+        ("cli_model", "nous", "abandoned", "none"), ("desktop", "openai-codex", "abandoned", "none"),
+        ("desktop", "nous", "abandoned", "none"), ("desktop", "xai-oauth", "abandoned", "none"),
+        ("desktop", "openai-codex", "abandoned", "none"), ("desktop", "nous", "abandoned", "none"),
+        ("desktop", "xai-oauth", "failed", "network"), ("desktop", "nous", "failed", "auth"),
+    ]
 
 
 def test_pending_oauth_session_does_not_settle(marks, monkeypatch):

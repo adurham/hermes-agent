@@ -128,7 +128,7 @@ def _track_oauth_setup(flow, session_id: str) -> None:
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
     if sess is None:  # cancelled before the start response even returned
-        finish_provider_setup(flow, "failed", "cancelled")
+        finish_provider_setup(flow, "abandoned")
         return
     attach_oauth_setup(sess, flow)
     settle_oauth_setup(sess)
@@ -331,9 +331,11 @@ def _codex_full_login_worker(session_id: str) -> None:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
     except Exception as e:
+        from hermes_cli.observability.shared_metrics_setup import note_oauth_failure
         _log.warning("codex device-code worker failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             s = _oauth_sessions.get(session_id)
+            note_oauth_failure(s, e)
             if s:
                 s["status"] = "error"
                 s["error_message"] = str(e)
@@ -835,9 +837,10 @@ async def _end_oauth_setup_metric(flow, exc: Exception) -> None:
         return
     from hermes_cli.observability.shared_metrics_setup import finish_provider_setup, setup_failure_class
     with contextlib.suppress(Exception):
-        # A 401/403 from the start route is the provider refusing this account/client.
-        refused = isinstance(exc, HTTPException) and exc.status_code in {401, 403}
-        failure = "auth" if refused else setup_failure_class(exc)
+        # A 401/403 from the start route is the provider refusing this account/client; a 504 is the
+        # provider not answering in time.
+        status = exc.status_code if isinstance(exc, HTTPException) else None
+        failure = {401: "auth", 403: "auth", 504: "network"}.get(status) or setup_failure_class(exc)
         await asyncio.get_running_loop().run_in_executor(None, finish_provider_setup, flow, "failed", failure)
 
 
@@ -894,4 +897,7 @@ async def cancel_oauth_session(session_id: str, request: Request, profile: Optio
             _oauth_sessions.pop(session_id, None)
     if sess is None:
         return {"ok": False, "message": "session not found"}
+    # Recorded now, not when the poller next wakes: a Nous/xAI poll can block for the code's lifetime.
+    from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
+    await asyncio.get_running_loop().run_in_executor(None, settle_oauth_setup, sess)
     return {"ok": True, "session_id": session_id}
