@@ -327,9 +327,8 @@ def request_elicitation_consent(message: str, description: str, *,
         return _consent(decision.get("choice"), "decline")
 
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
-    # Same observer hooks as the gateway branch, carrying the caller's surface value, so
-    # notifiers see this human wait in the classic CLI too; post fires in a finally so the
-    # wait always settles for observers even when the prompt raises (#131876).
+    # Same observer payload as the gateway branch (#131876); post fires in a finally so the
+    # wait settles for observers on the early fail-closed return too.
     hook_kwargs = dict(command=message, description=description, pattern_key="mcp_elicitation",
                        pattern_keys=["mcp_elicitation"], session_key=session_key, surface=surface)
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
