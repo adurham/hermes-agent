@@ -75,7 +75,7 @@ def _substring_matches(entries: List[str], old_text: str) -> List[int]:
     if exact := [i for i, e in enumerate(entries) if old_text in e]:
         return exact
     needle = _normalize_for_match(old_text)
-    if not needle.strip("'-"):  # a quotes/dashes-only needle would match every entry
+    if not any(c.isalnum() for c in needle):  # punctuation/space alone would select a whole entry
         return []
     return [i for i, e in enumerate(entries) if needle in _normalize_for_match(e)]
 
