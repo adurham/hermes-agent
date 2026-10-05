@@ -1,0 +1,24 @@
+name: hermes-kame-api-rotation
+repo: https://github.com/Kame696/kame-api-rotation-for-hermes
+sha: eb879a99e3e703ccfe8bd30455edeef9262bf0bb
+subdir: hermes-kame-api-rotation
+description: "Smart API key rotation: the healthiest key for every call, each 429 / RESOURCE_EXHAUSTED / quota refusal sized from its own evidence. Install with its companion hermes-kame-provider, which hands Hermes this plugin's rotating client through ProviderProfile.create_client; no core override. Disclosure — /kame-keys add|import|split write keys to auth.json through Hermes' pool API after a plaintext backup (last 5 kept); key-redacted local logs and a status file per profile."
+maintainer: Kame696
+tier: community
+category: models
+requires_hermes: ">=0.21.4"
+version: "1.8.1.9"
+docs_url: https://github.com/Kame696/kame-api-rotation-for-hermes#readme
+image: https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/eb879a99e3e703ccfe8bd30455edeef9262bf0bb/assets/kame-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/eb879a99e3e703ccfe8bd30455edeef9262bf0bb/assets/panel-overview.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/eb879a99e3e703ccfe8bd30455edeef9262bf0bb/assets/panel-events.png
+  - https://raw.githubusercontent.com/Kame696/kame-api-rotation-for-hermes/eb879a99e3e703ccfe8bd30455edeef9262bf0bb/assets/panel-settings.png
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - transform_api_error_classification
+  - post_api_request
+  provides_middleware: []
+  requires_env: []
