@@ -332,16 +332,28 @@ def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, t
     assert gate_manifest(manifest, set(), {"killed"}).action == "load"
 
 
-@pytest.mark.parametrize("provider,enable", [(True, True), (True, False), (False, True)])
+_HOOK = "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n"
+
+
+_PROVIDER = "def register(ctx):\n    ctx.register_memory_provider(object())\n"
+
+
+@pytest.mark.parametrize("init,enable", [
+    (_PROVIDER, True),
+    (_PROVIDER, False),
+    (_HOOK, True),
+    ('"""Recall hook. Not a MemoryProvider: it only injects context."""\n' + _HOOK, True),
+])
 def test_memory_category_install_activates_via_memory_provider_not_plugins_enable(world, monkeypatch,
-                                                                                  provider, enable):
+                                                                                  init, enable):
     """A memory provider activates through memory.provider alone — the loader never consults
     plugins.enabled — so "Enable now?" must select the provider, and a decline must point at
     `hermes memory setup`, never at the dead-end `plugins enable` hint. Catalog category "memory" also
-    holds hook plugins: those enable normally and leave the user's memory.provider alone."""
+    holds hook plugins: those enable normally and leave the user's memory.provider alone, even when their
+    docstring names MemoryProvider (the loader would return None for them)."""
     repo = world["repo"]
-    (repo / "__init__.py").write_text("def register_memory_provider(ctx):\n    pass\n" if provider
-                                      else "def register(ctx):\n    ctx.register_hook('pre_llm_call', print)\n")
+    provider = init is _PROVIDER
+    (repo / "__init__.py").write_text(init)
     world["state"]["pin"] = _commit(repo, "memory category plugin")
 
     def _memory_entries():
@@ -381,7 +393,8 @@ def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_
     repo = tmp_path / "mem-repo"
     repo.mkdir()
     (repo / "plugin.yaml").write_text("name: mem-plugin\nversion: 1.0.0\ndescription: d\n")
-    (repo / "__init__.py").write_text("from plugins.memory import MemoryProvider\n")
+    (repo / "__init__.py").write_text("from agent.memory_provider import MemoryProvider\n\n\n"
+                                      "class Mem(MemoryProvider):\n    pass\n")
     sp.run(["git", "init", "-q"], cwd=repo, check=True, env=_GIT_ENV)
     _commit(repo, "v1")
 

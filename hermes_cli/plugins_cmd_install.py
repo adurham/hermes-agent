@@ -563,9 +563,10 @@ def cmd_install(
     if no_deps:
         console.print("[dim]--no-deps: skipping dependency consent; the plugin stays disabled.[/dim]")
     # A memory provider activates through memory.provider alone; the loader never reads plugins.enabled.
-    # Decide from the installed tree: catalog category "memory" also holds hooks, context engines and skills.
-    from plugins.memory import _is_memory_provider_dir
-    is_memory_provider = _is_memory_provider_dir(target)
+    # Decide from the installed tree's code (not a text match): catalog category "memory" also holds hooks,
+    # context engines and skills, and a hook's docstring may name MemoryProvider.
+    from plugins.memory import _defines_memory_provider
+    is_memory_provider = _defines_memory_provider(target)
     if should_enable is None and not already_active:
         should_enable = _pc()._is_tty() and _pc()._ask_yes(
             f"  Use '{installed_name}' as the memory provider now? [y/N]: " if is_memory_provider
