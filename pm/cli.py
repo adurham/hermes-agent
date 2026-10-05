@@ -590,7 +590,7 @@ def _apply_pins(changed: list, lockfile) -> int:
         print("pm update: nothing to update")
         return 0
     pinned: list[str] = []
-    failed: list[str] = []
+    failed: dict[str, str] = {}
     for d in changed:
         package = get_package(d.name)
         try:
@@ -600,22 +600,29 @@ def _apply_pins(changed: list, lockfile) -> int:
             # pool skew (rolling Termux pool 404 while nodejs.org is ahead) — must
             # not zero out the whole run. Pin the rest, report the failure (#125386).
             print(f"✗ {d.name} pin failed: {e}")
-            failed.append(d.name)
+            failed[d.name] = f"{type(e).__name__}: {e}"
             continue
         lockfile.set_pin(d.name, d.version, artifacts)
         pinned.append(d.name)
         print(f"✓ {d.name} pinned {d.locked or '—'} → {d.version}")
-    if not pinned:
+    if pinned:
+        lockfile.save()
+        rc = 1 if _install_names(pinned) or not _sync_venv_step() else 0
+    else:
         print("pm update: every pin failed; lockfile untouched")
-        return 1
-    lockfile.save()
-    if _install_names(pinned):
-        return 1
-    rc = 0 if _sync_venv_step() else 1
-    if failed:
-        print(f"pm update: pinned {len(pinned)}, failed {len(failed)}: {', '.join(failed)}")
-        return 1
-    return rc
+        rc = 1
+    if not failed:
+        return rc
+    print(f"pm update: pinned {len(pinned)}, failed {len(failed)}: {', '.join(failed)}")
+    # The venv sync above leaves an `ok` sync receipt as latest; `hermes pm
+    # status` and the desktop read latest, so the partial run must land last.
+    from pm import receipt
+
+    token = receipt.begin("update")
+    for name, error in failed.items():
+        receipt.record_step(f"pin {name}", False, error)
+    receipt.finalize("failed", 1, token=token)
+    return 1
 
 
 def _refresh_uv_lock() -> int:

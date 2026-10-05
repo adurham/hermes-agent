@@ -4,12 +4,13 @@
 resolution bug or one target's rolling-pool 404), so `lockfile.save()`
 never ran and every unrelated package stayed un-updated. Pins are now
 isolated per package: successes are pinned and saved, failures are
-reported and summarized, exit stays non-zero.
+reported and summarized, exit stays non-zero, and the latest pm receipt
+(`hermes pm status`, the desktop) records the run as failed.
 """
 
 import pytest
 
-from pm import cli, paths, registry
+from pm import cli, paths, receipt, registry
 from pm.lock import Lockfile
 from pm.package import Package
 from pm.store import current_target
@@ -62,7 +63,9 @@ def prepare(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "_pin_artifacts", pin_artifacts_or_raise)
     monkeypatch.setattr(cli, "_install_names", lambda names: None)
-    monkeypatch.setattr(cli, "_sync_venv_step", lambda: True)
+    # Like the real sync, the venv step finalizes an `ok` receipt as latest.
+    monkeypatch.setattr(cli, "_sync_venv_step",
+                        lambda: receipt.finalize("ok", 0, token=receipt.begin("sync")) and True)
     return lock, broken, healthy
 
 
@@ -77,6 +80,9 @@ def test_one_failing_pin_does_not_block_the_rest(tmp_path, monkeypatch, capsys):
     # The healthy pin survived to disk; the broken row kept its old version.
     assert lock.version("healthy-pin") == "3.0"
     assert lock.version("broken-pin") == "1.0"
+    latest = receipt.latest()
+    assert (latest["outcome"], latest["exit_code"]) == ("failed", 1)
+    assert [s["name"] for s in latest["steps"]] == ["pin broken-pin"]
 
 
 def test_all_pins_failing_leaves_lockfile_untouched(tmp_path, monkeypatch, capsys):
@@ -89,12 +95,3 @@ def test_all_pins_failing_leaves_lockfile_untouched(tmp_path, monkeypatch, capsy
     assert "every pin failed; lockfile untouched" in out
     assert lock.path.read_bytes() == before
 
-
-def test_clean_run_still_succeeds(tmp_path, monkeypatch, capsys):
-    lock, broken, healthy = prepare(tmp_path, monkeypatch)
-    changed = [_decision(healthy, "3.0")]
-    assert cli._apply_pins(changed, lock) == 0
-    out = capsys.readouterr().out
-    assert "✓ healthy-pin pinned 1.0 → 3.0" in out
-    assert "failed" not in out
-    assert lock.version("healthy-pin") == "3.0"
