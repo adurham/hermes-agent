@@ -373,6 +373,39 @@ def _poll(provider, status, body):
     return run
 
 
+def _guest_sign_in(token_status, token_body):
+    """The Desktop free-tier sign-in (guest promotion): the real ``run_sign_in`` generator recorded
+    onto a dashboard session; the promotion completes, the token poll gets ``token_*`` until expiry."""
+    def run(monkeypatch):
+        import httpx
+
+        from hermes_cli import anon_auth, auth_device_flow
+        from hermes_cli.web_server_oauth import _record_sign_in_state
+
+        clock = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + max(s, 1)))
+        monkeypatch.setattr(auth_device_flow, "time", fake_time)
+        monkeypatch.setattr(anon_auth, "current_nous_state", lambda: {
+            "auth_method": anon_auth.ANON_AUTH_METHOD, "anon_token": "t", "portal_base_url": "https://p"})
+        monkeypatch.setattr(anon_auth, "guest_enabled", lambda: True)
+        monkeypatch.setattr(anon_auth, "_anon_headers", lambda: {})
+        replies = {
+            "/api/oauth/device/code": (200, {"device_code": "d", "user_code": "U", "verification_uri": "https://p/v",
+                                             "verification_uri_complete": "https://p/v?c=U", "expires_in": 30, "interval": 1}),
+            "/api/anonymous/promotion-intent": (200, {"claim_code": "C", "claim_url": "/claim", "interval": 1}),
+            "/api/anonymous/promotion-status": (200, {"status": "completed"}),
+            "/api/oauth/token": (token_status, token_body)}
+
+        def reply(request):
+            status, body = replies[request.url.path]
+            return httpx.Response(status, **({"json": body} if isinstance(body, dict) else {"text": body}))
+        sess = {"status": "pending"}
+        for state in anon_auth.run_sign_in(client_factory=lambda *_: httpx.Client(transport=httpx.MockTransport(reply))):
+            _record_sign_in_state(sess, state)
+        return sess
+    return run
+
+
 def _codex_start(status, body):
     """The dashboard start route: the worker thread's failure crosses into an HTTPException."""
     def run(monkeypatch):
@@ -394,19 +427,28 @@ def _codex_start(status, body):
     (_poll("xai", 400, {"error": "invalid_client"}), ("failed", "auth")),
     (_codex_start(401, {"error": "invalid_client"}), ("failed", "auth")),
     (_codex_start(0, ConnectionRefusedError("down")), ("failed", "network")),
-], ids=["nous-pending", "nous-503", "xai-denied", "xai-expired", "xai-refused", "codex-401", "codex-down"])
+    (_codex_start(503, "<html>503</html>"), ("failed", "network")),
+    (_guest_sign_in(400, {"error": "authorization_pending"}), ("abandoned", "none")),
+    (_guest_sign_in(503, "<html>503 unavailable</html>"), ("failed", "network")),
+], ids=["nous-pending", "nous-503", "xai-denied", "xai-expired", "xai-refused", "codex-401", "codex-down",
+        "codex-503", "guest-pending", "guest-503"])
 def test_wire_failures_keep_the_producers_class_to_the_recorded_end(marks, monkeypatch, producer, ending):
-    """Real poll loops / start route against wire responses: a lapse or a decline is a walk-away, an
-    outage or a refusal stays a failure, across the worker -> HTTPException boundary too."""
+    """Real poll loops / start route / free-tier sign-in against wire responses: a lapse or a decline
+    is a walk-away, an outage or a refusal stays a failure, across the worker -> HTTPException and
+    sign-in state -> session boundaries too."""
     import asyncio
 
     import hermes_cli.web_routers.oauth as routes
 
     monkeypatch.setattr(setup_metrics, "web_setup_surface", lambda: "desktop")
     flow = setup_metrics.begin_oauth_setup("nous", None)
-    with pytest.raises(Exception) as ended:
-        producer(monkeypatch)
-    asyncio.run(routes._end_oauth_setup_metric(flow, ended.value))
+    try:
+        sess = producer(monkeypatch)
+    except Exception as exc:
+        asyncio.run(routes._end_oauth_setup_metric(flow, exc))
+    else:  # a sign-in generator ends on a state, recorded onto its session
+        setup_metrics.attach_oauth_setup(sess, flow)
+        setup_metrics.settle_oauth_setup(sess)
     assert [r[2:] for r in _setup_rows(marks.rows)] == [("started", "none"), ending]
 
 def test_pending_oauth_session_does_not_settle(marks, monkeypatch):

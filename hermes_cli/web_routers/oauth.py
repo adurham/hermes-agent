@@ -208,6 +208,14 @@ def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
             attempt += 1
 
 
+def _codex_http_error(status: int) -> Callable[[str], Exception]:
+    """Exception type for a non-200 Codex reply: 401/403 is OpenAI refusing this account/client;
+    408/429/5xx is the service down or shedding load (a network-class failure)."""
+    if status in {401, 403}:
+        return _codex_err
+    return ConnectionError if status in {408, 429} or status >= 500 else RuntimeError
+
+
 def _codex_request_user_code(httpx) -> Dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
     from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
@@ -216,8 +224,8 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
         httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
         headers=_JSON_HEADERS,
     )
-    if resp.status_code != 200:  # a 401/403 is OpenAI refusing this account/client
-        raise (_codex_err if resp.status_code in {401, 403} else RuntimeError)(_codex_device_code_start_error(resp))
+    if resp.status_code != 200:
+        raise _codex_http_error(resp.status_code)(_codex_device_code_start_error(resp))
     device_data = resp.json()
     device_data["interval"] = max(3, int(device_data.get("interval", "5")))
     if not device_data.get("user_code") or not device_data.get("device_auth_id"):
@@ -280,8 +288,7 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     if token_resp.status_code != 200:
-        raise (_codex_err if token_resp.status_code in {401, 403} else RuntimeError)(
-            f"token exchange returned {token_resp.status_code}")
+        raise _codex_http_error(token_resp.status_code)(f"token exchange returned {token_resp.status_code}")
     tokens = token_resp.json()
     if not tokens.get("access_token"):
         raise RuntimeError("token exchange did not return access_token")
