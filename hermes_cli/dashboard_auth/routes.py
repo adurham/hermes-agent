@@ -310,7 +310,8 @@ async def auth_native_authorize(
                     authorize_path=f"{_prefix(request)}/auth/native/authorize",
                     code_challenge=code_challenge,
                     code_challenge_method=code_challenge_method,
-                    redirect_uri=redirect_uri, state=state),
+                    redirect_uri=redirect_uri, state=state,
+                    prefix=_prefix(request)),
                 headers=_NO_STORE)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
