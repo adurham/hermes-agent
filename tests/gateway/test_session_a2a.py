@@ -96,8 +96,12 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     db.set_session_title('legacy', 'a2a-dev-old-context')
     legacy = await conn.dispatch({'id': 3, 'method': 'a2a.forward', 'params': dict(
         agent='dev', tenant='team', peer='alice', context_id='old/context', input_id='first', text='hello')})
-    assert legacy['error']['message'] == 'runtime_coordination_required'
+    # A colliding pre-authority title is neither adopted nor a permanent refusal: the exact
+    # identity gets its own session and the old row keeps its title and history.
+    assert 'result' in legacy, legacy
+    assert legacy['result']['session_id'] not in {'legacy', *ids}
     assert db.get_session('legacy')['title'] == 'a2a-dev-old-context'
+    assert db.get_messages('legacy') == []
     denied = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None),
         {'user_id': 'reader', 'capabilities': ['session:read']})
     result = await denied.dispatch({'id': 1, 'method': 'a2a.forward', 'params': dict(

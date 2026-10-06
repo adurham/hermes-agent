@@ -4,11 +4,13 @@ from contextvars import ContextVar
 from dataclasses import asdict, replace
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError
 
+logger = logging.getLogger(__name__)
 _forward_identity = ContextVar('a2a_forward_identity', default=None)
 
 
@@ -81,12 +83,17 @@ async def forward(connection, params):
             raise RuntimeStoreError('admission_conflict')
         ref = restore_local_session(authority, sid)
     else:
-        # Historical titles discarded peer identity and collapsed context characters.
-        # Never silently adopt somebody else's history or create a replacement for it.
+        # Historical `a2a-{agent}-{slug}` titles discarded peer/tenant identity and collapsed
+        # context characters, and those `hermes chat --source a2a` rows stored no origin, so a
+        # titled row never proves it belongs to this exact conversation. Never adopt or retitle
+        # it (that would hand one peer another's history), and never refuse every peer whose
+        # slug collides: start this identity's own canonical session and leave the old row be.
         from plugins.platforms.a2a.adapter import _safe_context_slug
-        legacy = authority.db.get_session_by_title(f'a2a-{params["agent"]}-{_safe_context_slug(params["context_id"])}')
+        title = f'a2a-{params["agent"]}-{_safe_context_slug(params["context_id"])}'
+        legacy = authority.db.get_session_by_title(title)
         if legacy is not None:
-            raise RuntimeStoreError('runtime_coordination_required')
+            logger.warning('A2A: pre-authority session %s titled %r has no peer identity; '
+                           'forwarding into a new session instead of adopting it', legacy['id'], title)
         token = _forward_identity.set(identity)
         try:
             ref = create_local_session(authority, actor, {'source': 'a2a', 'request_id': key})
