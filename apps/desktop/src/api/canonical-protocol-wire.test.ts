@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import { HermesGateway } from './client'
 
@@ -68,5 +68,33 @@ test('a legacy (non-canonical) dial strips canonical-only identity keys the serv
 
     for (const socket of server.clients) { socket.terminate() }
     await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+test('a compress settle resumes under the caller\'s original timeout and abort signal', async () => {
+  // R4: the follow-up `session.resume` must not fall back to the default 120 s deadline
+  // and ignore the caller's AbortSignal (a cancelled compress would otherwise hang).
+  const { JsonRpcGatewayClient } = await import('@hermes/shared')
+  const wire: Array<[string, unknown, AbortSignal | undefined]> = []
+
+  const spy = vi.spyOn(JsonRpcGatewayClient.prototype, 'request').mockImplementation(async function (method: string, _params?: unknown, timeoutMs?: number, signal?: AbortSignal) {
+    wire.push([method, timeoutMs, signal])
+
+    return (method === 'session.mutate'
+      ? { session_id: 's', revision: 5, operation: 'compress', target_session_id: 's', message_count: 2 }
+      : { session_id: 's', revision: 4, execution_generation: 1, messages: [] }) as never
+  })
+
+  const client = new HermesGateway()
+  Object.assign(client, { canonical: true })
+
+  try {
+    await client.request('session.resume', { session_id: 's' })
+    const controller = new AbortController()
+    await client.request('session.compress', { session_id: 's' }, 7_000, controller.signal)
+    expect(wire.slice(1).map(([method, timeoutMs]) => [method, timeoutMs])).toEqual([['session.mutate', 7_000], ['session.resume', 7_000]])
+    expect(wire[2][2]).toBe(controller.signal)
+  } finally {
+    spy.mockRestore()
   }
 })
