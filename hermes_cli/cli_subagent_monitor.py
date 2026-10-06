@@ -52,13 +52,13 @@ from hermes_cli import cli_session_dock as session_rows
 def _clip(value, width):
     text = ' '.join(str(value or '').split())
     text = ''.join(c for c in text if c.isprintable())
-    # FORK: drop VS-16 from dynamic text (goals, queue previews, commands). A "⚙️"-shaped
-    # sequence paints 2 cells in kitty/iTerm2 but scores 1 in prompt_toolkit's model (and 1 in
-    # xterm.js) — a divergence in any row strands diff-repaint cells RIGHT of it, corrupting
-    # the elapsed timers these rows carry ("12m09s" -> stale-digit garble). Bare base
-    # codepoints measure 1 cell in every table. Single chokepoint: every dock/roster row
-    # runs through _clip.
-    text = text.replace('\ufe0f', '')
+    # FORK: normalize sequence machinery out of dynamic text (goals, queue previews,
+    # commands). "⚙️"-shaped sequences and ZWJ/keycap/flag clusters change painted width
+    # vs prompt_toolkit's model — a divergence in any row strands diff-repaint cells
+    # RIGHT of it, corrupting the elapsed timers these rows carry ("12m09s" ->
+    # stale-digit garble). Single chokepoint: every dock/roster row runs through _clip.
+    from hermes_cli.portable_glyphs import normalize_for_chrome
+    text = normalize_for_chrome(text)
     if get_cwidth(text) <= width:
         return text
     result = ''

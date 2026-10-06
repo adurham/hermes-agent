@@ -70,9 +70,11 @@ class _Panel:
         from cli import _append_blank_panel_line, _append_panel_line, _panel_cwidth
         self.lines, self.border, self.width = [], border, box_width
         self._row, self._blank = _append_panel_line, _append_blank_panel_line
-        # FORK: strip VS-16 from the title (model-generated titles reach here; a VS-16
-        # sequence measures 1 cell in pt's model but paints 2 — see _append_panel_line).
-        title = title.replace("\ufe0f", "")
+        # FORK: normalize sequence machinery out of the title (model-generated titles
+        # reach here; clusters change painted width vs pt's model — see
+        # _append_panel_line).
+        from hermes_cli.portable_glyphs import normalize_for_chrome
+        title = normalize_for_chrome(title)
         if title:
             # Title inlined into the top rule: ``╭─ Title ───╮``. The dash run is sized by
             # the title's DISPLAY width (cwidth), not ``len()``: a wide-glyph title (emoji,
