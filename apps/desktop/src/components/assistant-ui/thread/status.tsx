@@ -297,6 +297,61 @@ export const BackgroundResumeNotice: FC = () => {
   )
 }
 
+// Hands a turn back from the user, re-arming the quiet mark: see the call site.
+function useHandBackQuiet(
+  awaitingInput: boolean,
+  turnStartedAt: number | undefined,
+  setQuietSince: (since: number) => void
+) {
+  const [handBack, setHandBack] = useState({ awaitingInput, turnStartedAt })
+
+  if (handBack.awaitingInput !== awaitingInput || handBack.turnStartedAt !== turnStartedAt) {
+    setHandBack({ awaitingInput, turnStartedAt })
+
+    if (turnStartedAt !== undefined && turnStartedAt !== handBack.turnStartedAt) {
+      setQuietSince(turnStartedAt)
+    } else if (handBack.awaitingInput && !awaitingInput) {
+      setQuietSince(Date.now())
+    }
+  }
+}
+
+interface TurnActivityRowProps {
+  active: boolean
+  elapsed: number
+  hint: string
+  localLoad: ReturnType<typeof useLocalModelLoad>
+}
+
+const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, localLoad }) => {
+  const { t } = useI18n()
+
+  return (
+    <StatusRow
+      className={cn(!active && 'sr-only')}
+      data-slot="aui_turn-activity"
+      data-state={active ? 'active' : 'idle'}
+      label={active ? hint || 'Hermes is working' : ''}
+    >
+      {active && (
+        <>
+          <StatusPulse
+            aria-hidden="true"
+            className="dither inline-block size-3 rounded-[2px] text-midground/80"
+            kind="opacity"
+          />
+          {hint ? (
+            <WaitHint hint={hint} />
+          ) : localLoad ? (
+            <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
+          ) : null}
+          <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+        </>
+      )}
+    </StatusRow>
+  )
+}
+
 // Tail activity row. The pre-first-token spinner goes away once content flows,
 // but a turn keeps working through gaps it produces nothing during — between
 // one tool result landing and the next call arriving, while the provider
@@ -313,7 +368,6 @@ export const BackgroundResumeNotice: FC = () => {
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = false }) => {
-  const { t } = useI18n()
   // Same rule the reasoning disclosure renders by (message-parts.tsx).
   const showReasoning = useStore($showReasoning)
   const guidedChat = useOnboardingChatActive()
@@ -357,17 +411,7 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
   // card resumes the turn it paused. Neither is a gap between two quick calls,
   // so the wait after it shows at once, timed from that moment, the way a
   // normal send's row does.
-  const [handBack, setHandBack] = useState({ awaitingInput, turnStartedAt })
-
-  if (handBack.awaitingInput !== awaitingInput || handBack.turnStartedAt !== turnStartedAt) {
-    setHandBack({ awaitingInput, turnStartedAt })
-
-    if (turnStartedAt !== undefined && turnStartedAt !== handBack.turnStartedAt) {
-      setQuietSince(turnStartedAt)
-    } else if (handBack.awaitingInput && !awaitingInput) {
-      setQuietSince(Date.now())
-    }
-  }
+  useHandBackQuiet(awaitingInput, turnStartedAt, setQuietSince)
 
   // Every second the app claims to be working belongs to something. A named
   // wait says what it is straight away; an unnamed gap has to go quiet for
@@ -410,28 +454,5 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
     return null
   }
 
-  return (
-    <StatusRow
-      className={cn(!active && 'sr-only')}
-      data-slot="aui_turn-activity"
-      data-state={active ? 'active' : 'idle'}
-      label={active ? hint || 'Hermes is working' : ''}
-    >
-      {active && (
-        <>
-          <StatusPulse
-            aria-hidden="true"
-            className="dither inline-block size-3 rounded-[2px] text-midground/80"
-            kind="opacity"
-          />
-          {hint ? (
-            <WaitHint hint={hint} />
-          ) : localLoad ? (
-            <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
-          ) : null}
-          <ActivityTimerText aria-hidden={true} seconds={elapsed} />
-        </>
-      )}
-    </StatusRow>
-  )
+  return <TurnActivityRow active={active} elapsed={elapsed} hint={hint} localLoad={localLoad} />
 }

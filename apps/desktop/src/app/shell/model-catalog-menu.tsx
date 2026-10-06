@@ -196,6 +196,35 @@ interface ProviderGroup {
   provider: ModelOptionProvider
 }
 
+function queryErrorMessage(error: unknown): null | string {
+  return error ? (error instanceof Error ? error.message : String(error)) : null
+}
+
+function useDownloadRows(owner: LocalModelsOwner, localModelsEnabled: boolean) {
+  const downloadsKey: string = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): string =>
+      localModelsEnabled
+        ? runningModelDownloads(jobs)
+            .map(job => `${job.job_id}\u0000${job.target}`)
+            .join('\u0001')
+        : '',
+    localModelsEnabled
+  )
+
+  return useMemo(
+    () =>
+      downloadsKey === ''
+        ? []
+        : downloadsKey.split('\u0001').map(pair => {
+            const [jobId, target] = pair.split('\u0000')
+
+            return { jobId, target }
+          }),
+    [downloadsKey]
+  )
+}
+
 /**
  * THE model catalog menu: searchable, provider-grouped, `-fast` families
  * collapsed to one row, per-row hover submenu for thinking/effort/fast, full
@@ -270,34 +299,9 @@ export function ModelCatalogMenu({
   // (breaking open submenus and focus — the #72163 class). Subscribe to a
   // STABLE identity projection instead: it changes only when a download
   // starts or ends. Each row selects its own percent scalar.
-  const downloadsKey: string = useLocalRuntimeJobs(
-    owner,
-    (jobs: readonly LocalRuntimeJob[]): string =>
-      localModelsEnabled
-        ? runningModelDownloads(jobs)
-            .map(job => `${job.job_id}\u0000${job.target}`)
-            .join('\u0001')
-        : '',
-    localModelsEnabled
-  )
+  const downloads = useDownloadRows(owner, localModelsEnabled)
 
-  const downloads = useMemo(
-    () =>
-      downloadsKey === ''
-        ? []
-        : downloadsKey.split('\u0001').map(pair => {
-            const [jobId, target] = pair.split('\u0000')
-
-            return { jobId, target }
-          }),
-    [downloadsKey]
-  )
-
-  const error = modelOptions.error
-    ? modelOptions.error instanceof Error
-      ? modelOptions.error.message
-      : String(modelOptions.error)
-    : null
+  const error = queryErrorMessage(modelOptions.error)
 
   const providers = modelOptions.data?.providers
 

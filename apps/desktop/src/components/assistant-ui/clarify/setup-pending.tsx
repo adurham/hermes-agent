@@ -29,7 +29,8 @@ import { useTheme } from '@/themes'
 import { ClarifyConfirmBar } from './core/confirm-bar'
 import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
-import { isSetupPickerKind, PICKER_COLUMNS, QuestionPills, SETUP_PICKERS } from './setup-pickers'
+import { SetupChooseBody, setupChooseSource } from './setup-pending-parts'
+import { PICKER_COLUMNS } from './setup-pickers'
 import { LIVE_LOOK, useSetupRows } from './setup-rows'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
@@ -71,15 +72,10 @@ export function SetupChoosePending({
   const storedId = useStore(useSessionView().$storedId)
   const { mode, setMode } = useTheme()
 
-  const ready = Boolean(request?.requestId && request.setup)
-  const source = request ?? fromArgs
-  const setup = source?.setup ?? null
-  const kind = setup?.kind ?? 'question'
-  const pickerKind = isSetupPickerKind(kind) ? kind : null
+  const { kind, pickerKind, ready, requestId, setup, source } = setupChooseSource(request, fromArgs)
   const freeText = pickerKind === null
   const rows = useSetupRows(setup, storedId)
 
-  const requestId = ready ? (request?.requestId ?? null) : null
   const stages = useStore($setupChooseStages)
   const { draft, picked } = (requestId && stages[requestId]) || EMPTY_SETUP_STAGE
   const preselected = setup?.preselected
@@ -228,7 +224,6 @@ export function SetupChoosePending({
   })
 
   const cursor = ready ? keys.cursorRow : null
-  const Picker = pickerKind === null ? null : SETUP_PICKERS[pickerKind]
   const Icon = KIND_ICONS[kind]
 
   return (
@@ -257,63 +252,18 @@ export function SetupChoosePending({
           <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
-        {Picker === null && rows === null ? (
-          <div className="grid gap-2">
-            <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
-              {question.question}
-            </span>
-            <div className="flex flex-wrap gap-2 p-1" role="status">
-              <span className="sr-only">{setupCopy.loading}</span>
-              {Array.from({ length: 3 }, (_, index) => (
-                <div className="h-7 w-28 animate-pulse rounded-full bg-muted/40" key={index} />
-              ))}
-            </div>
-          </div>
-        ) : Picker === null ? (
-          <QuestionPills
-            cursor={cursor}
-            details={(rows ?? []).map(row => row.detail)}
-            disabled={!ready}
-            onActivate={() => keys.focusQuestion(0)}
-            onDraft={onDraft}
-            onOtherFocus={() => keys.onOtherFocus(0)}
-            onPick={index => keys.pick(0, index)}
-            onRowFocus={index => keys.focusRow(0, index)}
-            question={question}
-            staged={{
-              choices: (rows ?? []).filter(row => picked.includes(row.id)).map(row => row.label),
-              draft
-            }}
-          />
-        ) : (
-          <fieldset
-            className="m-0 grid min-w-0 gap-2 border-0 p-0"
-            data-clarify-batch-question={SETUP_CHOOSE_QID}
-            disabled={!ready}
-          >
-            <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
-              {question.question}
-            </span>
-            {rows === null ? (
-              <div className="grid grid-cols-3 gap-2" role="status">
-                <span className="sr-only">{setupCopy.loading}</span>
-                {Array.from({ length: 6 }, (_, index) => (
-                  <div className="h-10 animate-pulse rounded-lg bg-muted/40" key={index} />
-                ))}
-              </div>
-            ) : rows.length === 0 ? (
-              <p className="text-(--ui-text-tertiary)">{setupCopy.unavailable}</p>
-            ) : (
-              <Picker
-                cursor={cursor}
-                onPick={index => keys.pick(0, index)}
-                onStage={stage}
-                picked={picked}
-                rows={rows}
-              />
-            )}
-          </fieldset>
-        )}
+        <SetupChooseBody
+          cursor={cursor}
+          draft={draft}
+          keys={keys}
+          onDraft={onDraft}
+          onStage={stage}
+          picked={picked}
+          pickerKind={pickerKind}
+          question={question}
+          ready={ready}
+          rows={rows}
+        />
       </ClarifyShell>
 
       {undelivered ? null : (

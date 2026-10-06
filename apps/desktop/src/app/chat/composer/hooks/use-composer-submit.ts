@@ -221,36 +221,57 @@ export function useComposerSubmit({
     [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
   )
 
-  const submitDraft = () => {
-    if (disabled) {
-      return
-    }
+  // Returns false when the submit was refused and must not refocus the input.
+  const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
+    // Slash commands should execute immediately even while the agent is
+    // busy — they're client-side operations (/yolo, /skin, /new, /help,
+    // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
+    // routes them to executeSlashCommand, which has its own per-command
+    // busy guard for commands that genuinely need an idle session (skill
+    // /send directives).  Queuing them would make every slash command wait
+    // for the current turn to finish, which is how the TUI never behaves.
+    if (isSlashCommandText(text)) {
+      if (attachments.length) {
+        // Slash commands cannot ride alongside attachments — warn the user
+        // instead of silently queuing the payload (which would then reach the
+        // idle path and be submitted as plain text with no command execution).
+        notify({
+          kind: 'warning',
+          title: copy.slashCommandIgnoredTitle,
+          message: copy.slashCommandIgnoredBody
+        })
 
-    // Source the text from the DOM editor, not React state. The AUI composer
-    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
-    // render, so on fast typing or IME composition the final keystroke(s) may
-    // not have synced yet — reading state here drops the message (Enter looks
-    // like it does nothing; typing a trailing space only "fixes" it because the
-    // extra input event forces a state sync). draftRef is updated on every
-    // input event; refresh it from the editor once more to also cover an
-    // in-flight keystroke that hasn't fired its input event yet.
-    const editor = editorRef.current
-
-    if (editor) {
-      const domText = composerPlainText(editor)
-
-      if (domText !== draftRef.current) {
-        draftRef.current = domText
-        setComposerText(domText)
+        return false
       }
+
+      triggerHaptic('submit')
+      clearDraft()
+      dispatchSubmit(text)
+    } else if (!blockingPrompt && !attachments.length && text.trim()) {
+      // Cursor-style stop-and-correct: interrupt the live turn and redirect
+      // it with this text. redirect() preserves the shown reasoning/work; if
+      // the turn already ended, steerDraft re-queues so nothing is lost.
+      // Compaction is the gateway's call: it answers `queued` under the
+      // compression lock. The client flag can outlive an aborted compaction.
+      steerDraft()
+    } else if (payloadPresent) {
+      // Attachments can't ride a redirect (no tool-result image carriage) —
+      // queue the whole payload for the next turn. Same for a turn parked on
+      // an approval/sudo/secret prompt: a steer can't reach the model while
+      // the tool batch is blocked, so the message runs as the next turn.
+      queueCurrentDraft()
+    } else {
+      // Stop button (the only way to reach here while busy with an empty
+      // composer — empty Enter is short-circuited in the keydown handler).
+      triggerHaptic('cancel')
+      void Promise.resolve(onCancel())
     }
 
-    // A path that never got its committing space (`@apps/desktop/` left by a Tab
-    // descend, then Enter) is still the reference the user picked — promote it
-    // on the way out so it attaches instead of submitting as inert text.
-    const text = pathifyRefs(draftRef.current)
-    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+    return true
+  }
 
+  // True when the draft was consumed as a parked clarify card's answer.
+  const answerParkedCard = (text: string, payloadPresent: boolean) => {
     // A clarify or setup card parked on this session owns the turn: the agent
     // is blocked inside its tool batch waiting on the card's answer, so a
     // follow-up routed through steer/queue sits undelivered until the card's
@@ -282,7 +303,7 @@ export function useComposerSubmit({
       clearDraft()
       focusInput()
 
-      return
+      return true
     }
 
     if (cardParked) {
@@ -292,6 +313,43 @@ export function useComposerSubmit({
     // Same for a pending connection card: ordinary typing continues the operation.
     if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
+    }
+
+    return false
+  }
+
+  const submitDraft = () => {
+    if (disabled) {
+      return
+    }
+
+    // Source the text from the DOM editor, not React state. The AUI composer
+    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
+    // render, so on fast typing or IME composition the final keystroke(s) may
+    // not have synced yet — reading state here drops the message (Enter looks
+    // like it does nothing; typing a trailing space only "fixes" it because the
+    // extra input event forces a state sync). draftRef is updated on every
+    // input event; refresh it from the editor once more to also cover an
+    // in-flight keystroke that hasn't fired its input event yet.
+    const editor = editorRef.current
+
+    if (editor) {
+      const domText = composerPlainText(editor)
+
+      if (domText !== draftRef.current) {
+        draftRef.current = domText
+        setComposerText(domText)
+      }
+    }
+
+    // A path that never got its committing space (`@apps/desktop/` left by a Tab
+    // descend, then Enter) is still the reference the user picked — promote it
+    // on the way out so it attaches instead of submitting as inert text.
+    const text = pathifyRefs(draftRef.current)
+    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
+    if (answerParkedCard(text, payloadPresent)) {
+      return
     }
 
     // Approval / sudo / secret prompts also park the turn inside a tool batch,
@@ -306,48 +364,8 @@ export function useComposerSubmit({
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      // Slash commands should execute immediately even while the agent is
-      // busy — they're client-side operations (/yolo, /skin, /new, /help,
-      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
-      // routes them to executeSlashCommand, which has its own per-command
-      // busy guard for commands that genuinely need an idle session (skill
-      // /send directives).  Queuing them would make every slash command wait
-      // for the current turn to finish, which is how the TUI never behaves.
-      if (isSlashCommandText(text)) {
-        if (attachments.length) {
-          // Slash commands cannot ride alongside attachments — warn the user
-          // instead of silently queuing the payload (which would then reach the
-          // idle path and be submitted as plain text with no command execution).
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return
-        }
-
-        triggerHaptic('submit')
-        clearDraft()
-        dispatchSubmit(text)
-      } else if (!blockingPrompt && !attachments.length && text.trim()) {
-        // Cursor-style stop-and-correct: interrupt the live turn and redirect
-        // it with this text. redirect() preserves the shown reasoning/work; if
-        // the turn already ended, steerDraft re-queues so nothing is lost.
-        // Compaction is the gateway's call: it answers `queued` under the
-        // compression lock. The client flag can outlive an aborted compaction.
-        steerDraft()
-      } else if (payloadPresent) {
-        // Attachments can't ride a redirect (no tool-result image carriage) —
-        // queue the whole payload for the next turn. Same for a turn parked on
-        // an approval/sudo/secret prompt: a steer can't reach the model while
-        // the tool batch is blocked, so the message runs as the next turn.
-        queueCurrentDraft()
-      } else {
-        // Stop button (the only way to reach here while busy with an empty
-        // composer — empty Enter is short-circuited in the keydown handler).
-        triggerHaptic('cancel')
-        void Promise.resolve(onCancel())
+      if (!submitWhileBusy(text, payloadPresent, blockingPrompt)) {
+        return
       }
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()

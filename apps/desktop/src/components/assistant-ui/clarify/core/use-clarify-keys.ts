@@ -1,7 +1,8 @@
 import { type RefObject, useCallback, useEffect, useState } from 'react'
 
-import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import type { ClarifyQuestion } from '@/store/clarify'
+
+import { arrowMove, isForeignKeystroke, shortcutIndex } from './use-clarify-keys-handlers'
 
 interface ClarifyKeysOptions {
   columns?: number
@@ -166,64 +167,25 @@ export function useClarifyKeys({
     }
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
+      if (isForeignKeystroke(event, formRef.current)) {
         return
       }
 
-      // Not the visible card ⇒ not our keystroke. Inactive tabs stay MOUNTED,
-      // so every parked clarify keeps a live `window` listener; without this the
-      // card that acts is whichever mounted first, and answering the question in
-      // front of you silently answers a background session's question instead —
-      // resuming an agent turn the user never saw. Same resolver the composer's
-      // `clarifyCardOwnsKey` yields to, so the two cannot disagree about which
-      // card is live.
-      if (visibleClarifyCard() !== formRef.current) {
-        return
-      }
+      const arrow = arrowMove(event.key, columns)
 
-      const focused = document.activeElement as HTMLElement | null
-
-      if (
-        focused &&
-        (focused.isContentEditable ||
-          (focused.matches('a[href], button, input, select, textarea, [role="button"]') &&
-            !focused.matches('button[data-choice]')))
-      ) {
-        return
-      }
-
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (arrow) {
         if (choices.length > 0) {
           event.preventDefault()
-          move((event.key === 'ArrowDown' ? 1 : -1) * (columns ?? 1), columns === undefined)
+          move(arrow.delta, arrow.wrap)
         }
 
         return
       }
 
-      if ((event.key === 'ArrowRight' || event.key === 'ArrowLeft') && columns !== undefined) {
-        if (choices.length > 0) {
-          event.preventDefault()
-          move(event.key === 'ArrowRight' ? 1 : -1)
-        }
+      const index = shortcuts ? shortcutIndex(event.key) : null
 
-        return
-      }
-
-      if (shortcuts && /^[1-9]$/.test(event.key)) {
-        pickByIndex(event, Number(event.key) - 1)
-
-        return
-      }
-
-      const key = event.key.toLowerCase()
-
-      // Only the letters this card actually renders a row for. Anything past
-      // the last row belongs to the composer — the user is typing a message
-      // instead of picking an option, and swallowing the keystroke here would
-      // make the first letter of it vanish.
-      if (shortcuts && key.length === 1 && key >= 'a' && key <= 'z') {
-        pickByIndex(event, key.charCodeAt(0) - 97)
+      if (index !== null) {
+        pickByIndex(event, index)
 
         return
       }
