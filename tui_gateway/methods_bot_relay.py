@@ -23,9 +23,9 @@ def _relay_root() -> Path:
     return _hermes_root(Path(_default_home()))
 
 
-# Historical Desktop deadline mirrors; no subprocess retry is performed here.
-# Remove with the renderer relay deadline/receipt migration.
-TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
+# Desktop deadline mirror; no retry runs here. The owner gateway retries a transiently failed
+# admission once (``gateway.session_bot._maybe_retry``). Remove with the renderer relay deadline migration.
+TURN_MAX_ATTEMPTS = 2  # first admission + the owner's one transient-failure retry (gateway.session_bot)
 
 
 @method("bot_relay.roster.sync")

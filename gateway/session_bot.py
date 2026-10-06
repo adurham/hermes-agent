@@ -115,8 +115,9 @@ def _create_bot_chat(authority, actor):
     return ref
 
 
-def _result(authority, record):
-    row = get_session_admission(authority.db, admission_id=record['admission_id'])
+def _admission_outcome(authority, admission_id, fallback=None):
+    """``(status, reply)`` of one admission, read from its committed result, never transcript recency."""
+    row = get_session_admission(authority.db, admission_id=admission_id)
     if row is None:
         raise RuntimeStoreError('storage_unavailable')
     # A terminal row without a result blob is still definitive when the outcome says the
@@ -124,10 +125,9 @@ def _result(authority, record):
     # durable unknown state and for missing evidence (completed/interrupted without result).
     status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous',
               'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row['outcome'], 'ambiguous')}[row['status']]
-    # Read only this admission's committed result, never transcript recency.
     from gateway.session_results import admission_result
-    saved = admission_result(authority.db, record['admission_id'])
-    reply = record.get('reply', '')
+    saved = admission_result(authority.db, admission_id)
+    reply = (fallback or {}).get('reply', '')
     if saved is not None:
         reply = saved['result'].get('final_response', '')
         status = 'settled' if row['outcome'] == 'completed' else 'failed'
@@ -137,11 +137,99 @@ def _result(authority, record):
         from gateway.response_filters import is_intentional_silence_response
         if status == 'settled' and is_intentional_silence_response(reply):
             reply = ''
-    elif record.get('status') in {'settled', 'failed'}:
-        status = record['status']
+    elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
+        status = fallback['status']
+    return status, reply
+
+
+def _retry_admission(authority, record):
+    """The delivery's one retry admission id, read from the FIFO by its derived identity, so every
+    reader (an in-memory record, the receipt file, an owner restart) follows the same retry."""
+    with authority.db._read_ctx() as conn:
+        row = conn.execute('SELECT admission_id FROM session_admissions WHERE target_session_id=? AND request_id=?',
+                           (record['session_id'], _retry_identity(record['delivery_id']))).fetchone()
+    return row[0] if row else None
+
+
+def _result(authority, record):
+    """The delivery's receipt. Once the one transient-failure retry was admitted, the sender's
+    outcome is the retry's: ``status``/``reply`` follow it (``retry_admission_id``)."""
+    retry_id = _retry_admission(authority, record)
+    if retry_id:
+        status, reply = _admission_outcome(authority, retry_id)
+    else:
+        status, reply = _admission_outcome(authority, record['admission_id'], record)
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
-        admission_id=record['admission_id'], message=record['message'], reply=reply).items()}
+        admission_id=record['admission_id'], message=record['message'], reply=reply,
+        retry_admission_id=retry_id).items() if v is not None}
+
+
+def _retry_identity(key):
+    return 'bot:' + key + ':retry'
+
+
+def _retry_eligible(authority, record):
+    """Exactly the main-lane gate (``tools.bot_failure_reasons.result_retry_action``): the original
+    admission SETTLED ``failed`` with a committed result whose error classifies transient (429/5xx/
+    context overflow). queued/started/unknown admissions never qualify — unknown execution is never
+    replayed — and the retry itself is never retried."""
+    if (record.get('retry') or {}).get('refused') or _retry_admission(authority, record):
+        return False
+    row = get_session_admission(authority.db, admission_id=record['admission_id'])
+    if row is None or row['status'] != 'terminal' or row['outcome'] != 'failed':
+        return False
+    from gateway.session_results import admission_result
+    saved = admission_result(authority.db, record['admission_id'])
+    if saved is None:
+        return False
+    from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
+    return result_retry_action(saved['result']) != RETRY_NONE
+
+
+async def _maybe_retry(authority, home, path, record):
+    """Admit the delivery's one retry under a DERIVED identity recorded on the same receipt, so a
+    repeated deliver(), an owner restart or a second settle re-reads that admission instead of
+    minting another. The identity is written before the admission: a death in that two-store window
+    re-admits the SAME identity, which the FIFO answers with the existing row (never a second turn).
+
+    No user-row adoption: a transient owner-side failure persists the DM row and then CLOSES it with the
+    durable failed-turn boundary (``agent.conversation_loop._close_durable_failed_turn`` /
+    ``_hmwa_close_failed_turn``, #107070), so ``agent.session_persistence.adopt_unanswered_turn`` would
+    decline by contract (a plain assistant row follows the DM) and the retry is a fresh turn after that
+    boundary. A failure that left the DM as an OPEN tail (the context-pressure classes skip the closer)
+    is not retried: the owner execution has no adoption seam, and the retry's DM would merge into it."""
+    if not _retry_eligible(authority, record):
+        return
+    identity = _retry_identity(record['delivery_id'])
+    actor = Principal(record['principal_id'], authority.profile_id, frozenset({'session:submit', 'session:read'}),
+                      'bot-delivery-retry')
+    try:
+        authority._require_admission_open()
+        ref, live, entry = _target(authority, actor)
+        if ref.session_id != record['session_id']:
+            raise RuntimeStoreError('admission_conflict')
+        if authority.db.latest_conversation_role(entry.session_id) == 'user':
+            raise RuntimeStoreError('open_user_tail')
+    except RuntimeStoreError as exc:
+        if exc.reason == 'runtime_draining':
+            return  # nothing recorded: the restarted owner's recovery re-evaluates the same gate
+        record['retry'] = {'identity': identity, 'refused': exc.reason}
+        _write(path, record)
+        return
+    event = MessageEvent(text=record['message'], source=live.source, internal=True,
+        message_id=identity, metadata={'gateway_session_key': live.route, 'gateway_session_id': entry.session_id})
+    from gateway.session_automation import automation_notification_metadata
+    event.metadata.update(automation_notification_metadata(record))
+    if record.get('author') is not None:
+        event.metadata['turn_author'] = dict(record['author'])
+    record['retry'] = {'identity': identity}
+    _write(path, record)
+    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+    record.update(_result(authority, record))
+    _write(path, record)
+    if receipt.status in {'queued', 'started'}:
+        _watch_reply(authority, home, record['delivery_id'], receipt.admission_id)
 
 
 async def _record_reply(authority, home, key, future):
@@ -151,6 +239,7 @@ async def _record_reply(authority, home, key, future):
         record = _read(path)
         record.update(_result(authority, record))
         _write(path, record)
+        await _maybe_retry(authority, home, path, record)
 
 
 def relay_operation(connection, operation, params):
@@ -215,7 +304,10 @@ async def recover_bot_deliveries(authority):
             record.update(_result(authority, record))
             _write(path, record)
             if record['status'] in {'queued', 'claimed'}:
-                _watch_reply(authority, home, record['delivery_id'], record['admission_id'])
+                _watch_reply(authority, home, record['delivery_id'],
+                             record.get('retry_admission_id') or record['admission_id'])
+            else:
+                await _maybe_retry(authority, home, path, record)
         row = authority.db.get_session_by_title('Bot Chat')
         if row is None:
             return
@@ -271,6 +363,7 @@ async def deliver(connection, params):
                     or record.get('notification_category', 'result') != category):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
+            await _maybe_retry(authority, home, path, record)
             return _result(authority, record)
         await _migrate(authority, actor, home, root)
         record = _read(path)
@@ -280,6 +373,7 @@ async def deliver(connection, params):
                     or record.get('notification_category', 'result') != category):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
+            await _maybe_retry(authority, home, path, record)
             return _result(authority, record)
         if record is not None:
             raise RuntimeStoreError('unknown_execution')
