@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 
@@ -14,6 +14,32 @@ test('the ensure client inherits the caller-scrubbed parent env, not the raw Des
     { PATH: process.env.PATH ?? '', OWN: '0' }
   )
   expect(JSON.parse(result.stdout)).toEqual({ leak: null, home: '/home/x/.hermes', own: '1' })
+})
+
+test('a shell-delegated ensure quotes a spaced Windows install path (#74064)', async () => {
+  // cmd.exe cuts an unquoted `C:\Users\John Doe\...\hermes.cmd` at the first space.
+  const spawned: string[] = []
+  vi.resetModules()
+  vi.doMock('node:child_process', () => ({
+    spawn: (command: string) => {
+      spawned.push(command)
+      throw new Error('stop after spawn')
+    }
+  }))
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { value: 'win32' })
+
+  try {
+    const { runGatewayEnsure: ensure } = await import('./local-gateway')
+    const command = 'C:\\Users\\John Doe\\AppData\\Local\\hermes\\hermes.cmd'
+    await expect(ensure({ command, args: ['gateway', 'ensure'], env: {}, shell: true }, 'C:\\', 'C:\\h')).rejects.toThrow('stop after spawn')
+    await expect(ensure({ command, args: [], env: {}, shell: false }, 'C:\\', 'C:\\h')).rejects.toThrow('stop after spawn')
+    expect(spawned).toEqual([`"${command}"`, command])
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+    vi.doUnmock('node:child_process')
+    vi.resetModules()
+  }
 })
 
 test('canonical ensure cannot cross a rejected update or profile lifecycle gate', async () => {
