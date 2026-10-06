@@ -26,6 +26,7 @@ export const enLocalModels: Translations['settings']['localModels'] = {
      made the pick. Qualitative on purpose: predictions order candidates,
      they are not promises to print. */
   recommendedReason: {
+    'product-default': 'The default model for this machine, chosen by its manufacturer.',
     'best-quality-resident':
       'The highest-quality model that runs entirely on your GPU at full speed. Picks weigh quality against predicted speed on this hardware.',
     'speed-gated-quality':

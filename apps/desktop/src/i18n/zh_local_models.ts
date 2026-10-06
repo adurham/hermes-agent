@@ -34,6 +34,7 @@ export const zhLocalModels: TranslationOverride<Translations['settings']['localM
   modelsTitle: '模型',
   recommended: '推荐',
   recommendedReason: {
+    'product-default': '这台机器的默认模型，由其制造商选定。',
     'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
     'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
     'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。'

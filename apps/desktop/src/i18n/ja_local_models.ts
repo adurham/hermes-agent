@@ -25,6 +25,7 @@ export const jaLocalModels: TranslationOverride<Translations['settings']['localM
   modelsTitle: 'モデル',
   recommended: 'おすすめ',
   recommendedReason: {
+    'product-default': 'このマシンのメーカーが選んだ標準モデルです。',
     'best-quality-resident':
       'GPU に完全に載り、フルスピードで動くモデルの中で最高品質です。おすすめは品質とこのハードウェアでの予測速度を両立させて選ばれます。',
     'speed-gated-quality':

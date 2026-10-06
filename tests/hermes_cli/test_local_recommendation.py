@@ -3,7 +3,9 @@
 The recommendation itself is DERIVED (catalog.recommended_entry: best
 quality among resident entries clearing the pleasant speed floor, else
 fastest resident). Spilled models stay browseable but are never automatic
-recommendations, so nobody hand-maintains per-hardware-class picks.
+recommendations, so nobody hand-maintains per-hardware-class picks. The
+one exception is a recognized product whose manufacturer chose its default
+(catalog._PRODUCT_DEFAULTS), tested at the bottom of this file.
 This table pins the model and reason across discrete and unified memory
 classes so changes to the recommendation remain reviewable.
 
@@ -130,11 +132,15 @@ def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monke
     import subprocess
     import urllib.request
 
+    from hermes_cli.local_runtime import catalog
+
     def no_io(*args, **kwargs):
         raise AssertionError("calibration must use shipped data, not a runtime benchmark")
 
     monkeypatch.setattr(subprocess, "run", no_io)
     monkeypatch.setattr(urllib.request, "urlopen", no_io)
+    # The derived rule alone; the RTX Spark's product default has its own tests below.
+    monkeypatch.setattr(catalog, "_PRODUCT_DEFAULTS", {})
     budget = _unified(capacity)
     budget.gpu_name = gpu_name
     budget.platform = "win32"
@@ -227,3 +233,35 @@ def test_quality_decides_where_speed_permits():
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+# ── the RTX Spark's product default ──
+
+_N1X_PCI_ID = 0x2E1210DE  # NVML packs the device ID above the 16-bit vendor ID
+
+
+@pytest.mark.parametrize("identity", [
+    {"gpu_pci_id": _N1X_PCI_ID},
+    {"gpu_name": "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)"},
+])
+def test_the_rtx_spark_defaults_to_the_27b_with_flash_next_still_fitting(identity):
+    """Its manufacturer's pick. Flash Next fits too and stays one click away; on Windows it loads
+    once the carve-out leaves Windows enough commit to back it."""
+    from dataclasses import replace
+
+    budget = replace(_unified(128), platform="win32", **identity)
+    picked = recommended_entry(budget)
+    assert (picked[0].id, picked[1]) == ("qwen3.8-27b", "product-default")
+    flash_next = next(e for e in CATALOG if e.id == "qwen3.8-flash-next")
+    choice = select_variant(flash_next, budget)
+    assert choice is not None and choice.zero_spill
+
+
+def test_the_derived_rule_decides_on_other_platforms_backends_and_when_the_default_is_ineligible():
+    from dataclasses import replace
+
+    spark = replace(_unified(128), platform="win32", gpu_pci_id=_N1X_PCI_ID)
+    without_the_27b = tuple(e for e in CATALOG if e.id != "qwen3.8-27b")
+    assert recommended_entry(spark, without_the_27b)[1] != "product-default"
+    assert recommended_entry(replace(spark, platform="linux"))[1] != "product-default"
+    assert recommended_entry(spark, backend="vulkan")[1] != "product-default"

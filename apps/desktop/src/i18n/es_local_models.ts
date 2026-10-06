@@ -25,6 +25,7 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   modelsTitle: 'Modelos',
   recommended: 'Recomendado',
   recommendedReason: {
+    'product-default': 'El modelo predeterminado para este equipo, elegido por su fabricante.',
     'best-quality-resident':
       'El modelo de mayor calidad que se ejecuta por completo en tu GPU a máxima velocidad. La selección equilibra la calidad con la velocidad prevista en este hardware.',
     'speed-gated-quality':
