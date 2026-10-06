@@ -5,7 +5,7 @@ import time
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import advance_local_target, validate_local_lineage
-from hermes_state_mutation_guards import require_idle
+from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -16,7 +16,7 @@ def reset_in_transaction(db, conn, session_id, payload):
         raise RuntimeStoreError('runtime_coordination_required')
     receipt = json.loads(saved[0])
     target = validate_local_lineage(conn, receipt)
-    require_idle(db, conn, list({session_id, target}))
+    require_target_advanceable(db, conn, list({session_id, target}))
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     policy = receipt['policy']
     from gateway.session import SessionEntry

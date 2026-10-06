@@ -2,7 +2,7 @@
 import json
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
-from hermes_state_mutation_guards import require_idle
+from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -12,7 +12,7 @@ def local_snapshot(db, conn, session_id):
         raise RuntimeStoreError('runtime_coordination_required')
     saved = json.loads(row[0])
     target = validate_local_lineage(conn, saved)
-    require_idle(db, conn, list({session_id, target}))
+    require_target_advanceable(db, conn, list({session_id, target}))
     revision = conn.execute('SELECT runtime_revision FROM sessions WHERE id=?', (target,)).fetchone()[0]
     return {'receipt': saved, 'target': target, 'target_revision': revision}
 
