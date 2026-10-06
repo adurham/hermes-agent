@@ -674,11 +674,21 @@ class TestLoginPageWholeClassPrefix:
         emitted page must carry both the attribute and the JS that reads it
         (the PKCE cookie Path matches the mount, so a root-absolute POST
         would silently drop the cookie and break native login)."""
-        r = gated_app_proxied.get(
-            "/login", headers={"X-Forwarded-Prefix": "/hermes"})
-        html = r.text
-        assert "getAttribute('data-prefix')" in html
-        assert "fetch(prefix + '/auth/password-login'" in html
+        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from tests.hermes_cli.test_dashboard_auth_password_login import (
+            PasswordProvider)
+
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            r = gated_app_proxied.get(
+                "/login", headers={"X-Forwarded-Prefix": "/hermes"})
+            assert r.status_code == 200
+            html = r.text
+            assert "getAttribute('data-prefix')" in html
+            assert "fetch(prefix + '/auth/password-login'" in html
+        finally:
+            clear_providers()
 
     def test_native_chooser_fonts_prefixed_behind_proxy(self):
         """The RFC 8252 desktop provider chooser shares the login template,
