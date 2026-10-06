@@ -746,6 +746,20 @@ def _install_bundled(c: Console, name: str, invalidate_cache: bool) -> tuple:
     return SimpleNamespace(name=name, source="bundled"), "success", True
 
 
+# Identifier prefixes each adapter writes (SkillMeta.identifier / _wrap_identifier), so a fetch no
+# adapter answered still names the registry it was meant for. Bare owner/repo/path stays unresolved.
+_REGISTRY_PREFIXES = (
+    ("official/", "official"), ("skills-sh/", "skills-sh"), ("clawhub/", "clawhub"), ("lobehub/", "lobehub"),
+    ("browse-sh/", "browse-sh"), ("well-known:", "well-known"), ("http://", "url"), ("https://", "url"),
+)
+
+
+def _registry_from_identifier(identifier: str) -> str:
+    if identifier.startswith(("http://", "https://")) and "/.well-known/skills/" in identifier:
+        return "well-known"
+    return next((sid for prefix, sid in _REGISTRY_PREFIXES if identifier.startswith(prefix)), "unresolved")
+
+
 def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Optional[dict] = None,
                           error: Optional[BaseException] = None) -> None:
     """One shared-metrics extension install: official optional skills are the catalog, URL skills
@@ -833,6 +847,8 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if _matched_source is not None:
         attempt["registry"] = getattr(_matched_source, "SOURCE_ID", "") or "other"
+    elif attempt.get("registry") == "unresolved":
+        attempt["registry"] = _registry_from_identifier(identifier)
     if not bundle:
         attempt["failure_class"] = _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return None, "failed", False
