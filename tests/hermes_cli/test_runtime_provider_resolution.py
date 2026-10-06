@@ -2367,3 +2367,16 @@ def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(mon
     runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
 
     assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")
+
+
+def test_bare_custom_explicit_launch_key_wins_over_custom_pool(monkeypatch):
+    """R2-M1: on the bare-custom terminal rung a launch ``--api-key`` must not be replaced by a
+    pooled credential for the same URL (named-custom and direct-alias already honour it)."""
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "custom"})
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: {
+        "provider": "custom", "base_url": "http://127.0.0.1:9/v1", "api_key": "sk-pooled", "source": "pool"})
+    resolved = _resolve_openrouter_runtime(requested_provider="custom", explicit_api_key="sk-launch-explicit",
+                                           explicit_base_url="http://127.0.0.1:9/v1")
+    assert resolved["api_key"] == "sk-launch-explicit"
