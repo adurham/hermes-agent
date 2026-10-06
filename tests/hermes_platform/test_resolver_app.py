@@ -59,6 +59,27 @@ def test_bundle_presence_and_plist_version(tmp_path):
     assert insp.signer.state is CheckState.NOT_CHECKED
 
 
+def test_star_segment_tries_the_highest_version_first(tmp_path):
+    for version in ("2.9", "2.10", "10.0b"):
+        folder = tmp_path / f"Thing {version}"
+        folder.mkdir()
+        (folder / "thing").write_text("", encoding="utf-8")
+    location = AppLocation("path", str(tmp_path / "Thing *" / "thing"))
+    res = AppResolver(AppDef("thing", sys.platform, "executable", (location,))).locate()
+    assert res.kind == "known_path"
+    assert [os.path.basename(os.path.dirname(c.value)) for c in res.candidates] == ["Thing 10.0b", "Thing 2.10", "Thing 2.9"]
+
+
+def test_first_present_location_sets_the_resolution(tmp_path):
+    exe = tmp_path / "later" / "thing"
+    exe.parent.mkdir()
+    exe.write_text("", encoding="utf-8")
+    locations = (AppLocation("path", str(tmp_path / "absent" / "thing")), AppLocation("path", str(exe)))
+    res = AppResolver(AppDef("thing", sys.platform, "executable", locations)).locate()
+    assert res.kind == "known_path" and res.command == (str(exe),)
+    assert [c.present for c in res.candidates] == [False, True]
+
+
 def test_inspect_on_missing_is_not_checked(tmp_path):
     r = AppResolver(AppDef("thing", sys.platform, "executable", (AppLocation("path", str(tmp_path / "none")),), version_kind="plist"))
     insp = r.inspect(r.locate())

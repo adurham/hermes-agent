@@ -1,6 +1,9 @@
+import type { ToolCallMessagePart } from '@assistant-ui/react'
 import type {
+  CatalogApproved,
   CatalogAppState,
   CatalogScan,
+  CatalogServerError,
   CatalogTier,
   ConnectionAnswer,
   ConnectionOperationStatus,
@@ -11,13 +14,14 @@ import type {
   ConnectionTargetEnvField,
   ConnectionTargetKind,
   ConnectionTargetState,
-  ConnectionUpdatePayload
+  ConnectionUpdatePayload,
+  InstallPhase
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { SetupField } from '@/components/ui/setup-field-list'
-import { recordOf } from '@/lib/connector-tools'
+import { connectorText } from '@/lib/connector-tools'
 
 import { $gateway, requestGatewayForAgent } from './gateway'
 import { $activeGatewayProfile } from './profile'
@@ -54,12 +58,25 @@ export interface CatalogEntry {
   sha: string | null
   subdir: string | null
   scan: CatalogScan | null
-  requirements: string[]
+  /** The Hermes version range the plugin needs; its env vars are the target's `requiredEnv`. */
+  requiresHermes: string | null
   hasDesktopHalf: boolean
-  targetProfile: string
+  /** The profile the row installs into; null when the chat's home is no named profile. */
+  targetProfile: string | null
   appState: CatalogAppState | null
   /** On an installed skill row: the qualified name the model can now load. */
   skill: string | null
+  /** The install step while the row is installing; the card words it. */
+  phase: InstallPhase | null
+  /** The non-secret choices the user approved; a Try again after the card settled repeats them. */
+  approved: CatalogApproved | null
+  /** Facts on an installed row: whether it was turned on, what it still needs, what did not connect. */
+  enabled: boolean | null
+  missingEnv: string[]
+  serverErrors: CatalogServerError[]
+  alreadyInstalled: boolean
+  /** The backend's word that the row needs nothing more from the user: installed, skipped or failed. */
+  resolved: boolean
 }
 
 /** One target of the operation as the renderer knows it. State comes only from the backend
@@ -121,11 +138,8 @@ const $keptConnectionRequests = atom<Record<string, ConnectionRequest[]>>({})
  *  Models reuse call ids (`call_0` on every turn), so the op id, not the call id, names a row's card. */
 export const CONNECTION_OP_ARG = 'hermes_connection_op'
 
-export const connectionOpOf = (args: unknown): null | string => {
-  const value = recordOf(args as never)[CONNECTION_OP_ARG]
-
-  return typeof value === 'string' && value ? value : null
-}
+export const connectionOpOf = (args: ToolCallMessagePart['args']): null | string =>
+  connectorText(args[CONNECTION_OP_ARG]) || null
 
 /** The operation a tool row draws. A row that carries an op id draws that operation and no other. A row
  *  without one (history loaded from disk, or a call whose request has not arrived yet) falls back to its
@@ -182,29 +196,37 @@ const settleReason = oneOf(SETTLE_REASONS)
 export const isCatalogKind = (kind: ConnectionTargetKind): kind is 'plugin' | 'skill' =>
   kind === 'plugin' || kind === 'skill'
 
-/** A catalog row is done once it installed, was skipped or failed: the backend settles the operation
- *  then, so a failed row never holds the turn (`tools/connectors/contract.py::resolves`). */
-export const catalogRowResolved = (state: ConnectionTargetState): boolean =>
-  state === 'connected' || state === 'skipped' || state === 'failed'
-
 /** A `manage_catalog` install operation, as opposed to a `manage_connections` one. */
 export const isCatalogRequest = (request: ConnectionRequest): boolean =>
   request.targets.some(target => isCatalogKind(target.kind))
 
+type InstalledFacts = Pick<CatalogEntry, 'alreadyInstalled' | 'enabled' | 'missingEnv' | 'serverErrors'>
+
+const installedFacts = (entry: ConnectionOperationTarget): InstalledFacts => ({
+  alreadyInstalled: entry.already_installed ?? false,
+  enabled: entry.enabled ?? null,
+  missingEnv: entry.missing_env ?? [],
+  serverErrors: entry.server_errors ?? []
+})
+
 function catalogEntry(entry: ConnectionOperationTarget, name: string): CatalogEntry {
   return {
+    ...installedFacts(entry),
     appState: entry.app_state ?? null,
+    approved: entry.approved ?? null,
     description: entry.description ?? '',
     display: entry.display?.trim() || name,
     hasDesktopHalf: entry.has_desktop_half ?? false,
+    phase: entry.phase ?? null,
     platforms: entry.platforms ?? [],
     repo: entry.repo ?? null,
-    requirements: entry.requirements ?? [],
+    requiresHermes: entry.requires_hermes ?? null,
+    resolved: entry.resolved ?? false,
     scan: entry.scan ?? null,
     sha: entry.sha ?? null,
     skill: entry.skill ?? null,
     subdir: entry.subdir ?? null,
-    targetProfile: entry.target_profile?.trim() || 'default',
+    targetProfile: entry.target_profile?.trim() || null,
     tier: entry.tier ?? null
   }
 }

@@ -283,6 +283,14 @@ export function runTourEngine(
     doc.body.classList.remove('driver-active', 'driver-fade', 'driver-simple', 'driver-no-scroll')
   }
 
+  /** Every way a driver goes away funnels here, so the host hears about each one. */
+  const ended = () => {
+    holder.driver = undefined
+    holder.release?.()
+    holder.release = undefined
+    host?.onEnd?.()
+  }
+
   if (kind === 'show') {
     const gone = unmatched([action])
 
@@ -292,17 +300,8 @@ export function runTourEngine(
 
     if (!holder.driver) {
       clearOrphans()
-      // Esc, the X and an overlay click end a highlight too; without this
-      // hook the tour-active flag would stay set for the rest of the session.
-      holder.driver = factory({
-        ...base,
-        onDestroyed: () => {
-          holder.driver = undefined
-          holder.release?.()
-          holder.release = undefined
-          host?.onEnd?.()
-        }
-      })
+      // Esc, the ✕ and an overlay click end a one-off highlight too.
+      holder.driver = factory({ ...base, onDestroyed: ended })
     }
 
     // A one-off highlight is its own arrival, so it uses the settle-down enter.
@@ -337,10 +336,7 @@ export function runTourEngine(
     holder.driver = factory({
       ...base,
       onDestroyed: () => {
-        holder.driver = undefined
-        holder.release?.()
-        holder.release = undefined
-        host?.onEnd?.()
+        ended()
 
         if (origin !== undefined && host?.navigate && host.currentRoute?.() !== origin) {
           host.navigate(origin)

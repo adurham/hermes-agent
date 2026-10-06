@@ -17,7 +17,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterator, Literal
+from typing import Any, Callable, Iterator, Literal
 from urllib.parse import urlsplit
 
 from hermes_platform.resolver import known_dirs
@@ -33,7 +33,6 @@ from hermes_platform.resolver.core import (
 )
 
 PresenceKind = Literal["executable", "bundle"]
-LocationKind = Literal["path", "command", "uninstall_registry", "app_bundle", "flatpak", "snap"]
 VersionKind = Literal["pe_resource", "plist", "uninstall_registry", "none"]
 LivenessKind = Literal["server_json", "none"]
 
@@ -42,11 +41,10 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 @dataclass(frozen=True)
 class AppLocation:
-    """One place to look. `value` is the path (`path`), the command or snap name, the uninstall
-    entry's `DisplayName` prefix, the bundle name, or the flatpak app id. `file` is joined onto an
-    uninstall entry's `InstallLocation`."""
+    """One place to look. `kind` is `path` or a key of `LOCATION_KINDS`. `value` is the path, or the
+    value of that kind's `key`. `file` is joined onto an uninstall entry's `InstallLocation`."""
 
-    kind: LocationKind
+    kind: str
     value: str
     file: str = ""
 
@@ -94,7 +92,7 @@ class AppResolver:
 
     def locate(self, ctx: LookupContext | None = None) -> Resolution:
         d = self.definition
-        found = [hit for loc in d.locations for hit in _LOCATORS[loc.kind](d, loc, ctx)]
+        found = [hit for loc in d.locations for hit in _locator(loc.kind)(d, loc, ctx)]
         kind: Kind = next((k for c, k in found if c.present), "missing")
         return Resolution(kind, tuple(c for c, _ in found))
 
@@ -188,32 +186,49 @@ def _path_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_
 
 def _command_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
     res = locate_command(loc.value, ctx)
-    return [(Candidate(c.value, f"app:{d.app_id}:command", c.present), "path_executable") for c in res.candidates]
+    return [(Candidate(c.value, f"app:{d.app_id}:{loc.kind}", c.present), "path_executable") for c in res.candidates]
 
 
 def _uninstall_hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
     if sys.platform != "win32":
         return []
     # A UNC InstallLocation is skipped so a presence check never touches the network.
-    return [_hit(d, f"app:{d.app_id}:uninstall_registry", os.path.join(entry["InstallLocation"], loc.file))
+    return [_hit(d, f"app:{d.app_id}:{loc.kind}", os.path.join(entry["InstallLocation"], loc.file))
             for entry in _uninstall_entries(loc.value)
             if entry.get("InstallLocation") and not entry["InstallLocation"].startswith(("\\\\", "//"))]
 
 
-def _in_dirs(dirs: Callable[[], tuple[str, ...]], kind: str) -> _Locator:
+def _in_dirs(dirs: Callable[[], tuple[str, ...]]) -> _Locator:
     def hits(d: AppDef, loc: AppLocation, ctx: LookupContext | None) -> list[_Hit]:
-        return [_hit(d, f"app:{d.app_id}:{kind}", os.path.join(_expand(root), loc.value)) for root in dirs()]
+        return [_hit(d, f"app:{d.app_id}:{loc.kind}", os.path.join(_expand(root), loc.value)) for root in dirs()]
     return hits
 
 
-_LOCATORS: dict[str, _Locator] = {
-    "path": _path_hits,
-    "command": _command_hits,
-    "uninstall_registry": _uninstall_hits,
-    "app_bundle": _in_dirs(known_dirs.mac_application_dirs, "app_bundle"),
-    "flatpak": _in_dirs(known_dirs.flatpak_export_dirs, "flatpak"),
-    "snap": _in_dirs(known_dirs.snap_bin_dirs, "snap"),
+@dataclass(frozen=True)
+class LocationSpec:
+    """A location kind a declaration names in a mapping. `only_on` is the one OS family it is valid
+    under (None: any), `key` names the mapping field holding what to find, `yields` is the presence
+    it finds, and `needs_file` says the mapping also carries a relative `file`."""
+
+    only_on: str | None
+    key: str
+    yields: PresenceKind
+    locate: _Locator
+    needs_file: bool = False
+
+
+LOCATION_KINDS: dict[str, LocationSpec] = {
+    "command": LocationSpec(None, "name", "executable", _command_hits),
+    "uninstall_registry": LocationSpec("win32", "display_name_prefix", "executable", _uninstall_hits, needs_file=True),
+    "app_bundle": LocationSpec("darwin", "name", "bundle", _in_dirs(known_dirs.mac_application_dirs)),
+    "flatpak": LocationSpec("linux", "app_id", "executable", _in_dirs(known_dirs.flatpak_export_dirs)),
+    "snap": LocationSpec("linux", "name", "executable", _in_dirs(known_dirs.snap_bin_dirs)),
 }
+
+
+def _locator(kind: str) -> _Locator:
+    """A plain string location is a `path`; every other kind comes from `LOCATION_KINDS`."""
+    return _path_hits if kind == "path" else LOCATION_KINDS[kind].locate
 
 
 # ---- version sources -------------------------------------------------------------------
@@ -257,6 +272,30 @@ def _pe_version(path: str) -> Observation[str]:
     return Observation(CheckState.PRESENT, f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}")
 
 
+def _uninstall_values(entry: Any) -> dict[str, str]:
+    """The uninstall entry's values that exist; any of them may be missing."""
+    import winreg
+
+    values: dict[str, str] = {}
+    for value_name in ("DisplayName", "DisplayVersion", "InstallLocation"):
+        try:
+            values[value_name] = str(winreg.QueryValueEx(entry, value_name)[0])
+        except OSError:
+            continue
+    return values
+
+
+def _uninstall_entry(key: Any, index: int) -> dict[str, str]:
+    """One child entry's values; an entry can vanish between EnumKey and OpenKey, which reads as no values."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(key, winreg.EnumKey(key, index)) as entry:
+            return _uninstall_values(entry)
+    except OSError:
+        return {}
+
+
 def _uninstall_entries(display_name_prefix: str) -> Iterator[dict[str, str]]:
     """Each uninstall entry whose `DisplayName` starts with the prefix, machine-wide before per-user."""
     import winreg
@@ -271,16 +310,9 @@ def _uninstall_entries(display_name_prefix: str) -> Iterator[dict[str, str]]:
             with winreg.OpenKey(hive, root) as key:
                 count = winreg.QueryInfoKey(key)[0]
                 for i in range(count):
-                    sub = winreg.EnumKey(key, i)
-                    with winreg.OpenKey(key, sub) as entry:
-                        values: dict[str, str] = {}
-                        for value_name in ("DisplayName", "DisplayVersion", "InstallLocation"):
-                            try:
-                                values[value_name] = str(winreg.QueryValueEx(entry, value_name)[0])
-                            except OSError:
-                                continue
-                        if values.get("DisplayName", "").startswith(display_name_prefix):
-                            yield values
+                    values = _uninstall_entry(key, i)
+                    if values.get("DisplayName", "").startswith(display_name_prefix):
+                        yield values
         except OSError:
             continue
 

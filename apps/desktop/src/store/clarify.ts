@@ -15,7 +15,7 @@ export interface SetupChooseSpec {
   kind: SetupChooseKind
   options: SetupChooseOption[] | null
   multiSelect: boolean
-  /** Row ids the card starts with picked (the backend fills them from the machine scan). */
+  /** Row ids the card starts with picked (the backend fills them from the setup facts). */
   preselected: string[]
 }
 

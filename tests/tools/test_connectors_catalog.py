@@ -1,6 +1,7 @@
 """``manage_catalog`` (catalog install through the connection card).
 
 Contracts:
+- the tool reaches only desktop sessions, whatever a config selects, and is deferred by default
 - only a desktop chat draws it
 - the model sends catalog ids and an action; every other key is refused before anything runs
 - an id the catalog does not know, or a plugin this OS cannot run, is drawn failed and never installed
@@ -100,6 +101,51 @@ def _approve(env=None):
                                         for t in payload["targets"] if t["state"] == "pending"]}
 
 
+def test_only_a_desktop_session_carries_the_tool():
+    import model_tools
+    import toolsets
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from tools.tool_search import is_deferrable_tool_name
+
+    # A config may name the toolset; `all` never brings it in.
+    assert "manage_catalog" in model_tools._select_tool_names(["catalog", "web"], None, quiet_mode=True)
+    assert "manage_catalog" not in model_tools._select_tool_names(None, None, quiet_mode=True)
+    assert "manage_catalog" not in toolsets.resolve_toolset("all")
+    # The agent's own session platform decides whether it keeps the tool.
+    for platform in ("cli", "tui", "telegram", "cron", None):
+        assert "manage_catalog" in toolsets.session_platform_tool_drops(platform), platform
+    assert "manage_catalog" not in toolsets.session_platform_tool_drops("desktop")
+    # Behind tool_search by default, like the other desktop surface tools.
+    assert is_deferrable_tool_name("manage_catalog", frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"]))
+
+
+def _desktop_child_toolsets():
+    from tools.delegate_tool_toolsets import _resolve_child_toolsets
+    parent = SimpleNamespace(enabled_toolsets=["catalog", "web"], disabled_toolsets=None)
+    return _resolve_child_toolsets(parent, None, "leaf")
+
+
+@pytest.mark.parametrize("platform", ["desktop", "cli", "subagent"])
+def test_a_session_off_the_desktop_never_hears_of_the_tool_even_through_tool_search(monkeypatch, platform):
+    """A CLI config naming ``catalog``, and a delegate child of a desktop chat, lose manage_catalog from
+    the direct tools, the tool_search listing and the bridge's search, not just from the direct tools."""
+    import model_tools
+    from agent.agent_init import _load_tools
+
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    enabled, disabled = _desktop_child_toolsets() if platform == "subagent" else (["catalog", "web"], None)
+    assert "catalog" in enabled
+    agent = SimpleNamespace(quiet_mode=True, platform=platform, enabled_toolsets=enabled, disabled_toolsets=disabled)
+
+    _load_tools(agent, enabled, disabled)
+    found = json.loads(model_tools.handle_function_call(
+        "tool_search", {"queries": ["catalog plugin install"]},
+        enabled_toolsets=agent.enabled_toolsets, disabled_toolsets=agent.disabled_toolsets))
+
+    carried = "manage_catalog" in json.dumps(agent.tools) or "manage_catalog" in json.dumps(found)
+    assert carried is (platform == "desktop")
+
+
 @pytest.mark.parametrize("args", [
     {"action": "install", "items": [{"kind": "plugin", "id": "x"}], "profile": "work"},
     {"action": "install", "items": [{"kind": "plugin", "id": "x", "sha": "b" * 40}]},
@@ -170,7 +216,9 @@ def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):
     (call,) = installer.installs
     assert (call["force"], call["enable"], call["ref"]) == (True, False, pin)
     assert call["home"].resolve() == Path(work).resolve() and row["target_profile"] == "work"
-    assert "not enabled" in row["detail"]
+    # The row carries what the user approved, so a Try again after settle repeats it.
+    assert row["approved"] == {"force": True, "enable": False, "ref": pin}
+    assert row["enabled"] is False and "not enabled" in row["detail"]
 
 
 def test_a_failed_row_keeps_its_reason_and_try_again_works_while_the_card_is_open():

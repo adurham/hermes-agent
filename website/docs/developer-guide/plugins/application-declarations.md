@@ -72,7 +72,7 @@ app:
 | `flatpak` | `linux` | `app_id` | the system, then the per-user flatpak `exports/bin` |
 | `snap` | `linux` | `name` | `/snap/bin` |
 
-The directories behind each kind live in `hermes_platform/resolver/known_dirs.py`.
+Each kind's OS, key, presence and locator are one `LOCATION_KINDS` entry in `hermes_platform/resolver/app.py`; the parser validates against that table, so a new kind is one entry there. The directories behind each kind live in `hermes_platform/resolver/known_dirs.py`.
 
 | field | type | rule | maps to `AppDef` |
 |---|---|---|---|

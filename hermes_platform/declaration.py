@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
-from hermes_platform.resolver.app import AppDef, AppLocation
+from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 
 __all__ = [
     "AppSpec",
@@ -76,14 +76,6 @@ _APP_OS_FAMILIES = ("win32", "darwin", "linux")
 _APP_PRESENCE = ("executable", "bundle")
 _APP_VERSION_KINDS = {"pe_resource": "win32", "uninstall_registry": "win32", "plist": "darwin", "none": None}
 _APP_LIVENESS_KINDS = ("server_json", "none")
-# location kind -> (only valid under this OS, the key naming what to find, the presence it yields)
-_APP_LOCATION_KINDS = {
-    "command": (None, "name", "executable"),
-    "uninstall_registry": ("win32", "display_name_prefix", "executable"),
-    "app_bundle": ("darwin", "name", "bundle"),
-    "flatpak": ("linux", "app_id", "executable"),
-    "snap": ("linux", "name", "executable"),
-}
 _VERSION_RE = re.compile(r"^\d+(\.\d+)*$")
 # `requires.gpu` values and how a sentence names them. Only NVIDIA: `facts.gpu_class()` reports the
 # highest-priority vendor present, which answers "is an NVIDIA GPU here" exactly and would not answer
@@ -113,9 +105,10 @@ def _location_is_rooted(location: str, osf: str) -> bool:
 
 
 def _is_relative_name(value: Any, *, allow_dirs: bool) -> bool:
+    """Checks the stripped value, the one later joined: an empty part rejects a leading / or \\, a colon rejects a drive."""
     if not isinstance(value, str) or not value.strip() or "://" in value:
         return False
-    parts = value.replace("\\", "/").split("/")
+    parts = value.strip().replace("\\", "/").split("/")
     return ".." not in parts and "" not in parts and (allow_dirs or len(parts) == 1) and ":" not in parts[0]
 
 
@@ -129,19 +122,19 @@ def _parse_location(where: str, osf: str, presence: str, label: str, raw: Any) -
             raise DeclarationError(
                 f"{where}: {label} must be absolute or start with ~ / %VAR% / $VAR, without '..', '**' or a URL scheme")
         return AppLocation("path", path)
-    if not isinstance(raw, dict) or raw.get("kind") not in _APP_LOCATION_KINDS:
-        raise DeclarationError(f"{where}: {label} must be a path or a mapping with kind one of {sorted(_APP_LOCATION_KINDS)}")
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str) or raw["kind"] not in LOCATION_KINDS:
+        raise DeclarationError(f"{where}: {label} must be a path or a mapping with kind one of {sorted(LOCATION_KINDS)}")
     kind = raw["kind"]
-    only_on, key, yields = _APP_LOCATION_KINDS[kind]
-    if only_on and only_on != osf:
-        raise DeclarationError(f"{where}: {label} kind {kind!r} is only valid under app.{only_on}")
-    if yields != presence:
-        raise DeclarationError(f"{where}: {label} kind {kind!r} needs app.{osf}.presence {yields}")
-    value = raw.get(key)
+    spec = LOCATION_KINDS[kind]
+    if spec.only_on and spec.only_on != osf:
+        raise DeclarationError(f"{where}: {label} kind {kind!r} is only valid under app.{spec.only_on}")
+    if spec.yields != presence:
+        raise DeclarationError(f"{where}: {label} kind {kind!r} needs app.{osf}.presence {spec.yields}")
+    value = raw.get(spec.key)
     if not _is_relative_name(value, allow_dirs=False):
-        raise DeclarationError(f"{where}: {label}.{key} must be a bare name")
+        raise DeclarationError(f"{where}: {label}.{spec.key} must be a bare name")
     file = raw.get("file", "")
-    if kind == "uninstall_registry" and not _is_relative_name(file, allow_dirs=True):
+    if spec.needs_file and not _is_relative_name(file, allow_dirs=True):
         raise DeclarationError(f"{where}: {label}.file must be a relative path inside the install folder")
     return AppLocation(kind, value.strip(), str(file).strip())
 

@@ -8,7 +8,6 @@ user's laptop.
 
 from __future__ import annotations
 
-import contextvars
 import os
 import platform
 import re
@@ -50,7 +49,7 @@ def _posix_account() -> tuple[str, str]:
     """Return (login, full name) from the user database."""
     import pwd
 
-    entry = pwd.getpwuid(os.getuid())
+    entry = pwd.getpwuid(os.getuid())  # windows-footgun: ok — only called off Windows (_account)
     return entry.pw_name, entry.pw_gecos.split(",", 1)[0].strip()
 
 
@@ -134,7 +133,7 @@ def _linux_locale() -> str:
     """System locale from its config file; the shell's LANG is deliberately not read."""
     for path in ("/etc/locale.conf", "/etc/default/locale"):
         try:
-            with open(path, encoding="utf-8") as handle:
+            with open(path, encoding="utf-8-sig") as handle:
                 for line in handle:
                     key, _, value = line.strip().partition("=")
                     if key == "LANG" and value:
@@ -248,17 +247,17 @@ def fork_card(cards: dict) -> dict:
 def _blender_state() -> str:
     """Blender's state as the plugins card and the installer judge it: the resolver over the Blender plugin's
     pinned ``app:`` declaration. ``unknown`` when that takes longer than the deadline."""
+    from agent.memory_provider import spawn_context_thread
     from hermes_cli.plugin_catalog import get_live_catalog_entry
     from hermes_cli.plugin_catalog_presence import presence
 
     box: dict = {}
-    context = contextvars.copy_context()
 
     def read() -> None:
         entry = get_live_catalog_entry("blender")
         box["state"] = presence(entry).state if entry else "unknown"
 
-    worker = threading.Thread(target=lambda: context.run(read), daemon=True)
+    worker = spawn_context_thread(read, name="initiate-setup-blender")
     worker.start()
     worker.join(_BLENDER_DEADLINE_S)
     return box.get("state", "unknown")
@@ -278,7 +277,7 @@ def _description(block: dict) -> str:
 def _handoff(kind: str, description: str) -> dict:
     """The handoff message's parts and its two plans from ``templates/handoff.md``, the machine plan naming this
     computer, so the model reads them only when it reaches the handoff."""
-    text = (skill_dir() / "templates" / "handoff.md").read_text(encoding="utf-8")
+    text = (skill_dir() / "templates" / "handoff.md").read_text(encoding="utf-8-sig")
     sections = dict(re.findall(r"^## (\S+)\n\n(.*?)\n*(?=^## |\Z)", text, re.M | re.S))
     machine = sections["machine"].replace("<machine_kind>", kind).replace("<description>", description)
     return {"message": sections["message"], "build": sections["build"], "machine": machine}

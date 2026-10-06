@@ -642,6 +642,26 @@ export interface FreeTierStatusResult {
   error_code?: string | null
   retryable?: boolean | null
   retry_after?: number | null
+  challenge?: FreeTierChallengePayload | null
+}
+/** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
+export interface FreeTierChallengePayload {
+  type: 'browser'
+  url: string
+  required: boolean
+  expires_in: number
+  message: string
+  attempt?: number
+  [key: string]: unknown
+}
+export interface FreeTierChallengeResultParams {
+  profile?: string | null
+  url: string
+  attempt?: number
+  outcome: 'done' | 'failed' | 'closed' | 'timeout' | 'refused' | 'error' | 'unsupported'
+}
+export interface FreeTierChallengeResult {
+  accepted: boolean
 }
 export interface FreeTierProvisionResult {
   has_guest: boolean
@@ -654,11 +674,12 @@ export interface FreeTierProvisionResult {
 export interface FreeTierAckNoticeResult {
   acked: boolean
 }
-/** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer). */
+/** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered once more with the reason. */
 export interface SharedMetricsConsentResult {
   enabled: boolean
   send: boolean
   decided: boolean
+  reask?: boolean
 }
 /** ``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer. */
 export interface SharedMetricsSetParams {
@@ -781,6 +802,8 @@ export interface ModelOptionProvider {
   free_tier_pending?: boolean | null
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
+  limit?: ProviderLimit | null
+  usage?: ProviderUsage | null
   [key: string]: unknown
 }
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
@@ -799,6 +822,32 @@ export interface ModelPricing {
   discount_percent?: number | null
   was_input?: string | null
   was_output?: string | null
+}
+/** ``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time. */
+export interface ProviderLimit {
+  scope: 'account' | 'models'
+  resets_at?: string | null
+  models?: Record<string, string> | null
+}
+/** ``hermes_cli/inventory.py::_apply_usage`` — the provider's subscription usage, from cache. Multi-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows`` stays EMPTY there — a provider-wide percentage across different logins would be fabricated). Single-account providers keep the legacy ``windows`` gauge. */
+export interface ProviderUsage {
+  windows?: ProviderUsageWindow[]
+  accounts?: ProviderUsageAccount[] | null
+}
+/** One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour session or the weekly cap, with how much of it is spent and when it rolls over (ISO). ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly, so a limited account's resets_at must wait for it); ``model`` — the window caps only one model family (Anthropic Opus/Sonnet weekly) and can never imply the account itself is out of quota. */
+export interface ProviderUsageWindow {
+  label: string
+  used_percent: number
+  resets_at?: string | null
+  scope?: 'account' | 'model'
+}
+/** One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``). ``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI falls back to a localized "Account N"). ``windows`` is empty while the account's usage is not yet known — state carries the meaning, never a fabricated gauge. ``state``: ``ready`` — live quota below the cap (numeric windows present); ``limited`` — a live credential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` — no live numeric windows (failed/empty fetch, stale snapshot, provider without a usage API); ``unavailable`` — DEAD auth row (kept visible, never a quota row). ``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a live cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g. the earliest limited sibling). */
+export interface ProviderUsageAccount {
+  id: string
+  label?: string
+  windows?: ProviderUsageWindow[]
+  state: 'ready' | 'limited' | 'unknown' | 'unavailable'
+  resets_at?: string | null
 }
 export interface ImageGenerateParams {
   prompt?: string | null
@@ -984,6 +1033,7 @@ export interface ConnectionOperationTarget {
   kind: ConnectionTargetKind
   action: ConnectionTargetAction
   state: ConnectionTargetState
+  resolved?: boolean | null
   detail?: string | null
   instructions?: string | null
   discovery_error?: string | null
@@ -1001,11 +1051,17 @@ export interface ConnectionOperationTarget {
   sha?: string | null
   subdir?: string | null
   scan?: CatalogScan | null
-  requirements?: string[] | null
+  requires_hermes?: string | null
   has_desktop_half?: boolean | null
   target_profile?: string | null
   app_state?: CatalogAppState | null
   skill?: string | null
+  phase?: InstallPhase | null
+  approved?: CatalogApproved | null
+  enabled?: boolean | null
+  missing_env?: string[] | null
+  server_errors?: CatalogServerError[] | null
+  already_installed?: boolean | null
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
@@ -1028,6 +1084,19 @@ export interface CatalogScan {
 export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
 /** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
 export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
+/** The slow steps of an install, as ids; the desktop catalog card words them in its own language. */
+export type InstallPhase = 'downloading' | 'python_packages' | 'loading_tools'
+/** The non-secret Advanced choices the user approved on a catalog row; a Try again after the operation settled repeats them. */
+export interface CatalogApproved {
+  force: boolean
+  enable: boolean
+  ref?: string | null
+}
+/** An MCP server an installed plugin brought that did not connect, with the raw reason. */
+export interface CatalogServerError {
+  name: string
+  error: string
+}
 export interface ConnectionWakeResult {
   status: 'ok'
 }
@@ -1909,7 +1978,6 @@ export interface ProfileRow {
   display_name?: string
   skill_count?: number
   previous_names?: string[]
-  role?: 'setup' | null
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null
@@ -2104,8 +2172,23 @@ export interface OnboardingEnsureSetupProfileResult {
   name: string
   path: string
   created: boolean
-  role?: 'setup'
 }
+export interface OnboardingEnsureSetupSessionParams {
+  messages?: Record<string, unknown>[] | null
+}
+export interface OnboardingEnsureSetupSessionResult {
+  profile: string
+  session_id: string
+  empty: boolean
+}
+export interface OnboardingStateResult {
+  eligible: boolean
+  intro: OnboardingIntro
+  failed_starts: number
+  completed_at?: string | null
+  profile?: string | null
+}
+export type OnboardingIntro = 'unseen' | 'seen'
 export interface OnboardingResetSetupProfileResult {
   name: string
   path: string
@@ -3136,6 +3219,7 @@ export interface SessionListRow {
   message_count?: number
   live_message_count?: number | null
   source?: string
+  _lineage_root_id?: string | null
 }
 export interface SessionMostRecentParams {
   profile?: string | null
@@ -3536,6 +3620,30 @@ export interface LlmOneshotParams {
 export interface LlmOneshotResult {
   text: string
 }
+/** ``tool_call_id`` names the rejected call; its saved tool row records a started retry (display-only). */
+export interface SessionStartChatParams {
+  session_id: string
+  profile?: string | null
+  tool_call_id: string
+  args: StartChatArgs
+}
+/** The ``start_chat`` tool's arguments (``tools/start_chat_tool.py``). */
+export interface StartChatArgs {
+  message: string
+  title?: string | null
+  profile?: string | null
+}
+/** ``tui_gateway/start_chat.py``: ``started`` carries the new chat, ``rejected`` a reason and whether the same arguments may succeed on another try (``retryable``). A call already retried returns that retry's result. */
+export interface SessionStartChatResult {
+  status: StartChatStatus
+  session_id?: string | null
+  profile?: string | null
+  title?: string | null
+  message?: string | null
+  reason?: string | null
+  retryable?: boolean | null
+}
+export type StartChatStatus = 'started' | 'rejected'
 export interface SystemBatteryParams {
   profile?: string | null
 }
@@ -4349,6 +4457,25 @@ export interface ClarifyQuestion {
 export interface ClarifyResult {
   answers?: Record<string, string | null> | null
 }
+export interface SetupChooseRequestParams {
+  session_id: string
+  kind: SetupChooseKind
+  question: string
+  options?: SetupChooseOption[] | null
+  multi_select?: boolean
+  preselected?: string[] | null
+}
+export type SetupChooseKind = 'question' | 'accent' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'fork' | 'machine_use'
+export interface SetupChooseOption {
+  id: string
+  label: string
+  detail?: string | null
+}
+export interface SetupChooseResult {
+  picked?: string | string[] | null
+  label?: string | string[] | null
+  said?: string | null
+}
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string
@@ -4431,6 +4558,7 @@ export interface TourRequestParams {
   side?: string | null
   steps?: TourStep[] | null
   step_index?: number | null
+  preset?: TourPreset | null
 }
 export interface TourStep {
   selector?: string | null
@@ -4439,6 +4567,8 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+/** Which built-in tour ``start`` without steps runs. */
+export type TourPreset = 'quick' | 'full'
 export interface DisplayInstallSudoParams {
   session_id: string
   profile_key: string
@@ -4836,6 +4966,10 @@ export interface BrowserControllerCancelPayload {
 export interface VoiceStatusPayload {
   state: string
 }
+/** ``methods_voice`` voice.record ``on_partial`` — live STT text so far (``stt.streaming``). */
+export interface VoicePartialPayload {
+  text: string
+}
 /** ``methods_voice._vr_transcript`` / ``_deliver_fd_transcript`` / typed stop phrase in methods_prompt. */
 export interface VoiceTranscriptPayload {
   text?: string | null
@@ -4993,6 +5127,8 @@ export interface RpcMethods {
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
   /** Mark the one-time availability notice as shown on the free-tier identity. */
   'free_tier.ack_notice': { params: ProfileParams; result: FreeTierAckNoticeResult }
+  /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
+  'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
@@ -5097,10 +5233,14 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
-  /** Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role. */
+  /** Create-or-read the backend-owned setup profile; the backend picks the name. */
   'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
+  'onboarding.ensure_setup_session': { params: OnboardingEnsureSetupSessionParams; result: OnboardingEnsureSetupSessionResult }
+  'onboarding.mark_seen': { params: Params; result: OnboardingStateResult }
+  'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
   'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
+  'onboarding.state': { params: Params; result: OnboardingStateResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -5267,6 +5407,8 @@ export interface RpcMethods {
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
+  /** Run a start_chat request again from the session that made it (the handoff card's Retry). */
+  'session.start_chat': { params: SessionStartChatParams; result: SessionStartChatResult }
   /** Rendered /status text for the session. */
   'session.status': { params: SessionStatusParams; result: SessionStatusResult }
   /** Inject text into the next tool result without interrupting the turn. */
@@ -5442,6 +5584,7 @@ export const RPC_METHODS = [
   'display.thumbnail',
   'file.attach',
   'free_tier.ack_notice',
+  'free_tier.challenge_result',
   'free_tier.provision',
   'free_tier.status',
   'gateway.capabilities',
@@ -5495,7 +5638,11 @@ export const RPC_METHODS = [
   'model.options',
   'model.save_key',
   'onboarding.ensure_setup_profile',
+  'onboarding.ensure_setup_session',
+  'onboarding.mark_seen',
+  'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',
+  'onboarding.state',
   'paste.collapse',
   'pdf.attach',
   'pet.cancel',
@@ -5579,6 +5726,7 @@ export const RPC_METHODS = [
   'session.resume',
   'session.save',
   'session.set_hidden',
+  'session.start_chat',
   'session.status',
   'session.steer',
   'session.title',
@@ -5653,6 +5801,7 @@ export interface ServerRequestMap {
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
+  setup_choose: { params: SetupChooseRequestParams; result: SetupChooseResult }
   /** Masked sudo password for the terminal tool. */
   sudo: { params: SudoRequestParams; result: ValueResult }
   /** Read the visible in-app terminal buffer (JSON text answer). */
@@ -5676,6 +5825,7 @@ export const SERVER_REQUEST_METHODS = [
   'preview.act',
   'preview.read',
   'secret',
+  'setup_choose',
   'sudo',
   'terminal.read',
   'tour',
@@ -5721,6 +5871,8 @@ export interface BackendGatewayEventMap {
   'display.status': DisplayStatusPayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
   error: ErrorPayload
+  /** The account service wants a browser challenge cleared before the free-tier token exchange (broadcast); the desktop loads ``url`` in a hidden window. */
+  'free_tier.challenge': FreeTierChallengePayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
   'gateway.ready': GatewayReadyPayload
   /** Apply a named desktop layout preset. */
@@ -5831,6 +5983,8 @@ export interface BackendGatewayEventMap {
   'tool.start': ToolStartPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
+  /** Live STT text so far while the user is still speaking. */
+  'voice.partial': VoicePartialPayload
   /** Voice recorder state changed. */
   'voice.status': VoiceStatusPayload
   /** A voice capture produced text (or a stop phrase / silence limit). */
@@ -5857,6 +6011,7 @@ export const GATEWAY_EVENT_TYPES = [
   'display.lease',
   'display.status',
   'error',
+  'free_tier.challenge',
   'gateway.ready',
   'layout.apply',
   'message.complete',
@@ -5912,6 +6067,7 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.output_risk',
   'tool.start',
   'voice.interrupted',
+  'voice.partial',
   'voice.status',
   'voice.transcript',
   'wake.detected'

@@ -1,10 +1,10 @@
-"""``manage_catalog``: catalog search and install-through-the-card.
+"""``manage_catalog``: a desktop chat's catalog search and install-through-the-card.
 
 ``search`` reads the plugin catalog (the Plugins tab's resolver) and the skills hub and says what is
-already installed. ``install`` opens the same connection operation ``manage_connections`` opens,
-with rows of kind ``plugin`` / ``skill``; the host installs each row the user approves
-(``tools/connectors/catalog.py``). The model sends catalog ids and an action, nothing else: the pin,
-scan, target profile and activation are the host's.
+already installed in this chat's profile. ``install`` opens the same connection operation
+``manage_connections`` opens, with rows of kind ``plugin`` / ``skill``; the host installs each row
+the user approves (``tools/connectors/catalog.py``). The model sends catalog ids and an action,
+nothing else: the pin, scan, target profile and activation are the host's.
 """
 
 from __future__ import annotations
@@ -146,17 +146,16 @@ def install(items: List[Dict[str, str]], *, session_id: Optional[str], tool_call
 
 
 def search(query: str, kind: Optional[str], *, installer: Any = None) -> Dict[str, Any]:
+    """Runs on the tool call's thread, in this chat's profile scope, so ``installed`` is this
+    chat's profile's."""
     from hermes_constants import get_hermes_home, profile_name_for_home
-    from tools.connectors.catalog import target_scope
 
-    profile = profile_name_for_home(get_hermes_home()) or "default"
     rows: List[Dict[str, Any]] = []
-    with target_scope(profile):
-        if kind in (None, "plugin"):
-            rows += _plugin_rows(query)
-        if kind in (None, "skill") and query.strip():
-            rows += _skill_rows(query)
-    return {"results": rows, "installed_in": profile}
+    if kind in (None, "plugin"):
+        rows += _plugin_rows(query)
+    if kind in (None, "skill") and query.strip():
+        rows += _skill_rows(query)
+    return {"results": rows, "installed_in": profile_name_for_home(get_hermes_home())}
 
 
 def _plugin_rows(query: str) -> List[Dict[str, Any]]:

@@ -57,6 +57,9 @@ export const arBoot = {
   remoteDisplayBanner: {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
+  butterbar: {
+    goTo: (index, total) => `عرض الإشعار ${index} من ${total}`
+  },
   updates: {
     discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',
     discontinuedBody: 'لم يعد إصدار Hermes هذا مدعومًا وقد يتوقف عن العمل — ألغِ تثبيته. ستبقى بياناتك على القرص.',
@@ -321,5 +324,5 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
 >

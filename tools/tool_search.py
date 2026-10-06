@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
+from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
@@ -135,7 +136,7 @@ def _core_tool_names() -> frozenset[str]:
 
 # Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
 # their schema; once enabled they stay direct unless the deferral list names them.
-_DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "setup", "start_chat", "catalog"})
+_DIRECT_SURFACE_TOOLSETS = CLIENT_SURFACE_TOOLSETS | TOOLSET_SESSION_PLATFORMS.keys()
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit

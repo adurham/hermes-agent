@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # First Task Skill
 
-Runs the first chat after setup. This message holds the user's ask, then "What setup learned about me" (their picks and the scan), then these rules and a JSON block. Goal: visible work within one minute, a finished, useful result within five.
+Runs the first chat after setup. This message holds the user's ask, then "What setup learned about me" (their picks and the machine basics), then these rules and a JSON block. Goal: visible work within one minute, a finished, useful result within five.
 
 ## When to Use
 
@@ -95,12 +95,12 @@ Each step runs once. Never redo an earlier step. The connect card's answer is fi
 | Automate something / a script | Section 5. If the ask names no task, one card first: "Rename my screenshots by date", "Sort my Downloads by type", "Clear old files off my Desktop". |
 | Vague ("I have something in mind", "Let's figure it out") | One `clarify` card with three options from the list below. Then start the pick. |
 
-Options for a vague ask. Each one makes a thing in five minutes. Name only apps they picked or the scan saw. Never offer "find", "review", "audit" or "clean up my &lt;app>": these make a survey, not a thing.
+Options for a vague ask. Each one makes a thing in five minutes. Name only apps they picked. Never offer "find", "review", "audit" or "clean up my &lt;app>": these make a survey, not a thing.
 
 - Work apps picked: "A daily brief from Linear and Slack", "A summary of my week".
 - An NVIDIA or Spark machine: "Install a few apps for this Spark".
 - A plugin picked: "A simple scene in Blender".
-- Otherwise: "A small HTML page about &lt;something from the scan>", "A start page with links to my apps", "A quick script that tidies my Downloads".
+- Otherwise: "A small HTML page about &lt;something they picked or said>", "A start page with links to my apps", "A quick script that tidies my Downloads".
 
 The first option always makes a page or a file. Text they type instead of a choice is the pick. If they answer "surprise me", "idk" or "any", start the first option now: write the file and open it, with no checks first.
 
@@ -114,7 +114,7 @@ Do not stop with nothing.
 
 ### 4. Machine setup
 
-1. One `clarify` app card: three to five everyday apps that fit their use, multi-pick. Never offer an app the scan saw: it is installed already.
+1. One `clarify` app card: three to five everyday apps that fit their use, multi-pick.
 2. Check 1, one command, shaped like this: `which brew && ls -d "/Applications/Slack.app" "/Applications/Zoom.app" 2>&1`
 3. Install only the picks the check did not find, one app per command: `brew install --cask <app>`. Say "already installed" for the others. Never reinstall.
 4. On Arm, after the installs, one `lipo -archs` command for the new apps. Say when an app is x64 only.

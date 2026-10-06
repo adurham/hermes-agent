@@ -8,16 +8,14 @@
  * mode without that nav row, a collapsed pane) is dropped, never guessed at.
  */
 
+import type { TourPreset } from '@hermes/shared'
+
 import { runtimeTranslations } from '@/i18n'
 import { startTour, type TourResult } from '@/lib/tour'
 import { $interfaceMode } from '@/store/interface-mode'
 import { readLocalSetupEligibility } from '@/store/local-setup-offer'
 
-export type BuiltInTourPreset = 'quick' | 'full'
-
-type StopId = 'capabilities' | 'composer' | 'messaging' | 'model' | 'newSession' | 'rightPane' | 'sessions'
-
-const SELECTORS: Record<StopId, string> = {
+const SELECTORS = {
   capabilities: '[data-tour="sidebar-nav-capabilities"]',
   composer: '[data-tour="composer"]',
   messaging: '[data-tour="sidebar-nav-messaging"]',
@@ -26,6 +24,8 @@ const SELECTORS: Record<StopId, string> = {
   rightPane: '[data-tour="right-pane-toggle"]',
   sessions: '[data-tour="sessions-sidebar"]'
 }
+
+type StopId = keyof typeof SELECTORS
 
 /** Where their conversations live, where they ask for a job, how to start a
  *  fresh one, which model answers. */
@@ -36,16 +36,18 @@ const ESSENTIALS: StopId[] = ['sessions', 'composer', 'newSession', 'model']
 const SIMPLE_EXTRAS: StopId[] = ['capabilities', 'messaging']
 const ADVANCED_EXTRAS: StopId[] = ['rightPane', 'capabilities']
 
-const PRESET_STOPS: Record<BuiltInTourPreset, () => StopId[]> = {
+const PRESET_STOPS = {
   full: () => [...ESSENTIALS, ...($interfaceMode.get() === 'simple' ? SIMPLE_EXTRAS : ADVANCED_EXTRAS)],
   quick: () => ESSENTIALS
-}
+} satisfies Record<TourPreset, () => StopId[]>
 
 /** A slow fit answer drops the local line rather than holding the tour. */
 const LOCAL_FIT_WAIT_MS = 2_000
 
-/** Same rule as the tour collector: a keep-alive tab hidden with
- *  `data-pane-hidden` keeps its box, so the attribute decides, then size. */
+/** The tour collector's visibility rule minus its in-viewport test: a stop
+ *  scrolled out of view still counts, because driver.js scrolls to it. A
+ *  keep-alive tab hidden with `data-pane-hidden` keeps its box, so the
+ *  attribute decides, then size. */
 function onScreen(selector: string): boolean {
   const node = document.querySelector(selector)
 
@@ -60,21 +62,28 @@ function onScreen(selector: string): boolean {
 
 /** Whether the model stop says this computer can run a local model: the
  *  local-setup offer's answer (the backend's catalog `fits` check, on a local
- *  connection, with nothing set up yet). */
+ *  connection with Local Models on, with nothing set up yet). */
 async function canRunLocalModel(): Promise<boolean> {
   const read = readLocalSetupEligibility().then(
     ({ fit }) => fit !== null,
     () => false
   )
 
-  const late = new Promise<boolean>(resolve => setTimeout(() => resolve(false), LOCAL_FIT_WAIT_MS))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<boolean>(resolve => (timer = setTimeout(() => resolve(false), LOCAL_FIT_WAIT_MS)))
 
-  return Promise.race([read, late])
+  return Promise.race([read, late]).finally(() => clearTimeout(timer))
 }
 
 /** Run the built-in tour. Never throws; failures come back like any tour
- *  action's, so the agent can say so in words. */
-export async function runBuiltInTour(preset: BuiltInTourPreset): Promise<TourResult> {
+ *  action's, so the agent can say so in words. `stillActive` is asked again
+ *  after the local-model wait: a chat switch during it answers `notActiveError`
+ *  instead of opening the tour over the other chat. */
+export async function runBuiltInTour(
+  preset: TourPreset,
+  stillActive: () => boolean,
+  notActiveError: string
+): Promise<TourResult> {
   const stops = PRESET_STOPS[preset]().filter(id => onScreen(SELECTORS[id]))
 
   if (stops.length === 0) {
@@ -82,6 +91,11 @@ export async function runBuiltInTour(preset: BuiltInTourPreset): Promise<TourRes
   }
 
   const localLine = stops.includes('model') && (await canRunLocalModel())
+
+  if (!stillActive()) {
+    return { error: notActiveError, success: false }
+  }
+
   const copy = runtimeTranslations().appTour
 
   return startTour(

@@ -37,7 +37,9 @@ def _resolve_refresh_toolsets(agent, enabled_override, disabled_override):
     disabled = getattr(agent, "disabled_toolsets", None)
     if enabled_override is not None or disabled_override is not None:
         enabled = enabled_override if enabled_override is not None else enabled
-        disabled = disabled_override if disabled_override is not None else disabled
+        if disabled_override is not None:
+            from toolsets import session_disabled_toolsets
+            disabled = session_disabled_toolsets(disabled_override, getattr(agent, "platform", None))
         agent.enabled_toolsets, agent.disabled_toolsets = enabled, disabled
     return enabled, disabled
 
@@ -53,9 +55,8 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
 
 
 def _drop_session_tools(agent, new_defs: list, new_names: set) -> tuple:
-    from tools.connectors.turn import side_agent_tool_drops
-    from toolsets import session_platform_tool_drops
-    drops = side_agent_tool_drops(agent) | session_platform_tool_drops(getattr(agent, "platform", None))
+    from toolsets import agent_tool_drops
+    drops = agent_tool_drops(agent)
     if not drops:
         return new_defs, new_names
     return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
@@ -174,7 +175,7 @@ def persist_agent_tool_names(agent) -> None:
 def _config_permitted_names(agent) -> set:
     """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
     forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
-    here is no config choice); ``disabled_toolsets`` still strip it."""
+    here is no config choice); ``disabled_toolsets`` still strips it."""
     from model_tools import _select_tool_names
     from toolsets import CLIENT_SURFACE_TOOLSETS
     enabled = getattr(agent, "enabled_toolsets", None)

@@ -61,6 +61,9 @@ export const zhHantBoot = {
   remoteDisplayBanner: {
     message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`
   },
+  butterbar: {
+    goTo: (index, total) => `顯示第 ${index} 則通知，共 ${total} 則`
+  },
 
   updates: {
     discontinuedTitle: '此版本的 Hermes 已停止支援',
@@ -327,5 +330,5 @@ export const zhHantBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'updates' | 'install' | 'onboarding'
 >

@@ -174,26 +174,17 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
 
 
-# Surfaces where a person watches the turn as it runs (desktop chat, TUI). On the Nous free tier
-# a cooldown longer than ``LIVE_RETRY_WAIT_CAP_S`` is not slept through there: the free tier's
-# pause is service-wide, a retry before its reset only meets the same refusal, and the person
-# sits in front of a spinner for minutes. The turn ends at once with the reset time and the ways
-# forward instead. Every other provider, and every background surface (cron, batch, messaging
-# gateways, ``hermes chat -q``), waits out the cooldown, capped at ``RETRY_AFTER_CAP_S``.
-LIVE_SURFACES = frozenset({"desktop", "tui"})
+# A wait longer than this is one a person feels: a non-rate-limit Retry-After this long is announced
+# when it starts, and on the Nous free tier an attended session ends the turn instead of sitting through it.
 LIVE_RETRY_WAIT_CAP_S = 60.0
 # Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap re-tripped the limit; 600s
 # covers realistic provider windows while still rejecting pathological values (#26293).
 RETRY_AFTER_CAP_S = 600.0
 
 
-def is_live_surface(platform: Any) -> bool:
-    return str(platform or "").strip().lower() in LIVE_SURFACES
-
-
 def provider_retry_after_seconds(error: Any) -> Optional[float]:
     """Provider-declared cooldown: the ``Retry-After`` header, else a ``retry_after`` body field
-    (top level or nested under ``error``). None when absent, unparseable or zero — a zero/expired
+    (top level or nested under ``error``). None when absent, unparseable or zero: a zero or expired
     cooldown carries no usable wait, and treating it as one would hot-loop the provider."""
     value = parse_retry_after_seconds(getattr(getattr(error, "response", None), "headers", None))
     if value is None:

@@ -34,9 +34,6 @@ class KeylessMCPError(RuntimeError):
 
 
 _RATE_LIMIT_MARKERS = ("rate limit", "rate-limit", "ratelimit", "too many requests", "429", "quota exceeded", "slow down")
-# A free tier that refuses this client (401/402/403: anonymous access revoked, IP reputation gate) or
-# errors server-side (5xx) fails every query from here, so the next vendor gets the request too.
-_VENDOR_REFUSAL = re.compile(r"\bHTTP (?:40[123]|5\d\d)\b")
 
 # vendor -> (display label, env key, signup URL) for the standard failure hint.
 _VENDOR_HINTS = {
@@ -46,13 +43,18 @@ _VENDOR_HINTS = {
 
 
 def _is_rate_limitish(message: str) -> bool:
-    """Heuristic: does an error message look like free-tier throttling or a vendor-side refusal?"""
-    return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS) or bool(_VENDOR_REFUSAL.search(message or ""))
+    """Heuristic: does an error message look like free-tier throttling?"""
+    return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
-_AUTH_STATUS_RE = re.compile(
-    r"\b(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error(?:\s+code)?)"
-    r"\s*[:=']*\s*(?:401|403)\b",
+# A free tier that refuses this client (401/402/403: anonymous access revoked, IP reputation gate)
+# or errors server-side (5xx) fails every query from here, while another vendor may still serve it.
+# Anchored to the status the error starts with (after the ``Keyless <Vendor> search failed:`` prefix),
+# so a terminal error that echoes the query ("HTTP 400: invalid query 'http 503'") does not match.
+_VENDOR_REFUSAL_RE = re.compile(
+    r"\s*(?:keyless\s+\w+\s+search\s+failed:\s*)?"
+    r"(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error\s+code)"
+    r"\s*[:=']*\s*(?:40[123]|5\d\d)\b",
     re.IGNORECASE,
 )
 
@@ -60,11 +62,11 @@ _AUTH_STATUS_RE = re.compile(
 def _is_search_failover_eligible(message: str) -> bool:
     """Return whether another anonymous vendor may serve the search.
 
-    Rate limits and structured HTTP 401/403 provider rejections are local to
+    Rate limits and structured HTTP 401/402/403/5xx vendor refusals are local to
     one free search endpoint. Free-text markers are deliberately ignored:
     vendors may echo the query in an otherwise terminal error.
     """
-    return _is_rate_limitish(message) or bool(_AUTH_STATUS_RE.search(message or ""))
+    return _is_rate_limitish(message) or bool(_VENDOR_REFUSAL_RE.match(message or ""))
 
 
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
@@ -389,13 +391,13 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
         if not throttled(result):
             return order, vendor, result, False
         if i + 1 < len(order):
-            logger.info("keyless %s %s throttled or refused; failing over to %s", vendor, kind, order[i + 1])
+            logger.info("keyless %s %s unavailable; failing over to %s", vendor, kind, order[i + 1])
     return order, vendor, result, True
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate limits, vendor refusals and anonymous-endpoint auth/policy rejections advance
-    to the next vendor, other errors stop the walk (a malformed query fails everywhere).
+    """Rate limits and vendor refusals (HTTP 401/402/403/5xx) advance to the next
+    vendor, other errors stop the walk (a malformed query fails everywhere).
     ``data.served_by`` is set when the serving vendor differs from *name*."""
 
     def _throttled(result: Dict[str, Any]) -> bool:

@@ -12,10 +12,9 @@ import { Progress } from '@/components/ui/progress'
 import { useI18n } from '@/i18n'
 import { Book, Loader2, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { installAgentPlugin } from '@/store/agent-plugins'
+import { type AgentPluginInstallResult, installAgentPlugin } from '@/store/agent-plugins'
 import {
   type CatalogEntry,
-  catalogRowResolved,
   connectionOpOf,
   connectionOwnerFor,
   type ConnectionRequest,
@@ -57,6 +56,27 @@ function platformName(platform: string): string {
 
 const isCatalogTarget = (target: ConnectionTarget): target is CatalogTarget => Boolean(target.catalog)
 
+/** The row a successful settled Try again draws: the backend's install result for that retry, in the
+ *  fields the runner's installed row carries (`tools/connectors/catalog.py::_installed_row`). */
+function retriedRow(target: CatalogTarget, result: AgentPluginInstallResult): CatalogTarget {
+  const servers = result.live.mcpServers
+
+  return {
+    ...target,
+    catalog: {
+      ...target.catalog,
+      alreadyInstalled: false,
+      enabled: result.enabled ?? null,
+      missingEnv: result.missingEnv ?? [],
+      serverErrors: servers.filter(server => !server.connected).map(({ error, name }) => ({ error: error ?? '', name })),
+      skill: result.skillIds?.[0] ?? null
+    },
+    detail: '',
+    state: 'connected',
+    tools: servers.filter(server => server.connected).flatMap(server => server.tools)
+  }
+}
+
 /** `manage_catalog`: the host's catalog-install card. The model named ids; every word on a row is the
  *  host's resolution of that id. The card lives on the tool row that opened the operation only. */
 export function CatalogInstallTool(props: ToolCallMessagePartProps) {
@@ -65,6 +85,8 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   const runtimeId = useStore(view.$runtimeId)
   const opId = connectionOpOf(props.args)
   const running = props.result === undefined
+  // Only an install opens an operation; a search row that reuses an install's call id draws no card.
+  const opens = opId !== null || props.args.action === 'install'
 
   const $request = useMemo(
     () => toolConnectionRequest(runtimeId, props.toolCallId, opId, running),
@@ -73,7 +95,7 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
 
   const request = useStore($request)
 
-  if (request && connectionRequestOwnsPart(props, request)) {
+  if (opens && request && connectionRequestOwnsPart(props, request)) {
     return <CatalogInstallCard request={request} />
   }
 
@@ -94,8 +116,8 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
   const { t } = useI18n()
   const cardRef = useRef<HTMLDivElement | null>(null)
   const rows = request.targets.filter(isCatalogTarget)
-  const unresolved = rows.some(target => !catalogRowResolved(target.state))
-  const profile = rows[0]?.catalog.targetProfile ?? 'default'
+  const unresolved = rows.some(target => !target.catalog.resolved)
+  const profile = rows[0]?.catalog.targetProfile
 
   useConnectorFocusHandoff(request.targets, cardRef)
 
@@ -110,9 +132,11 @@ export function CatalogInstallCard({ request }: { request: ConnectionRequest }) 
             {t.common.continue}
           </Button>
         ) : null}
-        <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>
-          {t.assistant.catalogInstall.targetProfile(profileLabel({ name: profile }))}
-        </span>
+        {profile ? (
+          <span className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>
+            {t.assistant.catalogInstall.targetProfile(profileLabel({ name: profile }))}
+          </span>
+        ) : null}
       </div>
     </div>
   )
@@ -134,8 +158,8 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   // another operation can never hold this row.
   const [sentAt, setSentAt] = useState<null | { opId: string; seq: number }>(null)
   // Try again on a failed plugin row after the operation settled: a fresh host install (which enables a
-  // plugin already on disk). The settled operation is frozen, so the row shows this outcome over it.
-  const [retry, setRetry] = useState<null | { detail: string; status: 'failed' | 'installed' | 'running' }>(null)
+  // plugin already on disk). The settled operation is frozen, so the row draws that install's result.
+  const [retry, setRetry] = useState<null | { row: CatalogTarget; status: 'done' } | { status: 'running' }>(null)
   const sending = (sentAt?.opId === request.opId && request.seq <= sentAt.seq) || retry?.status === 'running'
   const Glyph = KIND_GLYPH[target.kind]
 
@@ -155,30 +179,35 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
   }
 
   const retrySettled = async () => {
-    setRetry({ detail: '', status: 'running' })
+    setRetry({ status: 'running' })
     const owner = request.sessionId ? await connectionOwnerFor(request.sessionId, 'plugins.manage') : null
 
+    if (!owner) {
+      setRetry({ row: { ...target, detail: copy.sendFailed }, status: 'done' })
+
+      return
+    }
+
+    // The choices the user approved on this row, so the retry installs what they asked for.
+    const approved = catalog.approved
+
     const result = await installAgentPlugin(
-      (method, params, timeoutMs) =>
-        requestGatewayForAgent(
-          owner?.connectionId ?? null,
-          owner?.profile ?? catalog.targetProfile,
-          method,
-          params,
-          timeoutMs
-        ),
-      { catalogName: target.name, identifier: '', profile: catalog.targetProfile }
+      (method, params, timeoutMs) => requestGatewayForAgent(owner.connectionId, owner.profile, method, params, timeoutMs),
+      {
+        catalogName: target.name,
+        enable: approved?.enable,
+        force: approved?.force,
+        identifier: '',
+        profile: catalog.targetProfile,
+        ref: approved?.ref ?? undefined
+      }
     )
 
-    setRetry(result.ok ? { detail: '', status: 'installed' } : { detail: result.error ?? '', status: 'failed' })
+    const row = result.ok ? retriedRow(target, result) : { ...target, detail: result.error || target.detail }
+    setRetry({ row, status: 'done' })
   }
 
-  const shown: CatalogTarget =
-    retry?.status === 'installed'
-      ? { ...target, detail: '', state: 'connected' }
-      : retry?.status === 'failed'
-        ? { ...target, detail: retry.detail || target.detail }
-        : target
+  const shown = retry?.status === 'done' ? retry.row : target
 
   const onRetry = !request.settled
     ? () => void answer('approved')
@@ -262,6 +291,16 @@ interface RowOutcomeProps {
   toolCount: (count: number) => string
 }
 
+/** What an installed row still needs, worded from the backend's facts. */
+function installedNotes(catalog: CatalogEntry, copy: CatalogCopy): string[] {
+  return [
+    ...catalog.serverErrors.map(({ error, name }) => copy.serverNotConnected(name, error)),
+    ...(catalog.enabled === false ? [copy.notEnabled] : []),
+    ...(catalog.missingEnv.length > 0 ? [copy.missingEnv(catalog.missingEnv.join(', '))] : []),
+    ...(catalog.alreadyInstalled ? [copy.alreadyInstalled] : [])
+  ]
+}
+
 /** The third line: the verbs while the row waits on the user, else what happened to it. */
 function RowOutcome({
   copy,
@@ -280,6 +319,7 @@ function RowOutcome({
 
   if (target.state === 'connected') {
     const { skill } = target.catalog
+    const notes = installedNotes(target.catalog, copy)
 
     const parts = [
       copy.installed,
@@ -305,6 +345,9 @@ function RowOutcome({
             </>
           ) : null}
         </p>
+        {notes.length > 0 ? (
+          <p className={cn(CAPTION, 'text-(--ui-text-tertiary) wrap-anywhere')}>{notes.join(' · ')}</p>
+        ) : null}
         {namesOpen ? (
           <ul className="flex min-w-0 flex-wrap gap-x-3 gap-y-0.5 font-mono text-[0.6875rem] leading-4 text-(--ui-text-secondary)">
             {target.tools.map(tool => (
@@ -357,9 +400,8 @@ function RowOutcome({
       <div className="grid min-w-0 gap-1.5" role="status">
         <p className={cn(CAPTION, 'text-(--ui-text-tertiary)')}>{copy.installing}</p>
         <Progress animated aria-label={copy.installing} className="h-0.5 bg-primary/15" indeterminate />
-        {/* The install phase the host is in ("Downloading…", "Installing Python packages…"). */}
-        {target.state === 'initiated' && target.detail ? (
-          <p className={cn(CAPTION, 'text-(--ui-text-quaternary) wrap-anywhere')}>{target.detail}</p>
+        {target.state === 'initiated' && target.catalog.phase ? (
+          <p className={cn(CAPTION, 'text-(--ui-text-quaternary)')}>{copy.phase[target.catalog.phase]}</p>
         ) : null}
       </div>
     )

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from tools.tour_presets import TourPreset
+
 from .base import JsonValue, Params, Payload, Result, WireEnum
 from .registry import event, server_request
 
@@ -77,7 +79,7 @@ class SetupChooseRequestParams(ServerRequestParams):
     question: str
     options: list[SetupChooseOption] | None = None
     multi_select: bool = False
-    # Row ids the card starts with picked: apps and plugins the machine scan saw.
+    # Row ids the card starts with picked: the plugins the setup facts found (Blender).
     preselected: list[str] | None = None
 
 
@@ -237,7 +239,7 @@ class TourRequestParams(ServerRequestParams):
     side: str | None = None
     steps: list[TourStep] | None = None
     step_index: int | None = None
-    preset: str | None = None
+    preset: TourPreset | None = None
 
 
 server_request("tour", params=TourRequestParams, result=ValueResult,

@@ -1,21 +1,25 @@
 """Guided tour (highlight + narrate UI elements) in the Hermes desktop GUI: ``start`` with no
 steps runs the app's own built-in tour (``preset`` quick or full); for a custom one the agent
 discovers targets (``action="targets"``), then highlights one step at a time (``show``) or hands
-over a step list the user pages (``start`` + ``steps``). Round-trips through the gateway blocking-prompt bridge
-(``tour.request``/``tour.respond``) so the agent learns whether the selector matched. Registered in
-``desktop_ui`` and hidden from the model when tours are off: a tour covers the whole screen, so "off"
-must mean the model is never told the tool exists rather than offered a call that fails."""
+over a step list the user pages (``start`` + ``steps``). Round-trips through the gateway
+blocking-prompt bridge (``tour.request``/``tour.respond``) so the agent learns whether the
+selector matched. Registered in ``desktop_ui`` and hidden from the model when tours are off: a
+tour covers the whole screen, so "off" must mean the model is never told the tool exists rather
+than offered a call that fails."""
 
 import json
 from typing import Callable, Optional
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
+from tools.tour_presets import TourPreset
 
 ACTIONS = ("targets", "show", "start", "next", "prev", "stop")
 SURFACES = ("app", "preview")
 SIDES = ("top", "right", "bottom", "left")
-PRESETS = ("quick", "full")
+
+
+PRESETS = tuple(TourPreset)
 
 
 def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optional[str] = None,
@@ -35,6 +39,8 @@ def tour_tool(action: str = "", surface: Optional[str] = None, selector: Optiona
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
     if preset is not None and preset not in PRESETS:
         return tool_error(f"preset must be one of: {', '.join(PRESETS)}.")
+    if preset is not None and steps is not None:
+        return tool_error("preset picks a built-in tour; pass steps or preset, not both.")
     # Every highlighted moment needs something to point at or something to say.
     if verb == "show" and not (selector or title or text):
         return tool_error("show needs a selector (and/or title/text for the popover).")
