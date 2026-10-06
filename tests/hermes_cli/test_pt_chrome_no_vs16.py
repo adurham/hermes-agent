@@ -95,6 +95,12 @@ def _vs16_offenders(path: Path) -> list[str]:
             continue
         if (node.lineno, node.col_offset) in scrollback_keys:
             continue
+        # A LONE VS-16 literal (exactly "\ufe0f") is a sanitizer argument — the
+        # text these files strip FROM dynamic content (``replace("\ufe0f", "")``),
+        # never emitted render content (alone it paints nothing). Exempt it; the
+        # offender shape is a base+VS-16 pair inside a rendered string.
+        if node.value == "\ufe0f":
+            continue
         offenders.append(f"{path.name}:{node.lineno}: {node.value[:60]!r}")
     return offenders
 
@@ -188,3 +194,78 @@ def test_status_bar_plain_text_contains_no_vs16():
 def test_status_bar_fragment_text_contains_no_vs16():
     text = _maximal_plain_bar_text()
     assert not any(ord(ch) == 0xFE0F for ch in text)
+
+
+# ── dynamic ingress: model/user text must not smuggle VS-16 into pt windows ──
+#
+# The static sweep above only covers string constants. VS-16 can also arrive at
+# runtime — think-stream previews, tool rows, session titles, /goal text, queue
+# previews — and render INSIDE prompt_toolkit windows whose diff repaints then
+# desync (the corruption class this file guards). These pin the runtime
+# chokepoints that sanitize dynamic text.
+
+
+def test_subagent_clip_strips_vs16_from_dynamic_rows():
+    from agent.display import display_cwidth
+    from hermes_cli.cli_subagent_monitor import _clip
+
+    # A goal / queue preview / command carrying a VS-16 sequence.
+    row = "⚙️ deploy the thing · 12m09s"
+    clipped = _clip(row, 60)
+    assert "\ufe0f" not in clipped, "dock rows must not carry VS-16 into the pt grid"
+    assert display_cwidth(clipped) <= 60
+
+
+def test_dock_activity_timer_field_clean_of_vs16():
+    from hermes_cli.cli_subagent_monitor import _clip
+    from hermes_cli.cli_process_dock import process_activity
+
+    # The row builder's timer field itself (what the corruption garbles). Every dock/
+    # roster row is assembled through _clip (dock_text, collapsed preview, modal roster),
+    # so this mirrors the real pipeline: the VS-16 in the process's last-output detail
+    # must not survive into the rendered grid, and the elapsed field must stay exact.
+    line = _clip(process_activity({"status": "running", "elapsed": 729, "detail": "⚙️ working"}), 60)
+    assert "\ufe0f" not in line
+    assert "12m09s" in line
+
+
+def test_spinner_text_strips_vs16_from_model_output():
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
+
+    stub = SimpleNamespace(
+        _spinner_text="… drafting ⚙️ the report",   # think-stream preview
+        _spinner_token_flow_enabled=False,
+        _spinner_token_flow=lambda: "",
+        _agent_running=False,
+        _tool_start_time=0,
+    )
+    out = CLIStatusBarMixin._render_spinner_text(stub)
+    assert "\ufe0f" not in out, f"spinner must sanitize dynamic text: {out!r}"
+    assert "drafting ⚙ the report" in out
+
+
+def test_session_title_badge_strips_vs16():
+    from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
+
+    placed = CLIStatusBarMixin._status_title_badge("Fix ⚠️ the timer — 4m17s", 120)
+    assert placed is not None
+    badge, _left = placed
+    assert "\ufe0f" not in badge, f"title badge must sanitize model-generated titles: {badge!r}"
+
+
+def test_output_history_line_math_counts_vs16_as_painted():
+    """Scrollback replay arithmetic counts VS-16 sequences at painted width.
+
+    ``_line_rows`` / ``_ansi_drop_cells`` measure against the real terminal grid; pt's
+    table scores a "⚙️" sequence 1 cell where kitty paints 2, so a line carrying them
+    must count one cell more than the raw-pt number.
+    """
+    from hermes_cli import cli_render
+
+    line = "x" * 8 + "⚙️" * 4          # 8 + (2 painted cells x 4) = 16 cells
+    assert cli_render._line_rows(line, 10) == 2  # 16 cells -> 2 rows at width 10
+    # The drop keeps a sequence glued to its base: dropping exactly through the
+    # emoji's two cells must not strand an orphan VS-16, and must not stop short.
+    assert cli_render._ansi_drop_cells("ab⚙️cd", 4) == "cd"

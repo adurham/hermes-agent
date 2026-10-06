@@ -614,6 +614,11 @@ class CLIStatusBarMixin:
         title = str(title or "").strip()
         if not title or width < 24:
             return None
+        # FORK: session titles are model/user-generated and can legally carry VS-16
+        # ("📅 Planning ⚠️ ..."). A VS-16 sequence diverges between pt's width model and
+        # what terminals paint, stranding diff-repaint cells near this badge. Bare base
+        # codepoints agree in every table.
+        title = title.replace("\ufe0f", "")
         title_width = max(6, min(30, width // 3))
         badge = f" {cls._trim_status_bar_text(title, title_width - 2)} "
         suffix_width = cls._status_bar_display_width(" ─") + cls._status_bar_display_width(badge)
@@ -716,6 +721,11 @@ class CLIStatusBarMixin:
         txt = getattr(self, "_spinner_text", "")
         if not txt:
             return ""
+        # FORK: a VS-16 sequence in dynamic text (think-stream previews, tool rows, thinking
+        # echoes) paints 2 cells in kitty/iTerm2 but scores 1 in pt's width model, stranding
+        # diff-repaint cells right of it — including this line's own ticking (4m17s) timer, the
+        # exact "impossible timer" garble. Bare base codepoints agree in every table.
+        txt = txt.replace("\ufe0f", "")
         flow = self._spinner_token_flow()
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:

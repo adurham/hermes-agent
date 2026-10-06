@@ -588,15 +588,27 @@ _ANSI_SEQUENCE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x0
 
 def _ansi_drop_cells(line: str, cells: int) -> str:
     """``line`` without its first ``cells`` visible cells; escape sequences are kept for their styling."""
-    from prompt_toolkit.utils import get_cwidth
+    # FORK: display_cwidth (VS-16-corrected) — a raw get_cwidth undercounts a "⚙️"-shaped
+    # sequence by 1 cell, so cell arithmetic against what the terminal paints drifts.
+    # Sequence-aware: a VS-16 stays glued to its base codepoint (dropped or kept together),
+    # so a boundary landing on the base never strands an orphan variation selector.
+    from agent.display import display_cwidth as get_cwidth
     out, pos = [], 0
     for match in [*_ANSI_SEQUENCE_RE.finditer(line), None]:
         end = match.start() if match else len(line)
-        for ch in line[pos:end]:
+        segment = line[pos:end]
+        i = 0
+        while i < len(segment):
+            ch = segment[i]
+            cluster = ch
+            if ch != "\ufe0f" and i + 1 < len(segment) and segment[i + 1] == "\ufe0f":
+                cluster = ch + "\ufe0f"
+                i += 1
             if cells > 0:
-                cells -= get_cwidth(ch)
+                cells -= get_cwidth(cluster)
             else:
-                out.append(ch)
+                out.append(cluster)
+            i += 1
         if match:
             out.append(match.group())
             pos = match.end()
@@ -646,8 +658,12 @@ def _terminal_reflows() -> bool | None:
 
 def _line_rows(line: str, columns: int) -> int:
     """Rows ``line`` fills when the terminal soft-wraps it at ``columns``."""
-    from prompt_toolkit.formatted_text import ANSI, fragment_list_width, to_formatted_text
-    width = fragment_list_width(to_formatted_text(ANSI(line)))
+    from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+    # FORK: count with display_cwidth (VS-16-corrected), not pt's fragment_list_width —
+    # a "⚙️"-shaped sequence is 1 cell to pt's table but 2 painted, so row math against
+    # the real grid drifts one cell per occurrence (misdropped cell on refill).
+    from agent.display import display_cwidth as _cw
+    width = sum(_cw(text) for _style, text, *_ in to_formatted_text(ANSI(line)))
     return max(1, -(-width // columns)) if columns and columns > 0 else 1
 
 
