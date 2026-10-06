@@ -1609,8 +1609,7 @@ def _(rid, params: dict) -> dict:
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
     saved_ok = mc._save_mcp_server(name, server_config)
     source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
-    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed",
-                               failure_class=None if saved_ok else "config_rejected")
+    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed", failure_class=None if saved_ok else "config_rejected")  # noqa: E501
     if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
