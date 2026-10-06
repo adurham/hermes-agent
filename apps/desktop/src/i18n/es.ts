@@ -3790,6 +3790,8 @@ export const esOverrides = {
       removeFromSidebar: 'Ocultar de la barra lateral',
       createdInPreviousContext:
         'El proyecto se creó en la conexión o el perfil anterior. Vuelve allí; no se escribió IDEA.md.',
+      hiddenFromSidebar: 'Ocultado de la barra lateral',
+      undoHide: 'Deshacer',
       createFailed: 'No se pudo crear el proyecto',
       staleBackend:
         'Actualiza el backend de Hermes para crear proyectos: tu backend es más antiguo que esta aplicación de escritorio (Configuración → Actualizaciones → Backend).',

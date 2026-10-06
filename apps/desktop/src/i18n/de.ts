@@ -3796,6 +3796,8 @@ export const deOverrides = {
       removeFromSidebar: 'Aus der Sidebar ausblenden',
       createdInPreviousContext:
         'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
+      hiddenFromSidebar: 'Aus der Sidebar ausgeblendet',
+      undoHide: 'Rückgängig',
       createFailed: 'Projekt konnte nicht erstellt werden',
       staleBackend:
         'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
