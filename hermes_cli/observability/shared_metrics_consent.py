@@ -32,10 +32,13 @@ _NO_THANKS = len(OFFER_CHOICES) - 1
 DOCS_URL = "https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics"
 _OFFER_DESCRIPTION = "\n".join((
     "Shared metrics are bounded counters: activity, outcomes, error classes (with a",
-    "fixed-list reason when a memory write or compression fails), model routes,",
-    "token totals, feature use and coarse machine facts. Never prompts, files, paths,",
+    "fixed-list reason when a memory write, compression, update or install fails),",
+    "model routes, token totals, feature use and coarse machine facts. A failed or",
+    "finished fresh install is noted on this machine and counted only if you opt in.",
+    "Never prompts, files, paths,",
     "setting values or error text. Collection stays on this machine; sending to Nous is",
-    "a separate choice, and data from before you opt in is never sent.",
+    "a separate choice, and apart from that install note, data from before you opt in",
+    "is never sent.",
     f"Details: {DOCS_URL}",
     "Change it any time: hermes setup telemetry",
 ))

@@ -10,7 +10,7 @@ export const esSharedMetrics = {
   collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
   collectedMilestones: 'Recuentos de configuración agrupados',
   collectedReliability:
-    'Resultados y duración de actualizaciones, fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
+    'Resultados y duración de actualizaciones e instalaciones (con un motivo de una lista fija y la etapa cuando algo falla, incluida una instalación nueva registrada en este equipo que solo se cuenta si aceptas), fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
   collectedUsage:
     'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
   collectedMachine:

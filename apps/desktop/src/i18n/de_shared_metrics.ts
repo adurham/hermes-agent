@@ -10,7 +10,7 @@ export const deSharedMetrics = {
   collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
   collectedMilestones: 'Gruppierte Einrichtungszahlen',
   collectedReliability:
-    'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
+    'Ergebnisse und Dauer von Updates und Installationen (mit einem Grund aus einer festen Liste und der Phase, wenn etwas fehlschlägt, einschließlich einer Neuinstallation, die auf diesem Gerät festgehalten und erst nach deiner Zustimmung gezählt wird), Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
   collectedUsage:
     'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
   collectedMachine:

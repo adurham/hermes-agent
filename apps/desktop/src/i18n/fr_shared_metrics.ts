@@ -10,7 +10,7 @@ export const frSharedMetrics = {
   collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
   collectedMilestones: 'Comptes de configuration regroupés',
   collectedReliability:
-    'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    'Résultats et durée des mises à jour et installations (avec un motif issu d’une liste fixe et l’étape en cas d’échec, y compris une nouvelle installation enregistrée sur cette machine et comptée seulement après votre accord), plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
   collectedUsage:
     "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
   collectedMachine:
