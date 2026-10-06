@@ -182,6 +182,9 @@ class GatewayControlServer:
         self._file_identities[bind_path] = (info.st_dev, info.st_ino)
         if pointer_file is not None:
             fd = os.open(pointer_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            # O_CREAT's mode only applies to a NEW file; an older gateway's leftover pointer is 0644
+            # and clients refuse it, so restarting must heal the mode.
+            os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as pointer:
                 pointer.write(str(bind_path))
             self._pointer_file = pointer_file
