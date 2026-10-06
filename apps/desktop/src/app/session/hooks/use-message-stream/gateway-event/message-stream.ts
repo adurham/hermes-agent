@@ -172,7 +172,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt, payload?.attachments)
+      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
     }
 
     return true
@@ -187,8 +187,8 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       flushQueuedDeltas(sessionId)
       const text = coerceGatewayText(payload?.text)
 
-      if (text || payload?.attachments?.length) {
-        finalizeInterimAssistantMessage(sessionId, text, occurredAt, payload?.attachments)
+      if (text) {
+        finalizeInterimAssistantMessage(sessionId, text, occurredAt)
       }
     }
 
@@ -377,7 +377,6 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,
-      payload?.attachments,
       payload?.response_reused === true
     )
 

@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { APPROVAL_RESPOND_TIMEOUT_MS, host, type MediaAttachment } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -45,27 +45,16 @@ export function isGroupPassText(text: unknown) {
  *  reads it — the session's own message shape, not the plugin's GroupMessage.
  *  `content` is a plain string on most providers and a part array on the rest. */
 interface GroupTurnTranscriptMessage {
-  /** Files the row's `MEDIA:` tags delivered (`text` arrives without them). */
-  attachments?: MediaAttachment[] | null
   content?: string | Array<string | { text?: string }>
   display_kind?: string
   role?: string
   text?: string
 }
 
-/** A member's reply: its words and the files it delivered. */
-interface GroupTurnReply {
-  attachments: MediaAttachment[]
-  text: string
-}
-
 /** What a finished turn left behind: the member's reply, or the notice of the
  *  `failed_turn` row Hermes closed it with (the member never answered), or
  *  null when no assistant row landed. */
-type GroupTurnPick = { failedNotice: string } | GroupTurnReply | null
-
-/** A reply that says nothing and delivers nothing is the member passing. */
-const isPassReply = (reply: GroupTurnReply) => isGroupPassText(reply.text) && !reply.attachments.length
+type GroupTurnPick = { failedNotice: string } | null | string
 
 /** #94376: pick the reply a finished turn should surface among the messages
  *  appended since `before`. Scans newest-first and prefers the last
@@ -78,7 +67,7 @@ const isPassReply = (reply: GroupTurnReply) => isGroupPassText(reply.text) && !r
  *  scan: text the member wrote before the tool call that preceded the
  *  provider failure is not its reply. */
 function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): GroupTurnPick {
-  let passText: GroupTurnReply | null = null
+  let passText: null | string = null
 
   for (let i = messages.length - 1; i >= before; i--) {
     const msg = messages[i]
@@ -94,21 +83,21 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
           ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
           : msg?.text || ''
 
-    const reply = { attachments: msg.attachments ?? [], text: String(text).trim() }
+    const replyText = String(text).trim()
 
     if (failedTurnBoundaryRow(msg)) {
-      return passText ?? { failedNotice: reply.text }
+      return passText ?? { failedNotice: replyText }
     }
 
-    if (isPassReply(reply)) {
+    if (isGroupPassText(replyText)) {
       if (passText === null) {
-        passText = reply
+        passText = replyText
       }
 
       continue
     }
 
-    return reply
+    return replyText
   }
 
   return passText
@@ -128,13 +117,12 @@ function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], befo
       i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
   )
 
-  let passText: GroupTurnReply | null = null
-  let reply: GroupTurnReply | null = null
+  let passText: null | string = null
+  let reply: null | string = null
 
   for (let i = anchor === -1 ? before : anchor; i < messages.length; i++) {
     const msg = messages[i]
     const text = groupTranscriptRowText(msg)
-    const attachments = msg?.attachments ?? []
 
     if (msg?.role === 'user') {
       if (text.startsWith(GROUP_PROMPT_HEADER_PREFIX) || syntheticGroupUserRow(msg, text)) {
@@ -148,17 +136,17 @@ function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], befo
       return { failedNotice: text }
     }
 
-    if (msg?.role !== 'assistant' || (!text && !attachments.length)) {
+    if (msg?.role !== 'assistant' || !text) {
       continue
     }
 
-    if (isPassReply({ attachments, text })) {
-      passText = { attachments, text }
+    if (isGroupPassText(text)) {
+      passText = text
 
       continue
     }
 
-    reply ??= { attachments, text }
+    reply ??= text
   }
 
   return reply ?? passText
@@ -867,15 +855,13 @@ export async function answerGroupClarify(
  *  reports work in flight the deadline extends (bounded by the hard cap),
  *  so slow models aren't cut off mid-run. A turn that still times out
  *  records a stranded marker so the finished reply can be harvested into
- *  the room at the member's next turn instead of being lost. The reply's
- *  delivered files go to `onReplyAttachments` before it resolves. */
+ *  the room at the member's next turn instead of being lost. */
 export async function runGroupChatMemberTurn(
   group: string,
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[],
-  onReplyAttachments?: (attachments: MediaAttachment[]) => void
+  images?: Attachment[]
 ): Promise<null | string> {
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
@@ -890,9 +876,7 @@ export async function runGroupChatMemberTurn(
   try {
     releaseTurnLease = await retainGroupTurnRoute(member)
 
-    return binding.isLive()
-      ? await runGroupChatMemberTurnLeased(group, member, prompt, thread, images, onReplyAttachments)
-      : null
+    return binding.isLive() ? await runGroupChatMemberTurnLeased(group, member, prompt, thread, images) : null
   } finally {
     releaseTurnLease?.()
     binding.dispose()
@@ -979,8 +963,6 @@ interface GroupTurnPollContext {
   binding: { isLive(): boolean }
   /** The in-flight marker this poll owns (see markGroupTurnInFlight). */
   turn: string
-  /** Receives the files the picked reply delivered (see runGroupChatMemberTurn). */
-  onReplyAttachments?: (attachments: MediaAttachment[]) => void
 }
 
 // Polls alive in THIS process, by marker token. A marker whose token is here belongs to a turn
@@ -1108,15 +1090,14 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     if ((messages.length > before || died) && done) {
       const pick = messages.length > before && !failedThisTurn ? pickGroupTurnReply(messages, before) : null
 
-      if (pick && 'text' in pick) {
+      if (typeof pick === 'string') {
         recordGroupActivity(context.group, {
-          kind: isPassReply(pick) ? 'passed' : 'replied',
+          kind: isGroupPassText(pick) ? 'passed' : 'replied',
           member: groupMemberKey(member),
           thread
         })
-        context.onReplyAttachments?.(pick.attachments)
 
-        return pick.text
+        return pick
       }
 
       // The turn died on our prompt: surface the gateway's retained error
@@ -1203,8 +1184,7 @@ async function runGroupChatMemberTurnLeased(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[],
-  onReplyAttachments?: (attachments: MediaAttachment[]) => void
+  images?: Attachment[]
 ): Promise<null | string> {
   const binding = followGroupChat(group, name => {
     group = name
@@ -1280,8 +1260,7 @@ async function runGroupChatMemberTurnLeased(
         before,
         leftover,
         binding,
-        turn,
-        onReplyAttachments
+        turn
       })
 
       // A reply (or an explicit pass) ends the turn; null is a timeout or a dead
@@ -1395,8 +1374,8 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         ? pickStrandedGroupTurnReply(messages, strandedBefore)
         : null
 
-    const reply = pick && 'text' in pick ? pick : null
-    const failedNotice = pick && 'failedNotice' in pick ? pick.failedNotice : null
+    const reply = typeof pick === 'string' ? pick : null
+    const failedNotice = typeof pick === 'string' ? null : (pick?.failedNotice ?? null)
 
     if (reply === null) {
       // The late turn died instead of answering: say so where the user looks
@@ -1415,13 +1394,13 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       }
     }
 
-    if (reply && !isPassReply(reply)) {
+    if (reply && !isGroupPassText(reply)) {
       recordGroupActivity(group, {
         kind: 'delivered',
         member: groupMemberKey(member),
         thread: strandedThread
       })
-      appendGroupChatEntry(group, groupMemberAuthor(member), reply.text, strandedThread, undefined, reply.attachments)
+      appendGroupChatEntry(group, groupMemberAuthor(member), reply, strandedThread)
       updateGroupChat(group, (r: GroupChatRoom) => {
         const markKey = `${strandedThread}::${memberKey}`
 

@@ -40,8 +40,7 @@ it('keeps discovered file paths and originating session scope intact through rem
       {
         role: 'assistant',
         timestamp: 1000,
-        content: 'https://example.com/report.txt',
-        attachments: paths.map(path => ({ path }))
+        content: paths.map(path => `MEDIA:${path}`).join(' ') + ' https://example.com/report.txt'
       }
     ],
     session_id: 'artifact-session'

@@ -1,5 +1,3 @@
-import type { MediaAttachment } from '@hermes/plugin-sdk'
-
 import { clearBotAttention, noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
@@ -153,14 +151,13 @@ async function runVisibleMemberTurn(
   context: GroupRoundMemberContext,
   member: GroupMember,
   prompt: string,
-  images?: Attachment[],
-  onReplyAttachments?: (attachments: MediaAttachment[]) => void
+  images?: Attachment[]
 ) {
   const turn = { ...member }
   updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
 
   try {
-    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images, onReplyAttachments)
+    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
   } finally {
     if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
@@ -187,13 +184,10 @@ export async function runGroupRoundMember(
   const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
-  let replyAttachments: MediaAttachment[] = []
   let accepted = false
 
   try {
-    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages, attachments => {
-      replyAttachments = attachments
-    })
+    reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
 
     // #129443: the participation rules ("reply only with something new,
     // else (pass)") let a directly addressed member pass just because a
@@ -306,10 +300,10 @@ export async function runGroupRoundMember(
     })
   }
 
-  const spoke = reply !== null && (!isGroupPassText(reply) || replyAttachments.length > 0)
+  const spoke = reply !== null && !isGroupPassText(reply)
 
   if (reply !== null && spoke) {
-    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread, undefined, replyAttachments)
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
   } else if (reply !== null && context.isCurrent() && context.addressedKeys?.has(memberKey)) {
     // #129443: the nudge was passed on too. Record the noncompliance where
     // the user looks (activity row + roster badge) instead of letting the

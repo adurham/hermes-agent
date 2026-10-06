@@ -3,22 +3,21 @@ export { toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,
   appendReasoningPart,
-  attachmentPart,
+  assistantTextPart,
   chatMessageText,
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
   finalizeInterruptedMessages,
-  isAttachmentPart,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
   reasoningPart,
   reasoningTextFromDetails,
-  textPart,
-  withAttachmentParts
+  renderMediaTags,
+  textPart
 } from './parts'
-export type { AttachmentPart, UnspokenTurnSpeech } from './parts'
+export type { UnspokenTurnSpeech } from './parts'
 export {
   branchGroupForUser,
   preserveLocalAssistantErrors,

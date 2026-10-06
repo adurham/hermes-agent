@@ -80,11 +80,11 @@ describe('MarkdownImage media routing', () => {
   })
 })
 
-describe('MessageTextContent attachments', () => {
+describe('MessageTextContent MEDIA directives', () => {
   afterEach(cleanup)
 
-  it('renders a delivered audio file through the canonical player instead of exposing a directive', async () => {
-    const { container } = render(<MessageTextContent attachments={[{ path: '/tmp/group-voice.mp3' }]} text="" />)
+  it('renders a raw audio MEDIA directive through the canonical player instead of exposing the directive', async () => {
+    const { container } = render(<MessageTextContent text="MEDIA:/tmp/group-voice.mp3" />)
 
     await waitFor(() => expect(container.querySelector('audio[controls]')).not.toBeNull())
     expect(container.textContent).not.toContain('MEDIA:')

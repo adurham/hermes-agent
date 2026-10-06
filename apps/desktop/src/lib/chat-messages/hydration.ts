@@ -7,8 +7,15 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
-import { chatMessageText, dedupeRepeatedTextInParts, reasoningPart,
-  reasoningTextFromDetails, textPart, withAttachmentParts } from './parts'
+import {
+  assistantTextPart,
+  chatMessageText,
+  dedupeRepeatedTextInParts,
+  reasoningPart,
+  reasoningTextFromDetails,
+  renderMediaTags,
+  textPart
+} from './parts'
 import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
@@ -481,22 +488,20 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // Some providers also persist the joined commentary as canonical content.
     // Keep that authoritative copy once, without treating unrelated final text
     // as a reason to discard the earlier public messages.
-    const normalized = (value: string) => value.replace(/\s+/g, ' ').trim()
+    const normalized = (value: string) => renderMediaTags(value).replace(/\s+/g, ' ').trim()
 
     const commentaryIsReply = Boolean(
       reply && commentary.length && normalized(commentary.join('\n\n')) === normalized(reply)
     )
 
     if (!commentaryIsReply) {
-      parts.push(...commentary.map(text => textPart(text, message.timestamp)))
+      parts.push(...commentary.map(text => assistantTextPart(text, message.timestamp)))
     }
 
     if (reply) {
-      parts.push(textPart(reply, message.timestamp))
-    }
-
-    if (displayRole === 'assistant') {
-      parts.push(...withAttachmentParts([], message.attachments))
+      parts.push(
+        displayRole === 'assistant' ? assistantTextPart(reply, message.timestamp) : textPart(reply, message.timestamp)
+      )
     }
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {

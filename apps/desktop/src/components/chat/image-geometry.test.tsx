@@ -45,7 +45,7 @@ function content(kind: string, path: string, hint?: string) {
   }
 
   if (kind === 'media') {
-    return <MessageTextContent attachments={[{ path }]} text="" />
+    return <MessageTextContent text={`MEDIA:${path}`} />
   }
 
   return (

@@ -3,12 +3,12 @@ import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-k
 import { getSession } from '@/hermes'
 import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
+  assistantTextPart,
   type ChatMessage,
   chatMessageText,
   preserveLocalAssistantErrors,
   textPart,
-  toChatMessages,
-  withAttachmentParts
+  toChatMessages
 } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
@@ -1176,7 +1176,6 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
 export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
-  const inflightAttachments = projection.inflight?.attachments
   const inflightStreaming = Boolean(projection.inflight?.streaming)
 
   // Mid-turn redirect corrections. They are additional user bubbles belonging
@@ -1399,7 +1398,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         projected.push({
           id: `inflight-assistant-segment-${index}-${sessionId}`,
           role: 'assistant',
-          parts: [textPart(segment)],
+          parts: [assistantTextPart(segment)],
           pending: false,
           interim: true
         })
@@ -1414,7 +1413,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projected.push({
       id: liveStreamId,
       role: 'assistant',
-      parts: withAttachmentParts(tail.trim() ? [textPart(tail)] : [], inflightAttachments),
+      parts: tail.trim() ? [assistantTextPart(tail)] : [],
       pending: inflightStreaming
     })
   } else {
@@ -1422,7 +1421,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       const liveRow: ChatMessage = {
         id: liveStreamId,
         role: 'assistant',
-        parts: withAttachmentParts(inflightAssistant ? [textPart(inflightAssistant)] : [], inflightAttachments),
+        parts: inflightAssistant ? [assistantTextPart(inflightAssistant)] : [],
         pending: inflightStreaming,
         ...(inflightError ? { error: inflightError } : {}),
         ...(inflightError && inflightErrorSurface ? { errorSurface: inflightErrorSurface } : {})

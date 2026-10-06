@@ -1,4 +1,4 @@
-import type { MediaAttachment, PersistedTurn } from '@hermes/shared'
+import type { PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -6,6 +6,7 @@ import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
+  assistantTextPart,
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
@@ -15,11 +16,10 @@ import {
   normalizeWs,
   partsText,
   reasoningPart,
+  renderMediaTags,
   sealOpenToolParts,
-  textPart,
   toolCallOwnerMessageId,
-  upsertToolPart,
-  withAttachmentParts
+  upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
 import {
@@ -70,16 +70,9 @@ interface MessageStreamOptions {
 }
 
 interface QueuedStreamDelta {
-  attachments?: MediaAttachment[]
   occurredAt: number
   text: string
-  type: 'assistant' | 'attachment' | 'reasoning'
-}
-
-const APPLY_QUEUED_DELTA: Record<QueuedStreamDelta['type'], (parts: ChatMessagePart[], delta: QueuedStreamDelta) => ChatMessagePart[]> = {
-  assistant: (parts, delta) => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, delta.text, delta.occurredAt)),
-  attachment: (parts, delta) => withAttachmentParts(parts, delta.attachments),
-  reasoning: (parts, delta) => appendReasoningPart(parts, delta.text, delta.occurredAt)
+  type: 'assistant' | 'reasoning'
 }
 
 // Date.now() alone can collide when an interim seal and the next segment's
@@ -314,7 +307,13 @@ export function useMessageStream({
         queue.delete(id)
 
         const applyQueued = (parts: ChatMessagePart[]) =>
-          queued.reduce((next, delta) => APPLY_QUEUED_DELTA[delta.type](next, delta), parts)
+          queued.reduce(
+            (next, delta) =>
+              delta.type === 'assistant'
+                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
+                : appendReasoningPart(next, delta.text, delta.occurredAt),
+            parts
+          )
 
         mutateStream(id, applyQueued, () => applyQueued([]), {}, queued[0]?.occurredAt)
       }
@@ -434,24 +433,18 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (
-      sessionId: string,
-      key: QueuedStreamDelta['type'],
-      delta: string,
-      occurredAt = Date.now() / 1000,
-      attachments?: MediaAttachment[]
-    ) => {
-      if (!delta && !attachments?.length) {
+    (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
+      if (!delta) {
         return
       }
 
       const queued = queuedDeltasRef.current.get(sessionId) ?? []
       const tail = queued.at(-1)
 
-      if (tail?.type === key && key !== 'attachment') {
+      if (tail?.type === key) {
         tail.text += delta
       } else {
-        queued.push({ occurredAt, text: delta, type: key, ...(attachments?.length ? { attachments } : {}) })
+        queued.push({ occurredAt, text: delta, type: key })
       }
 
       queuedDeltasRef.current.set(sessionId, queued)
@@ -508,15 +501,12 @@ export function useMessageStream({
   }, [flushQueuedDeltas])
 
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string, occurredAt?: number, attachments?: MediaAttachment[] | null) => {
-      if (delta) {
-        queueDelta(sessionId, 'assistant', delta, occurredAt)
+    (sessionId: string, delta: string, occurredAt?: number) => {
+      if (!delta) {
+        return
       }
 
-      // Queued behind the text so a card lands where its MEDIA: line ended.
-      if (attachments?.length) {
-        queueDelta(sessionId, 'attachment', '', occurredAt, attachments)
-      }
+      queueDelta(sessionId, 'assistant', delta, occurredAt)
     },
     [queueDelta]
   )
@@ -622,15 +612,15 @@ export function useMessageStream({
   )
 
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string, occurredAt = Date.now() / 1000, attachments?: MediaAttachment[] | null) => {
+    (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
       updateSessionState(sessionId, state => {
         if (state.interrupted) {
           return state
         }
 
-        const authoritativeText = text.trim()
+        const authoritativeText = renderMediaTags(text).trim()
 
-        if (!authoritativeText && !attachments?.length) {
+        if (!authoritativeText) {
           return state
         }
 
@@ -646,12 +636,9 @@ export function useMessageStream({
             part => (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
           )
 
-          return withAttachmentParts(
-            hasNewResponse
-              ? mergeCurrentResponseText(parts, visibleText, occurredAt)
-              : mergeFinalAssistantText(parts, visibleText, occurredAt),
-            attachments
-          )
+          return hasNewResponse
+            ? mergeCurrentResponseText(parts, visibleText, occurredAt)
+            : mergeFinalAssistantText(parts, visibleText, occurredAt)
         }
 
         let nextMessages = state.messages
@@ -708,10 +695,7 @@ export function useMessageStream({
               {
                 id: nextStreamMessageId('assistant-interim'),
                 role: 'assistant' as const,
-                parts: withAttachmentParts(
-                  authoritativeText ? [{ ...textPart(authoritativeText, occurredAt), completedAt: occurredAt }] : [],
-                  attachments
-                ),
+                parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
                 timestamp: occurredAt,
                 completedAt: occurredAt,
                 pending: false,
@@ -744,7 +728,6 @@ export function useMessageStream({
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
-      attachments?: MediaAttachment[] | null,
       responseReused?: boolean
     ) => {
       let shouldHydrate = false
@@ -759,9 +742,7 @@ export function useMessageStream({
           return {
             ...state,
             messages:
-              status === 'interrupted'
-                ? extendInterruptedReply(state.messages, text, occurredAt, attachments)
-                : state.messages,
+              status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -773,7 +754,7 @@ export function useMessageStream({
         }
 
         const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
-        const finalText = text.trim()
+        const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
         const completionError = failure?.error ?? completionErrorText(finalText)
@@ -803,12 +784,9 @@ export function useMessageStream({
 
           // Partial terminal errors carry the whole retained assistant buffer,
           // not just the response after the last tool (unlike healthy finals).
-          return withAttachmentParts(
-            interim || keepFailedPartialText
-              ? mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
-              : mergeCurrentResponseText(parts, visibleFinalText, occurredAt),
-            attachments
-          )
+          return interim || keepFailedPartialText
+            ? mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
+            : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
         }
 
         const withPersistedIdentity = (message: ChatMessage): ChatMessage => {
@@ -869,10 +847,7 @@ export function useMessageStream({
             parts:
               completionError && !keepFailedPartialText
                 ? []
-                : withAttachmentParts(
-                    finalText ? [{ ...textPart(finalText, occurredAt), completedAt: occurredAt }] : [],
-                    attachments
-                  ),
+                : [{ ...assistantTextPart(finalText, occurredAt), completedAt: occurredAt }],
             timestamp: occurredAt,
             completedAt: occurredAt,
             branchGroupId: state.pendingBranchGroup ?? undefined,
@@ -1027,7 +1002,7 @@ export function useMessageStream({
               // The reply is already on screen as the sealed interim: settle it
               // instead of appending the same text a second time (#123801).
               nextMessages = settleAt(identicalInterimIndex)
-            } else if (finalText || attachments?.length) {
+            } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
           } else {
@@ -1047,7 +1022,7 @@ export function useMessageStream({
 
             if (sealed?.interim === true && chatMessageText(sealed).trim() === finalText) {
               nextMessages = settleAt(sealedIndex)
-            } else if (finalText || attachments?.length) {
+            } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
           }

@@ -1,10 +1,4 @@
-import type {
-  MediaAttachment,
-  ProjectInfo,
-  SessionLiveInfo,
-  SubagentStatus,
-  ToolLabel
-} from '@hermes/shared/gateway-events'
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
 
 export interface ActiveTool {
   context?: string
@@ -137,9 +131,6 @@ export interface ClarifyReq {
 }
 
 export interface Msg {
-  // Files the reply's MEDIA: tags delivered (the gateway strips the tags from
-  // `text`); rendered as link rows under the reply.
-  attachments?: MediaAttachment[]
   info?: SessionInfo
   kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData

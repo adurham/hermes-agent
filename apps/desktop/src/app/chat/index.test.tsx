@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type ChatMessage, textPart } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -67,7 +67,7 @@ const { ChatView } = await import('./index')
 function assistantMessage(id: string, text: string): ChatMessage {
   return {
     id,
-    parts: [textPart(text)],
+    parts: [assistantTextPart(text)],
     role: 'assistant'
   }
 }

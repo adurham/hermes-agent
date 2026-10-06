@@ -141,6 +141,19 @@ describe('collectArtifactsForSession', () => {
     expect(values).toContain('/home/example/project/report.pdf')
   })
 
+  it('indexes MEDIA-delivered files from terminal stdout', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-media-session' }), [
+      {
+        content: JSON.stringify({ output: 'done\nMEDIA:/tmp/plot.png', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/plot.png')
+  })
+
   it('does not scan generic keys of non-terminal tools as shell output', () => {
     const artifacts = collectArtifactsForSession(makeSession({ id: 'search-noise-session' }), [
       {
@@ -196,6 +209,7 @@ describe('collectArtifactsForSession', () => {
       {
         content: JSON.stringify({
           file_path: '`/tmp/generated/transcript.md`',
+          media_tag: 'MEDIA:/tmp/generated/voice.ogg',
           success: true
         }),
         role: 'tool',
@@ -209,6 +223,7 @@ describe('collectArtifactsForSession', () => {
       '/tmp/generated/report.pdf',
       '/tmp/generated/notes.md',
       'https://cdn.example.com/generated/data.csv',
+      '/tmp/generated/voice.ogg',
       '/tmp/generated/transcript.md'
     ])
   })
@@ -336,26 +351,20 @@ ${payload}
     ])
   })
 
-  it('keeps explicitly delivered attachments', () => {
+  it('keeps explicitly delivered MEDIA files', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {
         content: 'Finished rendering. **MEDIA: /tmp/generated/demo.mp4**',
-        display_content: 'Finished rendering.',
-        attachments: [{ path: '/tmp/generated/demo.mp4' }],
         role: 'assistant',
         timestamp: 1_781_774_001
       },
       {
         content: 'Second render. MEDIA: "/tmp/generated/demo clip.mp4"',
-        display_content: 'Second render.',
-        attachments: [{ path: '/tmp/generated/demo clip.mp4' }],
         role: 'assistant',
         timestamp: 1_781_774_002
       },
       {
         content: 'Third render. "MEDIA:/tmp/generated/quoted.mp4"',
-        display_content: 'Third render.',
-        attachments: [{ path: '/tmp/generated/quoted.mp4' }],
         role: 'assistant',
         timestamp: 1_781_774_003
       }
@@ -372,22 +381,16 @@ ${payload}
     const artifacts = collectArtifactsForSession(makeSession({ id: 'office-session' }), [
       {
         content: 'Workbook ready. MEDIA:C:\\Users\\Example\\Documents\\report.xlsx',
-        display_content: 'Workbook ready.',
-        attachments: [{ path: 'C:\\Users\\Example\\Documents\\report.xlsx' }],
         role: 'assistant',
         timestamp: 1_781_774_001
       },
       {
         content: 'Deck exported. **MEDIA: /tmp/generated/summary.pptx**',
-        display_content: 'Deck exported.',
-        attachments: [{ path: '/tmp/generated/summary.pptx' }],
         role: 'assistant',
         timestamp: 1_781_774_002
       },
       {
         content: 'Notes compiled. MEDIA:"/tmp/generated/contract draft.docx"',
-        display_content: 'Notes compiled.',
-        attachments: [{ path: '/tmp/generated/contract draft.docx' }],
         role: 'assistant',
         timestamp: 1_781_774_003
       }
@@ -405,8 +408,6 @@ ${payload}
     const artifacts = collectArtifactsForSession(makeSession({ id: 'odd-ext-session' }), [
       {
         content: 'Palette saved. MEDIA:/tmp/generated/palette.icc',
-        display_content: 'Palette saved.',
-        attachments: [{ path: '/tmp/generated/palette.icc' }],
         role: 'assistant',
         timestamp: 1_781_774_001
       }

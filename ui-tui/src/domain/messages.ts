@@ -1,5 +1,3 @@
-import type { MediaAttachment } from '@hermes/shared/gateway-events'
-
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
@@ -32,7 +30,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { attachments, context, display_kind, name, role, text, timestamp } = row as TranscriptRow
+    const { context, display_kind, name, role, text, timestamp } = row as TranscriptRow
 
     const createdAt =
       typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
@@ -43,10 +41,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    // A reply can be only files: its MEDIA: tags came out of `text` on the gateway.
-    const files: Pick<Msg, 'attachments'> = role === 'assistant' && attachments?.length ? { attachments } : {}
-
-    if (typeof text !== 'string' || (!text.trim() && !files.attachments)) {
+    if (typeof text !== 'string' || !text.trim()) {
       continue
     }
 
@@ -104,13 +99,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (role === 'assistant') {
-      out.push({
-        role,
-        text,
-        ...files,
-        ...(createdAt !== undefined && { createdAt }),
-        ...(pending.length && { tools: pending })
-      })
+      out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })
@@ -131,7 +120,6 @@ export const fmtDuration = (ms: number) => {
 }
 
 interface TranscriptRow {
-  attachments?: MediaAttachment[] | null
   context?: string
   display_kind?: string
   display_metadata?: { task_count?: number; [key: string]: unknown }

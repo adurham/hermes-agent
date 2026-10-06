@@ -1,11 +1,9 @@
-import type { MediaAttachment } from '@hermes/shared'
-
 import {
+  assistantTextPart,
   type ChatMessage,
   chatMessageText,
   mergeFinalAssistantText,
-  textPart,
-  withAttachmentParts
+  renderMediaTags
 } from '@/lib/chat-messages'
 import { generatedImageEchoSources, stripGeneratedImageEchoes } from '@/lib/generated-images'
 
@@ -20,13 +18,8 @@ const flat = (text: string) => text.replace(/\s+/g, ' ').trim()
  * painted, a bubble is added. Extend-only: a shorter or different text never
  * replaces what the user saw.
  */
-export function extendInterruptedReply(
-  messages: ChatMessage[],
-  rawText: string,
-  occurredAt: number,
-  attachments?: MediaAttachment[] | null
-): ChatMessage[] {
-  const text = rawText.trim()
+export function extendInterruptedReply(messages: ChatMessage[], rawText: string, occurredAt: number): ChatMessage[] {
+  const text = renderMediaTags(rawText).trim()
 
   if (!text) {
     return messages
@@ -52,9 +45,7 @@ export function extendInterruptedReply(
       return messages
     }
 
-    return messages.map(message =>
-      message === target ? { ...message, parts: withAttachmentParts(parts, attachments) } : message
-    )
+    return messages.map(message => (message === target ? { ...message, parts } : message))
   }
 
   if (turn.some(message => flat(chatMessageText(message)).includes(flat(text)))) {
@@ -66,7 +57,7 @@ export function extendInterruptedReply(
     {
       id: `assistant-interrupted-${Date.now()}`,
       role: 'assistant',
-      parts: withAttachmentParts([{ ...textPart(text, occurredAt), completedAt: occurredAt }], attachments),
+      parts: [{ ...assistantTextPart(text, occurredAt), completedAt: occurredAt }],
       timestamp: occurredAt,
       completedAt: occurredAt,
       pending: false
