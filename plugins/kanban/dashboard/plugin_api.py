@@ -1734,11 +1734,6 @@ def _ws_board_live(normed: Optional[str]) -> Optional[str]:
     """
     if not normed or normed == kanban_db.DEFAULT_BOARD:
         return normed
-    try:
-        if kanban_db.read_board_metadata(normed).get("archived"):
-            return None
-    except Exception:
-        return None
     return normed if kanban_db.board_exists(normed) else None
 
 
