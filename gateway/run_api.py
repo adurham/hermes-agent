@@ -28,6 +28,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
     if getattr(web.app.state, "gateway_runner", None) is not None:
         raise RuntimeError("gateway API already started")
     web._configure_auth_gate(host, False, None, None)
+    # Local clients authenticate with tickets minted on the owner-only control socket. The SPA
+    # session token is a bearer credential any loopback peer (any OS user) could read from
+    # GET /, so the gateway-hosted listener never publishes it.
+    web.app.state.withhold_session_token = True
     config, server = web._build_uvicorn_server(host, port)
     config.timeout_graceful_shutdown = 5
     family, kind, proto, _, address = socket.getaddrinfo(
@@ -60,6 +64,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
         listener.close()
         web.app.state.gateway_runner = None
         web.app.state.session_authority = None
+        web.app.state.withhold_session_token = False
         if hasattr(server, "lifespan") and not server.lifespan.should_exit:
             await server.lifespan.shutdown()
         raise
@@ -74,6 +79,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
                 listener.close()
                 web.app.state.gateway_runner = None
                 web.app.state.session_authority = None
+                web.app.state.withhold_session_token = False
 
     task = asyncio.create_task(serve(), name="gateway-api")
     origin_host = f"[{host}]" if ":" in host else host
