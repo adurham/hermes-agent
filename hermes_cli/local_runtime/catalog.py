@@ -291,7 +291,7 @@ def recommended_entry(budget: HardwareBudget,
 
 _CATALOG_URL = ("https://raw.githubusercontent.com/NousResearch/hermes-agent"
                 "/main/hermes_cli/local_runtime/catalog.json")
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # bump when an older app would read a newer catalog but launch its entries wrongly
 _REFRESH_TTL_S = 6 * 3600
 _refresh_lock = threading.Lock()
 _last_refresh_attempt = 0.0
