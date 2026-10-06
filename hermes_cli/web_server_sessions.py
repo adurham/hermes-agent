@@ -122,6 +122,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     from fastapi import HTTPException
     from gateway.session_contract import SessionRef
     from gateway.session_mutations import mutate_session
+    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_state_runtime import RuntimeStoreError
 
     authority, actor = _session_mutation_context(request, profile)
@@ -142,6 +143,8 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
                   'invalid_params': 400, 'runtime_draining': 503}.get(exc.reason, 409)
         raise HTTPException(status_code=status, detail=exc.reason) from exc
+    except MUTATION_GUARD_REFUSALS as exc:
+        raise HTTPException(status_code=409, detail='session_busy') from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except sqlite3.Error as exc:

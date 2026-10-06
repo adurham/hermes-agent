@@ -1,6 +1,12 @@
 """Transcript mutation guards evaluated on the receipt's writer connection."""
 from hermes_state_common import _ENDED_ROW_SQL, _ended_by_compression
+from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
 from hermes_state_runtime import RuntimeStoreError
+
+# What ``require_idle``'s transcript-guard check raises when a live turn lease or a
+# compression lock protects a target: the same retryable "busy" verdict as a running
+# admission, so mutation surfaces map it to 409 rather than letting it escape as a 500.
+MUTATION_GUARD_REFUSALS = (SessionTurnLeaseLostError, SessionCompressionInProgressError)
 
 
 def require_not_executing(conn, session_ids):

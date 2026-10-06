@@ -4578,6 +4578,25 @@ class TestDeleteSessionEndpoint:
         finally:
             db.close()
 
+    @pytest.mark.parametrize("guard", ["turn_lease", "compression_lock"])
+    def test_delete_refused_by_live_write_guard_is_409(self, mutation_owner, guard):
+        # A live fallback turn lease / compression lock refuses deletion like a busy
+        # canonical admission does: a retryable 409 with the row intact, never a 500.
+        sid = f"guarded-{guard}"
+        self._seed([sid])
+        if guard == "turn_lease":
+            assert mutation_owner.db.try_acquire_session_turn_lease(sid, "foreign-turn")
+        else:
+            assert mutation_owner.db.try_acquire_compression_lock(sid, "foreign-compressor")
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        client = TestClient(app, raise_server_exceptions=False)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        self.auth_client = client
+        resp = self._canonical_delete(mutation_owner, sid)
+        assert resp.status_code == 409, resp.text
+        assert self._exists(sid)
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
