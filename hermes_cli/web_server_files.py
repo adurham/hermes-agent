@@ -7,7 +7,7 @@ import urllib.request
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
@@ -140,7 +140,7 @@ def _dashboard_local_update_managed_externally() -> bool:
     return True
 
 
-def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
+def _managed_files_policy(request: Optional[Request], *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
@@ -205,8 +205,12 @@ def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
             and not _is_sensitive_path(target) and not _is_sensitive_path(resolved))
 
 
-def _hosted_fs_read_guard(target: Path, request: Request) -> Path | None:
-    """Preview and Git reads share managed-file restrictions on locked deployments."""
+def _hosted_fs_read_guard(target: Path, request: Optional[Request] = None) -> Path | None:
+    """Preview and Git reads share managed-file restrictions on locked deployments.
+
+    ``request`` is unused (the policy is env/home driven) and optional so the
+    route functions stay callable directly, e.g. from agent-side tests.
+    """
     root = _managed_files_policy(request, create_root=False).locked_root
     if root is not None and not _hosted_fs_path_allowed(root, target):
         raise HTTPException(status_code=403, detail="Path is outside the managed read boundary")

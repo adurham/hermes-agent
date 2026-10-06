@@ -787,7 +787,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str, request: Request, profile: Optional[str] = None):
+async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
         try:
@@ -929,7 +929,7 @@ async def fs_read_data_url(
 
 @router.get("/api/fs/download")
 async def fs_download(
-    path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
+    path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
