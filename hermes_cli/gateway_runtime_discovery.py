@@ -27,14 +27,17 @@ def home_mode_unsafe(node: os.stat_result) -> bool:
         return True
     if not mode & 0o020:
         return False
+    # ``gr_mem`` never lists accounts whose PRIMARY gid is the group, so privacy also needs the
+    # passwd scan; membership we cannot establish is treated as shared.
     try:
         import grp
         import pwd
         user, group = pwd.getpwuid(node.st_uid), grp.getgrgid(node.st_gid)
-    except (ImportError, KeyError):
+        primary_members = {p.pw_uid for p in pwd.getpwall() if p.pw_gid == group.gr_gid}
+    except (ImportError, KeyError, OSError):
         return True
     return not (group.gr_gid == user.pw_gid and group.gr_name == user.pw_name
-                and set(group.gr_mem) <= {user.pw_name})
+                and set(group.gr_mem) <= {user.pw_name} and primary_members <= {node.st_uid})
 
 
 def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_result:
