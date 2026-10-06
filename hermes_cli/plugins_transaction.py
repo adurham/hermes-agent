@@ -13,6 +13,18 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
     _recover_plugin_publication(project, row, journal)
 
 
+# ---- iuf c1 ----
+def _consent_failure_class(reason: object) -> str:
+    """Extension-install class for a refused dependency consent. ``reason`` is one of the closed
+    strings plugins_cmd_install._install_plugin_python_deps / _consent_python_deps return."""
+    if reason == "dependency install skipped (non-interactive)":
+        return "non_interactive"
+    if reason == "dependency install declined":
+        return "deps_declined"
+    return "manifest_invalid"  # "invalid Python dependency declaration: ..."
+# ---- end iuf c1 ----
+
+
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
                    *, target_digest: str | None = None, require_consent: bool = False,
                    assume_consent: bool = False) -> None:
@@ -35,7 +47,8 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
             if not consented:
                 outcome = ("Reinstall declined: {}. The installed plugin and active environment are unchanged."
                            if target.exists() else "Install declined: {}. Nothing was installed.")
-                raise plugins_cmd.PluginOperationError(outcome.format(reason))
+                raise plugins_cmd.PluginOperationError(
+                    outcome.format(reason), failure_class=_consent_failure_class(reason))
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),

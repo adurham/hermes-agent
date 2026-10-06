@@ -400,6 +400,87 @@ FEATURE_DISABLED_EVENTS = frozenset({"disabled", "re_enabled"})
 FEATURE_DISABLED_NAME_MAX_LENGTH = 64
 # ---- end v5 signals ----
 
+# ---- iuf c1 ----
+# Why an extension install failed, named at each failure exit of the three emitters
+# (hermes_cli/skills_hub.py::_install_skill, hermes_cli/plugins_cmd_install.py::recorded_install,
+# hermes_cli/mcp_catalog.py::recorded_catalog_install / record_mcp_install); ``none`` on success.
+# A raised exception with no class of its own is classified by its TYPE: network / permission /
+# filesystem_error, anything else ``exception:<Type>``, which keeps only the ``exception`` prefix
+# (as on compression rows). Never the error message.
+EXTENSION_COMMON_FAILURE_CLASSES = frozenset({
+    "exception", "filesystem_error", "network", "none", "other", "permission",
+})
+EXTENSION_SKILL_FAILURE_CLASSES = EXTENSION_COMMON_FAILURE_CLASSES | frozenset({
+    "ambiguous",          # a short name matched several skills in different registries
+    "auth_rejected",      # GitHub refused every configured credential (401)
+    "fetch_failed",       # no registry served the files (unreachable, 404, removed)
+    "invalid_bundle",     # unsafe path, symlink or invalid skill name in the bundle
+    "invalid_name",       # a URL skill with no usable name (non-interactive, bad --name, cancelled prompt)
+    "not_found",          # a short name no registry knows, or a pinned registry that does not exist
+    "rate_limited",       # the GitHub API rate limit was exhausted
+    "scan_blocked",       # the security scan refused the bundle
+    "stale_index",        # listed in a registry index whose files no longer exist upstream
+})
+EXTENSION_PLUGIN_FAILURE_CLASSES = EXTENSION_COMMON_FAILURE_CLASSES | frozenset({
+    "already_installed",  # the plugin already exists / is pinned and needs --force or --ref
+    "clone_failed",       # git clone / fetch / checkout of the plugin repository failed or timed out
+    "deps_declined",      # the user declined the Python dependency prompt
+    "deps_failed",        # PM could not prepare the plugin's dependencies
+    "git_missing",        # git is not installed
+    "incompatible",       # newer manifest_version, unsupported platform / GPU / runtime version
+    "invalid_source",     # the identifier or subdirectory does not name a usable git source
+    "manifest_invalid",   # unreadable or malformed plugin.yaml / plugin.json / dependency declaration
+    "non_interactive",    # Python dependencies need consent and nobody could answer (no --yes-deps)
+    "removed_from_catalog",  # on the catalog kill list
+    "scan_blocked",       # the security scan refused the plugin
+})
+EXTENSION_MCP_FAILURE_CLASSES = EXTENSION_COMMON_FAILURE_CLASSES | frozenset({
+    "auth_required",      # the server refused the sign-in (OAuth error, HTTP 401/403)
+    "bootstrap_failed",   # a catalog entry's bootstrap command exited non-zero
+    "clone_failed",       # git clone / checkout of a catalog entry's repository failed
+    "config_invalid",     # no such catalog entry, undeclared env var, or a manifest that cannot be built
+    "config_rejected",    # Hermes refused a suspicious command/args configuration
+    "connect_failed",     # the probe could not reach or initialize the server
+    "git_missing",        # git is not installed
+    "missing_credentials",  # a required credential was not provided
+    "server_start_failed",  # the stdio server command is missing, or its native module needs another Node
+})
+EXTENSION_KIND_FAILURE_CLASSES = {
+    "mcp_server": EXTENSION_MCP_FAILURE_CLASSES, "plugin": EXTENSION_PLUGIN_FAILURE_CLASSES,
+    "skill": EXTENSION_SKILL_FAILURE_CLASSES,
+}
+EXTENSION_FAILURE_CLASSES = (
+    EXTENSION_SKILL_FAILURE_CLASSES | EXTENSION_PLUGIN_FAILURE_CLASSES | EXTENSION_MCP_FAILURE_CLASSES
+)
+# The skills-hub adapter that resolved or served a skill: every ``SOURCE_ID`` the router in
+# tools/skills_hub_search.py::create_source_router builds. ``none`` = no adapter was involved
+# (bundled restores, plugin and MCP rows), ``unresolved`` = a hub lookup no adapter answered,
+# ``other`` = an adapter id this list does not name.
+EXTENSION_REGISTRY_IDS = frozenset({
+    "browse-sh", "clawhub", "github", "hermes-index", "lobehub", "official", "skills-sh", "url", "well-known",
+})
+EXTENSION_REGISTRIES = EXTENSION_REGISTRY_IDS | frozenset({"none", "other", "unresolved"})
+# Why a `hermes update` run failed or was refused, derived from the FINAL receipt only
+# (shared_metrics_update.update_failure_class); ``none`` unless outcome is failed/refused.
+UPDATE_FAILURE_CLASSES = frozenset({
+    "aborted_before_apply",  # exited before the checkout moved (fetch, channel, branch, merge, HEAD checks)
+    "build_failed",          # the build stage reported failure
+    "deps_failed",           # PM dependency preparation failed (no deps mark, or a PM error type)
+    "exception",             # the run ended on an uncaught exception (type name dropped)
+    "fleet_stale",           # post-update verification found a gateway still stale or down
+    "fleet_unverified",      # verification could not prove the fleet current (no rows, unaccounted runtime)
+    "git_failed",            # a git/installer subprocess failed before the checkout moved (stash, pull, merge)
+    "interrupted",           # KeyboardInterrupt / exit 130
+    "lock_held",             # another updater held the update lock (refused, exit 2)
+    "managed_install",       # admission refused: image/package-managed or commit-build install (refused)
+    "none", "other",
+    "os_error",              # the run ended on an OSError (disk full, permission, file in use)
+    "restart_failed",        # the gateway restart failed, or a skipped restart left the fleet owing one
+    "subprocess_failed",     # a subprocess error (CalledProcessError, TimeoutExpired) reached the boundary
+    "unknown",               # the reporter sent no reason (Desktop packaged updaters)
+})
+# ---- end iuf c1 ----
+
 
 def update_duration_bucket(duration_ms: Any) -> str:
     """Bucket an update (or update stage) wall time; non-numbers count as instant."""
@@ -758,6 +839,9 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     EXTENSION_INSTALL_METRIC: {
         "kind": EXTENSION_KINDS, "name": EXTENSION_NAMES, "outcome": EXTENSION_OUTCOMES,
         "source": EXTENSION_SOURCES,
+        # ---- iuf c1 ----
+        "failure_class": EXTENSION_FAILURE_CLASSES, "registry": EXTENSION_REGISTRIES,
+        # ---- end iuf c1 ----
     },
     # ---- v4 loop ----
     MEMORY_OP_METRIC: {
@@ -803,6 +887,9 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "apply_mode": UPDATE_APPLY_MODES, "duration_bucket": UPDATE_DURATION_BUCKETS,
         "failed_stage": UPDATE_FAILED_STAGES, "from_version_age_bucket": VERSION_AGE_BUCKETS,
         "kind": UPDATE_KINDS, "outcome": UPDATE_OUTCOMES,
+        # ---- iuf c1 ----
+        "failure_class": UPDATE_FAILURE_CLASSES,
+        # ---- end iuf c1 ----
     },
     UPDATE_STAGE_METRIC: {
         "duration_bucket": UPDATE_DURATION_BUCKETS, "outcome": UPDATE_STAGE_OUTCOMES, "stage": UPDATE_STAGES,
@@ -960,6 +1047,13 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----
+# ---- iuf c1 ----
+# Rows recorded before the failure_class / registry split drain as they were counted.
+_LEGACY_METRIC_FIELDS[EXTENSION_INSTALL_METRIC] = (
+    _METRIC_FIELDS[EXTENSION_INSTALL_METRIC] - {"failure_class", "registry"},
+)
+_LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - {"failure_class"},)
+# ---- end iuf c1 ----
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
 SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
