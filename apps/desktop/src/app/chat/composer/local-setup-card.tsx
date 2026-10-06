@@ -39,9 +39,10 @@ export function LocalSetupCard({ busy, guidedChat }: LocalSetupCardProps) {
   const { t } = useI18n()
   const copy = t.composer.localSetup
 
-  // No answer yet (relaunch, or the backend just changed) or a failed one: ask again.
+  // No answer yet (relaunch, or the backend just changed): ask. A failed answer stays until the backend changes,
+  // which clears it, so a backend that is down is not asked again on every failure.
   useEffect(() => {
-    if (offer.state === 'shown' && (!eligibility || eligibility.transient)) {
+    if (offer.state === 'shown' && !eligibility) {
       void readLocalSetupEligibility()
     }
   }, [offer.state, eligibility])
