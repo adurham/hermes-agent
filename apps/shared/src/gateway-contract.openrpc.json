@@ -36903,6 +36903,15 @@
         "title": "ToolsetsListResult",
         "type": "object"
       },
+      "TourPreset": {
+        "description": "Which built-in tour ``start`` without steps runs. The wire contract imports this enum.",
+        "enum": [
+          "quick",
+          "full"
+        ],
+        "title": "TourPreset",
+        "type": "string"
+      },
       "TourRequestParams": {
         "additionalProperties": false,
         "description": "``tools/tour_tool.py`` field set.",
@@ -37001,6 +37010,17 @@
             ],
             "default": null,
             "title": "Step Index"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TourPreset"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

@@ -635,26 +635,35 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
     return
   }
 
-  void import('@/lib/tour')
-    .then(({ runTour }) =>
-      runTour(
-        {
-          kind: (str(p.action) || 'stop') as TourAction['kind'],
-          selector: p.selector as never,
-          side: p.side as TourStep['side'],
-          startAt: p.step_index as never,
-          steps: p.steps as TourStep[] | undefined,
-          text: p.text as never,
-          title: p.title as never
-        },
-        p.surface === 'preview' ? 'preview' : 'app',
-        previewOwnerFor(sessionId)
-      )
-    )
-    .then(
-      result => answerValue(request, result),
-      error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
-    )
+  const kind = (str(p.action) || 'stop') as TourAction['kind']
+
+  // start with no steps is the app's own tour: one call, the app owns the stops.
+  // The backend validated `preset`; absent means full.
+  const run =
+    kind === 'start' && !Array.isArray(p.steps)
+      ? import('@/app/chat/built-in-tour').then(({ runBuiltInTour }) =>
+          runBuiltInTour(p.preset === 'quick' ? 'quick' : 'full')
+        )
+      : import('@/lib/tour').then(({ runTour }) =>
+          runTour(
+            {
+              kind,
+              selector: p.selector as never,
+              side: p.side as TourStep['side'],
+              startAt: p.step_index as never,
+              steps: p.steps as TourStep[] | undefined,
+              text: p.text as never,
+              title: p.title as never
+            },
+            p.surface === 'preview' ? 'preview' : 'app',
+            previewOwnerFor(sessionId)
+          )
+        )
+
+  void run.then(
+    result => answerValue(request, result),
+    error => answerValue(request, { error: error instanceof Error ? error.message : String(error), success: false })
+  )
 }
 
 /** Method → handler. Every `ServerRequestMap` key the desktop answers. */

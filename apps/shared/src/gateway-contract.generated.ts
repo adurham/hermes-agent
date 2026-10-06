@@ -4500,6 +4500,7 @@ export interface TourRequestParams {
   side?: string | null
   steps?: TourStep[] | null
   step_index?: number | null
+  preset?: TourPreset | null
 }
 export interface TourStep {
   selector?: string | null
@@ -4508,6 +4509,8 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+/** Which built-in tour ``start`` without steps runs. The wire contract imports this enum. */
+export type TourPreset = 'quick' | 'full'
 export interface DisplayInstallSudoParams {
   session_id: string
   profile_key: string
