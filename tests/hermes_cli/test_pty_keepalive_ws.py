@@ -226,6 +226,29 @@ async def test_legacy_channel_connect_pops_marker_on_disconnect(pty_keepalive_ha
 
 
 @pytest.mark.asyncio
+async def test_legacy_marker_pops_even_when_disconnect_cancels_a_slow_close(
+    pty_keepalive_harness, monkeypatch
+):
+    """A disconnect may cancel the handler while the pump still awaits the blocking
+    ``bridge.close`` (a loaded host makes the thread hop slow); that cancellation must not
+    skip the marker cleanup, or every such reconnect leaks one entry (#63553)."""
+    import time
+
+    from starlette.testclient import TestClient
+
+    monkeypatch.setattr(FakeBridge, "close", lambda self: time.sleep(0.5))
+    markers = _pty_marker_dict()
+    markers.clear()
+    with TestClient(web_server.app).websocket_connect("/api/pty?channel=SLOWCLOSE") as ws:
+        ws.send_bytes(b"hi")
+        assert "SLOWCLOSE" in markers
+    deadline = time.monotonic() + 5.0
+    while "SLOWCLOSE" in markers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert "SLOWCLOSE" not in markers
+
+
+@pytest.mark.asyncio
 async def test_fresh_start_pops_stale_marker_and_reregisters_child_path(
     pty_keepalive_harness, tmp_path, monkeypatch
 ):
