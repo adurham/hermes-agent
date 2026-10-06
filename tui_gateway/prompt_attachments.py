@@ -160,6 +160,8 @@ def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: 
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
     try:
+        # mkstemp allocation is atomic across sessions sharing the profile images dir (main #b4faf6587e9's
+        # cross-session collision fix holds without the counter-named xb probe loop).
         img_path = stage_image_bytes(img_dir, img_bytes, ext, prefix=prefix)
     except Exception:
         session["image_counter"] = max(0, session["image_counter"] - 1)
@@ -237,13 +239,23 @@ def _stage_session_file_attachment(
     root.mkdir(parents=True, exist_ok=True)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
-    if target.exists():
-        stem = Path(filename).stem or "attachment"
-        suffix = Path(filename).suffix
-        counter = 2
-        while (target := root / f"{stem}-{counter}{suffix}").exists():
+    stem = Path(filename).stem or "attachment"
+    suffix = Path(filename).suffix
+    counter = 2
+    while True:
+        try:
+            upload = target.open("xb")
+        except FileExistsError:
+            target = root / f"{stem}-{counter}{suffix}"
             counter += 1
-    target.write_bytes(payload)
+        else:
+            break
+    try:
+        with upload:
+            upload.write(payload)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
     return target.resolve(), True
 
 

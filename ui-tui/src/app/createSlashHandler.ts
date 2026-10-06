@@ -1,5 +1,6 @@
 import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
 
+import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
@@ -13,18 +14,38 @@ import { captureDestination, isCurrentDestination } from './submissionDestinatio
 import { getUiState } from './uiStore.js'
 import { describeSlashExecError, shouldFallbackToDispatch } from './userMessages.js'
 
+/** Shared metrics count each user-typed command once, from the client: the gateway no longer
+ *  counts slash.exec, so locally handled commands (/resume, /skin, overlays) land too.
+ *  Fire-and-forget; the backend canonicalizes the raw name. */
+export function reportSlashCommand(gw: GatewayClient, name: string, sid: null | string | undefined): void {
+  if (name) {
+    gw.request('shared_metrics.slash_command', { command: name, ...(sid ? { session_id: sid } : {}) }).catch(
+      () => undefined
+    )
+  }
+}
+
+/** `typed` is false for programmatic calls (a picker re-issuing `/model <x>`) and for the
+ *  backend's alias re-dispatch; prefix/alias expansion keeps it, so a typed `/hea` counts once
+ *  as the /heartbeat it resolved to. */
 export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
   const { gw } = ctx.gateway
   const { catalog } = ctx.local
   const { page, send, sys } = ctx.transcript
 
-  const handler = (cmd: string, submission?: SlashSubmission): boolean => {
+  const handler = (cmd: string, submission?: SlashSubmission, typed = true): boolean => {
     const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
     const sid = ui.sid
     const destination = captureDestination()
     const parsed = parseSlashCommand(cmd)
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
+
+    const countTyped = () => {
+      if (typed) {
+        reportSlashCommand(gw, parsed.name, sid)
+      }
+    }
 
     const stale = () => flight !== ctx.slashFlightRef.current || !isCurrentDestination(destination)
 
@@ -47,6 +68,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
     const found = findSlashCommand(parsed.name)
 
     if (found) {
+      countTyped()
       found.run(parsed.arg, runCtx, cmd)
 
       return true
@@ -56,6 +78,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
     // command table was built (user widgets from $HERMES_HOME/tui-widgets,
     // /widgets-reload) dispatch straight off the live registry.
     if (getWidgetApp(parsed.name)) {
+      countTyped()
       const err = launchWidget(parsed.name, parsed.arg)
 
       if (err) {
@@ -71,7 +94,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
       if (exact) {
         if (exact.toLowerCase() !== needle) {
-          return handler(`${exact}${argTail}`, submission)
+          return handler(`${exact}${argTail}`, submission, typed)
         }
       } else {
         // Tiered name scoring (ported from grok-cli's slash menu): prefix
@@ -89,7 +112,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         const matches = [...new Set(scored.filter(entry => entry.score === best).map(entry => entry.canon))]
 
         if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
-          return handler(`${matches[0]}${argTail}`, submission)
+          return handler(`${matches[0]}${argTail}`, submission, typed)
         }
 
         if (matches.length > 1) {
@@ -112,7 +135,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
 
       if (d.type === 'alias') {
-        return void handler(`/${d.target}${argTail}`, submission)
+        return void handler(`/${d.target}${argTail}`, submission, false)
       }
 
       // A skill/bundle dispatch's `message` is the expanded skill body —
@@ -159,6 +182,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
     }
 
+    countTyped()
     gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
       .then(r => {
         if (stale()) {

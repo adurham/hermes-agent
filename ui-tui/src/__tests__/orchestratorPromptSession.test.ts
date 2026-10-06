@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { patchUiState } from '../app/uiStore.js'
 import { startPromptLiveSession } from '../app/useMainApp.js'
+import { t } from '../i18n/runtime.js'
 
 describe('startPromptLiveSession', () => {
   it('keeps the created target through a delayed model switch without publishing into the new focus', async () => {
@@ -62,7 +63,7 @@ describe('startPromptLiveSession', () => {
 
     expect(sid).toBe('abc123')
     expect(calls).toEqual([
-      ['new', { message: 'new live session started', title: undefined }],
+      ['new', { message: t('session.lifecycle.newLiveSessionStarted'), title: undefined }],
       ['rpc', { method: 'session.resume', params: { session_id: 'abc123' } }],
       [
         'rpc',
@@ -78,7 +79,7 @@ describe('startPromptLiveSession', () => {
           }
         }
       ],
-      ['sys', 'model → kimi-k2.6'],
+      ['sys', t('session.main.modelSwitched', 'kimi-k2.6')],
       ['warn', { model: 'kimi-k2.6', value: 'kimi-k2.6', warning: '' }],
       ['model-switched', { result: { model: 'kimi-k2.6', value: 'kimi-k2.6', warning: '' }, value: 'kimi-k2.6' }],
       ['dispatch', 'Build the thing']

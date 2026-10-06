@@ -12,6 +12,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
+import { reportSlashCommand } from './createSlashHandler.js'
 import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
@@ -345,6 +346,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         composerActions.clearIn()
 
         if (queued) {
+          // Handled here, before the slash handler, so it is counted here.
+          reportSlashCommand(gw, parsed.name, getUiState().sid)
           const retained = composerActions.enqueue(queued.text, queued.display, destination)
 
           if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
@@ -467,6 +470,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage,
       composerActions,
       composerRefs,
+      gw,
       handleBusyInput,
       interpolate,
       send,

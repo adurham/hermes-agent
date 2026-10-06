@@ -239,11 +239,24 @@ def deliver_to_live_owner(
     if notification_category not in ('result', 'diagnostic'):
         raise ValueError("invalid notification category")
     home = Path(profile_home).resolve()
-    return authority_delivery(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
+    category = {"notification_category": "diagnostic"} if notification_category == "diagnostic" else {}
+    # The authority refuses a category-changing replay (admission_conflict), so the admitted
+    # category is the producer's; echo it so callers can check the receipt's identity.
+    return {**authority_delivery(home, dict(id=_delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex),
         profile=home.name if home.parent.name == "profiles" else "default",
         message=message, **({"session_id": pinned["session_id"]} if pinned["session_id"] else {}),
-        **({"author": dict(author)} if author else {}),
-        **({"notification_category": "diagnostic"} if notification_category == "diagnostic" else {})))
+        **({"author": dict(author)} if author else {}), **category)), **category}
+
+
+def owner_holds_delivery(profile_home: Path | str, record: dict) -> bool:
+    """Whether the profile authority still holds ``record`` (main's bounded DM wait asks this).
+
+    An admission lives in the authority's durable FIFO, so it is held while the authority is
+    reachable; an unreachable one raises (outcome unknown, never cancelled). Only an unadmitted
+    legacy record whose profile has no store is provably ownerless.
+    """
+    owner = find_canonical_live_owner(profile_home)  # raises while the authority is unreachable
+    return owner is not None or bool(record.get("admission_id"))
 
 
 def claim_pending_delivery(profile_home, owner):
@@ -280,17 +293,38 @@ def complete_delivery(
         return record
 
 
+def cancel_queued_delivery(
+    profile_home: Path | str, delivery_id: str, *, error: str, reason: str,
+) -> dict[str, Any] | None:
+    """Cancel an ownerless queued receipt without racing a consumer's claim.
+
+    A claim or terminal result that won the mailbox lock is returned unchanged.
+    """
+    key = _delivery_id(delivery_id)
+    with _locked(profile_home) as root:
+        path = root / f"{key}.json"
+        record = _read(path)
+        # An authority admission lives in its FIFO: only the authority may settle it.
+        if record is None or record["status"] != "queued" or record.get("admission_id"):
+            return record
+        record.update(status="cancelled", reply="", error=error, reason=reason,
+                      completed_at=time.time_ns())
+        _write(path, record)
+        return record
+
+
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
     if record is not None and record.get('admission_id'):
         home = Path(profile_home).resolve()
         # Readback replays the immutable envelope; dropping category or author conflicts.
-        return authority_delivery(home, dict(id=delivery_id,
+        category = ({'notification_category': record['notification_category']}
+                    if 'notification_category' in record else {})
+        # The receipt carries the envelope's category so a producer can detect a changed retry.
+        return {**authority_delivery(home, dict(id=delivery_id,
             profile=home.name if home.parent.name == 'profiles' else 'default', message=record['message'],
-            **({'author': dict(record['author'])} if record.get('author') else {}),
-            **({'notification_category': record['notification_category']}
-               if 'notification_category' in record else {})))
+            **({'author': dict(record['author'])} if record.get('author') else {}), **category)), **category}
     return record
 
 

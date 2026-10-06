@@ -63,6 +63,26 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_cancel_queued_delivery_cancels_only_an_unadmitted_receipt(tmp_path, monkeypatch):
+    """main's cancel fence on the owner seam: a legacy unadmitted queued receipt is cancelled
+    once (idempotent); an authority admission is never cancelled from the mailbox."""
+    key = "3" * 32
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{key}.json", dict(
+            delivery_id=key, id=key, status="queued", message="first", created_at=1, sequence=1,
+            owner=_owner(tmp_path), **_owner(tmp_path)))
+    cancelled = mailbox.cancel_queued_delivery(tmp_path, key, error="owner closed", reason="runtime_offline")
+    assert cancelled["status"] == "cancelled" and cancelled["error"] == "owner closed"
+    assert mailbox.cancel_queued_delivery(tmp_path, key, error="again", reason="runtime_offline") == cancelled
+
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    admitted = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "second", delivery_id="4" * 32)
+    kept = mailbox.cancel_queued_delivery(tmp_path, admitted["delivery_id"], error="x", reason="runtime_offline")
+    assert kept["status"] != "cancelled"
+    assert mailbox.read_delivery_result(tmp_path, admitted["delivery_id"])["status"] == "queued"
+
+
 @pytest.mark.parametrize("intent_state", ["new", "existing", "raced"])
 def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, intent_state):
     """Main 61dc26cd7d9 on the canonical door: a BOM-prefixed DM payload and a BOM-prefixed pinned

@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
@@ -32,6 +34,10 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
     ? c.hiddenQueued
     : (entry.displayText ?? entry.text).trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
+/** A preview long enough (or multiline enough) that two lines may still hide
+ *  part of it — the entry gets an in-place expand/collapse toggle (#45664). */
+const shouldOfferExpandedPreview = (preview: string) => preview.length > 140 || preview.includes('\n')
+
 export function QueuePanel({
   busy,
   editingId,
@@ -46,6 +52,21 @@ export function QueuePanel({
 }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+
+  const toggleExpanded = (id: string) => {
+    setExpandedIds(current => {
+      const next = new Set(current)
+
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+
+      return next
+    })
+  }
 
   if (entries.length === 0) {
     return null
@@ -80,6 +101,9 @@ export function QueuePanel({
         // The owner died mid-turn and recovered this row as `unknown`: the
         // FIFO behind it is paused until someone acknowledges the loss.
         const lost = entry.serverStatus === 'unknown'
+        const preview = entryPreview(entry, c)
+        const canExpand = shouldOfferExpandedPreview(preview)
+        const isExpanded = expandedIds.has(entry.id)
 
         return (
           <StatusRow
@@ -91,21 +115,43 @@ export function QueuePanel({
             key={entry.id}
             leading={<Codicon className="text-muted-foreground/70" name="comment" size="0.8rem" />}
             trailing={
-              lost && onDiscardLost ? (
-                <Tip label={c.queueLostDiscardTip}>
-                  <Button
-                    aria-label={c.queueLostDiscard}
-                    className="h-5 rounded-md px-1.5 text-[0.66rem]"
-                    data-slot="queue-lost-discard"
-                    onClick={() => onDiscardLost(entry.id)}
-                    size="micro"
-                    type="button"
-                    variant="text"
-                  >
-                    {c.queueLostDiscard}
-                  </Button>
-                </Tip>
-              ) : !entry.serverStatus && <>
+              <>
+                {canExpand && (
+                  <Tip label={isExpanded ? c.queueCollapse : c.queueExpand}>
+                    <Button
+                      aria-expanded={isExpanded}
+                      aria-label={isExpanded ? c.queueCollapse : c.queueExpand}
+                      className="size-5 rounded-md"
+                      onClick={() => toggleExpanded(entry.id)}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Codicon
+                        className={cn('transition-transform', isExpanded && 'rotate-180')}
+                        name="chevron-down"
+                        size={iconSize.xs}
+                      />
+                    </Button>
+                  </Tip>
+                )}
+                {lost && onDiscardLost ? (
+                  <Tip label={c.queueLostDiscardTip}>
+                    <Button
+                      aria-label={c.queueLostDiscard}
+                      className="h-5 rounded-md px-1.5 text-[0.66rem]"
+                      data-slot="queue-lost-discard"
+                      onClick={() => onDiscardLost(entry.id)}
+                      size="micro"
+                      type="button"
+                      variant="text"
+                    >
+                      {c.queueLostDiscard}
+                    </Button>
+                  </Tip>
+                ) : (
+                  !entry.serverStatus && (
+                    <>
                 <Tip label={c.queueEdit}>
                   <Button
                     aria-label={c.queueEdit}
@@ -147,12 +193,22 @@ export function QueuePanel({
                     <CornerDownLeft className={iconSize.xs} />
                   </Button>
                 </Tip>
+                    </>
+                  )
+                )}
               </>
             }
             trailingVisible={isEditing || lost}
           >
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
+              <p
+                className={cn(
+                  'text-[0.73rem] leading-4 text-foreground/92',
+                  isExpanded ? 'max-h-40 overflow-y-auto whitespace-pre-wrap pr-1' : 'line-clamp-2 break-words'
+                )}
+              >
+                {preview}
+              </p>
               {(attachmentsCount > 0 || isEditing || lost) && (
                 <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
                   {lost && <span data-slot="queue-lost-note">{c.queueLostNote}</span>}

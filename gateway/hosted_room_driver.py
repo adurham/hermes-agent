@@ -894,7 +894,6 @@ def prune_published_terminal_tasks(
         return max(0, int(deleted.rowcount))
 
 
-
 def get_task_for_turn(
     db_path: DbPath,
     identity: TaskIdentity,
@@ -910,13 +909,3 @@ def get_task_for_turn(
         return _task_from_row(row) if row is not None else None
     finally:
         conn.close()
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Iterator  # noqa: F401,E402
-from pathlib import Path  # noqa: F401,E402
-from contextlib import contextmanager  # noqa: F401,E402
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -148,9 +148,11 @@ def _notif_release_turn(session: dict) -> None:
 
 
 def _notif_claim_turn(session: dict) -> bool:
-    """Claim the idle session (running=True) under history_lock; False if a turn is live."""
+    """Claim the idle session (running=True) under history_lock; False if a turn is live.
+    After the user's Stop no automatic turn starts: the cancel latch holds notifications
+    (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running"):
+        if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["running"] = True
         return True
@@ -653,6 +655,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     from tools import async_delegation
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
+    process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
@@ -767,8 +770,18 @@ def _hud_surface_note(session: dict) -> str:
     """The per-surface note for this turn ("" for the plain app window): HUD -> the read-the-window-below
     prior; voice-live -> the spoken-delegation contract with the recent transcript."""
     from gateway.session_surface import surface_note
-    committed = {"surface": session.get("client_surface"), "voice_context": session.get("voice_live_context")}
-    return surface_note(committed, getattr(session.get("agent"), "valid_tool_names", None))
+    surface, agent = session.get("client_surface"), session.get("agent")
+    direct = getattr(agent, "valid_tool_names", None) or set()
+    if surface == "hud":
+        from tools.tool_search_catalog import TOOL_CALL_NAME
+        if TOOL_CALL_NAME in direct:
+            # Tool search defers the desktop tools by default: they stay callable through the
+            # tool_call bridge, so the HUD note must count them and name the bridge (main 312f6bc2fd6).
+            from agent.prompt_builder import hud_surface_note
+            from agent.tool_executor import _tool_search_scoped_names
+            return hud_surface_note(direct, _tool_search_scoped_names(agent))
+    committed = {"surface": surface, "voice_context": session.get("voice_live_context")}
+    return surface_note(committed, direct)
 
 
 def _prepend_note(run_message: Any, note: str) -> Any:

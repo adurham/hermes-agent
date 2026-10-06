@@ -544,7 +544,14 @@ export class JsonRpcGatewayClient {
       const sessionEpochBefore = this.replayEpochBySession.get(sid) ?? this.replayEpoch
 
       // `open_requests` on the answer are re-delivered by the channel itself.
-      const result = await this.request<{ events?: GatewayEvent[]; epoch?: string; replay_epoch?: unknown; truncated?: unknown; snapshot_required?: unknown; latest_seq?: unknown }>(
+      const result = await this.request<{
+        epoch?: string
+        events?: GatewayEvent[]
+        latest_seq?: number
+        replay_epoch?: unknown
+        snapshot_required?: unknown
+        truncated?: boolean
+      }>(
         'session.events.since',
         { session_id: sid, last_seen: lastSeen, ...(sessionEpochBefore ? { replay_epoch: sessionEpochBefore } : {}) },
         REPLAY_REQUEST_TIMEOUT_MS
@@ -560,11 +567,12 @@ export class JsonRpcGatewayClient {
       const epoch = result?.epoch
       const sessionEpoch = result?.replay_epoch
 
-      if (result?.snapshot_required === true || result?.truncated === true) {
-        // The server could not replay our window (epoch changed, ring
-        // truncated, cursor ahead). Keeping the watermark would make the
+      if (result?.snapshot_required === true) {
+        // The canonical authority could not replay our window (epoch changed,
+        // ring truncated, cursor ahead). Keeping the watermark would make the
         // next reconnect believe nothing was missed; drop it and tell the
-        // consumer to re-resume for a snapshot.
+        // consumer to re-resume for a snapshot. A legacy backend reports a
+        // bare `truncated` instead; that skips the window below (#100122).
         this.adoptSessionReplayEpoch(sid, sessionEpoch)
         this.lastSeenSeq.delete(sid)
         this.dispatchEvent({ type: 'session.replay_gap', session_id: sid, payload: { replay_epoch: sessionEpoch, latest_seq: result.latest_seq } })
@@ -583,6 +591,19 @@ export class JsonRpcGatewayClient {
         return
       } else if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
         this.replayEpoch = epoch
+      }
+
+      if (result?.truncated === true) {
+        // The ring evicted events between our watermark and its oldest
+        // retained seq: the tail has a hole (missing message prefix, tool
+        // state, or terminal event), so never paint it as the gap. Skip the
+        // whole window up to the server's head; the barrier then resolves
+        // true, which lets the waiting history reads (the reconnect backstop,
+        // #94779) resync from the authoritative transcript. Parked live
+        // frames newer than that head still dispatch in the finally below.
+        this.skipTruncatedWindow(sid, result)
+
+        return
       }
 
       if (!Array.isArray(result?.events)) {
@@ -606,6 +627,18 @@ export class JsonRpcGatewayClient {
         this.flushReplayHold(sid, replayGeneration)
       }
     }
+  }
+
+  /** Advance the watermark past a truncated replay window without dispatching any of it. */
+  private skipTruncatedWindow(sid: string, result: { events?: GatewayEvent[]; latest_seq?: number }): void {
+    const seqs = (Array.isArray(result.events) ? result.events : []).map(event => event?.seq)
+
+    const head = Math.max(
+      this.lastSeenSeq.get(sid) ?? 0,
+      ...[result.latest_seq, ...seqs].filter((seq): seq is number => typeof seq === 'number' && Number.isFinite(seq))
+    )
+
+    this.lastSeenSeq.set(sid, head)
   }
 
   /**

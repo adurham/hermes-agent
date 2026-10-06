@@ -7,8 +7,12 @@ from hermes_state_runtime import RuntimeStoreError
 
 
 def route_digest(adapter, chat_id):
+    from gateway.platforms.webhook import _WebhookDeliveryIdentity
     adapter._reload_dynamic_routes()
-    route_name = chat_id.split(':', 2)[1]
+    try:
+        route_name = _WebhookDeliveryIdentity.route_from_chat_id(chat_id)
+    except (ValueError, TypeError, IndexError):
+        raise RuntimeStoreError('not_found') from None
     route = adapter._routes.get(route_name)
     if route is None:
         raise RuntimeStoreError('not_found')

@@ -235,14 +235,17 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
 
     def acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0,
             wait_seconds=1800.0, poll_interval_seconds=1.0, on_wait=None,
-            wait_notice_interval_seconds=15.0, should_abort=None, acquire_patience_s=0.5):
-        # Reuse only the local polling orchestrator, not the SQLite mixin surface.
+            wait_notice_interval_seconds=15.0, should_abort=None, acquire_patience_s=0.5,
+            on_contended=None):
+        # Reuse only the local polling orchestrator, not the SQLite mixin surface. Same signature
+        # as the owner's (``on_contended``: a busy-database notice; the RPC try never raises it).
         from hermes_state_compression import SessionCompressionMixin
         return SessionCompressionMixin.acquire_session_turn_lease(self, session_id, holder,
             ttl_seconds=ttl_seconds, wait_seconds=wait_seconds,
             poll_interval_seconds=poll_interval_seconds, on_wait=on_wait,
             wait_notice_interval_seconds=wait_notice_interval_seconds,
-            should_abort=should_abort, acquire_patience_s=acquire_patience_s)
+            should_abort=should_abort, acquire_patience_s=acquire_patience_s,
+            on_contended=on_contended)
 
     def refresh_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0):
         self._session(session_id)

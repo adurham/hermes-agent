@@ -20,7 +20,8 @@ import {
   getApiRequestProfile,
   hermesApi,
   type ProfileScope,
-  profileScoped
+  profileScoped,
+  sessionReadOwnerPin
 } from './client'
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
@@ -140,7 +141,8 @@ export async function listAllProfileSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  filter: SessionSourceFilter = {},
+  offset = 0
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -151,7 +153,7 @@ export async function listAllProfileSessions(
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
-      `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `/api/profiles/sessions?limit=${limit}&offset=${Math.max(0, offset)}&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
@@ -159,7 +161,7 @@ export async function listAllProfileSessions(
   return {
     ...result,
     sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
-    offset: 0
+    offset: Math.max(0, offset)
   }
 }
 
@@ -409,9 +411,17 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   return mutateSessionHttp(id, 'PATCH', { unread }, sessionWriteProfile(profile))
 }
 
-export function searchSessions(query: string): Promise<SessionSearchResponse> {
+// Full-text search over one profile's sessions. Pass the profile the caller is
+// showing: an unscoped request lands on the primary backend, which searches
+// its launch profile's state.db whatever profile the sidebar is on. `null`
+// asks the primary on purpose; omitted follows the ambient request profile.
+export function searchSessions(query: string, profile?: null | string): Promise<SessionSearchResponse> {
+  const scope = profileScoped(profile)
+  const suffix = scope.profile ? `&profile=${encodeURIComponent(scope.profile)}` : ''
+
   return hermesApi<SessionSearchResponse>({
-    path: `/api/sessions/search?q=${encodeURIComponent(query)}`
+    ...scope,
+    path: `/api/sessions/search?q=${encodeURIComponent(query)}${suffix}`
   })
 }
 
@@ -420,10 +430,14 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
 // 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
 // cross-profile list scan when locating an unknown id's owner.
 export function getSession(id: string, profile?: ProfileScope): Promise<SessionInfo> {
-  const suffix = sessionScopeQuery(profile)
+  // Pin the read to the session's OWNER connection (#125372): the ambient dial
+  // 404s on the wrong backend whenever two connections expose a same-named
+  // profile.
+  const scope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
+  const suffix = scope.profile ? `?profile=${encodeURIComponent(scope.profile)}` : ''
 
   return hermesApi<SessionInfo>({
-    ...sessionScoped(profile),
+    ...scope,
     path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
   })
 }
@@ -440,7 +454,8 @@ export function getSessionMessages(
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
-  const sessionScope = sessionScoped(profile)
+  // Owner connection pin (#125372) — see getSession.
+  const sessionScope = { ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
 
   if (sessionScope.profile) {
     query.set('profile', sessionScope.profile)
@@ -489,7 +504,7 @@ export function getLatestSessionMessages(
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
-  const route = { ...connectionScoped(), ...sessionScoped(profile) }
+  const route = { ...connectionScoped(), ...sessionScoped(profile), ...sessionReadOwnerPin(id, profile) }
   // Only the lookup key is normalized — backfill replays `route` verbatim.
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'

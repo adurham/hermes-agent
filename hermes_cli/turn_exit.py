@@ -15,6 +15,7 @@ TERMINAL_PROVIDER_REASONS = frozenset({
 
 def turn_exit_code(
     result, *, kanban_worker: bool, credentials_rate_limited: bool = False,
+    credentials_terminal: bool = False,
     transient_reasons=TRANSIENT_PROVIDER_REASONS, terminal_reasons=TERMINAL_PROVIDER_REASONS,
 ) -> int:
     """Preserve completion, interruption and retryable/terminal provider outcomes."""
@@ -22,6 +23,9 @@ def turn_exit_code(
         if credentials_rate_limited and kanban_worker:
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
+        if credentials_terminal and kanban_worker:
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         return 1
     if result.get("interrupted"):
         return 130

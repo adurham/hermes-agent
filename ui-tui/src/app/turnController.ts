@@ -8,6 +8,7 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
@@ -434,7 +435,7 @@ class TurnController {
       appendMessage({ role: 'assistant', text, ...(tools.length && { tools }) })
       this.sealedInterrupt = { partial, text }
     } else {
-      sys('interrupted')
+      sys(t('session.turn.interrupted'))
       this.sealedInterrupt = { partial: '', text: null }
     }
 
@@ -442,7 +443,7 @@ class TurnController {
 
     if (opts.keepBusy) {
       // `idle()` already cleared busy; re-assert it so the drain waits for settle.
-      patchUiState({ busy: true, status: 'interrupting…' })
+      patchUiState({ busy: true, status: t('session.status.interrupting') })
 
       return
     }

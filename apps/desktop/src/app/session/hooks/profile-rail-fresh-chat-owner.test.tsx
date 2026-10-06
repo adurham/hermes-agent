@@ -320,6 +320,7 @@ function Harness({
     navigate: vi.fn() as never,
     requestGateway,
     resetViewSync: cache.resetViewSync,
+    routedSessionId: null,
     runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,

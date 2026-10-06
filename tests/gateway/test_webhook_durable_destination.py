@@ -45,10 +45,12 @@ async def test_destination_commits_with_input_and_survives_adapter_restart():
             calls.append((content, delivery))
             return SendResult(success=True)
         replacement._deliver_github_comment = sink
-        result = await replacement.send('webhook:fixture:durable-one', 'completed answer')
+        from gateway.platforms.webhook import _WebhookDeliveryIdentity
+        chat_id = _WebhookDeliveryIdentity.from_parts(None, 'fixture', 'durable-one').session_chat_id
+        result = await replacement.send(chat_id, 'completed answer')
         assert result.success and calls[0][1] == retained
         replacement._global_secret = 'rotated-secret'
-        assert not (await replacement.send('webhook:fixture:durable-one', 'completed answer')).success
+        assert not (await replacement.send(chat_id, 'completed answer')).success
         assert len(calls) == 1
 
 
@@ -75,7 +77,8 @@ async def test_later_automation_completion_keeps_original_destination_resolvable
             calls.append((content, delivery))
             return SendResult(success=True)
         adapter._deliver_github_comment = sink
-        chat_id = 'webhook:fixture:automation-one'
+        from gateway.platforms.webhook import _WebhookDeliveryIdentity
+        chat_id = _WebhookDeliveryIdentity.from_parts(None, 'fixture', 'automation-one').session_chat_id
         assert (await adapter.send(chat_id, 'first reply')).success
         # The production completion path: an internal native_text_v1 admission on the original chat.
         from gateway.platforms.event import MessageEvent

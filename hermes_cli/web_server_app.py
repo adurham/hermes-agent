@@ -12,6 +12,19 @@ from hermes_cli.pty_session import run_reaper
 _log = logging.getLogger("hermes_cli.web_server")
 
 
+def _unlink_pty_markers(app: FastAPI) -> None:
+    """Second pass after ``PTY_REGISTRY.close_all()``: drop channel markers left in app state,
+    including stale paths from sessions reaped earlier (``PtySession.close()`` only removes
+    markers owned by live registry sessions)."""
+    from hermes_cli.web_server import _get_pty_active_session_files
+
+    for marker in set(_get_pty_active_session_files(app).values()):
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 @asynccontextmanager
 async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.web_server import (
@@ -139,6 +152,10 @@ async def standalone_lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
+    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
+    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
+    # first setup.status waits on the record (bounded) instead.
     from hermes_cli.free_tier_bootstrap import start_background_bootstrap
 
     start_background_bootstrap()
@@ -160,6 +177,12 @@ async def standalone_lifespan(app: "FastAPI"):
         auto_archive_task.cancel()
         eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
+
+        # PtySession.close() removes markers owned by live registry sessions.
+        # This second pass cleans any channel markers left in app state,
+        # including stale paths from sessions reaped earlier.
+        _unlink_pty_markers(app)
+
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
@@ -192,6 +215,7 @@ async def http_lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await PTY_REGISTRY.close_all()
+        _unlink_pty_markers(app)
 
 
 @asynccontextmanager

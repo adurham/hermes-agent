@@ -7,7 +7,10 @@ import json
 from hermes_state_runtime import RuntimeStoreError
 
 
-SIDECAR_KEYS = frozenset({'_usage_anchor', '_proactive_prune_rearm_tokens'})
+# model_config sidecars a worker may patch: every key the agent persists via
+# ``patch_session_model_config`` (``_anthropic_rejected_thinking``: main's rejected-signature
+# fingerprints, agent/anthropic_thinking_replay.py) or a compaction ``model_config_patch``.
+SIDECAR_KEYS = frozenset({'_usage_anchor', '_proactive_prune_rearm_tokens', '_anthropic_rejected_thinking'})
 
 
 def worker_context(db, conn, session_id, payload):

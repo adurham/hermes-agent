@@ -389,7 +389,17 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
     return None
 
 
-def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
+def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
+    """The native overlapped client checks its deadline per I/O step, but SID verification and the
+    connect/peer handshake are still synchronous calls into the pipe. Run the exchange on an
+    abandoned-at-deadline worker so a peer that never answers costs ``timeout``, never forever —
+    the bound ``_query_unix_socket`` already gets from ``sock.settimeout`` (#132547)."""
+    from agent.deadline import run_bounded_sync
+    outcome = run_bounded_sync(lambda: _windows_pipe_exchange(home, request, timeout), timeout, label="control-pipe")
+    return None if outcome.timed_out else outcome.value
+
+
+def _windows_pipe_exchange(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
     # The server is the native overlapped pipe worker; its client verifies the server's SID and
     # speaks the same framing (a plain open() got no answer in the live Windows pipe test).
     from gateway.runtime_bootstrap_windows import query_runtime_control

@@ -35,7 +35,7 @@ const buildCtx = (appended: Msg[]) =>
       setInput: vi.fn()
     },
     gateway: {
-      gw: { request: vi.fn() },
+      gw: { request: vi.fn(async () => null) },
       rpc: vi.fn(async () => null)
     },
     session: {
@@ -1463,7 +1463,7 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
-    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
+    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'terminal.read']) {
       expect(serverRequest(method, {}).handled).toBe(false)
     }
   })
@@ -1936,39 +1936,19 @@ describe('createGatewayEventHandler', () => {
     ).toBe(false)
   })
 
-  it('persists an abandoned (timed-out) clarify into the transcript when the clarify tool completes', () => {
-    const appended: Msg[] = []
-    const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-    // Backend clarify timed out: the overlay is still live (Python returned an
-    // empty answer), and the clarify tool's own tool.complete then fires.
-    patchOverlayState({
-      clarify: { choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?', requestId: 'req-1' }
-    })
-
-    onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
-
-    const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask How do you want to scope?'))
-    expect(record).toBeDefined()
-    expect(record?.text).toContain('1. Scope A')
-    expect(record?.text).toContain('2. Scope B')
-    // The live overlay is cleared so it doesn't double-render with the record.
-    expect(getOverlayState().clarify).toBeNull()
-  })
-
   it('only persists an abandoned clarify once even if tool.complete fires twice', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     patchOverlayState({
-      clarify: { choices: ['A'], question: 'Pick?', requestId: 'req-3' }
+      clarify: { questions: [{ choices: ['A'], qid: 'q0', question: 'Pick?' }], requestId: 'req-3' }
     })
 
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
     // A duplicate clarify tool.complete must not re-persist the same prompt.
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
-    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Pick?'))
+    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask ('))
     expect(records).toHaveLength(1)
   })
 
@@ -1979,7 +1959,7 @@ describe('createGatewayEventHandler', () => {
     // A clarify is live, but it's a *different* tool that just completed — the
     // clarify itself is still pending, so we must not persist or clear it.
     patchOverlayState({
-      clarify: { choices: ['A', 'B'], question: 'Pick?', requestId: 'req-4' }
+      clarify: { questions: [{ choices: ['A', 'B'], qid: 'q0', question: 'Pick?' }], requestId: 'req-4' }
     })
 
     onEvent({ payload: { name: 'search', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
@@ -1992,7 +1972,7 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    // Answered path (answerClarify) clears the overlay before the agent's
+    // Answered path (answerClarifyQuestion) clears the overlay before the agent's
     // tool.complete arrives, so there's nothing live to persist.
     onEvent({ payload: { duration_s: 4.2, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
 
@@ -2141,6 +2121,23 @@ describe('createGatewayEventHandler', () => {
     expect(clarify?.answers).toEqual({})
   })
 
+  it('maps a canonical one-card clarify.request onto the one-question card with its shared control', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { choices: ['a', 'b'], execution_generation: 3, multi_select: true, prompt_id: 'p-9', question: ' Pick? ' },
+      session_id: 'sid-c',
+      type: 'clarify.request'
+    } as any)
+
+    expect(getOverlayState().clarify).toEqual({
+      answers: {},
+      questions: [{ choices: ['a', 'b'], multiSelect: true, qid: 'p-9', question: 'Pick?' }],
+      requestId: 'p-9',
+      sharedControl: { execution_generation: 3, prompt_id: 'p-9', session_id: 'sid-c' }
+    })
+  })
+
   it('seeds locked answers from a reconnect-replayed batch clarify request', () => {
     serverRequest(
       'clarify',
@@ -2157,26 +2154,6 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
   })
 
-  it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
-    serverRequest(
-      'clarify',
-      {
-        choices: ['x', 'y'],
-        question: 'Fallback?',
-        questions: [
-          { qid: '', question: 'no qid' },
-          { qid: 'q1', question: '   ' }
-        ]
-      },
-      'req-bad'
-    )
-
-    const clarify = getOverlayState().clarify
-    expect(clarify?.questions).toBeUndefined()
-    expect(clarify?.question).toBe('Fallback?')
-    expect(clarify?.choices).toEqual(['x', 'y'])
-  })
-
   it('persists an abandoned batch clarify with its locked partials on tool.complete', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -2184,8 +2161,6 @@ describe('createGatewayEventHandler', () => {
     patchOverlayState({
       clarify: {
         answers: { q0: 'alpha' },
-        choices: null,
-        question: '',
         questions: [
           { choices: ['alpha', 'beta'], qid: 'q0', question: 'One?' },
           { choices: null, qid: 'q1', question: 'Two?' }
@@ -2638,6 +2613,66 @@ describe('createGatewayEventHandler', () => {
       // Turn continues without finalizing or throwing
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
+    })
+
+    describe('vault.save_login prompt (#109101)', () => {
+      it('opens the two-step save-login card for the server request', () => {
+        const { handled } = serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://www.linkedin.com',
+            session_id: 'sess',
+            site: 'www.linkedin.com'
+          },
+          'save-9'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultSaveLogin).toEqual({
+          origin: 'https://www.linkedin.com',
+          requestId: 'save-9',
+          site: 'www.linkedin.com'
+        })
+        expect(getUiState().status).toBe('save login for www.linkedin.com')
+      })
+
+      it('tears the card down on request.cancel, but only for the matching request', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        serverRequest(
+          'vault.save_login',
+          {
+            origin: 'https://a.example',
+            session_id: 'sess',
+            site: 'a.example'
+          },
+          'save-1'
+        )
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-2' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).not.toBeNull()
+
+        onEvent({ payload: { id: 'save-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultSaveLogin).toBeNull()
+      })
+
+      it('opens the verification-code card for vault.code and tears it down on request.cancel', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        const { handled } = serverRequest(
+          'vault.code',
+          { hint: 'sent to •••42', session_id: 'sess', site: 'github.com' },
+          'code-1'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultCode).toEqual({ hint: 'sent to •••42', requestId: 'code-1', site: 'github.com' })
+        expect(getUiState().status).toBe('verification code for github.com')
+
+        onEvent({ payload: { id: 'code-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultCode).toBeNull()
+      })
     })
   })
 })

@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { syncTuiLocale } from '../i18n/loader.js'
+import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -274,6 +276,12 @@ export async function hydrateFullConfig(
     patchUiState({ busyInputMode: busy!.value })
   }
 
+  // Same fail-safe as the voice key: a null config (transient RPC failure)
+  // keeps the last language rather than snapping back to English.
+  if (cfg) {
+    void syncTuiLocale(gw, cfg.config?.display?.language)
+  }
+
   return cfg
 }
 
@@ -402,7 +410,7 @@ export function useConfigSync({
         // server confirms the revision was loaded.
         if (nextMcpRev) {
           void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
-            turnController.pushActivity('MCP reloaded after config change')
+            turnController.pushActivity(t('status.mcpReloaded'))
           )
         }
 
@@ -416,7 +424,7 @@ export function useConfigSync({
         // reload-on-any-change there (no ack tracking possible).
         if (!nextMcpRev) {
           quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-            r => r && turnController.pushActivity('MCP reloaded after config change')
+            r => r && turnController.pushActivity(t('status.mcpReloaded'))
           )
         }
 

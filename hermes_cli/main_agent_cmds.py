@@ -122,7 +122,9 @@ def cmd_insights(args):
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))
     except Exception as e:
-        print(f"Error generating insights: {e}")
+        # Interactive /insights delegates here, so keep main's localized error line.
+        from agent.i18n import t
+        print(t("gateway.insights.error", error=str(e)))
     finally:
         if db is not None:
             try:
@@ -183,7 +185,7 @@ def cmd_skills(args):
         _cmd_skills_trust(args)
     else:
         from hermes_cli.skills_hub import skills_command
-        skills_command(args)
+        return skills_command(args)
 
 
 def _cmd_skills_trust(args):

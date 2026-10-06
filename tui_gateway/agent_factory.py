@@ -76,15 +76,6 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
-# Bare billing buckets are not routable provider identities; restoring one as a session provider override
-# breaks resume. ``openrouter`` is deliberately NOT in this set (fully routable; agent_init's gate is a different set).
-# (agent_init's fail-fast gate is a DIFFERENT set that also skips "openrouter" — there it means "default
-# route, don't fail fast", not "unroutable".) ``openrouter`` is deliberately excluded here — it is a fully
-# routable provider with its own API key and base_url. Sessions that used OpenRouter store
-# ``billing_provider="openrouter"``; dropping it forces resume to the current global model (e.g. a custom
-# endpoint), which is the wrong provider for the stored model. See #57588.
-
-
 def _is_routable_provider(provider: str) -> bool:
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import is_routable_provider
@@ -145,15 +136,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
-    # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
-    # agent_init treats as non-routable. Only restore an explicit provider; else resume uses the configured default.
-    provider = field("provider")
-    billing_provider = str(model_config.get("billing_provider") or row.get("billing_provider") or "").strip()
-    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
-        provider = billing_provider
-    base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
+    # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
+    # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
+    from hermes_state import SessionDB
+    route = SessionDB.session_gateway_runtime(row)
+    provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
@@ -284,12 +273,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    from agent.fast_mode import parse_service_tier
+
+    return parse_service_tier((_load_cfg().get("agent") or {}).get("service_tier", ""))
 
 
 def _load_provider_routing() -> dict:
@@ -405,7 +392,9 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
 def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     """The agent's toolsets for this session (None = all): an explicit HERMES_TUI_TOOLSETS pin; else the
     coding posture (coding_context collapses to coding toolset + enabled MCP servers in a code workspace);
-    else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them."""
+    else the configured CLI toolsets. Client-surface toolsets fold in here — only this surface can answer them.
+    An explicitly saved EMPTY list (``platform_toolsets.cli: []`` that resolves to nothing) is a
+    zero-tool state and returns [] — never None, which would mean unrestricted (#82010)."""
     session_platform = platform or _resolve_session_platform()
     explicit = [item.strip() for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",") if item.strip()]
     fallback_notice = None
@@ -427,7 +416,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.tools_config import _get_platform_tools, _platform_toolsets_explicitly_saved
         cfg = load_config()
         # include_default_mcp_servers=True is the runtime variant (the agent must be able to call
         # default MCP servers); the config-editing variant would silently drop MCP tools from the TUI.
@@ -437,7 +426,16 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
-        return sorted(_with_session_toolsets(enabled, session_platform)) if enabled else None
+        if enabled:
+            return sorted(_with_session_toolsets(enabled, session_platform))
+        # An explicitly saved list that resolves to nothing (``platform_toolsets.cli: []`` with no
+        # enabled MCP servers) is an explicit zero-tool state, not "no filter": fail closed with []
+        # instead of None (#82010). The client-surface fold-in must not resurrect tools the user
+        # explicitly switched off, so [] is returned bare. Only an ABSENT/unset key keeps the
+        # None = "no restriction" default below.
+        if _platform_toolsets_explicitly_saved(cfg, "cli"):
+            return []
+        return None
     except Exception:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")
@@ -480,11 +478,6 @@ def _session_show_reasoning(sid: str) -> bool:
     if "show_reasoning" in session:
         return bool(session["show_reasoning"])
     return _load_show_reasoning()
-
-
-def _process_tool_chrome_enabled(sid: str) -> bool:
-    """Non-essential tool rows follow display.show_reasoning, not reasoning_effort."""
-    return _session_show_reasoning(sid) and _tool_progress_enabled(sid)
 
 
 def _tool_progress_enabled(sid: str) -> bool:
@@ -619,14 +612,13 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
         return system_prompt
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(startup_skills, task_id=task_id)
     if missing_skills:
-        missing_display = ", ".join(missing_skills)
         if not loaded_skills:
-            raise ValueError(f"Unknown skill(s): {missing_display}")
-        logger.warning("Unknown skill(s) requested, skipping: %s. Continuing with: %s. "
-                       "List available skills with `hermes skills list`.", missing_display, ", ".join(loaded_skills))
+            raise ValueError(format_missing_skills(missing_skills))
+        logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+                       format_missing_skills(missing_skills), ", ".join(loaded_skills))
     if skills_prompt:
         system_prompt = "\n\n".join(part for part in (system_prompt, skills_prompt) if part).strip()
     return system_prompt
@@ -682,9 +674,11 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
+        request_overrides=runtime.get("request_overrides"),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)

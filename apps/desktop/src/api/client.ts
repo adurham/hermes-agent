@@ -66,7 +66,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private canonical = false
   private readonly protocol = new CanonicalDesktopProtocol()
   private readonly promptHandlers = new Set<ServerRequestHandler>()
-  private readonly deliveredPrompts = new Set<string>()
+  // Delivered canonical prompt id → its session (the fenced respond needs both).
+  private readonly deliveredPrompts = new Map<string, string>()
 
   override onRequest(handler: ServerRequestHandler): () => void {
     this.promptHandlers.add(handler)
@@ -87,11 +88,15 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const id = p.prompt_id
 
     if (this.deliveredPrompts.has(id)) { return }
-    this.deliveredPrompts.add(id)
+    this.deliveredPrompts.set(id, sid)
     const choices = Array.isArray(p.choices) ? p.choices : []
 
+    // The question card reads one `questions[]` shape. A canonical clarify prompt is one
+    // question (the shared gateway asks a batch one card at a time), so its prompt id doubles
+    // as the qid that `clarify.lock` answers with (see `request` below).
     const params: Record<string, unknown> = kind === 'clarify'
-      ? { session_id: sid, question: p.question, choices, multi_select: p.multi_select, questions: p.questions, answers: p.answers }
+      ? { session_id: sid, answers: p.answers,
+          questions: Array.isArray(p.questions) ? p.questions : [{ qid: id, question: p.question, choices, multi_select: p.multi_select }] }
       : { session_id: sid, request_id: id, command: p.command, description: p.description, choices,
           allow_permanent: choices.includes('always'), edit: p.edit }
 
@@ -105,7 +110,11 @@ export class HermesGateway extends JsonRpcGatewayClient {
       respond: result => {
         if (settled) { return }
         settled = true
-        const answer = kind === 'clarify' ? { answer: result.answer } : { choice: result.choice }
+        // A clarify reply without an answer (skip, Stop, cancel) is the empty answer the
+        // authority records as skipped; `clarify.respond` refuses a missing field.
+        const answer = kind === 'clarify'
+          ? { answer: typeof result.answer === 'string' ? result.answer : '' }
+          : { choice: result.choice }
         void this.request(`${kind}.respond`, { session_id: sid, request_id: id, ...answer }).catch(() => undefined)
       },
       fail: () => { settled = true }
@@ -139,6 +148,16 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
   override async request<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
     if (!this.canonical) { return super.request<T>(method, legacyParams(method, params), timeoutMs, signal) }
+
+    // The card locks each question with `clarify.lock`; a canonical prompt is a single
+    // question, so its one lock is the generation-fenced `clarify.respond` (null = skipped).
+    const promptSession = method === 'clarify.lock' ? this.deliveredPrompts.get(String(params.request_id ?? '')) : undefined
+
+    if (promptSession) {
+      const answer = typeof params.answer === 'string' ? params.answer : ''
+
+      return this.request<T>('clarify.respond', { session_id: promptSession, request_id: params.request_id, answer }, timeoutMs, signal)
+    }
     const sid = typeof params.session_id === 'string' ? params.session_id : null
 
     if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(sid)) {
@@ -269,6 +288,38 @@ export function ownerScoped(owner?: OwnerScope): { connectionId?: string; priori
   }
 }
 
+/** An owner resolved ONCE for one operation (a recording, a voice conversation).
+ *  `null` halves mean "untagged": the primary profile / the connection an
+ *  untagged request lands on. They are never re-read from the ambient scope
+ *  later, so a gateway/profile switch mid-operation cannot move its tail
+ *  (release, transcription) to another backend. */
+export interface ResolvedOwner {
+  connectionId: null | string
+  profile: null | string
+}
+
+/** Fill an owner's missing halves from the ambient scope, now. */
+export function resolveOwnerNow(owner?: OwnerScope): ResolvedOwner {
+  const ambient = $apiRequestScope.get()
+
+  return {
+    connectionId: owner?.connectionId || ambient.connectionId || null,
+    profile: owner?.profile || ambient.profile || null
+  }
+}
+
+/** `hermesApi` for a resolved owner: its tags are sent verbatim, with no
+ *  ambient connection spread underneath. An untagged half stays untagged. A
+ *  named profile is always explicit here, so it carries the foreground
+ *  priority `profileScoped` gives explicit profiles (voice is user-driven). */
+export function hermesApiAs<T>(owner: ResolvedOwner, request: HermesApiRequest): Promise<T> {
+  return window.hermesDesktop.api<T>({
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    ...(owner.profile ? { priority: 'foreground' as const, profile: owner.profile } : {}),
+    ...request
+  })
+}
+
 /** Profile that profile-scoped REST/WS calls should target (null → primary).
  *  Read-only twin of setApiRequestProfile for modules (e.g. voice playback)
  *  that build their own connection URLs and must stay on the same backend. */
@@ -395,4 +446,58 @@ export function profileScopeKey(scope?: ProfileScope): string {
  *  (null → the local pool). Read-only twin of setApiRequestConnection. */
 export function getApiRequestConnection(): null | string {
   return $apiRequestScope.get().connectionId
+}
+
+// ── Session-owner pin for session-scoped REST reads (#125372) ──────────────
+//
+// A read of /api/sessions/{id}[/messages|/timeline|/messages/around] only
+// means anything on the backend that OWNS the row. The store already resolves
+// that owner (knownOwnerForSession: tile route → persisted hint → tagged row)
+// and pushes the resolver here — same no-store-import seam as
+// setApiRequestProfile — so read helpers stop riding the WINDOW's ambient
+// connection onto a host that answers 404 "Session not found".
+
+export interface SessionReadOwnerRoute {
+  connectionId?: null | string
+  profile?: null | string
+  targetProfile?: null | string
+}
+
+export type SessionOwnerResolver = (sessionId: string) => SessionReadOwnerRoute | null | string | undefined
+
+let _sessionOwnerResolver: SessionOwnerResolver | null = null
+
+export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): void {
+  _sessionOwnerResolver = resolver
+}
+
+/** The connection pin a session-scoped READ must carry for `id`, or {} when
+ *  the caller already pinned a connection, no exact owner is known, or the
+ *  owner is the ambient connection. Pins 'local' too (the only way back to
+ *  this device when the primary is a remote registry source). When the caller
+ *  named no profile, the owner's backend-facing profile rides along: the
+ *  answering host resolves ?profile= against ITS OWN profiles. */
+export function sessionReadOwnerPin(id: string, profile?: ProfileScope): { connectionId?: string; profile?: string } {
+  if (profile && typeof profile === 'object' && String(profile.connectionId ?? '').trim()) {
+    return {}
+  }
+
+  const owner = _sessionOwnerResolver?.(id)
+
+  if (!owner || typeof owner === 'string') {
+    return {}
+  }
+
+  const connectionId = String(owner.connectionId ?? '').trim()
+
+  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
+    return {}
+  }
+
+  const ownerProfile = String(owner.targetProfile || owner.profile || '').trim()
+
+  return {
+    connectionId,
+    ...(profile == null && ownerProfile ? { profile: ownerProfile } : {})
+  }
 }

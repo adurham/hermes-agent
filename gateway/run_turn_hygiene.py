@@ -524,7 +524,7 @@ class GatewayTurnHygieneMixin:
             )
             _hyg_rotated = False
             _compressed = history
-        # Only rewrite the transcript when rotation produced a NEW session id. In-place compaction does NOT
+        # Only persist a child transcript when rotation produced a NEW session id. In-place compaction does NOT
         # need a rewrite: archive_and_compact() has already soft-archived the previous active rows and
         # inserted the compacted messages as the new active set inside _compress_context(). Calling
         # rewrite_transcript() after in-place compaction would invoke replace_messages(active_only=False)
@@ -539,7 +539,9 @@ class GatewayTurnHygieneMixin:
         # conversation silently vanishes. Persist the child transcript first; only then rebind the live
         # entry.
         if _hyg_rotated:
-            if not await self.async_session_store.rewrite_transcript(_hyg_new_sid, _compressed):
+            # Published child is already durable; a rewrite would drop rows cloned at publish.
+            if not await self.async_session_store.persist_rotated_compression_child(
+                    session_entry.session_id, _hyg_new_sid, _compressed):
                 logger.error(
                     "Session hygiene: failed to persist compressed transcript for rotated session "
                     "%s → %s; keeping the live entry on the original session so the "
@@ -558,7 +560,7 @@ class GatewayTurnHygieneMixin:
                 )
 
         if _hyg_rotated or _hyg_in_place:
-            # Rewritten (rotation) or persisted by archive_and_compact() (in-place): reset token count.
+            # Persisted (rotation) or persisted by archive_and_compact() (in-place): reset token count.
             session_entry.last_prompt_tokens = 0
             attempt.history = _compressed
             _new_count = len(_compressed)
@@ -623,24 +625,18 @@ class GatewayTurnHygieneMixin:
             if not _hyg_fence_cancelled:
                 # Force-redact: provider exception text may contain credentials; this reaches users.
                 from agent.redact import redact_sensitive_text
-                _err = redact_sensitive_text(getattr(_comp, "_last_summary_error", None) or "unknown error", force=True)
+                _err = redact_sensitive_text(
+                    getattr(_comp, "_last_summary_error", None) or t("gateway.shared.unknown_error"), force=True)
                 logger.warning("Session hygiene compression aborted: %s", _err)
                 await self._hmwa_hygiene_notify(
-                    source, attempt.meta,
-                    "⚠️ Shortening the conversation history failed, so I kept everything as-is. "
-                    "Run /compress to try again or /new to start fresh. If this keeps happening, "
-                    "run `hermes doctor` on the host.",
-                    "compression-failure warning",
+                    source, attempt.meta, t("gateway.compress.hygiene_failed"), "compression-failure warning",
                 )
         # Configured aux model failed, recovered on the main model: only the user can fix that config.
         elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
             _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-            _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+            _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or t("gateway.shared.unknown_error")
             await self._hmwa_hygiene_notify(
-                source, attempt.meta, f"ℹ️ Configured compression model `{_aux_model}` "
-                f"failed ({_aux_err}). Recovered using your main "
-                "model — context is intact — but you may want to "
-                "check `auxiliary.compression.model` in config.yaml.",
+                source, attempt.meta, t("gateway.compress.aux_failed", model=_aux_model, error=_aux_err),
                 "aux-model-fallback notice",
             )
 

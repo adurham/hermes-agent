@@ -9,6 +9,10 @@ import pytest
 from hermes_state import SessionDB
 from hermes_state_common import FTS_TRIGRAM_SQL, SCHEMA_VERSION
 
+# The trigram cron-exclusion rebuild is the v30 data migration: a store one version behind IT, not one
+# behind the current SCHEMA_VERSION (later migrations do not re-run it).
+_PRE_TRIGRAM_EXCLUSION_VERSION = 29
+
 
 @pytest.fixture
 def db(tmp_path):
@@ -136,6 +140,12 @@ def test_existing_external_layout_rebuilds_trigram_on_upgrade(tmp_path, old_vers
     migrated = SessionDB(db_path=db_path)
     try:
         assert _trigram_rowids(migrated) == {cli_id}
+        view_sql = migrated._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'view' AND name = 'messages_fts_trigram_src'"
+        ).fetchone()[0]
+        assert "sessions" in view_sql
+        assert "cron" in view_sql
         assert [row["id"] for row in migrated.search_messages("互迁移")] == [cli_id]
         assert [row["id"] for row in migrated.search_messages(
             "定时迁移内容", source_filter=["cron"]

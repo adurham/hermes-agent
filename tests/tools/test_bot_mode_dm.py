@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -711,7 +712,9 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
     target = home / "profiles" / "researcher"
     monkeypatch.setenv("HERMES_HOME", str(home))
     authority = _canonical_target(monkeypatch, target)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    # The authority still holds the admission, so the runner waits to its absolute deadline.
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.05)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
@@ -730,6 +733,51 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
     assert failed["delivery_id"] == queued["delivery_id"]
     assert len(authority.records) == 1
     assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+def _admitted_live_dm(tmp_path, monkeypatch, delivery_id):
+    """One DM admitted to a ready (fake) authority, with the wait loop sped up."""
+    from tools import bot_live_delivery as live
+
+    authority = _canonical_target(monkeypatch, tmp_path)
+    owner = live.find_canonical_live_owner(tmp_path)
+    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id=delivery_id)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
+    return live, authority, record
+
+
+def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
+    """A retained admission still delivers its reply after the first wait window (main a94b9758313)."""
+    live, authority, record = _admitted_live_dm(tmp_path, monkeypatch, "a" * 32)
+    settling = threading.Timer(0.05, lambda: authority.records[record["delivery_id"]].update(
+        status="settled", reply="PONG"))
+    settling.start()
+    try:
+        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
+    finally:
+        settling.join(timeout=2)
+    notice = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
+
+
+@pytest.mark.parametrize("lookup", ["raises", "holds"])
+def test_live_dm_wait_is_bounded_and_never_cancels_an_admission(tmp_path, monkeypatch, capsys, lookup):
+    """An authority that cannot be confirmed, or one that never settles, releases the runner with a
+    do-not-resend pending notice; the admitted receipt is never cancelled (main a6509d6b8fd)."""
+    live, _authority, record = _admitted_live_dm(tmp_path, monkeypatch, "2" * 32)
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.1)
+    if lookup == "raises":
+        def lookup_fails(_home):
+            raise ValueError("profile authority is not ready")
+
+        monkeypatch.setattr(live, "find_canonical_live_owner", lookup_fails)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
+    notice = json.loads(capsys.readouterr().out)
+    assert notice["status"] == "queued"
+    assert "Do not resend" in notice["detail"]
+    assert live.read_delivery_result(tmp_path, record["delivery_id"])["status"] == "queued"
 
 
 # ── plaintext tempfile lifecycle (peer stdin transport) ─────────────────────
@@ -1112,21 +1160,24 @@ def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkey
 
 
 def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
     dm_file = tmp_path / "dm-x.txt"
     dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+    _live, authority, record = _admitted_live_dm(tmp_path, monkeypatch, "b" * 32)
 
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
-    assert intent.exists(), "a pending delivery may still be retried from the same intent"
-    assert dm_file.exists()
+    outcomes = []
+    waiting = threading.Thread(target=lambda: outcomes.append(bot_mode_dm._wait_live_dm(
+        str(tmp_path), record["delivery_id"], dm_file=dm_file)), daemon=True)
+    waiting.start()
+    time.sleep(0.05)
+    pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
+    authority.records[record["delivery_id"]].update(status="settled", reply="ok")
+    waiting.join(timeout=2)
 
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert pending_kept, "a pending delivery keeps its intent while the runner waits"
+    assert not waiting.is_alive()
+    assert outcomes == [0]
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
 

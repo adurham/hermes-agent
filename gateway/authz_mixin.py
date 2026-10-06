@@ -633,8 +633,9 @@ class GatewayAuthorizationMixin:
         if local_verdict is not None:
             return local_verdict
 
-        # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.
-        if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+        # Webhook events are HMAC-verified; a ``trusted_inbound`` platform's events come from the
+        # service its adapter authenticated to (no human sender to allowlist).
+        if source.platform == Platform.WEBHOOK or getattr(_registry_entry(source.platform), "trusted_inbound", False) is True:
             return True
 
         adapter_profile = self._adapter_profile_for_source(source)
