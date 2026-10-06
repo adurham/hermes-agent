@@ -55,21 +55,6 @@ from agent.turn_failure_copy import is_max_iteration_handoff
 logger = logging.getLogger(__name__)
 
 
-def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
-    """Done-callback: close a SessionDB whose constructor finished after run_job's init timeout
-    (worker abandoned via ``shutdown(wait=False)``), else its .db/WAL/SHM handles leak to EMFILE.
-
-    If the constructor later completes inside that abandoned worker, the Future's result — an open SessionDB
-    holding .db / WAL / SHM file handles — would be orphaned and never closed, leaking descriptors until
-    EMFILE (#72782). This callback retrieves and closes that eventual late result.
-    """
-    with contextlib.suppress(Exception):
-        db = future.result()
-        if db is not None:
-            from hermes_state_registry import release_or_close
-            release_or_close(db)
-
-
 def _set_cron_session_title(session_db, session_id, base_title):
     """Persist a non-blank, unique title for a finished cron session; returns it (None if unset).
     Runs BEFORE end_session()/close() so no write races the close. Duplicate title (unique-index
@@ -1949,6 +1934,7 @@ def _open_cron_session_db(job: dict):
             # inside it, the future's result would be orphaned and its SQLite FDs (.db, WAL, SHM) leak until
             # process exit. Register a done-callback that retrieves and closes any eventual late result
             # (#72782).
+            from cron.scheduler_detached_worker import _close_late_session_db_result
             _session_db_future.add_done_callback(_close_late_session_db_result)
             raise
         finally:
@@ -2230,16 +2216,13 @@ def _finalize_cron_session(session_db, agent, job_id: str, job_name: str, cron_s
                 job_id, _lifecycle, _end_reason)
     except (Exception, KeyboardInterrupt) as e:
         logger.debug("Job '%s': session lifecycle classification failed: %s", job_id, e)
-    # Stamp the job's workdir on the row BEFORE end_session (same before-close ordering as the
-    # title write, #50536): the sidebar groups sessions by cwd prefix, and a NULL cwd filed every
-    # cron run under __no_project__ even when the job ran inside a repo (#108205). The workdir is
-    # the session's authoritative cwd — _launch_cwd_for_session records none for cron source, so
-    # nothing else writes one. Best-effort like every finalize step.
+    # Stamp the job's workdir on the row BEFORE end_session (title-write ordering, #50536): the
+    # sidebar groups by cwd prefix and nothing else writes a cron row's cwd (#108205).
     if workdir:
         try:
             _session_db.update_session_cwd(_final_cron_session_id, workdir)
         except (Exception, KeyboardInterrupt) as e:
-            logger.debug("Job '%s': failed to stamp workdir on session row: %s", job_id, e)
+            logger.debug("Job '%s': failed to stamp workdir on session row: %s", job_id, e, exc_info=True)
     try:
         _session_db.end_session(_final_cron_session_id, _end_reason)
         # The scheduler owns cron-session finalization. AIAgent.close() also

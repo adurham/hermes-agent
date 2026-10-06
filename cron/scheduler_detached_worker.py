@@ -9,9 +9,25 @@ overlap behind #102827. The worker's Future owns the teardown instead.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import subprocess
 import threading
 from typing import Optional
+
+
+def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
+    """Done-callback: close a SessionDB whose constructor finished after run_job's init timeout
+    (worker abandoned via ``shutdown(wait=False)``), else its .db/WAL/SHM handles leak to EMFILE.
+
+    If the constructor later completes inside that abandoned worker, the Future's result — an open
+    SessionDB holding .db / WAL / SHM file handles — would be orphaned and never closed, leaking
+    descriptors until EMFILE (#72782). This callback retrieves and closes that eventual late result.
+    """
+    with contextlib.suppress(Exception):
+        db = future.result()
+        if db is not None:
+            from hermes_state_registry import release_or_close
+            release_or_close(db)
 
 
 def defer_teardown_to_running_worker(

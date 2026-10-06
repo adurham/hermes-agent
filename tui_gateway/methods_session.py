@@ -401,26 +401,9 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         history = _visible_branch_history(display_history)
         if not history:
             return _err(rid, 4008, "send a message first")
-    # Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace".
-    raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
-    # An ssh profile's cwd lives on the remote host, where the host isdir check cannot vouch for it.
-    remote_cwd = bool(raw_cwd) and _is_remote_cwd_shape(raw_cwd) and _cwd_is_remote(profile_home)
-    explicit_cwd = False
-    with contextlib.suppress(Exception):
-        explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
-    session_cwd = _completion_cwd(params)
-    if raw_cwd and not explicit_cwd and source == "desktop":
-        # The desktop client names a workspace its gateway host cannot probe (Docker/remote backend
-        # topology — #108205): a failed host-side isdir is a topology artifact, not a verdict on the
-        # client's path. The CLIENT vouches instead, with #52589 provenance: a deliberate pick
-        # (cwd_explicit) adopts the raw path outright; an inherited app-global workspace only marks
-        # the workspace explicit when the resolution above actually adopted it, so a launch-dir
-        # fallback still persists nothing and a named profile's terminal.cwd keeps winning.
-        if _flag(params, "cwd_explicit"):
-            explicit_cwd = True
-            session_cwd = raw_cwd
-        elif session_cwd and session_cwd == os.path.abspath(os.path.expanduser(raw_cwd)):
-            explicit_cwd = True
+    # Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace"
+    # (#108205: the desktop arm lets the client vouch for a host-invisible path, #52589 provenance).
+    explicit_cwd, session_cwd, remote_cwd = _resolve_create_cwd(params, source, profile_home)
     _enable_gateway_prompts()
     from .methods_session_model_guard import create_overrides
     try:
