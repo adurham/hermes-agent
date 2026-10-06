@@ -492,7 +492,11 @@ describe('submission intent destinations', () => {
       gate.resolve({ type: 'skill', name: 'private-skill', message: 'expanded private skill' })
       await pending
     })
-    expect(requests).toEqual([['owner-a', 'alice', 'slash.exec']])
+    // Main's typed-slash metric (0631b2498cb) rides the same pinned destination.
+    expect(requests).toEqual([
+      ['owner-a', 'alice', 'shared_metrics.slash_command'],
+      ['owner-a', 'alice', 'slash.exec']
+    ])
     expect(submitPromptText).toHaveBeenCalledWith(
       'expanded private skill',
       expect.objectContaining({
