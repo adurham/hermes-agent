@@ -16,7 +16,11 @@ import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
+<<<<<<< HEAD
 import type { UninstallSectionTranslations } from './types_uninstall_section'
+=======
+import type { SidebarProjectsTranslations } from './types_projects'
+>>>>>>> 5b178bab48e3 (refactor(desktop): move sidebar projects copy into per-locale siblings for #73091)
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
@@ -2904,83 +2908,7 @@ export interface Translations extends NoticeTranslations {
       guide: string
     }
     noFilterMatches: string
-    projects: {
-      showAllSessions: string
-      sectionLabel: string
-      home: string
-      autoDiscovered: string
-      newButton: string
-      createTitle: string
-      createDesc: string
-      renameTitle: string
-      addFolderTitle: string
-      namePlaceholder: string
-      foldersLabel: string
-      ideaLabel: string
-      ideaPlaceholder: string
-      ideaGenerate: string
-      ideaGenerating: string
-      ideaShuffle: string
-      noFolders: string
-      addFolder: string
-      primaryBadge: string
-      removeFolder: string
-      create: string
-      menu: string
-      menuRename: string
-      menuAppearance: string
-      noColor: string
-      menuAddFolder: string
-      menuSetActive: string
-      menuDelete: string
-      moveToProject: string
-      movedTo: (name: string) => string
-      moveFailed: string
-      moveNoFolder: string
-      moveNoProjects: string
-      reveal: string
-      copyPath: string
-      removeFromSidebar: string
-      createdInPreviousContext: string
-      hiddenFromSidebar: string
-      undoHide: string
-      createFailed: string
-      staleBackend: string
-      deleteConfirm: string
-      startWork: string
-      newWorktreeTitle: string
-      newWorktreeDesc: string
-      branchPlaceholder: string
-      branchOff: () => { after: string; before: string }
-      baseBranchPlaceholder: string
-      baseBranchNone: string
-      startWorkFailed: string
-      worktreeStaleBackend: string
-      worktreeProjectLabel: string
-      worktreeProjectPlaceholder: string
-      worktreeProjectNone: string
-      convertBranch: string
-      convertBranchTitle: string
-      convertBranchDesc: string
-      convertBranchPlaceholder: string
-      convertBranchInstead: string
-      branchOpenExisting: string
-      branchSwitchHome: string
-      branchCreateWorktree: string
-      branchTrackRemote: string
-      branchesLoading: string
-      noBranches: string
-      removeWorktree: string
-      removeWorktreeFailed: string
-      removeWorktreeConfirm: string
-      removeWorktreeDirty: string
-      forceRemove: string
-      enter: (label: string) => string
-      reorder: (label: string) => string
-      toggle: (label: string, open: boolean) => string
-      showAllCount: (count: number) => string
-      back: string
-    }
+    projects: SidebarProjectsTranslations
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string
