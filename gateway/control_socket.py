@@ -288,7 +288,7 @@ class GatewayControlServer:
             home = self._home
             info = home.lstat()
             if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)
-                    or info.st_uid != os.getuid() or home_mode_unsafe(info)):  # windows-footgun: ok — POSIX-only helper
+                    or info.st_uid != os.getuid() or home_mode_unsafe(info, home)):  # windows-footgun: ok — POSIX-only helper
                 return None
             sock = writer.get_extra_info("socket")
             if hasattr(socket, "SO_PEERCRED"):

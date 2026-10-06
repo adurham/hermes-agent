@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,20 @@ class DiscoveryError(ValueError):
         self.reason = reason
 
 
-def home_mode_unsafe(node: os.stat_result) -> bool:
+def _may_have_access_acl(path: Path) -> bool:
+    """A Linux POSIX access ACL is present, or its absence cannot be established. Python has no
+    os.listxattr on macOS (whose chmod +a ACLs are separate); mode bits stay the policy there."""
+    if not hasattr(os, "listxattr"):
+        return False
+    try:
+        return "system.posix_acl_access" in os.listxattr(path, follow_symlinks=False)
+    except OSError as exc:
+        if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+            return False  # filesystem without xattrs cannot carry an ACL
+        return True
+
+
+def home_mode_unsafe(node: os.stat_result, path: Path) -> bool:
     """The profile home keeps the operator's mode (main's home policy: symlinked homes,
     HERMES_HOME_MODE 0701/0750). Only write by another user lets them swap the socket; read/search
     bits grant nothing against our 0600 socket, and group-write is harmless when the group is the
@@ -27,6 +41,10 @@ def home_mode_unsafe(node: os.stat_result) -> bool:
         return True
     if not mode & 0o020:
         return False
+    # With an access ACL the group bits are the mask: a named user (setfacl u:other:rwx) may
+    # hold write even though the owning group is private.
+    if _may_have_access_acl(path):
+        return True
     # ``gr_mem`` never lists accounts whose PRIMARY gid is the group, so privacy also needs the
     # passwd scan; membership we cannot establish is treated as shared.
     try:
@@ -45,7 +63,7 @@ def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_resul
     predicates = {"socket": stat.S_ISSOCK, "file": stat.S_ISREG, "directory": stat.S_ISDIR}
     if not predicates[kind](node.st_mode) or node.st_uid != os.getuid():  # windows-footgun: ok — POSIX socket path only
         raise DiscoveryError("unsafe_control_path")
-    if home_mode_unsafe(node) if home else stat.S_IMODE(node.st_mode) & 0o077:
+    if home_mode_unsafe(node, path) if home else stat.S_IMODE(node.st_mode) & 0o077:
         raise DiscoveryError("unsafe_control_permissions")
     return node
 

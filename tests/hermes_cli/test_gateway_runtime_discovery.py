@@ -70,7 +70,7 @@ def test_home_mode_refuses_only_writes_another_user_can_make(tmp_path, monkeypat
                                 (0o775, private, False), (0o775, shared, True)):
         home.chmod(mode)
         monkeypatch.setattr(grp, 'getgrgid', lambda _gid, g=group: g)
-        assert home_mode_unsafe(home.lstat()) is unsafe, (oct(mode), group.gr_name)
+        assert home_mode_unsafe(home.lstat(), home) is unsafe, (oct(mode), group.gr_name)
 
 
 @pytest.mark.platforms("linux", "macos")
@@ -87,11 +87,11 @@ def test_group_write_is_private_only_when_no_other_account_has_that_primary_grou
     monkeypatch.setattr(grp, 'getgrgid', lambda _gid: grp.struct_group((user.pw_name, 'x', user.pw_gid, [])))
     other = pwd.struct_passwd(('intruder', 'x', user.pw_uid + 1, user.pw_gid, '', '/', '/bin/sh'))
     monkeypatch.setattr(pwd, 'getpwall', lambda: [user, other])
-    assert home_mode_unsafe(home.lstat()) is True
+    assert home_mode_unsafe(home.lstat(), home) is True
     monkeypatch.setattr(pwd, 'getpwall', lambda: [user])
-    assert home_mode_unsafe(home.lstat()) is False
+    assert home_mode_unsafe(home.lstat(), home) is False
 
     def unreadable():
         raise OSError('passwd database unavailable')
     monkeypatch.setattr(pwd, 'getpwall', unreadable)
-    assert home_mode_unsafe(home.lstat()) is True
+    assert home_mode_unsafe(home.lstat(), home) is True

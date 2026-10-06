@@ -38,3 +38,27 @@ def test_restart_heals_a_world_readable_pointer_left_by_an_older_gateway(tmp_pat
         finally:
             await server.stop()
     asyncio.run(run())
+
+
+def test_group_bits_that_are_an_acl_mask_never_count_as_a_private_group(tmp_path, monkeypatch):
+    # With a POSIX ACL (setfacl u:nobody:rwx) the stat group bits are the mask: a 0770 home whose
+    # group is the owner's private one may still grant another named user write.
+    import grp
+    import pwd
+    from gateway.control_socket import GatewayControlServer
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError, _socket_path
+    home = tmp_path / "home"
+    home.mkdir()
+    home.chmod(0o770)
+    user = pwd.getpwuid(os.getuid())
+    monkeypatch.setattr(pwd, "getpwall", lambda: [user])
+    monkeypatch.setattr(grp, "getgrgid", lambda _gid: grp.struct_group((user.pw_name, "x", user.pw_gid, [])))
+    monkeypatch.setattr(os, "listxattr", lambda *_a, **_k: ["system.posix_acl_access"])
+    with pytest.raises(DiscoveryError, match="unsafe_control_permissions"):
+        _socket_path(home)
+    ours, _theirs = socket.socketpair(socket.AF_UNIX)
+
+    class Writer:
+        def get_extra_info(self, _key):
+            return ours
+    assert GatewayControlServer(home)._posix_peer_subject(Writer()) is None
