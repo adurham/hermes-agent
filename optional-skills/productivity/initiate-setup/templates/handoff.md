@@ -1,10 +1,10 @@
 # Handoff message
 
-`scripts/host_facts.py` sends these sections with the fork card's result. Each `## ` heading names one section.
+The backend sends these sections with the fork card's result. Each `## ` heading names one section.
 
 ## message
 
-The handoff message is the new chat's first user message. It is visible, so write it as their own ask, in their language, in the first person. The app adds the rest under it: a folded "What setup learned about me" block (their name, app, plugin and layout picks, and what the scan saw) and the first-task rules, which connect the apps and install the plugins they picked before the task starts. Do not repeat any of that, and add nothing they did not say.
+The handoff message is the new chat's first user message. It is visible, so write it as their own ask, in their language, in the first person. The app adds the rest under it: a folded "What setup learned about me" block (their name, app, plugin and layout picks, and the machine basics) and the first-task rules, which connect the apps and install the plugins they picked before the task starts. Do not repeat any of that, and add nothing they did not say.
 
 Write these parts in order, one short paragraph each (part names are not text). Drop a part whose slot is empty.
 

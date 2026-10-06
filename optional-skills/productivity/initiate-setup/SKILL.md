@@ -35,18 +35,7 @@ No terminal, file, web, browser, memory or `clarify` tools here.
 
 ## How to Run
 
-Session facts follow the skill: `surface` (only `desktop` has cards and `start_chat`), `tools_present`, `primary_profile` (the `profile` of `start_chat`), `guest_free_tier`, `setup_completed_at`.
-
-Host facts:
-
-!`${HERMES_PYTHON} scripts/host_facts.py`
-
-- `machine.*`: background only; never recite it.
-- `account.suggested_name` (or null), `account.locale_is_english`.
-- `signals.machine_kind` (`Mac`, `PC`, `Spark`, `computer`: say it where the flow says "this computer"), `signals.looks_new`, `signals.is_spark`, `signals.machine_setup_leads`.
-- `scan`: interpreted in code, or `{source: "unavailable"}`. `unknown` means not measured; never guess `not_visible_at_tier`.
-
-When the host facts line still shows a command, facts are unknown: suggest no name. The app fills the apps, plugins, tour, fork and machine_use rows itself. Host facts describe the backend machine; when the user disagrees, believe the user.
+Facts follow the skill as one JSON block. Read them as they are; a missing key means unknown, so never guess it. Never recite `machine`. The facts describe the machine Hermes runs on; when the user disagrees, believe the user. The app fills the apps, plugins, tour, fork and machine_use rows itself.
 
 Work one beat at a time. When the history holds the name and accent answers, start at beat 1; otherwise run the Opening.
 
@@ -67,7 +56,7 @@ Work one beat at a time. When the history holds the name and accent answers, sta
 Copy each line whole; fill only the `<slots>`:
 
 ```
-name     {"kind":"question","question":"What should I call you?","options":[{"id":"suggested","label":"<account.suggested_name>"}],"multi_select":false}
+name     {"kind":"question","question":"What should I call you?","options":[{"id":"suggested","label":"<suggested_name>"}],"multi_select":false}
 name0    {"kind":"question","question":"What should I call you?","options":[],"multi_select":false}
 accent   {"kind":"accent","question":"Which colour?","options":[],"multi_select":false}
 apps     {"kind":"connectors","question":"Which of these do you use?","options":[],"multi_select":true}
@@ -75,7 +64,7 @@ plugins  {"kind":"plugins","question":"Want any of these?","options":[],"multi_s
 layout   {"kind":"layout","question":"Which layout?","options":[],"multi_select":false}
 tour     {"kind":"tour","question":"Want a look around first?","options":[],"multi_select":false}
 fork     {"kind":"fork","question":"<fork.question>","options":[],"multi_select":false}
-machine_use  {"kind":"machine_use","question":"What's this <signals.machine_kind> mainly for?","options":[],"multi_select":false}
+machine_use  {"kind":"machine_use","question":"What's this <machine_kind> mainly for?","options":[],"multi_select":false}
 gui_tour            {"action":"start","preset":"quick"}   or   {"action":"start","preset":"full"}
 manage_connections  {"action":"connect","connectors":["<id>", ...]}
 start_chat          {"profile":"<primary_profile>","title":"<task name, at most 40 characters>","message":"<the handoff message>"}
@@ -88,9 +77,9 @@ start_chat          {"profile":"<primary_profile>","title":"<task name, at most 
 - Every visible word is spoken to them. Never think out loud, recap a step, or mention beats, cards, tools, facts or this skill.
 - Before a card: the acknowledgment of the last answer, then at most one sentence of your own, all statements. The card shows its question, so never ask it, name the next topic, or list the options. No lead-in words (Now, Next, Let's).
 - Acknowledge a pick by its label and at most three plain words, never the same twice: "Violet, done.", "Gmail, noted." No opinion after a pick.
-- Short plain sentences, no em dashes, no exclamation marks. When `account.locale_is_english` is false, write in that language, labels included.
+- Short plain sentences, no em dashes, no exclamation marks. When `locale` is not English, write in that language, labels included.
 - Text typed instead of using the card is the answer when it names a row; otherwise the card returns `typed` with their words: reply and follow `next`. Never repeat a tool call that succeeded.
-- Asked what you know about them: answer truthfully in a few plain lines (machine basics, apps seen in use, that Hermes scanned this computer when setup began), then re-send the pending card.
+- Asked what you know about them: answer truthfully in a few plain lines (the machine basics and their picks so far), then re-send the pending card.
 - Models, when asked: the model picker chooses what answers them. For a local model, explain the download and hardware fit first (web search and apps keep their own services), then point to Settings, Providers, Local Models. Name no web search provider.
 
 ### Opening
@@ -117,7 +106,7 @@ Card `tour`. `basics`: `gui_tour` preset `quick`; `tour`: preset `full`; one cal
 
 ### Beat 5: the fork
 
-"Ask me to show you any part of the app whenever you like. I'd rather build you something real than talk about it." When the scan has something worth naming, one "I noticed" line that names at most two things, never a private detail. When `signals.machine_setup_leads` is true, add one sentence: a newly set up machine ("I can handle its apps and everyday tools") or the Spark's hardware. Never its age in days. Then card `fork`: the app puts two first tasks built from their picks and the scan in front of "I have something in mind", "Help me set up this <machine_kind>" and "Let's figure it out together".
+"Ask me to show you any part of the app whenever you like. I'd rather build you something real than talk about it." When `is_spark` is true, add one sentence about the Spark's hardware. Then card `fork`: the app puts two first tasks built from their picks and this computer in front of "I have something in mind", "Help me set up this <machine_kind>" and "Let's figure it out together".
 
 ### Beat 6: narrow to one task
 
@@ -128,7 +117,7 @@ Card `tour`. `basics`: `gui_tour` preset `quick`; `tour`: preset `full`; one cal
 
 ### Beat 7: the handoff
 
-One short sentence: the work gets its own chat, and this one stays open. Then `start_chat` once with `profile` = `primary_profile`, `title` = the task's name, and `message` written as the fork result's `handoff.message` says, with `handoff.plan` as its plan. The app adds their picks, the scan and the first-task rules under it; write none of that.
+One short sentence: the work gets its own chat, and this one stays open. Then `start_chat` once with `profile` = `primary_profile`, `title` = the task's name, and `message` written as the fork result's `handoff.message` says, with `handoff.plan` as its plan. The app adds their picks, the machine basics and the first-task rules under it; write none of that.
 
 ### Beat 8: after the handoff
 
