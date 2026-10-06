@@ -458,7 +458,14 @@ def get_current_board() -> str:
             normed = _normalize_board_slug(candidate)
         except ValueError:
             return None
-        return normed if normed and board_exists(normed) else None
+        if not (normed and board_exists(normed)):
+            return None
+        # An archived board leaves a tombstone board.json; a stale `current`
+        # file or HERMES_KANBAN_BOARD pointing at one falls through to
+        # default rather than resurrecting it (#43243).
+        if read_board_metadata(normed).get("archived"):
+            return None
+        return normed
 
     for candidate in (
         (_CURRENT_BOARD_OVERRIDE.get() or "").strip(),
@@ -511,7 +518,7 @@ def board_dir(board: Optional[str] = None) -> Path:
 
 
 def board_exists(board: Optional[str] = None) -> bool:
-    """Board has ``board.json`` or ``kanban.db`` on disk; ``default`` always exists."""
+    """Board has a ``board.json`` on disk; ``default`` always exists."""
     slug = _slug_or_default(board)
     if slug == DEFAULT_BOARD:
         return True
@@ -519,7 +526,12 @@ def board_exists(board: Optional[str] = None) -> bool:
 
 
 def _dir_holds_board(d: Path) -> bool:
-    return (d / "board.json").exists() or (d / "kanban.db").exists()
+    # ``board.json`` is the identity marker: archive/hard-delete both leave the
+    # directory without it, and a stale ``connect(board=slug)`` used to leave a
+    # ``kanban.db``-only stub that resurfaced in the board list as an empty
+    # active board (#43243). Discovery must therefore require the metadata
+    # file; a DB-only directory is a stub to ignore, never a board.
+    return (d / "board.json").exists()
 
 
 def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
@@ -693,9 +705,12 @@ def create_board(
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
     normed = _require_slug(slug)
+    # Explicit creation clears any archived tombstone at this slug (left by
+    # remove_board(archive=True)) — otherwise init_db() below would rightly
+    # refuse to recreate the archived board's DB (#43243).
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
-        default_workdir=default_workdir, project_id=project_id,
+        default_workdir=default_workdir, project_id=project_id, archived=False,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -746,6 +761,9 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
 
     if archive:
+        # Capture display metadata before the move so the tombstone below keeps
+        # the user's board name instead of falling back to a title-cased slug.
+        prior_meta = read_board_metadata(normed)
         archive_root = boards_root() / "_archived"
         archive_root.mkdir(parents=True, exist_ok=True)
         ts = int(time.time())
@@ -755,6 +773,20 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
         d.rename(target)
+        # Leave an ``archived`` tombstone at the original slug. Stale dashboard
+        # tabs / gateway pollers can keep calling connect(board=slug) after the
+        # archive; without a marker the resurrect-guard cannot tell an archived
+        # slug from a brand-new one and an empty board would reappear (#43243).
+        write_board_metadata(
+            normed,
+            name=prior_meta.get("name"),
+            description=prior_meta.get("description"),
+            icon=prior_meta.get("icon"),
+            color=prior_meta.get("color"),
+            default_workdir=prior_meta.get("default_workdir"),
+            project_id=prior_meta.get("project_id"),
+            archived=True,
+        )
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     import shutil
     shutil.rmtree(d)
