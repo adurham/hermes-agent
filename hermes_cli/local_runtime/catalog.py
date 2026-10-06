@@ -38,6 +38,7 @@ class AssetFile:
     path: str                   # repo-relative (may include a subdir)
     size_bytes: int
     local: str | None = None
+    repo: str | None = None     # HF repo when it is not the entry's own (a companion published elsewhere)
 
     @property
     def local_name(self) -> str:
@@ -278,7 +279,8 @@ _last_refresh_attempt = 0.0
 def _asset_from(d: "dict | None") -> "AssetFile | None":
     if not d:
         return None
-    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"))
+    return AssetFile(path=d["path"], size_bytes=int(d["size_bytes"]), local=d.get("local"),
+                     repo=d.get("repo"))
 
 
 # Scalar CatalogEntry fields parsed from JSON: key -> (coerce, default); None default = required.

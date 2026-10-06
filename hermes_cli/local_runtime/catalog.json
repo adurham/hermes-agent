@@ -78,8 +78,9 @@
         "local": "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
       },
       "mtp_head": {
-        "path": "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
-        "size_bytes": 4137429120
+        "repo": "ggml-org/Qwen3.8-Flash-Next-GGUF",
+        "path": "mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+        "size_bytes": 4137429280
       },
       "min_engine": "b11370",
       "quality": 95,

@@ -419,7 +419,7 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
 def _download_plan(entry, variant) -> list:
     """Everything a variant needs: split parts + mmproj/draft/MTP head assets, as (url, dest, bytes) tuples."""
     plan = [(_hf_url(entry.repo, a.path), bootstrap.models_dir() / a.local_name, a.size_bytes) for a in variant.files]
-    plan += [(_hf_url(entry.repo, a.path), bootstrap.assets_dir() / a.local_name, a.size_bytes)
+    plan += [(_hf_url(a.repo or entry.repo, a.path), bootstrap.assets_dir() / a.local_name, a.size_bytes)
              for a in (entry.mmproj, entry.draft, entry.mtp_head) if a is not None]
     return plan
 
