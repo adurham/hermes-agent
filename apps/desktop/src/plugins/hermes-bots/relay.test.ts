@@ -380,8 +380,18 @@ describe('relay-route socket retention (#93594)', () => {
     await vi.advanceTimersByTimeAsync(0)
     await pushAndSettle()
 
-    // Only the sole remaining connection's one-time roster clear goes out; the local source is never polled.
-    expect(calls).toEqual([{ connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] } }])
+    // Only the sole remaining connection's one-time roster clear goes out — once per profile
+    // route, since each profile home holds its own roster; the local source is never polled.
+    // Two profiles of one connection are not peers: no profiles.list, nothing pinned.
+    expect(calls).toEqual([
+      { connectionId: 'remote-primary', method: 'bot_relay.roster.sync', params: { agents: [] }, route: route('remote-primary', { primary: true }) },
+      {
+        connectionId: 'remote-primary',
+        method: 'bot_relay.roster.sync',
+        params: { agents: [] },
+        route: route('remote-primary', { primary: true, profile: 'research' })
+      }
+    ])
     expect(pins).toHaveLength(0)
 
     stopBotRelay()
@@ -419,7 +429,11 @@ describe('relay-route socket retention (#93594)', () => {
       await pushAndSettle()
 
       expect(new Set(calls.map(call => call.connectionId))).toEqual(new Set(routes.map(item => item.connectionId)))
-      expect(pins.map(pin => pin.route.connectionId)).toEqual([...new Set(routes.map(item => item.connectionId))])
+      // One profiles.list per connection, however many of its profiles are routed.
+      const lists = calls.filter(call => call.method === 'profiles.list').map(call => call.connectionId)
+      expect(lists.sort()).toEqual([...new Set(routes.map(item => item.connectionId))].sort())
+      // Every eligible profile route (its own socket scope and outbox) is pinned exactly once.
+      expect(pins.map(pin => pin.route)).toEqual(routes)
 
       stopBotRelay()
     }

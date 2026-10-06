@@ -254,7 +254,9 @@ function releaseRelayRetention() {
   relayRouteRetentions.clear()
 }
 
-/** One representative route per reachable connection id. */
+/** Every relay-eligible profile route, once each. The canonical gateway keeps a
+ *  roster and an outbox per profile home, so drain/roster/pins are per ROUTE;
+ *  the peer set (is there anything to relay between?) is per connection id. */
 async function relayConnections(): Promise<RelayConnection[]> {
   if (typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
     return []
@@ -282,6 +284,11 @@ async function relayConnections(): Promise<RelayConnection[]> {
   } catch {
     return []
   }
+}
+
+/** Distinct connections among the relay routes: profiles of one connection are not peers. */
+function peerCount(connections: RelayConnection[]): number {
+  return new Set(connections.map(connection => connection.id)).size
 }
 
 /** Human label per connection id, from the registry — the only place that has one.
@@ -407,14 +414,14 @@ async function syncRelayRosters() {
       return
     }
 
-    if (connections.length < 2) {
+    if (peerCount(connections) < 2) {
       // Nothing to relay — but the gateways that remain still hold the last
       // pushed roster, so a departed machine's agents would stay in every
       // bot's prompt (and as message_agent targets) until a second connection
       // reappears. Push the now-empty roster once per sole connection so it
       // forgets it — a replacement sole connection has never been told. An
       // empty route list (registry not loaded yet) must not spend the clear.
-      if (connections.length === 1 && connections[0].id !== relay.rosterClearedFor) {
+      if (peerCount(connections) === 1 && connections[0].id !== relay.rosterClearedFor) {
         const cleared = await Promise.all(
           connections.map(async connection => {
             if (!isCurrent()) {
@@ -446,8 +453,10 @@ async function syncRelayRosters() {
     relay.rosterClearedFor = null
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
+    // One profiles.list per connection: its routes share a socket and answer one profile set.
+    const firstRoutes = connections.filter((connection, index) => connections.findIndex(other => other.id === connection.id) === index)
     await Promise.all(
-      connections.map(async connection => {
+      firstRoutes.map(async connection => {
         const agents = await relayAgentsOn(connection, labels)
 
         if (!isCurrent()) {
@@ -535,9 +544,9 @@ async function drainRelayOutboxes() {
 
     // Retention follows the relay-eligible set: with fewer than two
     // connections there is nothing to relay, so nothing stays pinned.
-    syncRelayRetention(connections.length >= 2 ? connections : [])
+    syncRelayRetention(peerCount(connections) >= 2 ? connections : [])
 
-    if (connections.length < 2) {
+    if (peerCount(connections) < 2) {
       return
     }
 
