@@ -497,6 +497,18 @@ database and the count is not reported.
 | `hermes.feature_disabled.count` | kind (`toolset`, `skill`, `plugin`, `platform`, `setting`, `memory`, `curator`, `compression`), name, surface (`cli_tools`, `cli_config`, `cli_slash`, `tui`, `desktop`, `dashboard`), event (`disabled`, `re_enabled`) | What users turn off. Diffed at the config write itself: a default-on toolset removed, a skill or plugin added to its disabled list, a default-`true` setting set false (and each moved back). Names are public only when shipped — toolset key, bundled/catalog skill, bundled/catalog plugin (messaging-platform plugins report as `platform`), `DEFAULT_CONFIG` key path (never a value) — else `custom`. Uninstalling a catalog skill counts as `disabled`. Only user entry points record (`hermes tools` / `config` / `skills` / `plugins`, chat slash commands, TUI/Desktop, dashboard); setup and migrations do not, even when a migration runs inside one of them (`hermes config migrate`, a profile created from the dashboard). A setting whose value is a `${VAR}` template is not compared. The diff and the record run on a background thread after the write, outside every config lock. At most once per (kind, name, event) per day. |
 <!-- ---- end v5 signals ---- -->
 
+<!-- ---- iuf c1 ---- -->
+#### Install and update failure reasons
+
+Since package schema v4 (extended in place while v4 was canary-only), two existing metrics say why
+they failed. Rows recorded before the change keep their old field set and still package.
+
+| Metric | Dimensions added | Question it answers |
+|---|---|---|
+| `hermes.extension.install.count` | failure class, registry | Why skill, plugin and MCP installs fail, and which skills-hub source fails. `failure_class` is `none` on success, else a closed name for the failure exit that stopped the install. Skills: `ambiguous`, `auth_rejected`, `fetch_failed`, `invalid_bundle`, `invalid_name`, `not_found`, `rate_limited`, `scan_blocked`, `stale_index`. Plugins: `already_installed`, `clone_failed`, `deps_declined`, `deps_failed`, `git_missing`, `incompatible`, `invalid_source`, `manifest_invalid`, `non_interactive`, `removed_from_catalog`, `scan_blocked`. MCP servers: `auth_required`, `bootstrap_failed`, `clone_failed`, `config_invalid`, `config_rejected`, `connect_failed`, `git_missing`, `missing_credentials`, `server_start_failed`. Every kind may also read `exception`, `filesystem_error`, `network`, `other`, `permission`. A raised error without a named class is classified by its Python type only (`PermissionError` reads `permission`, connection and timeout errors `network`, other `OSError`s `filesystem_error`, anything else `exception`, its type name dropped). `registry` is set on skill rows only: the skills-hub adapter that resolved or served the skill, one of `browse-sh`, `clawhub`, `github`, `hermes-index`, `lobehub`, `official`, `skills-sh`, `url`, `well-known` (the adapter ids `tools/skills_hub_search.py::create_source_router` builds), `unresolved` when no adapter answered, `none` for built-in restores and every plugin/MCP row, `other` otherwise. Never the identifier, URL, error text or path; `name` keeps its existing catalog-or-`custom` rule. |
+| `hermes.update.run` | failure class | Why `hermes update` fails, next to where (`failed_stage`). `none` unless the outcome is `failed` or `refused`. Derived from the final update receipt only: `aborted_before_apply`, `build_failed`, `deps_failed`, `exception`, `fleet_stale`, `fleet_unverified`, `git_failed`, `interrupted`, `lock_held`, `managed_install`, `os_error`, `restart_failed`, `subprocess_failed`, else `other`; Desktop packaged self-updates report `unknown` (their RPC carries a stage, never a reason). An exception that ended the run is read by its type name alone, never its message. A failed run whose every stage mark passed now reads `failed_stage` `verify` (the post-restart verification wrote `partial`) or `restart` (a skipped restart left the fleet owing one) instead of `other`. |
+<!-- ---- end iuf c1 ---- -->
+
 Local state is written under:
 
 ```text
@@ -518,7 +530,9 @@ locally for 30 days. Pending package rows and counters with unexported deltas
 are never pruned.
 Package schemas v1, v2 and v3 remain unchanged for existing outbox files. New
 packages use v4, which adds `failure_class` to `hermes.compression.count` and
-`hermes.memory.op.count` and still accepts their v3 field sets, as v3 accepted the v2
+`hermes.memory.op.count` and still accepts their v3 field sets (and, extended in place,
+`failure_class` on `hermes.extension.install.count` / `hermes.update.run` plus `registry` on the
+former, still accepting their earlier v4 field sets), as v3 accepted the v2
 field sets of `hermes.model_route.count`, `hermes.tool_call.count` and the task
 counters, so counters recorded before an upgrade drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory
