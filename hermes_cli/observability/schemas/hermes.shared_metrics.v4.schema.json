@@ -273,6 +273,9 @@
           },
           {
             "$ref": "#/$defs/feature_disabled_counter"
+          },
+          {
+            "$ref": "#/$defs/install_run_counter"
           }
         ]
       }
@@ -4948,6 +4951,106 @@
             },
             "retry_count_bucket": {
               "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "install_run_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.install.run"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "failed_stage",
+            "failure_class",
+            "installer",
+            "outcome"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "enum": [
+                "2m_to_5m",
+                "30s_to_2m",
+                "5m_to_15m",
+                "gte_15m",
+                "lt_30s"
+              ]
+            },
+            "failed_stage": {
+              "enum": [
+                "complete",
+                "config",
+                "gateway",
+                "none",
+                "other",
+                "prerequisites",
+                "products",
+                "python_deps",
+                "repository",
+                "setup",
+                "venv"
+              ]
+            },
+            "failure_class": {
+              "enum": [
+                "commit_not_on_branch",
+                "curl_missing",
+                "deps_install_failed",
+                "dir_not_checkout",
+                "download_digest_mismatch",
+                "download_failed",
+                "filesystem_error",
+                "gateway_failed",
+                "git_checkout_failed",
+                "git_clone_failed",
+                "git_extract_failed",
+                "git_fetch_failed",
+                "git_missing",
+                "git_reset_failed",
+                "interrupted",
+                "libstdcxx_missing",
+                "local_changes_blocked",
+                "none",
+                "other",
+                "products_build_failed",
+                "python_install_failed",
+                "setup_failed",
+                "unsupported_platform",
+                "uv_unusable"
+              ]
+            },
+            "installer": {
+              "enum": [
+                "install_ps1",
+                "install_sh",
+                "other"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "success"
+              ]
             }
           }
         },

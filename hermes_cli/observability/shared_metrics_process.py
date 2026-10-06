@@ -86,6 +86,11 @@ def begin_process(kind: str) -> None:
         if not _collection_on():
             home = get_hermes_home()
             purge_pending_updates(home)  # parked while on, never to be counted once off
+            # ---- iuf c2 ----
+            from .shared_metrics_install_run import purge_pending_installs
+
+            purge_pending_installs(home)  # an installer receipt is counted only while collection is on
+            # ---- end iuf c2 ----
             latches = home / "telemetry" / "shared_metrics" / ONBOARDING_LATCH_DIRNAME  # an opt-out outside Desktop
             for directory in (markers_dir(home), setup_markers_dir(home), latches):  # likewise pending exits/setups
                 shutil.rmtree(directory, ignore_errors=True)
@@ -200,6 +205,11 @@ def _report_dead_markers(home: Path, own: Path) -> None:
 
         report_pending_updates()
         report_abandoned_setups(home)
+        # ---- iuf c2 ----
+        from .shared_metrics_install_run import report_pending_installs
+
+        report_pending_installs(home)
+        # ---- end iuf c2 ----
     except Exception:
         logger.debug("Dead process markers not reported", exc_info=True)
     finally:

@@ -33,6 +33,9 @@ INCLUDE_DESKTOP=false
 VERBOSE=false
 SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
+INSTALL_LADDER=false
+INSTALL_STARTED=0
+FAILURE_CLASS=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -95,7 +98,25 @@ log() { printf '%s→%s %s\n' "$C_CYAN" "$C_NC" "$1"; }
 log_success() { printf '%s✓%s %s\n' "$C_GREEN" "$C_NC" "$1"; }
 log_warn() { printf '%s⚠%s %s\n' "$C_YELLOW" "$C_NC" "$1"; }
 log_error() { printf '%s✗%s %s\n' "$C_RED" "$C_NC" "$1" >&2; }
-fail() { STAGE_REASON="$1"; log_error "$1"; exit 1; }
+# $2: closed failure class for the local install receipt (write_install_receipt).
+fail() { STAGE_REASON="$1"; FAILURE_CLASS="${2:-other}"; log_error "$1"; exit 1; }
+
+# One local receipt per full-ladder run, under the profile's shared-metrics dir.
+# Only closed tokens and two timestamps (never STAGE_REASON, paths or URLs); the
+# installer never sends anything. Hermes reports it as hermes.install.run on a
+# later start only while shared metrics collection is on, and deletes it
+# unreported when collection is off. Best effort: never fails the install.
+write_install_receipt() {
+    # $1 outcome, $2 failed stage, $3 failure class
+    {
+        local dir="$HERMES_HOME/telemetry/shared_metrics/pending_installs" id
+        id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+        [ "${#id}" -eq 32 ] || id="$(printf '%08x%08x%08x' "$RANDOM$RANDOM" "$$" "$(date +%s)")"
+        mkdir -p "$dir" && printf '{"id":"%s","installer":"install_sh","outcome":"%s","failed_stage":"%s","failure_class":"%s","started_at":%s,"finished_at":%s}\n' \
+            "$id" "$1" "$2" "$3" "${INSTALL_STARTED:-0}" "$(date +%s)" > "$dir/.$id.tmp" \
+            && mv -f "$dir/.$id.tmp" "$dir/$id.json"
+    } >/dev/null 2>&1 || :
+}
 
 print_banner() {
     printf '\n%s%s' "$C_MAGENTA" "$C_BOLD"
@@ -267,10 +288,10 @@ ensure_uv() {
     # its own packaged toolchain.
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
-        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); Hermes does not support this host"
+        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); Hermes does not support this host" unsupported_platform
     fi
     if ! uv_bootstrap_pin "$_target"; then
-        fail "no pinned uv artifact for $_target; Hermes does not support this host"
+        fail "no pinned uv artifact for $_target; Hermes does not support this host" unsupported_platform
     fi
     local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
@@ -289,13 +310,13 @@ ensure_uv() {
             local _curl_status=$?
             case "$_curl_status" in
                 5|6|7|18|22|28|52|55|56) ;;
-                *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" ;;
+                *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" download_failed ;;
             esac
             if [ -n "${UV_PIN_MIRROR:-}" ] && curl -LsSf "$UV_PIN_MIRROR" -o "$_tmp/uv.tar.gz"; then
                 _fetched_from="$UV_PIN_MIRROR"
             else
                 rm -rf "$_tmp"
-                fail "failed to download pinned uv from $UV_PIN_URL or ${UV_PIN_MIRROR:-no mirror}"
+                fail "failed to download pinned uv from $UV_PIN_URL or ${UV_PIN_MIRROR:-no mirror}" download_failed
             fi
         fi
         local _digest
@@ -306,17 +327,17 @@ ensure_uv() {
         fi
         if [ "$_digest" != "$UV_PIN_SHA256" ]; then
             rm -rf "$_tmp"
-            fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)"
+            fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)" download_digest_mismatch
         fi
         if ! tar -xzf "$_tmp/uv.tar.gz" -C "$_tmp"; then
             rm -rf "$_tmp"
-            fail "failed to extract pinned uv archive"
+            fail "failed to extract pinned uv archive" uv_unusable
         fi
         local _unpacked
         _unpacked="$(find "$_tmp" -mindepth 1 -maxdepth 2 -name uv -type f | head -n1)"
         if [ -z "$_unpacked" ]; then
             rm -rf "$_tmp"
-            fail "uv binary not found in the downloaded archive"
+            fail "uv binary not found in the downloaded archive" uv_unusable
         fi
         mkdir -p "$_entry"
         mv "$_unpacked" "$UV_CMD"
@@ -327,7 +348,7 @@ ensure_uv() {
     fi
     # Bootstrap keeps the installer private; only UV_CMD invokes it.
     if ! "$UV_CMD" --version >/dev/null 2>&1; then
-        fail "pinned uv staged but does not run on this host"
+        fail "pinned uv staged but does not run on this host" uv_unusable
     fi
     log_success "uv ready ($("$UV_CMD" --version 2>/dev/null))"
 }
@@ -337,12 +358,12 @@ check_platform() {
     # install the phone cannot run (no Android wheels in the lock). The
     # signed APT package is the only supported shape there.
     if [ -n "${TERMUX_VERSION:-}" ] || case "${PREFIX:-}" in *com.termux/files/usr*) true ;; *) false ;; esac; then
-        fail "Termux is installed from its APT repository, not install.sh: pkg install hermes-agent (setup: https://hermes-agent.nousresearch.com/docs/getting-started/termux)"
+        fail "Termux is installed from its APT repository, not install.sh: pkg install hermes-agent (setup: https://hermes-agent.nousresearch.com/docs/getting-started/termux)" unsupported_platform
     fi
     case "$(uname -s 2>/dev/null)" in
         Linux*) : ;;
         Darwin*) : ;;
-        *) fail "unsupported platform: $(uname -s). On Windows use install.ps1." ;;
+        *) fail "unsupported platform: $(uname -s). On Windows use install.ps1." unsupported_platform ;;
     esac
 }
 
@@ -377,6 +398,11 @@ stage_result() {
     fi
     if [ "$JSON" = true ]; then
         json_frame "$ok" "$STAGE" "${STAGE_SKIPPED:-false}" "$reason"
+    fi
+    if [ "$ok" = false ] && [ "${INSTALL_LADDER:-false}" = true ]; then
+        # 130/143: Ctrl-C or SIGTERM while a stage ran, not a stage defect.
+        case "$code" in 130|143) [ -n "${FAILURE_CLASS:-}" ] || FAILURE_CLASS=interrupted ;; esac
+        write_install_receipt failed "${STAGE//-/_}" "${FAILURE_CLASS:-other}"
     fi
 }
 
@@ -428,8 +454,8 @@ emit_manifest() {
 }
 
 stage_prerequisites() {
-    command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager."
-    command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
+    command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager." git_missing
+    command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager." curl_missing
     # PM's Node on musl is the unofficial-builds musl archive, which links the
     # system libstdc++; without it every node/npm stage fails verification.
     local _target
@@ -439,7 +465,7 @@ stage_prerequisites() {
         for _libdir in /lib /usr/lib /usr/local/lib; do
             compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
         done
-        [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
+        [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run." libstdcxx_missing
     fi
     # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
     # installs the distro package with `sudo -n` under its install lock, so
@@ -462,14 +488,14 @@ stage_repository() {
         local broken
         broken="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
         log_warn "$INSTALL_DIR has no commits (interrupted clone); moving it aside to $broken"
-        mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside"
+        mv "$INSTALL_DIR" "$broken" || fail "cannot move $INSTALL_DIR aside" filesystem_error
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
         log "Updating $INSTALL_DIR ($BRANCH)"
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if [ -n "${HERMES_REPO_URL:-}" ]; then
-            git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
+            git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL" git_fetch_failed
         fi
         # Explicit refspec: a tag-pinned --single-branch checkout from an older
         # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
@@ -506,7 +532,7 @@ stage_repository() {
             fi
         fi
         run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
-            || fail "git fetch failed"
+            || fail "git fetch failed" git_fetch_failed
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -519,21 +545,21 @@ stage_repository() {
             # the stash below (#4735).
             if [ -n "$(git -C "$INSTALL_DIR" ls-files --unmerged)" ]; then
                 log_warn "clearing unmerged index entries from a previous conflict"
-                git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR"
+                git -C "$INSTALL_DIR" reset -q || fail "cannot clear the unmerged index in $INSTALL_DIR" local_changes_blocked
             fi
             run_logged "Stashing local changes" \
                 git -C "$INSTALL_DIR" stash push --include-untracked -m "hermes-install-autostash-$stamp" \
-                || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"
+                || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun" local_changes_blocked
             log_warn "local changes stashed as hermes-install-autostash-$stamp"
         fi
         # checkout's branch guess only sees remote refs the refspec maps, so a
         # narrow checkout (detached at its tag, no local branch) gets the branch
         # created at the fetched tip.
         if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed" git_checkout_failed
         else
             run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout -b "$BRANCH" "origin/$BRANCH" \
-                || fail "git checkout failed"
+                || fail "git checkout failed" git_checkout_failed
         fi
         if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
             git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
@@ -546,21 +572,21 @@ stage_repository() {
             # namespace as `hermes update` so its pruning and recovery work.
             local dropped rescue_kind rescue_ref prior
             dropped="$(git -C "$INSTALL_DIR" rev-list --count "origin/$BRANCH..HEAD")" \
-                || fail "cannot count commits before reset"
+                || fail "cannot count commits before reset" git_reset_failed
             if [ "$dropped" -gt 0 ]; then
                 rescue_kind="diverged"
                 git -C "$INSTALL_DIR" merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 \
                     || rescue_kind="orphan"
                 prior="$(git -C "$INSTALL_DIR" rev-parse --short=12 HEAD)" \
-                    || fail "cannot identify commits before reset"
+                    || fail "cannot identify commits before reset" git_reset_failed
                 rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$stamp-$prior"
                 git -C "$INSTALL_DIR" update-ref "$rescue_ref" HEAD \
-                    || fail "cannot back up $dropped local commit(s); refusing to reset"
+                    || fail "cannot back up $dropped local commit(s); refusing to reset" git_reset_failed
                 log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
                 log "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
             fi
             run_logged "Resetting to origin/$BRANCH" git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH" \
-                || fail "git reset failed"
+                || fail "git reset failed" git_reset_failed
             log_warn "not fast-forwardable; reset to origin/$BRANCH"
         fi
     else
@@ -569,9 +595,9 @@ stage_repository() {
         # the empty dir over) or we refuse: whatever lives there is not ours.
         if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
             if [ -d "$INSTALL_DIR" ] && [ ! -L "$INSTALL_DIR" ] && [ -z "$(ls -A "$INSTALL_DIR")" ]; then
-                rmdir "$INSTALL_DIR" || fail "cannot replace empty $INSTALL_DIR"
+                rmdir "$INSTALL_DIR" || fail "cannot replace empty $INSTALL_DIR" filesystem_error
             else
-                fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>."
+                fail "$INSTALL_DIR exists and is not a Hermes git checkout. Move it aside, or install elsewhere with --dir <path>." dir_not_checkout
             fi
         fi
         mkdir -p "$(dirname "$INSTALL_DIR")"
@@ -579,7 +605,7 @@ stage_repository() {
         # Phase lines ("Receiving objects: 42%") feed the status line; git
         # prints none to a pipe unless asked.
         if quiet_output; then progress=(--progress); fi
-        staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone"
+        staged="$(mktemp -d "$(dirname "$INSTALL_DIR")/.hermes-clone-XXXXXX")" || fail "cannot stage clone" filesystem_error
         for attempt in 1 2 3; do
             # Blobless: every commit, tree and release tag (runtime identity is
             # the nearest reachable release; --commit pins and branch switches
@@ -614,11 +640,11 @@ stage_repository() {
         fi
         if [ "$cloned" = false ]; then
             rm -rf "$staged"
-            fail "git clone failed; no checkout published"
+            fail "git clone failed; no checkout published" git_clone_failed
         fi
         if ! mv "$staged/tree" "$INSTALL_DIR"; then
             rm -rf "$staged"
-            fail "cannot publish cloned checkout"
+            fail "cannot publish cloned checkout" filesystem_error
         fi
         rmdir "$staged"
         # A treeless checkout must never write a commit-graph: over a graph with
@@ -638,9 +664,9 @@ stage_repository() {
         # marker records both, and a commit off that branch would make the
         # next plain rerun "update" onto a different line.
         git -C "$INSTALL_DIR" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
-            || fail "commit $INSTALL_COMMIT is not on branch $BRANCH"
+            || fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch
         run_logged "Pinning $INSTALL_COMMIT" git -C "$INSTALL_DIR" checkout "$INSTALL_COMMIT" \
-            || fail "could not pin commit $INSTALL_COMMIT"
+            || fail "could not pin commit $INSTALL_COMMIT" git_checkout_failed
     fi
 }
 
@@ -671,11 +697,11 @@ bootstrap_python() {
     if ! boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py" 2>/dev/null)" \
         && ! boot_py="$("$UV_CMD" python find --system --no-project "$_py" 2>/dev/null)"; then
         run_logged "Downloading Python $_py" "$UV_CMD" python install --no-bin --no-registry "$_py" \
-            || fail "bootstrap Python installation failed"
-        boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed"
+            || fail "bootstrap Python installation failed" python_install_failed
+        boot_py="$(UV_SYSTEM_PYTHON=1 UV_NO_PROJECT=1 "$UV_CMD" python find --managed-python "$_py")" || fail "bootstrap Python lookup failed" python_install_failed
     fi
     boot_py="${boot_py%$'\r'}"
-    [ -x "$boot_py" ] && "$boot_py" --version >/dev/null 2>&1 || fail "bootstrap Python is not executable: $boot_py"
+    [ -x "$boot_py" ] && "$boot_py" --version >/dev/null 2>&1 || fail "bootstrap Python is not executable: $boot_py" python_install_failed
 }
 
 # uv exits before PM can replace its tool entry. pm.cli then prepares and
@@ -693,7 +719,7 @@ bootstrap_pm() {
     if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo -n -v 2>/dev/null || :; fi
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \
-        || fail "pm install failed"
+        || fail "pm install failed" deps_install_failed
     log_success "dependencies installed"
 }
 
@@ -730,7 +756,7 @@ append_shell_path() {
         return 0
     fi
     mkdir -p "$(dirname "$rc")"
-    printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc"
+    printf '\n# Hermes Agent command\n%s\n' "$line" >> "$rc" || fail "cannot update PATH in $rc" filesystem_error
     log_success "added ~/.local/bin to PATH in $rc"
 }
 
@@ -777,7 +803,7 @@ stage_products() {
     fi
     (cd "$INSTALL_DIR" && run_logged "Building the hermes command and apps" \
         "$boot_py" -I -B -X utf8 hermes_cli/source_completion.py "${args[@]}") \
-        || fail "app products or command publication failed"
+        || fail "app products or command publication failed" products_build_failed
     wire_shell_path
     log_success "app products and hermes command ready"
 }
@@ -815,7 +841,7 @@ stage_setup() {
         log "setup skipped (no terminal); run 'hermes setup' after install"
         return 0
     fi
-    "$INSTALL_DIR/.hermes/bin/hermes" setup </dev/tty || fail "setup failed"
+    "$INSTALL_DIR/.hermes/bin/hermes" setup </dev/tty || fail "setup failed" setup_failed
 }
 
 stage_gateway() {
@@ -825,7 +851,7 @@ stage_gateway() {
         return 0
     fi
     # Setup installs the service when it handles the gateway; ask only if it did not.
-    "$INSTALL_DIR/.hermes/bin/hermes" gateway install --if-missing </dev/tty || fail "gateway installation failed"
+    "$INSTALL_DIR/.hermes/bin/hermes" gateway install --if-missing </dev/tty || fail "gateway installation failed" gateway_failed
 }
 
 stage_complete() {
@@ -862,6 +888,7 @@ run_stage() (
     set -e
     STAGE="$1"
     STAGE_REASON=""
+    FAILURE_CLASS=""
     STAGE_SKIPPED=false
     trap 'stage_result "$?"' EXIT
     if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
@@ -896,6 +923,10 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
 
     if [ -n "$STAGE" ] && [ "$JSON" = true ]; then
         trap 'stage_result "$?"' EXIT
+    elif [ -z "$STAGE" ]; then
+        INSTALL_LADDER=true
+        INSTALL_STARTED="$(date +%s)"
+        trap '[ "$?" -eq 0 ] || write_install_receipt failed prerequisites "${FAILURE_CLASS:-other}"' EXIT
     fi
     check_platform
     trap - EXIT
@@ -913,5 +944,6 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
         rc=$?
         [ "$rc" -eq 0 ] || exit "$rc"
     done
+    write_install_receipt success none none
     print_path_reload_hint
 fi

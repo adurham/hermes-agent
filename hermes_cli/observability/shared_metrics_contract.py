@@ -480,6 +480,26 @@ UPDATE_FAILURE_CLASSES = frozenset({
     "unknown",               # the reporter sent no reason (Desktop packaged updaters)
 })
 # ---- end iuf c1 ----
+# ---- iuf c2 ----
+# One fresh-install run of scripts/install.sh / install.ps1, from the local receipt the installer
+# leaves (the installer itself never sends); counted by a later Hermes start while collection is on.
+INSTALL_RUN_MARK = INSTALL_RUN_METRIC = "hermes.install.run"
+INSTALL_RUN_INSTALLERS = frozenset({"install_ps1", "install_sh", "other"})
+INSTALL_RUN_OUTCOMES = frozenset({"failed", "success"})
+# The installers' stage_names / $Stages ladder (hyphens as underscores).
+INSTALL_RUN_STAGES = frozenset({
+    "complete", "config", "gateway", "prerequisites", "products", "python_deps", "repository", "setup", "venv",
+})
+INSTALL_RUN_FAILED_STAGES = INSTALL_RUN_STAGES | {"none", "other"}
+# The code each installer fail()/Fail call site passes; `none` on success.
+INSTALL_RUN_FAILURE_CLASSES = frozenset({
+    "commit_not_on_branch", "curl_missing", "deps_install_failed", "dir_not_checkout", "download_digest_mismatch",
+    "download_failed", "filesystem_error", "gateway_failed", "git_checkout_failed", "git_clone_failed",
+    "git_extract_failed", "git_fetch_failed", "git_missing", "git_reset_failed", "interrupted",
+    "libstdcxx_missing", "local_changes_blocked", "none", "other", "products_build_failed",
+    "python_install_failed", "setup_failed", "unsupported_platform", "uv_unusable",
+})
+# ---- end iuf c2 ----
 
 
 def update_duration_bucket(duration_ms: Any) -> str:
@@ -960,6 +980,13 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "event": FEATURE_DISABLED_EVENTS, "kind": FEATURE_DISABLED_KINDS, "surface": FEATURE_DISABLED_SURFACES,
     },
     # ---- end v5 signals ----
+    # ---- iuf c2 ----
+    INSTALL_RUN_METRIC: {
+        "duration_bucket": UPDATE_DURATION_BUCKETS, "failed_stage": INSTALL_RUN_FAILED_STAGES,
+        "failure_class": INSTALL_RUN_FAILURE_CLASSES, "installer": INSTALL_RUN_INSTALLERS,
+        "outcome": INSTALL_RUN_OUTCOMES,
+    },
+    # ---- end iuf c2 ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -1105,6 +1132,9 @@ _DECISION_MARK_METRICS = {
     TOOL_UNAVAILABLE_MARK: TOOL_UNAVAILABLE_METRIC, PROVIDER_SETUP_MARK: PROVIDER_SETUP_METRIC,
     FEATURE_DISABLED_MARK: FEATURE_DISABLED_METRIC,
     # ---- end v5 signals ----
+    # ---- iuf c2 ----
+    INSTALL_RUN_MARK: INSTALL_RUN_METRIC,
+    # ---- end iuf c2 ----
 }
 
 
