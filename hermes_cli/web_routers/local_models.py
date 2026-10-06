@@ -397,8 +397,8 @@ def _assign_default(job: Dict[str, Any], model_id: str) -> None:
 
 
 # ── downloads: ranged parallel streams ───────────────────────
-def _hf_url(repo: str, path: str) -> str:
-    return f"https://huggingface.co/{repo}/resolve/main/{path}"
+def _hf_url(repo: str, path: str, revision: str = "main") -> str:
+    return f"https://huggingface.co/{repo}/resolve/{revision}/{path}"
 
 
 def _model_id_for(gguf: Path) -> str:
@@ -418,8 +418,9 @@ def _variant_files_on_disk(model_id: str) -> "list[Path]":
 
 def _download_plan(entry, variant) -> list:
     """Everything a variant needs: split parts + mmproj/draft/MTP head assets, as (url, dest, bytes) tuples."""
-    plan = [(_hf_url(entry.repo, a.path), bootstrap.models_dir() / a.local_name, a.size_bytes) for a in variant.files]
-    plan += [(_hf_url(a.repo or entry.repo, a.path), bootstrap.assets_dir() / a.local_name, a.size_bytes)
+    plan = [(_hf_url(entry.repo, a.path, a.revision), bootstrap.models_dir() / a.local_name, a.size_bytes)
+            for a in variant.files]
+    plan += [(_hf_url(a.repo or entry.repo, a.path, a.revision), bootstrap.assets_dir() / a.local_name, a.size_bytes)
              for a in (entry.mmproj, entry.draft, entry.mtp_head) if a is not None]
     return plan
 

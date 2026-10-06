@@ -27,15 +27,15 @@ ENTRY = CatalogEntry(
     id="head-model", display_name="Head Model", description="", repo="org/Head-Model-GGUF",
     variants=(BUILD,), n_ctx_train=262144, full_layers=12, recurrent_layers=36, per_layer_f16=2048,
     moe=True, n_vocab=248320, mtp_draft_depth=3,
-    mtp_head=AssetFile("mtp-Head-Model-Q8_0.gguf", 4 * GIB, repo="other/Head-Model-GGUF"))
+    mtp_head=AssetFile("mtp-Head-Model-Q8_0.gguf", 4 * GIB, repo="other/Head-Model-GGUF", revision="0123abc"))
 
 
 def test_the_head_downloads_with_the_model_from_its_own_repo_and_is_priced_before_download():
     without_head = replace(ENTRY, mtp_head=None)
 
     urls = [url for url, _, _ in local_models._download_plan(ENTRY, BUILD)]
-    assert "https://huggingface.co/other/Head-Model-GGUF/resolve/main/mtp-Head-Model-Q8_0.gguf" in urls
-    assert all("/org/Head-Model-GGUF/" in url for url in urls[:2])
+    assert "https://huggingface.co/other/Head-Model-GGUF/resolve/0123abc/mtp-Head-Model-Q8_0.gguf" in urls
+    assert all("/org/Head-Model-GGUF/resolve/main/" in url for url in urls[:2])
     assert ENTRY.mtp_capable and not without_head.mtp_capable
     with_plan = ENTRY.launch_plan(BUILD, UNIFIED_128)
     without_plan = without_head.launch_plan(BUILD, UNIFIED_128)
