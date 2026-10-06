@@ -101,7 +101,7 @@ def initiate_setup_prelude(message, surface: str, tools, history):
     so_far = _opening_so_far(history)
     if so_far is None or {"name", "accent"} <= so_far[1].keys():
         return None
-    return _opening(initiate_setup_facts.suggested_name(), *so_far)
+    return _opening(*so_far)
 
 
 def intro_resends(prompt: str) -> bool:
@@ -113,17 +113,18 @@ def intro_resends(prompt: str) -> bool:
     return prompt.startswith(HEADER) and onboarding_eligible() and read_state().get("intro") == "unseen"
 
 
-def _opening(suggested: str | None, said: set, replies: dict):
+def _opening(said: set, replies: dict):
     reply = replies.get("name")
     if reply is None:
-        # ``options`` is required by the tool schema; the history must carry it even when empty.
-        card = {"kind": "question", "question": NAME_QUESTION,
-                "options": [{"id": "suggested", "label": suggested}] if suggested else [], "multi_select": False}
+        # ``options`` is required by the tool schema. setup_choose adds the account's name as a row itself, so the
+        # saved call never carries it.
+        card = {"kind": "question", "question": NAME_QUESTION, "options": [], "multi_select": False}
         reply = _json_object((yield "" if INTRO in said else INTRO, "setup_choose", card))
     if "accent" in replies:
         return
     picked = reply.get("picked")
-    name = (suggested or "") if picked == "suggested" else picked.strip() if isinstance(picked, str) else ""
+    label = reply.get("label") if isinstance(reply.get("label"), str) else ""
+    name = label if picked == "suggested" else picked.strip() if isinstance(picked, str) else ""
     line = f"Good to meet you, {name}." if name else "Good to meet you."
     accent = {"kind": "accent", "question": "Which colour?", "options": [], "multi_select": False}
     yield "" if line in said else line, "setup_choose", accent

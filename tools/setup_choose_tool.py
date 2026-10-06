@@ -198,6 +198,15 @@ _APP_FILLED: dict[str, Callable[[dict], dict]] = {
 _APP_ROWS = frozenset({"tour", "machine_use", "fork"})
 
 
+def _name_rows() -> Optional[list]:
+    # The account's full name stays on this computer: it is added here, after the model's call was saved, so the
+    # model sees it only in the result when the user picks it.
+    from agent.initiate_setup_facts import suggested_name
+
+    name = suggested_name()
+    return [{"id": "suggested", "label": name}] if name else None
+
+
 def _connectors_closed() -> Optional[str]:
     from tools.connectors.gateway.config import connectors_available, load_config
 
@@ -242,6 +251,7 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
     payload = {"kind": kind, "question": text, "options": normalized,
                "multi_select": bool(multi_select) and (normalized is not None or kind != "question")}
     card = _card(kind, text, payload["multi_select"], normalized)
+    from agent.initiate_setup_prompt import NAME_QUESTION
     from hermes_cli.setup_profile import read_cards, record_cards
     try:
         cards = read_cards(session_id) if session_id else {}
@@ -253,6 +263,8 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
             return json.dumps({"outcome": "no_answer", "picked": None, "notice": closed,
                                "next": _THEN[kind](cards, None)}, ensure_ascii=False)
         payload.update(_APP_FILLED[kind](cards) if kind in _APP_FILLED else {})
+        if kind == "question" and text == NAME_QUESTION:
+            payload.update(options=_name_rows(), multi_select=False)
         reply = callback(payload)
         result = _result(reply, payload["options"])
         extra, state = _follow_up(kind, card, result, payload["options"], cards)

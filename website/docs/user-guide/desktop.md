@@ -259,7 +259,7 @@ First-run onboarding has been redesigned on a unified overlay design system, and
 
 #### What the setup chat knows about your computer
 
-The setup chat's first message carries a short block of facts, so it can name your computer and offer first tasks that fit it: the OS and its version, CPU, RAM, GPU class, whether it is a Spark, your full name from the account record (offered as a suggestion on the name card) and your language. The block goes to the inference provider that the setup chat uses and stays in that chat's history. Nothing else on the computer is read for setup, and nothing is stored. With a remote backend, the facts describe the remote machine, not the computer in front of you.
+The setup chat's first message carries a short block of facts, so it can name your computer and offer first tasks that fit it: the OS and its version, CPU, RAM, GPU class, whether it is a Spark, and your language. The block goes to the inference provider that the setup chat uses and stays in that chat's history. The name card offers your full name from the account record, but the name stays on this computer unless you pick it. Nothing else on the computer is read for setup, and nothing is stored. With a remote backend, the facts describe the remote machine, not the computer in front of you.
 
 #### Per-profile settings: the "Applies to" scope
 

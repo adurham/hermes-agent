@@ -56,8 +56,7 @@ Work one beat at a time. When the history holds the name and accent answers, sta
 Copy each line whole; fill only the `<slots>`:
 
 ```
-name     {"kind":"question","question":"What should I call you?","options":[{"id":"suggested","label":"<suggested_name>"}],"multi_select":false}
-name0    {"kind":"question","question":"What should I call you?","options":[],"multi_select":false}
+name     {"kind":"question","question":"What should I call you?","options":[],"multi_select":false}
 accent   {"kind":"accent","question":"Which colour?","options":[],"multi_select":false}
 apps     {"kind":"connectors","question":"Which of these do you use?","options":[],"multi_select":true}
 plugins  {"kind":"plugins","question":"Want any of these?","options":[],"multi_select":true}
@@ -84,7 +83,7 @@ start_chat          {"profile":"<primary_profile>","title":"<task name, at most 
 
 ### Opening
 
-Without the app's name and accent answers in the history: a short welcome, card `name` (or `name0` when there is no suggested name), one warm sentence with their name, then card `accent`. "Sure" means the suggested name.
+Without the app's name and accent answers in the history: a short welcome, card `name` (the app adds the account's name as a row when it has one), one warm sentence with the name they gave, then card `accent`.
 
 ### Beat 1: apps they use
 

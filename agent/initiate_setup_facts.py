@@ -88,7 +88,7 @@ def _suggested_name(login: str, full: str) -> str | None:
 
 
 def suggested_name() -> str | None:
-    """The desktop's name card offers it before the first model call."""
+    """The row ``setup_choose`` adds to the name card. It stays on this computer unless the user picks it."""
     return _suggested_name(*_account())
 
 
@@ -170,7 +170,9 @@ def _machine_kind(os_family: str, spark: bool) -> str:
 
 
 def facts() -> dict:
-    """The facts the ``/initiate-setup`` turn sends, read as they are. A key that was not measured is left out."""
+    """The facts the ``/initiate-setup`` turn sends, read as they are. A key that was not measured is left out.
+    The account's full name is not one of them: ``setup_choose`` adds it to the name card itself, so it reaches the
+    model only when the user picks it."""
     os_family, arch, gpu, cpu = host.os_family(), host.native_arch(), host.gpu_class(), host.cpu_model()
     ram = host.ram_total_bytes()
     spark = _is_spark(os_family, arch, gpu, cpu)
@@ -190,7 +192,6 @@ def facts() -> dict:
         "machine_kind": _machine_kind(os_family, spark),
         "has_nvidia_gpu": gpu == "nvidia",
         "is_spark": spark,
-        "suggested_name": _suggested_name(*_account()),
         "locale": _locale(),
     }
     return {key: value for key, value in block.items() if value not in (None, "")}
