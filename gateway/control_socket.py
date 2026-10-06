@@ -131,7 +131,9 @@ class GatewayControlServer:
         if home is None:
             from gateway.status import _get_process_hermes_home
             home = _get_process_hermes_home()
-        self._home = Path(home)
+        # The real directory, as clients canonicalize it: the peer check below refuses any
+        # symlinked component, so an unresolved symlinked ~/.hermes would never mint tickets.
+        self._home = Path(home).resolve()
         self.ticket_store = None
         self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
