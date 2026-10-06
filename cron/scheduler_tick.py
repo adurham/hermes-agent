@@ -57,6 +57,8 @@ def _tick_admitted(
             reconcile_pending(allow_connect=False)
         else:
             reconcile_pending()
+        from cron.bot_chat_legacy import drain_legacy_pending
+        drain_legacy_pending()
         _sched._maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
