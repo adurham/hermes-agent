@@ -120,6 +120,108 @@ def test_no_vs16_in_pt_rendered_chrome_strings():
     )
 
 
+def test_no_sequence_machinery_in_chrome_strings():
+    """The full banned set (ZWJ, VS-15/16, keycaps, RIs, skin tones, tags, bidi).
+
+    Broader than VS-16 alone: every one of these can change painted width
+    relative to pt's per-codepoint model, or reorder the grid. Dynamic text is
+    normalized through them at runtime (``normalize_for_chrome``); static
+    chrome may contain none. See hermes_cli/portable_glyphs.py.
+    """
+    from hermes_cli.portable_glyphs import BANNED_CODEPOINTS
+
+    offenders: list[str] = []
+    for rel in _CHROME_FILES:
+        p = _REPO_ROOT / rel
+        if not p.exists():
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        docs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                ds = ast.get_docstring(node, clean=False)
+                if ds is not None:
+                    docs.add(ds)
+        scrollback = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _is_printish(node):
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        scrollback.add((sub.lineno, sub.col_offset))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if node.value in docs:
+                continue
+            if (node.lineno, node.col_offset) in scrollback:
+                continue
+            for ch in node.value:
+                cp = ord(ch)
+                # A lone banned codepoint literal is a sanitizer argument
+                # (``replace("\ufe0f", "")`` etc.), never emitted content.
+                if node.value == ch and cp in BANNED_CODEPOINTS:
+                    continue
+                if cp in BANNED_CODEPOINTS:
+                    offenders.append(f"{p.name}:{node.lineno}: U+{cp:04X} in {node.value[:50]!r}")
+                    break
+    assert not offenders, (
+        "Sequence/format codepoints in chrome strings change painted width vs "
+        "pt's model (or reorder the grid) — the corruption class this file "
+        "guards. Offenders:\n" + "\n".join(offenders)
+    )
+
+
+def test_chrome_codepoints_are_allowlisted():
+    """Every non-ASCII chrome codepoint must be a deliberate allowlist entry.
+
+    Inverted enforcement (per external design review): instead of banning one
+    bad shape at a time, chrome may only use codepoints from
+    ``PORTABLE_EXTRA_CODEPOINTS`` — each with a class rationale — so a future
+    glyph that diverges on some terminal cannot slip in un-reviewed. The
+    width-engine matrix (test_width_engine_matrix.py) re-verifies each entry's
+    widths; this is the front door.
+    """
+    from hermes_cli.portable_glyphs import is_portable_codepoint
+
+    offenders: list[str] = []
+    for rel in _CHROME_FILES:
+        p = _REPO_ROOT / rel
+        if not p.exists():
+            continue
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        docs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                ds = ast.get_docstring(node, clean=False)
+                if ds is not None:
+                    docs.add(ds)
+        scrollback = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _is_printish(node):
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                        scrollback.add((sub.lineno, sub.col_offset))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            if node.value in docs:
+                continue
+            if (node.lineno, node.col_offset) in scrollback:
+                continue
+            for ch in node.value:
+                if ord(ch) < 0x80:
+                    continue
+                if not is_portable_codepoint(ch):
+                    offenders.append(f"{p.name}:{node.lineno}: {ch!r} (U+{ord(ch):04X}) "
+                                     f"in {node.value[:40]!r}")
+                    break
+    assert not offenders, (
+        "Chrome uses non-ASCII codepoints outside the portable allowlist "
+        "(hermes_cli/portable_glyphs.py). A new chrome glyph = deliberate "
+        "allowlist edit + width-matrix pass. Offenders:\n" + "\n".join(offenders)
+    )
+
+
 # ── behavioral: the status bar (the surface the corruption appeared on) ─────
 
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin as _CLIStatusBarMixin
