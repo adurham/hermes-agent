@@ -1,15 +1,15 @@
 name: nexus
 repo: https://github.com/Neboy72/nexus-memory
-sha: 6f464f723421d7e36352413b86683d3f8310d4a3
+sha: ec3a21c51331fb0482192c12f17e6e25ebd70e60
 subdir: plugins/memory/nexus
 version: "0.22.12"
-description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Runs fully local with Ollama or sentence-transformers embeddings; cloud embedders (Voyage, OpenAI, Google, Jina) are opt-in via their own API keys, and query rewriting plus paid consolidation stations stay off until enabled. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. See the README for the complete list of network paths."
+description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Runs fully local with Ollama or sentence-transformers embeddings; cloud embedders (Voyage, OpenAI, Google, Jina) are opt-in via their own API keys, and query rewriting plus paid consolidation stations stay off until enabled. Note that an embedding key already present in the environment is auto-detected, so the README's egress section is the authoritative list of what can leave the machine. Hermes and any MCP-connected agent share one collection, so they read and write the same memories."
 maintainer: Neboy72
 tier: community
 category: memory
 requires_hermes: ">=0.19"
-docs_url: https://github.com/Neboy72/nexus-memory/blob/6f464f723421d7e36352413b86683d3f8310d4a3/plugins/memory/nexus/README.md
-image: https://raw.githubusercontent.com/Neboy72/nexus-memory/6f464f723421d7e36352413b86683d3f8310d4a3/docs/images/nexus-logo-square.png
+docs_url: https://github.com/Neboy72/nexus-memory/blob/ec3a21c51331fb0482192c12f17e6e25ebd70e60/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/ec3a21c51331fb0482192c12f17e6e25ebd70e60/docs/images/nexus-logo-square.png
 capabilities:
   provides_tools:
     - nexus_recall
