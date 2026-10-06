@@ -85,7 +85,8 @@
         "repo": "ggml-org/Qwen3.8-Flash-Next-GGUF",
         "path": "mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
         "size_bytes": 4137429280,
-        "revision": "052beeaca7bec4a303e59cc7bc630c4f3a1b845d"
+        "revision": "052beeaca7bec4a303e59cc7bc630c4f3a1b845d",
+        "local": "mtp-Qwen3.8-Flash-Next-ggml-org-Q8_0.gguf"
       },
       "min_engine": "b11370",
       "quality": 95,
