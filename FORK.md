@@ -72,8 +72,16 @@ focus view, new guard) + dock/monitor/timer-rollover batch green (1 pre-existing
 `test_process_dock.py::test_monitor_controls_stop_processes_and_never_steer_them` — SIGKILL timing,
 reproduces identically on the stashed base, unrelated).
 
-**Upstreamable:** no — upstream still ships the `🗜️` badge; this is fork doctrine (same rationale as the
-tool-emoji strip). If upstream ever strips it, drop this delta at sync.
+**Upstreamable / upstream status (checked 2026-10-06):** the badge half is **already in flight upstream** —
+issue **#120588** (Zeus-Deus, 2026-09-23) documents the same VS16 width-mismatch root cause (with its own
+mini VT-grid repro), and open PRs **#122539** + **#120593** carry the same badge fix (badge `🗜️`→`🗜` in
+`_status_bar_segments` + test updates — identical in substance to `248691e172`). A third PR, **#122612**,
+was closed by its own author in favor of #122539: "same files, same direction, opened first." Per the
+fork's no-competing-PRs rule (upstreaming-fork-patches Step 0-hard-rule), nothing was filed; our 14 open
+PRs / 0 merged also argue against adding queue load. When #122539 or #120593 lands and is synced, DROP the
+badge delta (it becomes a no-op); the four-layer machinery stays — it's fork doctrine (heavier than
+upstream would take as-is; ingress normalization changes visible output). If BOTH open PRs die unmerged,
+a filing window reopens — the badge patch + tests here are ready to cherry-pick onto upstream/main.
 
 **Four-layer defense (commit `fb7912a866`, same day — per external design review):** the class is now
 structurally guarded, not instance-by-instance:
