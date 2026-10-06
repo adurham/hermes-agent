@@ -44,6 +44,29 @@ Scrollback strings (print/_cprint) are exempt — no pt grid to desync. Docs (`w
 U+FE0F, badge present as bare `🗜 2`). Teeth proven: re-inserting the VS-16 badge fails all 3.
 `test_cli_status_bar.py` glyph assertions updated to the bare codepoint (4 sites).
 
+**Class audit (same day, commits `3393319bf2` + `0bf2f1ca94`):** swept every pt-rendered surface for
+glyphs whose painted width diverges from pt's model. Static constants were clean after the badge fix;
+the survivors were all RUNTIME ingress paths carrying model/user text into pt windows whose diff
+repaints then desync — each now sanitized at its single chokepoint:
+
+- `cli_subagent_monitor._clip` — dock/roster rows (goals, queue previews, commands, last-output
+  details) carry live elapsed timers right of that text.
+- `cli_status_bar_mixin._render_spinner_text` — think-stream previews / tool rows / thinking echoes
+  (its own `(4m17s)` timer sits right of the text).
+- `cli_status_bar_mixin._status_title_badge` — model-generated session titles pinned at the bar edge.
+- `cli_render._append_panel_line` + `cli_tui_mixin._Panel.__init__` — modal panel content and titles
+  (approval descriptions/commands, clarify questions/answers, sudo text).
+- `cli_render._ansi_drop_cells` / `_line_rows` — replay arithmetic now measures with display_cwidth
+  (sequence-aware drop: base+VS16 glued), was raw get_cwidth / pt's fragment_list_width.
+Scrollback prints (Rich console / `_cprint`) confirmed exempt (no pt grid). ui-tui uses Ink
+`stringWidth` (own tables, `cmp N` text badge — no divergent glyph); Desktop renders its own React
+(the terminal pane is xterm.js's problem, already documented). Skins/config checked (no overrides).
+
+Guard file now 10 tests (static sweep + status bar ×2 + dock clip + dock activity + spinner + title
+badge + panels ×2 + replay math). Blast radius 142+65 focused tests green; the one
+`test_process_dock.py::test_monitor_controls_stop_processes_and_never_steer_them` failure is the same
+pre-existing SIGKILL-timing flake (reproduces identically on the stashed base, unrelated).
+
 **Verification:** 96 passed / 2 skipped across the blast radius (status bar, approval UI, slash-confirm,
 focus view, new guard) + dock/monitor/timer-rollover batch green (1 pre-existing flake in
 `test_process_dock.py::test_monitor_controls_stop_processes_and_never_steer_them` — SIGKILL timing,
