@@ -742,6 +742,8 @@ function Fail([string]$msg, [string]$Class = "other") {
 # a later start only while shared metrics collection is on, and deletes it
 # unreported when collection is off. Best effort: never fails the install.
 function Write-InstallReceipt([string]$Outcome, [string]$FailedStage, [string]$Class) {
+    if ($script:InstallReceiptWritten) { return }
+    $script:InstallReceiptWritten = $true
     try {
         $dir = Join-Path $HermesHome "telemetry\shared_metrics\pending_installs"
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -1385,6 +1387,7 @@ if ($Stage) {
 # manifest prints, so -IncludeDesktop inserts desktop here too.
 $script:InstallStarted = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $script:InstallStage = "prerequisites"
+$script:InstallReceiptWritten = $false
 try {
     Write-Banner
     foreach ($s in $Stages) {
@@ -1400,4 +1403,7 @@ try {
     if ($script:RunAsFile) { exit 1 }
     # Under iex: report failure without closing the user's window.
     $global:LASTEXITCODE = 1
+} finally {
+    # Ctrl-C stops the run without reaching catch; finally still runs (no-op after a receipt).
+    Write-InstallReceipt "failed" $script:InstallStage "interrupted"
 }

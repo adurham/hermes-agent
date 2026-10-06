@@ -35,6 +35,7 @@ SKIP_BROWSER=false
 SKIP_COMPUTER_USE=false
 INSTALL_LADDER=false
 INSTALL_STARTED=0
+INSTALL_RUN_ID=""
 FAILURE_CLASS=""
 
 while [ $# -gt 0 ]; do
@@ -107,13 +108,12 @@ fail() { STAGE_REASON="$1"; FAILURE_CLASS="${2:-other}"; log_error "$1"; exit 1;
 # later start only while shared metrics collection is on, and deletes it
 # unreported when collection is off. Best effort: never fails the install.
 write_install_receipt() {
-    # $1 outcome, $2 failed stage, $3 failure class
+    # $1 outcome, $2 failed stage, $3 failure class. One file per run: the first writer wins.
     {
-        local dir="$HERMES_HOME/telemetry/shared_metrics/pending_installs" id
-        id="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
-        [ "${#id}" -eq 32 ] || id="$(printf '%08x%08x%08x' "$RANDOM$RANDOM" "$$" "$(date +%s)")"
-        mkdir -p "$dir" && printf '{"id":"%s","installer":"install_sh","outcome":"%s","failed_stage":"%s","failure_class":"%s","started_at":%s,"finished_at":%s}\n' \
-            "$id" "$1" "$2" "$3" "${INSTALL_STARTED:-0}" "$(date +%s)" > "$dir/.$id.tmp" \
+        local dir="$HERMES_HOME/telemetry/shared_metrics/pending_installs" id="$INSTALL_RUN_ID"
+        [ -n "$id" ] && [ ! -e "$dir/$id.json" ] && mkdir -p "$dir" \
+            && printf '{"id":"%s","installer":"install_sh","outcome":"%s","failed_stage":"%s","failure_class":"%s","started_at":%s,"finished_at":%s}\n' \
+                "$id" "$1" "$2" "$3" "$INSTALL_STARTED" "$(date +%s)" > "$dir/.$id.tmp" \
             && mv -f "$dir/.$id.tmp" "$dir/$id.json"
     } >/dev/null 2>&1 || :
 }
@@ -399,9 +399,8 @@ stage_result() {
     if [ "$JSON" = true ]; then
         json_frame "$ok" "$STAGE" "${STAGE_SKIPPED:-false}" "$reason"
     fi
-    if [ "$ok" = false ] && [ "${INSTALL_LADDER:-false}" = true ]; then
-        # 130/143: Ctrl-C or SIGTERM while a stage ran, not a stage defect.
-        case "$code" in 130|143) [ -n "${FAILURE_CLASS:-}" ] || FAILURE_CLASS=interrupted ;; esac
+    # 130/143 (Ctrl-C, SIGTERM) are recorded by the ladder as `interrupted`.
+    if [ "$ok" = false ] && [ "${INSTALL_LADDER:-false}" = true ] && [ "$code" -ne 130 ] && [ "$code" -ne 143 ]; then
         write_install_receipt failed "${STAGE//-/_}" "${FAILURE_CLASS:-other}"
     fi
 }
@@ -926,6 +925,8 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     elif [ -z "$STAGE" ]; then
         INSTALL_LADDER=true
         INSTALL_STARTED="$(date +%s)"
+        INSTALL_RUN_ID="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || INSTALL_RUN_ID=""
+        [ "${#INSTALL_RUN_ID}" -eq 32 ] || INSTALL_RUN_ID="$(printf '%08x%08x%08x%08x' "$RANDOM$RANDOM" "$$" "$INSTALL_STARTED" "$RANDOM")"
         trap '[ "$?" -eq 0 ] || write_install_receipt failed prerequisites "${FAILURE_CLASS:-other}"' EXIT
     fi
     check_platform
@@ -939,11 +940,15 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     # No --stage: run the whole ladder — the same authoritative list the
     # manifest prints, so --include-desktop inserts desktop here too.
     print_banner
+    # Ctrl-C / SIGTERM (a closed terminal) end the install mid-stage: one `interrupted` receipt.
+    trap 'write_install_receipt failed "${s//-/_}" interrupted; exit 130' INT
+    trap 'write_install_receipt failed "${s//-/_}" interrupted; exit 143' TERM
     for s in $(stage_names); do
         run_stage "$s"
         rc=$?
-        [ "$rc" -eq 0 ] || exit "$rc"
+        case "$rc" in 0) ;; 130|143) write_install_receipt failed "${s//-/_}" interrupted; exit "$rc" ;; *) exit "$rc" ;; esac
     done
+    trap - INT TERM
     write_install_receipt success none none
     print_path_reload_hint
 fi

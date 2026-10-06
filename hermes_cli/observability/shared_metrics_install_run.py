@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 from pathlib import Path
@@ -68,21 +67,20 @@ def install_run_fields(receipt: Any) -> dict[str, str] | None:
     return fields
 
 
-def _claim_receipt_id(home: Path, receipt_id: str) -> Path | None:
-    """The new latch for ``receipt_id``, or None when this profile already counted it."""
-    directory = home / "telemetry" / "shared_metrics" / RECORDED_DIRNAME
-    directory.mkdir(parents=True, exist_ok=True)
-    latch = directory / receipt_id
+def _recorded_latch(home: Path, receipt_id: str) -> Path:
+    return home / "telemetry" / "shared_metrics" / RECORDED_DIRNAME / receipt_id
+
+
+def _mark_recorded(latch: Path) -> None:
+    """Latch a receipt id AFTER its row is saved: a process that dies between the latch and the save
+    (a short-lived start whose reporter thread is cut off at exit) must not drop the install."""
     try:
-        os.close(os.open(latch, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-    except FileExistsError:
-        return None
-    try:
-        for stale in sorted(directory.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[_RECORDED_KEEP:]:
+        latch.parent.mkdir(parents=True, exist_ok=True)
+        latch.touch()
+        for stale in sorted(latch.parent.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[_RECORDED_KEEP:]:
             stale.unlink(missing_ok=True)
-    except OSError:  # a concurrent prune won; the next claim prunes again
+    except OSError:  # a concurrent prune won; the next latch prunes again
         pass
-    return latch
 
 
 def report_pending_installs(home: Path) -> None:
@@ -109,13 +107,14 @@ def report_pending_installs(home: Path) -> None:
             if fields is None or not isinstance(receipt, dict):  # out of contract or unreadable
                 settle_claim(claimed, path, True)
                 continue
-            latch = _claim_receipt_id(home, receipt["id"])
-            if latch is None:  # counted before; only the delete had failed
+            latch = _recorded_latch(home, receipt["id"])
+            if latch.exists():  # counted before; only the delete had failed
                 settle_claim(claimed, path, True)
                 continue
+            # The claim rename already keeps concurrent starts apart; a busy store keeps the receipt.
             saved = emit_saved([(contract.INSTALL_RUN_MARK, fields)]) == 1
-            if not saved:
-                latch.unlink(missing_ok=True)  # nothing landed: the next start counts it
+            if saved:
+                _mark_recorded(latch)
             settle_claim(claimed, path, saved)
     except Exception:
         logger.debug("Pending install receipts not reported", exc_info=True)
