@@ -190,6 +190,11 @@ def retire_agent(agent):
     """A settled admission is a turn boundary, not the end of the session: the owner's
     in-process agent keeps its background processes, sandbox and browser between turns
     (release_clients), so the worker must too. Only memory extraction is turn-final work."""
+    # A boundary task queued this turn (LLM-bound extraction) would be cancelled by the
+    # provider shutdown's short drain; give it the same bounded head start cli_shutdown does.
+    manager = getattr(agent, '_memory_manager', None)
+    if manager is not None:
+        manager.flush_pending(timeout=10)
     messages = getattr(agent, '_session_messages', None)
     agent.shutdown_memory_provider(messages if isinstance(messages, list) else None)
     agent.release_clients()
