@@ -796,18 +796,23 @@ def _probe_failure_reason(exc: BaseException) -> str:
 
 def probe_failure_class(exc: BaseException) -> str:
     """Extension-install class for a failed MCP probe, from the exception TYPE (the same tests
-    :func:`_probe_failure_next_step` uses), never its message."""
-    tagged = getattr(exc, "failure_class", None)
-    if isinstance(tagged, str) and tagged:
+    :func:`_probe_failure_next_step` uses), never its message. Never raises: an exception whose own
+    attribute hooks raise reads ``connect_failed`` instead of replacing the user's error."""
+    from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
+    if tagged := tagged_failure_class(exc):
         return tagged
     from tools.mcp_tool_errors import _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
     from tools.mcp_tool_node_abi import NodeAbiMismatchError
-    root = _unwrap_exception_group(exc)
-    if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
-        return "auth_required"
-    # A missing stdio command (FileNotFoundError) or a native module built for another Node.
-    if any(isinstance(node, (FileNotFoundError, NodeAbiMismatchError)) for node in _iter_exception_nodes(exc)):
-        return "server_start_failed"
+    try:
+        root = _unwrap_exception_group(exc)
+        if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
+            return "auth_required"
+        # A missing stdio command (FileNotFoundError) or a native module built for another Node.
+        if any(isinstance(node, (FileNotFoundError, NodeAbiMismatchError)) for node in _iter_exception_nodes(exc)):
+            return "server_start_failed"
+    except Exception:  # a hook on the exception raised; the type tests could not finish
+        logger.debug("MCP probe failure not classified", exc_info=True)
     return "connect_failed"
 
 

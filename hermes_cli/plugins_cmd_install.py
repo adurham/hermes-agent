@@ -55,6 +55,16 @@ def _pc():
     return plugins_cmd
 
 
+class _ConsentRefusal(str):
+    """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
+    so publication classifies the refusal without matching the copy."""
+
+    def __new__(cls, text: str, failure_class: str) -> "_ConsentRefusal":
+        refusal = super().__new__(cls, text)
+        refusal.failure_class = failure_class
+        return refusal
+
+
 def _install_plugin_python_deps(
     manifest: dict, target: Path, console, *, assume_yes: bool = False
 ) -> tuple[bool, Optional[str]]:
@@ -78,7 +88,7 @@ def _install_plugin_python_deps(
         declaration = read_python_declaration(target)
         deps = declaration.install_requirements
     except Exception as exc:
-        return False, f"invalid Python dependency declaration: {exc}"
+        return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
     has_python = declaration.is_member
     has_package_json = (target / "package.json").is_file()
     if not has_python and not has_package_json:
@@ -136,13 +146,13 @@ def _consent_python_deps(
             "[dim]Non-interactive install — skipping dependency install. "
             "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
         )
-        return False, "dependency install skipped (non-interactive)"
+        return False, _ConsentRefusal("dependency install skipped (non-interactive)", "non_interactive")
     if not _ask_yes_no(("python", plugin_name, deps), "  Prepare these with Hermes through PM now? [y/N]: ", console):
         console.print(
             "[dim]Skipped — run `hermes plugins enable` when ready "
             "to prepare them.[/dim]\n"
         )
-        return False, "dependency install declined"
+        return False, _ConsentRefusal("dependency install declined", "deps_declined")
 
     # Consent only — the python-deps resolution itself runs inside the ONE
     # admission transaction at enable-commit time (C13): env + config move
@@ -474,8 +484,10 @@ def _publish_failure_class(exc: BaseException) -> str:
     keeps the class plugins_transaction tagged, a filesystem error keeps its kind, and everything
     else PM raised (InstallError, ResolutionConflict, AdmissionRefused, a worker error) is a
     dependency failure."""
-    tagged = getattr(exc, "failure_class", None)
-    if isinstance(exc, _pc().PluginOperationError) and isinstance(tagged, str) and tagged != "other":
+    from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+
+    tagged = tagged_failure_class(exc) if isinstance(exc, _pc().PluginOperationError) else None
+    if tagged and tagged != "other":
         return tagged
     if isinstance(exc, PermissionError):
         return "permission"

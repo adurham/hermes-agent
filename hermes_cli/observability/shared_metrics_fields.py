@@ -200,14 +200,23 @@ def extension_install_fields(
 # ---- iuf c1 ----
 # Exceptions from these top-level packages are transport failures, whatever their class name.
 _NETWORK_MODULES = frozenset({"aiohttp", "h11", "h2", "httpcore", "httpx", "requests", "ssl", "urllib3", "websockets"})
-_SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}  # = tools.skills_hub_install._SOURCE_ID_ALIASES
+
+
+def tagged_failure_class(error: object) -> str | None:
+    """The ``failure_class`` a raise site set, read statically: an attribute hook on a third-party
+    exception must not raise from a classifier and replace the user's error."""
+    import inspect
+
+    tagged = inspect.getattr_static(error, "failure_class", None)
+    return tagged if isinstance(tagged, str) and tagged else None
 
 
 def exception_failure_class(error: BaseException) -> str:
     """Why a raised install failed, from the exception alone: the class its raise site tagged
-    (``failure_class`` attribute), else its TYPE. Never reads the message."""
-    tagged = getattr(error, "failure_class", None)
-    if isinstance(tagged, str) and tagged:
+    (``failure_class`` attribute), else its TYPE. Never reads the message, and never runs the
+    exception's own attribute hooks (a raising ``__getattr__`` or property reads by type)."""
+    tagged = tagged_failure_class(error)
+    if tagged:
         return tagged
     import socket
     import urllib.error
@@ -238,6 +247,9 @@ def extension_registry(kind: str, registry: Any) -> str:
     """The skills-hub adapter id for a skill row; plugin and MCP rows are ``none``."""
     if kind != "skill":
         return "none"
+    # The hub's own alias table (`--source skills.sh`); already imported by the install it records.
+    from tools.skills_hub_install import _SOURCE_ID_ALIASES
+
     value = _norm(registry) or "none"
     value = _SOURCE_ID_ALIASES.get(value, value)
     return value if value in contract.EXTENSION_REGISTRIES else "other"

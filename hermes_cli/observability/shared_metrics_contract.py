@@ -1151,7 +1151,22 @@ def counter_dimensions_are_valid(metric_name: str, dimensions: dict[str, Any]) -
             else value in contract[field]
         )
         for field in fields
+    ) and _extension_install_fields_agree(metric_name, dimensions)
+
+
+# ---- iuf c1 ----
+def _extension_install_fields_agree(metric_name: str, dimensions: dict[str, Any]) -> bool:
+    """Cross-field rule the per-field enums cannot state: an install row's ``failure_class`` is in
+    its kind's set and is ``none`` exactly on success; only skill rows name a registry."""
+    if metric_name != EXTENSION_INSTALL_METRIC or "failure_class" not in dimensions:
+        return True  # other metrics, and the pre-split shape without failure_class/registry
+    kind, failure_class = dimensions["kind"], dimensions["failure_class"]
+    return (
+        failure_class in EXTENSION_KIND_FAILURE_CLASSES[kind]
+        and (failure_class == "none") == (dimensions["outcome"] == "success")
+        and (kind == "skill" or dimensions["registry"] == "none")
     )
+# ---- end iuf c1 ----
 
 
 def _relay_metadata(

@@ -17,7 +17,7 @@ _SCHEMA = Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v
 
 
 def _schema_dimensions(metric: str) -> list[dict]:
-    schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
+    schema = json.loads(_SCHEMA.read_text(encoding="utf-8-sig"))
     (definition,) = (d for d in schema["$defs"].values() if d.get("properties", {}).get("name", {}).get("const") == metric)
     dims = definition["properties"]["dimensions"]
     return dims["oneOf"] if "oneOf" in dims else [dims]
@@ -138,3 +138,57 @@ def test_update_failure_class_reads_only_receipt_fields(receipt, expected):
     run, _ = update_metrics.update_receipt_fields(receipt)
     assert run["failure_class"] == expected
     assert contract.counter_dimensions_are_valid(contract.UPDATE_RUN_METRIC, run)
+
+
+class _HostileError(Exception):
+    """A third-party exception whose attribute hooks raise (a PM worker, an SDK under -W error)."""
+
+    def __getattr__(self, name):
+        raise RuntimeError("hostile getattr")
+
+
+def test_failure_classifiers_never_raise_on_an_exception_whose_attribute_hooks_raise():
+    """Invariant: classification is inert. The raise-site classifiers run outside the metrics guard
+    (collection on or off), so a raising hook must not replace the user's error, and the metric row
+    still records (as ``exception``) instead of being dropped."""
+    from hermes_cli.mcp_config import probe_failure_class
+    from hermes_cli.plugins_cmd_install import _publish_failure_class
+
+    assert _publish_failure_class(_HostileError("x")) == "deps_failed"
+    assert probe_failure_class(_HostileError("x")) == "connect_failed"
+    for kind in contract.EXTENSION_KINDS:
+        dims = fields.extension_install_fields(kind=kind, source="url", name=None, outcome="failed", error=_HostileError("x"))
+        assert dims["failure_class"] == "exception", kind
+        assert contract.counter_dimensions_are_valid(contract.EXTENSION_INSTALL_METRIC, dims)
+
+
+def test_contract_rejects_contradictory_extension_install_rows():
+    """Invariant: the validator enforces what the per-field enums cannot: a kind's own failure set,
+    ``none`` exactly on success, a registry only on skill rows. Pre-split rows still validate."""
+    ok = {"kind": "skill", "name": "custom", "outcome": "failed", "source": "hub", "failure_class": "ambiguous",
+          "registry": "github"}
+    assert contract.counter_dimensions_are_valid(contract.EXTENSION_INSTALL_METRIC, ok)
+    for bad in ({"kind": "plugin", "registry": "none"}, {"outcome": "success"}, {"failure_class": "none"},
+                {"kind": "mcp_server", "failure_class": "other"}):
+        assert not contract.counter_dimensions_are_valid(contract.EXTENSION_INSTALL_METRIC, {**ok, **bad}), bad
+    legacy = {key: ok[key] for key in ("kind", "name", "outcome", "source")}
+    assert contract.counter_dimensions_are_valid(contract.EXTENSION_INSTALL_METRIC, legacy)
+
+
+def test_a_declined_dependency_consent_carries_its_class_not_its_copy(monkeypatch):
+    """The refusal reason names its closed class where it is produced, so rewording the copy cannot
+    turn a decline into ``manifest_invalid``; the user still reads the same text."""
+    from types import SimpleNamespace
+
+    from hermes_cli import plugins_cmd_install
+
+    console = SimpleNamespace(print=lambda *a, **k: None)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    consented, reason = plugins_cmd_install._consent_python_deps("p", ("dep",), console)
+    assert (consented, reason) == (False, "dependency install skipped (non-interactive)")
+    assert fields.tagged_failure_class(reason) == "non_interactive"
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr(plugins_cmd_install, "_ask_yes_no", lambda *a: False)
+    assert fields.tagged_failure_class(plugins_cmd_install._consent_python_deps("p", ("dep",), console)[1]) == "deps_declined"
+
