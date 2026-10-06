@@ -84,12 +84,11 @@ def _reset_session_context_vars():
     _reset_all()
 
 
-@pytest.fixture
-def cron_owner(monkeypatch):
-    """Replace only the client transport with the production owner execution seam.
+def owner_execution_runner():
+    """The production owner execution seam as a ``run_canonical_job`` replacement.
 
-    This is not admission/RPC coverage. Tests requesting it exercise the real
-    scheduler under the exact owner-store identity and profile scope.
+    This is not admission/RPC coverage: the real scheduler runs under the exact owner-store
+    identity and profile scope. A plain function so a subprocess tick can install it too.
     """
     from gateway.session_contract import SessionRef
     from gateway.session_cron import current_execution, execute
@@ -130,5 +129,12 @@ def cron_owner(monkeypatch):
         finally:
             release(db)
 
+    return run
+
+
+@pytest.fixture
+def cron_owner(monkeypatch):
+    """Replace only the client transport with the production owner execution seam."""
+    run = owner_execution_runner()
     monkeypatch.setattr("cron.scheduler_authority.run_canonical_job", run)
     return run
