@@ -95,6 +95,10 @@ def main():
                                    admission_id=value['admission_id'], execution_generation=value['execution_generation'])
                 assert 'result' in result, result
             return answer['result']
+    # A dispatcher iterating a slug under a HERMES_KANBAN_DB pin resolves through the pin (the
+    # gateway's embedded dispatcher does the same); an unfenced explicit board= would bypass it.
+    pinned = kb.pin_first_board_resolution()
+    pinned.__enter__()
     try:
         with closing(connect(board='owned')) as conn:
             tid = kb.create_task(conn, title='RECOVERY_TASK', assignee='assigned' if mode == 'cross_profile' else 'default',
@@ -166,6 +170,7 @@ def main():
             assert not writes, writes
             receipt['client_canonical_writable_opens'] = len(writes)
     finally:
+        pinned.__exit__(None, None, None)
         peer.release.set()
         for child in clients:
             if child.poll() is None:
