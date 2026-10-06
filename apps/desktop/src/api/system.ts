@@ -188,11 +188,9 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
 // voice on its own gateway; omitted halves → the active scope. `provider`
 // (fork) bypasses the configured tts.provider for this call only — the pet's
 // own dedicated voice.
-export function speakText(
-  text: string,
-  owner?: OwnerScope & { provider?: string }
-): Promise<AudioSpeakResponse> {
+export function speakText(text: string, owner?: OwnerScope & { provider?: string }): Promise<AudioSpeakResponse> {
   const provider = owner?.provider
+
   return hermesApi<AudioSpeakResponse>({
     ...ownerScoped(owner),
     path: '/api/audio/speak',

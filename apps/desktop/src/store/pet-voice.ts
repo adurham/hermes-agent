@@ -34,7 +34,8 @@ export async function setPetVoiceEnabled(enabled: boolean): Promise<void> {
 
   try {
     const record = await getHermesConfigRecord()
-    const display = record.display && typeof record.display === 'object' ? (record.display as Record<string, unknown>) : {}
+    const display =
+      record.display && typeof record.display === 'object' ? (record.display as Record<string, unknown>) : {}
     const pet = display.pet && typeof display.pet === 'object' ? (display.pet as Record<string, unknown>) : {}
 
     await saveHermesConfig({

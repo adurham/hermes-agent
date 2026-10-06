@@ -3806,7 +3806,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
   // with Date.now() (the moment of the switch), so the statusbar's session
   // timer reset to ~0 every time you clicked a different session tab instead
   // of showing how long that session has actually been running.
-  it('sets the session timer from the stored session\'s real started_at, not the resume time (warm cache)', async () => {
+  it("sets the session timer from the stored session's real started_at, not the resume time (warm cache)", async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])
     }
@@ -3912,7 +3912,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(JSON.stringify(resumedState?.messages)).toContain('partial answer')
   })
 
-  it('sets the session timer from the stored session\'s real started_at, not the resume time (cold path)', async () => {
+  it("sets the session timer from the stored session's real started_at, not the resume time (cold path)", async () => {
     setSessions([storedSession({ id: 'stored-1', started_at: 54_321 })])
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {

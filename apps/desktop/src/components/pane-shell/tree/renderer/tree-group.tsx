@@ -696,11 +696,9 @@ export function TreeGroup({
                         // session drop language — link/stack/split); `false` defers
                         // to the generic pane move (the workspace tab on a fresh
                         // draft has no session to link).
-                        if (!(stripRef.current && chrome.tabDrag?.(
-                          e,
-                          onTap,
-                          { groupId: node.id, strip: stripRef.current }
-                        ))) {
+                        if (!(
+                          stripRef.current && chrome.tabDrag?.(e, onTap, { groupId: node.id, strip: stripRef.current })
+                        )) {
                           startPaneDrag(
                             paneId,
                             e,
