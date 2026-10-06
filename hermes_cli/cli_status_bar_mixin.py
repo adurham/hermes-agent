@@ -1268,7 +1268,13 @@ class CLIStatusBarMixin:
                 ttft_label = snapshot.get("avg_ttft_label") or ""
                 if ttft_label:
                     add("ttft", _DIM, f"⚡ {ttft_label} TTFT")
-            add_count("compressions", "compressions", "🗜️", self._compression_count_style)
+            # FORK: bare U+1F5DC, no VS-16. "🗜️" (U+1F5DC + U+FE0F) paints 2 cells in
+            # kitty/iTerm2 but scores 1 in prompt_toolkit's model (and, via its Unicode-11
+            # table, in xterm.js) — that model-vs-paint divergence strands diff-repaint
+            # cells to the right of the badge and composed the recurring "impossible
+            # timer" corruption ("⏱70s" beside a stopwatch at ~7 s; "80s" at 8 s). Bare
+            # base codepoints are 1 cell in every measured width table.
+            add_count("compressions", "compressions", "🗜", self._compression_count_style)
             if wide:
                 # FORK: per-turn context delta (Δ+Nk new / Δ+Nk cache) — wide tier only,
                 # exactly where the fork rendered it in both renderers.

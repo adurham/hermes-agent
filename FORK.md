@@ -3,6 +3,55 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
+
+**Problem (recurrence ~6 of the spinner/status-line timer saga):** screenshot showed the status bar's
+per-prompt stopwatch field reading `⏱70s` (glyph-verified: stopwatch + 7 + 0 + s in four adjacent cells,
+no space/no dot) while the turn was ~13 s old — a value the formatter provably cannot emit (it renders
+`⏱ 13s`, and 70 s would render `⏱ 1m 10s`, always a space after the glyph). User: "that should be 8
+seconds, not 80" + "still getting extra numbers thrown in".
+
+**Root cause (Fable consult + pt-internals reading + on-screenshot metrology):** the string isn't
+emitted by any formatter — it is **composed on the terminal grid** by stale-cell survival. The final
+screen state is a palimpsest no single frame can produce: `⏱`, `7`, `0`, `s` in four contiguous cells
+with no space, where every frame string has a space after the clock — and `7`+`0` adjacent is
+impossible from any frame (`⏱ 7s` has no `0`; `⏱ 10s` has `1`,`0`; the `0` itself is the seed frame's
+`⏲ 0s`). The only structural mechanism in prompt_toolkit that loses repaints is a model-vs-paint cell
+width divergence right of a changed cell: pt's renderer diffs its Screen model cell-by-cell and never
+rewrites a cell whose model content is unchanged, so if any glyph left of the timer paints a different
+advance than pt's width table says, cells to its right desync and stale digits survive beside fresh
+ones (the fork's documented history: "4m170s", "wrapped continuation overlaps the row below" — same
+class). The compressions badge on this bar (upstream's `"🗜️"`) is a U+FE0F sequence: `get_cwidth`=1 vs
+`display_cwidth`=2, and this repo's own docs record xterm.js's Unicode-11 table disagreeing on the same
+sequences — the exact cross-terminal disagreement this fork already bans for its tool emoji
+(`tests/agent/test_display_cwidth_vs16.py`), but the chrome strings themselves were never covered.
+
+**Measured proof:** screenshot cell pitch is exactly 17.0 px (segment widths: ⚙-seg 102px = 6.0 cells,
+2.6d-seg 119px = 7.0, Δ-seg 238px = 14.0 — all integral and matching their model counts). The
+compressions-badge segment measures 119px = **7.0 physical cells where the model string says 6** — the
++1 VS-16 divergence, isolated to exactly that glyph, with every glyph to its right (the `2`, the
+separators, the stopwatch field) painting one cell right of its model position.
+
+**Fix (the fork's established doctrine — bare base codepoints in pt-rendered chrome):**
+- `hermes_cli/cli_status_bar_mixin.py`: compressions badge `"🗜️"` → `"🗜"`.
+- `hermes_cli/cli_tui_mixin.py`: approval-panel title `"⚠️  Dangerous Command"` → `"⚠  …"`.
+- `hermes_cli/cli_modal_mixin.py`: destructive-slash confirm title `"⚠️  /…"` → `"⚠  /…"`.
+Scrollback strings (print/_cprint) are exempt — no pt grid to desync. Docs (`website/docs/user-guide/
+{cli,tui}.md`) updated to the bare glyph.
+
+**Tests:** `tests/hermes_cli/test_pt_chrome_no_vs16.py` (new): AST sweep of every pt-chrome file
+(print-ish calls exempted) + behavioral status-bar checks (plain-text and fragment renderers contain no
+U+FE0F, badge present as bare `🗜 2`). Teeth proven: re-inserting the VS-16 badge fails all 3.
+`test_cli_status_bar.py` glyph assertions updated to the bare codepoint (4 sites).
+
+**Verification:** 96 passed / 2 skipped across the blast radius (status bar, approval UI, slash-confirm,
+focus view, new guard) + dock/monitor/timer-rollover batch green (1 pre-existing flake in
+`test_process_dock.py::test_monitor_controls_stop_processes_and_never_steer_them` — SIGKILL timing,
+reproduces identically on the stashed base, unrelated).
+
+**Upstreamable:** no — upstream still ships the `🗜️` badge; this is fork doctrine (same rationale as the
+tool-emoji strip). If upstream ever strips it, drop this delta at sync.
+
 ### Upstream PRs — 2026-10-04 (resurrection batch #2: exit-summary ordering #132899, estimator dedup #132900; both DRAFT)
 
 Fable-ruled re-mining of the July PRs closed on 2026-09-08 as housekeeping (NOT wontfix — maintainers had rated the premises valid). Both re-derived fresh on current upstream tip (`8d256ff184`-era), draft-only per the account gate.

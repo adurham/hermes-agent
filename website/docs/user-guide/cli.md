@@ -160,7 +160,7 @@ A persistent status bar sits above the input area, updating in real time:
 | Token count | Context tokens used / max context window; `~` marks an estimate |
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models). Rates come from Hermes' bundled official price table, then the provider's `/models` listing; on a direct first-party API (OpenAI, xAI, Anthropic, Google, DeepSeek, Xiaomi) a model missing from both is priced at the vendor's list price from models.dev. Proxies, relays and custom endpoints serving the same model id stay `n/a` rather than inherit that price. |
-| 🗜️ N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
+| 🗜 N | **Context compression count** — how many times the running session has been auto-compressed. Appears once the first compression fires. |
 | ▶ N | **Active background tasks** — how many `/bg` prompts are still running in the current session. Appears whenever at least one task is in flight. |
 | ⛓ N | **Active background subagents** — real child-task count across all in-flight `delegate_task` dispatches, batch-expanded (a 3-task parallel batch shows `⛓ 3`, not `⛓ 1`). Includes children the stall monitor has flagged `stalling` (still occupying a slot during their grace window before force-finalize), so the count doesn't flicker low right before recovery. Appears whenever at least one subagent is running. |
 | Duration | Elapsed session time |

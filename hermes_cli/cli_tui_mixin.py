@@ -184,7 +184,10 @@ class CLITuiMixin:
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
-        title = "⚠️  Dangerous Command"
+        # FORK: bare U+26A0, no VS-16 — see the status-bar compressions badge: a VS-16
+        # sequence diverges between pt's width model and what terminals paint, stranding
+        # stale cells in this panel's diff repaints.
+        title = "⚠  Dangerous Command"
 
         preview_lines = wrap(description, 60)
         preview_lines.extend(wrap(command, 60))
