@@ -292,7 +292,10 @@ def test_invalid_hot_profile_config_is_parked_and_unserved(mux):
         (mux['boot'] / 'config.yaml').write_text(json.dumps(invalid), encoding='utf-8')
         result = control(root, 'rescan-profiles')
         desc = control(root, 'identify')
-        assert result['parked'] == ['boot'], (result, tail(mux))
+        # An explicit control-socket rescan retries parked profiles by design, so the still-invalid
+        # 'invalid-hot' is re-parked alongside 'boot' (never served in between).
+        assert sorted(result['parked']) == ['boot', 'invalid-hot'], (result, tail(mux))
+        assert added.resolve() not in served_homes(desc), desc
         assert mux['boot'].resolve() not in served_homes(desc), desc
         assert 'boot' in desc.get('parked_profiles', {}), desc
         assert 'boot' not in recorded_served(root)
