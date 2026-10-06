@@ -760,8 +760,7 @@ describe('attached shared-remote group turns (#96493)', () => {
       getConnectionFor: vi.fn(async () => {
         throw new Error('Timed out connecting to profile "sean"')
       }),
-      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://local/sean' })),
-      touchBackend: vi.fn(async () => undefined)
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://local/sean' }))
     }
     await ensureGatewayForProfile('default')
 
@@ -840,8 +839,7 @@ describe('session-owner calls for a profile on the shared local host backend (#1
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      })),
-      touchBackend: vi.fn(async () => undefined)
+      }))
     }
 
     return getConnectionFor

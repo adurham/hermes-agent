@@ -170,14 +170,6 @@ interface Secondary {
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
   /**
-   * Main retired this scope's pooled backend for a foreground open elsewhere
-   * (electron/pool-retire.ts). A parked-by-stall entry re-arms on the
-   * wake/focus nudge; a retired one must not — that nudge would redial into
-   * the very slot the retirement freed. Only an explicit open of the scope
-   * clears it (rearmSecondary).
-   */
-  retiredByPool: boolean
-  /**
    * Epoch-ms deadline while an activation (prepare/ensure) is mid-dial. The
    * live-work pruner must not dispose an entry the user is switching to: a
    * switch target is not yet the active key, has no live sessions and holds
@@ -462,19 +454,9 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
  *  the chat's transport fan-out and the renderer receives every event twice
  *  (garbled streaming text + a duplicate interim bubble, #120005). Isolated
  *  SSH/pooled backends (neither flag) still get their own secondary. */
-async function ridesPrimaryBackend(
-  connectionId: null | string,
-  profile: string,
-  spawnPriority: SpawnPriority = 'background'
-): Promise<boolean> {
+async function ridesPrimaryBackend(connectionId: null | string, profile: string): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
-  const parked = g.secondaries.get(registryBackendScopeKey(connectionId, key))
-
-  if (parked?.retiredByPool) {
-    rearmSecondary(parked, spawnPriority)
-  }
-
   if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
     return false
   }
@@ -561,11 +543,11 @@ export function activeGateway(): HermesGateway | null {
 /** Passive ordering barrier for a runtime's transcript reads. Inspect only
  * existing sockets: waiting must never dial, activate, or retain a backend.
  * Each client names its own replaying runtime IDs; no ambient route is used
- * to decide which session's events are safe to paint over. A pruned or
- * pool-retired secondary keeps its closed socket's watermarks but will never
- * reopen to replay them, so it must not veto reads forever. */
+ * to decide which session's events are safe to paint over. A pruned
+ * secondary keeps its closed socket's watermarks but will never reopen to
+ * replay them, so it must not veto reads forever. */
 export function pendingSessionReplay(runtimeId: string): Promise<boolean> | undefined {
-  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen && !entry.retiredByPool)
+  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen)
   const clients = new Set([g.primaryGateway, ...reconnectable.map(entry => entry.gateway)])
 
   // A closed socket's false means only that IT cannot replay yet. When another
@@ -898,13 +880,8 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
     g.dialFailures.delete(entry.scope)
   }
 
-  if (entry.retiredByPool && priority !== 'foreground') {
-    throw new Error(`Backend for "${entry.profile}" was retired; open it explicitly to reconnect.`)
-  }
-
   entry.wantOpen = true
   entry.stalledDials = 0
-  entry.retiredByPool = false
 }
 
 function recordDialFailure(entry: Secondary, error?: unknown): void {
@@ -1081,7 +1058,6 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     retained: false,
     relayRetainCount: 0,
     wantOpen: true,
-    retiredByPool: false,
     activationLeaseUntil: 0
   }
 
@@ -1172,12 +1148,6 @@ async function gatewayForProfile(
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
-  const parked = g.secondaries.get(key)
-
-  if (parked?.retiredByPool) {
-    rearmSecondary(parked, spawnPriority)
-  }
-
   if (key === g.primaryProfile) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
@@ -1328,7 +1298,7 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  if (await ridesPrimaryBackend(connectionId, key, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, key)) {
     traceAgentRoute(scope, 'primary-shared')
 
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
@@ -1550,7 +1520,7 @@ export async function retainGatewayForAgent(
     return route.release
   }
 
-  if (isPrimaryRegistryRoute(connectionId, key) || (await ridesPrimaryBackend(connectionId, key, spawnPriority))) {
+  if (isPrimaryRegistryRoute(connectionId, key) || (await ridesPrimaryBackend(connectionId, key))) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
     return () => undefined
   }
@@ -1722,41 +1692,12 @@ export async function retainGatewayForSessionTurn(
     }
 
     cancelTurnLeaseRelease(key)
-    // Another session on the same scope may still hold a lease; report the
-    // scope's state, not this lease's.
-    publishTurnLease(scope, scopeHasTurnLease(scope))
     releaseRoute()
   }
 
   g.turnLeases.set(key, release)
-  publishTurnLease(scope, true)
 
   return release
-}
-
-function scopeHasTurnLease(scope: string): boolean {
-  const prefix = `${scope}\u0000`
-
-  for (const key of g.turnLeases.keys()) {
-    if (key.startsWith(prefix)) {
-      return true
-    }
-  }
-
-  return false
-}
-
-// Tell main whether a prompt turn leases this scope's pooled backend. An early
-// skip for cooperative retirement (electron/pool-retire.ts), never the proof:
-// main asks the backend itself before stopping anything. From #104871.
-function publishTurnLease(scope: string, activeTurn: boolean): void {
-  // Older Desktop hosts own pooled children. Canonical hosts expose no touch
-  // capability: their gateway lifetime is independent of renderer leases.
-  const desktop = window.hermesDesktop as (typeof window.hermesDesktop & {
-    touchBackend?: (scope: string, options?: { activeTurn?: boolean }) => Promise<unknown>
-  })
-
-  void desktop?.touchBackend?.(scope, { activeTurn }).catch(() => undefined)
 }
 
 function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
@@ -1841,7 +1782,7 @@ export async function openGatewayForAgent(
     return openGatewayForProfile(profile, { spawnPriority })
   }
 
-  if (await ridesPrimaryBackend(connectionId, profile, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, profile)) {
     if (!isOpen(g.primaryGateway)) {
       throw new Error('Hermes gateway unavailable')
     }
@@ -1897,7 +1838,7 @@ export async function ensureGatewayForAgent(
 
   const activationEpoch = beginGatewayActivation()
 
-  if (await ridesPrimaryBackend(connectionId, profile, 'foreground')) {
+  if (await ridesPrimaryBackend(connectionId, profile)) {
     // A retained primary can be open while the foreground still points at a
     // different source. Reusing its socket must also move the active route.
     return Boolean(isOpen(g.primaryGateway) && !signal?.aborted && applyActive(g.primaryProfile, activationEpoch))
@@ -2183,7 +2124,7 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
     // A backend main retired for a foreground open stays parked: redialing it
     // from a focus/wake nudge would queue a background spawn for the slot the
     // retirement just freed. Its tile still shows; the next click re-arms it.
-    if (entry.retiredByPool || g.reauthFailures.has(entry.scope)) {
+    if (g.reauthFailures.has(entry.scope)) {
       continue
     }
 
@@ -2237,71 +2178,6 @@ export function openSecondaryCount(): number {
   }
 
   return count
-}
-
-// Keep the idle reaper from killing a backend we still need: ping every live
-// secondary. The active one is pinged separately (touchActiveGatewayBackend).
-// "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect
-// backoff has no consumer on that backend, and pinging it anyway kept a
-// tile-pinned backend keepalive-fresh forever, so LRU eviction and the idle
-// reaper never freed its pool slot (#103375). Each ping also carries whether a
-// prompt turn leases the scope, so a foreground dial that must retire a
-// resident can skip leased ones early (the backend probe stays the proof).
-export function touchSecondaryGateways(): void {
-  // Older Desktop hosts own pooled children. Canonical hosts expose no touch
-  // capability: their gateway lifetime is independent of renderer keepalives.
-  const desktop = window.hermesDesktop as (typeof window.hermesDesktop & {
-    touchBackend?: (scope: string, options?: { activeTurn?: boolean }) => Promise<unknown>
-  })
-
-  for (const entry of g.secondaries.values()) {
-    if (entry.wantOpen && isOpen(entry.gateway)) {
-      void desktop?.touchBackend?.(entry.scope, { activeTurn: scopeHasTurnLease(entry.scope) }).catch(() => undefined)
-    }
-  }
-}
-
-// A local child is pooled under the bare profile (legacy route) or
-// `conn:local::<profile>`; both renderer scopes ride the same child, so a
-// retirement of either key parks both.
-function secondaryRidesPoolKey(entry: Secondary, poolKey: string): boolean {
-  if (entry.scope === poolKey) {
-    return true
-  }
-
-  const local = !entry.connectionId || entry.connectionId === 'local'
-  const profile = normKey(entry.profile)
-
-  return local && (profile === poolKey || `conn:local::${profile}` === poolKey)
-}
-
-// Main is retiring the pooled backend under `poolKey` for a foreground open
-// (electron/pool-retire.ts). Park every scope riding it BEFORE the socket
-// drops: the 'closed' state must not scheduleReconnect, and the focus/wake
-// nudge must not re-arm it either — both would queue a background redial for
-// the slot the retirement freed. The entry stays (bot tiles keep their card);
-// the next explicit open of the scope re-arms it. Returns the parked scopes.
-export function parkSecondariesForRetiredBackend(poolKey: string): string[] {
-  const key = String(poolKey || '').trim()
-  const parked: string[] = []
-
-  if (!key) {
-    return parked
-  }
-
-  for (const entry of g.secondaries.values()) {
-    if (!secondaryRidesPoolKey(entry, key)) {
-      continue
-    }
-
-    entry.wantOpen = false
-    entry.retiredByPool = true
-    entry.stalledDials = 0
-    clearTimer(entry)
-    parked.push(entry.scope)
-  }
-
-  return parked
 }
 
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the
