@@ -457,6 +457,7 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
 async function ridesPrimaryBackend(connectionId: null | string, profile: string): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
+
   if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
     return false
   }
@@ -1148,6 +1149,7 @@ async function gatewayForProfile(
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
+
   if (key === g.primaryProfile) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
