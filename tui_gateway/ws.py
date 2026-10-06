@@ -19,6 +19,7 @@ from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
 from tui_gateway.transport import serialize_frame
+from tui_gateway.ws_legacy_fallback import dispatch_legacy, legacy_fallback_allowed
 
 _log = logging.getLogger(__name__)
 
@@ -335,12 +336,14 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             try:
                 if authority_connection is not None:
                     resp = await authority_connection.dispatch(req)
-                    if _is_unknown_method(resp) and req_method in server._methods:
+                    actor = authority_connection.actor
+                    if (_is_unknown_method(resp) and req_method in server._methods
+                            and legacy_fallback_allowed(actor)):
                         # Session verbs live on the authority; everything else the sidecar still
                         # registers (pet, wake word, active-session list, connectors) keeps its
                         # legacy handler. A real -32601 reaches the client only for methods
                         # neither side knows, which is what its version-skew notice keys on.
-                        resp = await asyncio.to_thread(server.dispatch, req, transport)
+                        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
                 else:
                     resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:

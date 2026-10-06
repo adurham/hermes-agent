@@ -634,8 +634,10 @@ def _profile_scoped(handler):
             home = _profile_home(p.get("profile"))
             profile_home = str(home) if home else None
         else:
+            # Sessionless: the authority ticket's profile (WS legacy fallback), else the launch one.
+            from tui_gateway.ws_legacy_fallback import connection_profile_home
             session = _sessions.get(str(p.get("session_id") or ""))
-            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+            profile_home = session.get("profile_home") if isinstance(session, dict) else connection_profile_home()
         with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper

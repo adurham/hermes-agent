@@ -399,3 +399,73 @@ def test_ws_transport_preserves_cross_batch_order():
     asyncio.run(scenario())
 
 
+_INTERACTIVE = frozenset({"session:create", "session:read", "session:submit", "session:control",
+                          "session:approve", "session:respond"})
+
+
+def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
+    """One RPC through handle_ws on an authority connection whose dispatch answers -32601, so the
+    request takes the legacy-fallback branch (R2-M3). Returns the reply frame for id 1."""
+    import gateway.session_controls as session_controls
+
+    class FakeConnection:
+        def __init__(self, authority, transport, identity, operator=False):
+            self.actor = type("Actor", (), {"capabilities": frozenset(capabilities), "profile_id": profile_id})()
+
+        async def dispatch(self, req):
+            return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": "unknown method"}}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}})]
+
+    class FakeWS:
+        scope = {"hermes.session_authority": object()}
+
+        async def accept(self, **_kw):
+            pass
+
+        async def send_text(self, line):
+            sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+        async def receive_text(self):
+            if inbound:
+                return inbound.pop()
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self, **_kw):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
+    return next(frame for frame in sent if frame.get("id") == 1)
+
+
+def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):
+    """A worker-adoption ticket (or any connection without the authority's interactive grant) must
+    not reach general legacy dispatch after an authority -32601; an interactive one still does."""
+    ran = []
+    monkeypatch.setitem(server._methods, "probe.legacy",
+                        lambda rid, params: ran.append(rid) or {"jsonrpc": "2.0", "id": rid, "result": {}})
+    launch = str(server._launch_home())
+    for restricted in ({"worker:adopt"}, set()):
+        reply = _drive_authority_fallback(monkeypatch, capabilities=restricted, profile_id=launch, method="probe.legacy")
+        assert reply["error"]["code"] == -32601 and ran == []
+    reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=launch, method="probe.legacy")
+    assert reply["result"] == {} and ran == [1]
+
+
+def test_legacy_fallback_keeps_the_ticket_profile_for_sessionless_scoped_handlers(monkeypatch, tmp_path):
+    """A secondary-profile ticket's sessionless ``@_profile_scoped`` legacy call runs in THAT profile's
+    home, not the launch profile's."""
+    from hermes_constants import get_hermes_home
+
+    secondary = tmp_path / "profiles" / "l106742sec"
+    secondary.mkdir(parents=True)
+    monkeypatch.setitem(server._methods, "probe.scoped", server._profile_scoped(
+        lambda rid, params: {"jsonrpc": "2.0", "id": rid, "result": {"home": str(get_hermes_home())}}))
+    reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=str(secondary),
+                                      method="probe.scoped")
+    assert reply["result"]["home"] == str(secondary)
