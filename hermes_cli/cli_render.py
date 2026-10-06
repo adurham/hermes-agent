@@ -1068,6 +1068,12 @@ _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)
 
 
 def _append_panel_line(lines, border_style: str, content_style: str, text: str, box_width: int) -> None:
+    # FORK: strip VS-16 from panel content (approval descriptions/commands, clarify
+    # questions, sudo text — model/user-generated). A VS-16 sequence scores 1 cell in
+    # pt's width model but paints 2, so pt's diff skips cells the terminal shifted —
+    # stale characters survive inside the panel across repaints (the corruption class
+    # behind the "impossible timer"; see tests/hermes_cli/test_pt_chrome_no_vs16.py).
+    text = text.replace("\ufe0f", "")
     lines.extend(((border_style, "│ "), (content_style, _panel_ljust(text, max(0, box_width - 2))), (border_style, " │\n")))
 
 
