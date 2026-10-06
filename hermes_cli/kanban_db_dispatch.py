@@ -2527,26 +2527,6 @@ def _module_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
-def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
-    """Put the running install's package root on a module-form worker's path.
-
-    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in THIS process,
-    where a store-python shim has the repo root on ``sys.path`` in-process;
-    the spawned child runs the bare ``sys.executable`` from the task workspace
-    with a scrubbed ``PYTHONPATH`` and cannot import the package the parent
-    just proved importable — it dies before any work and the board
-    auto-blocks (#122299, #122487, #122500). Same-interpreter child, so the
-    root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
-    then owns dependency activation as usual. A resolved shim path owns its
-    imports and is left alone. Same pin cron's external worker uses (#112729).
-    """
-    if cmd[1:3] != ["-m", "hermes_cli.main"]:
-        return
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-
-    pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
-
-
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
     expanded = os.path.expanduser(path)
