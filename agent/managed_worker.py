@@ -88,6 +88,9 @@ class WorkerChannel:
             self.stream.flush()
 
 
+_INTERRUPTED = object()
+
+
 class WorkerControls:
     def __init__(self, channel, route):
         self.channel, self.route = channel, route
@@ -105,7 +108,7 @@ class WorkerControls:
             self.agent.interrupt()
         with self.lock:
             for state in self.clarifications.values():
-                state['answer'] = '[Interrupted]'
+                state['answer'] = _INTERRUPTED
                 state['event'].set()
 
     def read(self):
@@ -143,13 +146,30 @@ class WorkerControls:
         self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
         ack_gateway_approval(self.route, data['request_id'])
 
-    def clarify(self, question, choices, multi_select=False):
+    def clarify(self, questions):
+        """clarify_tool's batch contract: ``callback(questions) -> {answers, outcome, notice?}``.
+        One owner prompt per question, stopping at the first that is interrupted or unanswered;
+        an empty answer is a skip (``None``), as on the other surfaces."""
+        answers = {}
+        reply = {'answers': answers, 'outcome': 'submitted'}
+        for entry in questions:
+            answer = self._ask(entry['question'], entry['choices'], entry['multi_select'])
+            if answer is _INTERRUPTED:
+                reply['outcome'] = 'cancelled'
+                break
+            if answer is None:
+                reply['outcome'] = 'timed_out'
+                break
+            answers[entry['qid']] = answer.strip() or None
+        return reply
+
+    def _ask(self, question, choices, multi_select):
         import uuid
         prompt_id = uuid.uuid4().hex
-        state = {'event': threading.Event(), 'answer': '[No response]'}
+        state = {'event': threading.Event(), 'answer': None}
         with self.lock:
             if self.stopped.is_set() or len(self.clarifications) >= 16:
-                return '[Interrupted]'
+                return _INTERRUPTED
             self.clarifications[prompt_id] = state
         try:
             self.channel.send('clarify', prompt_id=prompt_id, question=question,
