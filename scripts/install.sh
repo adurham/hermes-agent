@@ -37,6 +37,8 @@ INSTALL_LADDER=false
 INSTALL_STARTED=0
 INSTALL_RUN_ID=""
 FAILURE_CLASS=""
+INSTALL_SIGNAL=""
+INSTALL_IN_STAGE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -109,13 +111,52 @@ fail() { STAGE_REASON="$1"; FAILURE_CLASS="${2:-other}"; log_error "$1"; exit 1;
 # unreported when collection is off. Best effort: never fails the install.
 write_install_receipt() {
     # $1 outcome, $2 failed stage, $3 failure class. One file per run: the first writer wins.
+    # A failed write (full disk) removes its partial temp file: the reader never sees dotfiles.
     {
         local dir="$HERMES_HOME/telemetry/shared_metrics/pending_installs" id="$INSTALL_RUN_ID"
-        [ -n "$id" ] && [ ! -e "$dir/$id.json" ] && mkdir -p "$dir" \
-            && printf '{"id":"%s","installer":"install_sh","outcome":"%s","failed_stage":"%s","failure_class":"%s","started_at":%s,"finished_at":%s}\n' \
+        [ -n "$id" ] && [ ! -e "$dir/$id.json" ] && mkdir -p "$dir" && {
+            printf '{"id":"%s","installer":"install_sh","outcome":"%s","failed_stage":"%s","failure_class":"%s","started_at":%s,"finished_at":%s}\n' \
                 "$id" "$1" "$2" "$3" "$INSTALL_STARTED" "$(date +%s)" > "$dir/.$id.tmp" \
-            && mv -f "$dir/.$id.tmp" "$dir/$id.json"
+                && mv -f "$dir/.$id.tmp" "$dir/$id.json" \
+                || rm -f "$dir/.$id.tmp"
+        }
     } >/dev/null 2>&1 || :
+}
+
+# Ladder signal handling. The traps only note the signal while a stage owns the
+# terminal: bash runs a trap once the foreground stage returns, and that stage's
+# result decides. A stage whose child caught Ctrl-C and succeeded (setup's
+# provider picker: "Provider setup skipped.") lets the ladder carry on, as bash's
+# own wait-and-cooperative-exit did before these traps existed. A stage that
+# failed after the signal is recorded as `interrupted`, then the signal is
+# re-raised so the exit status is the signal's. A TERM or HUP sent to the
+# installer alone (not its process group) takes effect when the running stage
+# returns, and the receipt names the stage the run stopped before. The stage
+# stays in the foreground because a background stage's children ignore Ctrl-C
+# under bash 3.2 (macOS /bin/bash), even after `trap -`.
+install_signal() {
+    # $1 signal name. Outside a stage (platform check, banner, between stages) stop now.
+    INSTALL_SIGNAL="$1"
+    [ "$INSTALL_IN_STAGE" = true ] || install_interrupted
+}
+
+install_interrupted() {
+    # Record the stage the signal cut off, then die by that signal (exit code if it is blocked).
+    local stage="${s:-prerequisites}" sig="${INSTALL_SIGNAL:-INT}" code=130
+    case "$sig" in HUP) code=129 ;; TERM) code=143 ;; esac
+    write_install_receipt failed "${stage//-/_}" interrupted
+    trap - INT TERM HUP EXIT
+    kill -s "$sig" "$$" 2>/dev/null
+    exit "$code"
+}
+
+# Inside a ladder stage: a child the signal killed ends the stage like bash's own
+# cooperative exit (its status is the signal's, 128+N); a child that caught the
+# signal keeps its own result, and the stage's receipt reads `interrupted`.
+stage_signal() {
+    # $1 status of the command the signal arrived during, $2 this signal's 128+N.
+    STAGE_INTERRUPTED=true
+    [ "$1" -ne "$2" ] || exit "$2"
 }
 
 print_banner() {
@@ -399,9 +440,13 @@ stage_result() {
     if [ "$JSON" = true ]; then
         json_frame "$ok" "$STAGE" "${STAGE_SKIPPED:-false}" "$reason"
     fi
-    # 130/143 (Ctrl-C, SIGTERM) are recorded by the ladder as `interrupted`.
-    if [ "$ok" = false ] && [ "${INSTALL_LADDER:-false}" = true ] && [ "$code" -ne 130 ] && [ "$code" -ne 143 ]; then
-        write_install_receipt failed "${STAGE//-/_}" "${FAILURE_CLASS:-other}"
+    if [ "$ok" = false ] && [ "${INSTALL_LADDER:-false}" = true ]; then
+        local class="${FAILURE_CLASS:-other}"
+        # A user abort beats the stage's own class: a child that caught Ctrl-C and exited 1
+        # (pm, source_completion, `hermes setup`) still reaches the stage's `|| fail ... <class>`.
+        case "$code" in 129|130|143) class=interrupted ;; esac
+        [ "${STAGE_INTERRUPTED:-false}" = false ] || class=interrupted
+        write_install_receipt failed "${STAGE//-/_}" "$class"
     fi
 }
 
@@ -888,8 +933,14 @@ run_stage() (
     STAGE="$1"
     STAGE_REASON=""
     FAILURE_CLASS=""
+    STAGE_INTERRUPTED=false
     STAGE_SKIPPED=false
     trap 'stage_result "$?"' EXIT
+    if [ "$INSTALL_LADDER" = true ]; then
+        trap 'stage_signal "$?" 130' INT
+        trap 'stage_signal "$?" 143' TERM
+        trap 'stage_signal "$?" 129' HUP
+    fi
     if [ "$NON_INTERACTIVE" = true ] && { [ "$STAGE" = setup ] || [ "$STAGE" = gateway ]; }; then
         STAGE_SKIPPED=true
         STAGE_REASON="needs user input"
@@ -924,10 +975,16 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
         trap 'stage_result "$?"' EXIT
     elif [ -z "$STAGE" ]; then
         INSTALL_LADDER=true
-        INSTALL_STARTED="$(date +%s)"
+        INSTALL_STARTED="$(date +%s 2>/dev/null)"
         INSTALL_RUN_ID="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || INSTALL_RUN_ID=""
-        [ "${#INSTALL_RUN_ID}" -eq 32 ] || INSTALL_RUN_ID="$(printf '%08x%08x%08x%08x' "$RANDOM$RANDOM" "$$" "$INSTALL_STARTED" "$RANDOM")"
+        [ "${#INSTALL_RUN_ID}" -eq 32 ] || INSTALL_RUN_ID="$(printf '%08x%08x%08x%08x' "$(( RANDOM * 32768 + RANDOM ))" "$$" "${INSTALL_STARTED:-0}" "$RANDOM")"
+        # No clock, no receipt: the reader drops a receipt without both timestamps anyway.
+        case "$INSTALL_STARTED" in ''|*[!0-9]*) INSTALL_RUN_ID="" ;; esac
         trap '[ "$?" -eq 0 ] || write_install_receipt failed prerequisites "${FAILURE_CLASS:-other}"' EXIT
+        # Ctrl-C, SIGTERM or a closed terminal (SIGHUP) anywhere in the run: one `interrupted` receipt.
+        trap 'install_signal INT' INT
+        trap 'install_signal TERM' TERM
+        trap 'install_signal HUP' HUP
     fi
     check_platform
     trap - EXIT
@@ -940,15 +997,31 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     # No --stage: run the whole ladder — the same authoritative list the
     # manifest prints, so --include-desktop inserts desktop here too.
     print_banner
-    # Ctrl-C / SIGTERM (a closed terminal) end the install mid-stage: one `interrupted` receipt.
-    trap 'write_install_receipt failed "${s//-/_}" interrupted; exit 130' INT
-    trap 'write_install_receipt failed "${s//-/_}" interrupted; exit 143' TERM
     for s in $(stage_names); do
+        # A TERM/HUP noted while the previous stage ran stops the run before this one.
+        [ -z "$INSTALL_SIGNAL" ] || install_interrupted
+        INSTALL_IN_STAGE=true
         run_stage "$s"
         rc=$?
-        case "$rc" in 0) ;; 130|143) write_install_receipt failed "${s//-/_}" interrupted; exit "$rc" ;; *) exit "$rc" ;; esac
+        INSTALL_IN_STAGE=false
+        if [ "$rc" -eq 0 ]; then
+            # The stage succeeded, so a Ctrl-C it saw was handled there: carry on.
+            [ "$INSTALL_SIGNAL" != INT ] || INSTALL_SIGNAL=""
+            continue
+        fi
+        case "$rc" in
+            129) INSTALL_SIGNAL="${INSTALL_SIGNAL:-HUP}" ;;
+            130) INSTALL_SIGNAL="${INSTALL_SIGNAL:-INT}" ;;
+            143) INSTALL_SIGNAL="${INSTALL_SIGNAL:-TERM}" ;;
+        esac
+        [ -z "$INSTALL_SIGNAL" ] || install_interrupted
+        # The stage normally wrote its receipt; one killed outright (SIGKILL, OOM) did not.
+        write_install_receipt failed "${s//-/_}" other
+        exit "$rc"
     done
-    trap - INT TERM
     write_install_receipt success none none
+    # Every stage finished: the receipt says success, and a pending TERM/HUP still ends the run.
+    [ -z "$INSTALL_SIGNAL" ] || install_interrupted
+    trap - INT TERM HUP
     print_path_reload_hint
 fi

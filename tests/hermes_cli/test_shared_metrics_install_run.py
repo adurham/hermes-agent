@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -62,7 +63,7 @@ def _park(home: Path, receipt: dict, name: str | None = None) -> Path:
 
 
 def test_schema_and_installers_match_the_contract_exactly():
-    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8-sig"))
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}
     dims = by_name[contract.INSTALL_RUN_METRIC]["properties"]["dimensions"]
     assert {field: set(spec["enum"]) for field, spec in dims["properties"].items()} == {
@@ -70,7 +71,12 @@ def test_schema_and_installers_match_the_contract_exactly():
     assert set(dims["required"]) == set(dims["properties"])
     assert {"$ref": "#/$defs/install_run_counter"} in schema["properties"]["metrics"]["items"]["oneOf"]
 
-    sh, ps1 = INSTALL_SH.read_text(encoding="utf-8"), INSTALL_PS1.read_text(encoding="utf-8")
+    sh, ps1 = INSTALL_SH.read_text(encoding="utf-8-sig"), INSTALL_PS1.read_text(encoding="utf-8-sig")
+    # Initialize-ResolvedPaths runs before the ladder's try, so its Fail can never write a receipt and
+    # carries no class (a class there would be dead); every ladder call site must carry one.
+    pre_ladder = re.search(r"\nfunction Initialize-ResolvedPaths \{\r?\n.*?\r?\n\}\r?\n", ps1, re.S).group(0)
+    assert re.search(r'Fail "[^\n]*-InstallDir\."\r?\n', pre_ladder)
+    ps1 = ps1.replace(pre_ladder, "\n")
     # Every fail()/Fail call site passes a class from the contract, and every class is used somewhere.
     sh_sites = re.findall(r'(?<![-\w])fail "(?:[^"\\$]|\\.|\$\([^)]*\)|\$)*" ?([a-z_]*)', sh)
     ps1_sites = re.findall(r'(?<![-\w])Fail "(?:[^"`$]|`.|\$\([^)]*\)|\$)*" ?([a-z_$(]*)', ps1)
@@ -146,10 +152,77 @@ def test_real_install_sh_ladder_leaves_only_closed_tokens(tmp_path):
     assert "git is required" in result.stderr
     receipts = list(install_run.pending_installs_dir(home).glob("*.json"))
     assert len(receipts) == 1
-    text = receipts[0].read_text(encoding="utf-8")
+    text = receipts[0].read_text(encoding="utf-8-sig")
     assert "example.invalid" not in text and str(tmp_path) not in text and "required" not in text
     receipt = json.loads(text)
     assert install_run.install_run_fields(receipt) == {
         "duration_bucket": "lt_30s", "failed_stage": "prerequisites", "failure_class": "git_missing",
         "installer": "install_sh", "outcome": "failed",
     }
+
+
+_MAIN_GUARD = 'if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then\n'
+_CHILD = """
+import pathlib, sys, time
+pathlib.Path(sys.argv[1]).write_text("ready")
+try:
+    time.sleep(30)
+except KeyboardInterrupt:
+    print("child handled Ctrl-C")
+    sys.exit(int(sys.argv[2]))
+"""
+
+
+def _ctrl_c_ladder(tmp_path: Path, child_exit: int) -> tuple[int, str, list[dict]]:
+    """The real install.sh main block and traps, with every stage body a no-op except python-deps,
+    whose child catches Ctrl-C like pm.cli / `hermes setup` do. Ctrl-C reaches the whole process
+    group, as from a terminal."""
+    script = INSTALL_SH.read_text(encoding="utf-8-sig")
+    assert script.count(_MAIN_GUARD) == 1
+    stubs = "".join(f"stage_{name}() {{ echo 'stage {name} ok'; }}\n" for name in (
+        "prerequisites", "repository", "venv", "config", "products", "setup", "gateway", "desktop", "complete"))
+    stubs += ('stage_python_deps() { "$STUB_PY" -c "$STUB_CHILD" "$STUB_READY" "$STUB_EXIT" '
+              '|| fail "pm install failed" deps_install_failed; }\nprint_banner() { :; }\n')
+    harness = tmp_path / "install-harness.sh"
+    harness.write_text(script.replace(_MAIN_GUARD, stubs + _MAIN_GUARD), encoding="utf-8")
+    home, ready = tmp_path / "home", tmp_path / "ready"
+    proc = subprocess.Popen(
+        ["bash", str(harness), "--non-interactive", "--hermes-home", str(home), "--dir", str(tmp_path / "checkout")],
+        env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", ""), "STUB_PY": sys.executable,
+             "STUB_CHILD": _CHILD, "STUB_READY": str(ready), "STUB_EXIT": str(child_exit)},
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "the stage child never started"
+        time.sleep(0.2)  # the child is inside its sleep
+        os.killpg(proc.pid, signal.SIGINT)  # windows-footgun: ok (POSIX-only test)
+        out, _ = proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok (POSIX-only test)
+    receipts = [json.loads(p.read_text(encoding="utf-8-sig")) for p in install_run.pending_installs_dir(home).glob("*.json")]
+    return proc.returncode, out.decode("utf-8", "replace"), receipts
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the real install.sh")
+def test_a_ctrl_c_the_stage_handles_lets_the_install_finish(tmp_path):
+    """The receipt's signal traps must never change the installer's control flow: before them, bash's
+    cooperative exit let the ladder carry on when the child caught Ctrl-C and succeeded."""
+    rc, out, receipts = _ctrl_c_ladder(tmp_path, child_exit=0)
+    assert "child handled Ctrl-C" in out
+    assert rc == 0, out
+    assert "stage complete ok" in out
+    assert [(r["outcome"], r["failed_stage"], r["failure_class"]) for r in receipts] == [("success", "none", "none")]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the real install.sh")
+def test_a_user_abort_the_child_turns_into_exit_1_is_recorded_as_interrupted(tmp_path):
+    """pm.cli / source_completion / `hermes setup` catch KeyboardInterrupt and exit 1, which reaches the
+    stage's `|| fail ... deps_install_failed`; the receipt must still say the user stopped it."""
+    rc, out, receipts = _ctrl_c_ladder(tmp_path, child_exit=1)
+    assert rc != 0 and "stage complete ok" not in out
+    assert [(r["outcome"], r["failed_stage"], r["failure_class"]) for r in receipts] == [
+        ("failed", "python_deps", "interrupted")]

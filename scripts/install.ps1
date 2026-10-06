@@ -344,7 +344,7 @@ function Initialize-ResolvedPaths {
     $storeInside = $cmpStore -eq $cmpDir -or
         $cmpStore.StartsWith($dirPrefix, [StringComparison]::OrdinalIgnoreCase)
     if ($storeInside) {
-        Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir." other
+        Fail "HermesHome ($resolvedHome) cannot be the install directory or live inside it ($resolvedDir): the tool store would land inside the checkout. Use a separate -HermesHome, or point HERMES_RUNTIME_DIR outside -InstallDir."
     }
     # The param() variables live in the CALLER's scope, which is the script
     # scope only under -File. Under the documented
@@ -744,6 +744,7 @@ function Fail([string]$msg, [string]$Class = "other") {
 function Write-InstallReceipt([string]$Outcome, [string]$FailedStage, [string]$Class) {
     if ($script:InstallReceiptWritten) { return }
     $script:InstallReceiptWritten = $true
+    $tmp = $null  # never a caller's $tmp (dynamic scope) in the catch below
     try {
         $dir = Join-Path $HermesHome "telemetry\shared_metrics\pending_installs"
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -753,7 +754,21 @@ function Write-InstallReceipt([string]$Outcome, [string]$FailedStage, [string]$C
         $tmp = Join-Path $dir ".$id.tmp"
         [IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding $false))
         Move-Item -LiteralPath $tmp -Destination (Join-Path $dir "$id.json") -Force
-    } catch {}
+    } catch {
+        # A full disk leaves a partial temp file the reader never looks at (it skips dotfiles).
+        if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# The receipt class for a ladder stage that threw. A native child Ctrl-C ended
+# (130, or Windows STATUS_CONTROL_C_EXIT 0xC000013A) is a user abort even when
+# the host did not stop the pipeline first; it beats the stage's own class.
+# (A Ctrl-C the host saw stops the pipeline: catch is skipped and finally
+# records `interrupted`.)
+function Get-StageFailureClass {
+    if ($global:LASTEXITCODE -in @(130, -1073741510, 3221225786)) { return "interrupted" }
+    if ($script:FailureClass) { return $script:FailureClass }
+    return "other"
 }
 
 function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = "") {
@@ -1398,7 +1413,7 @@ try {
     Write-InstallReceipt "success" "none" "none"
     Write-PathReloadHint
 } catch {
-    Write-InstallReceipt "failed" $script:InstallStage $(if ($script:FailureClass) { $script:FailureClass } else { "other" })
+    Write-InstallReceipt "failed" $script:InstallStage (Get-StageFailureClass)
     Write-Err "$_"
     if ($script:RunAsFile) { exit 1 }
     # Under iex: report failure without closing the user's window.
