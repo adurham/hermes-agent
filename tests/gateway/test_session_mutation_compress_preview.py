@@ -73,3 +73,51 @@ async def test_preview_mutation_reports_without_summarizing_or_writing(tmp_path,
         assert summaries == []
     finally:
         await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_canonical_compress_runs_the_live_agents_pre_compress_memory_hook(tmp_path, monkeypatch):
+    """Canonical ``/compress`` gives the session's memory providers the same ``on_pre_compress``
+    turn the in-process compressor does, and their insight reaches the summarizer."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from agent.context_compressor import ContextCompressor
+
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    hooked, summarized = [], []
+
+    class Memory:
+        def on_pre_compress(self, messages, **kwargs):
+            hooked.append([m['content'] for m in messages])
+            return 'PROVIDER_INSIGHT'
+
+    def compress(self, messages, **kw):
+        summarized.append(kw.get('memory_context'))
+        return [{'role': 'user', 'content': 'summary', '_compressed_summary': True}]
+
+    monkeypatch.setattr(ContextCompressor, '__init__', lambda self, *a, **k: None)
+    monkeypatch.setattr(ContextCompressor, 'compress', compress)
+    live_agent = SimpleNamespace(_memory_manager=Memory())
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: live_agent,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='hook', source='cli', cwd=str(tmp_path),
+                                                              model='frozen', toolsets=[]))
+    for i in range(4):
+        db.append_message(ref.session_id, 'user', f'question {i}')
+        db.append_message(ref.session_id, 'assistant', f'answer {i}')
+    before = db.get_session(ref.session_id)
+    try:
+        await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'compress', 'expected_revision': before['runtime_revision'],
+            'expected_generation': before['runtime_generation'], 'operation': 'compress', 'payload': {}}})
+        assert hooked and hooked[0][0] == 'question 0' and len(hooked[0]) == 8
+        assert summarized and 'PROVIDER_INSIGHT' in summarized[0]
+    finally:
+        await owner.close()

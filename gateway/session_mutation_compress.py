@@ -55,8 +55,16 @@ async def prepare_compress(authority, live, payload, prepared):
                                             estimate_request_tokens_rough(messages))
         return {'status': 'preview', 'lines': report['lines'], 'head_count': report['head_count'],
                 'tail_count': report['tail_count'], 'message_count': report['total']}
+    # The session's resident agent owns its memory providers; give them the same pre-compress
+    # turn (and the same best-effort contract) the in-process compressor does. No resident agent
+    # (cold session, or a managed worker that runs out of process) means no provider to call.
+    cached_agent = getattr(authority.runner, '_cached_agent_for', None)
+    resident = cached_agent(live.route) if callable(cached_agent) else None
+
     def summarize():
         with policy_scope(policy, authority=authority):
+            from agent.conversation_compression import _pre_compress_memory_context
+            memory_context = _pre_compress_memory_context(resident, head, False) if resident is not None else ''
             compressor = ContextCompressor(model, base_url=runtime.get('base_url') or '',
                 api_key=runtime.get('api_key') or '', provider=runtime.get('provider') or '',
                 api_mode=runtime.get('api_mode') or '', quiet_mode=True, abort_on_summary_failure=True,
@@ -64,7 +72,7 @@ async def prepare_compress(authority, live, payload, prepared):
                 min_tail_user_messages=max(1, _parse_config_int(options.get('min_tail_user_messages', 1), 1)),
                 custom_providers=config.get('custom_providers'))
             compressed = compressor.compress(json.loads(json.dumps(head)), force=True,
-                                               focus_topic=request.focus_topic)
+                                               focus_topic=request.focus_topic, memory_context=memory_context)
             if not any(m.get('_compressed_summary') for m in compressed):
                 raise RuntimeStoreError('nothing_to_compress')
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
