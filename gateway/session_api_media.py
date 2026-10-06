@@ -9,18 +9,6 @@ _MIME_EXT = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'im
 _IMAGE_LIMIT = 10
 
 
-def _sniffed_mime(data):
-    if data.startswith(b'\x89PNG\r\n\x1a\n'):
-        return 'image/png'
-    if data.startswith(b'\xff\xd8\xff'):
-        return 'image/jpeg'
-    if data[:6] in (b'GIF87a', b'GIF89a'):
-        return 'image/gif'
-    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
-        return 'image/webp'
-    return None
-
-
 def _data_url_bytes(url):
     """``(mime, bytes)`` for a committable ``data:image/...;base64,`` URL, else ``None``."""
     header, _, encoded = url.partition(',')
@@ -43,15 +31,15 @@ def commit_api_images(content):
     """Stage every inline ``data:`` image deterministically (same bytes -> same path, so an
     exact retry keeps its admission digest) and commit the bytes as immutable media."""
     from gateway.platforms.base import get_image_cache_dir
-    from gateway.session_ingress_media import capture_native_media
     from gateway.platforms.base import get_inbound_media_max_bytes
+    from gateway.session_ingress_media import capture_native_media, sniff_image_mime
     from hermes_state_runtime import RuntimeStoreError
     images = [decoded for decoded in map(_data_url_bytes, _image_urls(content)) if decoded is not None]
     # Validate the whole batch before one byte lands on disk: a refused request must not
     # leave staged or committed bytes behind, and the declared type must be the real one.
     limit = max(0, get_inbound_media_max_bytes())
     if (len(images) > _IMAGE_LIMIT or (limit and sum(len(data) for _, data in images) > limit)
-            or any(_sniffed_mime(data) != mime for mime, data in images)):
+            or any(sniff_image_mime(data) != mime for mime, data in images)):
         raise RuntimeStoreError('invalid_params')
     staged = []
     for mime, data in images:

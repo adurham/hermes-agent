@@ -27,7 +27,9 @@ def _stage_user_content(content):
     if isinstance(content, str):
         return content, []
     import base64
+    import binascii
     from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_ingress_media import _ATTACHMENT_LIMIT, _IMAGE_EXT, sniff_image_mime
     texts, attachments = [], []
     for part in content:
         if part.get('type') == 'text':
@@ -38,9 +40,20 @@ def _stage_user_content(content):
             texts.append(f"[Image attached: {url}]")
             continue
         header, _, data = url.partition(',')
-        mime = header[len('data:'):].split(';', 1)[0] or 'image/png'
+        declared = header[len('data:'):].split(';', 1)[0].strip().lower()
+        if len(attachments) >= _ATTACHMENT_LIMIT:
+            raise GatewayClientError('acp_content_invalid')
         try:
-            path = cache_image_from_bytes(base64.b64decode(data), '.' + mime.split('/', 1)[1])
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise GatewayClientError('acp_content_invalid') from exc
+        # The staged extension and admitted type come from the sniffed bytes, never the client's
+        # text (``text/html`` -> .html, ``image/svg+xml``, or a path-shaped subtype on Windows).
+        mime = sniff_image_mime(raw)
+        if mime is None or (declared and {'image/jpg': 'image/jpeg'}.get(declared, declared) != mime):
+            raise GatewayClientError('acp_content_invalid')
+        try:
+            path = cache_image_from_bytes(raw, _IMAGE_EXT[mime])
         except ValueError as exc:
             raise GatewayClientError('acp_content_invalid') from exc
         attachments.append({'path': path, 'mime': mime})

@@ -26,6 +26,20 @@ def _media_root():
 # cleanup of the staging file can change what executes.
 _ATTACHMENT_MIMES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
 _ATTACHMENT_LIMIT = 10
+_IMAGE_EXT = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp'}
+
+
+def sniff_image_mime(data):
+    """The admission image type the bytes really are (png/jpeg/gif/webp), else ``None``."""
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if data[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
 
 
 def admit_attachments(attachments):
@@ -42,6 +56,12 @@ def admit_attachments(attachments):
     paths = [Path(item['path']) for item in attachments]
     if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
         raise RuntimeStoreError('invalid_params')
+    # A hardlink placed in staging is a second name for a file outside it (~/.ssh/id_rsa).
+    try:
+        if any(path.lstat().st_nlink != 1 for path in paths):
+            raise RuntimeStoreError('invalid_params')
+    except OSError as exc:
+        raise RuntimeStoreError('invalid_params') from exc
     return {'attachments_v1': {'media': capture_native_media(paths),
                                'media_types': [item['mime'] for item in attachments]}}
 
