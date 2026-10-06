@@ -558,6 +558,11 @@ def custom_provider_pool_key_candidates(
     if requested_aliases:
         for norm_name, entry in _iter_custom_providers():
             if requested_aliases & _custom_entry_name_aliases(norm_name, entry):
+                # A named pool holds credentials for its configured endpoint only: a launch-
+                # overridden base_url must not inherit them (R2-M1), nor borrow a sibling's by URL.
+                entry_url = _norm_url(entry.get("base_url"))
+                if entry_url and entry_url != normalized_url:
+                    return []
                 return _pool_keys_for_custom_entry(norm_name, entry)
 
     for norm_name, entry in _iter_custom_providers():
