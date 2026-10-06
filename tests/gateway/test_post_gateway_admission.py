@@ -122,3 +122,35 @@ async def test_consumer_fires_in_the_routed_profile_scope_only(tmp_path):
 
     assert fired == [("beta", routed)]
     runner._handle_message_with_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_under_an_authority_the_hook_fires_once_at_ingress_never_at_execution(monkeypatch):
+    """A consumed message is never committed, and an admitted row's execution (first run or
+    restart replay) never offers the same message to the plugin again."""
+    import gateway.session_authorities as authorities
+    import gateway.session_ingress as ingress
+
+    fired = []
+    _register(lambda **kwargs: fired.append(kwargs["text"]) or (
+        {"action": "handled", "reply": "consumed"} if kwargs["text"] == "eat me" else None))
+    runner = _runner()
+    admitted = []
+
+    async def _admit(_authority, event):
+        admitted.append(event.text)
+        return "admitted"
+
+    monkeypatch.setattr(authorities, "active_authority", lambda _runner: object())
+    monkeypatch.setattr(ingress, "admit_message", _admit)
+
+    assert await runner._handle_message(_event("eat me")) == "consumed"
+    assert await runner._handle_message(_event("keep me")) == "admitted"
+    assert admitted == ["keep me"] and fired == ["eat me", "keep me"]
+
+    token = ingress.executing_admission.set(True)
+    try:
+        assert await runner._handle_message(_event("keep me")) == "agent-ok"
+    finally:
+        ingress.executing_admission.reset(token)
+    assert fired == ["eat me", "keep me"]

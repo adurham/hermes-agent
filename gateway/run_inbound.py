@@ -1360,6 +1360,12 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 # its whole request timeout.
                 if self._is_session_running(_quick_key) and await self._hm_busy_preempt(event, source, _quick_key):
                     return None
+                # Ingress-side, once per inbound message (#129958): a consumed message is never
+                # admitted, and a committed row never re-fires it at execution or restart replay.
+                from gateway.run_inbound_consumer import run_post_admission_hook
+                _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
+                if _consumed:
+                    return _consumer_reply
                 return await admit_message(authority, event)
         if (authority is None and not is_internal and not event.get_command()
                 and getattr(self, 'session_authority', None) is not None):
@@ -1415,7 +1421,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            if not is_internal:  # fail-open plugin consume, inside the claimed slot (#129958)
+            # Fail-open plugin consume inside the claimed slot (#129958). An admitted row already
+            # ran it at ingress, before its commit: execution never offers the same message twice.
+            from gateway.session_ingress import executing_admission
+            if not is_internal and not executing_admission.get():
                 from gateway.run_inbound_consumer import run_post_admission_hook
                 _consumed, _consumer_reply = await run_post_admission_hook(self, event, source, _quick_key)
                 if _consumed:
