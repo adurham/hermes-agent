@@ -90,7 +90,7 @@ Each step runs once. Never redo an earlier step. The connect card's answer is fi
 | Ask | First move |
 |---|---|
 | A daily brief / work apps | Connect. Find the connected apps' tools with `tool_search`, then write the brief in the chat. None connected: section 3. |
-| Set up this Mac / install apps | One `clarify` app card, then section 4. |
+| Set up this computer / install apps | One `clarify` app card, then section 4. |
 | Make something in a plugin app (Blender) | Install. Then `skill_view` the plugin's skill by its id and build one small thing. Install not `connected`: section 3. |
 | Automate something / a script | Section 5. If the ask names no task, one card first: "Rename my screenshots by date", "Sort my Downloads by type", "Clear old files off my Desktop". |
 | Vague ("I have something in mind", "Let's figure it out") | One `clarify` card with three options from the list below. Then start the pick. |
@@ -114,10 +114,12 @@ Do not stop with nothing.
 
 ### 4. Machine setup
 
+Use the commands for the OS in the "What setup learned" line.
+
 1. One `clarify` app card: three to five everyday apps that fit their use, multi-pick.
-2. Check 1, one command, shaped like this: `which brew && ls -d "/Applications/Slack.app" "/Applications/Zoom.app" 2>&1`
-3. Install only the picks the check did not find, one app per command: `brew install --cask <app>`. Say "already installed" for the others. Never reinstall.
-4. On Arm, after the installs, one `lipo -archs` command for the new apps. Say when an app is x64 only.
+2. Check 1, one command. macOS: `which brew && ls -d "/Applications/Slack.app" "/Applications/Zoom.app" 2>&1`. Windows: `winget list --accept-source-agreements`. Linux: `which <app> ...`, plus `flatpak list` when flatpak is there.
+3. Install only the picks the check did not find, one app per command. macOS: `brew install --cask <app>`. Windows: `winget install --id <id> -e`. Linux: `flatpak install -y flathub <id>`; a package that needs `sudo` goes on the list in step 5 instead. Say "already installed" for the others. Never reinstall.
+4. On Arm, after the installs, say when an app is x64 only. macOS: one `lipo -archs` command for the new apps. Windows: the winget package has no arm64 installer.
 5. List for them anything that needs a password, a licence or a payment. Never disable security settings.
 6. One line on what changed and the next slice (developer tools, drivers), then the close card.
 
