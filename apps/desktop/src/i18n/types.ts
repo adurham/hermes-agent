@@ -2707,6 +2707,7 @@ export interface Translations extends NoticeTranslations {
     next: string
     overdueSince: string
     noRuns: string
+    queuedRun: string
     manage: string
     showRuns: string
     hideRuns: string

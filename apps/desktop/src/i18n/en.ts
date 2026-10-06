@@ -3114,6 +3114,9 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
+    // Queued trigger feedback in Run History: the backend accepted the trigger
+    // but has not materialized the run session yet (#70826).
+    queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
     hideRuns: 'Hide runs',
