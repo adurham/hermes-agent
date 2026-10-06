@@ -210,14 +210,24 @@ def _worker_env(authority):
     process env byte-for-byte, exactly as before."""
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import _is_routed_home
     home = Path(str(authority.profile_id))
-    if not is_multiplex_active() or not home.is_absolute():
+    if not home.is_absolute():
+        return None
+    # Keyed on the worker's OWNING profile, not only the process-wide multiplex flag: a worker for
+    # another profile must never inherit the launch environ even when that flag reads False.
+    routed = _is_routed_home(home)
+    if not routed and not is_multiplex_active():
         return None
     from agent.secret_scope import build_profile_secret_scope
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
     # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
     env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True), home)
+    if routed:
+        # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
+        # forward launch-process provider credentials that no .env or source snapshot recorded.
+        _scrub_credentials(env, inherit_credentials=False)
     env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
     env['HERMES_HOME'] = str(home)
     from hermes_constants import apply_subprocess_home_env

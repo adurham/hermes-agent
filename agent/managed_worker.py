@@ -14,6 +14,7 @@ except ModuleNotFoundError as exc:
 
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import threading
@@ -161,10 +162,18 @@ class WorkerControls:
             self.channel.send('prompt_settled', prompt_id=prompt_id)
 
 
+_OUTBOX_NAME = re.compile(r'[A-Za-z0-9_-]{1,200}')
+
+
 def outbox_dir(home, execution_id):
     """execution_id is a ledger key ('admission-worker:<hex>'); ':' is not a legal Windows path
     character, so the private outbox directory is a portable spelling of the same identity."""
-    return Path(home) / 'worker-outboxes' / execution_id.replace(':', '-')
+    # A legacy-imported admission id is arbitrary text; never let it name a path outside
+    # worker-outboxes (``../`` on POSIX, ``..\\`` or drive spellings on Windows).
+    name = execution_id.replace(':', '-') if isinstance(execution_id, str) else ''
+    if not _OUTBOX_NAME.fullmatch(name):
+        raise ValueError('invalid_execution_id')
+    return Path(home) / 'worker-outboxes' / name
 
 
 def discover_profile_mcp(policy):
