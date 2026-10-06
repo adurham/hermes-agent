@@ -75,6 +75,42 @@ test('the connect timeout is dropped once headers arrive so a slow body streams 
   }
 })
 
+test('a body that stalls mid-stream is destroyed after the idle deadline, but the save dialog is not timed', async () => {
+  // R4: dropping the connect timeout at headers must not leave a stalled body hanging the
+  // save forever. The idle deadline runs only while the body is being read: an unread body
+  // waiting on the native save dialog is the user's time, not a stall.
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+
+    if (req.url === '/whole') { res.end('bytes');
+
+ return }
+
+    res.write('head-')
+  })
+
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`
+
+  const finish = async (res: http.IncomingMessage) => {
+    await new Promise(resolve => setTimeout(resolve, 150))
+    const chunks: Buffer[] = []
+
+    for await (const chunk of res) { chunks.push(Buffer.from(chunk)) }
+
+    return Buffer.concat(chunks).toString()
+  }
+
+  try {
+    await expect(downloadViaTokenToFile(url + '/whole', 'remote-static', {}, finish, { bodyIdleTimeoutMs: 50 })).resolves.toBe('bytes')
+    await expect(downloadViaTokenToFile(url + '/stall', 'remote-static', {}, finish, { bodyIdleTimeoutMs: 50 })).rejects.toThrow('stalled')
+  } finally {
+    destroyKeepaliveAgents()
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+}, 3_000)
+
 test.skipIf(process.platform === 'win32')('download retries mint a new private grant for every wire attempt and preserve remote auth', async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'download-auth-'))
   const grants: string[] = []
