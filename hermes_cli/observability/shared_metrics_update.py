@@ -169,10 +169,12 @@ def _receipt_stages(receipt: dict[str, Any]) -> list[dict[str, Any]]:
     # The fleet matrix is only passed to finalize by the post-restart verification.
     if isinstance(fleet, list) and fleet and not any(s["name"] == "verify" for s in stages):
         # ---- iuf c1 ----
-        # ``partial`` is written only by update_cmd_fleet._verify_fleet_after_update, so verification
-        # failed even when every fleet row reads current (zero rows expected, an unaccounted runtime,
-        # a dashboard that did not come back, a Windows resume failure).
-        bad = _fleet_bad(receipt) or receipt.get("outcome") == "partial"
+        # ``partial`` is written only by update_cmd_fleet._verify_fleet_after_update, which also
+        # writes it for a failed build or restart; with no failed stage mark, verification itself
+        # failed even when every fleet row reads current (zero rows expected, an unaccounted
+        # runtime, a dashboard that did not come back, a Windows resume failure).
+        bad = _fleet_bad(receipt) or (
+            receipt.get("outcome") == "partial" and not any(s.get("outcome") == "failed" for s in stages))
         # ---- end iuf c1 ----
         stages.append({
             "name": "verify", "outcome": "failed" if bad else "success",

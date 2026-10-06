@@ -104,6 +104,18 @@ def test_a_failed_update_whose_every_stage_passed_names_where_and_why_it_failed(
     }
 
 
+@pytest.mark.parametrize(("failed", "failure_class"), [("build", "build_failed"), ("restart", "restart_failed")])
+def test_a_partial_run_with_a_failed_stage_keeps_that_stage_and_its_verify_row_passes(failed, failure_class):
+    """Invariant: the verification writes ``partial`` for a failed build or restart too, so a
+    failed stage mark (not the synthetic verify stage) is where the run failed."""
+    stages = [(name, "failed" if name == failed else result) for name, result in _ALL_PASSED]
+    extra = {"gateway_restart": {"incomplete": True}} if failed == "restart" else {}
+    run, stage_rows = update_metrics.update_receipt_fields(
+        _receipt("partial", stages, exit_code=1, fleet=[{"state": "current"}], **extra))
+    assert (run["failed_stage"], run["failure_class"]) == (failed, failure_class)
+    assert [(s["stage"], s["outcome"]) for s in stage_rows if s["outcome"] == "failed"] == [(failed, "failed")]
+
+
 @pytest.mark.parametrize(("receipt", "expected"), [
     (_receipt("success", _ALL_PASSED), "none"),
     (_receipt("refused", [], steps=[{"name": "admission", "ok": False}], stop_reason="docker"), "managed_install"),
