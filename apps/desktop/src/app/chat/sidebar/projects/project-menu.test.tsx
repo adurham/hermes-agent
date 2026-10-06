@@ -97,8 +97,6 @@ const autoProject = {
   path: '/auto/repo'
 } as unknown as SidebarProjectTree
 
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
 const openTriggerMenu = (trigger: HTMLElement) => {
   // Radix's dropdown trigger opens on pointerdown (a synthetic 'click' fireEvent
   // alone won't do it), so fire the full mouse sequence a real click produces —
