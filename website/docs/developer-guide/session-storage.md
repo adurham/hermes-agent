@@ -56,7 +56,7 @@ pytest run.
 ### Desktop profile isolation and compaction generations
 
 Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
-including when one `hermes serve` process serves several profiles. In-session
+including when one process (the multiplex gateway, or a `hermes serve`) serves several profiles. In-session
 agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
 that session's database handle and bind its profile home during construction.
 Releasing the outgoing agent must not close the handle inherited by its replacement.

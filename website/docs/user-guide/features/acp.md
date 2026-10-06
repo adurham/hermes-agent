@@ -336,25 +336,25 @@ Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the cu
 
 ## Host integration
 
-These variables are set by an **ACP host process** (an editor or another agent
-harness) on the Hermes subprocess it spawns. They are not user configuration —
-do not set them by hand in `.env` or `config.yaml`.
+Older ACP hosts may still set this variable on the Hermes subprocess they
+spawn. It is not user configuration — do not set it by hand in `.env` or
+`config.yaml`.
 
 | Variable | Value | Effect |
 |----------|-------|--------|
-| `HERMES_ACP_SKIP_CONFIGURED_MCP` | `1` | Skip starting the **globally configured** MCP servers from `config.yaml` before the ACP JSON-RPC loop begins. |
+| `HERMES_ACP_SKIP_CONFIGURED_MCP` | `1` | **No effect.** Hermes no longer reads it. `hermes acp` / `hermes-acp` runs as a viewer of the gateway daemon and never starts the `config.yaml` MCP servers itself, so there is no ACP-side startup to skip. |
 
-Hermes normally starts every MCP server configured in `config.yaml` before it
-enters the ACP JSON-RPC loop. A host that owns MCP itself — passing the
-session's servers explicitly through `session/new` — does not need that global
-startup, and an unrelated slow or interactive MCP server would otherwise delay
-`initialize`. Setting the marker to exactly `1` lets such a host skip it.
+The ACP process does no MCP discovery. The gateway daemon starts the
+`mcp_servers` from its own profile's `config.yaml` once at gateway boot, and ACP
+sessions get those servers through the `platform_toolsets.acp` rules
+[above](#what-hermes-exposes-in-acp-mode). Setting the variable on the ACP
+subprocess or on the gateway does not change that. Use `platform_toolsets.acp`
+or `no_mcp` to keep configured servers out of ACP sessions.
 
-Only the global `config.yaml` discovery is skipped. **MCP servers supplied by
-the ACP session through `session/new` are still registered**, so a host loses
-no capability it asked for. Any other value (unset, empty, `0`, `false`) keeps
-the default behavior, so an unrelated truthy-looking string cannot silently
-disable MCP.
+The editor's `session/new` `mcpServers` are passed to the gateway and attached
+to that canonical session (see
+[Editor-provided MCP servers](#editor-provided-mcp-servers)), whether or not
+the variable is set.
 
 ## Session behavior
 
