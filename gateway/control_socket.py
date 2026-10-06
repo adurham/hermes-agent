@@ -18,7 +18,6 @@ import logging
 import os
 import socket
 import stat
-import struct
 import sys
 import tempfile
 import time
@@ -284,26 +283,13 @@ class GatewayControlServer:
         if os.name == "nt":
             return None
         try:
-            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe
+            from hermes_cli.gateway_runtime_discovery import home_mode_unsafe, socket_peer_uid
             home = self._home
             info = home.lstat()
             if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)
                     or info.st_uid != os.getuid() or home_mode_unsafe(info, home)):  # windows-footgun: ok — POSIX-only helper
                 return None
-            sock = writer.get_extra_info("socket")
-            if hasattr(socket, "SO_PEERCRED"):
-                _, uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            elif sys.platform == "darwin":
-                import ctypes
-                uid_value, gid_value = ctypes.c_uint(), ctypes.c_uint()
-                getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
-                getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
-                getpeereid.restype = ctypes.c_int
-                if getpeereid(sock.fileno(), ctypes.byref(uid_value), ctypes.byref(gid_value)) != 0:
-                    return None
-                uid = uid_value.value
-            else:
-                return None
+            uid = socket_peer_uid(writer.get_extra_info("socket"))
             return f"uid:{uid}" if uid == os.getuid() else None  # windows-footgun: ok — POSIX-only helper
         except OSError:
             return None

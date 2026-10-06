@@ -86,24 +86,17 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
             def __exit__(self, *args):
                 return False
 
-            def settimeout(self, timeout):
-                seen["timeout"] = timeout
-
-            def connect(self, target):
-                seen["socket"] = target
-
             def sendall(self, request):
                 seen["request"] = json.loads(request)
 
             def makefile(self, _mode):
                 return FakeStream()
 
-        def socket_path(home):
+        def connect_private(home, timeout):
             seen["control_home"] = Path(home).resolve()
-            return Path("/fake/gateway.sock")
+            return FakeSocket()
 
-        monkeypatch.setattr(discovery, "_socket_path", socket_path)
-        monkeypatch.setattr(module.socket, "socket", lambda *_a, **_k: FakeSocket())
+        monkeypatch.setattr(discovery, "connect_private", connect_private)
 
     result = module.bootstrap(False)
 

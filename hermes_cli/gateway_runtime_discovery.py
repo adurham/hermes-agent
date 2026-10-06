@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import socket
 import stat
+import sys
 from typing import Literal
 import time
 
@@ -68,6 +69,43 @@ def _private_node(path: Path, *, kind: str, home: bool = False) -> os.stat_resul
     return node
 
 
+def socket_peer_uid(sock: socket.socket) -> int | None:
+    """Kernel-reported uid of the process on the other end of a connected AF_UNIX socket
+    (SO_PEERCRED on Linux, getpeereid on macOS); None where neither exists."""
+    if hasattr(socket, "SO_PEERCRED"):
+        import struct
+        return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[1]
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+    uid, gid = ctypes.c_uint(), ctypes.c_uint()
+    getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
+    getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+    getpeereid.restype = ctypes.c_int
+    if getpeereid(sock.fileno(), ctypes.byref(uid), ctypes.byref(gid)) != 0:
+        raise OSError(ctypes.get_errno(), "getpeereid failed")
+    return uid.value
+
+
+def connect_private(home: Path, timeout: float) -> socket.socket:
+    """Connected control socket for *home* whose listener runs as this user (caller closes it).
+    The path is validated by lstat first, but connect() follows a symlink swapped in afterwards,
+    so the listening process itself is authenticated. Platforms without a peer-credential API
+    (neither SO_PEERCRED nor getpeereid) fall back to the path checks alone."""
+    path = _socket_path(home)
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        peer.settimeout(timeout)
+        peer.connect(str(path))
+        uid = socket_peer_uid(peer)
+        if uid is not None and uid != os.getuid():  # windows-footgun: ok — POSIX socket peer only
+            raise DiscoveryError("unsafe_control_peer")
+        return peer
+    except BaseException:
+        peer.close()
+        raise
+
+
 def _socket_path(home: Path) -> Path:
     _private_node(home, kind="directory", home=True)
     direct = home / "gateway.sock"
@@ -108,14 +146,8 @@ def query_identify(home: Path, *, timeout: float) -> dict:
         return _identify_response(query_runtime_control(
             home, b'{"protocol":1,"verb":"identify","id":1}\n', timeout))
     deadline = time.monotonic() + timeout
-    path = _socket_path(home)
     request = b'{"protocol":1,"verb":"identify","id":1}\n'
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        budget = deadline - time.monotonic()
-        if budget <= 0:
-            raise TimeoutError
-        client.settimeout(budget)
-        client.connect(str(path))
+    with connect_private(home, timeout) as client:
         budget = deadline - time.monotonic()
         if budget <= 0:
             raise TimeoutError

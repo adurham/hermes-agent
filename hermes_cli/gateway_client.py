@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager, suppress
 import json
 import os
 from pathlib import Path
-import socket
 import time
 
 
@@ -73,7 +72,7 @@ class GatewayClient:
 
 def _session_ticket(home: Path, endpoint, *, purpose="interactive") -> str:
     from hermes_cli.gateway_runtime import control_home_for
-    from hermes_cli.gateway_runtime_discovery import _socket_path, _identify_response
+    from hermes_cli.gateway_runtime_discovery import connect_private, _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
     home = control_home_for(home, endpoint)
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
@@ -84,9 +83,7 @@ def _session_ticket(home: Path, endpoint, *, purpose="interactive") -> str:
         data = query_runtime_control(home, request, 5)
     else:
         deadline = time.monotonic() + 5
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-            peer.settimeout(5)
-            peer.connect(str(_socket_path(home)))
+        with connect_private(home, 5) as peer:
             peer.sendall(request)
             data = bytearray()
             while b"\n" not in data:

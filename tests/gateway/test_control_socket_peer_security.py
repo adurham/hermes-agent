@@ -62,3 +62,37 @@ def test_group_bits_that_are_an_acl_mask_never_count_as_a_private_group(tmp_path
         def get_extra_info(self, _key):
             return ours
     assert GatewayControlServer(home)._posix_peer_subject(Writer()) is None
+
+
+def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypatch):
+    # lstat validates the path, but connect() follows a symlink swapped in afterwards: the
+    # client must authenticate the listening process itself (SO_PEERCRED / getpeereid).
+    import asyncio
+    import inspect
+    from gateway import control_socket, session_hosted_transport
+    from hermes_cli import gateway_client
+    from hermes_cli import gateway_runtime_discovery as discovery
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    real_uid = os.getuid()
+
+    async def run():
+        server = control_socket.GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
+        assert await server.start()
+        try:
+            path = discovery._socket_path(home)
+            monkeypatch.setattr(discovery.os, "getuid", lambda: real_uid + 1)
+            monkeypatch.setattr(discovery, "_socket_path", lambda _home: path)
+            with pytest.raises(discovery.DiscoveryError, match="unsafe_control_peer"):
+                await asyncio.to_thread(discovery.query_identify, home, timeout=2)
+        finally:
+            monkeypatch.undo()
+            await server.stop()
+    asyncio.run(run())
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("tui_bootstrap", "ui-tui/scripts/gateway_bootstrap.py")
+    tui_bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tui_bootstrap)
+    for client in (gateway_client._session_ticket, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
+        source = inspect.getsource(client)
+        assert "connect_private(" in source and "AF_UNIX" not in source, client.__qualname__

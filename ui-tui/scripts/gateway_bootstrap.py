@@ -3,7 +3,6 @@ import contextlib
 import json
 import os
 from pathlib import Path
-import socket
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -12,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 def bootstrap(start: bool) -> dict:
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
-    from hermes_cli.gateway_runtime_discovery import _socket_path
+    from hermes_cli.gateway_runtime_discovery import connect_private
 
     home = get_hermes_home().resolve()
     # Launch policy travels in session.create, not into daemon-wide defaults.
@@ -34,9 +33,7 @@ def bootstrap(start: bool) -> dict:
         from gateway.runtime_bootstrap_windows import query_runtime_control
         raw = query_runtime_control(control, request, 5)
     else:
-        with socket.socket(socket.AF_UNIX) as peer:
-            peer.settimeout(5)
-            peer.connect(str(_socket_path(control)))
+        with connect_private(control, 5) as peer:
             peer.sendall(request)
             with peer.makefile("rb") as stream:
                 raw = stream.readline(65537)
