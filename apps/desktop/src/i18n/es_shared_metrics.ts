@@ -18,7 +18,7 @@ export const esSharedMetrics = {
   installId:
     'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',
   consentWindow:
-    'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada; los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
+    'Solo se envían los paquetes cuyo periodo de recopilación completo cae dentro de una ventana de consentimiento registrada. Salvo el aviso de instalación nueva (registrado en este equipo y que solo se cuenta si aceptas), los datos de antes de aceptar, o de cualquier intervalo con el envío desactivado, se quedan en este equipo. Puedes volver a desactivar el envío cuando quieras.',
   readDocs: 'Leer todos los detalles',
   share: 'Recopilar y enviar a Nous',
   local: 'Recopilar solo en local',

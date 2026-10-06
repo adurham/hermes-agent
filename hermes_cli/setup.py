@@ -517,8 +517,10 @@ _SEND_CONSENT_EXPLAINER = (
     "(it contains no personal information and is reset by deleting",
     "the shared-metrics directory). Only packages whose entire",
     "collection period falls inside a recorded consent window are",
-    "ever sent — data from before you opt in, or from any gap",
-    "while sending was off, stays on this machine. Sending can be", "turned off again at any time.",
+    "ever sent. Apart from the fresh-install note (noted on this",
+    "machine and counted only once you opt in), data from before",
+    "you opt in, or from any gap while sending was off, stays on",
+    "this machine. Sending can be turned off again at any time.",
 )
 
 

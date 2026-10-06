@@ -19,7 +19,7 @@ export const enSharedMetrics: Translations['sharedMetrics'] = {
   installId:
     'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',
   consentWindow:
-    'Only packages whose entire collection period falls inside a recorded consent window are ever sent — data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
+    'Only packages whose entire collection period falls inside a recorded consent window are ever sent. Apart from the fresh-install note (noted on this machine and counted only once you opt in), data from before you opt in, or from any gap while sending was off, stays on this machine. Sending can be turned off again at any time.',
   readDocs: 'Read the full details',
   share: 'Collect and send to Nous',
   local: 'Collect locally only',

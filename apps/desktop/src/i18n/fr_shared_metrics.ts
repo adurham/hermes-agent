@@ -18,7 +18,7 @@ export const frSharedMetrics = {
   installId:
     'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
   consentWindow:
-    'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés. Hormis la note de nouvelle installation (enregistrée sur cette machine et comptée seulement après votre accord), les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
   readDocs: 'Lire tous les détails',
   share: 'Collecter et envoyer à Nous',
   local: 'Collecter en local uniquement',

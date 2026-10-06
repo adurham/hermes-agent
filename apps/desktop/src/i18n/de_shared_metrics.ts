@@ -18,7 +18,7 @@ export const deSharedMetrics = {
   installId:
     'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
   consentWindow:
-    'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt – Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, bleiben auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
+    'Gesendet werden nur Pakete, deren gesamter Erfassungszeitraum in ein erfasstes Zustimmungsfenster fällt. Abgesehen vom Hinweis auf eine Neuinstallation (auf diesem Gerät festgehalten und erst nach Ihrer Zustimmung gezählt) bleiben Daten von vor Ihrer Zustimmung oder aus Lücken, in denen das Senden aus war, auf diesem Rechner. Das Senden lässt sich jederzeit wieder abschalten.',
   readDocs: 'Alle Details lesen',
   share: 'Erfassen und an Nous senden',
   local: 'Nur lokal erfassen',
