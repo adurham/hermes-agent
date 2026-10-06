@@ -75,6 +75,30 @@ reproduces identically on the stashed base, unrelated).
 **Upstreamable:** no — upstream still ships the `🗜️` badge; this is fork doctrine (same rationale as the
 tool-emoji strip). If upstream ever strips it, drop this delta at sync.
 
+**Four-layer defense (commit `fb7912a866`, same day — per external design review):** the class is now
+structurally guarded, not instance-by-instance:
+  1. `hermes_cli/portable_glyphs.py` — committed allowlist (the exact 69 non-ASCII codepoints chrome
+     uses, classed narrow-solid / wide-solid / accepted-risk) + banned sequence machinery (ZWJ,
+     VS-15/16, keycaps, RIs, skin tones, tags, bidi) + `normalize_for_chrome()` cluster normalization;
+     ALL runtime ingress sanitizers upgraded from VS-16-strip to full cluster normalization.
+  2. `tests/hermes_cli/test_width_engine_matrix.py` — every chrome codepoint scored across
+     pt/wcwidth, xterm.js Unicode-11 (fixture pinned to the shipped @xterm/addon-unicode11 v0.9.0 and
+     version-checked), frozen Emoji_Presentation table + EAW (kitty-class), and an ambiguous-wide
+     column (iTerm2 pref / CJK locales). Only recorded accepted-risk A-width glyphs may diverge.
+  3. `tests/hermes_cli/test_diff_replay_no_stale_cells.py` — the MECHANISM test: real pt Application,
+     captured repaint bytes, replay onto a kitty-class painted grid, convergence asserted vs full
+     rewrite. Teeth: VS16 at a wrap boundary must corrupt (reproduces "70s"; bare badge stays clean).
+  4. `test_pt_chrome_no_vs16.py` — full banned-set sweep + inverted allowlist enforcement; teeth
+     proven (re-inserting "🗜️" fails 7 tests).
+  Fixture regeneration: `node scripts/gen_xterm_width_fixture.js` (node_modules version bump =>
+  `test_fixture_is_pinned_to_shipped_xterm_version` fails loudly).
+
+  Harness finding worth keeping: pt's diff uses relative cursor moves, so a 1-cell model/paint shift
+  is SELF-CORRECTING mid-line (single-row scenarios converge clean) — the corruption composes at
+  WRAP BOUNDARIES where the model wraps a row earlier than the painted grid and the shifted row's
+  stale cells are never rewritten. That is why the bug needed scrollback/tool-output interleaving
+  (run_in_terminal full redraws) plus a boundary row to compose.
+
 ### Upstream PRs — 2026-10-04 (resurrection batch #2: exit-summary ordering #132899, estimator dedup #132900; both DRAFT)
 
 Fable-ruled re-mining of the July PRs closed on 2026-09-08 as housekeeping (NOT wontfix — maintainers had rated the premises valid). Both re-derived fresh on current upstream tip (`8d256ff184`-era), draft-only per the account gate.
