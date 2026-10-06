@@ -70,6 +70,7 @@
       "per_layer_f16": 2048,
       "moe": true,
       "n_vocab": 248320,
+      "architecture": "qwen4exp",
       "mtp_draft_depth": 3,
       "mmproj": {
         "path": "mmproj-BF16.gguf",

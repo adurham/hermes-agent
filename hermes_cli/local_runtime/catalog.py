@@ -96,6 +96,9 @@ class CatalogEntry:
     # Vocab size prices the GPU logits buffers (ubatch x vocab x fp32, doubled under MTP backend
     # sampling) — a multi-GiB term at large vocabs that a weights-only fit would miss.
     n_vocab: int = 0
+    # GGUF general.architecture; prices architecture-specific buffers (estimator._WINDOW_COMPUTE_BYTES)
+    # before the file is on disk.
+    architecture: str = ""
     mmproj: "AssetFile | None" = None    # vision projector, downloads with model
     draft: "AssetFile | None" = None     # spec-decode draft model (e.g. DSpark)
     # MTP head shipped as its own file (the model carries none): the engine loads it as the
@@ -132,8 +135,8 @@ class CatalogEntry:
         return ModelProfile(
             name=variant.model_id, weights_bytes=variant.weights_bytes, embd_table_bytes=0,
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
-            n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp_capable else 1.0,
-            lazy_bytes=variant.lazy_bytes)
+            architecture=self.architecture, n_vocab=self.n_vocab,
+            kv_scale=1.2 if self.mtp_capable else 1.0, lazy_bytes=variant.lazy_bytes)
 
     def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
         # Optional external drafts may use spare memory after download, never reduce this grant.
@@ -285,7 +288,7 @@ _SCALAR_FIELDS = {
     "swa_layers": (int, 0), "swa_window": (int, 0),
     "moe": (bool, False), "mtp": (bool, False), "mtp_draft_depth": (int, 3),
     "n_vocab": (int, 0), "sampling": (dict, {}), "min_engine": (str, ""),
-    "quality": (int, 0), "decode_fraction": (float, 1.0),
+    "quality": (int, 0), "decode_fraction": (float, 1.0), "architecture": (str, ""),
 }
 
 

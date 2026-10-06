@@ -71,7 +71,8 @@ def _unified(size_gb: int) -> HardwareBudget:
 # - 96 GB and up, discrete or unified: Flash Next fits resident. Its
 #   IQ4_XS build loads ~60 GiB — the engine reads the 26.8 GiB per-layer
 #   embedding table from disk on demand — so with its MTP head and
-#   projector it needs ~74 GiB even at the native 256K window. It is the
+#   projector it holds the native 256K window in ~83 GiB on 128 GB, and
+#   144K on 96 GB. It is the
 #   pick: highest quality, and its sparse decode clears the floor even at
 #   UMA bandwidth (~28 tok/s predicted at 210 GB/s).
 # - Unified 32-48 GB: the dense 27B predicts ~13 tok/s at UMA bandwidth

@@ -143,7 +143,8 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
     from types import SimpleNamespace
 
     from hermes_cli.local_runtime import bootstrap, catalog, presets
-    from hermes_cli.local_runtime.context_policy import RUNTIME_OVERHEAD_BYTES, ub_logits_bytes
+    from hermes_cli.local_runtime.context_policy import (
+        RUNTIME_OVERHEAD_BYTES, posture_profile, ub_logits_bytes)
     from hermes_cli.local_runtime.estimator import ctx_bytes
     from hermes_cli.web_routers.local_models import _catalog_row
 
@@ -177,7 +178,9 @@ def test_catalog_and_preset_agree_on_identical_model_facts(tmp_path, monkeypatch
                 overhead = (RUNTIME_OVERHEAD_BYTES + entry.companion_bytes
                             + ub_logits_bytes(profile.n_vocab, mtp_capable=mtp,
                                               mtp_prefill=preset.keys.get("ubatch-size") == "2048" and mtp))
-                need = profile.weights_bytes + ctx_bytes(profile, preset.window) + overhead
+                posture = posture_profile(profile, mtp_capable=mtp,
+                                          mtp_prefill=preset.keys.get("ubatch-size") == "2048" and mtp)
+                need = profile.weights_bytes + ctx_bytes(posture, preset.window) + overhead
                 assert preset.spilled == (need > machine.usable_vram_bytes)
                 assert need <= machine.usable_vram_bytes + machine.ram_available_bytes
 

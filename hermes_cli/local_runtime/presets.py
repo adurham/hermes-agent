@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
@@ -161,7 +161,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
             # The model carries no MTP layers: draft-mtp drafts from the shipped head instead.
             keys["model-draft"] = str(companions.mtp_head)
         draft_path = _asset_path(entry.draft) if decision.spilled else None
-        if draft_path is not None and _draft_fits(draft_path, profile, budget, decision.window, plan.overhead_bytes):
+        if draft_path is not None and _draft_fits(draft_path, plan.profile, budget, decision.window,
+                                                  plan.overhead_bytes):
             keys["model-draft"] = str(draft_path)
             keys["spec-type"] = "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
@@ -186,9 +187,7 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int |
     plan = plan_launch(profile, budget, mtp_capable=is_mtp,
                        fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
                        requested_window=window)
-    if is_mtp and profile.kv_scale == 1.0:
-        profile = replace(profile, kv_scale=1.2)
-    return footprint_bytes(profile, window, overhead_bytes=plan.overhead_bytes)
+    return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
 
 
 def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
@@ -213,7 +212,7 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
         return None
     # Priced whole even when the plan spills: a spilled model still holds part of its weights on
     # the device, and over-counting errs toward the side that cannot thrash.
-    return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
+    return footprint_bytes(plan.profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 
 def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
