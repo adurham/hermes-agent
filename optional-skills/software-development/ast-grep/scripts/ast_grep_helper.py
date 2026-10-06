@@ -605,7 +605,8 @@ def cmd_install(_args: argparse.Namespace) -> int:
         err(f"installer not found: {installer}")
         return 1
     trace(f"running installer: {' '.join(cmd)}")
-    return subprocess.run(cmd).returncode
+    # health: allow HX006 -- the installer downloads a release; its duration depends on the network
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL).returncode
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
