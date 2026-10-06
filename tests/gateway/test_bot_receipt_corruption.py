@@ -173,6 +173,7 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
             entry,
             author=None,
             legacy=None,
+            notification_category="result",
         ):
             migrated.append((key, message, legacy["status"]))
 
