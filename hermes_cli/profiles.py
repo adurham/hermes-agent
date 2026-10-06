@@ -1334,7 +1334,7 @@ def _strip_multiplex_flag(config_path: Path) -> None:
     if not config_path.is_file():
         return
     with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_cli.config import atomic_config_replace, read_user_config_raw
         cfg = read_user_config_raw(config_path)
         gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
         if "multiplex_profiles" not in cfg and "multiplex_profiles" not in gateway:
@@ -1343,8 +1343,11 @@ def _strip_multiplex_flag(config_path: Path) -> None:
         gateway.pop("multiplex_profiles", None)
         if not gateway and "gateway" in cfg:
             cfg.pop("gateway")
-        # Absent keys are deleted by the round-trip writer; the clone's comments survive.
-        atomic_config_write(config_path, cfg)
+        # Deleting the flag is deliberate, so use the replace writer (the plain writer refuses
+        # omissions); the clone's comments still survive the round-trip.
+        atomic_config_replace(config_path, cfg)
+
+
 def _clone_plugins_ignore(plugins_root: Path):
     """copytree ignore for a cloned ``plugins/``: :func:`_non_exportable_entries` everywhere, plus
     the installer's in-flight ``.install-*`` / ``.update-*`` staging dirs at the root."""
