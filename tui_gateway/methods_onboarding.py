@@ -75,7 +75,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4072, "no setup profile to reset")
         _clear_setup_sessions(found[1])
         try:
-            setup = reset_setup_profile()
+            setup = reset_setup_profile(_launch_home())
         except Exception as e:
             return _err(rid, 5074, str(e))
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "reset": True})

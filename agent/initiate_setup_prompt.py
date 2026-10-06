@@ -24,11 +24,12 @@ def build_initiate_setup_prompt(surface: str, tools, primary_profile: str, sessi
     """The skill, then one JSON block of facts the model reads as they are. ``session_id``: the desktop session
     the turn runs in; its ``setup_choose`` cards read the same facts."""
     from hermes_cli.anon_auth import free_tier_route
-    from hermes_cli.setup_profile import read_state, record_cards
+    from hermes_cli.setup_profile import read_cards, read_state, record_cards
 
     host = initiate_setup_facts.facts()
     if session_id:
-        record_cards(session_id, initiate_setup_facts.setup_cards(host))
+        # Kickoff re-sends the command into a stalled chat: keep the picks already recorded there.
+        record_cards(session_id, {**read_cards(session_id), **initiate_setup_facts.setup_cards(host)})
     block = {
         "surface": surface,
         "tools_present": sorted(set(tools)),

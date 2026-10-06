@@ -88,12 +88,15 @@ def ensure_setup_profile() -> SetupProfile:
     return SetupProfile(name, path, created=True)
 
 
-def reset_setup_profile() -> SetupProfile:
+def reset_setup_profile(launch_home: Path) -> SetupProfile:
     found = find_setup_profile()
     if found is None:
         raise LookupError("no setup profile to reset")
     name, path = found
+    # Reset can run on the setup profile's own backend; its skills then come from the launch profile.
     source = get_hermes_home()
+    if (source / profiles_mod.SETUP_PROFILE_MARKER).is_file():
+        source = launch_home
     _write_soul(path)
     _replace_dir(path / "memories")
     _write_setup_config(path)
