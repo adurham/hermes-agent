@@ -60,7 +60,7 @@ def _deliver_bot_chat(job: dict, content: str) -> str:
 
     captured = {}
 
-    def _fake_deliver(home, owner, message, *, delivery_id):
+    def _fake_deliver(home, owner, message, *, delivery_id, notification_category="result"):
         captured["message"] = message
         return {"status": "settled", "message": message, "delivery_id": delivery_id}
 
