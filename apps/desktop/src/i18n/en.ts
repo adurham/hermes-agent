@@ -2,6 +2,7 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import { enAppTour, enHandoffTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
+import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
 import { enLocalModels } from './en_local_models'
@@ -508,14 +509,7 @@ export const en: Translations = {
 
   ...enNotices,
 
-  billingBlock: {
-    titleNous: 'Out of Nous credits',
-    titleProvider: provider => `Out of credits — ${provider}`,
-    fallbackMessage: 'Your account is out of credits. Add credits to keep going.',
-    openBilling: 'Open billing',
-    addCredits: 'Add credits',
-    dismiss: 'Dismiss'
-  },
+  ...enBilling,
 
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
