@@ -1,5 +1,6 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config'})
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
+_ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp'}
 
 
@@ -303,11 +305,19 @@ def policy_scope(policy, *, authority=None):
                 terminal[path[1]] = value
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
+    policy_token = _ACTIVE_POLICY.set(policy)
     from gateway.session_local_editor import editor_scope
     try:
         from gateway.session_local_mcp import editor_mcp_scope
         with editor_scope(policy), editor_mcp_scope(authority, policy):
             yield
     finally:
+        _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
+
+
+def active_policy():
+    """The frozen launch policy of the turn executing in this context, or ``None`` (standalone
+    serve / messaging turns). Consumers read it instead of re-deriving from live config."""
+    return _ACTIVE_POLICY.get()
