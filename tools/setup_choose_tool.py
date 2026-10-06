@@ -219,8 +219,8 @@ def _connectors_closed() -> Optional[str]:
     if load_config().enabled and not current_nous_state() and guest_enabled():
         try:
             ensure_portal_identity(explicit=True)
-        except Exception as exc:
-            logger.info("setup_choose: no guest identity for connectors: %s", exc)
+        except Exception:  # health: allow BLE001 -- one best-effort mint; on any failure the card says why it is closed
+            logger.info("setup_choose: no guest identity for connectors", exc_info=True)
         if connectors_available():
             return None
     return _NO_CONNECTORS
@@ -273,6 +273,7 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
             record_cards(session_id, state)
         return json.dumps({**result, **extra}, ensure_ascii=False)
     except Exception as exc:
+        logger.exception("setup_choose failed")
         return tool_error(f"Failed to get user input: {exc}")
 
 

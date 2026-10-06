@@ -45,3 +45,12 @@ def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
         result = tail.get("content") if tail.get("role") == "tool" else None
     prelude.close()
     return verdict
+
+
+def play_prelude(agent: Any, s: Any, prelude: Optional[Prelude]) -> Tuple[str, Any]:
+    """``("return", result)`` ends the turn now, ``("break", None)`` skips the model call, ``("run", None)`` runs
+    the loop as usual (also when there is no prelude)."""
+    verdict = run_scripted_prelude(agent, s, prelude) if prelude is not None else None
+    if verdict is not None and verdict.action in ("return", "break"):
+        return verdict.action, verdict.result
+    return "run", None

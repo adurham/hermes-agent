@@ -250,7 +250,7 @@ class CLIChatTurnMixin:
             if note:
                 prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
                 agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
-        except Exception:
+        except Exception:  # health: allow BLE001 -- the note is optional; a failure leaves the first turn as it was
             logger.debug("first-contact onboarding note failed", exc_info=True)
 
     def _chat_stage_user_message(self, agent, message):

@@ -43,6 +43,7 @@ def _(rid, params: dict) -> dict:
             finally:
                 release_or_close(db)
     except Exception as e:
+        logger.exception("onboarding.ensure_setup_session failed")
         return _err(rid, 5075, str(e))
     return _ok(rid, {"profile": setup.name, "session_id": row["id"], "empty": not row["message_count"]})
 
@@ -80,12 +81,25 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"name": setup.name, "path": str(setup.path), "reset": True})
 
 
+# The /initiate-setup slash builtin (methods_tools._SLASH_BUILTINS): the skill plus the facts block as one turn.
+def _cmd_initiate_setup(rid, params, session, name, arg):
+    with _session_profile_runtime_scope(session or {}):
+        enabled, disabled = _session_toolsets(session)
+        tools = _tools_mod("model_tools").get_tool_definitions(
+            enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True, skip_tool_search_assembly=True)
+        surface = _resolve_agent_platform(_session_source(session))
+        primary = _tools_mod("hermes_cli.setup_profile").primary_profile(_launch_home())
+        message = _tools_mod("agent.initiate_setup_prompt").build_initiate_setup_prompt(
+            surface, [tool["function"]["name"] for tool in tools], primary, (session or {}).get("session_key"))
+    return _ok(rid, {"type": "send", "message": message, "display": "/initiate-setup"})
+
 def _onboarding_state_result(rid, change) -> dict:
     from hermes_cli.setup_profile import find_setup_profile, onboarding_eligible
     try:
         state = change()
         found = find_setup_profile()
     except Exception as e:
+        logger.exception("onboarding state update failed")
         return _err(rid, 5076, str(e))
     return _ok(rid, {"eligible": onboarding_eligible(), "profile": found[0] if found else None, **state})
 
