@@ -135,3 +135,31 @@ def test_null_config_sections_read_as_absent(tmp_path):
     assert isinstance(legacy, LocalSessionPolicy)
     assert legacy.config().get('display', {}).get('busy_input_mode', 'interrupt') == 'interrupt'
 
+
+
+def test_frozen_route_keeps_its_endpoint_after_live_config_edit(tmp_path, monkeypatch):
+    """R2-M2: the frozen policy's config-derived endpoint is the one its frozen credential
+    belongs to; a later ``model.base_url`` edit must not redirect that credential."""
+    import json
+    from types import SimpleNamespace
+    from gateway.session_policy import build_policy, bind_launch_key
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.config_effective import load_user_config_effective
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+
+    def write(url, key):
+        (home / 'config.yaml').write_text(json.dumps(
+            {'model': {'provider': 'custom', 'base_url': url, 'api_key': key, 'default': 'm'}}))
+    write('http://127.0.0.1:1/v1', 'sk-frozen-endpoint-one')
+    private = {}
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, load_user_config_effective(home / 'config.yaml'),
+                          private_secrets=private)
+    authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=None)
+    policy = bind_launch_key(authority, 'sid', policy, None, config_secrets=private)
+    write('http://127.0.0.1:2/v1', 'sk-new-endpoint-two')
+    monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda runner, source: policy)
+    runner = SimpleNamespace(session_authority=authority)
+    _, runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())
+    assert (runtime['base_url'], runtime['api_key']) == ('http://127.0.0.1:1/v1', 'sk-frozen-endpoint-one')
