@@ -850,7 +850,9 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
     except HTTPException as exc:
         # Already-absent is an idempotent success: the desktop optimistically removes the row
         # and RESTORES it on any error, so a 404 resurrected ghost rows (a row deleted by
-        # another client between the sidebar snapshot and this DELETE).
+        # another client between the sidebar snapshot and this DELETE). An exact retry of the
+        # caller's own committed request never reaches here: mutate_session checks the receipt
+        # before resolving the id, so it replays that receipt (or 409s on a changed digest).
         if exc.status_code == 404 and exc.detail == 'not_found':
             return {"ok": True, "already_absent": True}
         raise
