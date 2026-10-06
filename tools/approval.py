@@ -52,6 +52,9 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Session keys whose frozen launch YOLO (`hermes chat --yolo`) was already applied: the launch flag seeds
+# the bypass once, so a later `/yolo` off is not silently re-enabled by the next turn.
+_launch_yolo_applied: set[str] = set()
 _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
 _permanent_approved_by_home: dict[str, set] = {}
@@ -283,6 +286,19 @@ def disable_session_yolo(session_key: str) -> None:
     _set_session_yolo(session_key, False)
 
 
+def apply_launch_yolo(session_key: str) -> None:
+    """Seed a launch-time YOLO bypass once per session boundary. Called every turn of a ``--yolo``
+    route; only the first call (or the first after ``clear_session``) enables it, so a user's
+    later revocation sticks instead of lasting a single turn."""
+    if not session_key:
+        return
+    with _lock:
+        if session_key in _launch_yolo_applied:
+            return
+        _launch_yolo_applied.add(session_key)
+    _set_session_yolo(session_key, True)
+
+
 def clear_session(session_key: str) -> None:
     """Remove all approval and yolo state for a given session."""
     if not session_key:
@@ -290,6 +306,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;

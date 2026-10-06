@@ -58,3 +58,36 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
 
     assert is_session_yolo_enabled(session_a) is False
     assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+def test_launch_yolo_revocation_survives_the_next_turn(monkeypatch):
+    """`hermes chat --yolo` seeds the bypass once; a later `/yolo` off is not re-enabled per turn."""
+    from types import SimpleNamespace
+    import gateway.session_policy as session_policy
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = _make_runner()
+    source = SessionSource(platform=Platform.LOCAL, chat_id="launch-yolo", user_id="u", chat_type="dm")
+    key = "agent:main:local:dm:launch-yolo"
+    monkeypatch.setattr(session_policy, "policy_for_source",
+                        lambda _runner, _source: SimpleNamespace(yolo=True, platform="cli", max_turns=5))
+
+    def _stop(**_kw):
+        raise RuntimeError("stop after the yolo seam")
+    runner._resolve_session_agent_runtime = _stop
+    runner._pre_agent_fallback_notice = None
+    runner._get_system_prompt_for_channel = lambda *a, **k: ""
+
+    def turn():
+        TurnRunner(runner, TurnContext(source=source, session_key=key))._run_sync_scoped()
+
+    try:
+        turn()
+        assert is_session_yolo_enabled(key) is True
+        disable_session_yolo(key)
+        turn()
+        assert is_session_yolo_enabled(key) is False
+    finally:
+        from tools.approval import clear_session
+        clear_session(key)
