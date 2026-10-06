@@ -5,8 +5,8 @@ import { ruAuxTasks } from './ru_aux_tasks'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruPluginSettings } from './ru_plugins'
-import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruProjects } from './ru_projects'
+import { ruSharedMetrics } from './ru_shared_metrics'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного

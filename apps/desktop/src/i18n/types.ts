@@ -15,12 +15,9 @@ import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
-import type { SharedMetricsTranslations } from './types_shared_metrics'
-<<<<<<< HEAD
-import type { UninstallSectionTranslations } from './types_uninstall_section'
-=======
 import type { SidebarProjectsTranslations } from './types_projects'
->>>>>>> 5b178bab48e3 (refactor(desktop): move sidebar projects copy into per-locale siblings for #73091)
+import type { SharedMetricsTranslations } from './types_shared_metrics'
+import type { UninstallSectionTranslations } from './types_uninstall_section'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'

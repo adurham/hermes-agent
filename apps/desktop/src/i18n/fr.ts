@@ -6,9 +6,9 @@ import { frBoot } from './fr_boot'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
+import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
-import { frProjects } from './fr_projects'
 
 export const frOverrides = {
   sharedMetrics: frSharedMetrics,
