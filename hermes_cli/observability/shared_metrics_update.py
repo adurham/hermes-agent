@@ -128,9 +128,13 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
         if "build" not in marked:
             return "build_failed"
         return "other"
+    if "schema" not in receipt:
+        # A parked copy (update_receipt._metric_receipt): parked only when the checkout already
+        # moved under the pre-pull interpreter, and it carries no stop reason or exit code.
+        return "other"
     # update_cmd._handle_update_called_process_error is the one finalize("failed") with neither a
     # stop reason nor an exit code: a git/installer subprocess failed before the checkout moved.
-    if "schema" in receipt and not reason and exit_code is None:
+    if not reason and exit_code is None:
         return "git_failed"
     return "aborted_before_apply"
 # ---- end iuf c1 ----
