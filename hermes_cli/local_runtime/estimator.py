@@ -6,7 +6,7 @@ ground truth after it. Unknown shapes round UP (never underestimate memory).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from hermes_cli.local_runtime.gguf import GGUFHeader
@@ -55,7 +55,9 @@ class ModelProfile:
     construct profiles directly."""
 
     name: str
-    weights_bytes: int          # weights the engine loads; tensors it reads from disk on demand are not
+    # Weights the engine loads when it reads lazy_bytes from disk on demand; as_loaded() adds them
+    # back on a machine where it reads them up front.
+    weights_bytes: int
     embd_table_bytes: int
     n_ctx_train: int
     layers: list[tuple[LayerKind, int]]   # (kind, kv_bytes_per_token_f16); SWA capped, recurrent ignored
@@ -70,6 +72,9 @@ class ModelProfile:
     kv_scale: float = 1.0
     # block index -> FFN weight bytes (from the tensor table); empty when unknown.
     ffn_block_bytes: dict[int, int] = field(default_factory=dict)
+    # Bytes of architecture-marked tensors (gguf._LAZY_READ_TENSORS) the engine can read from disk
+    # on demand instead of loading.
+    lazy_bytes: int = 0
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -94,6 +99,18 @@ class HardwareBudget:
     gpu_name: str = ""          # display name; legacy fallback for performance estimates
     platform: str = ""          # sys.platform of the machine being priced
     gpu_pci_id: int | None = None  # nvidia-smi's packed PCI device/vendor ID
+    # The engine reads lazy tensors from disk here. llama.cpp's own default does so everywhere
+    # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
+    # AMD/Intel integrated GPUs load them up front.
+    lazy_reads: bool = True
+
+
+def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:
+    """The profile as this machine loads it: on-demand tensors count as weights where the engine
+    reads them up front."""
+    if profile.lazy_bytes and not budget.lazy_reads:
+        return replace(profile, weights_bytes=profile.weights_bytes + profile.lazy_bytes, lazy_bytes=0)
+    return profile
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
@@ -139,7 +156,7 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
         moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
-        ffn_block_bytes=dict(header.ffn_block_bytes))
+        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes)
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:

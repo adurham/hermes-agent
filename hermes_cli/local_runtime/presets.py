@@ -12,7 +12,7 @@ from pathlib import Path
 from hermes_cli.local_runtime.context_policy import (
     RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, PhysicsRefusal, ctx_bytes, footprint_bytes, profile_from_gguf)
+    HardwareBudget, PhysicsRefusal, as_loaded, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
 
 logger = logging.getLogger(__name__)
@@ -112,7 +112,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     model_id = model_id_from_stem(gguf.stem)
     try:
         header = read_gguf_header(gguf)
-        profile = profile_from_gguf(header)
+        profile = as_loaded(profile_from_gguf(header), budget)
     except (ValueError, OSError) as exc:
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
@@ -136,6 +136,10 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
+    if profile.lazy_bytes:
+        # The price above leaves these tensors on disk; llama.cpp's own default loads them on
+        # integrated GPUs.
+        keys["lazy-mode"] = "on"
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
         # against the vendor's published llama.cpp recipes).
@@ -172,7 +176,7 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int |
 
     model_id = model_id_from_stem(gguf.stem)
     try:
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        profile = as_loaded(profile_from_gguf(read_gguf_header(gguf)), budget)
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None
@@ -196,7 +200,7 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
 
     model_id = model_id_from_stem(gguf.stem)
     try:
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        profile = as_loaded(profile_from_gguf(read_gguf_header(gguf)), budget)
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None

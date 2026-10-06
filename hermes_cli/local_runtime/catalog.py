@@ -18,7 +18,8 @@ from pathlib import PurePosixPath
 
 from hermes_cli.local_runtime.context_policy import (
     FLOOR, RUNTIME_OVERHEAD_BYTES, TARGET_WINDOW, LaunchPlan, plan_launch)
-from hermes_cli.local_runtime.estimator import HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal
+from hermes_cli.local_runtime.estimator import (
+    HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, as_loaded)
 from hermes_cli.local_runtime.gguf import model_id_from_stem
 from hermes_platform.host.products import is_nvidia_n1x_pci_id
 
@@ -131,11 +132,12 @@ class CatalogEntry:
         return ModelProfile(
             name=variant.model_id, weights_bytes=variant.weights_bytes, embd_table_bytes=0,
             n_ctx_train=self.n_ctx_train, layers=layers, swa_window=self.swa_window, moe=self.moe,
-            n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp_capable else 1.0)
+            n_vocab=self.n_vocab, kv_scale=1.2 if self.mtp_capable else 1.0,
+            lazy_bytes=variant.lazy_bytes)
 
     def launch_plan(self, variant: QuantVariant, budget: HardwareBudget) -> LaunchPlan:
         # Optional external drafts may use spare memory after download, never reduce this grant.
-        return plan_launch(self.profile(variant), budget, mtp_capable=self.mtp_capable,
+        return plan_launch(as_loaded(self.profile(variant), budget), budget, mtp_capable=self.mtp_capable,
                            fixed_overhead=RUNTIME_OVERHEAD_BYTES + self.companion_bytes)
 
     def download_files(self, variant: QuantVariant) -> tuple:

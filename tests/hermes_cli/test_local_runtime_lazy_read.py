@@ -2,17 +2,22 @@
 
 The engine's model loader leaves a tensor its architecture marks TENSOR_READ_LAZY in the file and
 reads that tensor's rows when a token needs them. Under the default ``--lazy-mode auto`` it does so
-only for a marked tensor larger than 4 GiB. Qwen3.8 Flash Next's 26.8 GiB per-layer embedding
-table is one: priced as loaded, the IQ4_XS build needs ~87 GiB and a 128 GB unified-memory machine
-refuses it; priced the way the engine loads it, the build holds ~60 GiB.
+only for a marked tensor larger than 4 GiB, and never on an integrated GPU, where it loads the
+table in full. Qwen3.8 Flash Next's 26.8 GiB per-layer embedding table is one: priced as loaded,
+the IQ4_XS build needs ~87 GiB; read on demand, it holds ~60 GiB. On a DGX Spark (GB10) the table
+took 27.2 GiB of resident memory under ``auto`` and 0.4 GiB under ``--lazy-mode on``, at the same
+decode speed and within 2% of the prefill speed, so Hermes passes ``on`` wherever it prices the
+table as left on disk. AMD/Intel integrated GPUs keep the engine's default (reading on demand
+halved their prefill, llama.cpp #28160) and pay for the table.
 """
 
 from __future__ import annotations
 
 import struct
 
+from hermes_cli.local_runtime import presets
 from hermes_cli.local_runtime.catalog import AssetFile, QuantVariant
-from hermes_cli.local_runtime.estimator import profile_from_gguf
+from hermes_cli.local_runtime.estimator import HardwareBudget, as_loaded, profile_from_gguf
 from hermes_cli.local_runtime.gguf import read_gguf_header
 
 GIB = 1 << 30
@@ -98,3 +103,36 @@ def test_a_catalog_build_is_priced_without_its_lazy_tables():
 
     assert build.size_bytes == 90 * GIB + (10 << 20)
     assert build.weights_bytes == build.size_bytes - 30 * GIB
+
+
+def _unified(*, lazy_reads: bool) -> HardwareBudget:
+    return HardwareBudget(usable_vram_bytes=64 * GIB, total_device_bytes=80 * GIB,
+                          ram_available_bytes=0, uma=True, lazy_reads=lazy_reads)
+
+
+def test_an_engine_that_loads_the_table_up_front_pays_for_it(tmp_path):
+    gguf = tmp_path / "flash.gguf"
+    _write_gguf(gguf, _arch("qwen4exp"), [("per_layer_token_embd.weight", OVER_4_GIB),
+                                          ("blk.0.attn_q.weight", 16 << 20)])
+    profile = profile_from_gguf(read_gguf_header(gguf))
+
+    assert as_loaded(profile, _unified(lazy_reads=True)).weights_bytes == 64 << 20
+    assert as_loaded(profile, _unified(lazy_reads=False)).weights_bytes == (64 << 20) + OVER_4_GIB * 4
+
+
+def test_the_preset_reads_the_table_on_demand_wherever_it_prices_it_that_way(tmp_path, monkeypatch):
+    """The price and the flag travel together, so the engine's own per-device default never decides
+    whether the table is resident."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    gguf = tmp_path / "flash.gguf"
+    _write_gguf(gguf, _arch("qwen4exp"), [("per_layer_token_embd.weight", OVER_4_GIB),
+                                          ("blk.0.attn_q.weight", 16 << 20)])
+
+    lazy = presets.preset_for_model(gguf, _unified(lazy_reads=True), set())
+    eager = presets.preset_for_model(gguf, _unified(lazy_reads=False), set())
+
+    assert lazy.keys["lazy-mode"] == "on"
+    assert "lazy-mode" not in eager.keys
+    window = min(lazy.window, eager.window)
+    assert (presets.resident_footprint(gguf, _unified(lazy_reads=False), window)
+            - presets.resident_footprint(gguf, _unified(lazy_reads=True), window)) == OVER_4_GIB * 4
