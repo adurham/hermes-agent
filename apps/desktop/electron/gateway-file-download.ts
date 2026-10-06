@@ -405,6 +405,46 @@ export interface GatewayDownloadResponse extends ReadableLike {
   headers: { [name: string]: string | string[] | undefined }
 }
 
+/** The stream surface the body idle watchdog needs: Node's http.IncomingMessage
+ *  and Electron net's IncomingMessage are both Readable EventEmitters. */
+export interface StallWatchableBody {
+  on(event: string, listener: (...args: any[]) => void): unknown
+  once(event: string, listener: (...args: any[]) => void): unknown
+  destroy(error?: Error): unknown
+  destroyed?: boolean
+}
+
+// Bound a body that stops arriving once the consumer is reading it. The watchdog arms only
+// when a 'data'/'readable' consumer attaches, so the unread body waiting on the native save
+// dialog stays the user's time; it pauses under write backpressure and resets on every chunk.
+// Shared by every download transport (native descriptor, token/bearer, OAuth cookie).
+export function destroyStalledBody(res: StallWatchableBody, idleMs: number): void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let watching = false
+  const stop = (): void => clearTimeout(timer)
+
+  const arm = (): void => {
+    stop()
+    timer = setTimeout(() => res.destroy(new Error(`Hermes backend download stalled: no data for ${idleMs}ms`)), idleMs)
+  }
+
+  const watch = (): void => {
+    if (watching || res.destroyed) { return }
+    watching = true
+    // Added after the consumer's own listener, so this never switches a reader's mode.
+    res.on('data', arm)
+    arm()
+  }
+
+  res.on('newListener', (event: string) => {
+    if (event === 'data' || event === 'readable') { queueMicrotask(watch) }
+  })
+  res.on('pause', stop)
+  res.on('resume', () => { if (watching) { arm() } })
+  res.once('end', stop)
+  res.once('close', stop)
+}
+
 /** Keep the body unread until the user selects a destination. */
 export async function finalizeGatewayDownload(
   response: GatewayDownloadResponse,

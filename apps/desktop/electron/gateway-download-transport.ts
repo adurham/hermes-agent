@@ -2,38 +2,9 @@ import http from 'node:http'
 import https from 'node:https'
 
 import { downloadAgentFor, withRetry } from './api-transport'
+import { destroyStalledBody } from './gateway-file-download'
 import { DEFAULT_FETCH_TIMEOUT_MS, resolveTimeoutMs } from './hardening'
 import { nativeGatewayHttpHeaders } from './local-gateway'
-
-// Bound a body that stops arriving once the consumer is reading it. The watchdog arms only
-// when a 'data'/'readable' consumer attaches, so the unread body waiting on the native save
-// dialog stays the user's time; it pauses under write backpressure and resets on every chunk.
-function destroyStalledBody(res: http.IncomingMessage, idleMs: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let watching = false
-  const stop = () => clearTimeout(timer)
-
-  const arm = () => {
-    stop()
-    timer = setTimeout(() => res.destroy(new Error(`Hermes backend download stalled: no data for ${idleMs}ms`)), idleMs)
-  }
-
-  const watch = () => {
-    if (watching || res.destroyed) { return }
-    watching = true
-    // Added after the consumer's own listener, so this never switches a reader's mode.
-    res.on('data', arm)
-    arm()
-  }
-
-  res.on('newListener', event => {
-    if (event === 'data' || event === 'readable') { queueMicrotask(watch) }
-  })
-  res.on('pause', stop)
-  res.on('resume', () => { if (watching) { arm() } })
-  res.once('end', stop)
-  res.once('close', stop)
-}
 
 // Retry only the connection phase, never a save dialog or a partially saved body.
 export async function downloadViaTokenToFile(url, token, ctx, finalizeGatewayDownload, options: any = {}) {
