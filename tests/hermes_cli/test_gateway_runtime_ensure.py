@@ -332,3 +332,26 @@ def test_named_profile_without_multiplex_evidence_starts_the_host_gateway(tmp_pa
 
     assert spawned == [(home if standalone else root).resolve()]
 
+
+@pytest.mark.parametrize("flag,standalone,owner", [("false", False, "root"), ("true", True, "home")])
+def test_cold_start_target_follows_boot_multiplex_policy(tmp_path, monkeypatch, flag, standalone, owner):
+    """Boot settles a retired `multiplex_profiles: false` like unset (the host still serves the
+    profile) and never serves a `standalone: true` secondary even under an explicit `true`."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    root = tmp_path / ".hermes"
+    home = root / "profiles" / "alpha"
+    home.mkdir(parents=True, mode=0o700)
+    (root / "config.yaml").write_text(f"gateway:\n  multiplex_profiles: {flag}\n", encoding="utf-8")
+    if standalone:
+        (home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    spawned = []
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+
+    runtime.ensure_gateway_runtime(home, timeout=0.3)
+
+    assert spawned == [{"root": root, "home": home}[owner].resolve()]
+
