@@ -315,11 +315,10 @@ class AuthorityConnection:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp
             resume_editor_mcp(self.authority, ref, params['editor'])
-        # A resume by id/title is the user asking for THIS conversation to continue; a stamped
-        # tui_shutdown / ws_disconnect row would otherwise be routed as stale on the next submit.
+        # Read-only mount (#85303): an ended row stays ended until the first admitted turn
+        # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
+        # never re-lights DB-derived liveness with no new activity.
         self.authority.authorize(self.actor, ref, 'session:read')
-        from gateway.session_local_recovery import reopen_local_session
-        reopen_local_session(self.authority, ref)
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
         # Only local routes have a frozen local launch policy to project.

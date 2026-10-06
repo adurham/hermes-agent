@@ -120,13 +120,15 @@ def local_history(authority, ref):
 
 
 def reopen_local_session(authority, ref):
-    """An explicit resume makes a local session live again.
+    """The first admitted turn makes a finalized local session live again (#85303).
 
-    A TUI shutdown / WS disconnect / idle eviction stamps ``end_reason`` on the physical row.
-    ``SessionStore`` reads any stamped row as a stale route (#54878) and, since those reasons are
-    not recoverable, answers the next submit with a FRESH session — the resumed client keeps waiting
-    on an id that never emits again. The classic resumes clear the stamp (``oneshot._load_resume_target``,
-    tui_gateway ``_resume_cold``); the authority must too. Only the lineage tip is reopened: a
+    Mounting (``session.resume``) is a read and leaves ``ended_at``/``end_reason`` alone; the drain
+    calls this after the turn's local preflight, before execution routes it. A TUI shutdown / WS
+    disconnect / idle eviction stamps ``end_reason`` on the physical row. ``SessionStore`` reads any
+    stamped row as a stale route (#54878) and, since those reasons are not recoverable, answers the
+    turn with a FRESH session — the client keeps waiting on an id that never emits again. The classic
+    surfaces clear the stamp on the first real turn (tui_gateway ``_reopen_if_finalized``); the
+    authority must too. Only the lineage tip is reopened: a
     compression parent or reset predecessor is never the physical target.
     """
     live = authority.sessions.get(ref.session_id)
