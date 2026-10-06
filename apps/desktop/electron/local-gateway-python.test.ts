@@ -11,6 +11,7 @@ import { mintGatewayTicketWithPython } from './local-gateway-python'
 // probe separately exercises Windows SID checks and HTTP/WS admission.
 test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, owner, protocol and purpose', async () => {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-')))
+  const mux = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-mux-')))
   const root = path.resolve('../..')
   // The JS-only CI runner has no repository venv; this helper uses stdlib only.
   const python = process.env.HERMES_TEST_PYTHON || 'python3'
@@ -44,8 +45,18 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
       override = invalid
       await expect(mintGatewayTicketWithPython(backend, cwd, endpoint, 'interactive')).rejects.toThrow('Gateway ticket')
     }
+
+    // A served secondary carries the multiplexer's control_home: the ticket is minted by THAT
+    // home's socket (the profile home has none), still bound to the secondary's identity.
+    override = {}
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await new Promise<void>(resolve => server.listen(path.join(mux, 'gateway.sock'), resolve))
+    await fs.chmod(path.join(mux, 'gateway.sock'), 0o600)
+    await expect(mintGatewayTicketWithPython(backend, cwd, { ...endpoint, control_home: mux }, 'interactive')).resolves.toBe('private-grant')
+    expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive' })
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })
+    await fs.rm(mux, { recursive: true, force: true })
   }
 })
