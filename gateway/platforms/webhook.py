@@ -223,9 +223,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
     @property
     def token(self):
-        # Bind native replay to the currently configured signing credentials.
+        # Bind native replay to the configured signing credentials. Static routes only: dynamic
+        # subscriptions hot-reload on every POST, and an unrelated ``webhook subscribe`` must not
+        # re-key the connector of already-admitted deliveries (their send() would see profile_mismatch).
         return json.dumps([self._global_secret, {name: route.get("secret", self._global_secret)
-                           for name, route in self._routes.items()}], sort_keys=True)
+                           for name, route in self._static_routes.items()}], sort_keys=True)
 
     # --- Lifecycle ---
 
@@ -676,7 +678,13 @@ class WebhookAdapter(BasePlatformAdapter):
             "webhook-id", headers.get("X-Request-ID", uuid.uuid4().hex))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
-        if route_config.get("deliver_only") and not self._record_delivery_id(delivery_identity, now):
+        coalesce = route_config.get("coalesce")
+        # deliver_only, cron_job and coalesced events act before (or without) a durable admission, so
+        # the ledger cannot dedupe a provider retry or a replayed signed delivery; the route-scoped
+        # in-memory guard is their only replay defence (main dedupes every route here).
+        non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
+                           or isinstance(coalesce, dict))
+        if non_durable and not self._record_delivery_id(delivery_identity, now):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("cron_job"):
@@ -684,12 +692,6 @@ class WebhookAdapter(BasePlatformAdapter):
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)
-        coalesce = route_config.get("coalesce")
-        # A coalesced event waits in memory before it is durably admitted, so the ledger cannot dedupe
-        # a provider retry inside the window; the in-memory idempotency guard fills that gap here.
-        if isinstance(coalesce, dict) and not self._record_delivery_id(delivery_identity, now):
-            logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if isinstance(coalesce, dict) and self._coalescer.enqueue(
                 route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
                 delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
