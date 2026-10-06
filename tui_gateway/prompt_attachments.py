@@ -242,6 +242,7 @@ def _stage_session_file_attachment(
     stem = Path(filename).stem or "attachment"
     suffix = Path(filename).suffix
     counter = 2
+    # O_CREAT|O_EXCL: never follows a planted (dangling) symlink, never races a same-name upload.
     while True:
         try:
             upload = target.open("xb")
