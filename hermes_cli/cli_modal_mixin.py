@@ -537,7 +537,10 @@ class CLIModalMixin:
             return "once"
         return _gated_confirm(
             self, command, "destructive_slash_confirm",
-            title=f"⚠️  /{command} — destroys conversation state",
+            # FORK: bare U+26A0, no VS-16 — a VS-16 sequence ("⚠️") diverges between
+            # pt's width model and what terminals paint (2 cells), desyncing this
+            # modal's diff repaints (see the status-bar compressions badge note).
+            title=f"⚠  /{command} — destroys conversation state",
             detail=detail,
             choices=[
                 ("once", "Approve Once", "proceed this time only"),
