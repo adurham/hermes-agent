@@ -116,6 +116,11 @@ def admit_api_turn(adapter, **kwargs):
         # This opaque namespace is persisted in the same row/transaction as
         # admission. It is never a bearer credential or execution input.
         payload['api_turn_v1']['run_owner_scope'] = run_owner_scope
+    # Refuse a foreign-surface target before committing any media for it (a refused
+    # admission otherwise retains its image bytes under native-inputs/ forever).
+    existing = authority.db.get_session(sid)
+    if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
+        raise RuntimeStoreError('permission_denied')
     if isinstance(kwargs['user_message'], list):
         from gateway.session_api_media import commit_api_images
         payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])

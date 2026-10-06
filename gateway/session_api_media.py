@@ -5,6 +5,20 @@ import os
 from pathlib import Path
 
 _MIME_EXT = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp'}
+# Same per-admission count as ``prompt.submit`` attachments (``session_ingress_media._ATTACHMENT_LIMIT``).
+_IMAGE_LIMIT = 10
+
+
+def _sniffed_mime(data):
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if data[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
 
 
 def _data_url_bytes(url):
@@ -30,12 +44,17 @@ def commit_api_images(content):
     exact retry keeps its admission digest) and commit the bytes as immutable media."""
     from gateway.platforms.base import get_image_cache_dir
     from gateway.session_ingress_media import capture_native_media
+    from gateway.platforms.base import get_inbound_media_max_bytes
+    from hermes_state_runtime import RuntimeStoreError
+    images = [decoded for decoded in map(_data_url_bytes, _image_urls(content)) if decoded is not None]
+    # Validate the whole batch before one byte lands on disk: a refused request must not
+    # leave staged or committed bytes behind, and the declared type must be the real one.
+    limit = max(0, get_inbound_media_max_bytes())
+    if (len(images) > _IMAGE_LIMIT or (limit and sum(len(data) for _, data in images) > limit)
+            or any(_sniffed_mime(data) != mime for mime, data in images)):
+        raise RuntimeStoreError('invalid_params')
     staged = []
-    for url in _image_urls(content):
-        decoded = _data_url_bytes(url)
-        if decoded is None:
-            continue
-        mime, data = decoded
+    for mime, data in images:
         path = Path(get_image_cache_dir()).resolve() / ('api_' + hashlib.sha256(data).hexdigest()[:32] + _MIME_EXT[mime])
         if not path.exists():
             temporary = path.with_name(path.name + '.%d.tmp' % os.getpid())
