@@ -255,6 +255,24 @@ def test_session_title_badge_strips_vs16():
     assert "\ufe0f" not in badge, f"title badge must sanitize model-generated titles: {badge!r}"
 
 
+def test_panel_lines_strip_vs16_from_dynamic_content():
+    """Modal panels (approval/clarify/sudo) render model/user text in pt windows."""
+    from hermes_cli.cli_render import _append_panel_line
+
+    lines = []
+    _append_panel_line(lines, "b", "c", "sudo rm -rf ⚙️ /tmp — dangerous", 40)
+    rendered = "".join(text for _style, text in lines)
+    assert "\ufe0f" not in rendered, f"panel content must not carry VS-16: {rendered!r}"
+
+
+def test_panel_title_strips_vs16():
+    from hermes_cli.cli_tui_mixin import _Panel
+
+    panel = _Panel("class:b", 40, title="⚠️  Dangerous Command", title_style="class:t")
+    rendered = "".join(text for _style, text in panel.close())
+    assert "\ufe0f" not in rendered, f"panel title must not carry VS-16: {rendered!r}"
+
+
 def test_output_history_line_math_counts_vs16_as_painted():
     """Scrollback replay arithmetic counts VS-16 sequences at painted width.
 
