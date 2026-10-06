@@ -116,8 +116,8 @@ def test_store_lifecycle_beyond_max_path_with_long_paths_disabled(tmp_path):
         os.stat(_plain(probe))  # the host really cuts plain spellings at MAX_PATH
     shutil.rmtree(_verbatim(tmp_path) / ("p" * 120))
 
-    from pm.install import _remove_entry
-    from pm.lock import Facts
+    from pm.install import _install, _remove_entry
+    from pm.lock import Facts, Lockfile
     from pm.package import Package, compose_env
     from pm.store import Store, current_target, tree_digest
 
@@ -127,38 +127,36 @@ def test_store_lifecycle_beyond_max_path_with_long_paths_disabled(tmp_path):
         def binary(self, entry: Path, target: str) -> Path:
             return entry / "bin" / "tool.exe"
 
-    package, target, version = Tool(), current_target(), "1.0.0"
+    package, target, version, pin = Tool(), current_target(), "1.0.0", "0" * 64
     entry_name = package.store_entry(version, target)
     source_root, store_root = tmp_path / "src", tmp_path / "dst"
     source, store = Store(source_root), Store(store_root)
+    lockfile = Lockfile(tmp_path / "lock.json")
+    lockfile.set_pin(package.name, version, {target: {"sha256": pin}})
 
     files = _build_tree(source_root / entry_name,
                         len(_plain(tmp_path / "dst" / entry_name)))
     expected = tree_digest(_verbatim(source_root / entry_name))
+    # The bundled source as a sealed install records it: facts.json inside its store.
+    source_facts = Facts(source_root / "facts.json")
+    source_facts.record(package.name, version, entry_name, package.env(source.entry(entry_name), target),
+                        source.root, target=target, artifacts=[pin], digest=expected)
 
-    with store.scratch() as scratch:
-        staged = scratch / "staged"
-        # The copy _copy_verified_source performs, then its digest check.
-        shutil.copytree(source.entry(entry_name), staged, symlinks=True)
-        assert tree_digest(staged) == expected
-        assert tree_digest(source.entry(entry_name)) == expected
-        _assert_tree(staged, files)
-        # Bytes scratch() must clean up itself (an abandoned extraction).
-        abandoned = scratch / "abandoned"
-        shutil.copytree(source.entry(entry_name), abandoned, symlinks=True)
-        published = store.publish(staged, entry_name)
-    assert not _verbatim(scratch).exists(), "scratch() left bytes behind beyond MAX_PATH"
+    # The real bundled-copy install: _copy_verified_source, verification, publish, facts commit.
+    facts = Facts(store_root / "facts.json")
+    published = _install(package, lockfile, facts, store, target, copy_from=(source_facts, source))
     assert not [p for p in _verbatim(store_root).iterdir() if p.name.startswith(".staging-")]
-
     _assert_tree(store_root / entry_name, files)
     assert tree_digest(published) == expected
 
+    # Bytes scratch() must clean up itself (an abandoned extraction).
+    with store.scratch() as scratch:
+        shutil.copytree(source.entry(entry_name), scratch / "abandoned", symlinks=True)
+    assert not _verbatim(scratch).exists(), "scratch() left bytes behind beyond MAX_PATH"
+
     # Records and child environments are exits: they carry the ordinary spelling.
-    facts = Facts(tmp_path / "facts.json")
-    facts.record(package.name, version, entry_name, package.env(published, target), store.root,
-                 target=target, artifacts=["0" * 64], digest=tree_digest(published))
-    assert facts.installed(package.name, version, store.root, (target, ("0" * 64,)))
-    on_disk = json.loads((tmp_path / "facts.json").read_text(encoding="utf-8"))
+    assert facts.installed(package.name, version, store.root, (target, (pin,)))
+    on_disk = json.loads((store_root / "facts.json").read_text(encoding="utf-8"))
     assert not [s for s in _strings(on_disk) if VERBATIM in s]
     child_env = compose_env([facts.env_for(package.name, store.root)], base={})
     assert not [v for v in child_env.values() if VERBATIM in v], child_env
