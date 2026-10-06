@@ -46,7 +46,8 @@ _DESKTOP_APPLY_MODES = {
 # ``finalize_pending_update_receipt`` stores ``f"{type(exc).__name__}: {exc}"`` as the stop reason of
 # a run that ended on an exception (main.cmd_update, update_completion._finish). Only the leading
 # type name is read, never the message; other stop reasons ("sys.exit(1)", "completion exited 1",
-# "Windows gateway recovery failed: ...") do not start with a bare CamelCase name and a colon.
+# "Windows gateway recovery failed: ...") do not start with a bare CamelCase name and a colon
+# (the fixed prefixes Hermes writes are matched by _STOP_REASON_PREFIX_CLASSES).
 _EXCEPTION_STOP_REASON = re.compile(r"([A-Z][A-Za-z0-9_]*):(?: |$)")
 # pm's own failure types (pm/package.py, pm/environment.py, pm/downloader.py, pm/lock.py, ...).
 _PM_ERROR_TYPES = frozenset({
@@ -58,6 +59,15 @@ _OS_ERROR_TYPES = frozenset(
     name for name, value in vars(builtins).items() if isinstance(value, type) and issubclass(value, OSError))
 # subprocess.SubprocessError and its subclasses that reached the command boundary uncaught.
 _SUBPROCESS_ERROR_TYPES = frozenset({"CalledProcessError", "SubprocessError", "TimeoutExpired"})
+# Exception type name -> class, first match wins; any other type reads ``exception``.
+_EXCEPTION_TYPE_CLASSES = (
+    (_PM_ERROR_TYPES, "deps_failed"), (_OS_ERROR_TYPES, "os_error"), (_SUBPROCESS_ERROR_TYPES, "subprocess_failed"),
+)
+# Fixed stop-reason prefixes Hermes itself writes (only the prefix is read, never what follows):
+# _update_takeover's preparation failure and update_completion's Windows gateway resume failure.
+_STOP_REASON_PREFIX_CLASSES = (
+    ("historical takeover preparation failed", "deps_failed"), ("Windows gateway recovery failed", "restart_failed"),
+)
 # ---- end iuf c1 ----
 
 
@@ -113,14 +123,10 @@ def update_failure_class(receipt: dict[str, Any], stages: list[dict[str, Any]], 
         return "fleet_unverified"  # verification failed with no stale/down row and no failed restart
     if stages and stages[-1]["name"] == "restart" and stages[-1].get("outcome") == "skipped":
         return "restart_failed"  # a skipped restart left the fleet owing one (completion exit 1)
-    if exc_type in _PM_ERROR_TYPES or reason.startswith("historical takeover preparation failed"):
-        return "deps_failed"
-    if exc_type in _OS_ERROR_TYPES:
-        return "os_error"
-    if exc_type in _SUBPROCESS_ERROR_TYPES:
-        return "subprocess_failed"
+    if by_reason := next((cls for prefix, cls in _STOP_REASON_PREFIX_CLASSES if reason.startswith(prefix)), None):
+        return by_reason
     if exc_type:
-        return "exception"
+        return next((cls for types, cls in _EXCEPTION_TYPE_CLASSES if exc_type in types), "exception")
     marked = {s["name"] for s in stages}
     if "apply" in marked:
         if "deps" not in marked:

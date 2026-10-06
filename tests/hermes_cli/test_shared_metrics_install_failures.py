@@ -133,6 +133,8 @@ def test_a_partial_run_with_a_failed_stage_keeps_that_stage_and_its_verify_row_p
               stop_reason="completion exited 1"), "deps_failed"),
     (_receipt("failed", _ALL_PASSED[:4] + [("build", "failed"), ("restart", "success")], exit_code=1), "build_failed"),
     (_receipt("failed", [("plan", "success")], exit_code=1, stop_reason="AcmeError: secret"), "exception"),
+    (_receipt("failed", _ALL_PASSED, exit_code=1, stop_reason="Windows gateway recovery failed: PermissionError: x"),
+     "restart_failed"),
 ])
 def test_update_failure_class_reads_only_receipt_fields(receipt, expected):
     run, _ = update_metrics.update_receipt_fields(receipt)
@@ -192,3 +194,13 @@ def test_a_declined_dependency_consent_carries_its_class_not_its_copy(monkeypatc
     monkeypatch.setattr(plugins_cmd_install, "_ask_yes_no", lambda *a: False)
     assert fields.tagged_failure_class(plugins_cmd_install._consent_python_deps("p", ("dep",), console)[1]) == "deps_declined"
 
+
+@pytest.mark.parametrize(("identifier", "registry"), [
+    ("skills.sh/acme/x", "skills-sh"), ("skils-sh/acme/x", "skills-sh"), ("OFFICIAL/x/y", "official"),
+    ("lobehub/x", "lobehub"), ("well-known:https://h/x", "well-known"), ("https://h/.well-known/skills/x", "well-known"),
+    ("https://h/a/SKILL.md", "url"), ("acme-corp/skills/x", "unresolved"),
+])
+def test_an_unserved_identifier_names_the_registry_its_adapter_accepts(identifier, registry):
+    from hermes_cli.skills_hub import _registry_from_identifier
+
+    assert _registry_from_identifier(identifier) == registry
