@@ -50,13 +50,45 @@ def _fits_sun_path(path: Path) -> bool:
     return len(str(path).encode("utf-8")) <= _MAX_UNIX_PATH
 
 
+def _private_runtime_dir() -> Optional[Path]:
+    """``$XDG_RUNTIME_DIR`` when it is what the spec promises: an absolute directory owned by this
+    user with no group/other access. Other users cannot pre-create names inside it."""
+    raw = os.environ.get("XDG_RUNTIME_DIR", "")
+    if _IS_WINDOWS or not raw or not os.path.isabs(raw):
+        return None
+    with contextlib.suppress(OSError):
+        if _private_directory(Path(raw)):
+            return Path(raw)
+    return None
+
+
 def _fallback_socket_path(home: Path) -> Path:
-    """Short temp-dir path for homes whose direct socket path exceeds sun_path: ``tempfile.gettempdir()``
-    then ``/tmp`` (POSIX); if nothing fits the tempdir candidate is returned anyway — bind fails
-    non-fatally and consumers use the scan layer."""
+    """Short path for homes whose direct socket path exceeds sun_path: the private
+    ``$XDG_RUNTIME_DIR`` first, then ``tempfile.gettempdir()`` and ``/tmp`` (POSIX); if nothing fits
+    the first candidate is returned anyway. A squatted shared-temp name is handled at bind time
+    (``_squat_proof_fallback``)."""
     name = f"hermes-gw-{_home_hash(home)}/control.sock"
-    candidates = [Path(tempfile.gettempdir()) / name] + ([] if _IS_WINDOWS else [Path("/tmp") / name])  # no-tmp: ok — AF_UNIX 104-byte path limit needs the short /tmp candidate
+    runtime = _private_runtime_dir()
+    candidates = ([runtime / name] if runtime else []) + [Path(tempfile.gettempdir()) / name] + (
+        [] if _IS_WINDOWS else [Path("/tmp") / name])  # no-tmp: ok — AF_UNIX 104-byte path limit needs the short /tmp candidate
     return next((c for c in candidates if _fits_sun_path(c)), candidates[0])
+
+
+def _private_directory(path: Path) -> bool:
+    info = path.lstat()
+    return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077  # windows-footgun: ok — POSIX only
+
+
+def _squat_proof_fallback(bind_path: Path) -> Path:
+    """Same ``hermes-gw-<hash>/control.sock`` leaf (what clients authenticate through the private
+    pointer), under a fresh ``mkdtemp`` root no other user can predict or pre-create."""
+    root = Path(tempfile.mkdtemp(prefix="hgw-", dir=bind_path.parent.parent))
+    path = root / bind_path.parent.name / bind_path.name
+    if not _fits_sun_path(path):
+        root.rmdir()
+        raise PermissionError("fallback control directory is squatted and no private path fits sun_path")
+    path.parent.mkdir(mode=0o700)
+    return path
 
 
 def resolve_server_socket_path(home: Path) -> tuple[Path, Optional[Path]]:
@@ -139,6 +171,7 @@ class GatewayControlServer:
         self._pipe_server: Any = None  # Windows proactor pipe server
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
+        self._fallback_root: Optional[Path] = None  # mkdtemp root created for a squatted fallback
         self._file_identities = {}
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             "identify": build_identify_payload, "status": build_status_payload, **(verb_handlers or {})}
@@ -155,11 +188,14 @@ class GatewayControlServer:
     async def _start_posix(self) -> bool:
         bind_path, pointer_file = resolve_server_socket_path(self._home)
         if pointer_file is not None:
-            bind_path.parent.mkdir(mode=0o700, exist_ok=True)
-            info = bind_path.parent.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()  # windows-footgun: ok — POSIX listener
-                    or info.st_mode & 0o077):
-                raise PermissionError("unsafe fallback control directory")
+            with contextlib.suppress(FileExistsError):
+                bind_path.parent.mkdir(mode=0o700)
+            if not _private_directory(bind_path.parent):
+                # Another local user pre-created the predictable shared-temp name; bootstrap treats
+                # a missing listener as fatal, so move to an unpredictable private root instead.
+                logger.warning("Fallback control directory %s is not private; using a fresh one", bind_path.parent)
+                bind_path = _squat_proof_fallback(bind_path)
+                self._fallback_root = bind_path.parent.parent
         if bind_path.is_symlink():
             raise PermissionError("control socket cannot be a symlink")
         # We only get here after winning the PID-file O_EXCL race, so any existing
@@ -220,6 +256,11 @@ class GatewayControlServer:
                 if self._file_identities.get(path) == (info.st_dev, info.st_ino):
                     path.unlink()
         self._file_identities.clear()
+        if self._fallback_root is not None:
+            with contextlib.suppress(OSError):
+                (self._fallback_root / f"hermes-gw-{_home_hash(self._home)}").rmdir()
+                self._fallback_root.rmdir()
+            self._fallback_root = None
 
     def handle_request_line(self, raw: bytes, peer_subject: Optional[str] = None) -> bytes:
         """One JSON request line -> one JSON response line. Never raises (shared by POSIX + pipe)."""

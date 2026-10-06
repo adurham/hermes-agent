@@ -1,6 +1,7 @@
 """Control-socket trust boundary: server identity, home writability, pointer mode, fallback root."""
 import os
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -96,3 +97,43 @@ def test_clients_refuse_a_control_listener_run_by_another_uid(tmp_path, monkeypa
     for client in (gateway_client._session_ticket, session_hosted_transport.owner_request, tui_bootstrap.bootstrap):
         source = inspect.getsource(client)
         assert "connect_private(" in source and "AF_UNIX" not in source, client.__qualname__
+
+
+def test_long_home_survives_a_squatted_shared_fallback_directory(tmp_path, monkeypatch):
+    # Any local user can pre-create the predictable shared-temp name; that must not stop the
+    # gateway from publishing its control socket (the bootstrap treats that as fatal).
+    import asyncio
+    from gateway.control_socket import GatewayControlServer, resolve_server_socket_path
+    from hermes_cli.gateway_runtime_discovery import _socket_path
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    home = tmp_path / ("p" * 90) / ".hermes"
+    home.mkdir(parents=True, mode=0o700)
+    squatted = resolve_server_socket_path(home)[0].parent
+    squatted.write_text("not yours")
+
+    async def run():
+        server = GatewayControlServer(home, verb_handlers={"identify": lambda: {"pid": 1}})
+        assert await server.start()
+        try:
+            assert _socket_path(home).parent.parent != squatted.parent
+        finally:
+            await server.stop()
+    try:
+        asyncio.run(run())
+    finally:
+        squatted.unlink()
+
+
+def test_long_home_prefers_the_private_runtime_dir(tmp_path, monkeypatch):
+    import tempfile
+    from gateway.control_socket import resolve_server_socket_path
+    runtime = Path(tempfile.mkdtemp(prefix="xr-"))
+    try:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+        home = tmp_path / ("p" * 90) / ".hermes"
+        home.mkdir(parents=True, mode=0o700)
+        assert resolve_server_socket_path(home)[0].parent.parent == runtime
+        runtime.chmod(0o755)  # not a private runtime dir: never trusted
+        assert resolve_server_socket_path(home)[0].parent.parent != runtime
+    finally:
+        runtime.rmdir()
