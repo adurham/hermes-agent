@@ -16,6 +16,7 @@ class SessionEvents:
         self._key = uuid.uuid4().hex
         self.epoch = uuid.uuid4().hex
         self.sequence = 0
+        self._public_id = None
         self.execution = {}
         # Synchronous same-thread recipients (API run projections): unlike fanout peers they
         # cannot lose a frame to a detach that races the writer thread.
@@ -44,9 +45,10 @@ class SessionEvents:
                 # Another publisher may evict us after watermark's lookup.
                 self.epoch = uuid.uuid4().hex
                 frame['params']['replay_epoch'] = self.epoch
-            # The ring owns this same event object; its lookup key remains
-            # private while both replay and live recipients see canonical IDs.
+            # The ring froze the frame under its private lookup key; live recipients see the
+            # canonical ID here and ``since`` restores it on the thawed replay copies.
             frame['params']['session_id'] = session_id
+            self._public_id = session_id
             self.sequence = frame['params']['seq']
 
             def overflow(transport):
@@ -71,7 +73,9 @@ class SessionEvents:
             missing = (epoch != current_epoch or sequence > latest
                        or event_replay.is_truncated(self._key, sequence)
                        or event_replay.latest_seq(self._key) != latest)
-            events = [] if missing else deepcopy(frames)
+            events = [] if missing else [
+                {**frame, 'session_id': self._public_id} if frame.get('session_id') == self._key else frame
+                for frame in frames]
             return {'events': events, 'latest_seq': latest, 'last_sequence': latest,
                     'epoch': current_epoch, 'replay_epoch': current_epoch,
                     'truncated': missing, 'snapshot_required': missing, 'count': len(events)}
