@@ -1033,6 +1033,7 @@ export interface ConnectionOperationTarget {
   kind: ConnectionTargetKind
   action: ConnectionTargetAction
   state: ConnectionTargetState
+  resolved?: boolean | null
   detail?: string | null
   instructions?: string | null
   discovery_error?: string | null
@@ -1050,11 +1051,17 @@ export interface ConnectionOperationTarget {
   sha?: string | null
   subdir?: string | null
   scan?: CatalogScan | null
-  requirements?: string[] | null
+  requires_hermes?: string | null
   has_desktop_half?: boolean | null
   target_profile?: string | null
   app_state?: CatalogAppState | null
   skill?: string | null
+  phase?: InstallPhase | null
+  approved?: CatalogApproved | null
+  enabled?: boolean | null
+  missing_env?: string[] | null
+  server_errors?: CatalogServerError[] | null
+  already_installed?: boolean | null
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
@@ -1077,6 +1084,19 @@ export interface CatalogScan {
 export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
 /** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
 export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
+/** The slow steps of an install, as ids; the desktop catalog card words them in its own language. The wire contract imports this enum. */
+export type InstallPhase = 'downloading' | 'python_packages' | 'loading_tools'
+/** The non-secret Advanced choices the user approved on a catalog row; a Try again after the operation settled repeats them. */
+export interface CatalogApproved {
+  force: boolean
+  enable: boolean
+  ref?: string | null
+}
+/** An MCP server an installed plugin brought that did not connect, with the raw reason. */
+export interface CatalogServerError {
+  name: string
+  error: string
+}
 export interface ConnectionWakeResult {
   status: 'ok'
 }

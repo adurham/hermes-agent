@@ -10,6 +10,7 @@ import type { TipId } from '@/lib/tips/catalog'
 
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BootTranslations } from './types_boot'
+import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
@@ -4301,29 +4302,7 @@ export interface Translations extends NoticeTranslations {
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
     }
-    catalogInstall: {
-      preparing: string
-      install: string
-      advanced: string
-      skip: string
-      installing: string
-      installed: string
-      notInstalled: string
-      failed: string
-      showNames: string
-      hideNames: string
-      skill: (name: string) => string
-      kind: { plugin: string; skill: string }
-      tier: { official: string; community: string }
-      targetProfile: (profile: string) => string
-      sendFailed: string
-      commitLabel: string
-      subdirLabel: string
-      securityHeading: string
-      scan: { passed: string; warnings: string; failed: string }
-      requirementsLabel: string
-      credentialsHeading: string
-    }
+    catalogInstall: CatalogInstallTranslations
     mcpSetup: {
       installTitle: string
       enableTitle: string
