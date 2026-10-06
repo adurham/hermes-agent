@@ -1,6 +1,7 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { runFreeTierChallenge } from '@/store/free-tier-challenge'
+import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -22,6 +23,17 @@ export type FreeTierRequester = <T = unknown>(method: string, params?: Record<st
  * render as if there were no free tier until an answer lands.
  */
 export const $freeTierStatus = atom<FreeTierStatus | null>(null)
+
+/**
+ * A signed-out free-tier user who should see the standing Sign in: the tier is
+ * on with an identity (`available`; a sign-in replaces that identity, so it
+ * reads false afterwards) and no guided setup owns the moment. The statusbar
+ * chip shows on it, and Simple mode keeps the statusbar up on it.
+ */
+export const $freeTierSignInOpen = computed(
+  [$freeTierStatus, $onboardingGate],
+  status => Boolean(status?.available) && !guidedOnboardingActive()
+)
 
 function isFreeTierStatus(value: unknown): value is FreeTierStatus {
   return typeof value === 'object' && value !== null && typeof (value as FreeTierStatus).has_guest === 'boolean'
