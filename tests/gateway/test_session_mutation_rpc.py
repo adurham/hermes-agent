@@ -63,3 +63,31 @@ async def test_pending_fanout_carries_the_revision_a_later_mutation_must_present
         authority._publish_pending(SessionRef('owned', 's'))
         assert published and published[-1][0] == 'session.info'
         assert published[-1][1]['revision'] == db.get_session('s')['runtime_revision']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('guard', ['turn_lease', 'compression_lock'])
+async def test_ws_mutation_refused_by_live_write_guard_is_session_busy(tmp_path, guard):
+    """The WS path answers a live turn lease / compression lock like REST's 409: a retryable
+    session_busy error frame with the row intact, never an exception that becomes an internal error."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('s', source='test')
+        epoch = begin_runtime_epoch(db, instance_id='current')
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id='owned',
+                                     instance_id='current', db=db, epoch=epoch)
+        authority.sessions['s'] = LiveSession(None, 'route')
+        if guard == 'turn_lease':
+            assert db.try_acquire_session_turn_lease('s', 'foreign-turn')
+        else:
+            assert db.try_acquire_compression_lock('s', 'foreign-compressor')
+        owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+        try:
+            refused = await owner.dispatch({'id': 7, 'method': 'session.mutate', 'params': {
+                'session_id': 's', 'request_id': 'delete-1',
+                'expected_revision': db.get_session('s')['runtime_revision'],
+                'expected_generation': db.get_session('s')['runtime_generation'],
+                'operation': 'delete', 'payload': {}}})
+            assert refused['error']['message'] == 'session_busy', refused
+            assert db.get_session('s') is not None
+        finally:
+            await owner.close()

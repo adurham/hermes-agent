@@ -382,7 +382,13 @@ class AuthorityConnection:
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session
-        result = await mutate_session(self.authority, self.actor, ref, params)
+        from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+        try:
+            result = await mutate_session(self.authority, self.actor, ref, params)
+        except MUTATION_GUARD_REFUSALS as exc:
+            # A live turn lease / compression lock is the same retryable busy verdict a
+            # running admission gets (REST maps it to 409), not an internal error.
+            raise RuntimeStoreError('session_busy') from exc
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None
