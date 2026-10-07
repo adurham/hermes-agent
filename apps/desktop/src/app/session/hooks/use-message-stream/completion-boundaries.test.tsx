@@ -4,6 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
@@ -178,6 +179,34 @@ it.each([true, false, undefined])(
     h.dispose()
   }
 )
+
+// The session authority acknowledges a queued admission before the prompt row
+// exists, so the optimistic prompt has no row id until the completion receipt
+// names it. A stored page read after the turn must replace that bubble, not
+// paint the prompt a second time beside its stored copy.
+it('binds the optimistic prompt to the receipt row when the submit acknowledgement named none', async () => {
+  const h = mount()
+  await h.submit()
+  expect(h.state().messages[0].rowId).toBeUndefined()
+  await h.send('message.start')
+  await h.send('message.delta', { text: ANSWER })
+  await h.send('message.complete', {
+    text: ANSWER,
+    persisted_turn: { row_ids: [71, 72], user_row_id: 71, final_assistant_row_id: 72, complete: true }
+  })
+
+  const latestPage = toChatMessages([
+    { id: 71, role: 'user', content: 'Give the answer.' },
+    { id: 72, role: 'assistant', content: ANSWER }
+  ])
+
+  // The switch-back read grafts the stored page onto the window by row id.
+  expect(timeline(graftRefreshedTailOntoBackfill(latestPage, h.state().messages))).toEqual([
+    ['user', 'Give the answer.'],
+    ['assistant', ANSWER]
+  ])
+  h.dispose()
+})
 
 const timeline = (messages: ChatMessage[]) => messages.map(message => [message.role, chatMessageText(message)])
 
