@@ -27,7 +27,7 @@ import {
   groupSessionKey,
   hasThreadScopedGroupSession
 } from './group-membership'
-import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { type GroupRoundMemberContext, runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
 import { botsText } from './i18n'
@@ -613,6 +613,31 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   }
 }
 
+/** Deliver any replies that finished after their turn timed out — every
+ *  member, not just this round's responders, so long work is late, never
+ *  lost. False = the drive must end (cancelled or the room went away). */
+async function harvestGroupRoundMembers(context: GroupRoundMemberContext): Promise<boolean> {
+  for (const member of context.members) {
+    if (!context.isCurrent()) {
+      recordGroupActivity(context.group, {
+        kind: 'cancelled',
+        member: null,
+        thread: context.thread
+      })
+
+      return false
+    }
+
+    await harvestStrandedGroupReply(context.group, member)
+
+    if (!context.binding.isLive()) {
+      return false
+    }
+  }
+
+  return true
+}
+
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
  *  a time. User follow-ups queue behind this drive; Stop invalidates its
  *  epoch and discards queued continuations.
@@ -656,25 +681,8 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
-      // Deliver any replies that finished after their turn timed out —
-      // every member, not just this round's responders, so long work is
-      // late, never lost.
-      for (const member of members) {
-        if (!isCurrent()) {
-          recordGroupActivity(group, {
-            kind: 'cancelled',
-            member: null,
-            thread
-          })
-
-          return
-        }
-
-        await harvestStrandedGroupReply(group, member)
-
-        if (!binding.isLive()) {
-          return
-        }
+      if (!(await harvestGroupRoundMembers(context))) {
+        return
       }
 
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(

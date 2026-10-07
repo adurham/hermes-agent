@@ -648,6 +648,50 @@ function enqueueRelayDelivery(sender: RelayConnection, envelope: RelayEnvelope, 
   })
 }
 
+function relayDeliverParams(sender: RelayConnection, envelope: RelayEnvelope, envelopeId: string) {
+  return {
+    id: envelopeId,
+    profile: String(envelope?.target_profile || ''),
+    message: String(envelope?.message || ''),
+    from_profile: String(envelope?.from_profile || ''),
+    from_handle: String(envelope?.from_handle || ''),
+    from_connection: String(sender.id)
+  }
+}
+
+/** Act on a `bot_relay.deliver` answer: only a settled/failed receipt for THIS
+ *  envelope posts back; anything else stays retained for recovery. */
+async function settleRelayDelivery(
+  res: { status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string },
+  envelopeId: string,
+  attentionKey: string,
+  postReply: (payload: { error?: string; reason?: string; reply?: string }) => Promise<void>
+) {
+  if (res.delivery_id !== envelopeId || !res.admission_id) {
+    noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+
+    return
+  }
+
+  if (res.status !== 'settled' && res.status !== 'failed') {
+    if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+
+    return
+  }
+
+  if (res.status === 'failed') {
+    noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
+    await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
+
+    return
+  }
+
+  clearBotAttention(attentionKey)
+  await postReply({
+    reply: String(res?.reply || '')
+  })
+}
+
 /** Deliver one claimed envelope on the target connection's own socket and post
  *  the reply (or the error) back to the sender gateway for its waiter. */
 async function deliverRelayEnvelope(
@@ -693,40 +737,11 @@ async function deliverRelayEnvelope(
     const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
       { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
       'bot_relay.deliver',
-      {
-        id: envelopeId,
-        profile: String(envelope?.target_profile || ''),
-        message: String(envelope?.message || ''),
-        from_profile: String(envelope?.from_profile || ''),
-        from_handle: String(envelope?.from_handle || ''),
-        from_connection: String(sender.id)
-      },
+      relayDeliverParams(sender, envelope, envelopeId),
       RELAY_DELIVER_TIMEOUT_MS
     )
 
-    if (res.delivery_id !== envelopeId || !res.admission_id) {
-      noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
-
-      return
-    }
-
-    if (res.status !== 'settled' && res.status !== 'failed') {
-      if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
-
-      return
-    }
-
-    if (res.status === 'failed') {
-      noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
-      await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
-
-      return
-    }
-
-    clearBotAttention(attentionKey)
-    await postReply({
-      reply: String(res?.reply || '')
-    })
+    await settleRelayDelivery(res, envelopeId, attentionKey, postReply)
   } catch (error: any) {
     // #93091: bot_relay.deliver classifies the failed turn and ships the
     // typed code in the JSON-RPC error's `data.reason`; forward it into
