@@ -570,6 +570,74 @@ class _ResponsesStream:
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
 
+def _parse_chat_messages(messages: List[Any]) -> tuple:
+    """Chat ``messages`` -> ``(system_prompt, conversation_messages, error_response_or_None)``.
+
+    System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
+    (Anthropic rejects images there, OpenAI text models ignore them)."""
+    from gateway.platforms.api_server import (
+        _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
+    system_prompt = None
+    conversation_messages: List[Dict[str, str]] = []
+    for idx, msg in enumerate(messages):
+        role = msg.get("role", "")
+        raw_content = msg.get("content", "")
+        if role == "system":
+            content = _normalize_chat_content(raw_content)
+            system_prompt = content if system_prompt is None else system_prompt + "\n" + content
+        elif role in {"user", "assistant"}:
+            try:
+                content = _normalize_multimodal_content(raw_content)
+            except ValueError as exc:
+                return None, None, _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+            conversation_messages.append({"role": role, "content": content})
+    return system_prompt, conversation_messages, None
+
+
+def _parse_responses_input(raw_input: Any) -> tuple:
+    """Responses ``input`` (string or item array) -> ``(input_messages, error_response_or_None)``."""
+    from gateway.platforms.api_server import (
+        _error_response, _multimodal_validation_error, _normalize_multimodal_content)
+    input_messages: List[Dict[str, Any]] = []
+    if isinstance(raw_input, str):
+        input_messages = [{"role": "user", "content": raw_input}]
+    elif isinstance(raw_input, list):
+        for idx, item in enumerate(raw_input):
+            if isinstance(item, str):
+                input_messages.append({"role": "user", "content": item})
+            elif _is_reasoning_input_item(item):
+                continue
+            elif isinstance(item, dict):
+                try:
+                    content = _normalize_multimodal_content(item.get("content", ""))
+                except ValueError as exc:
+                    return None, _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                input_messages.append({"role": item.get("role", "user"), "content": content})
+    else:
+        return None, _error_response("'input' must be a string or array", 400)
+    return input_messages, None
+
+
+def _parse_conversation_history(raw_history: Any) -> tuple:
+    """Explicit Responses ``conversation_history`` -> ``(history, error_response_or_None)``."""
+    from gateway.platforms.api_server import (
+        _error_response, _multimodal_validation_error, _normalize_multimodal_content)
+    conversation_history: List[Dict[str, Any]] = []
+    if not isinstance(raw_history, list):
+        return None, _error_response("'conversation_history' must be an array of message objects", 400)
+    for i, entry in enumerate(raw_history):
+        if _is_reasoning_input_item(entry):
+            continue
+        if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+            return None, _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
+        try:
+            entry_content = _normalize_multimodal_content(entry["content"])
+        except ValueError as exc:
+            return None, _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+        conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+    return conversation_history, None
+
+
 class OpenAICompatRoutesMixin:
     """/v1/chat/completions and /v1/responses handlers + SSE writers."""
 
@@ -660,7 +728,6 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -677,22 +744,9 @@ class OpenAICompatRoutesMixin:
             return _invalid_request("Missing or invalid 'messages' field")
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
-        # System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
-        # (Anthropic rejects images there, OpenAI text models ignore them).
-        system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
-        for idx, msg in enumerate(messages):
-            role = msg.get("role", "")
-            raw_content = msg.get("content", "")
-            if role == "system":
-                content = _normalize_chat_content(raw_content)
-                system_prompt = content if system_prompt is None else system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
-                try:
-                    content = _normalize_multimodal_content(raw_content)
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
-                conversation_messages.append({"role": role, "content": content})
+        system_prompt, conversation_messages, messages_err = _parse_chat_messages(messages)
+        if messages_err is not None:
+            return messages_err
         user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
         history = conversation_messages[:-1]
         if not _content_has_visible_payload(user_message):
@@ -1092,12 +1146,39 @@ class OpenAICompatRoutesMixin:
             await response.write(_sse_frame(data, event=event_type))
         return response
 
+    async def _responses_durable_replay(self, request: "web.Request", body: Dict[str, Any], stream: bool) -> tuple:
+        """Canonical Idempotency-Key record for POST /v1/responses ->
+        ``(durable_key, idempotency_scope, idempotency_key, replayed_response_or_None)``."""
+        durable_key = idempotency_scope = None
+        idempotency_key = request.headers.get('Idempotency-Key')
+        canonical = getattr(self.gateway_runner, 'session_authority', None) is not None
+        if canonical and idempotency_key:
+            # An exact retry replays the committed response BEFORE the conversation name is
+            # expanded: the first success already advanced the conversation, so re-expanding
+            # would build a different admission payload and refuse the retry as a conflict.
+            # Streaming and nonstreaming share the record: transport mode is not identity.
+            from gateway.platforms.api_server import _make_request_fingerprint
+            idempotency_scope = self._run_idempotency_scope(request)
+            durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
+                           _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
+            replay = self._response_store.get(durable_key[0])
+            if replay is not None:
+                if replay.get('fingerprint') != durable_key[1]:
+                    from gateway.platforms.api_server import _openai_error
+                    return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                        _openai_error('admission_conflict', code='admission_conflict'), status=409)
+                if stream:
+                    return (durable_key, idempotency_scope, idempotency_key,
+                            await self._replay_sse_responses(request, replay))
+                return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                    replay['response'], headers=replay.get('headers') or {})
+        return durable_key, idempotency_scope, idempotency_key, None
+
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
-            _content_has_visible_payload, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
+            _content_has_visible_payload, _error_response, _invalid_request, _redact_api_error_text,
             _resolve_media_to_data_urls, _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -1122,64 +1203,25 @@ class OpenAICompatRoutesMixin:
         if conversation and previous_response_id:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         stream = _coerce_request_bool(body.get("stream"), default=False)
-        durable_key = None
-        idempotency_key = request.headers.get('Idempotency-Key')
-        canonical = getattr(self.gateway_runner, 'session_authority', None) is not None
-        if canonical and idempotency_key:
-            # An exact retry replays the committed response BEFORE the conversation name is
-            # expanded: the first success already advanced the conversation, so re-expanding
-            # would build a different admission payload and refuse the retry as a conflict.
-            # Streaming and nonstreaming share the record: transport mode is not identity.
-            from gateway.platforms.api_server import _make_request_fingerprint
-            idempotency_scope = self._run_idempotency_scope(request)
-            durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
-                           _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
-            replay = self._response_store.get(durable_key[0])
-            if replay is not None:
-                if replay.get('fingerprint') != durable_key[1]:
-                    from gateway.platforms.api_server import _openai_error
-                    return web.json_response(_openai_error('admission_conflict', code='admission_conflict'), status=409)
-                if stream:
-                    return await self._replay_sse_responses(request, replay)
-                return web.json_response(replay['response'], headers=replay.get('headers') or {})
+        durable_key, idempotency_scope, idempotency_key, replayed = await self._responses_durable_replay(
+            request, body, stream)
+        if replayed is not None:
+            return replayed
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
             previous_response_id = self._current_response_store().get_conversation(conversation)
 
-        input_messages: List[Dict[str, Any]] = []
-        if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            for idx, item in enumerate(raw_input):
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif _is_reasoning_input_item(item):
-                    continue
-                elif isinstance(item, dict):
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": item.get("role", "user"), "content": content})
-        else:
-            return _error_response("'input' must be a string or array", 400)
+        input_messages, input_err = _parse_responses_input(raw_input)
+        if input_err is not None:
+            return input_err
 
         # Explicit conversation_history (stateless clients) beats previous_response_id chaining.
         conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
-            if not isinstance(raw_history, list):
-                return _error_response("'conversation_history' must be an array of message objects", 400)
-            for i, entry in enumerate(raw_history):
-                if _is_reasoning_input_item(entry):
-                    continue
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+            conversation_history, history_err = _parse_conversation_history(raw_history)
+            if history_err is not None:
+                return history_err
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         stored_session_id = None
