@@ -29,20 +29,36 @@ describe('inline image preview envelope (#74564)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('guarantees a landscape frame can span the full preview width', () => {
-    const maxWidth = stylesheet.match(/--image-preview-max-width:\s*([\d.]+)rem/)?.[1]
-    const height = stylesheet.match(/--image-preview-height:\s*clamp\(([\d.]+)rem/)?.[1]
+  const maxWidth = Number(stylesheet.match(/--image-preview-max-width:\s*([\d.]+)rem/)?.[1])
+  const heightClamp = stylesheet.match(
+    /--image-preview-height:\s*clamp\(([\d.]+)rem,\s*calc\(var\(--vsq\)\s*\*\s*([\d.]+)\),\s*([\d.]+)rem\)/
+  )
+  const [floor, vsqFactor, ceiling] = (heightClamp?.slice(1) ?? []).map(Number)
 
-    expect(maxWidth).toBeDefined()
-    expect(height).toBeDefined()
+  it('guarantees a landscape frame can span the full preview width', () => {
+    expect(maxWidth).not.toBeNaN()
+    expect(heightClamp).not.toBeNull()
 
     // The height FLOOR must be at least maxWidth × 9/16: then a 16:9 frame
     // (width = height × 16/9) reaches the full preview width even on the
     // shortest viewport, instead of collapsing to the old 16.25rem floor.
-    expect(Number(height)).toBeGreaterThanOrEqual((Number(maxWidth) * 9) / 16)
+    expect(floor).toBeGreaterThanOrEqual((maxWidth * 9) / 16)
     // And the envelope actually grew from the reported 34rem/16.25rem pair.
-    expect(Number(maxWidth)).toBeGreaterThan(34)
-    expect(Number(height)).toBeGreaterThan(16.25)
+    expect(maxWidth).toBeGreaterThan(34)
+    expect(floor).toBeGreaterThan(16.25)
+  })
+
+  it('keeps growing with the viewport in tall windows', () => {
+    // The middle clamp term scales with --vsq (min(0.5vh, 0.5vw)), so the
+    // preview tracks the window's shorter side between floor and ceiling.
+    // A factor at or below the old 100 — or a ceiling back at the old
+    // 26.25rem cap — would quietly shrink previews in tall windows again.
+    expect(vsqFactor).toBeGreaterThan(100)
+    expect(ceiling).toBeGreaterThan(26.25)
+    expect(ceiling).toBeGreaterThan(floor)
+    // Portrait images lean on the ceiling: it must at least match the width
+    // cap so a 1:1 frame can also fill the preview on a tall enough window.
+    expect(ceiling).toBeGreaterThanOrEqual(maxWidth)
   })
 
   it('keeps the natural-size cap so a small image is never upscaled', () => {
