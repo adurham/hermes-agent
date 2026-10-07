@@ -267,6 +267,9 @@ def setup_choose_tool(kind: str = "", question: str = "", options=None, multi_se
             payload.update(options=_name_rows(), multi_select=False)
         reply = callback(payload)
         result = _result(reply, payload["options"])
+        if kind == "question" and text == NAME_QUESTION and result["outcome"] == "typed":
+            # The composer answers the name card like its free-text field: the words are the name, not a missed row.
+            result = {"outcome": "submitted", "picked": result["said"]}
         extra, state = _follow_up(kind, card, result, payload["options"], cards)
         state = _remember(kind, text, result, state)
         if session_id and state != cards:

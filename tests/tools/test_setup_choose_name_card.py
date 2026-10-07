@@ -9,7 +9,7 @@ from tools.setup_choose_tool import setup_choose_tool
 NAME = "Ada Lovelace"
 
 
-def _ask(monkeypatch, reply):
+def _ask(monkeypatch, reply, session_id=None):
     monkeypatch.setattr(initiate_setup_facts, "suggested_name", lambda: NAME)
     shown = []
 
@@ -17,7 +17,8 @@ def _ask(monkeypatch, reply):
         shown.append(payload)
         return reply
 
-    result = setup_choose_tool(kind="question", question=NAME_QUESTION, options=[], callback=callback)
+    result = setup_choose_tool(kind="question", question=NAME_QUESTION, options=[], callback=callback,
+                               session_id=session_id)
     return shown[0], json.loads(result)
 
 
@@ -39,3 +40,16 @@ def test_facts_and_the_scripted_card_leave_the_name_out(monkeypatch):
     assert NAME not in json.dumps(card)
     line, _tool, _card = opening.send(json.dumps({"outcome": "submitted", "picked": "suggested", "label": NAME}))
     assert line == f"Good to meet you, {NAME}."
+
+
+def test_a_name_typed_in_the_composer_is_the_name_answer(monkeypatch):
+    from hermes_cli.setup_profile import read_cards
+
+    _, typed = _ask(monkeypatch, {"said": "Ada"}, session_id="setup-typed-name")
+    assert (typed["outcome"], typed["picked"]) == ("submitted", "Ada")
+    assert read_cards("setup-typed-name")["picks"]["name"] == "Ada"
+
+    opening = _opening(set(), {})
+    next(opening)
+    line, _tool, card = opening.send(json.dumps(typed))
+    assert (line, card["kind"]) == ("Good to meet you, Ada.", "accent")
