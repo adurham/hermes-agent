@@ -17,10 +17,36 @@ _TAIL_BYTES = 16384
 
 
 def handlers(connection):
-    return {name: partial(read, connection, kind=kind) for name, kind in {
+    return {**{name: partial(read, connection, kind=kind) for name, kind in {
         'session.control.read': 'control', 'process.list': 'processes',
         'subagent.list': 'subagents', 'subagent.tail': 'tail',
-    }.items()}
+    }.items()}, 'approval.pending': partial(approvals, connection),
+        'approval.received': partial(approvals, connection, ack=True)}
+
+
+async def approvals(connection, ref, params, *, ack=False):
+    """The Desktop's approval replay (``approval.pending``) and card ack (``approval.received``)
+    over the owner's generation-bound prompt projection. Left to the legacy sidecar they answered
+    ``session not found`` for every authority session, which the renderer reads as a reaped
+    runtime and answers with a mid-turn re-resume."""
+    fields = {'session_id', 'profile'} | ({'request_id'} if ack else set())
+    if (set(params) - fields or not isinstance(ref.session_id, str) or not ref.session_id
+            or (ack and (not isinstance(params.get('request_id'), str) or not params['request_id']))):
+        raise RuntimeStoreError('invalid_params')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:read')
+    live = authority.sessions[ref.session_id]
+    with live.event_stream.lock:
+        pending = [(route, prompt) for route, prompt in live.controls.pending.values() if prompt['kind'] == 'approval']
+    if ack:
+        from tools.approval import ack_gateway_approval
+        route = next((route for route, prompt in pending if prompt['prompt_id'] == params['request_id']), None)
+        return {'acknowledged': route is not None and ack_gateway_approval(route, params['request_id'])}
+    return {'approvals': [{'request_id': prompt['prompt_id'], 'command': prompt['command'],
+                           'description': prompt['description'], 'choices': list(prompt['choices']),
+                           'allow_permanent': 'always' in prompt['choices']} for _, prompt in pending]}
 
 
 async def read(connection, ref, params, *, kind):
