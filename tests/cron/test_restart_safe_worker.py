@@ -810,7 +810,7 @@ runpy.run_module("cron.scheduler", run_name="__main__", alter_sys=True)
 
 @pytest.mark.parametrize("cause", ["source_update", "interrupted_pull"])
 def test_relaunch_replays_the_worker_before_its_ack(tmp_path, cause):
-    """``run_agent``'s import may relaunch the process: ``hermes_bootstrap`` finishing a source
+    """Importing ``hermes_bootstrap`` may relaunch the process: finishing a source
     update (into an ``-I`` interpreter that ignores the pinned PYTHONPATH), or the restore of a
     tree a killed ``hermes update`` half-wrote. Reached inside ``run_one_job``, either came after
     the ack: the payload was deleted, the marker consumed, and the new process died on ``ruamel``

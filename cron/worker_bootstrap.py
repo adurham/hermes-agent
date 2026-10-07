@@ -2,7 +2,7 @@
 
 ``sys.executable -m cron.scheduler --external-worker-file ...``
 (``cron/scheduler.py::_launch_external_cron_worker``) is a full Hermes entry point that
-does not go through ``hermes_bootstrap``, and it imports Hermes packages the moment it
+reaches ``hermes_bootstrap`` only from its ``__main__``, and it imports Hermes packages the moment it
 starts. ``cron/scheduler_worker_env.py`` restores the committed generation's
 ``site-packages`` on its ``PYTHONPATH`` so those imports resolve, but a pinned path is not a
 boot: the worker holds no lease on the generation, so the PM collector may remove it
@@ -30,9 +30,8 @@ and may relaunch the process into a fresh one (``hermes_cli/venv_sync.py::relaun
 tree a killed ``hermes update`` half-wrote. ``finish_worker_boot()`` runs it from
 the worker's ``__main__`` before the payload is read, so a relaunch replays the whole worker: the
 payload is still on disk and the marker still set, and the new process boots its dependencies
-again. Left to ``run_agent``'s import inside ``run_one_job``, the relaunch came after the ack, with
-the payload deleted and the marker consumed: the new process died on ``ruamel`` and the adopted
-run was left ``unknown``.
+again. ``hermes_bootstrap`` re-runs the (idempotent) dependency boot; the package-init call above
+must stay, because ``cron.jobs`` needs dependencies before ``__main__`` can run.
 """
 
 from __future__ import annotations

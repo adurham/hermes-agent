@@ -4442,9 +4442,10 @@ if __name__ == "__main__":
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
-        # The gateway spawns this worker with stdout on DEVNULL and stderr on a capture file it
-        # only reads back if we die before the ack; without a log handler every adoption/ack
-        # failure below would otherwise be invisible to the persistent log.
+        # The gateway spawns this worker with stdout on DEVNULL and stderr on a
+        # capture file it only reads back if we die before the ack; without a
+        # log handler every adoption/ack failure below would otherwise be
+        # invisible to the persistent log.
         try:
             from hermes_logging import setup_logging
 
