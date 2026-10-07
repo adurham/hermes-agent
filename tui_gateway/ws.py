@@ -294,6 +294,46 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
+def _authority_connection(ws: Any, transport: "WSTransport", auth_identity: dict | None, operator: bool):
+    """The session-authority connection for this socket (route scope, else app state), or None
+    when this backend has no authority and requests go to the legacy ``server.dispatch``."""
+    authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
+        getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
+    if authority is None:
+        return None
+    from gateway.session_controls import AuthorityConnection
+    return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
+
+
+async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: "WSTransport") -> Any:
+    """One request through the authority when attached, else the legacy dispatcher."""
+    if authority_connection is None:
+        return await asyncio.to_thread(server.dispatch, req, transport)
+    resp = await authority_connection.dispatch(req)
+    actor = authority_connection.actor
+    if _is_unknown_method(resp) and req_method in server._methods and legacy_fallback_allowed(actor):
+        # Session verbs live on the authority; everything else the sidecar still
+        # registers (pet, wake word, active-session list, connectors) keeps its
+        # legacy handler. A real -32601 reaches the client only for methods
+        # neither side knows, which is what its version-skew notice keys on.
+        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
+    return resp
+
+
+def _start_backend_liveness() -> None:
+    """Backend heartbeat refresher + startup orphan sweep (idempotent, once per process); a
+    failure of either is logged and never blocks the connection."""
+    for start, what in (
+        (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
+        (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
+    ):
+        try:
+            start()
+        # health: allow BLE001 -- liveness boundary; logs the traceback (exc_info) via _log, a name ruff does not treat as a logger
+        except Exception:
+            _log.warning("%s failed", what, exc_info=True)
+
+
 class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
@@ -334,18 +374,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # writes the response itself via transport.write (a separate thread, so that is the safe
             # path). Inline handlers return the response dict, written here from the loop.
             try:
-                if authority_connection is not None:
-                    resp = await authority_connection.dispatch(req)
-                    actor = authority_connection.actor
-                    if (_is_unknown_method(resp) and req_method in server._methods
-                            and legacy_fallback_allowed(actor)):
-                        # Session verbs live on the authority; everything else the sidecar still
-                        # registers (pet, wake word, active-session list, connectors) keeps its
-                        # legacy handler. A real -32601 reaches the client only for methods
-                        # neither side knows, which is what its version-skew notice keys on.
-                        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
-                else:
-                    resp = await asyncio.to_thread(server.dispatch, req, transport)
+                resp = await _dispatch_request(authority_connection, req, req_method, transport)
             except Exception:
                 dispatch_crashes += 1
                 _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
@@ -376,11 +405,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
-        authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
-            getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
-        if authority is not None:
-            from gateway.session_controls import AuthorityConnection
-            authority_connection = AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
+        authority_connection = _authority_connection(ws, transport, auth_identity, operator)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
@@ -401,14 +426,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
         # desktop app and web dashboard reach the agent via this sidecar, not entry.main()).
-        for start, what in (
-            (server._start_backend_heartbeat_refresher, "backend heartbeat refresher start"),
-            (server._schedule_startup_orphan_sweep, "startup orphan sweep scheduling"),
-        ):
-            try:
-                start()
-            except Exception:
-                _log.warning("%s failed", what, exc_info=True)
+        _start_backend_liveness()
         if not ready_ok:
             disconnect_reason = "ready_send_failed"
             send_failures += 1

@@ -76,6 +76,11 @@ def validate_options(args):
                                  f"\n  Example: {_SAFE_MODE_EXAMPLE}")
 
 
+def _caller_cwd(args) -> str:
+    """The caller's working directory (``--in`` wins), resolved; filesystem work, so off the loop."""
+    return str(Path(getattr(args, "in_dir", None) or os.getcwd()).expanduser().resolve())
+
+
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
     async with connect_gateway() as client:
@@ -110,7 +115,7 @@ async def run_gateway_chat(args, emitter=None):
                 policy["title"] = title
             if isinstance(policy.get("toolsets"), str):
                 policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
-            cwd = str(Path(getattr(args, "in_dir", None) or os.getcwd()).expanduser().resolve())
+            cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd
             elif getattr(args, "in_dir", None):

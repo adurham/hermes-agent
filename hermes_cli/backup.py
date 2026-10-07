@@ -934,6 +934,33 @@ def _import_members(
         return _import_members_exclusive(zf, members, prefix, hermes_root, file_count)
 
 
+def _import_external_member(
+    zf: zipfile.ZipFile, member: str, home_dir: Path, new_file_mode: int, errors: List[str]
+) -> bool:
+    """Publish one ``_external/`` member under the user's home; False (with ``errors`` appended)
+    when it is a traversal or cannot be written."""
+    target = home_dir / member[len(_EXTERNAL_PREFIX):]
+    # Security: the resolved target must stay under the home dir.
+    try:
+        target.resolve().relative_to(home_dir)
+    except ValueError:
+        errors.append(f"  {member}: path traversal blocked")
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _extract_member_atomically(zf, member, target, new_file_mode)
+        # External provider configs commonly hold credentials.
+        if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+        return True
+    except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
+        errors.append(f"  {member}: {exc}")
+        return False
+
+
 def _import_members_exclusive(
     zf: zipfile.ZipFile, members: List[str], prefix: str, hermes_root: Path, file_count: int
 ) -> tuple[int, int, list[str], list[str], list[tuple[str, tuple[int, int], tuple[int, int]]]]:
@@ -957,29 +984,11 @@ def _import_members_exclusive(
         # ``_external/`` arc prefix restores to its original home-relative
         # location (e.g. ~/.honcho/config.json), NOT under HERMES_HOME.
         if member.startswith(_EXTERNAL_PREFIX):
-            ext_rel = member[len(_EXTERNAL_PREFIX):]
-            if not ext_rel:
+            if not member[len(_EXTERNAL_PREFIX):]:
                 continue
-            target = home_dir / ext_rel
-            # Security: the resolved target must stay under the home dir.
-            try:
-                target.resolve().relative_to(home_dir)
-            except ValueError:
-                errors.append(f"  {member}: path traversal blocked")
-                continue
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _extract_member_atomically(zf, member, target, new_file_mode)
-                # External provider configs commonly hold credentials.
-                if target.suffix in {".json", ".env", ".conf"} or target.name in _SECRET_FILE_NAMES:
-                    try:
-                        os.chmod(target, 0o600)
-                    except OSError:
-                        pass
+            if _import_external_member(zf, member, home_dir, new_file_mode, errors):
                 restored += 1
                 restored_external += 1
-            except (OSError, *_ZIP_MEMBER_READ_ERRORS) as exc:
-                errors.append(f"  {member}: {exc}")
             if restored % 500 == 0:
                 print(f"  {restored}/{file_count} files ...")
             continue
@@ -1549,6 +1558,48 @@ def restore_quick_snapshot(
         return False
 
 
+def _snapshot_epochs_restorable(files, entry_paths) -> bool:
+    """False (logged) when any listed ``state.db`` destination cannot prove its runtime epoch."""
+    for rel in files:
+        entry = entry_paths(rel)
+        if entry and entry[0].exists() and "state.db" in (entry[1].name, entry[1].resolve().name):
+            try:
+                _restore_destination_epoch(entry[1])
+            except OSError as exc:
+                logger.error("%s", exc)
+                return False
+    return True
+
+
+def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
+    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
+    try:
+        if dst.suffix == ".db":
+            # Restore through SQLite backup API so live connections
+            # (gateway, dashboard, another CLI session) see the
+            # restored data instead of continuing to serve stale
+            # cached pages from a replaced inode (issue #65942).
+            if not _safe_restore_db(src, dst):
+                # Refused, failed, or source failed its integrity check:
+                # dst left as it was. Count as a failure, not a restore.
+                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
+                return False
+        elif rel == "auth.json":
+            # Refresh tokens for these OAuth providers rotate on use. A historical
+            # snapshot can therefore contain a spent pair even though the current
+            # auth.json has the live successor. Restore the historical auth state
+            # while retaining that live single-use grant under the auth-store lock.
+            if not _restore_auth_json(src, dst):
+                logger.error("Failed to restore %s safely", rel)
+                return False
+        else:
+            shutil.copy2(src, dst)
+        return True
+    except (OSError, PermissionError) as exc:
+        logger.error("Failed to restore %s: %s", rel, exc)
+        return False
+
+
 def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
     """Restore state from a quick snapshot while ``home`` is reserved."""
     from gateway.runtime_ownership import exclusive_maintenance
@@ -1602,14 +1653,8 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
     with exclusive_maintenance(homes):
         # Epoch safety is a whole-profile preflight: copying config first would
         # both partially roll back the profile and report a refused DB as success.
-        for rel in meta.get("files", {}):
-            entry = _entry_paths(rel)
-            if entry and entry[0].exists() and "state.db" in (entry[1].name, entry[1].resolve().name):
-                try:
-                    _restore_destination_epoch(entry[1])
-                except OSError as exc:
-                    logger.error("%s", exc)
-                    return False
+        if not _snapshot_epochs_restorable(meta.get("files", {}), _entry_paths):
+            return False
 
         restored = 0
         auth_restore_failed = False
@@ -1628,34 +1673,10 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
                 continue
 
             dst.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                if dst.suffix == ".db":
-                    # Restore through SQLite backup API so live connections
-                    # (gateway, dashboard, another CLI session) see the
-                    # restored data instead of continuing to serve stale
-                    # cached pages from a replaced inode (issue #65942).
-                    if not _safe_restore_db(src, dst):
-                        # Refused, failed, or source failed its integrity check:
-                        # dst left as it was. Count as a failure, not a restore.
-                        logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
-                        continue
-                elif rel == "auth.json":
-                    # Refresh tokens for these OAuth providers rotate on use. A historical
-                    # snapshot can therefore contain a spent pair even though the current
-                    # auth.json has the live successor. Restore the historical auth state
-                    # while retaining that live single-use grant under the auth-store lock.
-                    if not _restore_auth_json(src, dst):
-                        logger.error("Failed to restore %s safely", rel)
-                        auth_restore_failed = True
-                        continue
-                else:
-                    shutil.copy2(src, dst)
+            if _restore_snapshot_entry(rel, src, dst):
                 restored += 1
-            except (OSError, PermissionError) as exc:
-                logger.error("Failed to restore %s: %s", rel, exc)
-                if rel == "auth.json":
-                    auth_restore_failed = True
+            elif rel == "auth.json":
+                auth_restore_failed = True
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0 and not auth_restore_failed

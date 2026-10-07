@@ -18,7 +18,8 @@ async def run(params, board_db):
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
         raise GatewayClientError('Kanban requires the assigned local profile owner')
     async with connect_gateway() as client:
-        accepted = await client.rpc('kanban.run', **dict(params, db=str(Path(board_db).resolve())))
+        db = str(await asyncio.to_thread(Path(board_db).resolve))
+        accepted = await client.rpc('kanban.run', **dict(params, db=db))
         sid, receipt = accepted['session_id'], accepted['receipt']
         print(f'Session: {sid}', file=sys.stderr)
         while receipt['status'] not in {'terminal', 'unknown'}:

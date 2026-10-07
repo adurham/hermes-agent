@@ -166,15 +166,17 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     ``agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here
     either — the exit mapping and the recovery gate must agree on what a worker is.
     """
-    from cli import _TERMINAL_PROVIDER_REASONS, _TRANSIENT_PROVIDER_REASONS
+    # Late-bound through the ``cli`` facade so a patched ``cli._*_PROVIDER_REASONS`` holds.
+    from cli import _TERMINAL_PROVIDER_REASONS as terminal_reasons
+    from cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
     from agent.kanban_turn_recovery import kanban_task_id
     from hermes_cli.turn_exit import turn_exit_code
     return turn_exit_code(
         result, kanban_worker=kanban_task_id() is not None,
         credentials_rate_limited=credentials_rate_limited,
         credentials_terminal=credentials_terminal,
-        transient_reasons=_TRANSIENT_PROVIDER_REASONS,
-        terminal_reasons=_TERMINAL_PROVIDER_REASONS,
+        transient_reasons=transient_reasons,
+        terminal_reasons=terminal_reasons,
     )
 
 
