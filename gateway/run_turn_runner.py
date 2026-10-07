@@ -78,6 +78,24 @@ def _finite_viewer_turn() -> bool:
     return finite_turn_required() is True
 
 
+def _persisted_turn(agent, agent_history, result, compressions) -> dict | None:
+    """``message.complete.persisted_turn`` for this turn, the receipt the TUI gateway's own turns
+    publish: clients bind the streamed reply to its stored row instead of comparing words. The
+    agent copies ``conversation_history`` into its message list, so an untouched pre-turn prefix
+    is the same dicts (transcript rows here carry no ``_row_id`` to compare)."""
+    from agent.persisted_turn_receipt import persisted_turn_receipt
+    if not isinstance(result, dict):
+        return None
+    status = ("interrupted" if result.get("interrupted")
+              else "error" if result.get("failed") or result.get("error") else "complete")
+    return persisted_turn_receipt(
+        result.get("messages"), getattr(agent, "_persist_user_message_idx", None), agent_history,
+        result.get("final_response"), status,
+        compression_unchanged=type(compressions) is int and compressions == getattr(
+            getattr(agent, "context_compressor", None), "compression_count", None),
+        prefix_row_matches=lambda before, after: before is after)
+
+
 class _NoStreamConsumer(RuntimeError):
     """Raised by the delta callback when nothing consumed the text; ``_call_quietly`` turns it into
     'not delivered' so the agent's partial-delivery accounting matches what the user saw."""
@@ -1151,7 +1169,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+        compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:
             # The classic `chat -q` process exit bounded the codex app-server child; a finite turn
@@ -1194,6 +1214,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,
+            **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
