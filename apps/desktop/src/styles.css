@@ -508,7 +508,7 @@
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
-    --conversation-text-base-size: 0.875rem;
+    --conversation-text-base-size: 0.8125rem;
     --conversation-tool-base-size: 0.6875rem;
     --conversation-caption-base-size: 0.75rem;
     --conversation-base-line-height: 1.125rem;
