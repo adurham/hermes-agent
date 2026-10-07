@@ -564,33 +564,8 @@ export class JsonRpcGatewayClient {
         return
       }
 
-      const epoch = result?.epoch
-      const sessionEpoch = result?.replay_epoch
-
-      if (result?.snapshot_required === true) {
-        // The canonical authority could not replay our window (epoch changed,
-        // ring truncated, cursor ahead). Keeping the watermark would make the
-        // next reconnect believe nothing was missed; drop it and tell the
-        // consumer to re-resume for a snapshot. A legacy backend reports a
-        // bare `truncated` instead; that skips the window below (#100122).
-        this.adoptSessionReplayEpoch(sid, sessionEpoch)
-        this.lastSeenSeq.delete(sid)
-        this.dispatchEvent({ type: 'session.replay_gap', session_id: sid, payload: { replay_epoch: sessionEpoch, latest_seq: result.latest_seq } })
-
+      if (this.applyReplayEpochs(sid, result)) {
         return
-      }
-
-      if (typeof sessionEpoch === 'string' && sessionEpoch) {
-        // Canonical responses also include `epoch`, but it is session-local,
-        // not the legacy process identity. Never reset unrelated cursors.
-        if (this.adoptSessionReplayEpoch(sid, sessionEpoch)) { return }
-      } else if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
-        // The old cursor no longer describes this process's numbering.
-        this.adoptReplayEpoch(epoch)
-
-        return
-      } else if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
-        this.replayEpoch = epoch
       }
 
       if (result?.truncated === true) {
@@ -627,6 +602,43 @@ export class JsonRpcGatewayClient {
         this.flushReplayHold(sid, replayGeneration)
       }
     }
+  }
+
+  /** Adopt the replay answer's epoch identity; true when the window must not be dispatched. */
+  private applyReplayEpochs(
+    sid: string,
+    result: { epoch?: string; latest_seq?: number; replay_epoch?: unknown; snapshot_required?: unknown } | undefined
+  ): boolean {
+    const epoch = result?.epoch
+    const sessionEpoch = result?.replay_epoch
+
+    if (result?.snapshot_required === true) {
+      // The canonical authority could not replay our window (epoch changed,
+      // ring truncated, cursor ahead). Keeping the watermark would make the
+      // next reconnect believe nothing was missed; drop it and tell the
+      // consumer to re-resume for a snapshot. A legacy backend reports a
+      // bare `truncated` instead; that skips the window below (#100122).
+      this.adoptSessionReplayEpoch(sid, sessionEpoch)
+      this.lastSeenSeq.delete(sid)
+      this.dispatchEvent({ type: 'session.replay_gap', session_id: sid, payload: { replay_epoch: sessionEpoch, latest_seq: result.latest_seq } })
+
+      return true
+    }
+
+    if (typeof sessionEpoch === 'string' && sessionEpoch) {
+      // Canonical responses also include `epoch`, but it is session-local,
+      // not the legacy process identity. Never reset unrelated cursors.
+      if (this.adoptSessionReplayEpoch(sid, sessionEpoch)) { return true }
+    } else if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
+      // The old cursor no longer describes this process's numbering.
+      this.adoptReplayEpoch(epoch)
+
+      return true
+    } else if (typeof epoch === 'string' && epoch && !this.replayEpoch) {
+      this.replayEpoch = epoch
+    }
+
+    return false
   }
 
   /** Advance the watermark past a truncated replay window without dispatching any of it. */
