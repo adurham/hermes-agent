@@ -1006,7 +1006,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
             logger.warning(".worktrees/ holds %d tree(s) (%s) — run `hermes worktree list` "
                            "to audit and `hermes worktree prune` to reclaim safely.", count, size_txt)
     except Exception:
-        pass
+        logger.debug("worktree summary failed", exc_info=True)
 
 
 def _prune_orphaned_branches(repo_root: str, protect: Optional[set] = None) -> None:

@@ -215,19 +215,24 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
     _catalog_registry(cat, module_loader)
     warning = ""
     skills: dict[str, dict] = {}
+    # Each loader is a degrade boundary: user config, third-party plugin registration and skill
+    # files can raise anything, and one failing source must never blank the whole palette.
     with scope if scope is not None else contextlib.nullcontext():
         try:
             _catalog_quick_commands(cat, load_cfg)
         except Exception as e:
+            logger.debug("quick_commands discovery failed", exc_info=True)
             warning = f"quick_commands discovery unavailable: {e}"
         try:
             _catalog_plugin_commands(cat, module_loader)
         except Exception as e:
+            logger.debug("plugin command discovery failed", exc_info=True)
             warning = warning or f"plugin command discovery unavailable: {e}"
         try:
             collision_note = _catalog_skills(cat, skills, module_loader)  # always runs: skills must list even when a loader failed
             warning = warning or collision_note
         except Exception as e:
+            logger.debug("skill discovery failed", exc_info=True)
             warning = f"skill discovery unavailable: {e}"
     return {
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in module_loader("hermes_cli.commands").SUBCOMMANDS.items()},

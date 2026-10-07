@@ -274,8 +274,9 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            # Optional: backup() still publishes over a deep WAL, just less tidily.
+            logger.debug("Pre-restore WAL checkpoint of %s skipped: %s", dst, exc)
         src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
             src_conn.backup(dst_conn)
@@ -286,10 +287,11 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         try:
             mode = src.stat().st_mode
             dst.chmod(mode)
-        except Exception:
-            pass
+        except OSError as exc:
+            # The data is restored; only the snapshot's file mode could not be carried over.
+            logger.warning("Restored %s but could not apply the snapshot's file mode: %s", dst, exc)
         return True
-    except Exception as exc:
+    except (sqlite3.Error, OSError, ValueError) as exc:  # ValueError: an unrepresentable path
         logger.warning("SQLite safe restore failed for %s -> %s: %s", src, dst, exc)
         # Release our own handle on *dst* before the fallback: on Windows an
         # open connection blocks unlink() with WinError 32, which would make
@@ -297,8 +299,8 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
         if dst_conn is not None:
             try:
                 dst_conn.close()
-            except Exception:
-                pass
+            except sqlite3.Error as close_exc:
+                logger.debug("Closing %s before the fallback restore failed: %s", dst, close_exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
         from hermes_cli.sqlite_safe_read import (
@@ -358,7 +360,7 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
                 dst, exc2,
             )
             return False
-        except Exception as exc2:
+        except (OSError, ValueError) as exc2:  # ValueError: a path the OS cannot represent
             logger.error("Fallback restore also failed for %s -> %s: %s", src, dst, exc2)
             return False
 

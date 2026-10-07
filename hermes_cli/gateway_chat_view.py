@@ -1,10 +1,13 @@
 """Classic terminal presentation of authority events and fenced controls."""
 import asyncio
 from contextlib import suppress
+import logging
 import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
+
+logger = logging.getLogger(__name__)
 
 
 _BLOCKING_CONTROL_EVENTS = frozenset({
@@ -243,14 +246,18 @@ class GatewayChatView:
     async def _write_usage_file(self, admission, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote, read from the
         result the owner committed with this admission's settlement (best-effort, never raises)."""
+        from websockets.exceptions import WebSocketException
         from hermes_cli.oneshot import _write_usage_file
         result = {}
         try:
             receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
                                             admission_id=admission, include_result=True)
             result = dict(receipt.get("result") or {})
-        except Exception:
-            pass
+        # Transport loss / refusal, or a receipt whose ``result`` is not a mapping.
+        except (GatewayClientError, OSError, TimeoutError, WebSocketException,
+                AttributeError, TypeError, ValueError) as exc:
+            # The ledger is still written from the outcome alone; a missing receipt is not fatal.
+            logger.debug("usage-file receipt for %s unavailable: %s", admission, exc)
         result.setdefault("session_id", self.session_id)
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)

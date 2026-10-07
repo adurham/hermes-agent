@@ -115,6 +115,9 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     try:
         return _ok(rid, authority_delivery(home, {**forwarded, 'profile': resolved}))
     except Exception as exc:
+        # Boundary: every way the target authority can be unreachable (discovery, ticket, WS,
+        # RPC refusal) is the same typed ``runtime_unavailable`` refusal the sender retries on.
+        logging.getLogger(__name__).debug("bot_relay.deliver to %s refused", resolved, exc_info=True)
         return _err(rid, 5094, str(exc), data={'reason': 'runtime_unavailable'})
 
 

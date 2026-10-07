@@ -7,6 +7,7 @@ cli-level names through ``from cli import ...`` at call time so facade monkeypat
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 
 # Log-record parity with the origin module.
@@ -39,7 +40,9 @@ def _run_state_db_auto_maintenance(session_db) -> None:
                 continue
             try:
                 count = repair()
-            except Exception as _exc:
+            # Every SessionDB refusal: sqlite/IO, RuntimeStoreError (ValueError), and the
+            # hermes_state_errors busy/replaced family (RuntimeError).
+            except (sqlite3.Error, OSError, ValueError, RuntimeError) as _exc:
                 # Latched below regardless: a repair this store refuses (live ledger work,
                 # locked file) must surface once, not retry silently on every start.
                 logger.warning(skip_msg, _exc)

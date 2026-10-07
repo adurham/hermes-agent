@@ -1080,6 +1080,9 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
             print()
             ensure_gateway_service(context="import")
     except Exception:
+        # Import boundary: the restore already succeeded; any service failure prints the
+        # manual fallback instead of failing the import.
+        logger.debug("gateway revive after import failed", exc_info=True)
         print("\nStart the gateway to activate cron jobs and messaging:\n  hermes gateway run")
 
 

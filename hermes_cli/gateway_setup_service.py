@@ -1,6 +1,9 @@
 """Gateway service setup orchestration; runtime startup is separate."""
 
+import logging
 import sys
+
+logger = logging.getLogger(__name__)
 
 SERVICE_INSTALL_QUESTION = (
     "Install the gateway service so Hermes starts automatically at login "
@@ -98,6 +101,9 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     except SystemExit:
         gw.print_warning("Gateway service install did not complete. Retry: hermes gateway install")
     except Exception as exc:
+        # Setup/import boundary: a service-manager failure of any kind degrades to the printed
+        # manual retry (False); it never aborts the setup wizard or a restore.
+        logger.debug("gateway service setup failed", exc_info=True)
         gw.print_warning(f"Gateway service setup failed: {exc}")
         gw.print_info("You can retry manually: hermes gateway install")
     return False
