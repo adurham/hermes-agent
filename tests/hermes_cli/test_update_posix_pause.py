@@ -73,7 +73,7 @@ def test_a_prompt_while_the_gateways_are_paused_takes_its_default_at_once(tmp_pa
 def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_path):
     """A KeepAlive job merely killed is respawned by launchd on the old code mid-update; the pause
     boots it out (no respawn) and the restart bootstraps the same plist (a fresh PID)."""
-    from hermes_cli.gateway import _gw
+    from hermes_cli.gateway import _launchd_print_service_pid
     from hermes_cli.update_cmd_posix_pause import _alive, _start_job, _stop_job
     label = f"ai.hermes.p2probe-{os.getpid()}"
     plist = tmp_path / f"{label}.plist"
@@ -84,7 +84,7 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
         domain = f"user/{os.getuid()}"  # windows-footgun: ok — macOS-only test (platforms("macos"))
 
     def pid() -> int | None:
-        return _gw()._launchd_print_service_pid(domain, label)[1]
+        return _launchd_print_service_pid(domain, label)[1]
 
     subprocess.run(["launchctl", "bootstrap", domain, str(plist)], check=True, timeout=30)
     try:
