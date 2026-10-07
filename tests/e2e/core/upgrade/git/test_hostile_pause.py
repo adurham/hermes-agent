@@ -377,12 +377,17 @@ def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
                                          + _read(w.sb.root / "update-e.log")[-6000:])
                 return any(str(gw_pid) in ((r.get("token") or {}).get("stop_sent") or []) for r in _record(w))
 
-            H.wait_for(_request_on_disk, timeout=900, interval=0.2, what="the updater's recorded stop request")
+            try:
+                H.wait_for(_request_on_disk, timeout=900, interval=0.2, what="the updater's recorded stop request")
+            except AssertionError as exc:
+                raise AssertionError(f"{exc}\nrecord: {_record(w)}\nupdate log:\n"
+                                     + _read(w.sb.root / "update-e.log")[-6000:]) from None
             time.sleep(1.0)  # inside the socket call now (its timeout is seconds, the drain minutes)
             rec_at_kill = _record(w)
             killed = _kill_born_after(host, procs0, keep={gw_pid})
         finally:
-            host.kill(gw_pid, signal.SIGCONT)
+            with contextlib.suppress(AssertionError):  # a gateway already gone must not mask the real failure
+                host.kill(gw_pid, signal.SIGCONT)
         head_at_kill = w.head()
         # The queued request may still drain it: let that settle before the next launch judges.
         with contextlib.suppress(AssertionError):
