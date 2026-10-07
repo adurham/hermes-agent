@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +17,8 @@ import psutil
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from hermes_cli.gateway_runtime_discovery import query_identify  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 def stop_owned(process):
@@ -129,6 +132,7 @@ def main():
         if status or not receipt.get('passed'):
             raise RuntimeError(f'Electron probe failed: exit={status}')
     except Exception as error:
+        logger.exception('harness error')
         receipt['passed'] = False
         receipt['harnessError'] = str(error)
     finally:

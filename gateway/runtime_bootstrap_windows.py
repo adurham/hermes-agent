@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import logging
 import os
 from pathlib import Path
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def _native():
@@ -264,6 +267,8 @@ class NativeControlServer:
                         if exc.winerror != 233:  # ERROR_PIPE_NOT_CONNECTED: the client already left
                             raise
         except BaseException as exc:
+            # Hand-off to the owning thread: start() re-raises the stored error.
+            logger.debug('runtime control pipe stopped', exc_info=True)
             self._error = exc
             self._ready.set()
         finally:

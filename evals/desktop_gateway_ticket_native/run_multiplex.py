@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -17,6 +18,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from evals.desktop_gateway_ticket_native.run import stop_owned  # noqa: E402
 from hermes_cli.gateway_runtime_discovery import query_identify  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 def ready(process, home, wanted):
@@ -99,6 +102,7 @@ def main():
         if status or not receipt.get('passed'):
             raise RuntimeError(f'Electron probe failed: exit={status}')
     except Exception as error:
+        logger.exception('harness error')
         receipt['passed'] = False
         receipt['harnessError'] = str(error)
     finally:

@@ -13,11 +13,14 @@ except ModuleNotFoundError as exc:
         raise
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 import sys
 import threading
+
+logger = logging.getLogger(__name__)
 
 MAX_FRAME = 4 * 1024 * 1024
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
@@ -322,12 +325,18 @@ def hello():
 def main():
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    # This process's own stderr only (the owner discards it): never the channel, and never the
+    # profile's log files, which the module contract keeps free of assignment secrets.
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler(sys.stderr))
+    logger.propagate = False
     try:
         channel.send('hello', **hello())
         frame = validate_bootstrap(read_frame(sys.stdin.buffer))
         execute(frame, channel)
     except Exception:
         # Runtime exceptions can contain credentials; the owner gets no raw traceback.
+        logger.exception('managed worker failed')
         channel.send('error', reason='managed_worker_failed')
         return 1
     finally:

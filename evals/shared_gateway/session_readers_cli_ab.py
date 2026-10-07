@@ -31,7 +31,8 @@ EXPECTED = {
 }
 results = []
 for (label, tree), (name, command), populated in itertools.product(TREES.items(), COMMANDS.items(), (False, True)):
-    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=tree, text=True, stdin=subprocess.DEVNULL).strip()
+    sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=tree, text=True, stdin=subprocess.DEVNULL,
+                                  timeout=30).strip()
     with tempfile.TemporaryDirectory(prefix='hermes-readers-cli-ab-') as tmp:
         home = Path(tmp) / 'profile'
         home.mkdir()

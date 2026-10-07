@@ -621,6 +621,7 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
     try:
         profile_db = _resolve_profile_db(profile)
     except Exception as e:
+        logging.debug("session_search: cannot open profile %r", profile, exc_info=True)
         return tool_error(f"profile '{profile}': {e}", success=False)
     if profile_db is not None:
         db, current_session_id = profile_db, None

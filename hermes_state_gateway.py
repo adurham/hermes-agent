@@ -374,7 +374,7 @@ class SessionGatewayMixin:
         for row in self._read_all("SELECT entry_json FROM gateway_routing"):
             try:
                 entry = json.loads(row["entry_json"] or "{}")
-            except Exception:
+            except (ValueError, TypeError, RecursionError):  # malformed / non-text / over-nested entry
                 continue
             if isinstance(entry, dict) and entry.get("session_id") == session_id:
                 return entry
@@ -389,7 +389,7 @@ class SessionGatewayMixin:
         for row in self._read_all("SELECT scope, session_key, entry_json FROM gateway_routing"):
             try:
                 entry = json.loads(row["entry_json"] or "{}")
-            except Exception:
+            except (ValueError, TypeError, RecursionError):  # malformed / non-text / over-nested entry
                 continue
             if isinstance(entry, dict) and entry.get("session_id") in session_ids:
                 found.append((row["scope"], row["session_key"], entry["session_id"]))

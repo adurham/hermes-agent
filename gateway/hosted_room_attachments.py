@@ -969,7 +969,8 @@ class HostedRoomAttachmentStore:
                         for item in payload.get("attachments", [])
                         if isinstance(item, Mapping)
                     }
-                except Exception:
+                # Malformed row: bad/over-nested JSON, a non-object payload, or non-iterable attachments.
+                except (ValueError, TypeError, AttributeError, RecursionError):
                     continue
                 if str(row["attachment_id"]) not in ids:
                     continue

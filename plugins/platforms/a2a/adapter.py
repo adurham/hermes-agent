@@ -591,6 +591,8 @@ class A2AAdapter(BasePlatformAdapter):
         except TimeoutError:
             return "[profile reply unverified; accepted work was not cancelled]", protocol.STATE_FAILED
         except Exception as exc:
+            # Boundary for a network peer: the full error stays in the local log, the reply is redacted.
+            logger.warning("A2A: dispatch to profile %r unverified", profile, exc_info=True)
             return security.redact_outbound(f"Profile dispatch unverified: {exc}"), protocol.STATE_FAILED
         result = receipt.get('result') or {}
         completed = receipt.get('outcome') == 'completed' and not result.get('failed')

@@ -1,6 +1,10 @@
 """Writable runner initialization, separate from process ownership."""
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
+
 class GatewayRuntimeInitMixin:
     def _init_runtime_settings(self) -> None:
         """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""
@@ -158,7 +162,7 @@ class GatewayRuntimeInitMixin:
 
     def _init_session_db(self) -> None:
         """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
-        from gateway.run import (Any, Dict, Path, _SESSION_DB_UNPINNED, _housekeeping_chore, _housekeeping_state_db_maintenance, _launch_sessions_dir, logger, threading)
+        from gateway.run import (Any, Dict, Path, _SESSION_DB_UNPINNED, _housekeeping_chore, _housekeeping_state_db_maintenance, _launch_sessions_dir, threading)
         # Session DB is a property caching one AsyncSessionDB per path (a handle bound here would pin the
         # root home under multiplex); priming here keeps startup diagnostics at init.
         # Initialize session database for session_search tool support. Same frozen-handle class of bug as
@@ -175,7 +179,7 @@ class GatewayRuntimeInitMixin:
             self._open_session_db_for_active_scope(raise_on_error=True)
         except Exception as e:
             # WARNING (not DEBUG) so it lands in errors.log; else an NFS HERMES_HOME silently loses /resume etc.
-            logger.warning("SQLite session store not available: %s", e)
+            logger.warning("SQLite session store not available: %s", e, exc_info=True)
             self._session_db_init_error = str(e)  # surfaced on the home channel(s) once connected
 
         # Opportunistic state.db maintenance (prune + optional VACUUM), at most once per min_interval_hours.

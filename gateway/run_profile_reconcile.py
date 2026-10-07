@@ -279,7 +279,7 @@ class GatewayProfileReconcileMixin:
             await serve_profile_runtime(self, name, home)
         except Exception as exc:
             logger.error("[MULTIPLEX] Profile '%s' not served: its session store is unusable (%s): %s",
-                         name, home, exc)
+                         name, home, exc, exc_info=True)
             release_profile_home(self, home)
             return f"session store unusable: {exc}"
         return None

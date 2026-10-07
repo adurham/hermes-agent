@@ -156,10 +156,11 @@ def _is_single_query_approval_context() -> bool:
     over the daemon): the viewer detaches on the first prompt, so nobody answers there either."""
     try:
         from gateway.session_finite import finite_turn_required
+    except ImportError:  # install without the gateway package: no admitted turn to carry the flag
+        pass
+    else:
         if finite_turn_required() is True:
             return True
-    except Exception:
-        pass
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 

@@ -60,8 +60,9 @@ def main():
         return
     receipts = []
     for label, repo in [('baseline', args.baseline), ('fixed', args.fixed)]:
-        sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
-        diff = subprocess.check_output(['git', 'diff', 'HEAD', '--', 'tools/session_search_tool.py'], cwd=repo, text=True)
+        sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True, timeout=30).strip()
+        diff = subprocess.check_output(['git', 'diff', 'HEAD', '--', 'tools/session_search_tool.py'], cwd=repo, text=True,
+                                       timeout=30)
         import hashlib
         source_hash = hashlib.sha256((repo / 'tools/session_search_tool.py').read_bytes()).hexdigest()
         for case in ['empty', 'foreign', 'existing']:

@@ -48,7 +48,7 @@ def main():
     repo = args.repo.resolve()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     receipt = {'head': subprocess.check_output(
-        ['git', 'rev-parse', 'HEAD'], cwd=repo, stdin=subprocess.DEVNULL, text=True).strip(),
+        ['git', 'rev-parse', 'HEAD'], cwd=repo, stdin=subprocess.DEVNULL, text=True, timeout=30).strip(),
         'surface': 'gateway.run control descriptor', 'passed': False, 'observations': []}
     with tempfile.TemporaryDirectory(prefix='ugw-boot-') as directory:
         root = Path(directory)

@@ -1,8 +1,11 @@
 """Profile-bound setup checks without legacy session execution dispatch."""
 import asyncio
+import logging
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 async def readiness(authority, actor, params, *, runtime):
@@ -31,7 +34,8 @@ async def readiness(authority, actor, params, *, runtime):
                 if runtime:
                     return check_runtime_readiness(params.get('provider') or None, strict_profile_scope=True)
                 return {'provider_configured': bool(_has_any_provider_configured(strict_profile_scope=True))}
-            except Exception as exc:
+            except Exception as exc:  # a readiness probe reports, never raises
+                logger.debug('readiness probe failed', exc_info=True)
                 return {'ok': False, 'error': str(exc)}
 
     return await asyncio.to_thread(probe)
