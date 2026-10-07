@@ -4629,6 +4629,12 @@ export const esOverrides = {
       'Hermes no pudo llegar al servicio de Nous para terminar de iniciar tu sesión. Comprueba tu conexión a internet y vuelve a intentarlo. Tu sesión sigue aquí.',
     alreadySignedInHeading: 'Ya has iniciado sesión.',
     alreadySignedInBody: 'Este Hermes ya tiene la sesión iniciada en una cuenta de Nous.',
+    offer: {
+      heading: 'Sigue adelante con Hermes',
+      body: 'Estás usando el uso gratuito. Si sigues usando Hermes, empezarás a encontrarte con límites. Inicia sesión con una cuenta gratuita de Nous para tener un uso mayor.',
+      signIn: 'Iniciar sesión',
+      notNow: 'Ahora no'
+    },
     setupFailed: {
       gateClosed:
         'Esta versión de Hermes no puede iniciarse sin una cuenta de Nous. Inicia sesión o crea una: es gratis y solo lleva un minuto.',

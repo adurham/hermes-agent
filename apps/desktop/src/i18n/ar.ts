@@ -68,6 +68,14 @@ export const arOverrides = {
     localTitle: 'يمكن لهذا الجهاز تشغيل النماذج محليًا',
     localText: (model: string) =>
       `${model} يناسب أجهزتك. يعمل مجانًا، ولا تغادر المحادثات جهازك. اختره من هنا، من قائمة النماذج، متى شئت.`
+  },
+  freeTier: {
+    offer: {
+      heading: 'واصل مع Hermes',
+      body: 'أنت تستخدم الحصة المجانية. إذا واصلت استخدام Hermes فستبدأ بمواجهة حدود الاستخدام. سجّل الدخول بحساب Nous مجاني للحصول على حصة أكبر.',
+      signIn: 'تسجيل الدخول',
+      notNow: 'ليس الآن'
+    }
   }
 } satisfies TranslationOverrides
 

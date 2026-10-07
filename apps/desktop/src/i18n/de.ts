@@ -4634,6 +4634,12 @@ export const deOverrides = {
       'Hermes konnte den Nous-Dienst nicht erreichen, um Ihre Anmeldung abzuschließen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut. Ihre Session bleibt erhalten.',
     alreadySignedInHeading: 'Bereits angemeldet.',
     alreadySignedInBody: 'Dieses Hermes ist bereits mit einem Nous-Konto angemeldet.',
+    offer: {
+      heading: 'Mit Hermes weitermachen',
+      body: 'Sie nutzen das kostenlose Kontingent. Wenn Sie Hermes weiter verwenden, stoßen Sie bald an Grenzen. Melden Sie sich mit einem kostenlosen Nous-Konto an, um ein größeres Kontingent zu erhalten.',
+      signIn: 'Anmelden',
+      notNow: 'Nicht jetzt'
+    },
     setupFailed: {
       gateClosed:
         'Diese Hermes-Version kann ohne Nous-Konto nicht starten. Melden Sie sich an oder legen Sie eines an – kostenlos und in einer Minute erledigt.',

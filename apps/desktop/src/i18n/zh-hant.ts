@@ -140,6 +140,14 @@ export const zhHantOverrides = {
     localTitle: '這台電腦可以在本機執行模型',
     localText: (model: string) =>
       `${model} 適合你的硬體。免費執行，對話不會離開你的電腦。隨時在這裡的模型選單中選擇它。`
+  },
+  freeTier: {
+    offer: {
+      heading: '繼續使用 Hermes',
+      body: '你正在使用免費額度。繼續使用 Hermes 的話，你會開始遇到限制。登入免費的 Nous 帳戶，即可獲得更多額度。',
+      signIn: '登入',
+      notNow: '暫不'
+    }
   }
 } satisfies TranslationOverrides
 

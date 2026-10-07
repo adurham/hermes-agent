@@ -4062,6 +4062,14 @@ export const jaOverrides = {
       description: 'モバイルサイドバーを表示します。',
       toggle: open => `サイドバーを${open ? '表示' : '非表示'}`
     }
+  },
+  freeTier: {
+    offer: {
+      heading: 'Hermes を使い続ける',
+      body: '現在は無料枠をご利用中です。Hermes を使い続けると、いずれ上限に達します。無料の Nous アカウントでサインインすると、より多くの利用枠が使えます。',
+      signIn: 'サインイン',
+      notNow: '今はしない'
+    }
   }
 } satisfies TranslationOverrides
 

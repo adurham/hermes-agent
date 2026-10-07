@@ -4188,6 +4188,12 @@ export const en: Translations = {
       "Hermes couldn't reach the Nous service to finish signing you in. Check your internet connection and try again. Your session is still here.",
     alreadySignedInHeading: 'Already signed in.',
     alreadySignedInBody: 'This Hermes is already signed in to a Nous account.',
+    offer: {
+      heading: 'Keep going with Hermes',
+      body: "You're on the free allowance. If you keep using Hermes, you'll start running into limits. Sign in with a free Nous account for a bigger allowance.",
+      signIn: 'Sign in',
+      notNow: 'Not now'
+    },
     setupFailed: {
       gateClosed:
         "This version of Hermes can't start without a Nous account. Sign in or create one, it's free and only takes a minute.",

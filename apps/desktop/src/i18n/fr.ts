@@ -4645,6 +4645,12 @@ export const frOverrides = {
       "Hermes n'a pas pu joindre le service Nous pour terminer votre connexion. Vérifiez votre connexion Internet et réessayez. Votre session reste disponible.",
     alreadySignedInHeading: 'Déjà connecté.',
     alreadySignedInBody: 'Cette installation Hermes est déjà connectée à un compte Nous.',
+    offer: {
+      heading: 'Continuez avec Hermes',
+      body: 'Vous utilisez le quota gratuit. Si vous continuez à utiliser Hermes, vous allez commencer à atteindre des limites. Connectez-vous avec un compte Nous gratuit pour obtenir un quota plus important.',
+      signIn: 'Se connecter',
+      notNow: 'Pas maintenant'
+    },
     setupFailed: {
       gateClosed:
         'Cette version de Hermes ne peut pas démarrer sans compte Nous. Connectez-vous ou créez-en un gratuitement en une minute.',

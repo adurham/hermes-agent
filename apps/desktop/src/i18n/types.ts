@@ -3621,6 +3621,13 @@ export interface Translations extends NoticeTranslations {
     unreachableBody: string
     alreadySignedInHeading: string
     alreadySignedInBody: string
+    /** The "keep going" offer the backend times after a finished task (repeats, backing off). */
+    offer: {
+      heading: string
+      body: string
+      signIn: string
+      notNow: string
+    }
     // First-launch set-up failure notice: the free tier could not be created at boot.
     // One sentence per backend code (`hermes_cli/anon_auth.py::ANON_*`); the copy never says
     // the free MODEL is off — what is unavailable is using Hermes without signing in.
@@ -4217,8 +4224,8 @@ export interface Translations extends NoticeTranslations {
       skipped: string
       noAnswer: string
       confirmAndContinueLabel: string
-      singleSelectHint: string;
-      multiSelectHint: string;
+      singleSelectHint: string
+      multiSelectHint: string
       oneQuestion: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string

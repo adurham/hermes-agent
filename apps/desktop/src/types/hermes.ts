@@ -183,6 +183,8 @@ export interface FreeTierStatus {
   retry_after?: number
   /** Present while the backend is waiting on a browser challenge. */
   challenge?: FreeTierChallengePayload | null
+  /** Seconds until the one-time first-task sign-in offer is due (0 = now); null when none is owed. */
+  nudge_due_in?: number | null
 }
 
 export interface MemoryProviderOAuthStatus {

@@ -4064,7 +4064,13 @@ export const zhOverrides = {
     retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
     errorBody: '登录未完成；请重试。',
     alreadySignedInHeading: '已登录。',
-    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
+    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。',
+    offer: {
+      heading: '继续使用 Hermes',
+      body: '你正在使用免费额度。继续使用 Hermes 的话，你会开始遇到限制。登录免费的 Nous 账户，即可获得更多额度。',
+      signIn: '登录',
+      notNow: '暂不'
+    }
   },
 
   modelPicker: {
