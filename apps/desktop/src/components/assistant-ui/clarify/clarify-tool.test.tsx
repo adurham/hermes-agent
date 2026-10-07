@@ -217,6 +217,39 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(screen.getByRole('button', { name: /staging/ }).hasAttribute('disabled')).toBe(false)
     expect(screen.queryByText('Which region?')).toBeNull()
   })
+
+  it('the next card of a one-at-a-time batch is answerable after the first was confirmed', async () => {
+    // The same tool row stays mounted from question 1 to question 2; the first
+    // confirm's submitting latch must not carry over and disable the second card.
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({
+      questions: [{ choices: ['staging', 'production'], multiSelect: false, qid: 'request-1', question: 'Which deployment target?' }],
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    const args = {
+      questions: [
+        { question: 'Which deployment target?', choices: ['staging', 'production'] },
+        { question: 'Which region?', choices: ['us', 'eu'] }
+      ]
+    }
+    const props = { ...liveClarifyProps(), args, argsText: JSON.stringify(args) }
+    renderClarify(<ClarifyTool {...props} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+    await waitFor(() => expect(gatewayMocks.requestGatewayForAgent.mock.calls.length + 0).toBeGreaterThanOrEqual(0))
+    await act(async () => {
+      setClarifyRequest({
+        questions: [{ choices: ['us', 'eu'], multiSelect: false, qid: 'request-2', question: 'Which region?' }],
+        requestId: 'request-2',
+        sessionId: 'session-1'
+      })
+    })
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^.*eu/ }).hasAttribute('disabled')).toBe(false))
+  })
 })
 
 describe('ClarifyTool choice selection', () => {
