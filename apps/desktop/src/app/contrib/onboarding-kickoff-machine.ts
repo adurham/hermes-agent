@@ -61,10 +61,8 @@ export interface KickoffMachine {
   dispose(): void
   /** Aborts every call that carries `signal` and fails the kickoff with `reason`. */
   stop(reason: KickoffFailure): void
-  /** Passed to every kickoff RPC, so `stop` rejects the ones still in flight. */
+  /** Passed to every kickoff RPC, so `stop` rejects the ones still in flight and any started after it. */
   signal: AbortSignal
-  /** `work`, or `stop`'s reason if that comes first: for steps that take no signal. */
-  until<T>(work: Promise<T>): Promise<T>
 }
 
 export function createKickoffMachine(): KickoffMachine {
@@ -82,16 +80,6 @@ export function createKickoffMachine(): KickoffMachine {
       reject(reason)
     }
   }
-
-  const until = <T>(work: Promise<T>): Promise<T> =>
-    stopReason
-      ? Promise.reject(stopReason)
-      : Promise.race([
-          work,
-          new Promise<never>((_, reject) =>
-            stopper.signal.addEventListener('abort', () => reject(stopReason), { once: true })
-          )
-        ])
 
   const enter = (next: KickoffState, detail?: string) => {
     log(`${state} -> ${next}${detail ? ` (${detail})` : ''}`)
@@ -181,5 +169,5 @@ export function createKickoffMachine(): KickoffMachine {
     }
   }
 
-  return { attempt, dispose: () => offExit?.(), enter, signal: stopper.signal, stop, until }
+  return { attempt, dispose: () => offExit?.(), enter, signal: stopper.signal, stop }
 }

@@ -183,7 +183,7 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
           $newChatProfile.set(setupProfile)
         }
 
-        await machine.until(ensureGatewayProfile(setupProfile))
+        await ensureGatewayProfile(setupProfile)
 
         // Finds the setup chat by title or creates it; `empty` is true only before its first turn.
         const setupChat = await requestGateway<OnboardingEnsureSetupSessionResult>(
@@ -204,13 +204,22 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
 
       const { record, setupChat, setupProfile } = prepared
 
+      // The way out covers the waits only. Opening switches the session and cannot be cancelled halfway, so a
+      // stop there would roll back under a resume that still lands on the setup chat.
+      window.clearTimeout(offerExit)
+      $introStartExit.set(null)
+
       machine.enter('opening', `session ${setupChat.session_id}`)
 
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(setupProfile, method, params, timeout)
 
-      const runtimeId = await machine.until(
-        adoptGuideSession(setupProfile, setupChat.session_id, record.free_tier_route, resumeSession, guideRequest)
+      const runtimeId = await adoptGuideSession(
+        setupProfile,
+        setupChat.session_id,
+        record.free_tier_route,
+        resumeSession,
+        guideRequest
       )
 
       // A relaunch reopens the same setup chat; one whose opening was cut off is sent the command again.
