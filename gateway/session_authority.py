@@ -584,6 +584,10 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     """
     if db is None:
         db = getattr(runner._session_db, '_db', runner._session_db)
+    # Resolved off-loop before any state is published: the rest of the bring-up runs without
+    # yielding, so no other task observes a half-registered authority.
+    from pathlib import Path
+    db_key = await asyncio.to_thread(Path(db.db_path).resolve)
     epoch = begin_runtime_epoch(db, instance_id=instance_id)
     recover_session_inputs(db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
@@ -598,8 +602,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epochs = getattr(store, '_local_authority_epochs', None)
     if epochs is None:
         epochs = store._local_authority_epochs = {}
-    from pathlib import Path
-    epochs[Path(db.db_path).resolve()] = epoch
+    epochs[db_key] = epoch
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority

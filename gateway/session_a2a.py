@@ -113,7 +113,7 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
     from hermes_cli.gateway_client import GatewayClient, GatewayClientError, _session_ticket
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
     from websockets.asyncio.client import connect
-    home = Path(home).resolve()
+    home = await asyncio.to_thread(Path(home).resolve)
     async with asyncio.timeout(timeout):
         ready = await asyncio.to_thread(ensure_gateway_runtime, home)
         if ready.state != 'ready' or ready.endpoint is None:

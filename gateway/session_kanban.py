@@ -1,4 +1,5 @@
 """Trusted dispatcher claims enter the ordinary owner's durable admission queue."""
+import asyncio
 from contextlib import closing
 from dataclasses import asdict, replace
 import threading
@@ -78,6 +79,9 @@ async def run_task(connection, params):
     from hermes_state_local import local_receipt
     from gateway.session_policy import restore_policy
     authority = connection.authority
+    # Resolved off-loop up front: no await may separate the saved-claim check, session
+    # creation and the claim's write transaction below.
+    owner_db = str(await asyncio.to_thread(Path(authority.db.db_path).resolve))
     # The dispatcher attempt is the durable request identity, including after the
     # task closes. Retry checks the saved claim, never reinterprets updated cards.
     request_id = 'kanban:' + json.dumps([params.get('board'), params.get('task_id'), params.get('run_id')], separators=(',', ':'))
@@ -114,7 +118,7 @@ async def run_task(connection, params):
             if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
                 raise RuntimeStoreError('stale_kanban_claim')
             kb._append_event(conn, task.id, 'owner_admitted',
-                {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
+                {'db': owner_db, 'session_id': ref.session_id,
                  'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
                 run_id=task.current_run_id)
     await connection.resume(ref, {})

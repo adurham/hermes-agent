@@ -192,7 +192,8 @@ async def execute(authority, ref, row, policy):
     token = _execution.set((authority, ref.session_id, data['cron_job']['id'], row['admission_id']))
     try:
         job = data['cron_job']
-        with _profile_runtime_scope(Path(authority.db.db_path).resolve().parent):
+        db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
+        with _profile_runtime_scope(db_path.parent):
             result = await asyncio.to_thread(run_job, job, extra_prompt=data['extra_prompt'],
                                              execution_id=row['admission_id'], cancel_event=cancel)
         # run_job stamps run-side verdicts on ITS job copy (quota hold, unreachable model); the

@@ -237,8 +237,9 @@ def _worker_env(authority):
 
 async def execute_managed(authority, ref, row, policy):
     env = await asyncio.to_thread(_worker_env, authority)
+    cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
     process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
-        cwd=Path(__file__).resolve().parents[1], stdin=subprocess.PIPE, env=env,
+        cwd=cwd, stdin=subprocess.PIPE, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
     worker = ManagedWorker(process)
     workers = getattr(authority, '_managed_workers', None)

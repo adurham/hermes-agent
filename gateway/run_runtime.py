@@ -43,7 +43,7 @@ async def _build_profile_authority(runner, name, home, *, register):
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
         db = getattr(runner._session_db, '_db', runner._session_db)
-        if db is None or Path(db.db_path).resolve().parent != home:
+        if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
         try:
@@ -188,7 +188,7 @@ async def serve_profile_runtime(runner, name, home):
     from gateway.session_hosted_service import _ensure_hosted_service, start_ready_hosted_services
     from gateway.session_local_recovery import recover_local_sessions
     from gateway.platforms.webhook_ingress import recover_webhook_finalizations
-    home = Path(home).resolve()
+    home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
     if registry.for_home(home) is not None:
         return registry.for_home(home)
@@ -212,7 +212,7 @@ async def serve_profile_runtime(runner, name, home):
 async def unserve_profile_runtime(runner, home):
     """Retire one profile's authority (deleted while running) and shrink the published set.
     No-op for a profile this process never served."""
-    home = Path(home).resolve()
+    home = await asyncio.to_thread(Path(home).resolve)
     registry = runner.session_authorities
     authority = registry.remove(home) if home in registry else None
     if authority is None:

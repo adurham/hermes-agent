@@ -51,7 +51,8 @@ async def dispatch_group_control(connection, method, params):
     if method not in _FIELDS or not isinstance(params, dict) or set(params) - (_FIELDS[method] | {'profile'}):
         raise RuntimeStoreError('invalid_params')
     home = Path(authority.profile_id)
-    if Path(authority.db.db_path).resolve().parent != home.resolve():
+    db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
+    if db_path.parent != await asyncio.to_thread(home.resolve):
         raise RuntimeStoreError('profile_mismatch')
     from hermes_cli.profiles import profile_matches_home
     profile = params.get('profile')
