@@ -517,20 +517,25 @@ class SessionAuthority:
             try:
                 with live.event_stream.lock:
                     from gateway.session_results import finish_result
+                    captured = self.pending_results.pop(admission_id, None)
                     settled, response = finish_result(self.db, epoch=self.epoch, row=row,
-                        response=response, outcome=outcome,
-                        result=self.pending_results.pop(admission_id, None))
+                        response=response, outcome=outcome, result=captured)
                     live.controls.snapshot(ref.session_id, None)
                     from gateway.session_ingress_media import release_admission_media
                     release_admission_media(self.db, admission_id)
                     self._publish_pending(ref)
                     # ``status`` is the message.complete contract's TurnStatus: the Desktop
                     # extends a Stopped bubble to the persisted partial only on 'interrupted'.
-                    live.event_stream.publish(ref.session_id, {
+                    complete = {
                         'text': response, 'content': response, 'admission_id': admission_id,
                         'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome'],
                         'status': {'completed': 'complete', 'interrupted': 'interrupted'}.get(
-                            settled['outcome'], 'error')})
+                            settled['outcome'], 'error')}
+                    # Only the agent's reuse site sets this (never inferred from equal text): the
+                    # final repeats a reply the viewer already painted, so it settles in place.
+                    if response and ((captured or {}).get('result') or {}).get('response_reused'):
+                        complete['response_reused'] = True
+                    live.event_stream.publish(ref.session_id, complete)
             except Exception:
                 # The settle fence lost (a reset/compression moved runtime_generation under
                 # the turn). The row stays `started` for recovery -> `unknown`; re-settling
