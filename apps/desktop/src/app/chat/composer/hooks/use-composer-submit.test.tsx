@@ -585,7 +585,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
-  it('answers the question with the typed message on an idle session', async () => {
+  it('skips the question and still sends the typed message on an idle session', async () => {
     parkClarify('runtime-session')
     const { hook, onSubmit } = renderSubmitHook({ text: 'actually do this instead' })
 
@@ -593,13 +593,15 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'actually do this instead' } }))
-    expect(onSubmit).not.toHaveBeenCalled()
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({}))
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
+    )
     expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
     expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
-  it('answers the question instead of steering a busy turn', async () => {
+  it('skips the question before steering a busy turn', async () => {
     parkClarify('runtime-session')
     const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'change course' })
 
@@ -607,8 +609,8 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'change course' } }))
-    expect(onSteer).not.toHaveBeenCalled()
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
+    expect(respond).toHaveBeenCalledWith({})
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {

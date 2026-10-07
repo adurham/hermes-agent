@@ -355,42 +355,15 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
 }
 
 /**
- * Answer the card parked on `sessionId` with text the user typed in the
- * composer. A card blocks the agent inside its tool batch, so the typed words
- * ARE the answer: the tool returns them and the turn carries on, with no
- * interrupt. A batch takes the text as its first open question's answer. False when
- * no card is parked or its request is gone; the caller then sends the words as
- * an ordinary message.
+ * Answer the setup card parked on `sessionId` with text the user typed in the
+ * composer: the setup turn reads typed words as the card's answer. False when
+ * no setup card is parked (an ordinary clarify card included) or its request is
+ * gone; the caller then skips any card and sends the words as a message.
  */
-export function answerClarifyRequest(sessionId: string | null | undefined, text: string): boolean {
+export function answerSetupCard(sessionId: string | null | undefined, text: string): boolean {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
 
-  if (!request) {
-    return false
-  }
-
-  if (request.setup) {
-    return answerSetupChoose(request, request.setup, text)
-  }
-
-  // A reconnect replay can arrive with answers already locked server-side;
-  // the backend merges this response over them, so the typed text goes to
-  // the first question still open and the locks stand.
-  const locked = request.lockedAnswers ?? {}
-  const target = request.questions.find(question => !(question.qid in locked)) ?? request.questions[0]
-  const answers = { [target.qid]: target.multiSelect ? JSON.stringify([text]) : text }
-
-  if (!respondToServerRequest(request.requestId, { answers })) {
-    return false
-  }
-
-  clearClarifyRequest(request.requestId, request.sessionId)
-  settleClarify(request, {
-    outcome: 'submitted',
-    responses: request.questions.map(question => settledResponse(question, { ...locked, ...answers }))
-  })
-
-  return true
+  return request?.setup ? answerSetupChoose(request, request.setup, text) : false
 }
 
 /** The row typed text names, by id or label (any case). */
@@ -439,33 +412,4 @@ function answerSetupChoose(request: ClarifyRequest, setup: SetupChooseSpec, text
   settleClarify(request, { outcome: 'submitted', ...answer })
 
   return true
-}
-
-/** One row of a clarify result, shaped like `tools/clarify_tool.py::_result`. */
-function settledResponse(question: ClarifyQuestion, answers: Record<string, null | string>) {
-  const raw = answers[question.qid]
-
-  if (!raw) {
-    return {
-      question: question.question,
-      status: question.qid in answers ? 'skipped' : 'unanswered',
-      user_response: null
-    }
-  }
-
-  let answer: string | string[] = raw
-
-  if (question.multiSelect) {
-    try {
-      const parsed: unknown = JSON.parse(raw)
-
-      if (Array.isArray(parsed)) {
-        answer = parsed.map(String)
-      }
-    } catch {
-      // A non-JSON multi-select answer stays one value.
-    }
-  }
-
-  return { question: question.question, status: 'answered', user_response: answer }
 }

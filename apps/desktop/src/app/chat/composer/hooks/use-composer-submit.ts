@@ -6,7 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
-import { answerClarifyRequest, hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
+import { answerSetupCard, hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
   type ComposerAttachment,
@@ -270,21 +270,22 @@ export function useComposerSubmit({
     return true
   }
 
-  // True when the draft was consumed as a parked clarify card's answer.
+  // True when the draft was consumed as a parked setup card's answer.
   const answerParkedCard = (text: string, payloadPresent: boolean) => {
-    // A clarify or setup card parked on this session owns the turn: the agent
-    // is blocked inside its tool batch waiting on the card's answer, so a
-    // follow-up routed through steer/queue sits undelivered until the card's
-    // own timeout (default 5 min) — the message looks sent and nothing
-    // happens. Typed words instead of a pick ARE the answer: they go back as
-    // the card's answer, the card settles showing them, and the turn carries
-    // on with no interrupt.
+    // A clarify card parked on this session owns the turn: the agent is blocked
+    // inside its tool batch waiting on `clarify.respond`, so a follow-up routed
+    // through steer/queue sits undelivered until the clarify's own timeout
+    // (default 5 min) — the message looks sent and nothing happens. Typing a
+    // real message instead of picking an option IS the answer "none of these":
+    // skip the question so the tool returns, then route the words normally.
+    // A setup card is the exception: the setup turn reads typed words as its
+    // answer, so they go back as the card's answer and the turn carries on.
     //
-    // A slash command or attachments cannot be an answer: those skip the card
-    // so the tool returns, then route normally. The skip is fire-and-forget:
-    // it clears the card synchronously and both RPCs ride the same socket in
-    // call order, so the gateway resolves the card before it sees the
-    // follow-up.
+    // A slash command or attachments cannot be a setup answer either. The skip
+    // is fire-and-forget, not awaited: it clears the card synchronously and
+    // both RPCs ride the same socket in call order, so the gateway resolves the
+    // clarify before it sees the follow-up. Awaiting first would leave the draft
+    // live for a tick — long enough for a second Enter to send it twice.
     //
     // /btw and /bg run beside the turn (snapshot / separate session) and answer
     // neither parked card. With attachments the draft isn't routed as a slash
@@ -296,7 +297,7 @@ export function useComposerSubmit({
       cardParked &&
       !attachments.length &&
       !SLASH_COMMAND_RE.test(text.trim()) &&
-      answerClarifyRequest(sessionId, text.trim())
+      answerSetupCard(sessionId, text.trim())
     ) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
