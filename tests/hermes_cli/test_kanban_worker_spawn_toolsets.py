@@ -183,6 +183,7 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
     monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda name: str(profile))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    kb.create_board("owned")  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board="owned")) as conn:
         task_id = kb.create_task(conn, title="t", body="b", assignee="elias",
                                  workspace_kind="dir", workspace_path=str(workspace))

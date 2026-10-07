@@ -100,6 +100,8 @@ def main():
     pinned = kb.pin_first_board_resolution()
     pinned.__enter__()
     try:
+        # Board identity is board.json (#43243): create it explicitly; under the pin its DB is board_path.
+        kb.create_board('owned')
         with closing(connect(board='owned')) as conn:
             tid = kb.create_task(conn, title='RECOVERY_TASK', assignee='assigned' if mode == 'cross_profile' else 'default',
                                  workspace_kind='dir', workspace_path=str(workspace), goal_mode=True, goal_max_turns=2)
