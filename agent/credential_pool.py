@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
 import os
@@ -398,31 +399,6 @@ def _exhausted_ttl(
     if sole_credential and not is_billing:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base
-
-
-def _parse_absolute_timestamp(value: Any) -> Optional[float]:
-    """Best-effort parse of epoch seconds / epoch ms / ISO-8601 into epoch seconds."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, (int, float)):
-        numeric = float(value)
-        if numeric <= 0:
-            return None
-        return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
-    if isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return None
-        try:
-            numeric = float(raw)
-            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
-        except ValueError:
-            pass
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            return None
-    return None
 
 
 def _singleton_predates_entry(state: Any, entry: "PooledCredential") -> bool:
