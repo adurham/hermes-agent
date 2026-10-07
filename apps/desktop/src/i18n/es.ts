@@ -1506,12 +1506,6 @@ export const esOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Backends de bots en caliente',
-      warmBotBackendsTitle: 'Backends de bots en caliente',
-      backendIdleTimeoutAria: 'Tiempo de inactividad del backend en milisegundos',
-      backendIdleTimeoutTitle: 'Tiempo de inactividad del backend'
-    },
     customEndpoints: {
       active: 'Activo',
       apiKeySet: 'Clave API configurada',

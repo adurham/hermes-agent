@@ -964,12 +964,6 @@ export interface Translations extends NoticeTranslations {
         full: { title: string; description: string; consequence: string }
       }
     }
-    poolLimits: {
-      warmBotBackendsAria: string
-      warmBotBackendsTitle: string
-      backendIdleTimeoutAria: string
-      backendIdleTimeoutTitle: string
-    }
     customEndpoints: {
       active: string
       apiKeySet: string

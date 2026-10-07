@@ -1503,12 +1503,6 @@ export const deOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Bot-Backends vorwärmen',
-      warmBotBackendsTitle: 'Bot-Backends vorwärmen',
-      backendIdleTimeoutAria: 'Leerlauf-Timeout des Backends in Millisekunden',
-      backendIdleTimeoutTitle: 'Leerlauf-Timeout des Backends'
-    },
     customEndpoints: {
       active: 'Aktiv',
       apiKeySet: 'API-Schlüssel gesetzt',
