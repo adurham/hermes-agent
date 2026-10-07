@@ -142,6 +142,24 @@ class TestFirstContactTurnNote:
             )
             assert TASK_FIRST_CLAUSE in note, mode
 
+    def test_no_note_in_the_task_chat_setup_hands_off_to(self, tmp_path, monkeypatch):
+        # The first-task chat is the first chat in the user's own profile, but setup already ran:
+        # no setup offer, no intro, and the offer latch stays unset.
+        from agent.first_task_prompt import MARKER
+        from agent.onboarding import PROFILE_BUILD_FLAG, first_contact_turn_note
+
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        cfg_path = tmp_path / "config.yaml"
+        note = first_contact_turn_note(
+            {"onboarding": {"profile_build": "ask"}},
+            cfg_path,
+            session_history_empty=True,
+            install_has_prior_sessions=False,
+            message=f"Set up Blender for me{MARKER}skill text",
+        )
+        assert note is None
+        assert not cfg_path.exists() or PROFILE_BUILD_FLAG not in cfg_path.read_text()
+
     def test_returns_none_when_not_first_contact(self, tmp_path):
         from agent.onboarding import first_contact_turn_note
 

@@ -168,10 +168,14 @@ def first_contact_turn_note(
     return the plain intro note. Returns ``None`` when this is not the first
     contact (non-empty session history or prior sessions exist on the install).
     """
+    from agent.first_task_prompt import MARKER as FIRST_TASK_MARKER
     from agent.initiate_setup_prompt import HEADER
     from hermes_cli.profiles import SETUP_PROFILE_MARKER
 
     if not session_history_empty or install_has_prior_sessions or message.startswith(HEADER):
+        return None
+    # The task chat setup hands off to is the user's first chat in their own profile; setup already ran.
+    if FIRST_TASK_MARKER in message:
         return None
     # The setup chat opens with its own welcome, whatever its first message says.
     if (config_path.parent / SETUP_PROFILE_MARKER).is_file():
