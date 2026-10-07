@@ -1317,6 +1317,7 @@
     "cron.promptPlaceholder",
     "cron.promptRequired",
     "cron.promptScheduleRequired",
+    "cron.queuedRun",
     "cron.resume",
     "cron.resumeTitle",
     "cron.resumed",
