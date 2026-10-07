@@ -158,17 +158,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
       return this.request<T>('clarify.respond', { session_id: promptSession, request_id: params.request_id, answer }, timeoutMs, signal)
     }
-    const sid = typeof params.session_id === 'string' ? params.session_id : null
 
-    if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(sid)) {
-      await this.request('session.resume', { session_id: sid, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
-    }
-
-    const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id : null
-
-    if (typeof parent === 'string' && parent && !this.attached.has(parent)) {
-      await this.request('session.resume', { session_id: parent, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
-    }
+    await this.attachForRequest(method, params)
 
     const prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
@@ -181,20 +172,40 @@ export class HermesGateway extends JsonRpcGatewayClient {
       const settled = this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), followUp) as T
 
       if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
-        // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
-        const sid = (settled as { session_id?: string }).session_id
-
-        if (sid) { this.attached.add(sid) }
-
-        for (const prompt of ((settled as { prompts?: Array<Record<string, unknown>> }).prompts ?? [])) {
-          this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)
-        }
+        this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> })
       }
 
       return settled
     } catch (error) {
       this.protocol.failure(prepared, error)
       throw error
+    }
+  }
+
+  // Resume the session (and, for branch-like methods, its parent) on THIS socket before a
+  // method that needs an authority subscription here.
+  private async attachForRequest(method: string, params: Record<string, unknown>): Promise<void> {
+    const sid = typeof params.session_id === 'string' ? params.session_id : null
+
+    if (sid && ATTACH_REQUIRED.has(method) && !this.attached.has(sid)) {
+      await this.request('session.resume', { session_id: sid, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
+    }
+
+    const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id : null
+
+    if (typeof parent === 'string' && parent && !this.attached.has(parent)) {
+      await this.request('session.resume', { session_id: parent, defer_history: true, omit_messages: true, ...(params.profile ? { profile: params.profile } : {}) })
+    }
+  }
+
+  private adoptAttachedSnapshot(settled: { session_id?: string; prompts?: Array<Record<string, unknown>> }): void {
+    // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
+    const sid = settled.session_id
+
+    if (sid) { this.attached.add(sid) }
+
+    for (const prompt of (settled.prompts ?? [])) {
+      this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)
     }
   }
 
