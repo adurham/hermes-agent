@@ -145,7 +145,7 @@ def _wire_turn_agent(authority, generation, agent):
         _step_callback_sync=None, _hooks_ref=SimpleNamespace(loaded_hooks=[]), _status_callback_sync=None,
         _event_callback_sync=None, _status_adapter=None, session_key='route', user_config={},
         _thinking_enabled=False, agent_holder=[None], tools_holder=[None], process_task_id=None,
-        process_baseline=None, run_generation=0)
+        process_baseline=None, run_generation=0, voice_turn=False)
     holder = SimpleNamespace(
         _ctx=ctx, _approval_owner=(authority, 's', generation),
         _runner=SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []),
