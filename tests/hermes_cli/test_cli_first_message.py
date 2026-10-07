@@ -13,9 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
-
 from agent.onboarding import PROFILE_BUILD_FLAG, is_seen
+from hermes_cli.config_effective import load_user_config_effective
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 ROOT = Path(__file__).parents[2]
@@ -44,5 +43,4 @@ def test_first_cli_message_in_a_fresh_home_reaches_the_model_unchanged(tmp_path)
     assert requests, f"the model was never called; stderr tail: {proc.stderr[-2000:]}"
     users = [m["content"] for m in requests[0]["messages"] if m.get("role") == "user"]
     assert users == [PROMPT]
-    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
-    assert not is_seen(config, PROFILE_BUILD_FLAG)
+    assert not is_seen(load_user_config_effective(home / "config.yaml"), PROFILE_BUILD_FLAG)
