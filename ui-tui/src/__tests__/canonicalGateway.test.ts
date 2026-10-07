@@ -18,3 +18,9 @@ it('rebuilds --max-turns from the launcher environment as the integer the sessio
   expect(options.max_turns).toBe(5)
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('max_turns')
 })
+
+it('carries `hermes --tui --yolo` (HERMES_YOLO_MODE) onto session.create as the frozen launch flag', () => {
+  expect(localCreationOptions({ HERMES_YOLO_MODE: '1' } as NodeJS.ProcessEnv).yolo).toBe(true)
+  expect(localCreationOptions({ HERMES_YOLO_MODE: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty('yolo')
+  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('yolo')
+})

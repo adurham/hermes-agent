@@ -29,6 +29,8 @@ async def busy_config(connection, ref, params, *, write=False):
     allowed = {'session_id', 'profile', 'key'} | ({'value'} if write else set())
     if params.get('key') == 'verbose' and not set(params) - allowed and ref.session_id:
         return verbose_config(connection, ref, params, write)
+    if params.get('key') == 'yolo' and not set(params) - allowed and ref.session_id:
+        return yolo_config(connection, ref, params, write)
     if (set(params) - allowed or not ref.session_id or params.get('key') != 'busy'
             or (write and params.get('value') not in ('interrupt', 'steer', 'queue'))):
         raise RuntimeStoreError('invalid_params')
@@ -66,6 +68,30 @@ def verbose_config(connection, ref, params, write):
         live.tool_progress_mode = current = (
             _VERBOSE_CYCLE[(_VERBOSE_CYCLE.index(current) + 1) % 4] if value == 'cycle' else value)
     return {'key': 'verbose', 'value': current, 'scope': 'session'}
+
+
+_YOLO_WORDS = {'1': True, 'on': True, 'true': True, '0': False, 'off': False, 'false': False}
+
+
+def yolo_config(connection, ref, params, write):
+    """Session-scoped /yolo (TUI slash + Shift+Tab, Desktop toggle): this session's approval bypass,
+    never HERMES_YOLO_MODE or approvals.mode. A ``--yolo`` launch is seeded first, so revoking it
+    here is not re-enabled by the next turn's launch seeding."""
+    value = params.get('value')
+    if write and value is not None and str(value).strip().lower() not in _YOLO_WORDS:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:control' if write else 'session:read')
+    from gateway.session_policy import policy_for_source
+    from tools.approval import apply_launch_yolo, disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
+    live = connection.authority.sessions[ref.session_id]
+    policy = policy_for_source(connection.authority.runner, live.source)
+    if policy is not None and policy.yolo:
+        apply_launch_yolo(live.route)
+    enabled = is_session_yolo_enabled(live.route)
+    if write:
+        enabled = not enabled if value is None else _YOLO_WORDS[str(value).strip().lower()]
+        (enable_session_yolo if enabled else disable_session_yolo)(live.route)
+    return {'key': 'yolo', 'value': '1' if enabled else '0', 'scope': 'session'}
 
 
 async def correct(connection, ref, params, *, verb):

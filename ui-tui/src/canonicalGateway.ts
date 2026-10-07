@@ -90,5 +90,9 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   // requires an int, so the environment's text form is undone here.
   if (env.HERMES_TUI_MAX_TURNS) { options.max_turns = Number(env.HERMES_TUI_MAX_TURNS) }
 
+  // `hermes --tui --yolo` exports HERMES_YOLO_MODE=1 (the in-process TUI read it); over the canonical
+  // gateway it must ride session.create as the frozen launch flag or the session prompts anyway.
+  if (['1', 'true', 'yes', 'on'].includes((env.HERMES_YOLO_MODE ?? '').trim().toLowerCase())) { options.yolo = true }
+
   return options
 }
