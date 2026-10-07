@@ -308,6 +308,22 @@ def finish_execution(
     return record
 
 
+def settle_delivery_outcome(execution_id: str, outcome: str) -> bool:
+    """Replace a terminal attempt's ``queued`` delivery outcome with the drain's real one.
+
+    The only post-terminal rewrite the ledger allows: the attempt's status is untouched and
+    only a ``queued`` handoff can settle, so a replay or a late caller is a no-op.
+    """
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE executions SET delivery_outcome=?
+               WHERE id=? AND delivery_outcome='queued'
+                 AND status IN ('completed','failed','unknown')""",
+            (outcome, execution_id),
+        )
+    return cur.rowcount == 1
+
+
 _OWNER_GONE_REASON = (
     "Scheduler restarted after this execution's owner exited before a durable "
     "terminal state; whether side effects ran is unknown."

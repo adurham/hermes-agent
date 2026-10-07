@@ -89,13 +89,14 @@ def _drive(monkeypatch, *, run_result, samples_before_miss):
         hb.arm()
         return run_result
 
-    def fake_deliver(execution_id, job, content, **kwargs):
+    def fake_deliver(job, content, **kwargs):
         delivered.append(content)
-        return {"status": "pending"}
+        return None
 
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
-    monkeypatch.setattr("cron.delivery_queue.enqueue", fake_deliver)
+    # The run queues its notice durably; the gateway drain sends it through _deliver_result.
+    monkeypatch.setattr(sched, "_deliver_result", fake_deliver)
     return sched, job, hb, delivered
 
 
@@ -105,8 +106,7 @@ _REAL_ERROR = "the real error text the failure path recorded"
 @pytest.mark.parametrize(
     "success, run_result, expected_status, expected_error",
     [
-        # A queued (durable-queue) success books ``delivery_queued`` until the gateway drains it.
-        (True, (True, "output text", "the report", None), "delivery_queued", None),
+        (True, (True, "output text", "the report", None), "ok", None),
         (False, (False, "output text", "", _REAL_ERROR), "error", _REAL_ERROR),
     ],
     ids=["delivered-ok", "delivered-failure-notice"],
@@ -123,6 +123,7 @@ def test_delivered_run_keeps_its_terminal_status_when_claim_sample_misses_after_
     cancel = threading.Event()
 
     assert sched.run_one_job(job, cancel_event=cancel) is True
+    assert sched.drain_delivery_queue({}, None) == 1
 
     assert len(delivered) == 1, "the notice must have left the process"
     if success:
@@ -157,6 +158,7 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
     monkeypatch.setattr("cron.delivery_queue.enqueue", deliver_then_cancel)
 
     assert sched.run_one_job(job, cancel_event=cancel) is True
+    assert sched.drain_delivery_queue({}, None) == 1
 
     assert delivered == ["the report"], "the notice had already left the process"
     assert hb.missed == 0, "the sampled claim never missed — only the transport event fired"
@@ -227,8 +229,7 @@ def _drive_heartbeat_thread(monkeypatch, *, misses, steal=False):
     monkeypatch.setattr(sched, "_FIRE_CLAIM_MISS_CONFIRM_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
-    monkeypatch.setattr("cron.delivery_queue.enqueue",
-                        lambda execution_id, job, content, **kw: (delivered.append(content), {"status": "pending"})[1])
+    monkeypatch.setattr(sched, "_deliver_result", lambda job, content, **kw: delivered.append(content))
     return sched, job, hb, delivered, run_cancel
 
 
@@ -243,12 +244,13 @@ def test_heartbeat_miss_mid_run_keeps_completed_run(temp_home, monkeypatch, miss
     sched, job, hb, delivered, run_cancel = _drive_heartbeat_thread(monkeypatch, misses=misses)
 
     assert sched.run_one_job(job) is True
+    assert sched.drain_delivery_queue({}, None) == 1
 
     assert hb.missed == misses
     assert run_cancel == [latched], "only a confirmed miss reaches the run's cancel event"
     assert delivered == ["the report"]
     record = get_job(job["id"])
-    assert record["last_status"] == "delivery_queued"  # queued success, never the interrupted error
+    assert record["last_status"] == "ok"
     assert record["last_error"] is None
     assert get_execution(job["execution_id"])["status"] == "completed"
 

@@ -67,11 +67,11 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
         assert scheduler.drain_delivery_queue({}, None) == 1
         (queued,) = delivery_queue_rows()
         assert queued["status"] == ("suppressed" if expected_suppression else "delivered")
-    else:
-        assert row["delivery_outcome"] == ("suppressed" if expected_suppression else "delivered")
+        row = executions.latest_execution(job["id"])  # the drain writes its outcome back
     assert len(sent) == (0 if expected_suppression else 1)
+    assert row["delivery_outcome"] == ("suppressed" if expected_suppression else "delivered")
     saved = jobs.get_job(job["id"])
-    assert saved["last_status"] == ("error" if mode != "success" else "delivery_queued" if queued_lane else "ok")
+    assert saved["last_status"] == ("ok" if mode == "success" else "error")
     if mode != "success":
         assert "isolated provider failure" in saved["last_error"]
         incident = next(i for i in incidents.list_incidents() if i["job_id"] == job["id"])

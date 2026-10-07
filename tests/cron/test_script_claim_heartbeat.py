@@ -379,10 +379,19 @@ def _run_claimed_job_with_mid_run_action(
             raise crash
         return True, "saved output", "D1 is promoting", None
 
-    # A completed agent run with an execution id hands its notice to the durable delivery queue
-    # (drained by the gateway), never to an inline ``_deliver_result``; the enqueue IS the
-    # delivery. A crash still alerts inline, so both doors are stubbed.
-    delivered = MagicMock(return_value={"status": "queued"})
+    # A completed agent run hands its notice to the durable delivery queue; a gateway drain that
+    # wins the race against the run's bookkeeping sends it through ``_deliver_result``. A crash
+    # alerts inline through the same stubbed door.
+    from cron import delivery_queue
+    monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "cron" / "deliveries.db")
+    real_enqueue = delivery_queue.enqueue
+
+    def _enqueue_then_drain(*args, **kwargs):
+        queued = real_enqueue(*args, **kwargs)
+        assert scheduler.drain_delivery_queue({}, None) == 1
+        return queued
+
+    delivered = MagicMock(side_effect=_enqueue_then_drain)
     monkeypatch.setattr(scheduler, "_deliver_result", MagicMock(return_value=None))
     finished = MagicMock()
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.05)
@@ -421,7 +430,7 @@ def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, 
     delivered.assert_called_once()
     finished.assert_called_once_with(
         "self-removal-heartbeat-execution",
-        success=True, error=None, delivery_outcome="queued")
+        success=True, error=None, delivery_outcome="delivered")
     with jobs.use_cron_store(tmp_path):
         assert jobs.load_jobs() == []
 

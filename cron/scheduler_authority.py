@@ -125,6 +125,9 @@ def reconcile_pending(*, allow_connect=True):
                 enqueue(params['request_id'], job, content, for_failure=not success)
             mark_job_run(job['id'], success, error, status='delivery_queued' if deliver else None,
                          execution_id=params['request_id'])
+            if deliver:
+                from cron.delivery_outcome import settle_quietly
+                settle_quietly(job['id'], params['request_id'])
             journal.unlink(missing_ok=True)
         except Exception:
             logging.getLogger(__name__).warning('Cron receipt recovery deferred: %s', journal, exc_info=True)

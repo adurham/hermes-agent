@@ -108,6 +108,13 @@ def run_env(monkeypatch, tmp_path):
         s, "finish_execution",
         lambda *a, **kw: state["finished"].append((a, kw)),
     )
+    # The drain settles a queued outcome in the (stubbed) ledger: record it the same way.
+    from cron import executions
+    monkeypatch.setattr(
+        executions, "settle_delivery_outcome",
+        lambda execution_id, outcome: state["finished"].append(
+            ((execution_id,), {"delivery_outcome": outcome})) or True,
+    )
     # No durable incident store in play: never acked, no id.
     monkeypatch.setattr(
         s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, None)
@@ -422,6 +429,7 @@ class TestOutcomeBookkeeping:
         run_env["drain"](for_failure=True)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0OPS"]
         assert "failed" in run_env["send"][0]["message"].lower()
+        assert self._outcome(run_env) == ("delivered" if transport_success else "failed")
         assert alerted == (["inc-b1"] if transport_success else []), (
             "only a delivered failure ping may mark the incident alerted"
         )
@@ -439,6 +447,7 @@ class TestOutcomeBookkeeping:
         assert self._outcome(run_env) == "queued"
         run_env["drain"](for_failure=False)
         assert [c["chat_id"] for c in run_env["send"]] == ["D0MAIN"]
+        assert self._outcome(run_env) == "delivered"
 
 
 class TestPreflightAndDashboardLanes:

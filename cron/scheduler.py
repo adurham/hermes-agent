@@ -3293,11 +3293,18 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         incident_acked=d.incident_acked,
         success=d.success,
     )
+    from cron.delivery_outcome import settle_quietly, settled_outcome
+    if delivery_outcome == "queued":
+        # A drain that already finished this send (cron/delivery_outcome.py) is the real outcome.
+        delivery_outcome = settled_outcome(execution_id) or "queued"
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
+    if job.get("last_delivery_queued"):
+        # A drain that settled before this run's own bookkeeping landed found nothing to fence on.
+        settle_quietly(job["id"], execution_id)
     journal.unlink(missing_ok=True)
     return True
 
