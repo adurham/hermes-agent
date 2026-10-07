@@ -18,6 +18,7 @@ import {
 } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import { storedSessionIdForRuntimeId } from '@/store/session-states'
+import { isStartChatCallerWatched } from '@/store/start-chat'
 import { retireTips } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
 
@@ -127,8 +128,8 @@ export function skipIntro(): void {
   selectProfile(launch?.profile ?? 'default')
 }
 
-/** A setup chat's `start_chat` started the task chat: the guided first run is complete. */
-export function finishGuidedOnboarding(runtimeId: string): void {
+/** A setup chat's `start_chat` started the task chat (`startedId`): the guided first run is complete. */
+export function finishGuidedOnboarding(runtimeId: string, startedId: string): void {
   const threads = $chatOnboardingThreadIds.get()
   const storedId = storedSessionIdForRuntimeId(runtimeId)
 
@@ -137,12 +138,15 @@ export function finishGuidedOnboarding(runtimeId: string): void {
   }
 
   const { phase } = $onboardingGate.get()
+  // The task chat opens itself only for a watched caller (start-chat-tool.tsx). A setup chat that
+  // finished in the background opens nothing, so it must not open a tour either.
+  const handoffOpens = isStartChatCallerWatched(storedId ?? runtimeId)
 
   endIntroView()
   completeGuide()
 
-  if ((phase === 'guided' || phase === 'left') && $toursEnabled.get()) {
-    void showHandoffTour()
+  if (handoffOpens && (phase === 'guided' || phase === 'left') && $toursEnabled.get()) {
+    void showHandoffTour(() => $selectedStoredSessionId.get() === startedId)
   }
 }
 

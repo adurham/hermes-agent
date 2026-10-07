@@ -12,11 +12,11 @@ const LOCAL_FIT_WAIT_MS = 1500
 
 /** Waits for a visible node. The profile rail mounts a render or two after the handoff switches profiles, and
  *  the tour engine returns a no-match for a selector that is not in the DOM yet. Returns false on timeout. */
-async function waitFor(selector: string, timeoutMs = 6000): Promise<boolean> {
+async function waitFor(selector: string, timeoutMs = 6000, ready = () => true): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
 
   while (Date.now() < deadline) {
-    const visible = [...document.querySelectorAll(selector)].some(node => {
+    const visible = ready() && [...document.querySelectorAll(selector)].some(node => {
       const { width, height } = node.getBoundingClientRect()
 
       return width > 0 && height > 0 && !node.closest('[data-pane-hidden]')
@@ -32,9 +32,10 @@ async function waitFor(selector: string, timeoutMs = 6000): Promise<boolean> {
   return false
 }
 
-/** The caller does not await this, so the tour does not delay the handoff. */
-export async function showHandoffTour(): Promise<void> {
-  if (!(await waitFor(RAIL))) {
+/** The caller does not await this, so the tour does not delay the handoff. `onHandoffChat` is true while the
+ *  started task chat is the one on screen: the tour waits for it to open and drops if the user moves on. */
+export async function showHandoffTour(onHandoffChat: () => boolean): Promise<void> {
+  if (!(await waitFor(RAIL, 6000, onHandoffChat))) {
     return
   }
 
@@ -49,6 +50,10 @@ export async function showHandoffTour(): Promise<void> {
   // Imported here instead of at the top: this module is reachable from the boot path through intro.ts
   // (finishGuidedOnboarding), and run-tour.ts keeps driver.js and its stylesheet out of that path.
   const { startTour } = await import('@/lib/tour')
+
+  if (!onHandoffChat()) {
+    return
+  }
 
   await startTour([
     { accent: true, selector: RAIL, side: 'right', text: copy('profileText'), title: copy('profileTitle') },

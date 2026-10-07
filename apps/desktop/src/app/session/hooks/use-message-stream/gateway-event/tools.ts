@@ -41,7 +41,9 @@ function recordToolPreview(ctx: GatewayEventContext, sessionId: string, cwd: str
 }
 
 function reportStartChatHandoff(payload: GatewayEventPayload | undefined, sessionId: string): void {
-  if (payload?.name !== 'start_chat' || readStartChatResult(payload.result)?.status !== 'started') {
+  const outcome = readStartChatResult(payload?.result)
+
+  if (payload?.name !== 'start_chat' || outcome?.status !== 'started') {
     return
   }
 
@@ -52,7 +54,7 @@ function reportStartChatHandoff(payload: GatewayEventPayload | undefined, sessio
   }
 
   // From the setup chat, the handoff completes the guided first run (no-op elsewhere).
-  finishGuidedOnboarding(sessionId)
+  finishGuidedOnboarding(sessionId, outcome.sessionId)
 }
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
