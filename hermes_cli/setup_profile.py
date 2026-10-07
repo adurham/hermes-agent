@@ -231,21 +231,35 @@ def _write_state(path: Path, state: dict) -> None:
 
 def release_setup_copy(copy_dir: Path, *, from_setup: bool) -> None:
     """A copy of a profile (clone, clone-all, import, distribution install) is never the setup profile: drop the
-    marker, and when the source was the setup profile, the setup toolsets its config grants (``_write_setup_config``)."""
+    marker, and when the source was the setup profile, the tool limits ``_write_setup_config`` gave it: the cli
+    toolset grant, the toolsets it disabled and its deferred-tool list."""
     (copy_dir / profiles_mod.SETUP_PROFILE_MARKER).unlink(missing_ok=True)
     config_path = copy_dir / "config.yaml"
     if not from_setup or not config_path.is_file():
         return
+    from agent.skill_utils import parse_config_string_list
     from hermes_cli.config import atomic_config_replace, read_user_config_raw
     config = read_user_config_raw(config_path)
-    platforms = dict(config.get("platform_toolsets") or {})
-    if platforms.pop("cli", None) is None:
-        return
-    if platforms:
-        config["platform_toolsets"] = platforms
-    else:
-        config.pop("platform_toolsets", None)
+    _set_section(config, "platform_toolsets", "cli", None)
+    disabled = [name for name in parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets"))
+                if name not in _SETUP_DISABLED_TOOLSETS]
+    _set_section(config, "agent", "disabled_toolsets", disabled or None)
+    if ((config.get("tools") or {}).get("tool_search") or {}).get("defer") == _SETUP_DEFERRED_TOOLS:
+        _set_section(config, "tools", "tool_search", None)
     atomic_config_replace(config_path, config)
+
+
+def _set_section(config: dict, section: str, key: str, value) -> None:
+    """``config[section][key] = value``; ``None`` removes the key, and the section with its last key."""
+    entries = dict(config.get(section) or {})
+    if value is None:
+        entries.pop(key, None)
+    else:
+        entries[key] = value
+    if entries:
+        config[section] = entries
+    else:
+        config.pop(section, None)
 
 
 def _write_setup_config(path: Path) -> None:
