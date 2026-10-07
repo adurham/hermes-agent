@@ -74,6 +74,8 @@ def start_chat(args: dict, caller_id: str | None = None) -> str:
             if "error" in created:
                 return _rejected(created["error"]["message"], retryable=True)
             result = created["result"]
+            if from_setup:  # its first turn skips the first-contact note: setup already ran
+                server._sessions[result["session_id"]]["setup_handoff"] = True
             mark_seen(target_home / "config.yaml", PROFILE_BUILD_FLAG)
             submitted = server._methods["prompt.submit"](None, {"session_id": result["session_id"], "text": message})
             if "error" in submitted:

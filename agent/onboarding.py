@@ -159,6 +159,7 @@ def first_contact_turn_note(
     install_has_prior_sessions: bool,
     message: str,
     command: str = "/initiate-setup",
+    setup_handoff: bool = False,
 ) -> Optional[str]:
     """Return a one-shot sidecar note for the install's first-ever message.
 
@@ -166,16 +167,16 @@ def first_contact_turn_note(
     and the offer has not been latched yet, return the opt-in
     directive and persist ``onboarding.seen.profile_build_offered``. Otherwise
     return the plain intro note. Returns ``None`` when this is not the first
-    contact (non-empty session history or prior sessions exist on the install).
+    contact (non-empty session history or prior sessions exist on the install). ``setup_handoff``
+    marks the task chat setup started (``start_chat``), told by the caller, never read from the text.
     """
-    from agent.first_task_prompt import MARKER as FIRST_TASK_MARKER
     from agent.initiate_setup_prompt import HEADER
     from hermes_cli.profiles import SETUP_PROFILE_MARKER
 
     if not session_history_empty or install_has_prior_sessions or message.startswith(HEADER):
         return None
     # The task chat setup hands off to is the user's first chat in their own profile; setup already ran.
-    if FIRST_TASK_MARKER in message:
+    if setup_handoff:
         return None
     # The setup chat opens with its own welcome, whatever its first message says.
     if (config_path.parent / SETUP_PROFILE_MARKER).is_file():

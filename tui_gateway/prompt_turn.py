@@ -644,6 +644,7 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
             session_history_empty=history_empty,
             install_has_prior_sessions=_install_has_prior_sessions(session),
             message=message,
+            setup_handoff=bool(session.get("setup_handoff")),
         )
         if not note:
             return

@@ -141,3 +141,16 @@ def test_installs_prior_sessions_probe_counts_the_install(monkeypatch):
 
     monkeypatch.setattr(server, "_session_db", lambda _s: _Ctx(_DB(2)))
     assert server._install_has_prior_sessions(fresh) is True
+
+
+def test_the_task_chat_setup_hands_off_to_gets_no_note(monkeypatch, onboarding_home):
+    """start_chat marks the session it opens from setup; the prompt turn passes that on."""
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+    monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
+
+    agent = types.SimpleNamespace()
+    session = {**_session(agent), "setup_handoff": True}
+    _stage(session, agent, history_empty=True)
+
+    assert getattr(agent, "_gateway_turn_context_notes", None) is None
+    assert PROFILE_BUILD_FLAG not in (onboarding_home / "config.yaml").read_text()

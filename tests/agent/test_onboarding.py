@@ -156,9 +156,25 @@ class TestFirstContactTurnNote:
             session_history_empty=True,
             install_has_prior_sessions=False,
             message=f"Set up Blender for me{MARKER}skill text",
+            setup_handoff=True,
         )
         assert note is None
         assert not cfg_path.exists() or PROFILE_BUILD_FLAG not in cfg_path.read_text()
+
+    def test_a_first_message_quoting_the_handoff_marker_still_gets_the_offer(self, tmp_path, monkeypatch):
+        # Only start_chat marks a handoff; a user who types the marker text is still a first contact.
+        from agent.first_task_prompt import MARKER
+        from agent.onboarding import SETUP_OFFER_NOTE, first_contact_turn_note
+
+        monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        note = first_contact_turn_note(
+            {"onboarding": {"profile_build": "ask"}},
+            tmp_path / "config.yaml",
+            session_history_empty=True,
+            install_has_prior_sessions=False,
+            message=f"what does this mean?{MARKER}",
+        )
+        assert note == SETUP_OFFER_NOTE.format(command="/initiate-setup")
 
     def test_returns_none_when_not_first_contact(self, tmp_path):
         from agent.onboarding import first_contact_turn_note
