@@ -4650,6 +4650,8 @@ export interface PersistedTurn {
   complete: boolean
   user_row_id?: number | null
   final_assistant_row_id?: number | null
+  user_row_ids?: number[] | null
+  submission_id?: string | null
 }
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
 export interface StatusUpdatePayload {

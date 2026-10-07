@@ -43,6 +43,13 @@ def persisted_turn_receipt(
     receipt: dict = {"row_ids": row_ids, "complete": False}
     if (user_row_id := committed_row_id(tail[0])) is not None:
         receipt["user_row_id"] = user_row_id
+    # Every rendered user row of the turn in order (the prompt, then each steer/redirect row), so a
+    # client binds its optimistic bubbles even when the turn holds more than one prompt row. Only a
+    # fully committed list is published: a gap would shift every later pairing.
+    users = [message for message in tail if message.get("role") == "user" and message.get("display_kind") != "hidden"]
+    user_row_ids = [committed_row_id(message) for message in users]
+    if users and None not in user_row_ids:
+        receipt["user_row_ids"] = user_row_ids
     last = tail[-1]
     # Equality only verifies the structurally selected final row's body: it never selects an identity.
     if (status == "complete" and last.get("role") == "assistant" and not last.get("tool_calls")

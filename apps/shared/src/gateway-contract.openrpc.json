@@ -20411,6 +20411,33 @@
             ],
             "default": null,
             "title": "Final Assistant Row Id"
+          },
+          "user_row_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Ids"
+          },
+          "submission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Submission Id"
           }
         },
         "required": [

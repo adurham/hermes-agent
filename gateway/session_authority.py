@@ -544,8 +544,11 @@ class SessionAuthority:
                         complete['response_reused'] = True
                     # The committed row addresses of the turn: a viewer binds the streamed reply to
                     # its stored row, so a transcript read racing this frame never paints it twice.
+                    # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
+                    # prompt (``user-<submission_id>``), which the queued admission ack could not name.
                     if isinstance(captured_result.get('persisted_turn'), dict):
-                        complete['persisted_turn'] = captured_result['persisted_turn']
+                        complete['persisted_turn'] = {**captured_result['persisted_turn'],
+                                                      'submission_id': row['request_id']}
                     live.event_stream.publish(ref.session_id, complete)
                     # The idle snapshot (running=false) follows the completion, as on every other
                     # host: a viewer that read running=false first settled the reply as a turn whose

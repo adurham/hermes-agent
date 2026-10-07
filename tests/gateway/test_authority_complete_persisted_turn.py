@@ -61,9 +61,31 @@ def test_turn_runner_result_carries_the_committed_turn_receipt(tmp_path):
     result = {'final_response': 'finished while away', 'messages': messages}
 
     assert _persisted_turn(agent, history, result, 0) == {
-        'row_ids': row_ids, 'complete': True, 'user_row_id': row_ids[0], 'final_assistant_row_id': row_ids[-1]}
+        'row_ids': row_ids, 'complete': True, 'user_row_id': row_ids[0], 'final_assistant_row_id': row_ids[-1],
+        'user_row_ids': [row_ids[0]]}
     # A compaction during the turn can drop streamed rows: the receipt no longer vouches for all of it.
     assert _persisted_turn(agent, history, result, 1)['complete'] is False
+
+
+def test_steered_turn_receipt_names_every_user_row_in_order(tmp_path):
+    """A steer/redirect adds a second user row, so the turn is never `complete`; the receipt still
+    names each committed user row so the client can bind every optimistic bubble it painted."""
+    from gateway.run_turn_runner import _persisted_turn
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    agent = _flushing_agent(db, 's')
+    messages = [{'role': 'user', 'content': 'slow one'}, {'role': 'assistant', 'content': 'partial'},
+                {'role': 'user', 'content': 'change course'}, {'role': 'assistant', 'content': 'steered reply'}]
+    agent._persist_user_message_idx = 0
+    agent._flush_messages_to_session_db(messages, [])
+    row_ids = [row['_row_id'] for row in db.get_messages_as_conversation('s', include_row_ids=True)]
+    receipt = _persisted_turn(agent, [], {'final_response': 'steered reply', 'messages': messages}, 0)
+
+    assert receipt['complete'] is False
+    assert receipt['user_row_ids'] == [row_ids[0], row_ids[2]]
+    # An uncommitted steer row would shift every later pairing: publish no list at all.
+    messages.insert(3, {'role': 'user', 'content': 'not flushed'})
+    assert 'user_row_ids' not in _persisted_turn(agent, [], {'final_response': 'steered reply', 'messages': messages}, 0)
 
 
 @pytest.mark.asyncio
@@ -92,7 +114,9 @@ async def test_authority_completion_publishes_the_turn_receipt(tmp_path, monkeyp
         await asyncio.wait_for(authority.sessions['s'].task, 5)
 
     [complete] = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
-    assert complete['persisted_turn'] == receipt
+    # The receipt names the client submission whose turn it is: the viewer that sent it binds its
+    # optimistic prompt (`user-<submission_id>`) to the stored row, as main's submit ack does.
+    assert complete['persisted_turn'] == {**receipt, 'submission_id': 'r'}
     # The idle snapshot follows the completion: a viewer never reads running=false for a turn whose
     # terminal frame has not been published yet.
     order = [(f['params']['type'], f['params']['payload'].get('running')) for f in frames
