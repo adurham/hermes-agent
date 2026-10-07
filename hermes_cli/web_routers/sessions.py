@@ -853,7 +853,11 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
         # another client between the sidebar snapshot and this DELETE). An exact retry of the
         # caller's own committed request never reaches here: mutate_session checks the receipt
         # before resolving the id, so it replays that receipt (or 409s on a changed digest).
-        if exc.status_code == 404 and exc.detail == 'not_found':
+        # The authority also answers ``not_found`` for an EXISTING cold row it cannot restore
+        # (e.g. an API-server row without its binding); that row was not deleted, so only a
+        # genuinely absent id is the idempotent success.
+        if exc.status_code == 404 and exc.detail == 'not_found' and await asyncio.to_thread(
+                _with_db, profile, lambda db: db.get_session(session_id) is None, read_only=True):
             return {"ok": True, "already_absent": True}
         raise
     # The canonical delete retires rows only: scrub each deleted session's on-disk artifacts

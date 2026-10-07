@@ -114,3 +114,30 @@ async def test_http_import_and_delete_keep_atomic_receipts(tmp_path, monkeypatch
             assert deleted.json()['deleted_ids'] == ['imported-session']
             assert (await client.delete('/api/sessions/imported-session', params=query)).json() == deleted.json()
             assert db.get_session('imported-session') is None
+
+
+@pytest.mark.asyncio
+async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_path, monkeypatch):
+    """M3: the authority also answers ``not_found`` for an EXISTING cold row it cannot restore
+    (an API-server row with no binding). That is not an idempotent success — Desktop would drop
+    the row and it reappears on reload. Only a genuinely absent id is ``already_absent``."""
+    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_cli import web_server as web
+    monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
+    monkeypatch.setattr('hermes_state._default_db_path', lambda: tmp_path / 'state.db')
+    app = FastAPI()
+    app.state.auth_required = False
+    app.include_router(manage_router)
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('cold-api', source='api_server', chat_id='cold-api', session_key='agent:main:api:cold')
+        epoch = begin_runtime_epoch(db, instance_id='owner')
+        app.state.session_authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
+                                                       instance_id='owner', db=db, epoch=epoch)
+        query = {'request_id': 'delete', 'expected_revision': 0, 'expected_generation': 0}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://localhost',
+                                     headers={'Authorization': 'Bearer fixture-token'}) as client:
+            unrestorable = await client.delete('/api/sessions/cold-api', params=query)
+            gone = await client.delete('/api/sessions/never-existed', params=query)
+        assert unrestorable.status_code == 404 and unrestorable.json()['detail'] == 'not_found', unrestorable.text
+        assert db.get_session('cold-api') is not None
+        assert gone.status_code == 200 and gone.json() == {'ok': True, 'already_absent': True}, gone.text
