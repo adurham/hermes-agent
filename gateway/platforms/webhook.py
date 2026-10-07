@@ -307,6 +307,9 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[webhook] Destination unavailable for %s", chat_id, exc_info=True)
             return SendResult(success=False, error="Webhook destination unavailable or unauthorized")
+        return await self._deliver_to(delivery, chat_id, content)
+
+    async def _deliver_to(self, delivery: Dict[str, Any], chat_id: str, content: str) -> SendResult:
         deliver_type = delivery["deliver"]
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
@@ -760,6 +763,15 @@ class WebhookAdapter(BasePlatformAdapter):
             return None
         if getattr(event, '_webhook_duplicate', False):
             return "duplicate"
+        if receipt is None:
+            # A post_gateway_admission plugin consumed the delivery: nothing was committed, so the
+            # reply goes to the destination this request just validated, not a retained row.
+            reply = getattr(event, '_consumer_reply', None)
+            if reply:
+                from gateway.platforms.webhook_delivery import snapshot_destination
+                await self._deliver_to(snapshot_destination(self, self._delivery_info.get(session_chat_id)),
+                                       session_chat_id, reply)
+            return "accepted"
         from gateway.session_authorities import active_authority, authority_for_profile_id
         runner = self._message_handler.__self__
         authority = authority_for_profile_id(runner, receipt.ref.profile_id) or active_authority(runner)

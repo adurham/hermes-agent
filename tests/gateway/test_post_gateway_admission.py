@@ -154,3 +154,51 @@ async def test_under_an_authority_the_hook_fires_once_at_ingress_never_at_execut
     finally:
         ingress.executing_admission.reset(token)
     assert fired == ["eat me", "keep me"]
+
+
+@pytest.mark.asyncio
+async def test_webhook_deliveries_fire_the_hook_once_per_admission_never_on_a_provider_retry():
+    """Webhook/relay traffic enters through ``webhook_ingress.admit_producer``, not
+    ``_handle_message``: plugins still see each delivery once, a consumed one is never committed
+    (its reply goes to the route's destination), and a provider retry of a committed delivery
+    is not offered again."""
+    import hashlib
+    import hmac
+    import json
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from gateway.platforms.webhook import WebhookAdapter
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+
+    fired = []
+    _register(lambda **kwargs: fired.append(kwargs["message_id"]) or (
+        {"action": "handled", "reply": "plugin took it"} if "eat" in kwargs["text"] else None))
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"secret": "owned-secret", "routes": {
+        "fixture": {"prompt": "{text}"}}}))
+    sent = []
+
+    async def _sink(delivery, chat_id, content):
+        sent.append(content)
+
+    adapter._deliver_to = _sink
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
+
+    async def _post(client, text, delivery_id):
+        body = json.dumps({"text": text}).encode()
+        signature = "sha256=" + hmac.new(b"owned-secret", body, hashlib.sha256).hexdigest()
+        return await client.post("/webhooks/fixture", data=body, headers={
+            "X-GitHub-Delivery": delivery_id, "X-Hub-Signature-256": signature})
+
+    async with TestClient(TestServer(app)) as client:
+        db = adapter._message_handler.__self__.session_authority.db
+        assert (await _post(client, "eat this", "d-eat")).status == 202
+        assert sent == ["plugin took it"] and not db._read_all("SELECT 1 FROM session_admissions")
+        assert (await _post(client, "keep this", "d-keep")).status == 202
+        assert (await _post(client, "keep this", "d-keep")).status in (200, 202)
+        rows = db._read_all("SELECT request_id FROM session_admissions")
+    assert [row["request_id"] for row in rows] == ["d-keep"]
+    assert fired == ["d-eat", "d-keep"]

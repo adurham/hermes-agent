@@ -902,7 +902,14 @@ class RelayAdapter(BasePlatformAdapter):
             event.timestamp = datetime.fromtimestamp(0, timezone.utc)
             # Wait only for the SQLite receipt, never inference or outbound ACKs
             # (those need this same WS reader). Exceptions deliberately suppress ACK.
-            await admit_producer(self, event)
+            if await admit_producer(self, event) is None and getattr(event, '_consumer_reply', None):
+                # A post_gateway_admission plugin consumed it (never committed); its reply is
+                # sent off this reader, like an executed admission's.
+                from gateway.session_ingress import deliver_response
+                task = asyncio.create_task(deliver_response(
+                    self, event, runner._session_key_for_source(event.source), event._consumer_reply))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
         else:
             await self.handle_message(event)
 
