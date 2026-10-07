@@ -251,7 +251,7 @@ def execute(frame, channel):
     agent = None
     try:
         with policy_scope(policy):
-            agent = AIAgent(model=policy.model, provider=policy.provider, base_url=policy.base_url,
+            agent = _construct_agent(frame, AIAgent, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
                 reasoning_config=policy.reasoning_config, platform=policy.source,
@@ -297,6 +297,17 @@ def execute(frame, channel):
         if agent is not None:
             retire_agent(agent)
         store.close()
+
+
+def _construct_agent(frame, factory, **kwargs):
+    """Agent construction resolves the provider credentials; a Kanban attempt that fails here
+    still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
+    try:
+        return factory(**kwargs)
+    except Exception as exc:
+        from gateway.session_kanban import record_start_failure
+        record_start_failure(frame, exc)
+        raise
 
 
 def hello():
