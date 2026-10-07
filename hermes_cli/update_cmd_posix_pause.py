@@ -452,9 +452,10 @@ def _describe(token: dict) -> str:
 def pause_at_commit_point() -> str | None:
     """Stop this install's gateways before the first checkout move; once per run.
 
-    Returns a refusal (the caller must not move the checkout) when the pause could not complete;
-    by then everything it stopped is running again on the unchanged code. The verdict is sticky:
-    every later move of this run gets the same answer."""
+    Never refuses the update: the pause is protection, not a gate. When it cannot complete
+    (discovery or the durable record fails, a stop fails), the gateways run through the swap and
+    the post-commit restart refreshes them, which is how POSIX updated before the pause existed.
+    Always ``None``; the caller's refusal branch stays for the contract it shares with Windows."""
     token = _RUN
     if token is None:
         return None
@@ -470,7 +471,8 @@ def _pause(token: dict) -> str | None:
         units, jobs, notices = _left_running(units, jobs)
         bare, more = _discover_bare({u["pid"] for u in units} | {j["pid"] for j in jobs})
     except Exception as exc:  # health: allow BLE001 -- a discovery that cannot finish stops nothing
-        return f"could not discover the running gateways before the update ({exc}); nothing was stopped"
+        print(f"  ⚠ Could not list the running gateways ({exc}); they keep running and are restarted after the update")
+        return None
     for line in notices + more:
         print(line)
     supervised = units + jobs
@@ -491,7 +493,8 @@ def _pause(token: dict) -> str | None:
             markers={e["pid"]: _planned_stop_marker_path(Path(e["home"])) for e in bare})
     except Exception as exc:  # health: allow BLE001 -- no durable record, no stop
         token["resume_needed"] = False
-        return f"could not record the gateways this update pauses ({exc}); nothing was stopped"
+        print(f"  ⚠ Could not record the gateways to pause ({exc}); they keep running and are restarted after the update")
+        return None
     # From here a refusal or a crash leaves the set owed: the command's own exit resume (registered
     # in ``_cmd_update_impl`` for this token), else the next launch's recovery, restarts it.
     token["posix_stopped"] = True
@@ -500,15 +503,16 @@ def _pause(token: dict) -> str | None:
             (_stop_unit if entry["kind"] == "systemd" else _stop_job)(entry)
             pause_record.mark_stop_sent(token, entry["pid"])
         _stop_bare(token, bare)
-    except Exception as exc:  # health: allow BLE001 -- roll back: restart the stopped set on the old code
-        print(f"  ✗ Could not pause every gateway ({exc}); restarting them on the current code")
+    except Exception as exc:  # health: allow BLE001 -- roll back: restart the stopped set, update unpaused
+        print(f"  ⚠ Could not pause every gateway ({exc}); restarting them, the update continues without the pause")
         try:
             resume_paused_set(token)
-        except Exception as again:  # health: allow BLE001 -- still owed: the record keeps it for the next launch
-            pause_record.sync(token)
-            return f"could not pause the gateways ({exc}) and some did not restart ({again}); nothing was changed"
+        except Exception as again:  # health: allow BLE001 -- still owed: completion restarts them after the deps
+            print(f"  ⚠ {again}; they restart once the dependencies are synced")
+        for restarted in _RESTARTED.values():
+            restarted.clear()  # back on the OLD code: the post-commit fleet restart must refresh them
         pause_record.sync(token)
-        return f"could not pause the gateways ({exc}); nothing was changed"
+        return None
     pause_record.sync(token)
     print(f"  ⏸ Paused for the update: {_describe(token)} (restarted once the dependencies are synced)")
     return None
