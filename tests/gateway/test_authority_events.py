@@ -79,6 +79,10 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
             observed = []
             while not observed or observed[-1]['params']['type'] != 'message.complete':
                 observed.append(await asyncio.to_thread(peer.frames.get, True, 5))
+            # The idle snapshot follows the completion, never precedes it.
+            observed.append(await asyncio.to_thread(peer.frames.get, True, 5))
+            assert (observed[-1]['params']['type'], observed[-1]['params']['payload']['running']) == (
+                'session.info', False)
             frames.append(observed)
         assert frames[0] == frames[1]
         replay = (await since(initial['replay_epoch'], initial['last_sequence']))['result']
@@ -104,8 +108,8 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
         await turn(5)
         after = (await since(refreshed['replay_epoch'], refreshed['last_sequence']))['result']
         assert not after['snapshot_required']
-        assert after['events'][-1]['type'] == 'message.complete'
-        assert after['events'][-1]['payload']['text'] == '5'
+        assert [e['type'] for e in after['events'][-2:]] == ['message.complete', 'session.info']
+        assert after['events'][-2]['payload']['text'] == '5'
         before_race = await b.resume(ref, {})
         stamp = event_replay._stamp_event
         def evict_then_stamp(frame):

@@ -101,9 +101,11 @@ def main():
         assert ready.wait(30), errors
         before_release = returned.wait(30)
         if before_release:
-            frame = frames.get(timeout=5)
-            healthy_completed = (frame['params']['type'] == 'message.complete'
-                                 and 'LOCAL_ACK_WS_SHARED' in json.dumps(frame))
+            # The producer re-queued the completion; the idle session.info that follows it may
+            # already sit ahead of it in the healthy peer's queue.
+            while (frame := frames.get(timeout=5))['params']['type'] != 'message.complete':
+                pass
+            healthy_completed = 'LOCAL_ACK_WS_SHARED' in json.dumps(frame)
     finally:
         os.close(slow_read)
         worker.join(timeout=15)
