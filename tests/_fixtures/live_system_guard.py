@@ -290,9 +290,13 @@ def _live_system_guard(request, monkeypatch):
             real_home = Path(pwd.getpwuid(_os.getuid()).pw_dir).resolve()
         except (ImportError, KeyError):
             real_home = Path.home().resolve()
+        # The child must not resolve the REAL Hermes root. Comparing HERMES_HOME against the whole
+        # account home refused every Windows sandbox: %TEMP% lives under %USERPROFILE%.
+        from hermes_state_guard import _real_platform_state_root
+        real_root = _real_platform_state_root() or real_home / ".hermes"
         try:
             return (Path(home).resolve() != real_home
-                    and not Path(hermes_home).resolve().is_relative_to(real_home))
+                    and not Path(hermes_home).resolve().is_relative_to(real_root))
         except Exception:
             return False
 
