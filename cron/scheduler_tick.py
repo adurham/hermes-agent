@@ -57,8 +57,12 @@ def _tick_admitted(
             reconcile_pending(allow_connect=False)
         else:
             reconcile_pending()
-        from cron.bot_chat_legacy import drain_legacy_pending
-        drain_legacy_pending()
+        # Upgrade drain for the retired CLI lane's records: never let it stop due jobs below.
+        try:
+            from cron.bot_chat_legacy import drain_legacy_pending
+            drain_legacy_pending()
+        except Exception as _legacy_exc:
+            _sched.logger.warning("Legacy Bot Chat pending drain failed: %s", _legacy_exc)
         _sched._maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:
