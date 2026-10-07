@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from tests.gateway.test_normal_runtime_boot import control, model_peer  # noqa: F401
+from tests.gateway.test_normal_runtime_boot import control
 
 
 @pytest.mark.platforms("linux")

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tests.acp_adapter.test_gateway_sessions import daemon, editor, viewer, model_peer  # noqa: F401
+from tests.acp_adapter.test_gateway_sessions import editor, viewer
 
 
 class EditPeer(BaseHTTPRequestHandler):

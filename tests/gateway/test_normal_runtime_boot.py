@@ -34,23 +34,6 @@ def control(home, verb, params=None):
     return reply['result']
 
 
-@pytest.fixture
-def model_peer():
-    from http.server import ThreadingHTTPServer
-    import threading
-    from tests.gateway.fixtures.shared_authority_peer import ModelPeer
-    server = ThreadingHTTPServer(('127.0.0.1', 0), ModelPeer)
-    server.requests, server.metadata_requests = [], []
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-
 async def handshake(home, descriptor):
     url = descriptor['api_origin'].replace('http:', 'ws:') + '/api/ws'
     with pytest.raises(InvalidStatus):

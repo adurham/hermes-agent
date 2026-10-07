@@ -4,22 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_api_turn import admit_api_turn, api_execution
-from tests.gateway.test_api_source_binding import owner
-
-
-@pytest.fixture
-def api(owner, tmp_path, monkeypatch):
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    adapter = APIServerAdapter(PlatformConfig(enabled=True))
-    adapter.gateway_runner = owner.runner
-    adapter._session_db = owner.db
-    owner.runner._adapter_for_source = lambda source: adapter
-    yield adapter
-    adapter._response_store.close()
-    adapter._run_idempotency_store.close()
 
 
 def test_declared_key_is_durable_and_cannot_rebind(api, owner):
@@ -64,7 +49,6 @@ async def test_structured_content_bypasses_text_parser_without_losing_parts(api,
         return 'ok'
     owner.runner._handle_message = handle
     assert await execute_admission(owner, ref, row) == 'ok'
-
 
 
 def test_api_author_is_admission_scoped_not_session_identity(api, owner):

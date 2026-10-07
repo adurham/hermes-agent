@@ -2,30 +2,12 @@
 import concurrent.futures
 from dataclasses import asdict
 import json
-import sys
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.session_policy import build_policy, bind_launch_key, policy_scope, restore_policy
 from hermes_state_runtime import RuntimeStoreError
-
-
-@pytest.fixture
-def server_spec(tmp_path):
-    script = tmp_path / 'owned_mcp.py'
-    script.write_text('''import json, os, sys
-for line in sys.stdin:
- r=json.loads(line); method=r.get('method'); ident=r.get('id')
- if ident is None: continue
- if method=='initialize': result={'protocolVersion':r['params']['protocolVersion'],'capabilities':{'tools':{}},'serverInfo':{'name':'owned-peer','version':'1'}}
- elif method=='tools/list': result={'tools':[{'name':'echo','description':'owned echo','inputSchema':{'type':'object','properties':{}}}]}
- elif method=='tools/call': result={'content':[{'type':'text','text':os.environ['BORROWED_CREDENTIAL']}]}
- else: result={}
- print(json.dumps({'jsonrpc':'2.0','id':ident,'result':result}),flush=True)
-''')
-    return {'name': 'same-editor-name', 'command': sys.executable, 'args': [str(script)],
-            'env': [{'name': 'BORROWED_CREDENTIAL', 'value': 'PRIVATE_A'}]}
 
 
 def owner():

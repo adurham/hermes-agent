@@ -10,7 +10,8 @@ import time
 import psutil
 import pytest
 
-from tests.acp_adapter.test_gateway_sessions import daemon, editor, viewer, model_peer, control  # noqa: F401
+from tests.acp_adapter.test_gateway_sessions import editor, viewer
+from tests.gateway.test_normal_runtime_boot import control
 
 
 @pytest.mark.platforms("linux")

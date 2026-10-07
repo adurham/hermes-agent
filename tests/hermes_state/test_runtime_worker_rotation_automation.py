@@ -1,8 +1,6 @@
 """Worker rotation carries automation in the publication transaction."""
 import json
 
-from tests.hermes_state.test_runtime_worker_compression import worker  # noqa: F401
-
 
 def test_publication_moves_automation_once_and_preserves_cleared_controls(worker):
     db, store = worker

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
 
 
 def _server(home):
@@ -19,14 +18,14 @@ def _server(home):
     return GatewayControlServer(home, verb_handlers={'identify': lambda: descriptor})
 
 
-def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, tmp_path):
+def test_authenticated_owner_transport_rechecks_source_and_cold_binding(hosted_owner, tmp_path):
     from gateway.session_hosted_transport import (
         HostedRoomOwnerRPC, install_hosted_transport, check_remote_hosted_admission,
         owner_request,
     )
     from gateway.hosted_room_driver import TaskIdentity
     from hermes_state_runtime import list_session_admissions, RuntimeStoreError
-    authority, loop, _, _ = owner
+    authority, loop, _, _ = hosted_owner
     source, target = tmp_path / 'source', tmp_path / 'target'
     source.mkdir(mode=0o700)
     target.mkdir(mode=0o700)
@@ -257,7 +256,7 @@ def test_attachment_chunks_fill_the_response_line_without_overflowing_it(tmp_pat
         assert max(lines) > _MAX_RESPONSE_BYTES * 3 // 4, 'chunks leave most of the response line unused'
 
 
-def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(owner, tmp_path, monkeypatch):
+def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(hosted_owner, tmp_path, monkeypatch):
     """check_remote_hosted_admission proves the durable row still matches the source's
     bound input from source-attested digests, transferring no bytes; a source attachment
     re-pointed at different bytes (same id, name and size) is still refused."""
@@ -265,7 +264,7 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import list_session_admissions, RuntimeStoreError
-    authority, loop, _, _ = owner
+    authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
     target_home.mkdir(parents=True, mode=0o700)
     authority.profile_id = str(target_home)
@@ -317,7 +316,7 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
                 asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
 
 
-def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_destination(owner, tmp_path, monkeypatch):
+def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_destination(hosted_owner, tmp_path, monkeypatch):
     """Documents ride in the prompt as content-addressed paths, so execution never re-hashes
     them: the digest-only preflight must itself refuse ``storage_unavailable`` when the
     destination bytes no longer match the source-attested digest (same-size mutation) or
@@ -326,7 +325,7 @@ def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_desti
     from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
     from gateway.session_contract import SessionRef
     from hermes_state_runtime import list_session_admissions, RuntimeStoreError
-    authority, loop, _, _ = owner
+    authority, loop, _, _ = hosted_owner
     target_home = tmp_path / 'profiles' / 'other'
     target_home.mkdir(parents=True, mode=0o700)
     authority.profile_id = str(target_home)

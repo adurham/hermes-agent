@@ -1,11 +1,7 @@
 """Runs retain caller-selected history and exact terminal status."""
-from types import SimpleNamespace
-
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-
-from tests.gateway.test_api_cutover_contract import api, owner
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,6 @@ from gateway.platforms import base
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress_media import _media_root
 from hermes_state_runtime import RuntimeStoreError
-from tests.gateway.test_api_cutover_contract import api, owner  # noqa: F401
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=')
 

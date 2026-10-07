@@ -1,8 +1,6 @@
 """Watermarked compaction and rotation share the worker receipt transaction."""
 import pytest
 
-from tests.hermes_state.test_runtime_worker_compression import worker  # noqa: F401
-
 
 def test_watermarked_compaction_preserves_foreign_tail_and_rejects_stale_holder(worker):
     db, store = worker

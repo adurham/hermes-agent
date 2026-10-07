@@ -11,8 +11,6 @@ from gateway.platforms import api_server as _api_server
 from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
-from tests.gateway.test_api_cutover_contract import api  # noqa: F401
-from tests.gateway.test_api_source_binding import owner  # noqa: F401
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 

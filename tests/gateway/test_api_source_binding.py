@@ -1,27 +1,10 @@
 """API source restoration cannot mint a parallel native conversation."""
-from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import SessionAuthority
+from gateway.config import Platform
 from gateway.session_contract import Principal, SessionRef, Submission
-from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
-
-
-@pytest.fixture
-def owner(tmp_path):
-    db = SessionDB(tmp_path / 'state.db')
-    store = SessionStore(config=GatewayConfig(), sessions_dir=tmp_path / 'sessions')
-    store._db = db  # production: the routing store and the authority share the profile's state.db
-    runner = SimpleNamespace(_draining=False, session_store=store)
-    authority = SessionAuthority(runner, profile_id='default', instance_id='first', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='first'))
-    runner.session_authority = authority
-    yield authority
-    db.close()
+from hermes_state_runtime import RuntimeStoreError
 
 
 def test_private_api_binding_restores_exact_route(owner):

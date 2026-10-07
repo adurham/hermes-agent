@@ -3,7 +3,6 @@ import hashlib
 
 import pytest
 
-from tests.gateway.test_api_source_binding import owner  # noqa: F401
 from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
 from hermes_state_runtime import RuntimeStoreError
 

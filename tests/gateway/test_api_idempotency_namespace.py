@@ -3,8 +3,6 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from tests.gateway.test_api_cutover_contract import api  # noqa: F401
-from tests.gateway.test_api_source_binding import owner  # noqa: F401
 
 OLD, NEW = 'probe-old-key-long-enough', 'probe-new-key-long-enough'
 
