@@ -49,6 +49,8 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 _tool_call_logger_lock = threading.Lock()
+# How the first-contact note spells /initiate-setup: Telegram has no hyphens, and Slack reaches it via /hermes.
+_SETUP_COMMAND_SPELLING = {Platform.TELEGRAM: "/initiate_setup", Platform.SLACK: "/hermes initiate-setup"}
 
 
 def _tool_call_logger() -> logging.Logger:
@@ -1424,7 +1426,7 @@ class GatewayTurnMixin:
             note = first_contact_turn_note(
                 _load_gateway_config(), _gateway_config_home() / "config.yaml",
                 session_history_empty=True, install_has_prior_sessions=False, message=message,
-                command="/initiate_setup" if source.platform == Platform.TELEGRAM else "/initiate-setup")
+                command=_SETUP_COMMAND_SPELLING.get(source.platform, "/initiate-setup"))
             if note:
                 turn_sidecar_notes.append(note)
 
