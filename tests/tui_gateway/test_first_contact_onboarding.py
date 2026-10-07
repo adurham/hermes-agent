@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from agent.onboarding import PROFILE_BUILD_FLAG, SETUP_OFFER_NOTE
+from agent.onboarding import PROFILE_BUILD_FLAG, SETUP_OFFER_NOTE, profile_build_directive
 from hermes_yaml import safe_dump, safe_load
 from tui_gateway import server
 
@@ -42,8 +42,9 @@ def _stage(session, agent, history_empty):
 
 
 def test_stages_setup_offer_on_first_contact(monkeypatch, onboarding_home):
-    """Fresh install + empty history: the opt-in directive is staged on the agent
-    and the offered flag is persisted before the turn runs."""
+    """Fresh install + empty history under guest onboarding: the /initiate-setup offer is staged
+    on the agent and the offered flag is persisted before the turn runs."""
+    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
 
     agent = types.SimpleNamespace()
@@ -52,6 +53,17 @@ def test_stages_setup_offer_on_first_contact(monkeypatch, onboarding_home):
     assert agent._gateway_turn_context_notes == SETUP_OFFER_NOTE.format(command="/initiate-setup")
     loaded = safe_load((onboarding_home / "config.yaml").read_text())
     assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
+
+
+def test_stages_profile_build_offer_without_guest_onboarding(monkeypatch, onboarding_home):
+    """Without guest onboarding the first message keeps main's memory profile offer."""
+    monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
+    monkeypatch.setattr(server, "_install_has_prior_sessions", lambda _s: False)
+
+    agent = types.SimpleNamespace()
+    _stage(_session(agent), agent, history_empty=True)
+
+    assert agent._gateway_turn_context_notes == profile_build_directive().strip()
 
 
 def test_skips_first_contact_when_prior_sessions_exist(monkeypatch, onboarding_home):

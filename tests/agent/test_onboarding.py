@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hermes_yaml as yaml
+import pytest
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
@@ -98,13 +99,20 @@ class TestProfileBuildMode:
 
 
 class TestFirstContactTurnNote:
-    def test_returns_setup_offer_and_marks_seen(self, tmp_path):
+    @pytest.mark.parametrize("guest", [False, True])
+    def test_first_contact_offer_follows_the_onboarding_gate(self, tmp_path, monkeypatch, guest):
+        # The /initiate-setup offer ships with guest onboarding; everyone else keeps the memory profile offer.
         from agent.onboarding import (
             PROFILE_BUILD_FLAG,
             SETUP_OFFER_NOTE,
             first_contact_turn_note,
+            profile_build_directive,
         )
 
+        if guest:
+            monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
+        else:
+            monkeypatch.delenv("HERMES_GUEST_ONBOARDING", raising=False)
         cfg_path = tmp_path / "config.yaml"
         cfg = {"onboarding": {"profile_build": "ask"}}
         note = first_contact_turn_note(
@@ -114,7 +122,8 @@ class TestFirstContactTurnNote:
             install_has_prior_sessions=False,
             message="hello",
         )
-        assert note == SETUP_OFFER_NOTE.format(command="/initiate-setup")
+        expected = SETUP_OFFER_NOTE.format(command="/initiate-setup") if guest else profile_build_directive().strip()
+        assert note == expected
         loaded = yaml.safe_load(cfg_path.read_text())
         assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
 

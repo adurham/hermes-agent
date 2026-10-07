@@ -174,11 +174,40 @@ def first_contact_turn_note(
             and not is_seen(config, PROFILE_BUILD_FLAG)
         ):
             mark_seen(config_path, PROFILE_BUILD_FLAG)
-            return SETUP_OFFER_NOTE.format(command=command)
+            from hermes_cli.anon_auth import guest_enabled
+
+            # /initiate-setup is the offer only where the setup flow ships; elsewhere keep the memory profile offer.
+            return SETUP_OFFER_NOTE.format(command=command) if guest_enabled() else profile_build_directive().strip()
         return PLAIN_INTRO_NOTE
     except Exception as e:
         logger.debug("first_contact_turn_note failed, using plain intro: %s", e)
         return PLAIN_INTRO_NOTE
+
+
+def profile_build_directive() -> str:
+    """System-note directive appended to the very first message ever.
+
+    Short opt-in profile-build flow persisting to the user-profile memory store;
+    phrased so the agent ASKS before any lookup and never silently reads
+    connected accounts.
+    """
+    return (
+        "\n\n"
+        "[System note: This is the user's very first message ever. " + TASK_FIRST_CLAUSE
+        + "What this note asks: after a one-sentence introduction (mention /help "
+        "shows commands), OFFER — do not assume — to build a short profile of them so you can be more useful, and "
+        "explain they can decline or do it later. If and ONLY IF they accept:\n"
+        "  1. Ask for whatever they're comfortable sharing (name, what they do, how they like you to work). "
+        "Volunteered facts come first.\n"
+        "  2. Before ANY external lookup, say what you intend to look up and get explicit consent for that step. Never "
+        "read their connected accounts (email, calendar, etc.) silently — ask each time.\n"
+        "  3. With consent, you may use web_search to confirm public details (e.g. employer, public profiles) from the "
+        "data points they gave.\n"
+        "  4. Save each confirmed, durable fact with the memory tool using target=\"user\" — keep entries compact and "
+        "high-signal.\n"
+        "If they decline at any point, stop immediately and continue normally. Keep the whole exchange light and "
+        "conversational, not an interrogation.]"
+    )
 
 
 def is_seen(config: Mapping[str, Any], flag: str) -> bool:
@@ -214,6 +243,6 @@ __all__ = [
     "BUSY_INPUT_FLAG", "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
     "PLAIN_INTRO_NOTE", "SETUP_OFFER_NOTE", "first_contact_turn_note",
     "busy_input_hint_gateway", "busy_input_hint_cli", "tool_progress_hint_gateway", "tool_progress_hint_cli",
-    "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode",
+    "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
     "is_seen", "mark_seen",
 ]
