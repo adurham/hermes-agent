@@ -407,7 +407,7 @@ def _complete_selected(request: dict) -> bool:
             pre_update_version=request["pre_update_version"],
             completion_message=request.get("completion_message"),
             announce=None if request.get("completion_message") else "\n✓ Code updated!",
-            followups=followups)
+            followups=followups, before_build=lambda: _resume_paused_before_build(request))
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- e.g. the shared update lock refused the tail
         reason = str(exc) or type(exc).__name__
         # The tail's steps catch their own failures, so a raise here means the build never ran.
@@ -447,6 +447,21 @@ def _complete_selected(request: dict) -> bool:
         restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"],
         update_complete=bool(runtime_safe) and complete)
     return complete
+
+
+def _resume_paused_before_build(request: dict) -> None:
+    """The one restart point of gateways paused for this update, on every OS: the dependencies are
+    synced and the launchers published, the product builds (minutes) have not started. A gateway
+    needs nothing later to boot; config migration and maintenance run with it up, as they always
+    did on POSIX. A failure stays owed: the post-build resume retries it and records the outcome."""
+    token = request.get("windows_resume")
+    if not token or not token.get("resume_needed"):
+        return
+    from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
+    try:
+        _resume_windows_gateways_after_update(token)
+    except Exception as exc:  # health: allow BLE001 -- retried (and recorded) after the build
+        print(f"  ⚠ Paused gateway restart incomplete ({exc}); retrying after the build")
 
 
 class _ForwardedOutput:

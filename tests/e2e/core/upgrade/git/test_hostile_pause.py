@@ -1,0 +1,406 @@
+"""Linux/macOS ``hermes update`` pauses this install's gateways before the first checkout move.
+
+One real HEAD install (``_git_world``: the real ``scripts/install.sh`` over real smart HTTP, every
+command in a ``bwrap`` sandbox) is shared by the cells. A credential-free, platform-less (cron-only)
+``hermes gateway run`` lives in the same PID namespace as the updater (``handoff._nshost``), as on a
+user's machine. What is asserted is what the user sees: which gateway process serves the checkout
+(its control-socket ``identify``: pid + ``code_sha``), the update's exit code and transcript, HEAD,
+and the durable pause record ``update_pause_record`` keeps in the root hermes home.
+
+(a) a real release: the gateway is gone BEFORE HEAD moves (a 0.1 s timeline of both), and exactly
+    one gateway, a new process, serves the new commit once the update returns; the restart line is
+    printed after the dependency sync and before the product builds.
+(b) no-op update (already current): the same gateway process keeps serving; nothing is stopped.
+(c) the fetch fails (origin unreachable): nothing is stopped.
+(d) ``--no-gateway-restart``: nothing is stopped before the move (the user manages gateways).
+(e) SIGKILL mid-stop: the gateway is SIGSTOPped so the updater blocks in its control-socket pause
+    request with the planned-stop request on disk; the whole update tree is SIGKILLed there. The
+    next ``hermes`` launch must leave exactly one gateway serving: none lost, none duplicated.
+(f) SIGKILL after the commit, before the restart: the release's dependency preparation holds while
+    a toggle exists; the update tree is SIGKILLed once HEAD is the release and the gateway is
+    paused. The next launch syncs the dependencies and restarts exactly the paused gateway on the
+    new commit.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import re
+import shutil
+import signal
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Iterator
+
+import pytest
+
+import hermes_yaml as yaml
+from tests.e2e.core.upgrade import _helpers as H
+from tests.e2e.core.upgrade.git import _git_world as G
+from tests.e2e.core.upgrade import _install_helpers as I
+from tests.e2e.core.upgrade.handoff._nshost import NamespaceHost
+
+pytestmark = G.PYTESTMARK
+
+PAUSED = "⏸ Paused for the update"
+RESTARTED = "▶ Restarted paused gateway(s)"
+SLOW_DEPS = ".e2e-slow-deps-sync"
+DEPS_STARTED = ".e2e-deps-sync-started"
+UPDATE_TIMEOUT = 1500
+_DEPS_MARK = "# e2e (test_hostile_pause): slow dependency sync toggle"
+_SLOW_DEPS = f"""    {_DEPS_MARK}
+    _e2e_home = __import__("os").path.expanduser("~")
+    if __import__("os").path.exists(__import__("os").path.join(_e2e_home, "{SLOW_DEPS}")):
+        open(__import__("os").path.join(_e2e_home, "{DEPS_STARTED}"), "w").write("started")
+        while __import__("os").path.exists(__import__("os").path.join(_e2e_home, "{SLOW_DEPS}")):
+            __import__("time").sleep(0.2)
+"""
+
+
+@pytest.fixture(scope="module")
+def w() -> Iterator[G.World]:
+    """A SHORT root: the gateway's AF_UNIX control socket lives under ``$HERMES_HOME``."""
+    base = os.environ.get("TMPDIR") or tempfile.gettempdir()
+    root = Path(tempfile.mkdtemp(prefix="hz", dir=base))
+    try:
+        with G.world(root, base=I.head_sha()) as world:
+            cfg_path = world.sb.hermes_home / "config.yaml"
+            cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else None) or {}
+            cfg["updates"] = {**(cfg.get("updates") or {}), "check": False}
+            cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+            yield world
+    finally:
+        if not os.environ.get("HERMES_E2E_KEEP_ROOT"):
+            shutil.rmtree(root, ignore_errors=True)
+
+
+# -- helpers ---------------------------------------------------------------------------------------
+
+
+def _read(p: Path) -> str:
+    return p.read_text(encoding="utf-8-sig", errors="replace") if p.is_file() else ""
+
+
+def _ref_head(w: G.World) -> str:
+    """HEAD straight from the ref files (no git process, safe at 10 Hz)."""
+    git = w.checkout / ".git"
+    head = _read(git / "HEAD").strip()
+    if not head.startswith("ref: "):
+        return head
+    ref = head[5:]
+    loose = _read(git / ref).strip()
+    if loose:
+        return loose
+    for line in _read(git / "packed-refs").splitlines():
+        if line.endswith(" " + ref):
+            return line.split()[0]
+    return ""
+
+
+def _identify(w: G.World) -> dict | None:
+    from gateway.control_socket import identify_gateway
+
+    with contextlib.suppress(Exception):
+        return identify_gateway(w.sb.hermes_home, timeout=5.0)
+    return None
+
+
+def _serving(w: G.World, sha: str) -> dict | None:
+    ident = _identify(w)
+    return ident if ident and ident.get("code_sha") == sha else None
+
+
+def _gateways(host: NamespaceHost) -> list[dict]:
+    """``gateway run`` processes in the namespace, by the canonical matcher."""
+    from gateway.status import looks_like_gateway_command_line
+
+    return [p for p in host.procs() if p["state"] not in ("Z", "X")
+            and looks_like_gateway_command_line(" ".join(p["cmdline"]))]
+
+
+def _record(w: G.World) -> list[dict]:
+    """Every paused-gateway record (live, orphaned, claimed) in the root hermes home."""
+    found = []
+    for p in sorted(w.sb.hermes_home.glob(".hermes-update-paused-gateways*.json")):
+        with contextlib.suppress(OSError, ValueError):
+            found.append({"path": p.name, **json.loads(p.read_text(encoding="utf-8"))})
+    return found
+
+
+@contextlib.contextmanager
+def _namespace(w: G.World) -> Iterator[NamespaceHost]:
+    host = NamespaceHost(w.sb.root, w.sb.env)
+    try:
+        yield host
+    finally:
+        leaked = host.close()
+        (w.sb.hermes_home / "gateway.pid").unlink(missing_ok=True)  # names a pid of the dead namespace
+        assert not leaked, f"processes outlived the sandbox: {leaked}"
+
+
+def _ns_cli(host: NamespaceHost, w: G.World, *args: str, timeout: float = 600):
+    cp = host.run([w.sb.hermes, *args], timeout=timeout)
+    w.transcripts.append(f"$ hermes {' '.join(args)} -> rc={cp.returncode}\n{(cp.stdout or '')[-6000:]}\n"
+                         f"{(cp.stderr or '')[-3000:]}")
+    return cp
+
+
+def _start_gateway(host: NamespaceHost, w: G.World, tag: str) -> dict:
+    host.spawn([w.sb.hermes, "gateway", "run"], log=w.sb.root / f"gateway-{tag}.log")
+    sha = w.head()
+    try:
+        return H.wait_for(lambda: _serving(w, sha), timeout=240, interval=1.0, what="the gateway's identify")
+    except AssertionError as exc:
+        raise AssertionError(f"premise: the gateway never came up: {exc}\n{host.ps_text()}\n"
+                             f"{_read(w.sb.root / f'gateway-{tag}.log')[-4000:]}") from None
+
+
+def _kill_born_after(host: NamespaceHost, before: set[int], keep: set[int] | frozenset[int] = frozenset()) -> list[int]:
+    killed: list[int] = []
+    for _ in range(10):
+        live = [p["pid"] for p in host.procs()
+                if p["pid"] not in before and p["pid"] not in keep and p["state"] not in ("Z", "X")]
+        if not live:
+            break
+        for pid in live:
+            host.kill(pid, signal.SIGSTOP)
+        for pid in live:
+            host.kill(pid, signal.SIGKILL)  # windows-footgun: ok - linux-only (bwrap) module
+            if pid not in killed:
+                killed.append(pid)
+        time.sleep(0.5)
+    return killed
+
+
+class _Timeline:
+    """10 Hz samples of (gateway pid alive, HEAD) while the update runs."""
+
+    def __init__(self, host: NamespaceHost, w: G.World, pid: int):
+        self.host, self.w, self.pid = host, w, pid
+        self.rows: list[tuple[float, bool, str]] = []
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        t0 = time.monotonic()
+        while not self._stop.is_set():
+            with contextlib.suppress(Exception):
+                self.rows.append((time.monotonic() - t0, self.host.alive(self.pid), _ref_head(self.w)))
+            time.sleep(0.1)
+
+    def __enter__(self):
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._t.join(timeout=10)
+
+    def first(self, pred) -> float | None:
+        return next((t for t, alive, head in self.rows if pred(alive, head)), None)
+
+    def text(self) -> str:
+        out, last = [], None
+        for t, alive, head in self.rows:
+            state = (alive, head[:10])
+            if state != last:
+                out.append(f"  t={t:7.2f}s gateway_pid_alive={alive} HEAD={head[:10]}")
+                last = state
+        return "\n".join(out)
+
+
+def _publish_release(w: G.World, tag: str) -> str:
+    """A release that changes a module the gateway imports lazily plus a web build input."""
+    return w.publish(f"release: e2e hostile pause {tag}", {
+        f"docs/e2e-hostile-pause-{tag}.txt": f"release {tag}\n",
+        f"web/e2e-hostile-pause-{tag}.txt": f"web input changed by release {tag}\n",
+    })
+
+
+def _publish_slow_deps_release(w: G.World, tag: str) -> str:
+    text = w.git("show", "HEAD:pm/client.py") + "\n"
+    if _DEPS_MARK not in text:
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
+        text = text[:m.end()] + _SLOW_DEPS + text[m.end():]
+    return w.publish(f"release: e2e hostile pause slow deps {tag}", {
+        "pm/client.py": text, f"docs/e2e-hostile-pause-{tag}.txt": f"release {tag}\n"})
+
+
+def _diag(w: G.World, host: NamespaceHost, cp=None, **extra) -> str:
+    parts = [f"{k}={v}" for k, v in extra.items()]
+    parts.append("pause records: " + json.dumps(_record(w), default=str)[:3000])
+    parts.append("--- sandbox ---\n" + host.ps_text())
+    return "\n".join(parts) + "\n" + w.diag(cp)
+
+
+# -- cells -----------------------------------------------------------------------------------------
+
+
+def test_real_release_pauses_before_the_move_and_restarts_after_deps(w):
+    w.reset_clean()
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "a")
+        old_sha, old_pid = w.head(), int(before["pid"])
+        target = _publish_release(w, "a")
+        with _Timeline(host, w, old_pid) as tl:
+            cp = _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
+        out = G.output(cp)
+        after = H.wait_for(lambda: _serving(w, target), timeout=60, interval=1.0, what="a gateway on the release") \
+            if cp.returncode == 0 else None
+        gws = _gateways(host)
+        diag = _diag(w, host, cp, timeline="\n" + tl.text(), before=before, after=after, gateways=gws)
+
+        assert cp.returncode == 0 and w.head() == target, f"premise: the update did not land:\n{diag}"
+        gone, moved = tl.first(lambda alive, _h: not alive), tl.first(lambda _a, head: head == target)
+        assert gone is not None and moved is not None, f"timeline missed the stop or the move:\n{diag}"
+        assert tl.first(lambda alive, head: alive and head == target) is None, \
+            f"the OLD gateway process was alive while HEAD named the release:\n{diag}"
+        assert gone < moved, f"the gateway stopped only after the checkout moved:\n{diag}"
+        assert PAUSED in out and RESTARTED in out, f"the pause/restart lines are missing:\n{diag}"
+        assert out.index(PAUSED) < out.index(RESTARTED), f"restart printed before the pause:\n{diag}"
+        built = [m.start() for m in re.finditer(r"web UI|Building", out)]
+        assert not built or out.index(RESTARTED) < built[0], \
+            f"the paused gateway was restarted only after the product builds:\n{diag}"
+        assert after and int(after["pid"]) != old_pid, f"no NEW gateway process serves {target[:12]}:\n{diag}"
+        assert len(gws) == 1, f"expected exactly one gateway process, found {len(gws)}:\n{diag}"
+        assert not [r for r in _record(w) if (r.get("token") or {}).get("resume_needed")], \
+            f"a discharged pause left an owed record:\n{diag}"
+        assert old_sha != target
+
+
+def test_noop_update_stops_nothing(w):
+    w.reset_clean()
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "b")
+        cp = _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
+        ident = _identify(w)
+        diag = _diag(w, host, cp, before=before, after=ident)
+        assert cp.returncode == 0, f"the no-op update failed:\n{diag}"
+        assert PAUSED not in G.output(cp), f"an already-current update paused the gateways:\n{diag}"
+        assert ident and ident.get("pid") == before.get("pid"), f"the gateway process changed:\n{diag}"
+
+
+def test_failed_fetch_stops_nothing(w):
+    w.reset_clean()
+    url = w.config("remote.origin.url")
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "c")
+        _publish_release(w, "c")
+        w.git("remote", "set-url", "origin", "http://127.0.0.1:9/unreachable.git")
+        try:
+            cp = _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
+        finally:
+            w.git("remote", "set-url", "origin", url)
+        ident = _identify(w)
+        diag = _diag(w, host, cp, before=before, after=ident)
+        assert cp.returncode != 0, f"premise: the update with an unreachable origin succeeded:\n{diag}"
+        assert PAUSED not in G.output(cp), f"a fetch failure paused the gateways:\n{diag}"
+        assert ident and ident.get("pid") == before.get("pid"), f"the gateway process changed:\n{diag}"
+
+
+def test_no_gateway_restart_stops_nothing_before_the_move(w):
+    w.reset_clean()
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "d")
+        target = _publish_release(w, "d")
+        with _Timeline(host, w, int(before["pid"])) as tl:
+            cp = _ns_cli(host, w, "update", "--yes", "--branch", "main", "--no-gateway-restart",
+                         timeout=UPDATE_TIMEOUT)
+        diag = _diag(w, host, cp, timeline="\n" + tl.text(), before=before, after=_identify(w))
+        assert cp.returncode == 0 and w.head() == target, f"premise: the update did not land:\n{diag}"
+        assert PAUSED not in G.output(cp), f"--no-gateway-restart paused the gateways:\n{diag}"
+        assert tl.first(lambda alive, _h: not alive) is None, f"--no-gateway-restart stopped the gateway:\n{diag}"
+
+
+def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
+    w.reset_clean()
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "e")
+        gw_pid, sha = int(before["pid"]), w.head()
+        _publish_release(w, "e")
+        marker = w.sb.hermes_home / ".gateway-planned-stop.json"
+        procs0 = {p["pid"] for p in host.procs()}
+        host.kill(gw_pid, signal.SIGSTOP)  # the socket pause request queues; the updater waits on it
+        killed: list[int] = []
+        try:
+            upd = host.spawn([w.sb.hermes, "update", "--yes", "--branch", "main"], log=w.sb.root / "update-e.log")
+
+            def _request_on_disk():
+                if not host.alive(upd):
+                    raise AssertionError("premise: the update exited before its stop request:\n"
+                                         + _read(w.sb.root / "update-e.log")[-6000:])
+                with contextlib.suppress(OSError, ValueError):
+                    return json.loads(marker.read_text(encoding="utf-8")).get("target_pid") == gw_pid
+                return False
+
+            H.wait_for(_request_on_disk, timeout=900, interval=0.2, what="the updater's stop request on disk")
+            time.sleep(1.0)  # inside the socket call now (its timeout is seconds, the drain minutes)
+            rec_at_kill = _record(w)
+            killed = _kill_born_after(host, procs0, keep={gw_pid})
+        finally:
+            host.kill(gw_pid, signal.SIGCONT)
+        head_at_kill = w.head()
+        # The queued request may still drain it: let that settle before the next launch judges.
+        with contextlib.suppress(AssertionError):
+            H.wait_for(lambda: not host.alive(gw_pid), timeout=120, interval=1.0, what="the old gateway to drain")
+        status = _ns_cli(host, w, "status", timeout=600)
+        served = None
+        with contextlib.suppress(AssertionError):
+            served = H.wait_for(lambda: _identify(w), timeout=120, interval=1.0, what="a serving gateway")
+        time.sleep(3.0)
+        gws = _gateways(host)
+        diag = _diag(w, host, None, killed=killed, record_at_kill=rec_at_kill, head_at_kill=head_at_kill,
+                     served=served, gateways=gws, status=G.output(status)[-3000:],
+                     update_log=_read(w.sb.root / "update-e.log")[-5000:])
+        assert killed, f"premise: nothing was killed:\n{diag}"
+        assert rec_at_kill and any((r.get("token") or {}).get("unmapped") for r in rec_at_kill), \
+            f"premise: no durable record named the gateway before its stop request:\n{diag}"
+        assert head_at_kill == sha, f"premise: the checkout moved before the kill:\n{diag}"
+        assert served, f"the next launch left NO gateway serving (lost):\n{diag}"
+        assert len(gws) == 1, f"expected exactly one gateway after recovery, found {len(gws)}:\n{diag}"
+
+
+def test_sigkill_after_commit_before_restart_next_launch_restarts_on_new_code(w):
+    w.reset_clean()
+    started, toggle = w.sb.home / DEPS_STARTED, w.sb.home / SLOW_DEPS
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "f")
+        gw_pid = int(before["pid"])
+        target = _publish_slow_deps_release(w, "f")
+        procs0 = {p["pid"] for p in host.procs()}
+        toggle.write_text("on\n", encoding="utf-8")
+        killed: list[int] = []
+        try:
+            upd = host.spawn([w.sb.hermes, "update", "--yes", "--branch", "main"], log=w.sb.root / "update-f.log")
+
+            def _held_after_commit():
+                if not host.alive(upd):
+                    raise AssertionError("premise: the update exited before the slow dependency sync:\n"
+                                         + _read(w.sb.root / "update-f.log")[-6000:])
+                return started.is_file() and _ref_head(w) == target
+
+            H.wait_for(_held_after_commit, timeout=1200, interval=0.5, what="the committed update in its deps sync")
+            gw_alive_at_kill = host.alive(gw_pid)
+            rec_at_kill = _record(w)
+            killed = _kill_born_after(host, procs0, keep={gw_pid})
+        finally:
+            toggle.unlink(missing_ok=True)
+            started.unlink(missing_ok=True)
+        status = _ns_cli(host, w, "status", timeout=900)
+        served = None
+        with contextlib.suppress(AssertionError):
+            served = H.wait_for(lambda: _serving(w, target), timeout=180, interval=1.0, what="a gateway on the release")
+        time.sleep(3.0)
+        gws = _gateways(host)
+        diag = _diag(w, host, None, killed=killed, gw_alive_at_kill=gw_alive_at_kill, record_at_kill=rec_at_kill,
+                     served=served, gateways=gws, status=G.output(status)[-3000:],
+                     update_log=_read(w.sb.root / "update-f.log")[-5000:])
+        assert killed and w.head() == target, f"premise: the kill did not land after the commit:\n{diag}"
+        assert not gw_alive_at_kill, f"the gateway still ran old code while HEAD named the release:\n{diag}"
+        assert served, f"the next launch did not restart the paused gateway on the release:\n{diag}"
+        assert int(served["pid"]) != gw_pid and len(gws) == 1, f"lost or duplicated gateway:\n{diag}"
