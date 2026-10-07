@@ -70,6 +70,39 @@ async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path
     assert (typed_text, typed_note) == ('and tomorrow?', '')
 
 
+
+@pytest.mark.asyncio
+async def test_voice_turn_is_admitted_and_scoped_to_its_own_turn(tmp_path, monkeypatch):
+    """A spoken voice-mode turn (TUI/Desktop ``voice_turn``) rides canonical admission to the turn
+    that runs on ``auxiliary.voice_chat``; the next typed turn stays on the main model."""
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_surface import surface_turn_note, surface_voice_turn
+    from hermes_state_runtime import list_session_admissions
+
+    seen = []
+    async def answer(event):
+        seen.append((event.text, surface_voice_turn(), surface_turn_note(SimpleNamespace(valid_tool_names=set()))))
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        for rid, extra in (('spoken', {'voice_turn': True}), ('typed', {})):
+            reply = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
+                'session_id': 's', 'submission_id': rid, 'text': rid, **extra}})
+            assert reply['result']['status'] == 'queued', reply
+            await authority.sessions['s'].task
+        rejected = await connection.dispatch({'id': 3, 'method': 'prompt.submit', 'params': {
+            'session_id': 's', 'submission_id': 'bad', 'text': 'x', 'voice_turn': 'yes'}})
+        assert rejected['error']['message'] == 'invalid_params', rejected
+    finally:
+        await connection.close()
+
+    rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
+    assert rows['spoken']['payload']['surface_v1'] == {'voice_turn': True}
+    assert 'surface_v1' not in rows['typed']['payload'] and 'bad' not in rows
+    assert seen == [('spoken', True, ''), ('typed', False, '')]
+
 def _admissions(home):
     with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
         return dict(db.execute('SELECT request_id, status FROM session_admissions'))

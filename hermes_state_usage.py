@@ -276,12 +276,14 @@ class SessionUsageMixin:
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
         billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
-        source: Optional[str]=None,
+        source: Optional[str]=None, task: str = "",
     ) -> None:
         """Update totals and route attribution, ensuring the legacy missing-row backfill.
         *absolute*=False increments (per-API-call deltas, CLI path); *absolute*=True sets directly
         (gateway path, where the cached agent holds cumulative totals). ``source`` is the session's
-        real surface for the row-existence guard; callers that don't know it leave the placeholder."""
+        real surface for the row-existence guard; callers that don't know it leave the placeholder.
+        ``task`` names a per-turn route (``voice_chat``): its calls count in the session totals and
+        land in ``session_model_usage`` under that task, but never become the session's recorded route."""
         values = dict(locals())
         values.pop('self')
         values.pop('session_id')
@@ -299,7 +301,7 @@ class SessionUsageMixin:
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
         actual_cost_usd: Optional[float]=None, cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         pricing_version: Optional[str]=None, billing_provider: Optional[str]=None, billing_base_url: Optional[str]=None,
-        billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False,
+        billing_mode: Optional[str]=None, api_call_count: int=0, absolute: bool=False, task: str="",
     ) -> None:
         usage = {k: v for k, v in locals().items() if k in _MODEL_USAGE_FIELDS}
         sql = _TOKEN_UPDATE_ABSOLUTE_SQL if absolute else _TOKEN_UPDATE_DELTA_SQL
@@ -332,7 +334,7 @@ class SessionUsageMixin:
         # and fallback succeeds, the first accounted usage is the authoritative route;
         # after that keep the row as is (one row cannot represent mixed usage).
         first_accounted_route = (
-            int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
+            not task and int(existing.get("api_call_count") or 0) == 0 and has_accounted_usage and bool(model)
             and bool(billing_provider)
             and (existing.get("model") != model or existing.get("billing_provider") != billing_provider)
         )
@@ -343,7 +345,7 @@ class SessionUsageMixin:
                    WHERE id = ?""", (model, billing_provider, billing_base_url, billing_mode, session_id))
         conn.execute(sql, params)
         if record_model_usage:
-            self._record_model_usage(conn, session_id, **usage)
+            self._record_model_usage(conn, session_id, task=task, **usage)
 
     def _record_model_usage(
         self, conn, session_id: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,

@@ -384,12 +384,13 @@ describe('desktop branch creation idempotency', () => {
     // resume starts on the PARENT's route token and then sees the child's. That
     // change is the navigation this resume is for, not a user leaving: the
     // child must still be attached, or "Waking up…" never clears.
-    let routeToken = 'route:parent'
+    // Real desktop-controller token shape: `${pathname}:${search}:${hash}`.
+    let routeToken = `${sessionRoute('parent')}::`
     let routedId: null | string = 'parent'
 
     const navigate = vi.fn((to: string) => {
       queueMicrotask(() => {
-        routeToken = `route:${to}`
+        routeToken = `${to}::`
         routedId = to === sessionRoute('stored-branch') ? 'stored-branch' : null
       })
     })

@@ -12,7 +12,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 SURFACES = frozenset({'hud', 'voice-live'})
 _VOICE_CONTEXT_LIMIT = 6000
-_SUBMIT_FIELDS = ('surface', 'voice_context', 'interrupted')
+_SUBMIT_FIELDS = ('surface', 'voice_context', 'interrupted', 'voice_turn')
 _surface_turn = ContextVar('surface_turn', default=None)
 
 
@@ -22,15 +22,16 @@ def submit_surface_fields(params):
 
 
 def admit_surface(params):
-    """Wire ``surface`` / ``voice_context`` / ``interrupted`` -> committed ``surface_v1`` (``{}`` when absent)."""
-    surface, context, interrupted = (params.get(key) for key in _SUBMIT_FIELDS)
+    """Wire ``surface`` / ``voice_context`` / ``interrupted`` / ``voice_turn`` -> committed ``surface_v1``
+    (``{}`` when absent). ``voice_turn`` marks a spoken voice-mode turn: it runs on ``auxiliary.voice_chat``."""
+    surface, context, interrupted, voice_turn = (params.get(key) for key in _SUBMIT_FIELDS)
     if surface is not None and surface not in SURFACES:
         raise RuntimeStoreError('invalid_params')
     # The spoken transcript only makes sense for a live-voice delegation; anywhere else it is
     # a client smuggling model input past the persisted row.
     if context is not None and (surface != 'voice-live' or not isinstance(context, str)):
         raise RuntimeStoreError('invalid_params')
-    if interrupted is not None and type(interrupted) is not bool:
+    if any(flag is not None and type(flag) is not bool for flag in (interrupted, voice_turn)):
         raise RuntimeStoreError('invalid_params')
     committed = {}
     if surface:
@@ -39,6 +40,8 @@ def admit_surface(params):
         committed['voice_context'] = context[:_VOICE_CONTEXT_LIMIT]
     if interrupted:
         committed['interrupted'] = True
+    if voice_turn:
+        committed['voice_turn'] = True
     return {'surface_v1': committed} if committed else {}
 
 
@@ -75,6 +78,11 @@ def surface_turn_scope(committed):
         yield
     finally:
         _surface_turn.reset(token)
+
+
+def surface_voice_turn():
+    """Whether the executing admission is a spoken voice turn (``auxiliary.voice_chat`` route)."""
+    return bool((_surface_turn.get() or {}).get('voice_turn'))
 
 
 def surface_turn_note(agent):

@@ -35,3 +35,22 @@ def test_usage_receipt_includes_route_rows_and_rolls_back_on_receipt_failure(tmp
             rt.mutate_worker_execution(db, **(args | {'sequence': 3, 'payload': {'input_tokens': -1}}))
     finally:
         db.close()
+
+
+def test_worker_voice_turn_usage_counts_but_never_rewrites_the_session_route(tmp_path):
+    """A managed worker's per-turn route (``task``) reaches the owner: totals count, the
+    session's recorded model stays the one the user picked, and the per-task row is kept."""
+    db = SessionDB(tmp_path / 'state.db')
+    try:
+        db.create_session('s', source='cli', model='main-model')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        scope = dict(epoch=epoch, execution_id='w', session_id='s', generation=0)
+        rt.register_worker_execution(db, **scope, kind='compute', adoption_secret='private')
+        payload = {'input_tokens': 10, 'api_call_count': 1, 'model': 'voice-model',
+                   'billing_provider': 'voicep', 'task': 'voice_chat'}
+        rt.mutate_worker_execution(db, **scope, sequence=1, operation='usage.main', payload=payload)
+        row = db.get_session('s')
+        assert (row['input_tokens'], row['model']) == (10, 'main-model')
+        assert db.auxiliary_usage_by_task('s')['voice_chat']['input_tokens'] == 10
+    finally:
+        db.close()

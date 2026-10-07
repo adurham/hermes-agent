@@ -366,7 +366,7 @@ class AuthorityConnection:
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
-                                   'surface', 'voice_context', 'interrupted'}
+                                   'surface', 'voice_context', 'interrupted', 'voice_turn'}
         if forbidden:
             raise RuntimeStoreError('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')

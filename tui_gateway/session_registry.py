@@ -413,10 +413,9 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _session_default_model({"profile_home": _profile_home(profile)}),
+        **_lazy_info_route({"profile_home": _profile_home(profile)}, {"model": model, "provider": provider} if model else {}),
         "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-        **({"provider": provider} if provider else {}),
     }
 
 
@@ -683,7 +682,7 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 

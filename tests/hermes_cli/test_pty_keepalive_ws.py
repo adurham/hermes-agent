@@ -226,26 +226,34 @@ async def test_legacy_channel_connect_pops_marker_on_disconnect(pty_keepalive_ha
 
 
 @pytest.mark.asyncio
-async def test_legacy_marker_pops_even_when_disconnect_cancels_a_slow_close(
-    pty_keepalive_harness, monkeypatch
-):
-    """A disconnect may cancel the handler while the pump still awaits the blocking
-    ``bridge.close`` (a loaded host makes the thread hop slow); that cancellation must not
-    skip the marker cleanup, or every such reconnect leaks one entry (#63553)."""
+async def test_legacy_marker_dropped_when_cancel_lands_mid_close(pty_keepalive_harness, monkeypatch):
+    """The disconnect closes the bridge in a worker thread; cancelling the handler while that close is still
+    running must not skip the marker discard."""
+    import threading
     import time
-
     from starlette.testclient import TestClient
 
-    monkeypatch.setattr(FakeBridge, "close", lambda self: time.sleep(0.5))
+    close_started = threading.Event()
+
+    def slow_close(self):
+        close_started.set()
+        time.sleep(0.5)  # still running when the client context exits and cancels the handler
+        self.alive = False
+
+    monkeypatch.setattr(FakeBridge, "close", slow_close)
     markers = _pty_marker_dict()
     markers.clear()
-    with TestClient(web_server.app).websocket_connect("/api/pty?channel=SLOWCLOSE") as ws:
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?channel=LEGACYCANCEL") as ws:
         ws.send_bytes(b"hi")
-        assert "SLOWCLOSE" in markers
+        assert "LEGACYCANCEL" in markers
+        ws.close()
+        assert close_started.wait(5)  # teardown is inside bridge.close ...
+    # ... and leaving the client context cancelled the handler there.
     deadline = time.monotonic() + 5.0
-    while "SLOWCLOSE" in markers and time.monotonic() < deadline:
+    while "LEGACYCANCEL" in markers and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert "SLOWCLOSE" not in markers
+    assert "LEGACYCANCEL" not in markers
 
 
 @pytest.mark.asyncio

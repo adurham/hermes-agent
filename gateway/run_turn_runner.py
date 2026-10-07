@@ -360,8 +360,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
                                    stream_delta_cb, interim_assistant_cb, want_interim_messages):
-        """Per-message state — callbacks and reasoning config change every turn, so they aren't
-        baked into the cached agent."""
+        """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
         agent._notification_config = ctx.user_config
@@ -386,10 +385,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
+        from gateway.session_surface import surface_turn_note, surface_voice_turn
+        # auxiliary.voice_chat route: a voice note, or a canonical admission committed as a voice turn.
+        agent._voice_turn_pending = ctx.voice_turn or surface_voice_turn()
         self._merge_turn_request_overrides(agent, turn_route)
         # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        from gateway.session_surface import surface_turn_note
         agent._gateway_turn_context_notes = "\n\n".join(
             note for note in (*runner._consume_pending_turn_sidecar_notes(ctx.session_key), surface_turn_note(agent)) if note)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
@@ -602,8 +603,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # in approve/deny.
         adapter.pause_typing_for_chat(ctx._status_chat_id)
         self._close_native_stream_boundary("Approval")
-        # Redact credentials before display: Tirith's findings are already redacted, but the raw
-        # command string still leaks secrets. Both the button and plain-text paths use this value.
+        # Redact credentials before display: the raw command string can carry secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}

@@ -39,6 +39,7 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { reportStartupLatency } from './startupLatency.js'
+import { markNextSubmitVoice } from './submissionCore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
@@ -54,6 +55,7 @@ import {
   stderrLooksLikeProblem,
   stderrProblemActivity
 } from './userMessages.js'
+import { handleVoiceCapture } from './voicePartialStore.js'
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -850,6 +852,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
+    if (handleVoiceCapture(ev, ctx.voice)) {
+      return
+    }
+
     switch (ev.type) {
       case 'connection.request':
         if (ev.payload) {
@@ -1124,25 +1130,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'voice.status': {
-        // Continuous VAD loop reports its internal state so the status bar
-        // can show listening / transcribing / idle without polling.
-        const state = String(ev.payload?.state ?? '')
-
-        if (state === 'listening') {
-          setVoiceRecording(true)
-          setVoiceProcessing(false)
-        } else if (state === 'transcribing') {
-          setVoiceRecording(false)
-          setVoiceProcessing(true)
-        } else {
-          setVoiceRecording(false)
-          setVoiceProcessing(false)
-        }
-
-        return
-      }
-
       case 'voice.transcript': {
         // Explicit user-intent stop: the user said (or typed) a bare stop
         // phrase. The backend already halted the capture loop and flipped
@@ -1196,6 +1183,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setInput('')
           setTimeout(() => {
             if (isCurrentDestination(destination)) {
+              // Only a transcript submitted where it was spoken is a voice turn;
+              // one re-routed to its own session's queue lands as typed text.
+              markNextSubmitVoice(text)
               submitRef.current(text)
             } else {
               enqueue?.(text, text, destination)

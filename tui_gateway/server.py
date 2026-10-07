@@ -829,7 +829,7 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Send an ``approval`` server request with the command redacted: a credential-shaped value Tirith flagged
+    """Send an ``approval`` server request with the command redacted: a credential-shaped value
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
@@ -1517,10 +1517,11 @@ def _live_session_identity(session: dict) -> tuple[str, str]:
     agent = session.get("agent")
     override = session.get("model_override") or {}
     model = (str(pending.get("display_model") or "").strip() or mirror.get("model")
-             or getattr(agent, "model", "") or override.get("model") or _session_default_model(session))
+             or getattr(agent, "model", "") or override.get("model"))
     provider = (str(pending.get("display_provider") or "").strip() or mirror.get("provider")
-                or getattr(agent, "provider", "") or override.get("provider") or "")
-    return str(model), str(provider or "")
+                or getattr(agent, "provider", "") or override.get("provider"))
+    default = ("", "") if model else _session_default_route(session)
+    return str(model or default[0]), str(provider or default[1])
 
 
 def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, tier: str | None = None) -> bool:

@@ -512,7 +512,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _host_attach_or_none,
         _log_standalone_profiles_at_boot,
         _multiplex_profile_homes,
-        _recover_pending_flushes,
         _refresh_host_gateway_record,
         _resolve_gateway_exit_verdict,
         _run_planned_stop_watcher,
@@ -722,12 +721,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             _shutdown_gateway_health_export(runner)
             return False
 
-        def _recover_pending() -> None:
-            recovered = _recover_pending_flushes(runner)
-            if recovered:
-                logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
-
-        _best_effort(_recover_pending)
         if runner.should_exit_cleanly:
             _shutdown_gateway_health_export(runner)
             if runner.exit_reason:

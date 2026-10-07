@@ -21,6 +21,8 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     assert policies[2].platform == 'desktop'
     assert 'desktop_ui' in policies[2].toolsets
     assert all('desktop_ui' not in p.toolsets for p in policies[:2])
+    # Platform-gated toolsets (catalog) ride on the Desktop surface only, like the native TUI factory.
+    assert 'catalog' in policies[2].toolsets and all('catalog' not in p.toolsets for p in policies[:2])
     cfg['platform_toolsets']['cli'].clear()
     assert 'terminal' in policies[0].toolsets
 
@@ -196,3 +198,20 @@ def test_frozen_bare_custom_route_keeps_its_endpoint_pool_and_launch_key_wins(tm
         runtimes.append(GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())[1])
     assert (runtimes[0]['base_url'], runtimes[0]['credential_pool']) == (url, pool)
     assert (runtimes[1]['api_key'], runtimes[1]['credential_pool']) == ('sk-launch-explicit', None)
+
+
+def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
+    """A not-yet-built session with no launch model/provider runs on ``nous/welcome`` on the free
+    tier (the agent build pins it), so ``session.info`` says so; an explicit launch model stands."""
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from gateway.session_local import _lazy_model
+    from gateway.session_policy import build_policy
+    import hermes_cli.anon_auth as anon_auth
+    authority = SimpleNamespace(runner=None, profile_id='fixture')
+    monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: True)
+    configured = replace(build_policy({'cwd': str(tmp_path)}, {'model': {'default': 'cfg-model'}}), model='cfg-model')
+    assert _lazy_model(authority, configured) == anon_auth.GUEST_MODEL
+    assert _lazy_model(authority, build_policy({'cwd': str(tmp_path), 'model': 'pick'}, {})) == 'pick'
+    monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: False)
+    assert _lazy_model(authority, configured) == 'cfg-model'

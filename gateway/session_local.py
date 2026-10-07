@@ -169,6 +169,20 @@ def publish_local_policy(authority, session_id):
     authority.runner._evict_cached_agent(live.route)
 
 
+def _lazy_model(authority, policy):
+    """The model a not-yet-built session will run: with no provider pinned, the free tier's agent
+    build pins ``nous/welcome`` (``pin_model_for_route``), so the configured default is not it."""
+    import json
+    model = policy.model if policy else None
+    if (policy is None or json.loads(policy.request_json).get('model')
+            or str(policy.provider or '').strip().lower() not in {'', 'auto'}):
+        return model
+    from gateway.session_authorities import owner_scope
+    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
+    with owner_scope(authority):
+        return GUEST_MODEL if free_tier_route() else model
+
+
 def local_session_info(authority, ref):
     live = authority.sessions[ref.session_id]
     agent = authority.agent(ref)
@@ -176,7 +190,9 @@ def local_session_info(authority, ref):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     info = {'source': policy.source if policy else live.source.platform.value,
-            'model': getattr(agent, 'model', policy.model if policy else None), 'lazy': agent is None,
+            'model': (getattr(agent, 'model', policy.model if policy else None) if agent is not None
+                      else _lazy_model(authority, policy)),
+            'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
             'profile_name': served_profile_name(authority.profile_id),

@@ -99,7 +99,7 @@ export interface DelegationStatus {
 
 export interface ApprovalReq {
   sharedControl?: SharedControl
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  // false when the backend won't honor a permanent allow → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
