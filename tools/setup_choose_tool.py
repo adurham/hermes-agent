@@ -294,7 +294,7 @@ SETUP_CHOOSE_SCHEMA = {
         "chosen option id (or the free-text answer) as a string, or a list of ids "
         "with multi_select; label is the name the user saw "
         "for each pick, so say the label, never the id. "
-        "Do what `next` says. `handoff` holds the start_chat message's parts and plan."
+        "Do what `next` says. `handoff` holds the handoff message's parts and plan."
     ),
     "parameters": {
         "type": "object",
