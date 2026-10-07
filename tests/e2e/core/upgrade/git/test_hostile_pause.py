@@ -27,6 +27,10 @@ and the durable pause record ``update_pause_record`` keeps in the root hermes ho
     dependencies). A ``hermes gateway run`` launched then (the replayed argv) syncs the owed
     dependencies in its own launch before serving; the next ``hermes`` launch adopts that gateway
     instead of starting a twin, and the record is discharged.
+(i) the checkout move itself fails before the commit point (the release adds a file under a
+    directory the user cannot write): the paused gateway is restarted on the OLD code, and the
+    update's exit code and receipt outcome equal those of the same failing update run with no
+    gateway at all.
 (h) the Desktop hand-off (``scripts/desktop-update/posix.sh``, what the Desktop app spawns before it
     quits) runs the same ``hermes update --gateway``: the gateway is paused and restarted on the new
     commit, and the hand-off's result file reports success.
@@ -276,6 +280,9 @@ def _diag(w: G.World, host: NamespaceHost, cp=None, **extra) -> str:
 def test_real_release_pauses_before_the_move_and_restarts_after_deps(w):
     w.reset_clean()
     with _namespace(w) as host:
+        # A second profile: the one multiplexing gateway serves both and is paused/restarted once.
+        prof = _ns_cli(host, w, "profile", "create", "p2probe-a", "--no-alias")
+        assert prof.returncode == 0 or "already exists" in G.output(prof), f"premise: {G.output(prof)[-2000:]}"
         before = _start_gateway(host, w, "a")
         old_sha, old_pid = w.head(), int(before["pid"])
         target = _publish_release(w, "a")
@@ -300,6 +307,8 @@ def test_real_release_pauses_before_the_move_and_restarts_after_deps(w):
             f"the paused gateway was restarted only after the product builds:\n{diag}"
         assert after and int(after["pid"]) != old_pid, f"no NEW gateway process serves {target[:12]}:\n{diag}"
         assert len(gws) == 1, f"expected exactly one gateway process, found {len(gws)}:\n{diag}"
+        paused_line = next(line for line in out.splitlines() if PAUSED in line)
+        assert paused_line.count("gateway PID") == 1, f"the multiplexer was paused more than once:\n{diag}"
         assert not [r for r in _record(w) if (r.get("token") or {}).get("resume_needed")], \
             f"a discharged pause left an owed record:\n{diag}"
         assert old_sha != target
@@ -441,6 +450,17 @@ def test_sigkill_after_commit_before_restart_next_launch_restarts_on_new_code(w)
 def test_deps_failure_after_commit_holds_the_paused_set_until_a_launch_syncs(w):
     w.reset_clean()
     toggle = w.sb.home / BREAK_DEPS
+    # As users run: the suite-wide HERMES_DISABLE_LAZY_INSTALLS also turns off each launch's
+    # dependency sync (venv_sync.prepare_launch), and with it the tree gate's dependency hold.
+    lazy = w.sb.env.pop("HERMES_DISABLE_LAZY_INSTALLS", None)
+    try:
+        _deps_failure_cell(w, toggle)
+    finally:
+        if lazy is not None:
+            w.sb.env["HERMES_DISABLE_LAZY_INSTALLS"] = lazy
+
+
+def _deps_failure_cell(w: G.World, toggle: Path) -> None:
     with _namespace(w) as host:
         before = _start_gateway(host, w, "g")
         gw_pid = int(before["pid"])
@@ -490,14 +510,21 @@ def test_desktop_handoff_update_pauses_and_restarts_through_the_same_path(w):
         result.unlink(missing_ok=True)
         log = w.sb.hermes_home / "logs" / "desktop-update-handoff.log"
         log0 = len(_read(log))
+        ulog = w.sb.hermes_home / "logs" / "update.log"
+        ulog0 = len(_read(ulog))
         with _Timeline(host, w, old_pid) as tl:
             cp = host.run(["bash", str(w.checkout / "scripts" / "desktop-update" / "posix.sh"),
                            "--install-root", str(w.checkout), "--desktop-pid", "0", "--no-ui"],
                           timeout=UPDATE_TIMEOUT, cwd=w.checkout)
-        handoff = _read(log)[log0:]
-        res = {}
-        with contextlib.suppress(OSError, ValueError):
-            res = json.loads(result.read_text(encoding="utf-8"))
+
+            def finished() -> dict | None:  # posix.sh re-execs itself detached (--daemonized)
+                with contextlib.suppress(OSError, ValueError):
+                    return json.loads(result.read_text(encoding="utf-8"))
+                return None
+            res = {}
+            with contextlib.suppress(AssertionError):
+                res = H.wait_for(finished, timeout=UPDATE_TIMEOUT, interval=1.0, what="the hand-off result")
+        handoff = _read(log)[log0:] + "\n--- update.log (this run) ---\n" + _read(ulog)[ulog0:]
         after = None
         with contextlib.suppress(AssertionError):
             after = H.wait_for(lambda: _serving(w, target), timeout=60, interval=1.0, what="a gateway on the release")
@@ -511,3 +538,48 @@ def test_desktop_handoff_update_pauses_and_restarts_through_the_same_path(w):
             f"the OLD gateway process was alive while HEAD named the release:\n{diag}"
         assert after and int(after["pid"]) != old_pid and len(gws) == 1, \
             f"not exactly one NEW gateway on the release after the hand-off:\n{diag}"
+
+
+def test_failed_move_restarts_exactly_the_paused_set_on_the_old_code(w):
+    w.reset_clean()
+    blocked = w.checkout / "website"
+    assert blocked.is_dir(), "premise: website/ is tracked"
+    target = w.publish("release: e2e hostile pause i", {"website/e2e-hostile-pause-i.txt": "release i\n"})
+
+    def failing_update(host):
+        blocked.chmod(0o555)
+        try:
+            return _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
+        finally:
+            blocked.chmod(0o755)
+
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "i")
+        old_sha, old_pid = w.head(), int(before["pid"])
+        cp = failing_update(host)
+        out = G.output(cp)
+        receipt = w.receipt()
+        after = None
+        with contextlib.suppress(AssertionError):
+            after = H.wait_for(lambda: _serving(w, old_sha), timeout=60, interval=1.0, what="a gateway on the old code")
+        gws = _gateways(host)
+        diag = _diag(w, host, cp, before=before, after=after, gateways=gws, receipt=receipt)
+        assert w.head() == old_sha != target, f"premise: the move did not fail before the commit:\n{diag}"
+        assert cp.returncode != 0, f"premise: the failed move reported success:\n{diag}"
+        assert PAUSED in out, f"premise: nothing was paused before the move:\n{diag}"
+        assert after and int(after["pid"]) != old_pid and len(gws) == 1, \
+            f"not exactly one gateway restarted on the OLD code:\n{diag}"
+        assert not [r for r in _record(w) if (r.get("token") or {}).get("resume_needed")], \
+            f"the restarted set is still owed:\n{diag}"
+        rc_with = cp.returncode
+        host.kill(int(after["pid"]), signal.SIGTERM)
+        H.wait_for(lambda: not _gateways(host), timeout=120, interval=0.5, what="the gateway to exit")
+        (w.sb.hermes_home / "gateway.pid").unlink(missing_ok=True)
+        ctrl = failing_update(host)
+        ctrl_receipt = w.receipt()
+        diag = _diag(w, host, ctrl, with_gateway_rc=rc_with, with_gateway_receipt=receipt)
+        assert w.head() == old_sha, f"premise: the control run moved the checkout:\n{diag}"
+        assert ctrl.returncode == rc_with, f"the paused set's restart changed the exit code:\n{diag}"
+        assert ctrl_receipt.get("outcome") == receipt.get("outcome"), \
+            f"the paused set's restart changed the receipt outcome:\n{diag}"
+        assert PAUSED not in G.output(ctrl), f"the control run paused something:\n{diag}"
