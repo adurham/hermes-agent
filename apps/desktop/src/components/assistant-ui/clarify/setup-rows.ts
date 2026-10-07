@@ -1,4 +1,5 @@
 import type { ConnectorRow, SetupChooseKind, SetupChooseOption } from '@hermes/shared'
+import { useMemo } from 'react'
 
 import { MODE_OPTIONS } from '@/app/settings/constants'
 import { $chatLayoutPicked, assembleChatOnboarding, snapshotChatLayout } from '@/components/onboarding-chat/assembly'
@@ -132,14 +133,19 @@ export function useSetupRows(setup: null | SetupChooseSpec, storedId: null | str
   const connectors = useConnectorRows(setup?.options === null && setup.kind === 'connectors' ? storedId : null)
   const plugins = useOnboardingPluginList(setup?.options === null && setup.kind === 'plugins' ? storedId : null)
 
-  if (!setup) {
-    return []
-  }
+  // Same inputs must return the same array: the pending card's stage callback and store write key off it.
+  return useMemo(() => {
+    if (!setup) {
+      return NO_ROWS
+    }
 
-  const rows = setup.options ?? APP_ROWS[setup.kind]({ connectors, dark: renderedMode === 'dark', plugins, t })
+    const rows = setup.options ?? APP_ROWS[setup.kind]({ connectors, dark: renderedMode === 'dark', plugins, t })
 
-  return setup.kind === 'theme' && rows ? rows.filter(row => THEME_TILES.includes(row.id)) : rows
+    return setup.kind === 'theme' && rows ? rows.filter(row => THEME_TILES.includes(row.id)) : rows
+  }, [connectors, plugins, renderedMode, setup, t])
 }
+
+const NO_ROWS: SetupRow[] = []
 
 export function useSetupLabel(
   kind: SetupChooseKind,

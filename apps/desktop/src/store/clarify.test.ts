@@ -181,6 +181,21 @@ describe('answerSetupCard', () => {
     expect(hasClarifyRequest('session-a')).toBe(false)
     expect(look).toBe('#0000ff')
   })
+
+  it('does not notify subscribers when a staged patch changes nothing', () => {
+    const preview = () => undefined
+    const listener = vi.fn()
+
+    stageSetupChoose('req-a', { labels: ACCENTS, preview })
+    const before = $setupChooseStages.get()
+    const unlisten = $setupChooseStages.listen(listener)
+
+    stageSetupChoose('req-a', { labels: ACCENTS, preview })
+    unlisten()
+
+    expect($setupChooseStages.get()).toBe(before)
+    expect(listener).not.toHaveBeenCalled()
+  })
 })
 
 describe('normalizeChoices', () => {

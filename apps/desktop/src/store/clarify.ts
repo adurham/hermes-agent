@@ -283,7 +283,19 @@ export const setupChooseStage = (requestId: string): SetupChooseStage =>
   $setupChooseStages.get()[requestId] ?? EMPTY_SETUP_STAGE
 
 export function stageSetupChoose(requestId: string, patch: Partial<SetupChooseStage>): void {
-  $setupChooseStages.set({ ...$setupChooseStages.get(), [requestId]: { ...setupChooseStage(requestId), ...patch } })
+  const current = setupChooseStage(requestId)
+
+  // A no-op patch keeps the atom reference so subscribers do not rerender.
+  const unchanged = Object.entries(patch).every(([key, value]) =>
+    // SAFETY: the entries of a Partial<SetupChooseStage> carry only SetupChooseStage keys.
+    Object.is(current[key as keyof SetupChooseStage], value)
+  )
+
+  if (unchanged && requestId in $setupChooseStages.get()) {
+    return
+  }
+
+  $setupChooseStages.set({ ...$setupChooseStages.get(), [requestId]: { ...current, ...patch } })
 }
 
 export function commitSetupChoose(requestId: string): void {
