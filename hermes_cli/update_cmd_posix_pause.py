@@ -172,10 +172,33 @@ def _supervisor_markers(pid: int) -> str | None:
         return None
     if env.get("HERMES_S6_SUPERVISED_CHILD"):
         return "s6"
-    if env.get("INVOCATION_ID"):
-        return "a systemd unit outside hermes-gateway*"
-    if env.get("XPC_SERVICE_NAME", "0") not in ("", "0"):
-        return f"launchd job {env['XPC_SERVICE_NAME']}"
+    if unit := _respawning_service(pid):
+        return f"systemd unit {unit}"
+    # launchd names terminal apps' shells application.<bundle id>; those are not KeepAlive jobs.
+    xpc = env.get("XPC_SERVICE_NAME", "0")
+    if xpc not in ("", "0") and not xpc.startswith("application."):
+        return f"launchd job {xpc}"
+    return None
+
+
+def _respawning_service(pid: int) -> str | None:
+    """The systemd service that would respawn *pid* when it exits, or ``None``.
+
+    systemd restarts a unit only when its main process exits, so the gateway must BE the
+    MainPID or its direct child (a non-exec wrapper that exits with it). The inherited
+    INVOCATION_ID is no evidence: a terminal tab's shell carries one (its .scope is never
+    respawned), and so does anything deep under a CI runner's service."""
+    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
+    cgroup = _pid_cgroup(pid) or ""
+    leaf = cgroup.rsplit("/", 1)[-1]
+    if not leaf.endswith(".service"):
+        return None
+    scope_cmd = ["systemctl", "--user"] if "/user@" in cgroup else ["systemctl"]
+    with suppress(OSError, subprocess.SubprocessError):
+        main = _unit_main_pid(scope_cmd, leaf)
+        if main > 0 and main in (pid, _ppid(pid)):
+            restart = _systemctl(scope_cmd + ["show", leaf, "--property=Restart", "--value"], timeout=10)
+            return leaf if (restart.stdout or "").strip() not in ("", "no") else None
     return None
 
 
