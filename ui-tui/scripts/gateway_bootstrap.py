@@ -54,6 +54,9 @@ if __name__ == "__main__":
         with contextlib.redirect_stdout(sys.stderr):
             result = bootstrap("--start" in sys.argv)
         print(json.dumps(result))
-    except Exception as exc:
+    # Discovery/ticket failures: missing modules, socket/pipe I/O (incl. timeouts), DiscoveryError and
+    # bad JSON (ValueError), rejected grants (RuntimeError), malformed reply shapes. Anything else
+    # still exits 1, with a traceback.
+    except (ImportError, OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)

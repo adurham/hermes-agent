@@ -23,6 +23,73 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tests.gateway.fixtures.shared_authority_peer import ModelPeer
 from websockets.asyncio.client import connect
+from agent.memory_provider import spawn_context_thread
+
+
+def _peer_class(kind, stopping):
+    peer_class = ModelPeer
+    if stopping:
+        from native_stop_probe import StopPeer
+        peer_class = StopPeer
+    if kind in ('approval', 'clarify'):
+        sys.path.insert(0, str(ROOT / 'tests/gateway/fixtures'))
+        if kind == 'approval':
+            from authority_controls_peer import ModelPeer as peer_class
+        else:
+            from authority_clarify_peer import ModelPeer as peer_class
+    return peer_class
+
+
+def _cleanup(model, first, children, daemon, startup, ensured_pid, home, receipts):
+    model.release.set()
+    if first is not None:
+        (Path(sys.argv[1]) / 'last-first.pty').write_bytes(first[2])
+    for proc, master in children:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=5)
+        os.close(master)
+    if daemon and daemon.poll() is None:
+        daemon.send_signal(signal.SIGINT)
+        try:
+            daemon.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            daemon.kill()
+            daemon.wait(timeout=5)
+    if startup and not ensured_pid:
+        from gateway.status import get_running_pid_identity_strict
+        identity = get_running_pid_identity_strict(home / 'gateway.pid')
+        ensured_pid = identity[0] if identity else None
+    if ensured_pid:
+        import psutil
+        owned = psutil.Process(ensured_pid)
+        owned.send_signal(signal.SIGINT)
+        try:
+            owned.wait(timeout=20)
+        except psutil.TimeoutExpired:
+            owned.kill()
+    model.shutdown()
+    model.server_close()
+    (Path(sys.argv[1]) / 'receipt.json').write_text(json.dumps(receipts, indent=2))
+    print(json.dumps(receipts), flush=True)
+
+
+def _prompt_effect_receipts(kind, target, model, receipts):
+    if kind == 'approval':
+        receipts['owned_effect_after_native_consent'] = not target.exists()
+        assert not target.exists()
+    if kind == 'clarify':
+        tool_replies = [json.loads(message['content']) for messages in model.requests
+                        for message in messages if message['role'] == 'tool']
+        receipts['native_answer_on_model_wire'] = any(
+            response.get('user_response') == 'green'
+            for reply in tool_replies for response in reply.get('responses', []))
+        (Path(sys.argv[1]) / 'model-tool-replies.json').write_text(json.dumps(tool_replies, indent=2))
+        assert receipts['native_answer_on_model_wire']
 
 
 def run():
@@ -36,17 +103,8 @@ def run():
         home.mkdir(mode=0o700)
         user = base / 'user'
         user.mkdir()
-        peer_class = ModelPeer
         stopping = kind in ('stop', 'stop-control', 'stop-launcher')
-        if stopping:
-            from native_stop_probe import StopPeer
-            peer_class = StopPeer
-        if kind in ('approval', 'clarify'):
-            sys.path.insert(0, str(ROOT / 'tests/gateway/fixtures'))
-            if kind == 'approval':
-                from authority_controls_peer import ModelPeer as peer_class
-            else:
-                from authority_clarify_peer import ModelPeer as peer_class
+        peer_class = _peer_class(kind, stopping)
         target = base / 'owned-removal'
         target.mkdir()
         (target / 'owned.txt').write_text('fixture')
@@ -56,7 +114,7 @@ def run():
         model.blocked, model.release, model.disconnected = threading.Event(), threading.Event(), threading.Event()
         if stopping:
             model.command = 'touch -- ' + shlex.quote(str(home / 'stop-effect'))
-        threading.Thread(target=model.serve_forever, daemon=True).start()
+        spawn_context_thread(model.serve_forever, name='native-probe-model').start()
         model_url = f'http://127.0.0.1:{model.server_port}/v1'
         (home / 'config.yaml').write_text(json.dumps({
             'gateway': {'multiplex_profiles': False},
@@ -127,7 +185,7 @@ def run():
                             output.extend(os.read(master, 65536))
                         except OSError:
                             break
-            threading.Thread(target=drain, daemon=True).start()
+            spawn_context_thread(drain, name='native-probe-drain-' + name).start()
             return proc, master, output
 
         try:
@@ -254,54 +312,10 @@ def run():
             (Path(sys.argv[1]) / 'reconnected.pty').write_bytes(third[2])
             receipts['reconnect_rendered_reply'] = expected in third[2]
             receipts['daemon_survived_detach'] = daemon.poll() is None
-            if kind == 'approval':
-                receipts['owned_effect_after_native_consent'] = not target.exists()
-                assert not target.exists()
-            if kind == 'clarify':
-                tool_replies = [json.loads(message['content']) for messages in model.requests
-                                for message in messages if message['role'] == 'tool']
-                receipts['native_answer_on_model_wire'] = any(
-                    response.get('user_response') == 'green'
-                    for reply in tool_replies for response in reply.get('responses', []))
-                (Path(sys.argv[1]) / 'model-tool-replies.json').write_text(json.dumps(tool_replies, indent=2))
-                assert receipts['native_answer_on_model_wire']
+            _prompt_effect_receipts(kind, target, model, receipts)
             assert receipts['reconnect_rendered_reply']
         finally:
-            model.release.set()
-            if 'first' in locals():
-                (Path(sys.argv[1]) / 'last-first.pty').write_bytes(first[2])
-            for proc, master in children:
-                if proc.poll() is None:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                        proc.wait(timeout=5)
-                os.close(master)
-            if daemon and daemon.poll() is None:
-                daemon.send_signal(signal.SIGINT)
-                try:
-                    daemon.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    daemon.kill()
-                    daemon.wait(timeout=5)
-            if startup and not ensured_pid:
-                from gateway.status import get_running_pid_identity_strict
-                identity = get_running_pid_identity_strict(home / 'gateway.pid')
-                ensured_pid = identity[0] if identity else None
-            if ensured_pid:
-                import psutil
-                owned = psutil.Process(ensured_pid)
-                owned.send_signal(signal.SIGINT)
-                try:
-                    owned.wait(timeout=20)
-                except psutil.TimeoutExpired:
-                    owned.kill()
-            model.shutdown()
-            model.server_close()
-            (Path(sys.argv[1]) / 'receipt.json').write_text(json.dumps(receipts, indent=2))
-            print(json.dumps(receipts), flush=True)
+            _cleanup(model, locals().get('first'), children, daemon, startup, ensured_pid, home, receipts)
 
 
 if __name__ == '__main__':
