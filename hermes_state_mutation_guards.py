@@ -72,9 +72,14 @@ def delete_targets(conn, session_id):
     # message on the route re-admits the "deleted" conversation through the surviving child.
     # The walk also runs BACKWARD to the root (#57543): a sidebar row carries the chain tip's
     # id, and a surviving root re-projects as the "deleted" conversation on the next reload.
+    # Every walked row must belong to the requested row's principal domain: only that row was
+    # authorized, so a parent link into another principal's chain (an imported or forged edge)
+    # stops the walk instead of deleting their conversation.
+    from hermes_state_mutation_binding import same_history_owner
     frontier = list(targets)
     for _ in range(_CHAIN_CAP):
-        frontier = [sid for sid in _expand_compression_lineage_ids(conn, frontier) if sid not in targets]
+        frontier = [sid for sid in _expand_compression_lineage_ids(conn, frontier)
+                    if sid not in targets and same_history_owner(conn, session_id, sid)]
         if not frontier:
             break
         targets.update(frontier)

@@ -118,6 +118,16 @@ def _import(db, conn, session_id, payload):
         if raw.get('parent_session_id'):
             parents.append((sid, raw['parent_session_id']))
         imported.append(sid)
-    detached = db._attach_import_parents(conn, parents)
+    # A parent outside this payload is kept only when it is history this importer already
+    # controls: its import binding equals the child's (written by import_history_control in this
+    # transaction). Linking under any other row would graft the import onto a foreign chain,
+    # which a later chain-aware delete of the import would then remove.
+    from hermes_state_mutation_binding import history_binding
+    # Rows imported now, not payload ids: a payload naming an existing foreign id skips that row.
+    fresh = set(imported)
+    foreign = [(sid, parent) for sid, parent in parents if parent not in fresh and (
+        history_binding(conn, parent) is None or history_binding(conn, parent) != history_binding(conn, sid))]
+    parents = [link for link in parents if link not in foreign]
+    detached = db._attach_import_parents(conn, parents) + len(foreign)
     return set(imported), {'ok': True, 'imported': len(imported), 'skipped': len(skipped),
         'imported_ids': imported, 'skipped_ids': skipped, 'detached': detached, 'errors': []}
