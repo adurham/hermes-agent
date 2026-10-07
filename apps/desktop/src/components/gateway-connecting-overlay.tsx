@@ -2,14 +2,16 @@ import type { ConnectionState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { useI18n } from '@/i18n'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $onboardingStateRead } from '@/store/onboarding-gate'
-import { $introView } from '@/store/onboarding-intro'
+import { $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $gatewayState } from '@/store/session'
 import { isMainWindow } from '@/store/windows'
 
@@ -59,10 +61,26 @@ function isInitialConnect(
 
 interface ConnectingOverlayViewProps {
   decoding: boolean
+  onExit: (() => void) | null
   phase: Phase
 }
 
-function ConnectingOverlayView({ decoding, phase }: ConnectingOverlayViewProps) {
+/** The first-run start outlasted the boot budget: it keeps waiting, and the person may go on without setup. */
+function SlowSetupStart({ onExit }: { onExit: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid max-w-xs justify-items-center gap-3 text-center" role="status">
+      <div className="text-sm font-medium text-foreground">{t.onboarding.setupSlowTitle}</div>
+      <div className="text-xs text-muted-foreground">{t.onboarding.setupSlowBody}</div>
+      <Button onClick={onExit} size="sm" type="button" variant="secondary">
+        {t.onboarding.continueWithoutSetup}
+      </Button>
+    </div>
+  )
+}
+
+function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayViewProps) {
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
 
@@ -77,17 +95,21 @@ function ConnectingOverlayView({ decoding, phase }: ConnectingOverlayViewProps) 
       // in styles.css.
       data-glass-opaque=""
     >
-      <DecodeText
-        active={decoding}
-        className={cn(
-          'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
-          leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
-        )}
-        cursor
-        loop
-        prefix={4}
-        text={TEXT}
-      />
+      {onExit ? (
+        <SlowSetupStart onExit={onExit} />
+      ) : (
+        <DecodeText
+          active={decoding}
+          className={cn(
+            'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
+            leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
+          )}
+          cursor
+          loop
+          prefix={4}
+          text={TEXT}
+        />
+      )}
     </div>
   )
 }
@@ -98,6 +120,7 @@ export function GatewayConnectingOverlay() {
   const gatewaySwitching = useStore($gatewaySwitching)
   const onboardingStateRead = useStore($onboardingStateRead)
   const introView = useStore($introView)
+  const introStartExit = useStore($introStartExit)
   const [previewing] = useState(forcedPreview)
   const reduce = prefersReducedMotion()
   // Under reduced motion, skip the multi-phase exit choreography (text-out →
@@ -187,5 +210,11 @@ export function GatewayConnectingOverlay() {
     return null
   }
 
-  return <ConnectingOverlayView decoding={phase === 'live' && (previewing || connecting)} phase={phase} />
+  return (
+    <ConnectingOverlayView
+      decoding={phase === 'live' && (previewing || connecting)}
+      onExit={introHolds ? introStartExit : null}
+      phase={phase}
+    />
+  )
 }

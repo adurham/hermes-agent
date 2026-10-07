@@ -7,10 +7,12 @@ import { $introTurnSent, openIntro, rememberLaunchSource } from '@/components/on
 import { $setupSession, guideSourceConnectionId } from '@/components/onboarding-chat/setup-profile'
 import type { ChatMessagePart } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { prefetchConnectorCatalog } from '@/store/connector-catalog'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { $setupProfileName, type GuideKickoffResult } from '@/store/onboarding-gate'
+import { $introStartExit } from '@/store/onboarding-intro'
 import { prefetchOnboardingPlugins } from '@/store/onboarding-plugins'
 import {
   $activeGatewayProfile,
@@ -22,7 +24,7 @@ import {
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
-import { createKickoffMachine, KickoffFailure, NO_DEADLINE } from './onboarding-kickoff-machine'
+import { createKickoffMachine, KickoffFailure, KickoffSkipped, NO_DEADLINE } from './onboarding-kickoff-machine'
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
 function prefetchGuideCatalogs(storedId: null | string): void {
@@ -131,6 +133,15 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
     const machine = createKickoffMachine()
     let swapped = false
 
+    // Past the boot budget the start keeps waiting, and the starting screen offers a way out.
+    const offerExit = window.setTimeout(
+      () =>
+        $introStartExit.set(() =>
+          machine.stop(new KickoffSkipped('Setup was skipped while Hermes was still starting.'))
+        ),
+      BACKEND_BOOT_WAIT_TIMEOUT_MS
+    )
+
     try {
       // Every call here is idempotent, so a retry repeats the whole step. The calls carry no deadline: a cold
       // first boot answers them late, and the machine fails on the signals that mean it never will.
@@ -138,7 +149,8 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
         const { name: setupProfile } = await requestGateway<OnboardingEnsureSetupProfileResult>(
           'onboarding.ensure_setup_profile',
           {},
-          NO_DEADLINE
+          NO_DEADLINE,
+          machine.signal
         )
 
         $setupProfileName.set(setupProfile)
@@ -150,7 +162,7 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
           'setup.status',
           {},
           NO_DEADLINE,
-          undefined,
+          machine.signal,
           { spawnPriority: 'foreground' }
         )
 
@@ -171,13 +183,14 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
           $newChatProfile.set(setupProfile)
         }
 
-        await ensureGatewayProfile(setupProfile)
+        await machine.until(ensureGatewayProfile(setupProfile))
 
         // Finds the setup chat by title or creates it; `empty` is true only before its first turn.
         const setupChat = await requestGateway<OnboardingEnsureSetupSessionResult>(
           'onboarding.ensure_setup_session',
           {},
-          NO_DEADLINE
+          NO_DEADLINE,
+          machine.signal
         )
 
         return { record, setupChat, setupProfile }
@@ -196,12 +209,8 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(setupProfile, method, params, timeout)
 
-      const runtimeId = await adoptGuideSession(
-        setupProfile,
-        setupChat.session_id,
-        record.free_tier_route,
-        resumeSession,
-        guideRequest
+      const runtimeId = await machine.until(
+        adoptGuideSession(setupProfile, setupChat.session_id, record.free_tier_route, resumeSession, guideRequest)
       )
 
       // A relaunch reopens the same setup chat; one whose opening was cut off is sent the command again.
@@ -238,15 +247,20 @@ export function useOnboardingKickoff({ requestGateway, resumeSession, runSlashCo
         })
       }
 
-      console.error('[setup] welcome chat could not start', error)
-      notify({
-        kind: 'error',
-        title: 'Welcome chat needs attention',
-        message: error instanceof Error ? error.message : 'The welcome chat could not start.'
-      })
+      // Going on without setup is the person's choice, not an error to report.
+      if (!(error instanceof KickoffSkipped)) {
+        console.error('[setup] welcome chat could not start', error)
+        notify({
+          kind: 'error',
+          title: 'Welcome chat needs attention',
+          message: error instanceof Error ? error.message : 'The welcome chat could not start.'
+        })
+      }
 
       return 'failed'
     } finally {
+      window.clearTimeout(offerExit)
+      $introStartExit.set(null)
       machine.dispose()
     }
   }, [requestGateway, resumeSession, runSlashCommand])

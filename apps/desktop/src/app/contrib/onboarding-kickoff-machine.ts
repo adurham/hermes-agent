@@ -9,7 +9,8 @@ import { $gatewayState } from '@/store/session'
  * (the backend process is alive, the gateway is open or reconnecting, a call is in flight) it waits with no
  * wall-clock deadline: a cold first boot answers late, but it answers (51 s to listen on a Windows ARM64
  * first boot, then a busy backend behind the first calls). It fails only on what waiting cannot fix: an
- * RPC error response, the backend process exiting, or a result it does not expect.
+ * RPC error response, the backend process exiting, a result it does not expect, or `stop` (the person chose
+ * to go on without setup once the wait outlasted the boot budget).
  */
 export type KickoffState = 'waiting-backend' | 'preparing' | 'opening' | 'started' | 'off' | 'failed'
 
@@ -18,6 +19,9 @@ export const NO_DEADLINE = 0
 
 /** A failure no amount of waiting fixes. */
 export class KickoffFailure extends Error {}
+
+/** The person chose to go on without setup while the start was still waiting. */
+export class KickoffSkipped extends KickoffFailure {}
 
 type FailureKind = 'fatal' | 'starting' | 'transient'
 
@@ -55,12 +59,39 @@ export interface KickoffMachine {
    *  dropped connection runs it again once. Anything else, or the backend exiting, rejects. */
   attempt<T>(state: KickoffState, step: () => Promise<T>): Promise<T>
   dispose(): void
+  /** Aborts every call that carries `signal` and fails the kickoff with `reason`. */
+  stop(reason: KickoffFailure): void
+  /** Passed to every kickoff RPC, so `stop` rejects the ones still in flight. */
+  signal: AbortSignal
+  /** `work`, or `stop`'s reason if that comes first: for steps that take no signal. */
+  until<T>(work: Promise<T>): Promise<T>
 }
 
 export function createKickoffMachine(): KickoffMachine {
   let state: KickoffState | 'begin' = 'begin'
   let exitFailure: KickoffFailure | null = null
   const exitWaiters = new Set<(error: KickoffFailure) => void>()
+  const stopper = new AbortController()
+  let stopReason: KickoffFailure | null = null
+
+  const stop = (reason: KickoffFailure) => {
+    stopReason = reason
+    stopper.abort(reason)
+
+    for (const reject of exitWaiters) {
+      reject(reason)
+    }
+  }
+
+  const until = <T>(work: Promise<T>): Promise<T> =>
+    stopReason
+      ? Promise.reject(stopReason)
+      : Promise.race([
+          work,
+          new Promise<never>((_, reject) =>
+            stopper.signal.addEventListener('abort', () => reject(stopReason), { once: true })
+          )
+        ])
 
   const enter = (next: KickoffState, detail?: string) => {
     log(`${state} -> ${next}${detail ? ` (${detail})` : ''}`)
@@ -83,6 +114,10 @@ export function createKickoffMachine(): KickoffMachine {
   })
 
   const gatewayOpen = (): Promise<void> => {
+    if (stopReason) {
+      return Promise.reject(stopReason)
+    }
+
     if (exitFailure) {
       return Promise.reject(exitFailure)
     }
@@ -128,6 +163,10 @@ export function createKickoffMachine(): KickoffMachine {
       } catch (error) {
         const kind = failureKind(error)
 
+        if (stopReason) {
+          throw stopReason
+        }
+
         if (exitFailure) {
           throw exitFailure
         }
@@ -142,5 +181,5 @@ export function createKickoffMachine(): KickoffMachine {
     }
   }
 
-  return { attempt, dispose: () => offExit?.(), enter }
+  return { attempt, dispose: () => offExit?.(), enter, signal: stopper.signal, stop, until }
 }

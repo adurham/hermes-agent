@@ -12,6 +12,10 @@ export type IntroView = 'off' | 'starting' | 'intro' | 'ended'
 
 export const $introView = atom<IntroView>('off')
 
+/** Set once the setup chat's start has outlasted the boot budget: the starting screen keeps waiting and offers
+ *  this way out, which ends the start through the kickoff's failed path. Null otherwise. */
+export const $introStartExit = atom<(() => void) | null>(null)
+
 /** The demo layout is on screen: the chat alone, narrower, minimal composer, no status bar. Kept here,
  *  free of layout imports, so the shell can read it; onboarding-chat/assembly.ts owns the switch. */
 export const $chatOnboardingSolo = atom(false)
