@@ -12,7 +12,6 @@ import os
 import platform
 import re
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -268,13 +267,11 @@ def _app_states(names: list[str]) -> dict[str, str]:
     return {name: states.get(name, "unknown") for name in names}
 
 
-def _plugin_tasks(block: dict) -> list[dict]:
-    """The fork's plugin rows, each offered only when the app its plugins need is there: the installer refuses a
-    plugin whose app is missing, so the card never offers one."""
-    nvidia = block.get("has_nvidia_gpu") and block["machine"].get("os_family") == "win32"
-    states = _app_states(["blender", *(_NVIDIA_TASK["plugins"] if nvidia else [])])
+def _plugin_tasks(states: dict[str, str]) -> list[dict]:
+    """The fork's plugin rows, each offered only when the app its plugins need is there (*states* from
+    ``_app_states``): the installer refuses a plugin whose app is missing, so the card never offers one."""
     tasks = []
-    nvidia_plugins = [name for name in _NVIDIA_TASK["plugins"] if nvidia and states[name] != "missing_app"]
+    nvidia_plugins = [name for name in _NVIDIA_TASK["plugins"] if states.get(name, "missing_app") != "missing_app"]
     if nvidia_plugins:
         tasks.append({**_NVIDIA_TASK, "plugins": nvidia_plugins})
     if states["blender"] != "missing_app":
@@ -307,7 +304,9 @@ def setup_cards(block: dict) -> dict:
     Blender preselect, the handoff text the fork result carries, and the machine line ``start_chat`` appends
     to the task chat's first message."""
     kind, description = block["machine_kind"], _description(block)
-    plugin_tasks = _plugin_tasks(block)
+    nvidia = block.get("has_nvidia_gpu") and block["machine"].get("os_family") == "win32"
+    states = _app_states(["blender", *(_NVIDIA_TASK["plugins"] if nvidia else [])])
+    plugin_tasks, blender = _plugin_tasks(states), states["blender"]
     ram = f", {block['machine']['ram_gb']} GB RAM" if block["machine"].get("ram_gb") else ""
     return {
         "learned": [f"This {kind}: {description}{ram}."],
