@@ -64,7 +64,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
   const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
