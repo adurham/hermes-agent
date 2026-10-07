@@ -28,6 +28,7 @@ def _runner(platform, published):
         _run_still_current=lambda: True,
     )
     live = SimpleNamespace(event_stream=SimpleNamespace(
+        execution={},
         publish=lambda sid, payload, event_type: published.append((sid, event_type, payload)) or True))
     authority = SimpleNamespace(sessions={'s': live})
     turn._approval_owner = (authority, 's', 3)
@@ -35,13 +36,21 @@ def _runner(platform, published):
     return turn, adapter_sends
 
 
-def test_local_review_summary_is_a_review_summary_event_even_after_the_turn_settled():
+def test_local_review_summary_follows_the_turn_settlement_and_is_never_fenced():
+    import threading
     published = []
     turn, adapter_sends = _runner(Platform.LOCAL, published)
-    turn._ctx._run_still_current = lambda: False  # the review fork outlives the turn
+    stream = turn._approval_owner[0].sessions['s'].event_stream
+    stream.execution = {'execution_generation': 3}  # the drain is still settling turn 3
+    turn._ctx._run_still_current = lambda: False  # and the review fork outlives the turn
     send, _release = turn._make_bg_review_callbacks()
-    send('💾 Self-improvement review: memory updated')
-    # No post-delivery hold on the local route (nothing ever fires it there), as in-process.
+    worker = threading.Thread(target=send, args=('💾 Self-improvement review: memory updated',))
+    worker.start()
+    worker.join(0.3)
+    # Not before the turn's message.complete: the drain clears the stamp only after it.
+    assert worker.is_alive() and published == []
+    stream.execution = {}
+    worker.join(5)
     assert published == [('s', 'review.summary', {'text': '💾 Self-improvement review: memory updated'})]
     assert adapter_sends == []
 

@@ -302,9 +302,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 deliver(message)
 
         def send(message: str) -> None:
-            if local_viewer:
-                # Same as the in-process TUI: no post-delivery hold (the local route has no
-                # platform send to wait for) and no run-generation gate.
+            if local_viewer and owner is not None:
+                # The review fork reports from its own thread while the drain may still be
+                # settling this turn. Hold the row until the authority published the turn's
+                # message.complete (it clears the execution stamp only after that), the order
+                # the in-process TUI produced. Never fenced: a late summary still reaches viewers.
+                authority, session_id, generation = owner
+                live = authority.sessions.get(session_id)
+                deadline = time.monotonic() + 120
+                while (live is not None and time.monotonic() < deadline
+                       and live.event_stream.execution.get("execution_generation") == generation):
+                    time.sleep(0.05)
                 deliver(message)
                 return
             if not self._status_live():
