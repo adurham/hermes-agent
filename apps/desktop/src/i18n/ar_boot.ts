@@ -208,7 +208,8 @@ export const arBoot = {
       failed: 'فشل تحديث الواجهة الخلفية.',
       noReturn: 'لم تعد الواجهة الخلفية إلى الاتصال. قد لا يكون التحديث قد اكتمل — تحقق من مضيف الواجهة الخلفية.'
     }
-  },  install: {
+  },
+  install: {
     stageStates: {
       pending: 'قيد الانتظار',
       running: 'جار التثبيت',
@@ -251,6 +252,9 @@ export const arBoot = {
     headerDesc: 'اربط مزوّد نماذج لبدء المحادثة. معظم الخيارات تتطلب نقرة واحدة.',
     preparingInstall: 'يُكمل Hermes التثبيت. عادة ما يستغرق ذلك أقل من دقيقة في أول تشغيل.',
     starting: 'جار بدء Hermes...',
+    setupSlowTitle: 'يستغرق الإعداد وقتا أطول من المعتاد.',
+    setupSlowBody: 'لا يزال Hermes قيد البدء في الخلفية.',
+    continueWithoutSetup: 'المتابعة دون إعداد',
     lookingUpProviders: 'جار البحث عن المزوّدين...',
     collapse: 'طي',
     otherProviders: 'مزودون آخرون',

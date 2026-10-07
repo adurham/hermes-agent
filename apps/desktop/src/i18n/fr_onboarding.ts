@@ -4,9 +4,11 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   headerTitle: 'Configurons Hermes Agent pour vous',
   headerDesc:
     'Connectez un fournisseur de modèles pour commencer à discuter. La plupart des options nécessitent un clic.',
-  preparingInstall:
-    "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
+  preparingInstall: "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
   starting: 'Démarrage de Hermes…',
+  setupSlowTitle: 'La configuration prend plus de temps que d’habitude.',
+  setupSlowBody: 'Hermes est toujours en cours de démarrage en arrière-plan.',
+  continueWithoutSetup: 'Continuer sans configuration',
   lookingUpProviders: 'Recherche des fournisseurs...',
   collapse: 'Réduire',
   otherProviders: 'Autres fournisseurs',
