@@ -1,0 +1,19 @@
+name: profile-models
+title: "Profile Models"
+repo: https://github.com/AllenRobinHubert/profile-models
+sha: 669157573ae4f577fae1eac88bed54afb7506c40
+description: "Read-only Desktop model map for main, auxiliary, sub-agent and MoA routes. Disclosure: reads the selected profile config through the host; no external network calls or credential storage."
+maintainer: AllenRobinHubert
+tier: community
+category: desktop
+version: "1.0.1"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/AllenRobinHubert/profile-models#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/AllenRobinHubert/profile-models/669157573ae4f577fae1eac88bed54afb7506c40/docs/statusbar.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
