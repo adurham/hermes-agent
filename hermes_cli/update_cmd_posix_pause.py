@@ -244,7 +244,10 @@ def _left_running(units: list[dict], jobs: list[dict]) -> tuple[list[dict], list
     from hermes_cli.gateway import _is_pid_ancestor_of_current_process
     keep_units, keep_jobs, notices = [], [], []
     for unit in units:
-        if _escape_cgroup(unit):
+        if _manage_cmd(unit["scope"]) is None:
+            notices.append(f"  ↷ {unit['unit']} keeps running until after the update (stopping a system "
+                           "unit needs root or passwordless sudo)")
+        elif _escape_cgroup(unit):
             keep_units.append(unit)
         else:
             notices.append(f"  ↷ {unit['unit']} keeps running until after the update (this update runs "

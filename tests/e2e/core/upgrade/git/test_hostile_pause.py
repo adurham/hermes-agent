@@ -20,6 +20,16 @@ and the durable pause record ``update_pause_record`` keeps in the root hermes ho
     a toggle exists; the update tree is SIGKILLed once HEAD is the release and the gateway is
     paused. The next launch syncs the dependencies and restarts exactly the paused gateway on the
     new commit.
+(g) the dependency sync fails after the commit (contract amendment A6): the release's dependency
+    preparation raises while a toggle exists and changes ``uv.lock``'s bytes (the dependency stamp),
+    so the venv is stale at the new HEAD. The update exits 0 with a ``dependencies`` follow-up and
+    the paused gateway stays stopped (the tree gate holds it: it would boot new code on stale
+    dependencies). A ``hermes gateway run`` launched then (the replayed argv) syncs the owed
+    dependencies in its own launch before serving; the next ``hermes`` launch adopts that gateway
+    instead of starting a twin, and the record is discharged.
+(h) the Desktop hand-off (``scripts/desktop-update/posix.sh``, what the Desktop app spawns before it
+    quits) runs the same ``hermes update --gateway``: the gateway is paused and restarted on the new
+    commit, and the hand-off's result file reports success.
 """
 
 from __future__ import annotations
@@ -52,6 +62,13 @@ SLOW_DEPS = ".e2e-slow-deps-sync"
 DEPS_STARTED = ".e2e-deps-sync-started"
 UPDATE_TIMEOUT = 1500
 _DEPS_MARK = "# e2e (test_hostile_pause): slow dependency sync toggle"
+BREAK_DEPS = ".e2e-break-deps-sync"
+DEPS_OWED = "dependencies not installed yet"  # update_completion._settle_after_commit
+_BREAK_MARK = "# e2e (test_hostile_pause): failing dependency sync toggle"
+_BREAK_DEPS = f"""    {_BREAK_MARK}
+    if __import__("os").path.exists(__import__("os").path.join(__import__("os").path.expanduser("~"), "{BREAK_DEPS}")):
+        raise RuntimeError("e2e: dependency sync fails on purpose ({BREAK_DEPS})")
+"""
 _SLOW_DEPS = f"""    {_DEPS_MARK}
     _e2e_home = __import__("os").path.expanduser("~")
     if __import__("os").path.exists(__import__("os").path.join(_e2e_home, "{SLOW_DEPS}")):
@@ -231,11 +248,26 @@ def _publish_slow_deps_release(w: G.World, tag: str) -> str:
         "pm/client.py": text, f"docs/e2e-hostile-pause-{tag}.txt": f"release {tag}\n"})
 
 
+def _publish_broken_deps_release(w: G.World, tag: str) -> str:
+    text = w.git("show", "HEAD:pm/client.py") + "\n"
+    if _BREAK_MARK not in text:
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
+        text = text[:m.end()] + _BREAK_DEPS + text[m.end():]
+    # pm's dependency stamp hashes uv.lock's bytes: a trailing TOML comment makes the venv stale
+    # at the new HEAD without changing what any dependency resolves to.
+    lock = w.git("show", "HEAD:uv.lock") + f"\n# e2e hostile pause {tag}: dependency stamp moves\n"
+    return w.publish(f"release: e2e hostile pause broken deps {tag}", {
+        "pm/client.py": text, "uv.lock": lock, f"docs/e2e-hostile-pause-{tag}.txt": f"release {tag}\n"})
+
+
 def _diag(w: G.World, host: NamespaceHost, cp=None, **extra) -> str:
     parts = [f"{k}={v}" for k, v in extra.items()]
     parts.append("pause records: " + json.dumps(_record(w), default=str)[:3000])
     parts.append("--- sandbox ---\n" + host.ps_text())
-    return "\n".join(parts) + "\n" + w.diag(cp)
+    text = "\n".join(parts) + "\n" + w.diag(cp)
+    print(text[:12000])  # the cell's receipt: ``-rA`` shows it for passing cells too
+    return text
 
 
 # -- cells -----------------------------------------------------------------------------------------
@@ -404,3 +436,78 @@ def test_sigkill_after_commit_before_restart_next_launch_restarts_on_new_code(w)
         assert not gw_alive_at_kill, f"the gateway still ran old code while HEAD named the release:\n{diag}"
         assert served, f"the next launch did not restart the paused gateway on the release:\n{diag}"
         assert int(served["pid"]) != gw_pid and len(gws) == 1, f"lost or duplicated gateway:\n{diag}"
+
+
+def test_deps_failure_after_commit_holds_the_paused_set_until_a_launch_syncs(w):
+    w.reset_clean()
+    toggle = w.sb.home / BREAK_DEPS
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "g")
+        gw_pid = int(before["pid"])
+        target = _publish_broken_deps_release(w, "g")
+        toggle.write_text("on\n", encoding="utf-8")
+        try:
+            cp = _ns_cli(host, w, "update", "--yes", "--branch", "main", timeout=UPDATE_TIMEOUT)
+        finally:
+            toggle.unlink(missing_ok=True)
+        out = G.output(cp)
+        held = _gateways(host)
+        rec_after_update = _record(w)
+        diag = _diag(w, host, cp, before=before, gateways_after_update=held)
+        assert w.head() == target, f"premise: the release never committed:\n{diag}"
+        assert DEPS_OWED in out, f"premise: the dependency sync did not fail after the commit:\n{diag}"
+        assert cp.returncode == 0, f"A6: a dependency failure after the commit failed the update:\n{diag}"
+        assert PAUSED in out, f"premise: the gateway was not paused:\n{diag}"
+        assert not held, f"a paused gateway was started on the new code with stale dependencies:\n{diag}"
+        assert any((r.get("token") or {}).get("resume_needed") for r in rec_after_update), \
+            f"the held set is not owed in the durable record:\n{diag}"
+
+        # The replayed argv's own launch: does it sync the owed dependencies before importing?
+        log = w.sb.root / "gateway-g2.log"
+        host.spawn([w.sb.hermes, "gateway", "run"], log=log)
+        served = None
+        with contextlib.suppress(AssertionError):
+            served = H.wait_for(lambda: _serving(w, target), timeout=600, interval=1.0, what="a gateway on the release")
+        launch_log = _read(log)
+        status = _ns_cli(host, w, "status", timeout=600)
+        time.sleep(3.0)
+        gws = _gateways(host)
+        diag = _diag(w, host, None, served=served, gateways=gws, launch_log=launch_log[-4000:],
+                     status=G.output(status)[-3000:])
+        assert served and int(served["pid"]) != gw_pid, f"the gateway's own launch did not come up on the release:\n{diag}"
+        assert len(gws) == 1, f"the next launch started a twin beside the running gateway:\n{diag}"
+        assert not [r for r in _record(w) if (r.get("token") or {}).get("resume_needed")], \
+            f"the record still owes a gateway that is serving:\n{diag}"
+
+
+def test_desktop_handoff_update_pauses_and_restarts_through_the_same_path(w):
+    w.reset_clean()
+    with _namespace(w) as host:
+        before = _start_gateway(host, w, "h")
+        old_pid = int(before["pid"])
+        target = _publish_release(w, "h")
+        result = w.sb.hermes_home / ".hermes-update-result.json"
+        result.unlink(missing_ok=True)
+        log = w.sb.hermes_home / "logs" / "desktop-update-handoff.log"
+        log0 = len(_read(log))
+        with _Timeline(host, w, old_pid) as tl:
+            cp = host.run(["bash", str(w.checkout / "scripts" / "desktop-update" / "posix.sh"),
+                           "--install-root", str(w.checkout), "--desktop-pid", "0", "--no-ui"],
+                          timeout=UPDATE_TIMEOUT, cwd=w.checkout)
+        handoff = _read(log)[log0:]
+        res = {}
+        with contextlib.suppress(OSError, ValueError):
+            res = json.loads(result.read_text(encoding="utf-8"))
+        after = None
+        with contextlib.suppress(AssertionError):
+            after = H.wait_for(lambda: _serving(w, target), timeout=60, interval=1.0, what="a gateway on the release")
+        gws = _gateways(host)
+        diag = _diag(w, host, cp, timeline="\n" + tl.text(), result=res, after=after, gateways=gws,
+                     handoff_log=handoff[-6000:])
+        assert w.head() == target, f"premise: the hand-off did not land the release:\n{diag}"
+        assert res.get("ok") is True, f"the hand-off result is not a success:\n{diag}"
+        assert PAUSED in handoff and RESTARTED in handoff, f"the hand-off update did not pause/restart:\n{diag}"
+        assert tl.first(lambda alive, head: alive and head == target) is None, \
+            f"the OLD gateway process was alive while HEAD named the release:\n{diag}"
+        assert after and int(after["pid"]) != old_pid and len(gws) == 1, \
+            f"not exactly one NEW gateway on the release after the hand-off:\n{diag}"
