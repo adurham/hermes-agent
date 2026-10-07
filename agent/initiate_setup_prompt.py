@@ -105,13 +105,14 @@ def initiate_setup_prelude(message, surface: str, tools, history):
     return _opening(*so_far)
 
 
-def intro_resends(prompt: str) -> bool:
+def intro_resends(prompt: str, surface: str) -> bool:
     """True while the desktop intro owns recovery of this ``/initiate-setup`` turn: after a relaunch the
     app sends the command again (the prelude replays only the unanswered opening cards), so a generic
-    auto-continue of the cut-off turn would race it."""
+    auto-continue of the cut-off turn would race it. A TUI chat has no intro to resend it."""
     from hermes_cli.setup_profile import onboarding_eligible, read_state
 
-    return prompt.startswith(HEADER) and onboarding_eligible() and read_state().get("intro") == "unseen"
+    return (surface == "desktop" and prompt.startswith(HEADER) and onboarding_eligible()
+            and read_state().get("intro") == "unseen")
 
 
 def _opening(said: set, replies: dict):
