@@ -423,8 +423,10 @@ def _relaunch_bare(entry: dict) -> int:
         return existing
     logs = Path(entry["home"]) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "HERMES_HOME": entry["home"]}
-    for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED"):
+    from tools.environments.local import served_profile_child_env
+    # That home's own secrets, never the updater's: its environ holds the launch profile's .env.
+    env = served_profile_child_env(target_home=entry["home"], inherit_credentials=True)
+    for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
         env.pop(leaked, None)
     with open(logs / "gateway-update-resume.log", "ab") as log:
         proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
