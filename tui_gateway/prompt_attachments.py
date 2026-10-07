@@ -6,6 +6,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 from __future__ import annotations
 
+import os
 import re as _re
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -245,6 +246,10 @@ def _stage_session_file_attachment(
     # O_CREAT|O_EXCL: never follows a planted (dangling) symlink, never races a same-name upload.
     while True:
         try:
+            # Windows CREATE_NEW follows a dangling symlink and creates its target outside root;
+            # an existing link of any kind is an occupied name on every platform.
+            if os.path.lexists(target):
+                raise FileExistsError(target)
             upload = target.open("xb")
         except FileExistsError:
             target = root / f"{stem}-{counter}{suffix}"
