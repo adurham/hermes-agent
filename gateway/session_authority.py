@@ -163,7 +163,7 @@ class SessionAuthority:
                 del live.subscribers[subscription]
 
     async def detach(self, actor, subscription_id):
-        for live in self.sessions.values():
+        for session_id, live in self.sessions.items():
             if subscription_id in live.subscribers:
                 if live.subscribers[subscription_id] != actor:
                     raise RuntimeStoreError('permission_denied')
@@ -171,6 +171,9 @@ class SessionAuthority:
                 transport = self.events.get(actor.transport_id)
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
+                if not live.subscribers:
+                    from gateway.session_acp_lifecycle import end_idle_acp_session
+                    end_idle_acp_session(self, session_id)
                 return
         raise RuntimeStoreError('not_found')
 

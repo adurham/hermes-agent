@@ -1,5 +1,6 @@
 """Private local creation receipts in the canonical runtime transaction owner."""
 import json
+import time
 
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
@@ -61,3 +62,21 @@ def local_receipt(db, session_id):
         return value
     except (TypeError, ValueError) as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
+
+
+def end_idle_local_session(db, *, epoch, session_id, target_id, reason):
+    """Stamp ``ended_at`` on *target_id* only while the logical *session_id*'s FIFO is idle.
+
+    The idle check and the stamp share one owner write txn, so an admission committed first keeps
+    the row open; one committed after is reopened by the drain (``reopen_local_session``)."""
+    def write(conn):
+        _epoch(conn, epoch)
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'",
+                        (session_id,)).fetchone():
+            return 0
+        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id IN (?,?) AND status!='terminal'",
+                        (session_id, target_id)).fetchone():
+            return 0
+        return db._end_and_bump(conn, 'UPDATE sessions SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL',
+                                (time.time(), reason, target_id), target_id, reason)
+    return db._execute_write(write)

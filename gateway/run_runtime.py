@@ -327,3 +327,14 @@ async def settle_gateway_runtime(runner):
     tasks = [task for authority in _authorities(runner) for task in _authority_tasks(authority)]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    # Sockets closed in drain_gateway_runtime; work settled above. ACP has no per-session destroy,
+    # so the stop is the end of every ACP session nobody is viewing (#118216).
+    from gateway.session_acp_lifecycle import end_idle_acp_sessions
+    for authority in _authorities(runner):
+        try:
+            end_idle_acp_sessions(authority)
+        except Exception:
+            # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
+            import logging
+            logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
+                                                getattr(authority, 'profile_id', '?'), exc_info=True)

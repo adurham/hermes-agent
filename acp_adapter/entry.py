@@ -216,8 +216,9 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.exception("ACP agent crashed")
         sys.exit(1)
-    # No ended_at stamp here (#118216 is the in-process adapter's): sessions are daemon-owned and
-    # may have other viewers or background work, so the daemon's reset lifecycle ends them.
+    # No ended_at stamp here: sessions are daemon-owned and may have other viewers or queued work.
+    # The owner ends an ACP session when its last viewer detaches with an idle FIFO, and at gateway
+    # stop (gateway/session_acp_lifecycle.py, #118216).
 
 
 if __name__ == "__main__":
