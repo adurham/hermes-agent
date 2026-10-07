@@ -1,0 +1,25 @@
+name: openrouter-spend
+title: "OpenRouter Spend"
+repo: https://github.com/AllenRobinHubert/openrouter-spend
+sha: 4a54b43f82264a0703d21abec9f7e49e8650abcf
+description: "OpenRouter API-key spend and recorded chat costs in USD/INR. Disclosure: contacts OpenRouter and Frankfurter; reads local profile accounting metadata and writes its own ledger."
+maintainer: AllenRobinHubert
+tier: community
+category: desktop
+version: "0.4.1"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/AllenRobinHubert/openrouter-spend#readme
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/AllenRobinHubert/openrouter-spend/4a54b43f82264a0703d21abec9f7e49e8650abcf/docs/statusbar.png
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - api_request_error
+    - post_auxiliary_call
+    - post_tool_call
+  provides_middleware:
+    - llm_execution
+  requires_env:
+    - OPENROUTER_API_KEY
