@@ -36,6 +36,7 @@ from agent.surface_switch import (
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from hermes_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
+from agent.turn_scripted_prelude import Prelude, play_prelude
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
 from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
@@ -1530,6 +1531,24 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _codex_app_server_turn(agent: Any, s: Any) -> Optional[Dict[str, Any]]:
+    """The codex app-server's result for this turn, or None when its failure activated a fallback and the
+    generic loop retries the same user turn."""
+    codex_result = agent._run_codex_app_server_turn(
+        user_message=s.user_message, original_user_message=s.original_user_message,
+        messages=s.messages, effective_task_id=s.effective_task_id,
+        should_review_memory=s._should_review_memory,
+    )
+    from agent.turn_recovery import activate_codex_app_server_fallback
+    if not activate_codex_app_server_fallback(agent, codex_result):
+        return codex_result
+    # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
+    # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
+    s.api_call_count = int(codex_result.get("api_calls") or 0)
+    s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    return None
+
+
 def _run_conversation_turn(
     agent,
     user_message: Any,
@@ -1545,6 +1564,7 @@ def _run_conversation_turn(
     turn_author: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
+    prelude: Optional[Prelude] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
@@ -1554,7 +1574,8 @@ def _run_conversation_turn(
     ``title_user_message``: optional pre-injection text for titles only (None uses the
     model-facing message; an empty string suppresses titling for this turn).
     ``persist_user_display_*``:
-    display-only event rendering; the model still receives the message unchanged."""
+    display-only event rendering; the model still receives the message unchanged.
+    ``prelude``: scripted tool calls played before the first model call (``agent/turn_scripted_prelude.py``)."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1619,21 +1640,15 @@ def _run_conversation_turn(
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
-        codex_result = agent._run_codex_app_server_turn(
-            user_message=s.user_message, original_user_message=s.original_user_message,
-            messages=s.messages, effective_task_id=s.effective_task_id,
-            should_review_memory=s._should_review_memory,
-        )
-        from agent.turn_recovery import activate_codex_app_server_fallback
-        if not activate_codex_app_server_fallback(agent, codex_result):
-            return codex_result
-        # Fallback activation rewrote provider/model/api_mode: retry this same user turn on the generic
-        # loop below, keeping codex's projected rows and its failed API call in the turn's accounting.
-        s.api_call_count = int(codex_result.get("api_calls") or 0)
-        s.active_system_prompt = _sync_failover_system_message(agent, None, s.active_system_prompt)
+    if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
+        return codex_result
 
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
+    if _prelude_action == "return":
+        return _prelude_result
+    while _prelude_action != "break" and (
+        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
+    ):
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1707,6 +1722,7 @@ def run_conversation(
     moa_config: Optional[dict[str, Any]] = None,
     turn_author: Optional[Dict[str, Any]] = None,
     title_user_message: Optional[str] = None,
+    prelude: Optional[Prelude] = None,
 ) -> Dict[str, Any]:
     """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
 
@@ -1736,6 +1752,7 @@ def run_conversation(
             moa_config=moa_config,
             turn_author=turn_author,
             title_user_message=title_user_message,
+            prelude=prelude,
         )
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)

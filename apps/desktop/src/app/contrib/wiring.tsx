@@ -57,13 +57,11 @@ import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
-  $freshSessionRequest,
   $profileScope,
   ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
-  normalizeProfileKey,
-  refreshActiveProfile
+  normalizeProfileKey
 } from '@/store/profile'
 import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
@@ -93,7 +91,7 @@ import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
-import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -170,11 +168,18 @@ import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useOnboardingHandoff } from './onboarding-handoff'
-import { useOnboardingKickoff } from './onboarding-kickoff'
-import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
+import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
+import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
+import {
+  useCreditsNoticeDemo,
+  useFreshSessionRequest,
+  useGatewayScopeRefresh,
+  useOpenKeybindsListener,
+  usePublishRestartPreviewServer
+} from './wiring-effects'
 import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
@@ -462,31 +467,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const openProviderSettings = useCallback(() => navigate(`${SETTINGS_ROUTE}?tab=providers`), [navigate])
 
-  // Palette "Keyboard shortcuts" entry dispatches a custom event (contributions
-  // don't have router access); listen and navigate to the settings keybinds tab.
-  useEffect(() => {
-    const onOpenKeybinds = () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-    window.addEventListener('hermes:open-keybinds', onOpenKeybinds)
-
-    return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
-  }, [navigate])
-
-  // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ⌘K palette
-  // / window.__creditsDemo). Dynamic import inside the DEV guard so the module
-  // is dropped from production builds.
-  useEffect(() => {
-    if (!import.meta.env.DEV) {
-      return
-    }
-
-    let dispose: (() => void) | undefined
-
-    void import('./dev/credits-notice-demo').then(m => {
-      dispose = m.installCreditsNoticeDemo()
-    })
-
-    return () => dispose?.()
-  }, [])
+  useOpenKeybindsListener(navigate)
+  useCreditsNoticeDemo()
 
   // Post-turn rehydrate from stored history (same behavior as DesktopController,
   // including finished-todos restoration).
@@ -560,13 +542,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway
   })
 
-  // Expose the restart handler to the preview pane contribution (module
-  // boundary crossed via atom — contrib-panes can't import this file).
-  useEffect(() => {
-    $restartPreviewServer.set(restartPreviewServer)
-
-    return () => $restartPreviewServer.set(null)
-  }, [restartPreviewServer])
+  usePublishRestartPreviewServer(restartPreviewServer)
 
   const {
     archiveSession,
@@ -603,43 +579,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     updateSessionState
   })
 
-  // A profile switch/create drops to a fresh new-session draft so the
-  // previously open session doesn't bleed across contexts. Skip initial value.
-  const freshSessionRequest = useStore($freshSessionRequest)
-  const lastFreshRef = useRef(freshSessionRequest)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (freshSessionRequest === lastFreshRef.current) {
-      return
-    }
-
-    lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
-  }, [freshSessionRequest, startFreshSessionDraft])
-
-  // Swapping the live gateway to another source or profile must re-pull that
-  // source's model/config/profile state. Two sources commonly both expose a
-  // `default` profile, so profile alone is not a sufficient identity.
-  const gatewayScope = `${activeConnectionId ?? ''}\0${activeGatewayProfile}`
-  const lastGatewayScopeRef = useRef(gatewayScope)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (gatewayScope === lastGatewayScopeRef.current) {
-      return
-    }
-
-    lastGatewayScopeRef.current = gatewayScope
-    // Force: the new source/profile pair has its own defaults, so reseed the
-    // selector even if the composer already shows values from the previous
-    // backend. These refreshes carry intent tokens so an in-flight picker
-    // click still wins.
-    void refreshCurrentModel(true)
-    void refreshHermesConfig(true)
-    void refreshActiveProfile()
-    resetProjectTreeState()
-  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
+  useFreshSessionRequest(startFreshSessionDraft)
+  useGatewayScopeRefresh(activeConnectionId, activeGatewayProfile, refreshCurrentModel, refreshHermesConfig)
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that
@@ -700,12 +641,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const kickoffFirstChat = useOnboardingKickoff({
-    createBackendSessionForSend,
-    requestGateway,
-    resumeSession,
-    runCreatePinnedTo
-  })
+  const adoptSessionRoute = useCallback(
+    async (storedSessionId: string) => {
+      creatingSessionRef.current = true
+
+      try {
+        await resumeSession(storedSessionId, true)
+
+        if ($selectedStoredSessionId.get() === storedSessionId) {
+          navigate(sessionRoute(storedSessionId), { replace: true })
+        }
+      } finally {
+        window.setTimeout(() => {
+          creatingSessionRef.current = false
+        }, 0)
+      }
+    },
+    [navigate, resumeSession]
+  )
 
   useOnboardingHandoff({
     activeSessionIdRef,
@@ -788,6 +741,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     startFreshSessionDraft,
     sttEnabled,
     updateSessionState
+  })
+
+  const runKickoffSlash = useCallback<KickoffSlashCommand>(
+    (command, options) => executeSlashCommand(command, { ...options, typed: false }),
+    [executeSlashCommand]
+  )
+
+  const kickoffFirstChat = useOnboardingKickoff({
+    requestGateway: ambientRequestGateway,
+    resumeSession: adoptSessionRoute,
+    runSlashCommand: runKickoffSlash
   })
 
   // Runs outside the selected ChatBar so queues belonging to background
@@ -1368,7 +1332,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && (
+      {isMainWindow() && (
         <OnboardingChatGate
           enabled={gatewayState === 'open'}
           onKickoff={kickoffFirstChat}
