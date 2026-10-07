@@ -2149,6 +2149,7 @@ export const jaOverrides = {
     last: '前回',
     next: '次回',
     noRuns: 'まだ実行されていません',
+    queuedRun: '待機中の実行',
     manage: '管理',
     showRuns: '実行履歴を表示',
     hideRuns: '実行履歴を隠す',

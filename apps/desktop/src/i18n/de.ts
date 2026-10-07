@@ -3553,6 +3553,7 @@ export const deOverrides = {
     next: 'Als Nächstes:',
     overdueSince: 'Überfällig seit:',
     noRuns: 'Noch keine Ausführungen',
+    queuedRun: 'Ausführung in der Warteschlange',
     manage: 'Verwalten',
     showRuns: 'Ausführungen anzeigen',
     hideRuns: 'Ausführungen ausblenden',

@@ -2417,6 +2417,7 @@ export const ruOverrides = {
     last: 'Последний:',
     next: 'Следующий:',
     noRuns: 'Запусков пока не было',
+    queuedRun: 'Запуск в очереди',
     manage: 'Управлять',
     showRuns: 'Показать запуски',
     hideRuns: 'Скрыть запуски',

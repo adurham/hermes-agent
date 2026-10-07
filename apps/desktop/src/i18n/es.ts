@@ -3546,6 +3546,7 @@ export const esOverrides = {
     next: 'Siguiente:',
     overdueSince: 'Atrasada desde:',
     noRuns: 'Sin ejecuciones aún',
+    queuedRun: 'Ejecución en cola',
     manage: 'Gestionar',
     showRuns: 'Mostrar ejecuciones',
     hideRuns: 'Ocultar ejecuciones',

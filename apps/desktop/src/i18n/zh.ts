@@ -3017,6 +3017,7 @@ export const zhOverrides = {
     last: '上次：',
     next: '下次：',
     noRuns: '尚无运行',
+    queuedRun: '排队中的运行',
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',

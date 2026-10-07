@@ -3560,6 +3560,7 @@ export const frOverrides = {
     next: 'Prochaine :',
     overdueSince: 'En retard depuis :',
     noRuns: 'Aucune exécution',
+    queuedRun: 'Exécution en file d’attente',
     manage: 'Gérer',
     showRuns: 'Afficher les exécutions',
     hideRuns: 'Masquer les exécutions',
