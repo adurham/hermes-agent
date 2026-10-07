@@ -94,10 +94,7 @@ def reset_setup_profile(launch_home: Path) -> SetupProfile:
     if found is None:
         raise LookupError("no setup profile to reset")
     name, path = found
-    # Reset can run on the setup profile's own backend; its skills then come from the launch profile.
-    source = get_hermes_home()
-    if (source / profiles_mod.SETUP_PROFILE_MARKER).is_file():
-        source = launch_home
+    source = _user_home(launch_home)
     _write_soul(path)
     _replace_dir(path / "memories")
     _write_setup_config(path)
@@ -110,11 +107,18 @@ def reset_setup_profile(launch_home: Path) -> SetupProfile:
 
 
 def primary_profile(launch_home: Path) -> str:
-    """The profile setup hands off to: the launch profile from the setup profile's home, else this one."""
-    home = get_hermes_home()
-    if (home / profiles_mod.SETUP_PROFILE_MARKER).is_file():
-        home = launch_home
-    return profile_name_for_home(home) or "default"
+    """The profile setup hands off to: the user's own profile, never the setup profile."""
+    return profile_name_for_home(_user_home(launch_home)) or "default"
+
+
+def _user_home(launch_home: Path) -> Path:
+    """The user's own profile home. The calling backend may be scoped to the setup profile, or launched under
+    it (during onboarding the ambient backend is the setup profile's), so take the first candidate that is not
+    the setup profile."""
+    for home in (get_hermes_home(), launch_home):
+        if not (home / profiles_mod.SETUP_PROFILE_MARKER).is_file():
+            return home
+    return profiles_mod.get_profile_dir("default")
 
 
 def onboarding_eligible() -> bool:
