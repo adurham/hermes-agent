@@ -114,31 +114,43 @@ def test_session_read_handlers_run_sessiondb_work_off_event_loop(monkeypatch, ca
     assert all(thread_id != loop_thread for thread_id in db_threads)
 
 
-def test_session_rename_routes_through_authority_without_second_writer(monkeypatch):
-    """Main's rename fix offloaded the ad-hoc ``_with_db`` writer; on the unified runtime the
-    PATCH route never opens a SessionDB at all — the owning session authority applies the
-    ``sidebar`` mutation, so a second writer (on or off the loop) would be the regression."""
-    seen = {}
+def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch, tmp_path):
+    """Main's rename fix (1769024ca3b) ported to the unified runtime: the PATCH still opens no
+    second SessionDB writer (the owning authority applies the ``sidebar`` mutation), and that
+    authority's SQLite transaction runs off the event loop thread."""
+    from types import SimpleNamespace
+
+    import gateway.session_mutations as _mutations
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
 
     def _open_db(*_args, **_kwargs):
         raise AssertionError("rename must not open its own SessionDB writer")
 
-    async def _mutate(request, profile, session_id, *, request_id, expected_revision, operation,
-                      payload, expected_generation=None):
-        seen.update(profile=profile, session_id=session_id, request_id=request_id,
-                    expected_revision=expected_revision, operation=operation, payload=payload,
-                    expected_generation=expected_generation)
-        return {"ok": True, "title": payload.get("title")}
+    write_threads: list[int] = []
+    commit = _mutations.mutate_runtime_session
 
-    monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
-    monkeypatch.setattr(_web_server_sessions, "_mutate_session_request", _mutate)
+    def _recording_commit(*args, **kwargs):
+        write_threads.append(threading.get_ident())
+        return commit(*args, **kwargs)
 
-    body = _web_models.SessionRename(title="renamed", pinned=True, request_id="req-1",
-                                     expected_revision=3, expected_generation=1)
-    result = asyncio.run(_rt_sessions.rename_session_endpoint("sess-1", body, request=object()))
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("sess-1", source="cli")
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id="p", instance_id="owner",
+                                     db=db, epoch=begin_runtime_epoch(db, instance_id="owner"))
+        authority.sessions["sess-1"] = LiveSession(None, "route")
+        actor = Principal("owner", "p", frozenset({"session:control"}), "http")
+        monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
+        monkeypatch.setattr(_web_server_sessions, "_session_mutation_context", lambda request, profile: (authority, actor))
+        monkeypatch.setattr(_mutations, "mutate_runtime_session", _recording_commit)
 
-    assert result == {"ok": True, "title": "renamed"}
-    assert seen == {
-        "profile": None, "session_id": "sess-1", "request_id": "req-1", "expected_revision": 3,
-        "expected_generation": 1, "operation": "sidebar", "payload": {"title": "renamed", "pinned": True},
-    }
+        async def _rename():
+            body = _web_models.SessionRename(title="renamed", request_id="req-1", expected_revision=0)
+            return threading.get_ident(), await _rt_sessions.rename_session_endpoint("sess-1", body, request=object())
+
+        loop_thread, result = asyncio.run(_rename())
+        assert result["ok"] is True and result["title"] == "renamed"
+        assert db.get_session("sess-1")["title"] == "renamed"
+    assert write_threads and all(thread_id != loop_thread for thread_id in write_threads)

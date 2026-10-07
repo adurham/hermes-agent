@@ -4,6 +4,8 @@ No legacy slash handler is executed after a receipt: those handlers own separate
 transactions. Local reset prepares its replacement in the receipt transaction;
 branch/compress/model still require their own prepared runtime publication.
 """
+import asyncio
+
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
@@ -98,7 +100,9 @@ async def mutate_session(authority, actor, ref, params):
         # first attempt may have committed and then failed before publishing them.
         result = prepared
     else:
-        result = mutate_runtime_session(authority.db, epoch=authority.epoch,
+        # The receipt transaction is synchronous SQLite: run it off the event loop so a large
+        # state.db or a contended writer lock never stalls other clients (main 1769024ca3b).
+        result = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
             principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
             expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
             operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=prepared,
