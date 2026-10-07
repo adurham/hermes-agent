@@ -674,7 +674,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 try:
                     return bool(self._steer_running_agent(running_agent, self._steer_text_with_origin(text, event)))
                 except Exception as exc:
-                    logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
+                    logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc, exc_info=True)
             return False
         if self._agent_has_active_subagents(running_agent):
             logger.info("PRIORITY interrupt demoted to queue for session %s because the running agent has active subagents (#30170)", _quick_key)
@@ -1139,6 +1139,36 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
+    async def _hm_authority_admission(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, is_internal: bool,
+    ) -> tuple[bool, Optional[str]]:
+        """``(True, reply)`` when the routed profile's session authority owned this message
+        (preempted, plugin-consumed or admitted to its durable FIFO); ``(False, None)`` to continue
+        on the in-process path. Raises ``RuntimeStoreError('profile_mismatch')`` for a scope this
+        process does not serve."""
+        # The message handler entered the routed profile's scope; its authority owns this turn.
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is not None and not event.get_command() and not is_internal:
+            from gateway.session_ingress import admit_message, executing_admission
+            if not executing_admission.get():
+                # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
+                # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
+                # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
+                # its whole request timeout.
+                if self._is_session_running(_quick_key) and await self._hm_busy_preempt(event, source, _quick_key):
+                    return True, None
+                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
+                if _consumed:
+                    return True, _consumer_reply
+                return True, await admit_message(authority, event)
+        if (authority is None and not is_internal and not event.get_command()
+                and getattr(self, 'session_authority', None) is not None):
+            # Scoped to a home this process does not serve: never fall back to the launch ledger.
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('profile_mismatch')
+        return False, None
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1168,27 +1198,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if _reply is not None:
             return _reply
 
-        # The message handler entered the routed profile's scope; its authority owns this turn.
-        from gateway.session_authorities import active_authority
-        authority = active_authority(self)
-        if authority is not None and not event.get_command() and not is_internal:
-            from gateway.session_ingress import admit_message, executing_admission
-            if not executing_admission.get():
-                # The durable FIFO only orders turns; busy_input_mode still decides what a follow-up
-                # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
-                # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
-                # its whole request timeout.
-                if self._is_session_running(_quick_key) and await self._hm_busy_preempt(event, source, _quick_key):
-                    return None
-                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
-                if _consumed:
-                    return _consumer_reply
-                return await admit_message(authority, event)
-        if (authority is None and not is_internal and not event.get_command()
-                and getattr(self, 'session_authority', None) is not None):
-            # Scoped to a home this process does not serve: never fall back to the launch ledger.
-            from hermes_state_runtime import RuntimeStoreError
-            raise RuntimeStoreError('profile_mismatch')
+        _owned, _authority_reply = await self._hm_authority_admission(event, source, _quick_key, is_internal)
+        if _owned:
+            return _authority_reply
 
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)
