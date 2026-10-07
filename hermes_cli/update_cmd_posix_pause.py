@@ -379,15 +379,16 @@ def _stop_bare(token: dict, bare: list[dict]) -> None:
 
 
 def _gateway_on_home(home: str, exclude: set[int]) -> int | None:
-    from hermes_cli.gateway import find_gateway_pids
-    from hermes_cli.update_fleet_scope import gateway_pid_home
-    want = os.path.realpath(home)
-    with suppress(Exception):
-        for pid in find_gateway_pids(all_profiles=True):
-            found = gateway_pid_home(int(pid))
-            if int(pid) not in exclude and found and os.path.realpath(found) == want:
-                return int(pid)
-    return None
+    """The gateway serving *home*: its runtime lock + PID file, verified against the live process.
+
+    Never a process scan: a replayed ``gateway run`` matches the canonical matcher for the moment
+    before it finds the home already served and exits, so only the lock holder counts."""
+    from gateway.status import get_running_pid
+    try:
+        pid = get_running_pid(Path(home) / "gateway.pid", cleanup_stale=False)
+    except Exception:  # health: allow BLE001 -- unreadable identity files: nothing proven to adopt
+        return None
+    return int(pid) if pid and int(pid) not in exclude else None
 
 
 def _relaunch_bare(entry: dict) -> int:
@@ -405,11 +406,11 @@ def _relaunch_bare(entry: dict) -> int:
                                 stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
     deadline = time.monotonic() + _READY_TIMEOUT_S
     while time.monotonic() < deadline:
+        if (pid := _gateway_on_home(entry["home"], {int(entry["pid"])})) is not None:
+            return pid  # the replay, or a gateway someone started meanwhile (the replay then exits 0)
         if proc.poll() is not None:
             raise RuntimeError(f"replayed gateway for {entry['home']} exited {proc.returncode} "
                                f"(see {logs / 'gateway-update-resume.log'})")
-        if (pid := _gateway_on_home(entry["home"], {int(entry["pid"])})) is not None:
-            return pid
         time.sleep(0.5)
     raise RuntimeError(f"replayed gateway for {entry['home']} did not come up within {int(_READY_TIMEOUT_S)}s")
 

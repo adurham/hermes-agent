@@ -493,7 +493,9 @@ def _deps_failure_cell(w: G.World, toggle: Path) -> None:
         time.sleep(3.0)
         gws = _gateways(host)
         diag = _diag(w, host, None, served=served, gateways=gws, launch_log=launch_log[-4000:],
-                     status=G.output(status)[-3000:])
+                     status=G.output(status)[-3000:], launch_log_after=_read(log)[len(launch_log):][-4000:],
+                     resume_log=_read(w.sb.hermes_home / "logs" / "gateway-update-resume.log")[-4000:],
+                     gateway_log=_read(w.sb.hermes_home / "logs" / "gateway.log")[-6000:])
         assert served and int(served["pid"]) != gw_pid, f"the gateway's own launch did not come up on the release:\n{diag}"
         assert len(gws) == 1, f"the next launch started a twin beside the running gateway:\n{diag}"
         assert not [r for r in _record(w) if (r.get("token") or {}).get("resume_needed")], \
