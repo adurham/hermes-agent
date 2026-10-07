@@ -1693,6 +1693,19 @@ export function overlayConcurrentMessageChanges(
     )
   }
 
+  const representedByStoredRow = (current: ChatMessage): boolean => {
+    const rows = transcriptRowIds(current)
+
+    return (
+      rows.length > 0 &&
+      rows.every(id =>
+        overlaid.some(
+          message => message.id !== current.id && message.role === current.role && transcriptRowIds(message).includes(id)
+        )
+      )
+    )
+  }
+
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
     const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
@@ -1712,6 +1725,18 @@ export function overlayConcurrentMessageChanges(
       isLiveTailReplyId(current.id) &&
       committedOnPage(current)
     ) {
+      if (nextIndex !== undefined) {
+        dropped.add(current.id)
+      }
+
+      continue
+    }
+
+    // A completion receipt bound this optimistic prompt to its stored row
+    // while REST was in flight, so it differs from the pre-bind baseline only
+    // by that row id. The page already carries the stored row under its own
+    // id: the prompt is represented, not a new concurrent row.
+    if (current.role === 'user' && representedByStoredRow(current)) {
       if (nextIndex !== undefined) {
         dropped.add(current.id)
       }
