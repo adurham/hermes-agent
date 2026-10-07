@@ -111,8 +111,10 @@ async def probe(peer):
             assert agent is not None, (source, list(runner._agent_cache), peer.requests, await rpc(ws, 'session.resume', session_id=sid))
             assert agent.platform == {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop'}[source], vars(agent).get('platform')
             cwd = Path(os.environ['HERMES_HOME'], source)
-            assert (cwd / 'policy-proof.txt').read_text() == 'owned'
             requests = [r for r in peer.requests if r.get('model') == 'policy-' + source]
+            tool_results = [m for r in requests for m in r['messages'] if m['role'] == 'tool']
+            assert (cwd / 'policy-proof.txt').is_file(), (source, str(cwd), tool_results)
+            assert (cwd / 'policy-proof.txt').read_text() == 'owned'
             assert len(requests) >= 2, peer.requests
             assert any(str(cwd) in json.dumps(m) for r in requests for m in r['messages'] if m['role'] == 'tool')
             names = {t['function']['name'] for t in requests[0]['tools']}

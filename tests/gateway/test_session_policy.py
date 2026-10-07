@@ -46,7 +46,8 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
     home, state = tmp_path / 'home', tmp_path / 'state'
     home.mkdir()
     state.mkdir()
-    env = {k: os.environ[k] for k in ('PATH', 'SYSTEMROOT', 'LANG', 'TZ') if k in os.environ}
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = child_env()
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'session_policy_peer.py')],
                             cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=130)

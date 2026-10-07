@@ -57,8 +57,9 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     import subprocess
     import sys
     repo = Path(__file__).resolve().parents[2]
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'SYSTEMROOT') if k in os.environ}
-    env.update(HOME=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = child_env()
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
         env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150)
     assert result.returncode == 0, result.stdout + result.stderr

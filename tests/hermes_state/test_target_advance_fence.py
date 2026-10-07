@@ -12,7 +12,7 @@ from hermes_state import SessionDB
 import hermes_state_runtime as rt
 
 
-def _local_session(db, epoch):
+def _local_session(db, epoch, cwd):
     from hermes_state_local import commit_local_session
     from gateway.config import Platform
     from gateway.session import SessionEntry, SessionSource
@@ -23,7 +23,7 @@ def _local_session(db, epoch):
     source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
     now = _now()
     entry = SessionEntry('local:' + sid, sid, now, now, origin=source, platform=Platform.LOCAL)
-    policy = build_policy({'source': 'cli', 'cwd': '/', 'model': 'm', 'toolsets': []},
+    policy = build_policy({'source': 'cli', 'cwd': str(cwd), 'model': 'm', 'toolsets': []},
                           {'platform_toolsets': {'cli': []}}, private_secrets={})
     commit_local_session(db, epoch=epoch, receipt={
         'profile_id': 'profile', 'principal_id': 'human', 'request_id': 'r', 'session_id': sid,
@@ -44,7 +44,7 @@ def test_target_advance_allows_queued_follower_and_refuses_started_head(tmp_path
     prepare = {'_prepare_only': True} if operation == 'compress' else {}
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
-        sid = _local_session(db, epoch)
+        sid = _local_session(db, epoch, tmp_path)
         rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id=sid,
                                request_id='head', payload={'text': 'head'})
         rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id=sid,
