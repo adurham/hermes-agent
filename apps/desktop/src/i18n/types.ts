@@ -10,6 +10,7 @@ import type { TipId } from '@/lib/tips/catalog'
 
 import type { AppTourTranslations, HandoffTourTranslations } from './types_app_tour'
 import type { AuxTaskCopyMap } from './types_aux_tasks'
+import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ModelMenuTranslations } from './types_model_menu'
@@ -542,14 +543,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  billingBlock: {
-    titleNous: string
-    titleProvider: (provider: string) => string
-    fallbackMessage: string
-    openBilling: string
-    addCredits: string
-    dismiss: string
-  }
+  billingBlock: BillingTranslations['billingBlock']
 
   sendDiagnostics: {
     title: string
@@ -2715,6 +2709,7 @@ export interface Translations extends NoticeTranslations {
     next: string
     overdueSince: string
     noRuns: string
+    queuedRun: string
     manage: string
     showRuns: string
     hideRuns: string
