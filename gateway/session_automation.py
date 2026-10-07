@@ -63,10 +63,27 @@ def automation_notification_metadata(metadata):
         raise RuntimeStoreError('invalid_params')
     return {'notification_category': category} if category == 'diagnostic' else {}
 
+
+_DISPLAY_TEXT_LIMIT = 2000
+
+
+def automation_display_metadata(metadata):
+    """Validate a producer's async-result card: both keys or neither, kind from the closed set."""
+    if 'display_kind' not in metadata and 'display_text' not in metadata:
+        return {}
+    from gateway.response_filters import PRODUCER_NOTICE_DISPLAY_KINDS
+    kind, text = metadata.get('display_kind'), metadata.get('display_text')
+    if (kind not in PRODUCER_NOTICE_DISPLAY_KINDS or not isinstance(text, str) or not text.strip()
+            or len(text) > _DISPLAY_TEXT_LIMIT):
+        raise RuntimeStoreError('invalid_params')
+    return {'display_kind': kind, 'display_text': text}
+
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
-# persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes.
+# persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes,
+# and display_kind/display_text so the persisted row is the card the producer named.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
-    'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category'})
+    'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
+    'display_kind', 'display_text'})
 
 
 def snapshot_automation(authority, adapter, event, identity):
@@ -76,7 +93,7 @@ def snapshot_automation(authority, adapter, event, identity):
             or event.media_urls or event.prompt_response or event.source.platform == Platform.API_SERVER
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
-    notification = automation_notification_metadata(event.metadata)
+    notification = automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
     entry = _owner(runner, event)
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
@@ -132,6 +149,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
     descriptor = {'identity': identity, 'owner': ref.session_id,
                   'route': entry.session_key, 'target': entry.session_id}
     descriptor.update(automation_notification_metadata(event.metadata))
+    descriptor.update(automation_display_metadata(event.metadata))
     if event.metadata.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
@@ -169,6 +187,7 @@ def restore_local_automation(authority, ref, row):
         message_id=descriptor['identity'], metadata={'gateway_session_key': live.route,
             'gateway_session_id': entry.session_id})
     event.metadata.update(automation_notification_metadata(descriptor))
+    event.metadata.update(automation_display_metadata(descriptor))
     if descriptor.get('turn_author') is not None:
         event.metadata['turn_author'] = deepcopy(descriptor['turn_author'])
     if descriptor.get('heartbeat'):

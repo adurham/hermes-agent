@@ -1319,6 +1319,13 @@ class GatewayNotificationsMixin:
                 metadata["gateway_session_id"] = parent_session_id
             if evt.get('_automation_identities'):
                 metadata['automation_identities'] = evt['_automation_identities']
+            if source.platform == Platform.LOCAL and evt.get("type", "completion") == "completion":
+                # A local completion persists as the async-result card the in-process TUI wrote;
+                # messaging rows stay internal_notification, as on main.
+                from tools.process_registry_notifications import (
+                    PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text)
+                metadata["display_kind"] = PROCESS_COMPLETE_DISPLAY_KIND
+                metadata["display_text"] = evt.get("_display_text") or process_completion_display_text([evt])
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to
             # it: by delivery time the user has often continued elsewhere, and an event anchored
@@ -1701,10 +1708,13 @@ class GatewayNotificationsMixin:
                 entries_to_deliver = entries
             synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
                           else self._format_coalesced_process_completions(entries_to_deliver))
+            from tools.process_registry_notifications import process_completion_display_text
+            display_text = process_completion_display_text([evt for _text, evt, _future in entries_to_deliver])
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries_to_deliver:
+                candidate_evt = dict(candidate_evt, _display_text=display_text)
                 if getattr(self, 'session_authority', None) is not None:
                     candidate_evt = dict(candidate_evt, _automation_identities=[
                         producer_identity(self, evt) for _text, evt, _future in entries_to_deliver])

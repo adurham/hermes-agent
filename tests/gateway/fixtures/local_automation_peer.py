@@ -84,9 +84,15 @@ def probe(base, source):
         assert 'REAL_TERMINAL_COMPLETION' in str(texts[-1]), texts
         assert sum('REAL_TERMINAL_COMPLETION' in str(text) for text in texts) == 1, texts
         with sqlite3.connect(home / 'state.db') as db:
-            notices = db.execute("SELECT display_kind FROM messages WHERE role='user' AND content LIKE ?",
-                                 ('%REAL_TERMINAL_COMPLETION%',)).fetchall()
-        assert notices == [('internal_notification',)], notices
+            notices = db.execute("SELECT display_kind, json_extract(display_metadata, '$.display_text') FROM messages"
+                                 " WHERE role='user' AND content LIKE ?", ('%REAL_TERMINAL_COMPLETION%',)).fetchall()
+        # A completion is the same async-result card the in-process TUI persisted; a watch match is not one.
+        assert len(notices) == 1, notices
+        if watch:
+            assert notices[0][0] == 'internal_notification', notices
+        else:
+            assert notices[0][0] == 'process_complete', notices
+            assert str(notices[0][1]).startswith('Background Process Finished: '), notices
         prefixes = [json.dumps([m for m in r['messages'] if m['role'] in ('system', 'developer')], sort_keys=True)
                     for r in model.requests if r.get('messages')]
         assert len(set(prefixes)) == 1, 'automation changed the cached system prefix'

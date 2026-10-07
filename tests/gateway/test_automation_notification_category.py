@@ -95,6 +95,24 @@ async def test_bot_invalid_category_refuses_before_admission(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_display_kind_is_a_closed_producer_set(tmp_path, monkeypatch):
+    """Only gateway-produced notice kinds ride an automation admission; anything else refuses."""
+    from gateway.response_filters import display_kind_for_event, display_metadata_for_event
+    from gateway.session_automation import automation_display_metadata
+    trusted = {'display_kind': 'process_complete', 'display_text': 'Background Process Finished: true'}
+    assert automation_display_metadata(trusted) == trusted
+    event = MessageEvent(text='notice', internal=True, metadata=dict(trusted))
+    assert display_kind_for_event(event) == 'process_complete'
+    assert display_metadata_for_event(event) == {'display_text': trusted['display_text']}
+    assert display_kind_for_event(MessageEvent(text='x', metadata=dict(trusted))) is None
+    for bad in ({'display_kind': 'hidden', 'display_text': 'x'}, {'display_kind': 'process_complete'},
+                {'display_text': 'x'}, {'display_kind': 'process_complete', 'display_text': ''},
+                {'display_kind': 'process_complete', 'display_text': 'x' * 2001}):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            automation_display_metadata(bad)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('category', ['result', 'diagnostic'])
 async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, category):
     from gateway.session_ingress_context import native_callback, register_transport_home
