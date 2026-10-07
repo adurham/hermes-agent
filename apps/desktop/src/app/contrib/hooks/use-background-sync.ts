@@ -81,6 +81,19 @@ export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession
   return stored.profile
 }
 
+/** Dedupe key for one active transcript's last published page signature. */
+function transcriptSignatureKey(stored: ActiveTranscriptSession, storedSessionId: string): string {
+  return stored.ownerRoute
+    ? JSON.stringify([
+        stored.ownerRoute.connectionId,
+        stored.ownerRoute.profile,
+        stored.ownerRoute.targetProfile ?? '',
+        stored.ownerRoute.mode ?? '',
+        storedSessionId
+      ])
+    : `${stored.profile ?? 'default'}:${storedSessionId}`
+}
+
 /** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
 export function resolveActiveTranscriptSession(
   storedSessionId: string,
@@ -604,15 +617,7 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = stored.ownerRoute
-      ? JSON.stringify([
-          stored.ownerRoute.connectionId,
-          stored.ownerRoute.profile,
-          stored.ownerRoute.targetProfile ?? '',
-          stored.ownerRoute.mode ?? '',
-          storedSessionId
-        ])
-      : `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = transcriptSignatureKey(stored, storedSessionId)
 
     // Same rule as the warm-activation guard (use-session-actions/index.ts):
     // publishing the page would blank the thread and trip the routed loading

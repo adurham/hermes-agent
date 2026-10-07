@@ -51,6 +51,25 @@ function resumeRetryDelayMs(attempt: number): number {
   return Math.min(RESUME_RETRY_MAX_MS, RESUME_RETRY_BASE_MS * 2 ** attempt)
 }
 
+// Resume the routed session with the owner route / snapshot mode carried by an
+// explicit resume request for that same session.
+function dispatchRouteResume(
+  resumeSession: RouteResumeOptions['resumeSession'],
+  routedSessionId: string,
+  sessionResumeRequest: SessionResumeRequest | null,
+  explicitlyRequested: boolean
+): void {
+  const ownerRoute = sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
+
+  if (explicitlyRequested && sessionResumeRequest?.authoritativeSnapshot) {
+    void resumeSession(routedSessionId, true, ownerRoute, { authoritativeSnapshot: true })
+  } else if (ownerRoute) {
+    void resumeSession(routedSessionId, true, ownerRoute)
+  } else {
+    void resumeSession(routedSessionId, true)
+  }
+}
+
 // HashRouter boot edge case: pathname briefly reads `/` before the hash is
 // parsed. If the hash references a real session, defer; resume picks it up
 // next tick. Without this, ctrl+R on `#/:sessionId` flashes 5 loading states.
@@ -202,16 +221,7 @@ export function useRouteResume({
 
         bootResumeRef.current = false
 
-        const ownerRoute =
-          sessionResumeRequest?.sessionId === routedSessionId ? sessionResumeRequest.ownerRoute : undefined
-
-        if (explicitlyRequested && sessionResumeRequest.authoritativeSnapshot) {
-          void resumeSession(routedSessionId, true, ownerRoute, { authoritativeSnapshot: true })
-        } else if (ownerRoute) {
-          void resumeSession(routedSessionId, true, ownerRoute)
-        } else {
-          void resumeSession(routedSessionId, true)
-        }
+        dispatchRouteResume(resumeSession, routedSessionId, sessionResumeRequest, explicitlyRequested)
       }
 
       return
