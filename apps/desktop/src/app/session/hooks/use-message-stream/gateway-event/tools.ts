@@ -45,8 +45,10 @@ function reportStartChatHandoff(payload: GatewayEventPayload | undefined, sessio
     return
   }
 
-  if (isStartChatCallerWatched(storedSessionIdForRuntimeId(sessionId) ?? sessionId)) {
-    markLiveStartChat(payload.tool_id || payload.tool_call_id || payload.id || '')
+  const callerId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
+
+  if (isStartChatCallerWatched(callerId)) {
+    markLiveStartChat(callerId, payload.tool_id || payload.tool_call_id || payload.id || '')
   }
 
   // From the setup chat, the handoff completes the guided first run (no-op elsewhere).

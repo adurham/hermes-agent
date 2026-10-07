@@ -34,14 +34,19 @@ export function readStartChatResult(result: unknown): null | StartChatOutcome {
   return null
 }
 
-const liveStarts = new Set<string>()
-
-export function markLiveStartChat(toolCallId: string): void {
-  liveStarts.add(toolCallId)
+// Tool call ids are unique only within one session (providers reuse ids like `call_0`), so per-call state is keyed by the calling session too.
+function callKey(callerId: string, toolCallId: string): string {
+  return `${callerId}\u0000${toolCallId}`
 }
 
-export function takeLiveStartChat(toolCallId: string): boolean {
-  return liveStarts.delete(toolCallId)
+const liveStarts = new Set<string>()
+
+export function markLiveStartChat(callerId: string, toolCallId: string): void {
+  liveStarts.add(callKey(callerId, toolCallId))
+}
+
+export function takeLiveStartChat(callerId: string, toolCallId: string): boolean {
+  return liveStarts.delete(callKey(callerId, toolCallId))
 }
 
 export function isStartChatCallerWatched(storedId: string): boolean {
@@ -50,13 +55,21 @@ export function isStartChatCallerWatched(storedId: string): boolean {
 
 export const $startChatRetries = atom<Record<string, 'pending' | StartChatOutcome>>({})
 
-function setRetry(toolCallId: string, value: 'pending' | null | StartChatOutcome): void {
-  const { [toolCallId]: _previous, ...rest } = $startChatRetries.get()
+type StartChatRetry = 'pending' | StartChatOutcome | undefined
 
-  $startChatRetries.set(value ? { ...rest, [toolCallId]: value } : rest)
+export function startChatRetry(
+  retries: Record<string, 'pending' | StartChatOutcome>,
+  callerId: string,
+  toolCallId: string
+): StartChatRetry {
+  return retries[callKey(callerId, toolCallId)]
 }
 
-type StartChatRetry = 'pending' | StartChatOutcome | undefined
+function setRetry(key: string, value: 'pending' | null | StartChatOutcome): void {
+  const { [key]: _previous, ...rest } = $startChatRetries.get()
+
+  $startChatRetries.set(value ? { ...rest, [key]: value } : rest)
+}
 
 /** The card's Retry (live in this window, else recorded on the saved tool row) wins over the call's own result. */
 export function startChatOutcome(
@@ -71,7 +84,7 @@ export function startChatOutcome(
 }
 
 /** A later start_chat in this chat already started: a Retry here could only start the task twice. */
-export function startChatSuperseded(messages: ChatMessage[], toolCallId: string): boolean {
+export function startChatSuperseded(messages: ChatMessage[], callerId: string, toolCallId: string): boolean {
   const retries = $startChatRetries.get()
   let after = false
 
@@ -83,7 +96,8 @@ export function startChatSuperseded(messages: ChatMessage[], toolCallId: string)
 
       if (
         after &&
-        startChatOutcome(part, part.toolCallId ? retries[part.toolCallId] : undefined)?.status === 'started'
+        startChatOutcome(part, part.toolCallId ? startChatRetry(retries, callerId, part.toolCallId) : undefined)
+          ?.status === 'started'
       ) {
         return true
       }
@@ -96,6 +110,7 @@ export function startChatSuperseded(messages: ChatMessage[], toolCallId: string)
 }
 
 export async function retryStartChat(
+  callerId: string,
   toolCallId: string,
   callerRuntimeId: string,
   args: StartChatArgs
@@ -106,7 +121,9 @@ export async function retryStartChat(
     throw new Error('Gateway not connected')
   }
 
-  setRetry(toolCallId, 'pending')
+  const key = callKey(callerId, toolCallId)
+
+  setRetry(key, 'pending')
 
   try {
     const outcome = readStartChatResult(
@@ -118,11 +135,11 @@ export async function retryStartChat(
       )
     )
 
-    setRetry(toolCallId, outcome)
+    setRetry(key, outcome)
 
     return outcome
   } catch (error) {
-    setRetry(toolCallId, null)
+    setRetry(key, null)
 
     throw error
   }

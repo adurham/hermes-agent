@@ -23,11 +23,18 @@ import {
   isStartChatCallerWatched,
   retryStartChat,
   startChatOutcome,
+  startChatRetry,
   startChatSuperseded,
   takeLiveStartChat
 } from '@/store/start-chat'
 
-import { requestedTitle, retryRequest, StartChatRejected, StartChatStarted, StartChatStarting } from './start-chat-tool-parts'
+import {
+  requestedTitle,
+  retryRequest,
+  StartChatRejected,
+  StartChatStarted,
+  StartChatStarting
+} from './start-chat-tool-parts'
 
 async function openStartedChat(
   chat: { profile: string; sessionId: string },
@@ -55,7 +62,9 @@ export function StartChatTool(props: ToolCallMessagePartProps & Pick<TimelinePar
   const callerBusy = useStore(view.$busy)
   const profiles = useStore($profiles)
   const sessions = useStore($sessions)
-  const retry = useStore($startChatRetries)[props.toolCallId]
+  // Same fallback as the live-start mark in gateway-event/tools.ts, so both sides build the same key.
+  const callerKey = callerId ?? callerRuntimeId ?? ''
+  const retry = startChatRetry(useStore($startChatRetries), callerKey, props.toolCallId)
   const navigate = useNavigate()
   const { result, toolResultMetadata } = props
 
@@ -66,7 +75,7 @@ export function StartChatTool(props: ToolCallMessagePartProps & Pick<TimelinePar
 
   const superseded = useStoresSelector(
     [view.$messages, $startChatRetries],
-    () => outcome?.status === 'rejected' && startChatSuperseded(view.$messages.get(), props.toolCallId)
+    () => outcome?.status === 'rejected' && startChatSuperseded(view.$messages.get(), callerKey, props.toolCallId)
   )
 
   const started = outcome?.status === 'started' ? outcome : null
@@ -79,7 +88,7 @@ export function StartChatTool(props: ToolCallMessagePartProps & Pick<TimelinePar
       return
     }
 
-    void retryStartChat(props.toolCallId, callerRuntimeId, retryRequest(args)).then(
+    void retryStartChat(callerKey, props.toolCallId, callerRuntimeId, retryRequest(args)).then(
       next => {
         if (next?.status === 'started') {
           void openStartedChat(next, callerId, navigate).catch(error => notifyError(error, copy.openFailed))
@@ -90,14 +99,14 @@ export function StartChatTool(props: ToolCallMessagePartProps & Pick<TimelinePar
   }
 
   useEffect(() => {
-    if (!started || !takeLiveStartChat(props.toolCallId)) {
+    if (!started || !takeLiveStartChat(callerKey, props.toolCallId)) {
       return
     }
 
     const watching = () => Boolean(callerId) && isStartChatCallerWatched(callerId!)
 
     void openStartedChat(started, callerId, navigate, watching).catch(error => notifyError(error, copy.openFailed))
-  }, [callerId, copy.openFailed, navigate, props.toolCallId, started])
+  }, [callerId, callerKey, copy.openFailed, navigate, props.toolCallId, started])
 
   if (props.result !== undefined && !outcome) {
     return <ToolFallback {...props} />
