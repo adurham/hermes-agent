@@ -181,10 +181,12 @@ it.each([true, false, undefined])(
 )
 
 // The session authority acknowledges a queued admission before the prompt row
-// exists, so the optimistic prompt has no row id until the completion receipt
-// names it. A stored page read after the turn must replace that bubble, not
-// paint the prompt a second time beside its stored copy.
-it('binds the optimistic prompt to the receipt row when the submit acknowledgement named none', async () => {
+// exists, and writes a steer's row mid-turn, so no submit acknowledgement names
+// them. The completion receipt does; a stored page read after the turn must
+// replace those bubbles, not paint each prompt a second time beside its row.
+const submissionIdOf = (h: ReturnType<typeof mount>) => h.state().messages[0].id.replace(/^user-/, '')
+
+it('binds the sent prompt to the receipt row named by its submission', async () => {
   const h = mount()
   await h.submit()
   expect(h.state().messages[0].rowId).toBeUndefined()
@@ -192,7 +194,10 @@ it('binds the optimistic prompt to the receipt row when the submit acknowledgeme
   await h.send('message.delta', { text: ANSWER })
   await h.send('message.complete', {
     text: ANSWER,
-    persisted_turn: { row_ids: [71, 72], user_row_id: 71, final_assistant_row_id: 72, complete: true }
+    persisted_turn: {
+      row_ids: [71, 72], user_row_id: 71, user_row_ids: [71], final_assistant_row_id: 72, complete: true,
+      submission_id: submissionIdOf(h)
+    }
   })
 
   const latestPage = toChatMessages([
@@ -200,11 +205,53 @@ it('binds the optimistic prompt to the receipt row when the submit acknowledgeme
     { id: 72, role: 'assistant', content: ANSWER }
   ])
 
-  // The switch-back read grafts the stored page onto the window by row id.
   expect(timeline(graftRefreshedTailOntoBackfill(latestPage, h.state().messages))).toEqual([
     ['user', 'Give the answer.'],
     ['assistant', ANSWER]
   ])
+  h.dispose()
+})
+
+it('binds the prompt and the steer of a turn whose receipt is not complete', async () => {
+  const h = mount()
+  await h.submit()
+  await h.send('message.start')
+  await h.send('message.delta', { text: 'Partial' })
+  await flush()
+  await h.redirect()
+  await h.send('message.delta', { text: ' then revised.' })
+  await h.send('message.complete', {
+    text: 'Revised.',
+    persisted_turn: {
+      row_ids: [71, 72, 73, 74], user_row_id: 71, user_row_ids: [71, 73], final_assistant_row_id: 74,
+      complete: false, submission_id: submissionIdOf(h)
+    }
+  })
+
+  expect(h.state().messages.filter(m => m.role === 'user').map(m => m.rowId)).toEqual([71, 73])
+  h.dispose()
+})
+
+it('binds a viewer that never sent the turn only when it shows exactly the receipt rows', async () => {
+  const h = mount()
+
+  const earlier = toChatMessages([
+    { id: 60, role: 'user', content: 'Earlier.' },
+    { id: 61, role: 'assistant', content: 'Before.' }
+  ])
+
+  h.update(state => ({ ...state, messages: [...earlier, { id: 'user-peer', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }] }))
+  await h.send('message.start')
+  await h.send('message.delta', { text: ANSWER })
+  await h.send('message.complete', {
+    text: ANSWER,
+    persisted_turn: {
+      row_ids: [71, 72], user_row_id: 71, user_row_ids: [71], final_assistant_row_id: 72, complete: true,
+      submission_id: 'sent-from-another-window'
+    }
+  })
+
+  expect(h.state().messages.find(m => m.id === 'user-peer')?.rowId).toBe(71)
   h.dispose()
 })
 

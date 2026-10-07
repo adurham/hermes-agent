@@ -48,38 +48,9 @@ import {
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
+import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
-
-/**
- * A complete receipt names the turn's one stored prompt row. A host whose
- * submit acknowledgement cannot name it (the session authority queues the turn
- * and writes the row when it runs) leaves the optimistic prompt without a row
- * id; bind it here so a transcript read keyed on stored rows (switch-back,
- * peer refresh) replaces that bubble instead of painting the prompt twice.
- */
-function bindReceiptPrompt(
-  messages: ChatMessage[],
-  promptIndex: number,
-  persistedTurn: PersistedTurn | null | undefined
-): ChatMessage[] {
-  const rowId = persistedTurn?.complete === true ? persistedTurn.user_row_id : undefined
-  const prompt = messages[promptIndex]
-
-  if (
-    typeof rowId !== 'number' ||
-    !Number.isSafeInteger(rowId) ||
-    rowId <= 0 ||
-    prompt?.role !== 'user' ||
-    prompt.rowId !== undefined ||
-    !prompt.id.startsWith('user-') ||
-    prompt.id.startsWith('user-queued-')
-  ) {
-    return messages
-  }
-
-  return messages.map((message, index) => (index === promptIndex ? { ...message, rowId } : message))
-}
 
 interface MessageStreamOptions {
   activeGatewayProfile?: string
@@ -1066,7 +1037,7 @@ export function useMessageStream({
         // degraded websocket leaves its tool row spinning forever. The turn is
         // provably done here — nothing can still be running — so seal any
         // tool-call parts that never saw their completion event.
-        nextMessages = bindReceiptPrompt(sealOpenToolParts(nextMessages), lastUserIndex, persistedTurn)
+        nextMessages = bindReceiptUserRows(sealOpenToolParts(nextMessages), persistedTurn)
 
         const hasInlineError = nextMessages.some(
           (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
