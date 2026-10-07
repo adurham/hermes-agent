@@ -2,6 +2,7 @@ import type { FreeTierClaimNudgeResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { cancelOAuthSession, listOAuthProviders, pollOAuthSession, startOAuthLogin } from '@/hermes'
+import { gatewayActivationEpoch } from '@/store/gateway'
 import type { FreeTierStatus } from '@/types/hermes'
 
 import { $freeTierStatus, type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
@@ -93,6 +94,14 @@ function clearTimers() {
 
 const set = (state: FreeTierSignInState) => $freeTierSignIn.set(state)
 
+// `requestGateway` keeps one identity across backend switches, so a reply is tied to the active route
+// it was asked under: a late answer from the previous connection or profile must not land on this one.
+export function sameGatewayRoute(): () => boolean {
+  const epoch = gatewayActivationEpoch()
+
+  return () => gatewayActivationEpoch() === epoch
+}
+
 const fail = (kind: FreeTierSignInFailure, message: null | string = null, retryAfter = 0) => {
   clearTimers()
   set({
@@ -115,6 +124,7 @@ export function openFreeTierSignIn() {
 
 let offerTimer: number | null = null
 let offerTimerFor: FreeTierStatus | null = null
+let offerTimerRoute: () => boolean = () => false
 let offerClaiming = false
 
 function clearOfferTimer() {
@@ -148,7 +158,7 @@ export function stopFreeTierOffer() {
  */
 export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway: FreeTierRequester) {
   // A re-sync on the same read (an onboarding change) keeps its running timer, so it is not pushed back.
-  if (offerTimer !== null && status === offerTimerFor) {
+  if (offerTimer !== null && status === offerTimerFor && offerTimerRoute()) {
     return
   }
 
@@ -160,10 +170,15 @@ export function syncFreeTierOffer(status: FreeTierStatus | null, requestGateway:
   }
 
   if (dueIn > 0) {
+    const isCurrent = sameGatewayRoute()
     offerTimerFor = status
+    offerTimerRoute = isCurrent
     offerTimer = window.setTimeout(() => {
       offerTimer = null
-      void refreshFreeTierStatus(requestGateway)
+
+      if (isCurrent()) {
+        void refreshFreeTierStatus(requestGateway, isCurrent)
+      }
     }, dueIn * 1000)
 
     return
@@ -180,6 +195,7 @@ async function claimFreeTierOffer(requestGateway: FreeTierRequester) {
     return
   }
 
+  const isCurrent = sameGatewayRoute()
   offerClaiming = true
   let claimed: boolean
 
@@ -192,12 +208,16 @@ async function claimFreeTierOffer(requestGateway: FreeTierRequester) {
     offerClaiming = false
   }
 
+  if (!isCurrent()) {
+    return
+  }
+
   if (claimed && $freeTierSignIn.get().status === 'closed') {
     set({ status: 'offer' })
   }
 
   // The claim settled the offer either way; re-read so the cached `nudge_due_in` drops.
-  void refreshFreeTierStatus(requestGateway)
+  void refreshFreeTierStatus(requestGateway, isCurrent)
 }
 
 /** Close and abandon. Cancels a live device-code session so the backend is not

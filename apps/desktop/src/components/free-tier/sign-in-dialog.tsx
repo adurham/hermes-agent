@@ -36,6 +36,7 @@ import {
   freeTierSignInClaim,
   type FreeTierSignInFailure,
   releaseFreeTierSignIn,
+  sameGatewayRoute,
   stopFreeTierOffer,
   syncFreeTierOffer
 } from '@/store/free-tier-sign-in'
@@ -98,7 +99,7 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
       $freeTierStatus.listen(sync),
       $onboardingGate.listen(sync),
       $onboardingSurfaces.listen(sync),
-      $freeTierTurnCompleted.listen(() => void refreshFreeTierStatus(requestGateway))
+      $freeTierTurnCompleted.listen(() => void refreshFreeTierStatus(requestGateway, sameGatewayRoute()))
     ]
 
     sync()

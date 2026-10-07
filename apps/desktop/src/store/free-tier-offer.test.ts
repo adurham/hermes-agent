@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
 import { $freeTierSignIn, closeFreeTierSignIn, stopFreeTierOffer, syncFreeTierOffer } from '@/store/free-tier-sign-in'
+import { activeGatewayProfileKey, ensureGatewayForProfile } from '@/store/gateway'
 import { $onboardingGate } from '@/store/onboarding-gate'
 import type { FreeTierStatus } from '@/types/hermes'
 
@@ -16,12 +17,20 @@ const status = (nudge_due_in: null | number, available = true): FreeTierStatus =
 })
 
 // The backend's two answers: what `free_tier.status` reads now, and whether this caller won the claim.
-function gateway({ claimed = true, statuses }: { claimed?: boolean; statuses: FreeTierStatus[] }) {
+function gateway({
+  claim,
+  claimed = true,
+  statuses
+}: {
+  claim?: Promise<{ claimed: boolean }>
+  claimed?: boolean
+  statuses: FreeTierStatus[]
+}) {
   const queue = [...statuses]
 
   const requestGateway = vi.fn(async (method: string) => {
     if (method === 'free_tier.claim_nudge') {
-      return { claimed }
+      return claim ?? { claimed }
     }
 
     return queue.length > 1 ? queue.shift() : queue[0]
@@ -47,6 +56,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stop()
+  stop = () => undefined
   stopFreeTierOffer()
   closeFreeTierSignIn()
   $freeTierStatus.set(null)
@@ -111,6 +121,22 @@ describe('sign-in offer after a finished task', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(claims(requestGateway)).toBe(0)
+    expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
+  })
+
+  it('a claim answered after the gateway route changed does not open the offer', async () => {
+    let answer: (value: { claimed: boolean }) => void = () => undefined
+    const claim = new Promise<{ claimed: boolean }>(resolve => (answer = resolve))
+    const requestGateway = gateway({ claim, statuses: [status(null)] })
+
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    // Re-selecting the active route is a route change: it starts a new activation.
+    await ensureGatewayForProfile(activeGatewayProfileKey())
+    answer({ claimed: true })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(claims(requestGateway)).toBe(1)
     expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
   })
 })
