@@ -6,10 +6,8 @@ import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
-import { AskDirective } from '@/components/assistant-ui/ask-directive'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
-import { OnboardingChatDirective } from '@/components/onboarding-chat/directive'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -54,7 +52,6 @@ import {
   Zap
 } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -351,28 +348,6 @@ registry.registerMany([
       render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
     } satisfies TranscriptDirectiveContribution
   },
-  ...(isOnboardingEnabled()
-    ? [
-        {
-          id: 'transcript.onboarding',
-          area: TRANSCRIPT_DIRECTIVE_AREA,
-          data: {
-            name: 'onboarding',
-            render: ({ attrs, streaming }) => <OnboardingChatDirective attrs={attrs} streaming={streaming} />
-          } satisfies TranscriptDirectiveContribution
-        },
-        // ::ask is the guided chat's question card, registered only with the
-        // onboarding flag. B4 decides its wider use.
-        {
-          id: 'transcript.ask',
-          area: TRANSCRIPT_DIRECTIVE_AREA,
-          data: {
-            name: 'ask',
-            render: ({ attrs, streaming }) => <AskDirective attrs={attrs} streaming={streaming} />
-          } satisfies TranscriptDirectiveContribution
-        }
-      ]
-    : []),
   {
     id: 'layout.reset',
     area: PALETTE_AREA,

@@ -354,7 +354,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   // The guide's reasoning is it reading its own runbook ("Now step 4: offer
-  // the tour with ::ask"), and a first-time user reading that alongside the
+  // the layout picker"), and a first-time user reading that alongside the
   // greeting breaks the one conversation the guide is trying to have.
   const guidedChat = useOnboardingChatActive()
 

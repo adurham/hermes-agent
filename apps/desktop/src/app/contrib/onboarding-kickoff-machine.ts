@@ -12,7 +12,7 @@ import { $gatewayState } from '@/store/session'
  * RPC error response, the backend process exiting, a result it does not expect, or `stop` (the person chose
  * to go on without setup once the wait outlasted the boot budget).
  */
-export type KickoffState = 'waiting-backend' | 'preparing' | 'opening' | 'started' | 'off' | 'failed'
+type KickoffState = 'waiting-backend' | 'preparing' | 'opening' | 'started' | 'off' | 'failed'
 
 /** json-rpc-channel arms a call's timer only for a positive timeout, so 0 waits for the answer. */
 export const NO_DEADLINE = 0
@@ -53,7 +53,7 @@ function log(line: string): void {
   window.hermesDesktop?.logLine?.(text)
 }
 
-export interface KickoffMachine {
+interface KickoffMachine {
   enter(next: KickoffState, detail?: string): void
   /** Runs `step` once the gateway is open. A dial that times out on a starting backend runs it again; a
    *  dropped connection runs it again once. Anything else, or the backend exiting, rejects. */

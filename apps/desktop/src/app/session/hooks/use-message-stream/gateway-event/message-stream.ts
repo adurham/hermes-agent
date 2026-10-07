@@ -2,7 +2,6 @@ import type { BillingBlock } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
-import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
@@ -85,11 +84,7 @@ function turnFailure(payload: GatewayEventPayload | undefined, finalText: string
   }
 }
 
-function reportOnboardingTurnComplete(ctx: GatewayEventContext, sessionId: string, finalText: string): void {
-  // Onboarding's first build: between turns is the only moment Setup may
-  // put a check-in into that session (no-op everywhere else).
-  reportFirstBuildTurnComplete(sessionId, finalText)
-
+function reportOnboardingTurnComplete(ctx: GatewayEventContext, sessionId: string): void {
   // The whole agent loop has returned: the end of a task, not a step in one.
   // Only the session on screen counts, which drops subagent mirrors (child ids).
   if (!ctx.isActiveEvent) {
@@ -412,7 +407,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.response_reused === true
     )
 
-    reportOnboardingTurnComplete(ctx, sessionId, finalText)
+    reportOnboardingTurnComplete(ctx, sessionId)
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.

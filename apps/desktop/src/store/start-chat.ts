@@ -7,7 +7,7 @@ import { $gateway } from '@/store/gateway'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { isSessionInForeground, requestForOwnedSession } from '@/store/session-states'
 
-export type StartChatOutcome =
+type StartChatOutcome =
   | { profile: string; sessionId: string; status: 'started'; title: null | string }
   | { reason: string; retryable: boolean; status: 'rejected' }
 

@@ -21,7 +21,7 @@ import { getBaseColors } from '@/themes/context'
 import { ChoiceLabel } from './core/choice-row'
 import type { SetupRow } from './setup-rows'
 
-export interface SetupPickerProps {
+interface SetupPickerProps {
   cursor: null | number
   onPick: (index: number) => void
   onStage: (id: string) => void
@@ -203,14 +203,7 @@ function PluginPicker(props: SetupPickerProps) {
 
   const needsApp = (row: SetupRow) => Boolean(plugins?.some(plugin => plugin.name === row.id && pluginNeedsApp(plugin)))
 
-  return (
-    <ChipPicker
-      {...props}
-      dim={needsApp}
-      icon={pluginIcon}
-      sub={t.assistant.setupChoose.plugin}
-    />
-  )
+  return <ChipPicker {...props} dim={needsApp} icon={pluginIcon} sub={t.assistant.setupChoose.plugin} />
 }
 
 export const SETUP_PICKERS: Record<SetupPickerKind, FC<SetupPickerProps>> = {

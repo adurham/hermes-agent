@@ -307,12 +307,6 @@ export function acceptLocalSetupOffer(): void {
   transition('accepted', {})
 }
 
-/** The card is live: shown, still eligible. The composer adds "and this session is idle". */
-export const $localSetupCardLive = computed(
-  [$localSetupOffer, $localSetupEligibility],
-  (offer, eligibility) => offer.state === 'shown' && Boolean(eligibility?.fit)
-)
-
 /** The model-menu row stays until setup completes, whatever happened to the card. */
 export const $localSetupRowFit = computed($localSetupEligibility, eligibility => eligibility?.fit ?? null)
 

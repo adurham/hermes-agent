@@ -46,8 +46,8 @@ export async function showHandoffTour(): Promise<void> {
 
   const localVisible = localModel !== null && pillVisible
   const copy = (key: string, ...args: unknown[]) => translateNow(`handoffTour.${key}`, ...args)
-  // Imported here instead of at the top: this module is reachable from the boot path through the handoff
-  // hook, and run-tour.ts keeps driver.js and its stylesheet out of that path.
+  // Imported here instead of at the top: this module is reachable from the boot path through intro.ts
+  // (finishGuidedOnboarding), and run-tour.ts keeps driver.js and its stylesheet out of that path.
   const { startTour } = await import('@/lib/tour')
 
   await startTour([

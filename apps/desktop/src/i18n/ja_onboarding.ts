@@ -64,9 +64,6 @@ export const jaOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: '認証コードをコピーして以下に貼り付けてください。',
   pasteAuthCode: '認証コードを貼り付け',
   reopenAuthPage: '認証ページを再度開く',
-  autoBrowser: provider =>
-    `${provider} をブラウザーで開きました。Hermes をそこで承認すれば自動接続されます。コピーや貼り付けは不要です。`,
-  reopenSignInPage: 'サインインページを再度開く',
   waitingAuthorize: '承認を待っています...',
   externalPending: provider =>
     `${provider} は独自の CLI からサインインします。ターミナルでこのコマンドを実行してから、戻って「サインインしました」を選択してください:`,

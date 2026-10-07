@@ -9,7 +9,7 @@ import { resetTips } from './tips'
 
 // `left`: the user walked out of the intro (sidebar, another chat, a layout pick) without skipping;
 // the setup chat is a normal chat from then on and can still finish the guide.
-export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'left', 'skipped', 'handoff', 'done'] as const
+const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'left', 'skipped', 'done'] as const
 
 export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
 
@@ -34,7 +34,7 @@ export const $setupProfileName = atom<null | string>(null)
 
 let guideKickoff: GuideKickoff = { status: 'idle' }
 
-const guidedPhase = (phase: OnboardingPhase) => phase === 'pending' || phase === 'guided' || phase === 'handoff'
+const guidedPhase = (phase: OnboardingPhase) => phase === 'pending' || phase === 'guided'
 
 /**
  * Guided first run is behind the user: finished, skipped, or never due. The phase is only
@@ -140,21 +140,6 @@ export function runGuideKickoff(kickoff: () => Promise<GuideKickoffResult>): Pro
   return promise
 }
 
-export function beginOnboardingHandoff(): void {
-  const { phase } = $onboardingGate.get()
-
-  if (isOnboardingEnabled() && (phase === 'guided' || phase === 'skipped')) {
-    setPhase('handoff')
-    reportOnboarding('onboarding.mark_seen')
-  }
-}
-
-export function completeOnboardingFlow(): void {
-  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'handoff') {
-    setPhase('done')
-  }
-}
-
 /** A setup `start_chat` started the task chat: the guide is complete (the backend recorded it). */
 export function completeGuide(): void {
   const { phase } = $onboardingGate.get()
@@ -199,7 +184,7 @@ export async function resetOnboarding(
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>
 ): Promise<void> {
   await request('onboarding.reset_setup_profile', {})
-  setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [], plugins: [], pluginOutcomes: {} })
+  setOnboardingAnswers({ ...DEFAULT_ANSWERS })
   // Skip retired the tutorial tips; from zero means they come back.
   resetTips()
 }

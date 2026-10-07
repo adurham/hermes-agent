@@ -8,7 +8,7 @@ import { setOnboardingSurfaceActive } from './onboarding-presence'
  * `intro` is the setup chat in the demo layout, `ended` means the user left it (or finished),
  * and `off` means it never ran or failed to start. Only the main window moves out of `off`.
  */
-export type IntroView = 'off' | 'starting' | 'intro' | 'ended'
+type IntroView = 'off' | 'starting' | 'intro' | 'ended'
 
 export const $introView = atom<IntroView>('off')
 

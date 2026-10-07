@@ -82,9 +82,6 @@ export const frOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: "Copiez le code d'autorisation et collez-le ci-dessous.",
   pasteAuthCode: "Coller le code d'autorisation",
   reopenAuthPage: "Rouvrir la page d'autorisation",
-  autoBrowser: provider =>
-    `Nous avons ouvert ${provider} dans votre navigateur. Autorisez Hermes là-bas et vous serez connecté automatiquement — rien à copier ou coller.`,
-  reopenSignInPage: 'Rouvrir la page de connexion',
   waitingAuthorize: 'En attente de votre autorisation...',
   externalPending: provider =>
     `${provider} se connecte via sa propre CLI. Exécutez cette commande dans un terminal, puis revenez et choisissez « Je me suis connecté » :`,

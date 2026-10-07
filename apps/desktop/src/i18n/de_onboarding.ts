@@ -82,9 +82,6 @@ export const deOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: 'Kopieren Sie den Autorisierungscode und fügen Sie ihn unten ein.',
   pasteAuthCode: 'Autorisierungscode einfügen',
   reopenAuthPage: 'Autorisierungsseite erneut öffnen',
-  autoBrowser: provider =>
-    `Wir haben ${provider} in Ihrem Browser geöffnet. Autorisieren Sie Hermes dort, und Sie werden automatisch verbunden – nichts zu kopieren oder einzufügen.`,
-  reopenSignInPage: 'Anmeldeseite erneut öffnen',
   waitingAuthorize: 'Warten auf Ihre Autorisierung…',
   externalPending: provider =>
     `${provider} meldet sich über seine eigene CLI an. Führen Sie diesen Befehl in einem Terminal aus, kehren Sie dann zurück und wählen Sie „Ich habe mich angemeldet“:`,

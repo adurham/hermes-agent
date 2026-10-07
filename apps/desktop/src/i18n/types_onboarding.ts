@@ -46,8 +46,6 @@ export interface OnboardingTranslations {
   copyAuthCode: string
   pasteAuthCode: string
   reopenAuthPage: string
-  autoBrowser: (provider: string) => string
-  reopenSignInPage: string
   waitingAuthorize: string
   externalPending: (provider: string) => string
   signedIn: string

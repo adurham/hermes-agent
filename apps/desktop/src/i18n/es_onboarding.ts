@@ -81,9 +81,6 @@ export const esOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: 'Copia el código de autorización y pégalo abajo.',
   pasteAuthCode: 'Pegar código de autorización',
   reopenAuthPage: 'Volver a abrir página de autorización',
-  autoBrowser: provider =>
-    `Abrimos ${provider} en tu navegador. Autoriza Hermes allí y te conectarás automáticamente; no hay nada que copiar o pegar.`,
-  reopenSignInPage: 'Volver a abrir página de inicio de sesión',
   waitingAuthorize: 'Esperando tu autorización...',
   externalPending: provider =>
     `${provider} inicia sesión con su propia CLI. Ejecuta este comando en una terminal y luego vuelve y elige "Ya inicié sesión":`,

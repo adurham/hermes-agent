@@ -61,9 +61,6 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: 'Скопируйте код авторизации и вставьте его ниже.',
   pasteAuthCode: 'Вставьте код авторизации',
   reopenAuthPage: 'Открыть страницу авторизации снова',
-  autoBrowser: provider =>
-    `Мы открыли ${provider} в вашем браузере. Авторизуйте Hermes там, и подключение произойдёт автоматически — ничего копировать и вставлять не нужно.`,
-  reopenSignInPage: 'Открыть страницу входа снова',
   waitingAuthorize: 'Ждём вашей авторизации...',
   externalPending: provider =>
     `${provider} входит через собственный CLI. Выполните эту команду в терминале, затем вернитесь и выберите «Я вошёл»:`,

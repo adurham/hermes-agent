@@ -1,4 +1,3 @@
-import './guide-loading.css'
 import './intro-copy.css'
 
 import { useStore } from '@nanostores/react'

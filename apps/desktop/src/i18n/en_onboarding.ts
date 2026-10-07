@@ -70,9 +70,6 @@ export const enOnboarding: Translations['onboarding'] = {
   copyAuthCode: 'Copy the authorization code and paste it below.',
   pasteAuthCode: 'Paste authorization code',
   reopenAuthPage: 'Re-open authorization page',
-  autoBrowser: provider =>
-    `We opened ${provider} in your browser. Authorize Hermes there and you'll be connected automatically — nothing to copy or paste.`,
-  reopenSignInPage: 'Re-open sign-in page',
   waitingAuthorize: 'Waiting for you to authorize...',
   externalPending: provider =>
     `${provider} signs in through its own CLI. Run this command in a terminal, then come back and pick "I've signed in":`,

@@ -243,7 +243,7 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
   }
 }
 
-export interface SetupChooseStage {
+interface SetupChooseStage {
   draft: string
   /**
    * The name each row of the card shows, by id: a typed answer still names the rows staged with it, and

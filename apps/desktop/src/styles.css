@@ -1692,14 +1692,6 @@ body.guest-pointer-lock :is(webview, iframe) {
   font-size: inherit;
 }
 
-/* Ask / onboarding pills sit flush with the prose left edge. `.aui-md` is
-   `overflow-hidden` so wide code/tables don't blow the column; that same clip
-   shears the first pill's left cap. Cards opt the surface out; tables/code keep
-   their own overflow. */
-[data-slot='aui_assistant-message-content'] .aui-md:has([data-onboarding-card]) {
-  overflow: visible;
-}
-
 /* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
    selector ties our `my-*` utility on specificity and wins on source order, so
    paragraph spacing must be reclaimed here at higher specificity. One tight

@@ -5,7 +5,7 @@ import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { runComposerMiddleware } from '../contrib'
 import type { ChatBarProps } from '../types'
 
-export interface VoiceStopHandle {
+interface VoiceStopHandle {
   active: boolean
   end: () => void
 }

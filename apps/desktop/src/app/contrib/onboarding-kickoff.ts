@@ -4,7 +4,7 @@ import { useCallback } from 'react'
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
 import { $chatOnboardingThreadIds, endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { $introTurnSent, openIntro, rememberLaunchSource } from '@/components/onboarding-chat/intro'
-import { $setupSession, guideSourceConnectionId } from '@/components/onboarding-chat/setup-profile'
+import { $setupSession, guideSourceConnectionId } from '@/components/onboarding-chat/setup-session'
 import type { ChatMessagePart } from '@/lib/chat-messages'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
@@ -37,7 +37,7 @@ function prefetchGuideCatalogs(storedId: null | string): void {
 /** Runs a slash command as if typed; `hidden` keeps its user row out of every transcript. */
 export type KickoffSlashCommand = (command: string, options: { hidden: true; sessionId: string }) => Promise<void>
 
-export interface OnboardingKickoffOptions extends Pick<ReturnType<typeof useSessionActions>, 'resumeSession'> {
+interface OnboardingKickoffOptions extends Pick<ReturnType<typeof useSessionActions>, 'resumeSession'> {
   requestGateway: AmbientGatewayRequest
   runSlashCommand: KickoffSlashCommand
 }

@@ -69,3 +69,23 @@
     transition: none;
   }
 }
+
+/* The composer dock fades in once the setup guide has arrived (data-guide-arrived on the chat). */
+@keyframes guide-controls-arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+[data-guide-arrived] [data-slot='composer-dock'] {
+  animation: guide-controls-arrive 100ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-guide-arrived] [data-slot='composer-dock'] {
+    animation: none;
+  }
+}

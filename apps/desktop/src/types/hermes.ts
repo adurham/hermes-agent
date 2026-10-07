@@ -1820,8 +1820,6 @@ export interface McpCatalogEntry {
     examples?: string[]
     requires_app?: boolean
   } | null
-  /** Observed on this entry's backend host, not proof that its MCP is usable. */
-  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1830,7 +1828,6 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
-  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */

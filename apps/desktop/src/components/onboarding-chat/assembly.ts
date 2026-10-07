@@ -54,7 +54,7 @@ export function takeGuideShape(): void {
   }
 }
 
-export function startChatOnboardingSolo(): void {
+function startChatOnboardingSolo(): void {
   if (!isOnboardingEnabled() || $chatOnboardingSolo.get()) {
     return
   }

@@ -29,7 +29,7 @@ import { showHandoffTour } from './signpost'
  * the top (`landed`) until the backend's first assistant row, which carries the same words,
  * takes its place.
  */
-export type IntroCopyStage = 'hidden' | 'landed' | 'playing'
+type IntroCopyStage = 'hidden' | 'landed' | 'playing'
 
 export const $introCopy = atom<IntroCopyStage>('hidden')
 

@@ -1,5 +1,4 @@
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
-import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
 import { finishGuidedOnboarding } from '@/components/onboarding-chat/intro'
 import { type GatewayEventPayload, toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
@@ -120,10 +119,6 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       if (!sessionInterrupted(sessionId)) {
         recordToolPreview(ctx, sessionId, state?.cwd ?? '', pendingProduction)
       }
-
-      // Onboarding's first build paces its check-ins off real work done
-      // (no-op in every other session).
-      reportFirstBuildToolComplete(sessionId)
 
       if (!event.replayed) {
         reportStartChatHandoff(payload, sessionId)

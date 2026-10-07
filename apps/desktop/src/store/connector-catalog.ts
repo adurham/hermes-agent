@@ -30,8 +30,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
-export type ConnectorCatalog =
-  { status: 'loading' } | { status: 'ready'; rows: ConnectorRow[] } | { status: 'unavailable' }
+type ConnectorCatalog = { status: 'loading' } | { status: 'ready'; rows: ConnectorRow[] } | { status: 'unavailable' }
 
 /** The picks card remounts on every transcript rebuild (each hidden submit, each turn end), so the read is
  *  held in the query cache per session: a remount paints the rows it already has instead of flashing back to

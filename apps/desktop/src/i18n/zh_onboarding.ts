@@ -59,8 +59,6 @@ export const zhOnboarding: TranslationOverrides['onboarding'] = {
   copyAuthCode: '复制授权码并粘贴到下面。',
   pasteAuthCode: '粘贴授权码',
   reopenAuthPage: '重新打开授权页面',
-  autoBrowser: provider => `已在浏览器中打开 ${provider}。请在那里授权 Hermes，连接会自动完成，无需复制或粘贴。`,
-  reopenSignInPage: '重新打开登录页面',
   waitingAuthorize: '等待你授权...',
   externalPending: provider => `${provider} 通过自己的 CLI 登录。请在终端运行此命令，然后回来选择“我已登录”：`,
   signedIn: '我已登录',
