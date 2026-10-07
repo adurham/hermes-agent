@@ -8,21 +8,28 @@ interface WindowSizingOptions {
   mainWindow: () => BrowserWindow | null
 }
 
-// The size this module last gave each window. window-state.json skips a window
-// still at it: an app-chosen size is not where the user left the window, and a
-// saved onboarding size reopened the app as a 602x642 chat.
-const appSized = new WeakMap<BrowserWindow, { height: number; width: number }>()
+// The bounds this module last gave each window. window-state.json skips a
+// window still at them: app-chosen bounds are not where the user left the
+// window, and a saved onboarding size reopened the app as a 602x642 chat. A
+// user move or resize leaves them, so that placement is saved.
+type PlacedWindow = Pick<BrowserWindow, 'getNormalBounds' | 'isMaximized'>
 
-export function isAppSized(win: BrowserWindow): boolean {
-  const size = appSized.get(win)
+const appSized = new WeakMap<PlacedWindow, Rectangle>()
 
-  if (!size || win.isMaximized()) {
+export function markAppSized(win: PlacedWindow, bounds: Rectangle): void {
+  appSized.set(win, bounds)
+}
+
+export function isAppSized(win: PlacedWindow): boolean {
+  const given = appSized.get(win)
+
+  if (!given || win.isMaximized()) {
     return false
   }
 
-  const { height, width } = win.getNormalBounds()
+  const bounds = win.getNormalBounds()
 
-  return Math.abs(width - size.width) <= 1 && Math.abs(height - size.height) <= 1
+  return (['x', 'y', 'width', 'height'] as const).every(key => Math.abs(bounds[key] - given[key]) <= 1)
 }
 
 // Onboarding sets the chat size outright. Normal grows each axis to the normal
@@ -56,7 +63,7 @@ export function registerWindowSizing({ enabled, mainWindow }: WindowSizingOption
     const next = sizedBounds(mode, bounds, screen.getDisplayMatching(bounds).workArea)
 
     if (next) {
-      appSized.set(win, { height: next.height, width: next.width })
+      markAppSized(win, next)
       win.setBounds(next, true)
     }
   })
