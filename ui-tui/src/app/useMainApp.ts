@@ -59,7 +59,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
@@ -108,6 +108,22 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   }
 
   return t.muted
+}
+
+type SubmitLiteral = (value: string, attachments?: Array<{ path: string; mime: string }>) => void
+
+/** Which transcript detail sections render, derived from the `thinking:tools` layout key. */
+const detailsVisibility = (detailsLayoutKey: string, ui: Pick<UiState, 'detailsModeCommandOverride' | 'sections'>) => {
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+
+  const historyThinkingExpanded =
+    thinkingDetailsVisible && (ui.detailsModeCommandOverride || ui.sections.thinking === 'expanded')
+
+  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
+
+  return { detailsVisible, historyThinkingExpanded, thinkingDetailsVisible, toolsDetailsVisible }
 }
 
 export interface PromptLiveSessionOptions {
@@ -263,7 +279,7 @@ export function useMainApp(gw: GatewayClient) {
   const onServerRequestRef = useRef<(request: ServerRequest) => boolean>(() => false)
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
-  const submitLiteralRef = useRef<(value: string, attachments?: Array<{ path: string; mime: string }>) => void>(() => {})
+  const submitLiteralRef = useRef<SubmitLiteral>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
@@ -391,14 +407,11 @@ export function useMainApp(gw: GatewayClient) {
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
-  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
-  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
-  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const { detailsVisible, historyThinkingExpanded, thinkingDetailsVisible, toolsDetailsVisible } = detailsVisibility(
+    detailsLayoutKey,
+    ui
+  )
 
-  const historyThinkingExpanded =
-    thinkingDetailsVisible && (ui.detailsModeCommandOverride || ui.sections.thinking === 'expanded')
-
-  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
@@ -826,24 +839,31 @@ export function useMainApp(gw: GatewayClient) {
       // path); an empty answer is the skip. A multi-question shared set keeps
       // the per-question lock below.
       if (clarify.sharedControl && clarify.questions.length === 1) {
-        void rpc<SharedControlRespondResponse>('clarify.respond', { answer, ...sharedControlParams(clarify) }).then(r => {
-          if (!r || !fresh()) {
-            return
+        void rpc<SharedControlRespondResponse>('clarify.respond', { answer, ...sharedControlParams(clarify) }).then(
+          r => {
+            if (!r || !fresh()) {
+              return
+            }
+
+            const label = toolTrailLabel('clarify')
+
+            turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+            patchTurnState({ turnTrail: turnController.turnTools })
+            turnController.persistedToolLabels.add(label)
+            appendMessage({
+              kind: 'trail',
+              role: 'system',
+              text: '',
+              tools: [buildToolTrailLine('clarify', question.question)]
+            })
+            appendMessage({
+              role: 'user',
+              text: answer.trim() ? clarifyAnswerText(answer, question.multiSelect) : t('session.main.skipped')
+            })
+            patchUiState({ status: 'running…' })
+            patchOverlayState({ clarify: null })
           }
-
-          const label = toolTrailLabel('clarify')
-
-          turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
-          patchTurnState({ turnTrail: turnController.turnTools })
-          turnController.persistedToolLabels.add(label)
-          appendMessage({ kind: 'trail', role: 'system', text: '', tools: [buildToolTrailLine('clarify', question.question)] })
-          appendMessage({
-            role: 'user',
-            text: answer.trim() ? clarifyAnswerText(answer, question.multiSelect) : t('session.main.skipped')
-          })
-          patchUiState({ status: 'running…' })
-          patchOverlayState({ clarify: null })
-        })
+        )
 
         return
       }
@@ -1056,7 +1076,12 @@ export function useMainApp(gw: GatewayClient) {
       // fenced to its destination and drains once `gatewayConnected` returns.
       if (gw.attached) {
         recoverSidRef.current = storedSid ?? recoverSidRef.current
-        patchUiState({ busy: false, compacting: false, gatewayConnected: false, status: t('session.status.reconnecting') })
+        patchUiState({
+          busy: false,
+          compacting: false,
+          gatewayConnected: false,
+          status: t('session.status.reconnecting')
+        })
 
         if (state.sid) {
           turnController.pushActivity(connectionLostActivity(), 'warn')
@@ -1201,7 +1226,10 @@ export function useMainApp(gw: GatewayClient) {
       // Canonical shared controls answer through the generation-bound RPC; a
       // legacy server→client request resolves its response frame locally.
       if (overlay.approval.sharedControl) {
-        return rpc<SharedControlRespondResponse>('approval.respond', { choice, ...sharedControlParams(overlay.approval) }).then(r => r && settle())
+        return rpc<SharedControlRespondResponse>('approval.respond', {
+          choice,
+          ...sharedControlParams(overlay.approval)
+        }).then(r => r && settle())
       }
 
       respondWith(overlay.approval.requestId, { choice }, settle)
