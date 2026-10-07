@@ -16,6 +16,8 @@ import { isHudWindow } from '@/store/windows'
 
 import { useComposerScope } from './scope'
 
+const ELIGIBILITY_RETRY_MS = 30_000
+
 interface LocalSetupCardProps {
   busy: boolean
   guidedChat: boolean
@@ -39,11 +41,23 @@ export function LocalSetupCard({ busy, guidedChat }: LocalSetupCardProps) {
   const { t } = useI18n()
   const copy = t.composer.localSetup
 
-  // No answer yet (relaunch, or the backend just changed): ask. A failed answer stays until the backend changes,
-  // which clears it, so a backend that is down is not asked again on every failure.
+  // No answer yet (relaunch, or the backend just changed): ask. A failed answer is asked again after a pause, so a
+  // backend that recovers brings the card back without a read on every render.
   useEffect(() => {
-    if (offer.state === 'shown' && !eligibility) {
+    if (offer.state !== 'shown') {
+      return
+    }
+
+    if (!eligibility) {
       void readLocalSetupEligibility()
+
+      return
+    }
+
+    if (eligibility.transient) {
+      const retry = window.setTimeout(() => void readLocalSetupEligibility(), ELIGIBILITY_RETRY_MS)
+
+      return () => window.clearTimeout(retry)
     }
   }, [offer.state, eligibility])
 
