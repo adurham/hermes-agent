@@ -90,7 +90,7 @@ def w() -> Iterator[G.World]:
     try:
         with G.world(root, base=I.head_sha()) as world:
             cfg_path = world.sb.hermes_home / "config.yaml"
-            cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else None) or {}
+            cfg = (yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig")) if cfg_path.is_file() else None) or {}
             cfg["updates"] = {**(cfg.get("updates") or {}), "check": False}
             cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
             yield world
@@ -148,7 +148,7 @@ def _record(w: G.World) -> list[dict]:
     found = []
     for p in sorted(w.sb.hermes_home.glob(".hermes-update-paused-gateways*.json")):
         with contextlib.suppress(OSError, ValueError):
-            found.append({"path": p.name, **json.loads(p.read_text(encoding="utf-8"))})
+            found.append({"path": p.name, **json.loads(p.read_text(encoding="utf-8-sig"))})
     return found
 
 
@@ -376,7 +376,7 @@ def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
                     raise AssertionError("premise: the update exited before its stop request:\n"
                                          + _read(w.sb.root / "update-e.log")[-6000:])
                 with contextlib.suppress(OSError, ValueError):
-                    return json.loads(marker.read_text(encoding="utf-8")).get("target_pid") == gw_pid
+                    return json.loads(marker.read_text(encoding="utf-8-sig")).get("target_pid") == gw_pid
                 return False
 
             H.wait_for(_request_on_disk, timeout=900, interval=0.2, what="the updater's stop request on disk")
@@ -521,7 +521,7 @@ def test_desktop_handoff_update_pauses_and_restarts_through_the_same_path(w):
 
             def finished() -> dict | None:  # posix.sh re-execs itself detached (--daemonized)
                 with contextlib.suppress(OSError, ValueError):
-                    return json.loads(result.read_text(encoding="utf-8"))
+                    return json.loads(result.read_text(encoding="utf-8-sig"))
                 return None
             res = {}
             with contextlib.suppress(AssertionError):

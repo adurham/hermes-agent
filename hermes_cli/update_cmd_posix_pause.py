@@ -253,7 +253,8 @@ def _escape_cgroup(unit: dict) -> bool:
            f"hermes-update-{os.getpid()}.scope", "fail", "2", "PIDs", "au", str(len(pids)), *map(str, pids),
            "Description", "s", f"hermes update (outside {unit['unit']} while it is paused)", "0"]
     with suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)
+        subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   stdin=subprocess.DEVNULL, timeout=15, check=False)
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         if not _inside(_pid_cgroup(), unit["cgroup"]):
@@ -327,7 +328,8 @@ def _stop_job(job: dict) -> None:
     if home := gateway_pid_home(job["pid"]):
         _write_update_planned_stop_marker(Path(home), job["pid"])
     result = subprocess.run(["launchctl", "bootout", f"{job['domain']}/{job['label']}"],
-                            capture_output=True, text=True, timeout=90, check=False)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   stdin=subprocess.DEVNULL, timeout=90, check=False)
     if result.returncode != 0 and _alive(job["pid"], None):
         raise PauseRefused(f"launchctl bootout {job['label']} failed: {(result.stderr or '').strip()}")
     _wait_gone([job["pid"]], 30.0)
@@ -337,7 +339,8 @@ def _start_job(job: dict) -> None:
     from hermes_cli.gateway import _launchctl_bootstrap, _wait_for_launchd_service_pid
     _launchctl_bootstrap(job["domain"], job["plist"], job["label"])
     subprocess.run(["launchctl", "kickstart", f"{job['domain']}/{job['label']}"],
-                   capture_output=True, text=True, timeout=30, check=False)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   stdin=subprocess.DEVNULL, timeout=30, check=False)
     if not _wait_for_launchd_service_pid(job["label"], old_pid=job["pid"], timeout=15.0, domain=job["domain"]):
         raise RuntimeError(f"{job['label']} did not come back under launchd")
 
@@ -396,7 +399,7 @@ def _stop_bare(token: dict, bare: list[dict]) -> None:
     survivors = _wait_gone(born, _drain_timeout(acks), born)
     for pid in survivors:
         with suppress(ProcessLookupError, PermissionError):
-            os.kill(pid, signal.SIGKILL)
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
     if _wait_gone(survivors, 10.0, born):
         raise PauseRefused("gateway PID(s) " + ", ".join(map(str, sorted(survivors))) + " did not stop")
 

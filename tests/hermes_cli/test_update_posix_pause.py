@@ -79,9 +79,9 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
     plist = tmp_path / f"{label}.plist"
     plist.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": ["/bin/sleep", "600"],
                                       "RunAtLoad": True, "KeepAlive": True}))
-    domain = f"gui/{os.getuid()}"
+    domain = f"gui/{os.getuid()}"  # windows-footgun: ok — macOS-only test (platforms("macos"))
     if subprocess.run(["launchctl", "print", domain], capture_output=True, check=False).returncode:
-        domain = f"user/{os.getuid()}"
+        domain = f"user/{os.getuid()}"  # windows-footgun: ok — macOS-only test (platforms("macos"))
 
     def pid() -> int | None:
         return _gw()._launchd_print_service_pid(domain, label)[1]
