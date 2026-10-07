@@ -572,8 +572,9 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
-    from hermes_cli.setup_profile import release_setup_copy
-    release_setup_copy(target, from_setup=any(rel_parts == (SETUP_PROFILE_MARKER,) for _, rel_parts in entries))
+    from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
+    shipped_marker = any(rel_parts == (SETUP_PROFILE_MARKER,) for _, rel_parts in entries)
+    release_setup_copy(target, setup_state=setup_marker_state(target) if shipped_marker else None)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:

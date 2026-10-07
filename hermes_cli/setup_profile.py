@@ -20,6 +20,8 @@ SETUP_CHAT_TITLE = "Welcome to Hermes"
 MAX_FAILED_STARTS = 3
 RETURNING_USER_FLAG = "setup_intro"  # config.yaml onboarding.seen.<flag>, see settle_returning_user
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
+# Marker key: the toolsets setup itself disabled, so a copy of the profile undoes those and keeps the user's own.
+_ADDED_DISABLED = "setup_disabled_toolsets"
 _CARDS_DIR = "setup-cards"
 _SETUP_TOOLSETS = ["setup", "start_chat", "connections", "no_mcp"]
 _SETUP_DISABLED_TOOLSETS = ["project", "catalog"]
@@ -81,8 +83,7 @@ def ensure_setup_profile() -> SetupProfile:
     try:
         _write_soul(path)
         _replace_dir(path / "memories")
-        _write_setup_config(path)
-        _write_state(path, _FRESH_STATE)
+        _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: _write_setup_config(path)})
     except BaseException:
         profiles_mod.delete_profile(name, yes=True)
         raise
@@ -95,14 +96,15 @@ def reset_setup_profile(launch_home: Path) -> SetupProfile:
         raise LookupError("no setup profile to reset")
     name, path = found
     source = _user_home(launch_home)
+    added = _read_state(path).get(_ADDED_DISABLED) or []
     _write_soul(path)
     _replace_dir(path / "memories")
-    _write_setup_config(path)
+    added = list(dict.fromkeys([*added, *_write_setup_config(path)]))
     _replace_dir(path / "skills")
     if (source / "skills").is_dir():
         profiles_mod._copytree_keep_junctions(source / "skills", path / "skills",
                                               profiles_mod._non_exportable_entries, dirs_exist_ok=True)
-    _write_state(path, _FRESH_STATE)
+    _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: added})
     return SetupProfile(name, path, created=False)
 
 
@@ -129,7 +131,7 @@ def onboarding_eligible() -> bool:
 def read_state() -> dict:
     found = find_setup_profile()
     if found is not None:
-        return _read_state(found[1])
+        return _public_state(_read_state(found[1]))
     return {**_FRESH_STATE, "intro": "seen"} if _returning_user_latched() else dict(_FRESH_STATE)
 
 
@@ -217,7 +219,21 @@ def _change_state(change: Callable[[dict], dict]) -> dict:
         return dict(_FRESH_STATE)
     state = change(_read_state(found[1]))
     _write_state(found[1], state)
-    return state
+    return _public_state(state)
+
+
+def _public_state(state: dict) -> dict:
+    """The onboarding state the app reads; the setup-only bookkeeping stays in the marker."""
+    return {key: value for key, value in state.items() if key != _ADDED_DISABLED}
+
+
+def setup_marker_state(profile_dir: Path) -> Optional[dict]:
+    """The setup marker of *profile_dir*, or None when it is not the setup profile."""
+    marker = profile_dir / profiles_mod.SETUP_PROFILE_MARKER
+    if not marker.is_file():
+        return None
+    from utils import read_json_or_empty
+    return read_json_or_empty(marker)
 
 
 def _read_state(path: Path) -> dict:
@@ -229,20 +245,22 @@ def _write_state(path: Path, state: dict) -> None:
     atomic_json_write(path / profiles_mod.SETUP_PROFILE_MARKER, state)
 
 
-def release_setup_copy(copy_dir: Path, *, from_setup: bool) -> None:
+def release_setup_copy(copy_dir: Path, *, setup_state: Optional[dict]) -> None:
     """A copy of a profile (clone, clone-all, import, distribution install) is never the setup profile: drop the
-    marker, and when the source was the setup profile, the tool limits ``_write_setup_config`` gave it: the cli
-    toolset grant, the toolsets it disabled and its deferred-tool list."""
+    marker, and when the source was the setup profile (*setup_state* is its marker, see ``setup_marker_state``),
+    the tool limits ``_write_setup_config`` gave it: the cli toolset grant, the toolsets setup itself disabled
+    (the user's own disabled toolsets stay) and its deferred-tool list."""
     (copy_dir / profiles_mod.SETUP_PROFILE_MARKER).unlink(missing_ok=True)
     config_path = copy_dir / "config.yaml"
-    if not from_setup or not config_path.is_file():
+    if setup_state is None or not config_path.is_file():
         return
     from agent.skill_utils import parse_config_string_list
     from hermes_cli.config import atomic_config_replace, read_user_config_raw
     config = read_user_config_raw(config_path)
     _set_section(config, "platform_toolsets", "cli", None)
+    added = set(setup_state.get(_ADDED_DISABLED) or [])
     disabled = [name for name in parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets"))
-                if name not in _SETUP_DISABLED_TOOLSETS]
+                if name not in added]
     _set_section(config, "agent", "disabled_toolsets", disabled or None)
     if ((config.get("tools") or {}).get("tool_search") or {}).get("defer") == _SETUP_DEFERRED_TOOLS:
         _set_section(config, "tools", "tool_search", None)
@@ -262,7 +280,8 @@ def _set_section(config: dict, section: str, key: str, value) -> None:
         config.pop(section, None)
 
 
-def _write_setup_config(path: Path) -> None:
+def _write_setup_config(path: Path) -> list[str]:
+    """Give the setup profile its tool limits; returns the toolsets it disabled that were not disabled already."""
     from agent.skill_utils import parse_config_string_list
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     config_path = path / "config.yaml"
@@ -275,6 +294,7 @@ def _write_setup_config(path: Path) -> None:
     config["tools"] = {**(config.get("tools") or {}), "tool_search": {"defer": list(_SETUP_DEFERRED_TOOLS)}}
     config["display"] = {**(config.get("display") or {}), "show_reasoning": False}
     atomic_config_write(config_path, config)
+    return [name for name in _SETUP_DISABLED_TOOLSETS if name not in disabled]
 
 
 def _write_soul(path: Path) -> None:
