@@ -22,6 +22,8 @@ RETURNING_USER_FLAG = "setup_intro"  # config.yaml onboarding.seen.<flag>, see s
 _FRESH_STATE = {"intro": "unseen", "failed_starts": 0}
 # Marker key: the toolsets setup itself disabled, so a copy of the profile undoes those and keeps the user's own.
 _ADDED_DISABLED = "setup_disabled_toolsets"
+# Marker key: the profile setup was made or reset from, the handoff target when no live home names it.
+_OWNER = "owner_profile"
 _CARDS_DIR = "setup-cards"
 _SETUP_TOOLSETS = ["setup", "start_chat", "connections", "no_mcp"]
 _SETUP_DISABLED_TOOLSETS = ["project", "catalog"]
@@ -78,12 +80,13 @@ def ensure_setup_profile() -> SetupProfile:
     found = find_setup_profile()
     if found is not None:
         return SetupProfile(found[0], found[1], created=False)
+    owner = profile_name_for_home(get_hermes_home()) or "default"
     name = _free_setup_profile_name()
     path = profiles_mod.create_profile(name, clone_config=True, no_alias=True, description=SETUP_PROFILE_DESCRIPTION)
     try:
         _write_soul(path)
         _replace_dir(path / "memories")
-        _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: _write_setup_config(path)})
+        _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: _write_setup_config(path), _OWNER: owner})
     except BaseException:
         profiles_mod.delete_profile(name, yes=True)
         raise
@@ -104,7 +107,7 @@ def reset_setup_profile(launch_home: Path) -> SetupProfile:
     if (source / "skills").is_dir():
         profiles_mod._copytree_keep_junctions(source / "skills", path / "skills",
                                               profiles_mod._non_exportable_entries, dirs_exist_ok=True)
-    _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: added})
+    _write_state(path, {**_FRESH_STATE, _ADDED_DISABLED: added, _OWNER: profile_name_for_home(source) or "default"})
     return SetupProfile(name, path, created=False)
 
 
@@ -116,11 +119,13 @@ def primary_profile(launch_home: Path) -> str:
 def _user_home(launch_home: Path) -> Path:
     """The user's own profile home. The calling backend may be scoped to the setup profile, or launched under
     it (during onboarding the ambient backend is the setup profile's), so take the first candidate that is not
-    the setup profile."""
+    the setup profile, else the profile setup was made or reset from."""
     for home in (get_hermes_home(), launch_home):
         if not (home / profiles_mod.SETUP_PROFILE_MARKER).is_file():
             return home
-    return profiles_mod.get_profile_dir("default")
+    found = find_setup_profile()
+    owner = _read_state(found[1]).get(_OWNER) if found else None
+    return profiles_mod.get_profile_dir(owner or "default")
 
 
 def onboarding_eligible() -> bool:
@@ -224,7 +229,7 @@ def _change_state(change: Callable[[dict], dict]) -> dict:
 
 def _public_state(state: dict) -> dict:
     """The onboarding state the app reads; the setup-only bookkeeping stays in the marker."""
-    return {key: value for key, value in state.items() if key != _ADDED_DISABLED}
+    return {key: value for key, value in state.items() if key not in (_ADDED_DISABLED, _OWNER)}
 
 
 def setup_marker_state(profile_dir: Path) -> Optional[dict]:
