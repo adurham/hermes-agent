@@ -63,7 +63,7 @@ def test_insights_skips_open_when_store_missing(capsys, existing_store):
         with patch("hermes_state.SessionDB") as ctor:
             run()
         ctor.assert_not_called()
-    assert "No sessions found in the last" in capsys.readouterr().out
+    assert "No session data yet." in capsys.readouterr().out
 
 
 def test_show_insights_opens_read_only(existing_store):

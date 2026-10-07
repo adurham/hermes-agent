@@ -114,8 +114,8 @@ def cmd_insights(args):
         from hermes_cli.config import get_hermes_home
         path = get_hermes_home() / "state.db"
         if not path.exists():
-            source = f" (source: {args.source})" if args.source else ""
-            print(f"  No sessions found in the last {args.days} days{source}.")
+            from agent.i18n import t
+            print(f"  {t('cli.insights.no_session_data')}")
             return
         db = SessionDB(db_path=path, read_only=True)
         engine = InsightsEngine(db)
