@@ -184,6 +184,13 @@ async def probe(peer, target):
         if not peer.blocked:
             await asyncio.wait_for(a.complete.wait(), 10)
         await asyncio.wait_for(authority.sessions[ref.session_id].task, 10)
+        # The idle session.info is published after message.complete (its terminal frame); wait for
+        # it on every observer that sees the whole stream before reading "the last event".
+        for observer in (b,) if peer.blocked else (a, b):
+            async with asyncio.timeout(10):
+                while not (observer.events and observer.events[-1]['type'] == 'session.info'
+                           and observer.events[-1].get('payload', {}).get('running') is False):
+                    await asyncio.sleep(.01)
         assert target.read_text() == 'owned-effect'
         agent = authority.agent(ref)
         assert isinstance(agent, AIAgent)
