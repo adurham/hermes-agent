@@ -51,8 +51,9 @@ ANON_SECRET_ENV = "HERMES_ANON_API_SECRET"
 # config.yaml or .env, never shown in setup. Deleted at GA together with this comment.
 GUEST_ONBOARDING_ENV = "HERMES_GUEST_ONBOARDING"
 # Preview cohort for the free tier's connector set, sent once on account creation so the account
-# service can record it on the account. Exactly "true" or "false" is sent as that boolean; anything
-# else (unset included) omits the field and the service applies its default. Self-reported and
+# service can record it on the account. "1" / "true" send true and "0" / "false" send false ("1" is
+# GUEST_ONBOARDING_ENV's spelling, so one bundle command reads the same for both); anything else (unset
+# included) omits the field and the service applies its default. Self-reported and
 # baked into desktop bundles in plain text: the service must treat it as a preference, never proof.
 PREVIEW_FULL_CONNECTORS_ENV = "HERMES_PREVIEW_FULL_CONNECTORS"
 GUEST_MINT_TIMEOUT_SECONDS = 5.0
@@ -333,9 +334,9 @@ def _raise_for_anon_status(
 
 def mint_request_body() -> Dict[str, Any]:
     """The ``/api/anonymous/create`` body: ``{"preview_full_connectors": bool}`` when the env var is
-    exactly ``true`` / ``false``, else ``{}``."""
+    ``1`` / ``true`` or ``0`` / ``false``, else ``{}``."""
     raw = (os.environ.get(PREVIEW_FULL_CONNECTORS_ENV) or "").strip()
-    return {"preview_full_connectors": raw == "true"} if raw in ("true", "false") else {}
+    return {"preview_full_connectors": raw in ("1", "true")} if raw in ("1", "true", "0", "false") else {}
 
 
 def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
