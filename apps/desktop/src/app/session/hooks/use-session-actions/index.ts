@@ -1331,10 +1331,15 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
 
+      // A route change is drift only when it leads AWAY from this session. A
+      // caller that navigates and resumes in one tick (branch → child) starts
+      // here on the previous route; the router commits the target route a
+      // render later, and treating that as drift abandoned the child behind a
+      // "Waking up…" overlay that never cleared.
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
-        getRouteToken() === routeToken
+        (getRouteToken() === routeToken || getRoutedStoredSessionId() === storedSessionId)
 
       // A reconnect re-resumes the runtime this view is streaming. Let its
       // replay land while that runtime still owns the view. Otherwise the REST
@@ -1543,9 +1548,11 @@ export function useSessionActions({
       // dial the owning backend without moving $activeGatewayProfile.
       if ($showAllProfiles.get()) {
         if (resolvedConnectionId) {
-          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
+          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default', {
+            spawnPriority: 'foreground'
+          })
         } else if (sessionProfile) {
-          await openGatewayForProfile(normalizeProfileKey(sessionProfile))
+          await openGatewayForProfile(normalizeProfileKey(sessionProfile), { spawnPriority: 'foreground' })
         }
       } else if (resolvedConnectionId) {
         await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
@@ -2759,6 +2766,7 @@ export function useSessionActions({
       busyRef,
       copy,
       getRouteToken,
+      getRoutedStoredSessionId,
       holdSessionTranscriptView,
       requestGateway,
       resetViewSync,

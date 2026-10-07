@@ -377,6 +377,77 @@ describe('desktop branch creation idempotency', () => {
     expect($sessions.get().filter(session => session.id === 'stored-pandora')).toHaveLength(1)
     expect($sessions.get().filter(session => session.id === 'stored-other-box')).toHaveLength(1)
   })
+
+  it('opens the branch child even when the router lands on its route after the resume started', async () => {
+    // Branching the open chat navigates to the child and resumes it in the same
+    // tick. The router commits the child route only on its next render, so the
+    // resume starts on the PARENT's route token and then sees the child's. That
+    // change is the navigation this resume is for, not a user leaving: the
+    // child must still be attached, or "Waking up…" never clears.
+    let routeToken = 'route:parent'
+    let routedId: null | string = 'parent'
+
+    const navigate = vi.fn((to: string) => {
+      queueMicrotask(() => {
+        routeToken = `route:${to}`
+        routedId = to === sessionRoute('stored-branch') ? 'stored-branch' : null
+      })
+    })
+
+    const requestGateway = vi.fn(async (method: string) =>
+      (method === 'session.branch_stored'
+        ? { session_id: 'runtime-branch', stored_session_id: 'stored-branch' }
+        : {}) as never
+    )
+
+    // The child's resume is profile-routed (resolveStoredSession stamps it).
+    vi.mocked(requestGatewayForProfile).mockImplementation((async (_profile: string, method: string) =>
+      (method === 'session.resume'
+        ? {
+            info: {},
+            message_count: 0,
+            messages: [],
+            resumed: 'stored-branch',
+            session_id: 'runtime-branch',
+            session_key: 'stored-branch'
+          }
+        : {}) as never) as never)
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'parent', message_count: 2, title: 'Parent' })])
+
+    render(
+      <Harness
+        getRoutedStoredSessionId={() => routedId}
+        getRouteToken={() => routeToken}
+        navigate={navigate}
+        onReady={value => (actions = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="parent"
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await expect(actions!.branchStoredSession('parent')).resolves.toBe(true)
+    })
+
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('stored-branch'), { replace: true })
+    // The resume dispatches on the child's profile socket.
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(requestGatewayForProfile)
+          .mock.calls.filter(([, method, params]) => method === 'session.resume' && params?.session_id === 'stored-branch')
+      ).toHaveLength(1)
+    )
+    await waitFor(() => expect($activeSessionId.get()).toBe('runtime-branch'))
+    expect($resumeFailedSessionId.get()).toBeNull()
+    vi.mocked(requestGatewayForProfile).mockReset()
+    setSelectedStoredSessionId(null)
+    setActiveSessionId(null)
+  })
 })
 
 describe('connection-qualified session deletion', () => {
