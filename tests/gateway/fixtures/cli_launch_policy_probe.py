@@ -58,6 +58,20 @@ def _is_summary_round(body):
     return last['role'] == 'user' and 'maximum number of tool-calling iterations' in str(last.get('content', ''))
 
 
+def _settled_bytes(path, budget=10.0):
+    """Windows releases a killed daemon's byte-range locks asynchronously (msvcrt.locking -> EACCES
+    on read); wait for the release, bounded, so the leak scan still reads every file."""
+    import time
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            return path.read_bytes()
+        except PermissionError:
+            if os.name != 'nt' or time.monotonic() > deadline:
+                raise PermissionError(f'leak scan cannot read {path}') from None
+            time.sleep(.1)
+
+
 def probe(tmp_path):
     root = Path(__file__).resolve().parents[3]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -168,7 +182,7 @@ def probe(tmp_path):
         backups = home / 'backups' / 'config'  # copies of config.yaml itself (#109463), not a daemon leak
         for path in home.rglob('*'):
             if path.is_file() and backups not in path.parents \
-                    and any(key.encode() in path.read_bytes() for key in keys.values()):
+                    and any(key.encode() in _settled_bytes(path) for key in keys.values()):
                 leaks.append(str(path.relative_to(home)))
         assert not leaks, leaks
         return {'pids': pids, 'requests': count, 'concurrent_policies': True, 'auth_endpoint_model_reasoning': True,
