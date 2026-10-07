@@ -75,8 +75,9 @@ class GatewayTurnPrepareMixin:
                     explicit_api_key=key, explicit_base_url=launch_url,
                     target_model=policy.model, config=frozen)
                 if runtime is None:
-                    if key is None:
-                        key = frozen.get('model', {}).get('api_key')
+                    # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
+                    # resolver already reads from the frozen scope, so a URL-matched credential pool still
+                    # serves (and rotates on) the frozen endpoint.
                     # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
                     # from the frozen primary (expired token, Portal down, exhausted pool) tries the
                     # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is

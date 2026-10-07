@@ -164,3 +164,35 @@ def test_frozen_route_keeps_its_endpoint_after_live_config_edit(tmp_path, monkey
     runner = SimpleNamespace(session_authority=authority)
     _, runtime = GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())
     assert (runtime['base_url'], runtime['api_key']) == ('http://127.0.0.1:1/v1', 'sk-frozen-endpoint-one')
+
+
+def test_frozen_bare_custom_route_keeps_its_endpoint_pool_and_launch_key_wins(tmp_path, monkeypatch):
+    """The frozen ``model.api_key`` is config, not a launch key: a URL-matched credential pool still
+    serves the frozen endpoint (refresh/rotation on 401/429), while a bound launch key wins (R2-M1)."""
+    import json
+    from types import SimpleNamespace
+    from gateway.session_policy import build_policy, bind_launch_key
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.config_effective import load_user_config_effective
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    url = 'http://127.0.0.1:1/v1'
+    (home / 'config.yaml').write_text(json.dumps(
+        {'model': {'provider': 'custom', 'base_url': url, 'api_key': 'sk-frozen-config', 'default': 'm'}}))
+    pool = object()
+    monkeypatch.setattr('hermes_cli.runtime_provider._try_resolve_from_custom_pool', lambda base_url, *a, **k: {
+        'provider': 'custom', 'api_mode': 'chat_completions', 'base_url': base_url, 'api_key': 'sk-pooled',
+        'source': 'pool:custom', 'credential_pool': pool} if base_url.rstrip('/') == url else None)
+    authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=None)
+    runner = SimpleNamespace(session_authority=authority)
+    runtimes = []
+    for sid, launch in (('config-keyed', None), ('launch-keyed', 'sk-launch-explicit')):
+        private = {}
+        params = {'cwd': str(tmp_path), 'model': 'm'} | ({'api_key': launch} if launch else {})
+        policy = build_policy(params, load_user_config_effective(home / 'config.yaml'), private_secrets=private)
+        policy = bind_launch_key(authority, sid, policy, launch, config_secrets=private)
+        monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda runner, source, p=policy: p)
+        runtimes.append(GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())[1])
+    assert (runtimes[0]['base_url'], runtimes[0]['credential_pool']) == (url, pool)
+    assert (runtimes[1]['api_key'], runtimes[1]['credential_pool']) == ('sk-launch-explicit', None)
