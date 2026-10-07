@@ -131,7 +131,11 @@ if __name__ == '__main__':
                       TELEGRAM_ALLOWED_USERS='fixture-user')
     Path(os.environ['HERMES_HOME'], 'config.yaml').write_text(
         f'model:\n  default: local-wire-stub\n  provider: custom\n  base_url: {base_url}\n'
-        f'auxiliary:\n  title_generation:\n    enabled: false\nterminal:\n  cwd: {os.environ["HERMES_HOME"]}\n')
+        f'auxiliary:\n  title_generation:\n    enabled: false\nterminal:\n  cwd: {os.environ["HERMES_HOME"]}\n'
+        # The multiplex FIFO case asserts a queued follow-up gets its own durable row; under the
+        # default ``interrupt`` a follow-up landing after the agent is built is redirected INTO the
+        # running turn instead, so the outcome raced agent construction under load.
+        + ('display:\n  busy_input_mode: queue\n' if sys.argv[1] == 'multiplex' else ''))
     status = 0
     try:
         asyncio.run(probe(sys.argv[1], peer))
