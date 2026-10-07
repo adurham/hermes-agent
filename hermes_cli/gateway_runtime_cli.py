@@ -25,6 +25,11 @@ def cmd_gateway_ensure(args) -> None:
         payload = asdict(result)
         if result.endpoint:
             payload["endpoint"]["capabilities"] = sorted(result.endpoint.capabilities)
+        # The code THIS client (and any gateway it starts) runs, resolved exactly like the owner's
+        # ``endpoint.code_sha``: a client that sees them differ is attached to a gateway that
+        # outlived ``hermes update`` and must restart it rather than re-attach.
+        from hermes_cli.version_info import get_code_identity
+        payload["client_code_sha"] = get_code_identity().get("sha")
         code = ensure_exit_code(result)
     except (ValueError, TypeError):
         payload, code = {"state": "inaccessible", "reason_code": "invalid_invocation", "endpoint": None}, 2

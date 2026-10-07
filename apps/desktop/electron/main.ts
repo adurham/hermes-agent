@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configureWindowsGatewayTicketClient, createLocalGatewayDials, ensureLocalGateway, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { configureWindowsGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
 configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
@@ -11796,11 +11796,56 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     // Update waits yield: retirement or profile deletion may win in that gap.
     assertPoolEntryStillOwned(poolKey, entry)
     assertLocalProfileCanStart(profile, profileDeletionGate, key => directoryExists(path.join(HERMES_HOME, 'profiles', key)))
-  })
+  }, restartStaleLocalGateway)
 
   assertPoolEntryStillOwned(poolKey, entry)
 
   return { ...connection, profile, logs: hermesLog.slice(-80), ...getWindowState() }
+}
+
+// `hermes gateway restart` drains in-flight turns before the owner exits; the CLI client is
+// bounded so a wedged drain cannot hang Restart. The gateway's own drain is unaffected by the kill.
+const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
+
+// Supervised restart of the per-host gateway Desktop attaches to (it never owns that process):
+// the same resolver, spawn helper and Windows quoting as `gateway ensure`, against the profile
+// that owns the gateway process. A non-zero exit is logged, not thrown: the re-ensure that
+// follows reports what actually answers.
+async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
+  const backend = await ensureRuntime(
+    await resolveHermesBackend(['--profile', ownerProfile, 'gateway', 'restart']),
+    () => undefined
+  )
+
+  const result = await runGatewayEnsure(
+    { ...backend, env: desktopBackendSpawnEnv(backend.env || {}, GUEST_ONBOARDING) },
+    resolveHermesCwd(),
+    HERMES_HOME,
+    profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
+    { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
+  )
+
+  const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
+  rememberLog(`[gateway] hermes --profile ${ownerProfile} gateway restart exited ${result.code}${reason ? `: ${reason}` : ''}`)
+}
+
+// A ready gateway whose boot commit differs from this Hermes (it outlived `hermes update`) is
+// restarted once before attaching instead of being re-attached on every dial.
+const restartStaleLocalGateway = createStaleGatewayRestarter(restartLocalGatewayOwner, rememberLog)
+
+// Models-page "Restart Hermes": restart the local gateway behind `profile`'s cached descriptor.
+// A remote/SSH descriptor has no gatewayEndpoint, so nothing local is touched for it.
+async function restartAttachedLocalGateway(profile: string): Promise<void> {
+  const pending = profile === primaryProfileKey()
+    ? backendConnectionState.getPromise()
+    : localProfilePoolKeys(profile).map(key => backendPool.get(key)?.connectionPromise).find(Boolean)
+
+  const connection = await pending?.catch(() => null)
+  const endpoint = connection?.gatewayEndpoint
+
+  if (endpoint) {
+    await restartLocalGatewayOwner(gatewayOwnerProfile(endpoint))
+  }
 }
 
 // Forget a cached descriptor. Nothing is killed: the gateway behind it owns its
@@ -12200,7 +12245,7 @@ async function startHermes(requestedProfile?: string) {
       resolveHermesCwd(),
       HERMES_HOME,
       profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: primaryProfile })
-    ))
+    ), undefined, restartStaleLocalGateway)
 
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
@@ -14657,11 +14702,13 @@ const hudIpc = registerHudIpc({
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
-  // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
+  // stale lockfile, and restart the attached local gateway (Desktop does not
+  // own it). Soft primary teardown keeps the renderer shell mounted.
   await recycleOwnedBackend({
     notifyApplied: sendConnectionApplied,
     primaryProfile: primaryProfileKey(),
     profile: typeof profile === 'string' ? profile : '',
+    restartLocalGateway: restartAttachedLocalGateway,
     teardownPool: teardownPoolBackendAndWait,
     teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
     teardownSsh: value => teardownSshConnection(value || null)

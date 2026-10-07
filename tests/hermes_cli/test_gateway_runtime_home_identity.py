@@ -38,3 +38,17 @@ def test_endpoint_matches_served_home_under_any_canonical_spelling(tmp_path):
     other.mkdir()
     assert _endpoint(_ready_payload(served), other).reason_code == 'profile_mismatch'
     assert _endpoint(_ready_payload(served), Path(served + '-suffix')).reason_code == 'profile_mismatch'
+
+
+def test_ready_endpoint_carries_the_owner_boot_commit(tmp_path):
+    """`gateway ensure --json` publishes the code the owner BOOTED from, so Desktop can restart a
+    gateway that outlived `hermes update` instead of re-attaching it forever (503 Restart required)."""
+    from hermes_cli.gateway_runtime import _endpoint
+    home = tmp_path / 'home'
+    home.mkdir()
+    served = str(home.resolve())
+    sha = '0123456789abcdef0123456789abcdef01234567'
+    assert _endpoint({**_ready_payload(served), 'code_sha': sha}, home).endpoint.code_sha == sha
+    # An owner that cannot name its code (non-git, unreadable stamp) or answers garbage is unknown, not a mismatch.
+    assert _endpoint(_ready_payload(served), home).endpoint.code_sha is None
+    assert _endpoint({**_ready_payload(served), 'code_sha': ['x']}, home).endpoint.code_sha is None

@@ -32,6 +32,10 @@ class GatewayEndpoint:
     # Home whose control socket answers for this endpoint: the profile's own home, or the
     # default multiplexer's root when the profile is served by it.
     control_home: str | None = None
+    # Commit the owner BOOTED from (its ``identify`` ``code_sha``); None when it cannot name one.
+    # A gateway that outlived ``hermes update`` keeps serving old code, so an attaching client
+    # compares this with its own checkout and restarts the owner instead of re-attaching it.
+    code_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,7 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
         authority_epoch=epoch, runtime_protocol=1, api_origin=origin,
         supervisor=supervisor, capabilities=frozenset(capabilities),
         control_home=str(control_home) if control_home is not None else None,
+        code_sha=code_sha if isinstance(code_sha := payload.get("code_sha"), str) and code_sha else None,
     ))
 
 
