@@ -19,7 +19,6 @@ import pytest
 from scripts.bundles import native
 
 
-@pytest.mark.skipif(sys.platform == "darwin", reason="native Python fixture contains unavailable framework header links on macOS")
 def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_path, monkeypatch):
     import importlib
     import inspect
@@ -253,10 +252,12 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     facts = Facts(output / "tools/facts.json")
     venv_fact = facts.get("venv")
     assert venv_fact is not None
-    assert venv_fact["extras"] == json.loads((output / "enabled-features.json").read_text())
+    assert venv_fact["extras"] == json.loads((output / "enabled-features.json").read_text())["extras"]
     assert "environment" not in venv_fact
     from pm.install import venv_is_current
     with monkeypatch.context() as patch:
+        # The desktop app points the bundled backend's store at the payload's tools dir.
+        patch.setenv("HERMES_RUNTIME_DIR", str(output / "tools"))
         patch.setattr("pm.paths.repo_root", lambda: output / "hermes-agent")
         assert venv_is_current(project_root=output / "hermes-agent")
     for name in stale:
