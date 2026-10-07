@@ -125,7 +125,17 @@ def _user_home(launch_home: Path) -> Path:
             return home
     found = find_setup_profile()
     owner = _read_state(found[1]).get(_OWNER) if found else None
-    return profiles_mod.get_profile_dir(owner or "default")
+    return profiles_mod.get_profile_dir(_live_owner(owner or "default"))
+
+
+def _live_owner(owner: str) -> str:
+    """The saved owner's current name: a renamed profile keeps its old name in ``previous_names``."""
+    if owner == "default" or profiles_mod.get_profile_dir(owner).is_dir():
+        return owner
+    for info in profiles_mod.list_profiles(lazy_skill_count=True):
+        if owner in info.previous_names:
+            return info.name
+    return "default"
 
 
 def onboarding_eligible() -> bool:

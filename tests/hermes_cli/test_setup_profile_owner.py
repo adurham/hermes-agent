@@ -37,3 +37,12 @@ def test_reset_from_the_setup_backend_keeps_the_handoff_owner(root, monkeypatch)
 
     assert setup_profile.primary_profile(setup) == "work"
     assert "owner_profile" not in setup_profile.read_state()
+
+
+def test_handoff_follows_a_renamed_owner_profile(root, monkeypatch):
+    setup = _setup_from(monkeypatch, "work")
+    monkeypatch.setenv("HERMES_HOME", str(setup))
+
+    profiles.rename_profile("work", "personal")
+
+    assert setup_profile.primary_profile(setup) == "personal"
