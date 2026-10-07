@@ -1,16 +1,20 @@
 """Process startup phases; diagnostics remain in the gateway facade."""
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any, Optional
 
 from gateway.config import GatewayConfig
 
+# Log-record parity with the origin module.
+logger = logging.getLogger("gateway.run")
+
 async def _start_gateway_replace_existing_instance(existing_pid: int, replace: bool) -> bool:
     """Handle a live gateway PID under this HERMES_HOME: replace it (``--replace``) or refuse.
     Returns False when startup must abort (refused, permission denied, target still alive)."""
-    from gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, logger, suppress)
+    from gateway.run import (_clear_takeover_marker_quiet, _replace_target_belongs_to_other_profile, _wait_for_pid_exit, get_hermes_home, suppress)
     from gateway.status import get_process_start_time, remove_pid_file, terminate_pid
     if not replace:
         hermes_home = str(get_hermes_home())
@@ -94,7 +98,7 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
         if _released:
             logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
     except Exception:
-        pass
+        logger.debug("Stale scoped lock release for replaced gateway PID %d failed", existing_pid, exc_info=True)
     return True
 
 
@@ -414,7 +418,7 @@ async def _start_gateway_shutdown_tail(
     _planned_stop_watcher_stop: threading.Event, _planned_stop_watcher_thread: threading.Thread,
     _signal_initiated_shutdown: list) -> bool:
     """Post-``wait_for_shutdown`` teardown; returns the process exit verdict (True = exit 0)."""
-    from gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider, logger, suppress)
+    from gateway.run import (_CRON_SHUTDOWN_DRAIN_TIMEOUT, _HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT, _await_thread_exit, _best_effort, _resolve_gateway_exit_verdict, _shutdown_mcp_servers_nonblocking, _stop_cron_provider)
     # Control socket first: once shutdown begins we are no longer a truthful "serving here" answer and a
     # successor must be able to bind. Early-exit paths rely on the atexit cleanup_files hook instead.
     if _control_server is not None:
@@ -496,41 +500,10 @@ def _launch_home_may_multiplex(config=None) -> bool:
     raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
-                        verbosity: Optional[int] = 0, force: bool = False) -> bool:
-    """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
-    systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
-    deadlocks); ``force`` starts without consulting the host owner at all."""
+def _start_gateway_resolve_terminal_cwd() -> None:
+    """Messaging-only defaults belong to startup, not incidental imports by the TUI."""
+    import os
     from gateway.cwd_placeholder import CWD_PLACEHOLDERS, resolve_placeholder_terminal_cwd
-    from gateway.run import (
-        GatewayRunner,
-        _best_effort,
-        _discover_gateway_mcp_tools,
-        _enable_multiplex_log_routing,
-        _ensure_windows_gateway_venv_imports,
-        _gateway_loop_exception_handler,
-        _host_attach_or_none,
-        _log_standalone_profiles_at_boot,
-        _multiplex_profile_homes,
-        _refresh_host_gateway_record,
-        _resolve_gateway_exit_verdict,
-        _run_planned_stop_watcher,
-        _shutdown_gateway_health_export,
-        _shutdown_mcp_servers_nonblocking,
-        _start_gateway_make_restart_signal_handler,
-        asyncio,
-        get_hermes_home,
-        load_gateway_config_for_runner,
-        logger,
-        os,
-        signal,
-        suppress,
-        threading,
-    )
-    # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
-    os.environ["HERMES_EXEC_ASK"] = "1"
-
-    # Messaging-only defaults belong to startup, not incidental imports by the TUI.
     configured_cwd = os.environ.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in CWD_PLACEHOLDERS:
         resolved_cwd = resolve_placeholder_terminal_cwd(
@@ -545,6 +518,124 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             os.environ.pop("TERMINAL_CWD", None)
         else:
             os.environ["TERMINAL_CWD"] = resolved_cwd
+
+
+def _start_gateway_reserve_profiles(profile_homes) -> bool:
+    """Reserve the launch home plus every served profile home; False when startup must abort."""
+    from gateway.run import get_hermes_home
+    from gateway.runtime_ownership import process_ownership, OwnershipConflict
+    try:
+        process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
+    except OwnershipConflict as exc:
+        logger.error("Cannot reserve gateway profiles: %s", exc)
+        # A named profile that the LIVE default multiplexer already serves is a configuration
+        # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
+        # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
+        # Any other same-user contender keeps the ordinary "already running" exit 1.
+        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        if named_profile_served_by_running_multiplexer():
+            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+            from gateway.run import _write_runtime_status_quiet
+            logger.error(
+                "The default gateway is running as a profile multiplexer and already serves this profile. "
+                "Manage it with `hermes gateway restart` from the default profile instead of starting a "
+                "second gateway for the profile.")
+            _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason=str(exc))
+            raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+        return False
+    except OSError as exc:
+        logger.error("Cannot reserve gateway profiles: %s", exc)
+        return False
+    return True
+
+
+def _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restart_signal_handler) -> None:
+    """SIGINT/SIGTERM drain, SIGUSR1 restart; main thread only."""
+    import signal
+    from contextlib import suppress
+    if threading.current_thread() is threading.main_thread():
+        # add_signal_handler raises NotImplementedError on Windows; SIGUSR1 is POSIX-only.
+        handlers = [(sig, shutdown_signal_handler, (sig,)) for sig in (signal.SIGINT, signal.SIGTERM)]
+        if hasattr(signal, "SIGUSR1"):
+            handlers.append((signal.SIGUSR1, restart_signal_handler, ()))  # windows-footgun: ok — hasattr-guarded
+        for sig, handler, args in handlers:
+            with suppress(NotImplementedError):
+                loop.add_signal_handler(sig, handler, *args)  # windows-footgun: ok — suppress(NotImplementedError)
+    else:
+        logger.info("Skipping signal handlers (not running in main thread).")
+
+
+async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) -> Optional[bool]:
+    """MCP discovery, then ``runner.start()``. Returns the exit verdict when the process must end
+    before running mode (start failed, clean exit, aborted startup); None to continue into cron."""
+    from gateway.run import (_discover_gateway_mcp_tools, _resolve_gateway_exit_verdict,
+                             _shutdown_gateway_health_export, _shutdown_mcp_servers_nonblocking)
+    # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
+    try:
+        # MCP tool discovery — run in an executor so the asyncio event loop stays responsive even when a
+        # configured MCP server is slow or unreachable.  discover_mcp_tools() uses a blocking 120s wait
+        # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
+        # Telegram polling) until it returned. See #16856.
+        await _discover_gateway_mcp_tools(runner.config)
+    except Exception:
+        logger.debug("MCP tool discovery failed (non-fatal)", exc_info=True)
+
+    try:
+        success = await runner.start()
+    except BaseException:
+        _shutdown_gateway_health_export(runner)
+        raise
+    if not success:
+        _shutdown_gateway_health_export(runner)
+        return False
+
+    if runner.should_exit_cleanly:
+        _shutdown_gateway_health_export(runner)
+        if runner.exit_reason:
+            logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
+        # Explicit exit codes (GATEWAY_FATAL_CONFIG_EXIT_CODE) must propagate so s6 finish maps 78 → 125.
+        if runner.exit_code is not None:
+            raise SystemExit(runner.exit_code)
+        return True
+    if not runner._running:
+        # Startup aborted by restart/shutdown before running mode; preserve that path without starting cron.
+        try:
+            await runner.wait_for_shutdown()
+            try:
+                await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+            except Exception:
+                logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
+            return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
+        finally:
+            _shutdown_gateway_health_export(runner)
+    return None
+
+
+async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
+                        verbosity: Optional[int] = 0, force: bool = False) -> bool:
+    """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
+    systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
+    deadlocks); ``force`` starts without consulting the host owner at all."""
+    from gateway.run import (
+        GatewayRunner,
+        _best_effort,
+        _enable_multiplex_log_routing,
+        _ensure_windows_gateway_venv_imports,
+        _gateway_loop_exception_handler,
+        _host_attach_or_none,
+        _log_standalone_profiles_at_boot,
+        _multiplex_profile_homes,
+        _refresh_host_gateway_record,
+        _run_planned_stop_watcher,
+        _start_gateway_make_restart_signal_handler,
+        asyncio,
+        load_gateway_config_for_runner,
+        os,
+        threading,
+    )
+    # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
+    os.environ["HERMES_EXEC_ASK"] = "1"
+    _start_gateway_resolve_terminal_cwd()
 
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
@@ -576,29 +667,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             and not await _start_gateway_replace_existing_instance(existing_pid, replace)):
         return False
 
-    from gateway.runtime_ownership import process_ownership, OwnershipConflict
     from gateway.status import remove_pid_file, release_gateway_runtime_lock
-    try:
-        process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
-    except OwnershipConflict as exc:
-        logger.error("Cannot reserve gateway profiles: %s", exc)
-        # A named profile that the LIVE default multiplexer already serves is a configuration
-        # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
-        # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
-        # Any other same-user contender keeps the ordinary "already running" exit 1.
-        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-        if named_profile_served_by_running_multiplexer():
-            from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
-            from gateway.run import _write_runtime_status_quiet
-            logger.error(
-                "The default gateway is running as a profile multiplexer and already serves this profile. "
-                "Manage it with `hermes gateway restart` from the default profile instead of starting a "
-                "second gateway for the profile.")
-            _write_runtime_status_quiet(gateway_state="startup_failed", exit_reason=str(exc))
-            raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
-        return False
-    except OSError as exc:
-        logger.error("Cannot reserve gateway profiles: %s", exc)
+    if not _start_gateway_reserve_profiles(profile_homes):
         return False
     # Freeze discovery: later profile additions must restart and reserve before opening stores.
     if profile_homes:
@@ -650,16 +720,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # discoverable). Anything else is forwarded to the default handler so real bugs still surface.
         loop.set_exception_handler(_gateway_loop_exception_handler)
 
-        if threading.current_thread() is threading.main_thread():
-            # add_signal_handler raises NotImplementedError on Windows; SIGUSR1 is POSIX-only.
-            handlers = [(sig, shutdown_signal_handler, (sig,)) for sig in (signal.SIGINT, signal.SIGTERM)]
-            if hasattr(signal, "SIGUSR1"):
-                handlers.append((signal.SIGUSR1, restart_signal_handler, ()))  # windows-footgun: ok — hasattr-guarded
-            for sig, handler, args in handlers:
-                with suppress(NotImplementedError):
-                    loop.add_signal_handler(sig, handler, *args)  # windows-footgun: ok — suppress(NotImplementedError)
-        else:
-            logger.info("Skipping signal handlers (not running in main thread).")
+        _start_gateway_install_signal_handlers(loop, shutdown_signal_handler, restart_signal_handler)
 
         # Windows has no add_signal_handler, so `hermes gateway stop`'s SIGTERM would never drain; poll the
         # planned-stop marker (written BEFORE the kill) instead. Runs everywhere so masked-SIGTERM drains.
@@ -702,44 +763,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         _best_effort(_start_keepalive, "Nous auth keepalive did not start: %s")
         _ensure_windows_gateway_venv_imports()
 
-        # discover_mcp_tools() blocks up to 120s; on the loop thread it would freeze platform heartbeats.
-        try:
-            # MCP tool discovery — run in an executor so the asyncio event loop stays responsive even when a
-            # configured MCP server is slow or unreachable.  discover_mcp_tools() uses a blocking 120s wait
-            # internally; calling it from the loop thread would freeze platform heartbeats (Discord shard,
-            # Telegram polling) until it returned. See #16856.
-            await _discover_gateway_mcp_tools(runner.config)
-        except Exception as e:
-            logger.debug("MCP tool discovery failed: %s", e)
-
-        try:
-            success = await runner.start()
-        except BaseException:
-            _shutdown_gateway_health_export(runner)
-            raise
-        if not success:
-            _shutdown_gateway_health_export(runner)
-            return False
-
-        if runner.should_exit_cleanly:
-            _shutdown_gateway_health_export(runner)
-            if runner.exit_reason:
-                logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
-            # Explicit exit codes (GATEWAY_FATAL_CONFIG_EXIT_CODE) must propagate so s6 finish maps 78 → 125.
-            if runner.exit_code is not None:
-                raise SystemExit(runner.exit_code)
-            return True
-        if not runner._running:
-            # Startup aborted by restart/shutdown before running mode; preserve that path without starting cron.
-            try:
-                await runner.wait_for_shutdown()
-                try:
-                    await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
-                except Exception:
-                    logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
-                return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
-            finally:
-                _shutdown_gateway_health_export(runner)
+        _early_verdict = await _start_gateway_run_runner(runner, _signal_initiated_shutdown)
+        if _early_verdict is not None:
+            return _early_verdict
 
         cron_stop, cron_provider, cron_thread, housekeeping_thread = (
             _start_gateway_start_cron_and_housekeeping(runner))
