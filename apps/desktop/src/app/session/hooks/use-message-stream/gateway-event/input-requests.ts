@@ -96,6 +96,44 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  // Canonical gateways settle a shared prompt with `approval.settled` /
+  // `clarify.settled {prompt_id}` once ANY attached viewer answered it (or the
+  // turn ended). The prompt id is the server request id this window parked the
+  // card under. Only the parked card comes down: the answer itself reaches the
+  // transcript through the tool's own completion, so no "skipped" projection.
+  if (event.type === 'approval.settled' || event.type === 'clarify.settled') {
+    const promptId = (payload as { prompt_id?: unknown } | undefined)?.prompt_id
+
+    if (typeof promptId !== 'string' || !promptId) {
+      return true
+    }
+
+    forgetServerRequest(promptId)
+    const key = sessionId ?? ''
+
+    if (event.type === 'clarify.settled') {
+      if ($clarifyRequests.get()[key]?.requestId === promptId) {
+        clearClarifyRequest(promptId, sessionId)
+
+        if (sessionId) {
+          deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+        }
+      }
+
+      return true
+    }
+
+    const approval = sessionApprovalRequests(sessionId ?? null)
+      .get()
+      .find(request => request.serverRequestId === promptId)
+
+    if (approval) {
+      clearApprovalRequest(sessionId, approval.requestId)
+    }
+
+    return true
+  }
+
   if (event.type !== 'request.cancel') {
     return false
   }
