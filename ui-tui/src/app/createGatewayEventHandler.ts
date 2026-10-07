@@ -32,6 +32,13 @@ import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import { createBillingVerificationPresenter, createFreeTierChallengePresenter } from './gatewayBrowserLinks.js'
+import {
+  fenceLifecycleEvent,
+  isGenericErrorEvent,
+  openCanonicalApproval,
+  openCanonicalClarify,
+  settleSharedPrompt
+} from './gatewayCanonicalEvents.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
@@ -442,6 +449,193 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
 }
 
+interface VoiceTranscriptDeps {
+  enqueue: GatewayEventHandlerContext['composer']['enqueue']
+  getFullConfigOnce: () => Promise<ConfigFullResponse | null>
+  setInput: GatewayEventHandlerContext['composer']['setInput']
+  setVoiceEnabled: GatewayEventHandlerContext['voice']['setVoiceEnabled']
+  setVoiceProcessing: GatewayEventHandlerContext['voice']['setProcessing']
+  setVoiceRecording: GatewayEventHandlerContext['voice']['setRecording']
+  submitRef: GatewayEventHandlerContext['submission']['submitRef']
+  sys: GatewayEventHandlerContext['system']['sys']
+}
+
+function handleVoiceTranscript(
+  payload: Extract<AnyGatewayEvent, { type: 'voice.transcript' }>['payload'],
+  deps: VoiceTranscriptDeps
+): void {
+  const {
+    enqueue,
+    getFullConfigOnce,
+    setInput,
+    setVoiceEnabled,
+    setVoiceProcessing,
+    setVoiceRecording,
+    submitRef,
+    sys
+  } = deps
+
+  // Explicit user-intent stop: the user said (or typed) a bare stop
+  // phrase. The backend already halted the capture loop and flipped
+  // voice mode off — mirror it here like a manual /voice off, and say
+  // so (this is intent, not the no-speech timeout below).
+  if (payload?.stop_phrase) {
+    setVoiceEnabled(false)
+    setVoiceRecording(false)
+    setVoiceProcessing(false)
+    sys(t('gatewayMsg.voice.stopPhrase'))
+
+    return
+  }
+
+  // CLI parity: the 3-strikes silence detector flipped off automatically.
+  // Mirror that on the UI side and tell the user why the mode is off.
+  if (payload?.no_speech_limit) {
+    setVoiceEnabled(false)
+    setVoiceRecording(false)
+    setVoiceProcessing(false)
+    sys(t('gatewayMsg.voice.noSpeechLimit'))
+
+    return
+  }
+
+  const text = String(payload?.text ?? '').trim()
+
+  if (!text) {
+    return
+  }
+
+  const destination = captureDestination()
+  void getFullConfigOnce().then(cfg => {
+    if (!isCurrentDestination(destination)) {
+      enqueue?.(text, text, destination)
+
+      return
+    }
+
+    const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
+
+    if (submitMode === 'draft') {
+      setInput(current => (current.trim() ? `${current.trimEnd()} ${text}` : text))
+
+      return
+    }
+
+    // Default to CLI parity. Clear + defer submit so the cleared input
+    // is committed before submit reads it; invalid config also falls
+    // back to this established direct-submit behavior.
+    setInput('')
+    setTimeout(() => {
+      if (isCurrentDestination(destination)) {
+        // Only a transcript submitted where it was spoken is a voice turn;
+        // one re-routed to its own session's queue lands as typed text.
+        markNextSubmitVoice(text)
+        submitRef.current(text)
+      } else {
+        enqueue?.(text, text, destination)
+      }
+    }, 0)
+  })
+}
+
+interface ErrorEventSinks {
+  panel: GatewayEventHandlerContext['transcript']['panel']
+  setStatus: (status: string) => void
+  sys: GatewayEventHandlerContext['system']['sys']
+}
+
+function handleErrorEvent(
+  payload: Extract<AnyGatewayEvent, { type: 'error' }>['payload'],
+  versionedGenericError: boolean,
+  { panel, setStatus, sys }: ErrorEventSinks
+): void {
+  // Build/RPC failures are not authority to settle a versioned turn.
+  if (versionedGenericError) {
+    sys(`error: ${String(payload?.message || 'unknown error')}`)
+
+    return
+  }
+
+  turnController.recordError()
+  flashPet('failed')
+
+  const message = String(payload?.message || t('gatewayMsg.error.unknown'))
+
+  turnController.pushActivity(message, 'error')
+
+  if (NO_PROVIDER_RE.test(message)) {
+    panel(setupRequiredTitle(), buildSetupRequiredSections())
+    setStatus(t('session.status.setupRequired'))
+
+    return
+  }
+
+  sys(`error: ${describeRpcError(new Error(message))}`)
+  setStatus('ready')
+}
+
+interface SessionInfoSinks {
+  appendMessage: (msg: Msg) => void
+  setHistoryItems: GatewayEventHandlerContext['transcript']['setHistoryItems']
+  setStatus: (status: string) => void
+}
+
+function applySessionInfo(payload: unknown, { appendMessage, setHistoryItems, setStatus }: SessionInfoSinks): void {
+  const current = getUiState().info
+  const incoming = payload as SessionInfo | undefined
+
+  if (!incoming) {
+    return
+  }
+
+  if (incoming.profile_name && current?.profile_name && incoming.profile_name !== current.profile_name) {
+    return
+  }
+
+  let info: SessionInfo = { ...current, ...incoming }
+
+  // A busy-time admission painted no bubble at submit; paint it when the
+  // authority starts it, so it lands after the previous assistant reply.
+  for (const started of newlyStartedRows(current?.pending_submissions, incoming.pending_submissions)) {
+    markBubbleShown(started.input_id)
+    appendMessage({ role: 'user', text: started.user })
+  }
+
+  // A replayed snapshot can be the only terminal signal after reconnect.
+  // Missing running on older gateways must not clear a live turn.
+  if (incoming.running === true) {
+    patchUiState({ busy: true, status: 'running…' })
+  }
+
+  if (incoming.running === false) {
+    turnController.clearStatusTimer()
+    // The authority settles the row before it publishes the final, so this snapshot
+    // can land a frame ahead of `message.complete`; the trail (tool rows, reasoning)
+    // stays parked for that final to archive instead of being dropped here.
+    turnController.idle({ keepTurnArchive: true })
+    setStatus('ready')
+  }
+
+  // Agent-less producers (lazy cwd switches, `_fallback_session_info`) send
+  // payloads without a durable id — keep the one we already track so a
+  // later reconnect still resumes this session.
+  const storedSid = info.stored_session_id || getUiState().storedSid
+
+  if (storedSid) {
+    info = { ...info, stored_session_id: storedSid }
+  }
+
+  patchUiState(state => ({
+    ...state,
+    info,
+    status: state.status === t('session.status.startingAgent') ? 'ready' : state.status,
+    storedSid,
+    usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
+  }))
+
+  setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+}
+
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
   syncThemeToTerminalBackground()
 
@@ -682,7 +876,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       // Startup queries are arbitrary launcher/script text (Omarchy prompted
       // launches, `hermes --tui -q "…"`) — submit LITERALLY, bypassing the
       // slash/!/interpolation dispatcher, matching one-shot's semantics.
-      if (!isCurrentDestination(destination)) { return sys('startup query skipped: active session changed') }
+      if (!isCurrentDestination(destination)) {
+        return sys('startup query skipped: active session changed')
+      }
+
       submitLiteralRef.current(STARTUP_QUERY || 'What do you see in this image?', attachments)
     }, 0)
   }
@@ -815,40 +1012,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
-    // Lifecycle authority is local to an owner epoch. Only attachment RPC
-    // snapshots replace that epoch; delayed push events cannot reset it.
     const current = getUiState().info
-    const execution = (ev.payload ?? {}) as { execution_epoch?: string; execution_generation?: number }
+    const genericError = isGenericErrorEvent(ev)
 
-    const genericError = ev.type === 'error' &&
-      execution.execution_epoch === undefined && execution.execution_generation === undefined
-
-    const lifecycle = !genericError && ['session.info', 'message.start', 'message.complete', 'error'].includes(ev.type)
-
-    if (lifecycle && current?.execution_generation !== undefined) {
-      const incoming = (ev.payload ?? {}) as { execution_epoch?: string; execution_generation?: number }
-
-      if (
-        incoming.execution_epoch !== current.execution_epoch ||
-        typeof incoming.execution_generation !== 'number' ||
-        !Number.isSafeInteger(incoming.execution_generation) ||
-        incoming.execution_generation < current.execution_generation
-      ) {
-        return
-      }
-
-      if (ev.type !== 'session.info') {
-        patchUiState({ info: { ...current, execution_generation: incoming.execution_generation } })
-      }
+    if (fenceLifecycleEvent(ev, current, genericError)) {
+      return
     }
 
-    if (ev.type === 'approval.settled' || ev.type === 'clarify.settled') {
-      const kind = ev.type === 'approval.settled' ? 'approval' : 'clarify'
-      const promptId = ev.payload?.prompt_id
-
-      patchOverlayState(previous => previous[kind]?.sharedControl?.prompt_id === promptId
-        ? { ...previous, [kind]: null } : previous)
-
+    if (settleSharedPrompt(ev)) {
       return
     }
 
@@ -890,63 +1061,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         showChallenge(ev.payload)
 
         return
-      case 'session.info': {
-        const current = getUiState().info
-        const incoming = ev.payload as SessionInfo | undefined
 
-        if (!incoming) {
-          return
-        }
-
-        if (incoming.profile_name && current?.profile_name && incoming.profile_name !== current.profile_name) {
-          return
-        }
-
-        let info: SessionInfo = { ...current, ...incoming }
-
-        // A busy-time admission painted no bubble at submit; paint it when the
-        // authority starts it, so it lands after the previous assistant reply.
-        for (const started of newlyStartedRows(current?.pending_submissions, incoming.pending_submissions)) {
-          markBubbleShown(started.input_id)
-          appendMessage({ role: 'user', text: started.user })
-        }
-
-        // A replayed snapshot can be the only terminal signal after reconnect.
-        // Missing running on older gateways must not clear a live turn.
-        if (incoming.running === true) {
-          patchUiState({ busy: true, status: 'running…' })
-        }
-
-        if (incoming.running === false) {
-          turnController.clearStatusTimer()
-          // The authority settles the row before it publishes the final, so this snapshot
-          // can land a frame ahead of `message.complete`; the trail (tool rows, reasoning)
-          // stays parked for that final to archive instead of being dropped here.
-          turnController.idle({ keepTurnArchive: true })
-          setStatus('ready')
-        }
-
-        // Agent-less producers (lazy cwd switches, `_fallback_session_info`) send
-        // payloads without a durable id — keep the one we already track so a
-        // later reconnect still resumes this session.
-        const storedSid = info.stored_session_id || getUiState().storedSid
-
-        if (storedSid) {
-          info = { ...info, stored_session_id: storedSid }
-        }
-
-        patchUiState(state => ({
-          ...state,
-          info,
-          status: state.status === t('session.status.startingAgent') ? 'ready' : state.status,
-          storedSid,
-          usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
-        }))
-
-        setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+      case 'session.info':
+        applySessionInfo(ev.payload, { appendMessage, setHistoryItems, setStatus })
 
         return
-      }
 
       case 'session.replay_gap':
         // The authority retired this subscription (fanout overflow) while the
@@ -1130,72 +1249,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'voice.transcript': {
-        // Explicit user-intent stop: the user said (or typed) a bare stop
-        // phrase. The backend already halted the capture loop and flipped
-        // voice mode off — mirror it here like a manual /voice off, and say
-        // so (this is intent, not the no-speech timeout below).
-        if (ev.payload?.stop_phrase) {
-          setVoiceEnabled(false)
-          setVoiceRecording(false)
-          setVoiceProcessing(false)
-          sys(t('gatewayMsg.voice.stopPhrase'))
-
-          return
-        }
-
-        // CLI parity: the 3-strikes silence detector flipped off automatically.
-        // Mirror that on the UI side and tell the user why the mode is off.
-        if (ev.payload?.no_speech_limit) {
-          setVoiceEnabled(false)
-          setVoiceRecording(false)
-          setVoiceProcessing(false)
-          sys(t('gatewayMsg.voice.noSpeechLimit'))
-
-          return
-        }
-
-        const text = String(ev.payload?.text ?? '').trim()
-
-        if (!text) {
-          return
-        }
-
-        const destination = captureDestination()
-        void getFullConfigOnce().then(cfg => {
-          if (!isCurrentDestination(destination)) {
-            enqueue?.(text, text, destination)
-
-            return
-          }
-
-          const submitMode = normalizeVoiceSubmitMode(cfg?.config?.voice?.submit_mode)
-
-          if (submitMode === 'draft') {
-            setInput(current => (current.trim() ? `${current.trimEnd()} ${text}` : text))
-
-            return
-          }
-
-          // Default to CLI parity. Clear + defer submit so the cleared input
-          // is committed before submit reads it; invalid config also falls
-          // back to this established direct-submit behavior.
-          setInput('')
-          setTimeout(() => {
-            if (isCurrentDestination(destination)) {
-              // Only a transcript submitted where it was spoken is a voice turn;
-              // one re-routed to its own session's queue lands as typed text.
-              markNextSubmitVoice(text)
-              submitRef.current(text)
-            } else {
-              enqueue?.(text, text, destination)
-            }
-          }, 0)
+      case 'voice.transcript':
+        // Pass the handler-construction captures (same references as before extraction).
+        handleVoiceTranscript(ev.payload, {
+          enqueue,
+          getFullConfigOnce,
+          setInput,
+          setVoiceEnabled,
+          setVoiceProcessing,
+          setVoiceRecording,
+          submitRef,
+          sys
         })
 
         return
-      }
-
       case 'wake.detected': {
         // "Hey Hermes": optionally open a fresh session (start_new_session),
         // then arm voice capture so the user can speak hands-free. Mirrors CLI.
@@ -1436,86 +1503,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      // Canonical gateways (`gateway/session_pending_controls.py`) publish
-      // generation-bound shared controls as events carrying `prompt_id`; they
-      // are answered through approval.respond / clarify.respond, never through
-      // a server→client request frame (that is the legacy tui_gateway path in
-      // createServerRequestHandler).
-      case 'clarify.request': {
-        const shared = ev.payload
-
-        if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
-          return
-        }
-
-        const sharedControl = { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id }
-
-        const batch = (shared.questions ?? [])
-          .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
-          .map(q => ({
-            choices: q.choices && q.choices.length > 0 ? q.choices : null,
-            multiSelect: q.multi_select === true,
-            qid: q.qid,
-            question: q.question.trim()
-          }))
-
-        // The canonical gateway asks one card per question (question/choices/
-        // multi_select); the Ink card renders the one questions[] shape, so a
-        // single card becomes a one-question set answered via clarify.respond.
-        const single = (shared.question ?? '').trim()
-
-        const questions = batch.length
-          ? batch
-          : single
-            ? [
-                {
-                  choices: shared.choices && shared.choices.length > 0 ? shared.choices : null,
-                  multiSelect: shared.multi_select === true,
-                  qid: shared.prompt_id,
-                  question: single
-                }
-              ]
-            : []
-
-        if (!questions.length) {
-          return
-        }
-
-        patchOverlayState({
-          clarify: { answers: shared.answers ?? {}, questions, requestId: shared.prompt_id, sharedControl }
-        })
-        setStatus('waiting for input…')
-        ringPromptBell()
+      // Canonical gateways publish generation-bound shared controls as events
+      // carrying `prompt_id` (see gatewayCanonicalEvents.ts).
+      case 'clarify.request':
+        openCanonicalClarify(ev, setStatus, ringPromptBell)
 
         return
-      }
 
-      case 'approval.request': {
-        const shared = ev.payload
-
-        if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
-          return
-        }
-
-        const sharedControl = { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id }
-
-        patchOverlayState({
-          approval: {
-            // Only an explicit false (tirith warning) drops the permanent-allow option.
-            allowPermanent: shared.allow_permanent !== false,
-            choices: shared.choices,
-            command: String(shared.command ?? ''),
-            description: String(shared.description ?? 'dangerous command'),
-            requestId: shared.prompt_id,
-            sharedControl,
-            smartDenied: shared.smart_denied === true
-          }
-        })
-        setStatus('approval needed')
-        ringPromptBell()
+      case 'approval.request':
+        openCanonicalApproval(ev, setStatus, ringPromptBell)
 
         return
-      }
 
       case 'background.complete':
         if (!ev.payload) {
@@ -1789,31 +1787,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'error':
-        // Build/RPC failures are not authority to settle a versioned turn.
-        if (genericError && current?.execution_generation !== undefined) {
-          sys(`error: ${String(ev.payload?.message || 'unknown error')}`)
-
-          return
-        }
-
-        turnController.recordError()
-        flashPet('failed')
-
-        {
-          const message = String(ev.payload?.message || t('gatewayMsg.error.unknown'))
-
-          turnController.pushActivity(message, 'error')
-
-          if (NO_PROVIDER_RE.test(message)) {
-            panel(setupRequiredTitle(), buildSetupRequiredSections())
-            setStatus(t('session.status.setupRequired'))
-
-            return
-          }
-
-          sys(`error: ${describeRpcError(new Error(message))}`)
-          setStatus('ready')
-        }
+        handleErrorEvent(ev.payload, genericError && current?.execution_generation !== undefined, {
+          panel,
+          setStatus,
+          sys
+        })
     }
   }
 }
