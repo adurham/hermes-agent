@@ -125,7 +125,10 @@ async def multiplex_probe(runner, authority, primary, state, mode, peer):
         queued = MessageEvent(text='MULTIPLEX_QUEUED', source=source, message_id='busy-2')
         task = asyncio.create_task(adapter.handle_message(queued))
         try:
-            async with asyncio.timeout(3):
+            # A durable FIFO row, not an adapter-local queue: the bound is wall-clock only (the
+            # admission commits on the owner's writer, which a loaded runner can delay), like the
+            # model-gate and drain waits above.
+            async with asyncio.timeout(10):
                 while not any(row['request_id'] == 'busy-2' for row in rows(entry.session_id)):
                     await asyncio.sleep(0.01)
             assert not adapter._pending_messages, 'callback wrapper restored adapter-local queue'
