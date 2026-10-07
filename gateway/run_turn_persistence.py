@@ -104,7 +104,7 @@ class GatewayTurnPersistenceMixin:
             try:
                 await self.async_session_store.clear_resume_pending(session_key)
             except Exception as _e:
-                logger.debug("clear_resume_pending failed for %s: %s", session_key, _e)
+                logger.debug("clear_resume_pending failed for %s: %s", session_key, _e, exc_info=True)
 
         # Normalize empty responses: surface errors, partial failures, and work-without-text.
         # Fix for #18765.

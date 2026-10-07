@@ -166,10 +166,6 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
-class GatewayTurnMixin:
-    """Agent-turn execution for GatewayRunner (see module docstring)."""
-
-
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
@@ -845,16 +841,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if not proxy_url:
             return self._proxy_error_result(t("gateway.proxy.url_missing"))
 
-        # The proxy key is a per-profile credential: honor the installed secret scope under multiplex.
-        # Only UnscopedSecretError (the unscoped default-profile path) falls back to the env; any
-        # other get_secret() error propagates (same as BASE) rather than silently degrading to the
-        # ambient key, which may hold another profile's credential.
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        # The proxy key is a per-profile credential read through the installed secret scope:
+        # ``_run_agent`` binds the source profile's scope (or the launch profile's once the process
+        # multiplexes), and an unscoped single-profile process reads os.environ inside get_secret.
+        # Any get_secret() error propagates rather than degrading to the ambient key, which may hold
+        # another profile's credential.
+        from agent.secret_scope import get_secret_str
 
-        try:
-            proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
-        except UnscopedSecretError:
-            proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
+        proxy_key = get_secret_str("GATEWAY_PROXY_KEY").strip()
 
         _run_still_current = self._run_still_current_fn(session_key, run_generation)
 

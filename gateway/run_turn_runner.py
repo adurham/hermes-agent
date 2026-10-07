@@ -1118,13 +1118,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # codes) belongs in the log, and the chat gets the commands that fix it. The result is
             # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
             # turn, and an API receipt reports failure, never a completed turn with an apology.
-            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc, exc_info=True)
             from hermes_state_runtime import RuntimeStoreError
             from agent.turn_failure_copy import stamp_failure
+            resolution_error = str(exc)
 
             def _unresolved(text: str) -> dict:
                 return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                                      "failed": True, "completed": False, "error": str(exc)},
+                                      "failed": True, "completed": False, "error": resolution_error},
                                      "auth_permanent", False)
             if isinstance(exc, RuntimeStoreError):
                 # Session-policy refusals carry a stable reason code (e.g. a CLI launch key

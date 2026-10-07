@@ -39,6 +39,75 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
+    """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
+    config and launch credential, walking its own fallback chain on an AuthError. Module-level so
+    tests that bind the method onto bare namespaces still reach it."""
+    from gateway.run import _runtime_agent_kwargs
+    from gateway.session_policy import launch_key
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
+    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    frozen = policy.config(authority)
+    key = launch_key(authority, policy)
+    launch_url = json.loads(policy.request_json).get('base_url')
+    # Every rung reads the session's FROZEN config, never live config.yaml: a later
+    # ``model.base_url`` edit must not carry this route's frozen credential to the new host
+    # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
+    with frozen_runtime_config(frozen):
+        runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
+            explicit_api_key=key, explicit_base_url=launch_url,
+            target_model=policy.model, config=frozen)
+        if runtime is None:
+            # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
+            # resolver already reads from the frozen scope, so a URL-matched credential pool still
+            # serves (and rotates on) the frozen endpoint.
+            # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
+            # from the frozen primary (expired token, Portal down, exhausted pool) tries the
+            # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
+            # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
+            # the provider chain, which keeps the credential pool an explicit URL would drop.
+            runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=policy.provider,
+                explicit_api_key=key, explicit_base_url=launch_url, target_model=policy.model)
+        else:
+            fallback_entry = None
+    if fallback_entry is not None:
+        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
+            policy.provider or '', policy.model or '',
+            runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
+            fallback_entry.get('model') or 'default')
+        return fallback_entry['model'], _runtime_agent_kwargs(runtime)
+    return policy.model, _runtime_agent_kwargs(runtime)
+
+
+def _recover_or_remember_model(runner, skey, model):
+    """Last step of ``_resolve_session_agent_runtime``: remember a good model, recover an empty one."""
+    # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
+    # the session goes silent — reuse the last model resolved for this session, else process-wide.
+    if not model:
+        _lr_state = runner._peek_session_state(skey) if skey else None
+        _lr_star = runner._peek_session_state("*")
+        _recovered = (
+            (_lr_state.conversation.last_resolved_model if _lr_state else "")
+            or (_lr_star.conversation.last_resolved_model if _lr_star else "")
+        )
+        if _recovered:
+            logger.warning(
+                "Empty model resolved for session=%s — recovering "
+                "last-known-good model %s (config read likely returned "
+                "empty; see #35314)", skey or "", _recovered,
+            )
+            model = _recovered
+    else:
+        # Cache the good resolution for future recovery turns.
+        if skey:
+            runner._session_state(skey).conversation.last_resolved_model = model
+        runner._session_state("*").conversation.last_resolved_model = model
+    return model
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -58,43 +127,7 @@ class GatewayTurnPrepareMixin:
         self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            from gateway.run import _runtime_agent_kwargs
-            from gateway.session_policy import launch_key
-            from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
-            from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
-            from gateway.session_authorities import active_authority
-            authority = active_authority(self)
-            frozen = policy.config(authority)
-            key = launch_key(authority, policy)
-            launch_url = json.loads(policy.request_json).get('base_url')
-            # Every rung reads the session's FROZEN config, never live config.yaml: a later
-            # ``model.base_url`` edit must not carry this route's frozen credential to the new host
-            # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
-            with frozen_runtime_config(frozen):
-                runtime = _resolve_named_custom_runtime(requested_provider=policy.provider,
-                    explicit_api_key=key, explicit_base_url=launch_url,
-                    target_model=policy.model, config=frozen)
-                if runtime is None:
-                    # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
-                    # resolver already reads from the frozen scope, so a URL-matched credential pool still
-                    # serves (and rotates on) the frozen endpoint.
-                    # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
-                    # from the frozen primary (expired token, Portal down, exhausted pool) tries the
-                    # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
-                    # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
-                    # the provider chain, which keeps the credential pool an explicit URL would drop.
-                    runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=policy.provider,
-                        explicit_api_key=key, explicit_base_url=launch_url, target_model=policy.model)
-                else:
-                    fallback_entry = None
-            if fallback_entry is not None:
-                from hermes_cli.fallback_config import pre_agent_fallback_notice
-                self._pre_agent_fallback_notice = pre_agent_fallback_notice(
-                    policy.provider or '', policy.model or '',
-                    runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
-                    fallback_entry.get('model') or 'default')
-                return fallback_entry['model'], _runtime_agent_kwargs(runtime)
-            return policy.model, _runtime_agent_kwargs(runtime)
+            return _resolve_policy_agent_runtime(self, policy)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         if skey:
@@ -144,7 +177,8 @@ class GatewayTurnPrepareMixin:
                 # Layering the override on the default runtime sent its model to the default provider's
                 # endpoint (openai-codex on the Nous URL). Run this turn on the whole default route and say
                 # so; the persisted override is kept, so the next turn retries it.
-                logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc)
+                logger.warning("Session /model override provider %s unavailable: %s", override["provider"], exc,
+                               exc_info=True)
                 unavailable_override, override = override, None
         if runtime_kwargs is None:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -191,29 +225,7 @@ class GatewayTurnPrepareMixin:
                         "No model configured — defaulting to %s for provider %s", model, runtime_kwargs["provider"],
                     )
 
-        # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
-        # the session goes silent — reuse the last model resolved for this session, else process-wide.
-        if not model:
-            _lr_state = self._peek_session_state(skey) if skey else None
-            _lr_star = self._peek_session_state("*")
-            _recovered = (
-                (_lr_state.conversation.last_resolved_model if _lr_state else "")
-                or (_lr_star.conversation.last_resolved_model if _lr_star else "")
-            )
-            if _recovered:
-                logger.warning(
-                    "Empty model resolved for session=%s — recovering "
-                    "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)", skey or "", _recovered,
-                )
-                model = _recovered
-        else:
-            # Cache the good resolution for future recovery turns.
-            if skey:
-                self._session_state(skey).conversation.last_resolved_model = model
-            self._session_state("*").conversation.last_resolved_model = model
-
-        return model, runtime_kwargs
+        return _recover_or_remember_model(self, skey, model), runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Effective model/runtime config for one turn. With `/fast` priority on, fast-mode
@@ -550,6 +562,7 @@ class GatewayTurnPrepareMixin:
             except UnscopedSecretError:
                 home_env = (os.getenv(env_key) or "").strip()
             except Exception:
+                logger.debug("Home-channel secret %s unreadable; treating it as unset", env_key, exc_info=True)
                 home_env = ""
         # Also honor in-memory / yaml home_channel on this platform.
         with suppress(Exception):
