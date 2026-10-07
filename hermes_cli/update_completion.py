@@ -450,16 +450,18 @@ def _complete_selected(request: dict) -> bool:
 
 
 def _resume_paused_before_build(request: dict) -> None:
-    """The one restart point of gateways paused for this update, on every OS: the dependencies are
-    synced and the launchers published, the product builds (minutes) have not started. A gateway
-    needs nothing later to boot; config migration and maintenance run with it up, as they always
-    did on POSIX. A failure stays owed: the post-build resume retries it and records the outcome."""
+    """Restart the gateways the POSIX pause stopped: the dependencies are synced and the launchers
+    published, the product builds (minutes) have not started. A gateway needs nothing later to
+    boot. A failure stays owed: the post-build resume retries it and records the outcome.
+
+    POSIX only: the fleet restart skips what this restarted (``already_restarted``). A Windows set
+    keeps resuming after the fleet restart, which would otherwise drain it a second time."""
     token = request.get("windows_resume")
-    if not token or not token.get("resume_needed"):
+    if not token or not token.get("resume_needed") or token.get("platform") != "posix":
         return
-    from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
+    from hermes_cli.update_cmd import _m
     try:
-        _resume_windows_gateways_after_update(token)
+        _m()._resume_windows_gateways_after_update(token)
     except Exception as exc:  # health: allow BLE001 -- retried (and recorded) after the build
         print(f"  ⚠ Paused gateway restart incomplete ({exc}); retrying after the build")
 
