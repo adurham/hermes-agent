@@ -251,10 +251,12 @@ interface SetupChooseStage {
    */
   labels: Record<string, string>
   picked: string[]
+  /** The card's own pick of a row: it applies the row's look the same way a click does. */
+  preview: ((id: string) => void) | null
   revert: (() => void) | null
 }
 
-export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', labels: {}, picked: [], revert: null }
+export const EMPTY_SETUP_STAGE: SetupChooseStage = { draft: '', labels: {}, picked: [], preview: null, revert: null }
 
 /**
  * A card's answer: the picked ids, and the names the user saw for them when any id is a row. The backend
@@ -421,8 +423,14 @@ function answerSetupChoose(request: ClarifyRequest, setup: SetupChooseSpec, text
     return false
   }
 
-  // Keep the look of a row already previewed on the card; any other preview reverts with the request.
-  if (setup.multiSelect || stage.picked.includes(id)) {
+  // A typed row is picked as if clicked, so its look stays once the request clears.
+  const staged = setup.multiSelect || stage.picked.includes(id)
+
+  if (!staged) {
+    stage.preview?.(id)
+  }
+
+  if (staged || stage.preview) {
     commitSetupChoose(request.requestId)
   }
 

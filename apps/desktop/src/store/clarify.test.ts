@@ -3,13 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $clarifyRequest,
   $clarifyRequests,
+  $setupChooseStages,
+  answerSetupCard,
   type ClarifyRequest,
   clearClarifyRequest,
   hasClarifyRequest,
   normalizeChoices,
   normalizeQuestions,
   setClarifyRequest,
-  skipClarifyRequest
+  setupChooseStage,
+  skipClarifyRequest,
+  stageSetupChoose
 } from './clarify'
 import { $gateway } from './gateway'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
@@ -126,6 +130,56 @@ describe('skipClarifyRequest', () => {
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
     expect(hasClarifyRequest('session-a')).toBe(false)
+  })
+})
+
+describe('answerSetupCard', () => {
+  const ACCENTS = { '#0000ff': 'Blue', '#ff0000': 'Red' }
+  let look: string
+
+  // The card's pick: snapshot the look once, then apply the row (as setup-pending's `stage` does).
+  function mountAccentCard(requestId: string) {
+    stageSetupChoose(requestId, {
+      labels: ACCENTS,
+      preview: id => {
+        const before = look
+        stageSetupChoose(requestId, {
+          picked: [id],
+          revert: setupChooseStage(requestId).revert ?? (() => (look = before))
+        })
+        look = id
+      }
+    })
+  }
+
+  beforeEach(() => {
+    look = 'original'
+    $clarifyRequests.set({})
+    $setupChooseStages.set({})
+    resetServerRequestsForTests()
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+    $setupChooseStages.set({})
+  })
+
+  it('applies a typed row over the row previewed on the card, and keeps it after the card clears', () => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'setup_choose', params: {}, respond })
+    setClarifyRequest({
+      ...clarify('session-a', 'req-a'),
+      setup: { kind: 'accent', multiSelect: false, options: null, preselected: [] }
+    })
+    mountAccentCard('req-a')
+    setupChooseStage('req-a').preview?.('#ff0000')
+
+    expect(answerSetupCard('session-a', 'blue')).toBe(true)
+
+    expect(respond).toHaveBeenCalledWith({ label: 'Blue', picked: '#0000ff' })
+    expect(hasClarifyRequest('session-a')).toBe(false)
+    expect(look).toBe('#0000ff')
   })
 })
 

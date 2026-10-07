@@ -147,6 +147,15 @@ export function SetupChoosePending({
     [kind, mode, question.multiSelect, requestId, rowLabels, setMode]
   )
 
+  // Composer text that names a row picks it through this card, so the typed pick applies its look too.
+  const liveRequestId = request?.requestId
+
+  useEffect(() => {
+    if (liveRequestId) {
+      stageSetupChoose(liveRequestId, { preview: stage })
+    }
+  }, [liveRequestId, stage])
+
   const toggle = useCallback(
     (_question: ClarifyQuestion, choice: string) => {
       const row = rows?.[question.choices?.indexOf(choice) ?? -1]
