@@ -140,7 +140,8 @@ def main():
                         assert receipt['pid_preserved'] and receipt['managed_dead'], receipt
                     elif peer.mode == 'crash':
                         import signal
-                        os.kill(active.worker_pid, signal.SIGKILL)
+                        # Windows has no SIGKILL; os.kill there is TerminateProcess for any signal.
+                        os.kill(active.worker_pid, getattr(signal, 'SIGKILL', signal.SIGTERM))
                     peer.release.set()
                     if peer.mode != 'timeout':
                         wait_for(lambda: not kb._pid_alive(active.worker_pid))

@@ -2,6 +2,7 @@
 import asyncio
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import shlex
 import os
 from pathlib import Path
 import socket
@@ -27,7 +28,8 @@ class PromptPeer(BaseHTTPRequestHandler):
         if last.get('role') != 'tool' and ('ASK_APPROVAL' in text or 'ASK_CLARIFY' in text):
             approval = 'ASK_APPROVAL' in text
             name = 'terminal' if approval else 'clarify'
-            args = {'command': 'rm -rf ' + str(self.server.target)} if approval else {
+            # Git Bash eats unquoted backslashes: a bare C:\\... path removes nothing on Windows.
+            args = {'command': 'rm -rf ' + shlex.quote(self.server.target.as_posix())} if approval else {
                 'questions': [{'question': 'Choose the answer', 'choices': ['BLUE', 'GREEN']}]}
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'call_control', 'type': 'function', 'function': {'name': name, 'arguments': json.dumps(args)}}]}

@@ -23,7 +23,7 @@ class Peer(BaseHTTPRequestHandler):
         message = {'role': 'assistant', 'content': 'POLICY_DONE'}
         if not done:
             message = {'role': 'assistant', 'content': None, 'tool_calls': [
-                {'id': 'owned', 'type': 'function', 'function': {'name': 'terminal',
+                {'id': 'owned-' + str(body.get('model')), 'type': 'function', 'function': {'name': 'terminal',
                  'arguments': json.dumps({'command': 'pwd; printf owned > policy-proof.txt'})}}]}
         payload = json.dumps({'id': 'policy', 'object': 'chat.completion', 'model': body.get('model'),
                               'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop' if done else 'tool_calls'}],
