@@ -1604,7 +1604,13 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
-      showOptions: 'Afficher les options'
+      showOptions: 'Afficher les options',
+      developerTitle: 'Développeur',
+      resetOnboardingTitle: 'Réinitialiser la configuration initiale',
+      resetOnboardingDesc:
+        'Supprimer les chats de configuration, recréer le profil de configuration et relancer la configuration initiale. Vos propres profils, chats et plugins sont conservés.',
+      resetOnboardingAction: 'Réinitialiser',
+      resetOnboardingFailed: 'Impossible de réinitialiser la configuration initiale'
     },
     hudModifier: {
       title: 'Toucher pour afficher le HUD',
@@ -5402,6 +5408,7 @@ export const frOverrides = {
       startingUntitled: 'Démarrage d’un chat…',
       untitled: 'Nouveau chat',
       notStarted: 'Le chat n’a pas démarré',
+      retry: 'Réessayer',
       inProfile: profile => `Dans ${profile}`,
       open: 'Ouvrir',
       openFailed: 'Impossible d’ouvrir le chat'

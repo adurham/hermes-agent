@@ -1597,7 +1597,13 @@ export const deOverrides = {
         'Wie groß eine lokale Datei sein darf, die Desktop für Vorschauen und Bildanhänge lädt, in MB. Standard ist 16. Remote-Anhänge ohne Bild verwenden ein eigenes Limit von 256 MB. Ein sehr hoher Wert lädt die gesamte Datei in den Speicher, was die App einfrieren oder abstürzen lassen kann.',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Maximale Vorschau-/Bildladegröße in Megabyte',
-      showOptions: 'Optionen anzeigen'
+      showOptions: 'Optionen anzeigen',
+      developerTitle: 'Entwickler',
+      resetOnboardingTitle: 'Onboarding zurücksetzen',
+      resetOnboardingDesc:
+        'Löscht die Einrichtungs-Chats, baut das Einrichtungsprofil neu auf und startet die Ersteinrichtung erneut. Ihre eigenen Profile, Chats und Plugins bleiben erhalten.',
+      resetOnboardingAction: 'Zurücksetzen',
+      resetOnboardingFailed: 'Onboarding konnte nicht zurückgesetzt werden'
     },
     hudModifier: {
       title: 'Tippen, um das HUD aufzurufen',
@@ -5394,7 +5400,8 @@ export const deOverrides = {
       notStarted: 'Der Chat wurde nicht gestartet',
       inProfile: profile => `In ${profile}`,
       open: 'Öffnen',
-      openFailed: 'Der Chat konnte nicht geöffnet werden'
+      openFailed: 'Der Chat konnte nicht geöffnet werden',
+      retry: 'Erneut versuchen'
     },
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',

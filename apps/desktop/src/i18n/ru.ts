@@ -1,6 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
@@ -29,7 +29,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
   return n === 1 && nn !== 11 ? one : n >= 2 && n <= 4 && (nn < 12 || nn > 14) ? few : many
 }
 
-export const ru = defineLocale({
+export const ruOverrides = {
   sharedMetrics: ruSharedMetrics,
   sessionImport: {
     title: 'Продолжить из другого приложения',
@@ -1035,7 +1035,13 @@ export const ru = defineLocale({
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах',
       voiceShortcutHintTitle: 'Горячая клавиша записи голоса',
       voiceShortcutHintDesc:
-        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.'
+        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.',
+      developerTitle: 'Для разработчиков',
+      resetOnboardingTitle: 'Сбросить первоначальную настройку',
+      resetOnboardingDesc:
+        'Удалить чаты настройки, пересоздать профиль настройки и снова запустить первоначальную настройку. Ваши профили, чаты и плагины сохранятся.',
+      resetOnboardingAction: 'Сбросить',
+      resetOnboardingFailed: 'Не удалось сбросить первоначальную настройку'
     },
     hudModifier: {
       title: 'Вызов HUD коротким нажатием',
@@ -3893,6 +3899,7 @@ export const ru = defineLocale({
       startingUntitled: 'Запускаю чат…',
       untitled: 'Новый чат',
       notStarted: 'Чат не запустился',
+      retry: 'Повторить',
       inProfile: profile => `В ${profile}`,
       open: 'Открыть',
       openFailed: 'Не удалось открыть чат'
@@ -4187,4 +4194,6 @@ export const ru = defineLocale({
       toggle: open => `${open ? 'Показать' : 'Скрыть'} боковую панель`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const ru = defineLocale(ruOverrides)

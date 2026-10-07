@@ -1595,6 +1595,12 @@ export const esOverrides = {
       disableF12Title: 'Desactivar DevTools con F12',
       disableF12Desc:
         'Impide que F12 abra las herramientas para desarrolladores. Ctrl+Shift+I (o Cmd+Opt+I en Mac) sigue funcionando.',
+      developerTitle: 'Desarrollador',
+      resetOnboardingTitle: 'Restablecer la configuración inicial',
+      resetOnboardingDesc:
+        'Borra los chats de configuración, reconstruye el perfil de configuración y vuelve a ejecutar la configuración inicial. Tus propios perfiles, chats y plugins se conservan.',
+      resetOnboardingAction: 'Restablecer',
+      resetOnboardingFailed: 'No se pudo restablecer la configuración inicial',
       attachmentSizeTitle: 'Tamaño máximo de vista previa / carga de imagen',
       attachmentSizeDesc:
         'Tamaño máximo de archivo local que el escritorio cargará para vistas previas y adjuntos de imagen, en MB. El valor por defecto es 16. Los adjuntos remotos no-imagen usan un límite separado de 256 MB. Un valor muy alto carga el archivo completo en memoria y puede congelar o bloquear la app.',
@@ -5387,6 +5393,7 @@ export const esOverrides = {
       startingUntitled: 'Iniciando un chat…',
       untitled: 'Chat nuevo',
       notStarted: 'El chat no se inició',
+      retry: 'Reintentar',
       inProfile: profile => `En ${profile}`,
       open: 'Abrir',
       openFailed: 'No se pudo abrir el chat'

@@ -1,6 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaLocalModels } from './ja_local_models'
@@ -10,7 +10,7 @@ import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
-export const ja = defineLocale({
+export const jaOverrides = {
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -1006,6 +1006,12 @@ export const ja = defineLocale({
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
+      developerTitle: '開発者',
+      resetOnboardingTitle: 'オンボーディングをリセット',
+      resetOnboardingDesc:
+        'セットアップ用のチャットを削除し、セットアッププロファイルを作り直して、初回セットアップをもう一度実行します。自分で作成したプロファイル、チャット、プラグインはそのまま残ります。',
+      resetOnboardingAction: 'リセット',
+      resetOnboardingFailed: 'オンボーディングをリセットできませんでした',
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc:
         '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
@@ -3711,7 +3717,8 @@ export const ja = defineLocale({
       notStarted: 'チャットを開始できませんでした',
       inProfile: profile => `${profile} 内`,
       open: '開く',
-      openFailed: 'チャットを開けませんでした'
+      openFailed: 'チャットを開けませんでした',
+      retry: '再試行'
     },
     tool: {
       copyCode: 'コードをコピー',
@@ -4056,4 +4063,6 @@ export const ja = defineLocale({
       toggle: open => `サイドバーを${open ? '表示' : '非表示'}`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const ja = defineLocale(jaOverrides)

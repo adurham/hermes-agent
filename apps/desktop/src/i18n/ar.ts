@@ -9,9 +9,9 @@ import { arCommon } from './ar_common'
 import { arConnectors } from './ar_connectors'
 import { arDiagnostics } from './ar_diagnostics'
 import { arSettings } from './ar_settings'
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 
-export const ar = defineLocale({
+export const arOverrides = {
   sharedMetrics: arCommon.sharedMetrics,
   externalOpenFailed: arChrome.externalOpenFailed,
   sessionImport: arConnectors.sessionImport,
@@ -69,4 +69,6 @@ export const ar = defineLocale({
     localText: (model: string) =>
       `${model} يناسب أجهزتك. يعمل مجانًا، ولا تغادر المحادثات جهازك. اختره من هنا، من قائمة النماذج، متى شئت.`
   }
-})
+} satisfies TranslationOverrides
+
+export const ar = defineLocale(arOverrides)

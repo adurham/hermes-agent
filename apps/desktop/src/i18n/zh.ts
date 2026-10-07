@@ -1,6 +1,6 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
 import { zhLocalModels } from './zh_local_models'
@@ -9,7 +9,7 @@ import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhSharedMetrics } from './zh_shared_metrics'
 
-export const zh = defineLocale({
+export const zhOverrides = {
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -1304,6 +1304,11 @@ export const zh = defineLocale({
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
       alwaysExternalLinksDesc:
         '点击的每个链接都在系统浏览器中打开，而不是应用内浏览器。右键菜单中的“在应用内浏览器中打开”仍然可用。',
+      developerTitle: '开发者',
+      resetOnboardingTitle: '重置新手引导',
+      resetOnboardingDesc: '删除设置对话，重建设置配置文件，并重新运行首次设置。你自己的配置文件、对话和插件会保留。',
+      resetOnboardingAction: '重置',
+      resetOnboardingFailed: '无法重置新手引导',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
@@ -4679,6 +4684,7 @@ export const zh = defineLocale({
       startingUntitled: '正在启动对话…',
       untitled: '新对话',
       notStarted: '对话未能启动',
+      retry: '重试',
       inProfile: profile => `位于 ${profile}`,
       open: '打开',
       openFailed: '无法打开对话'
@@ -5027,4 +5033,6 @@ export const zh = defineLocale({
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const zh = defineLocale(zhOverrides)
