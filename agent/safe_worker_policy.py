@@ -1,5 +1,8 @@
 """Private bootstrap policy for admission-owned troubleshooting workers.
 
+Stdlib-only: hermes_cli's config/env layer imports it, so it ships in the installer's
+hermes_cli + i18n-kernel tail and must never import beyond the standard library.
+
 Bind once in a fresh exec, before config/agent/plugin imports. This is not a
 sandbox or a public launch switch: only the managed worker bootstrap consumes
 the owner's validated assignment. No environment flag grants this policy and
