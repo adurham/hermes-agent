@@ -143,6 +143,14 @@ SETUP_OFFER_NOTE = (
 )
 
 
+# Telegram commands take no hyphens, and Slack reaches /initiate-setup through /hermes (50-slash cap).
+_SETUP_COMMAND_BY_PLATFORM = {"telegram": "/initiate_setup", "slack": "/hermes initiate-setup"}
+
+
+def setup_command(platform: str) -> str:
+    """How a platform's user types /initiate-setup."""
+    return _SETUP_COMMAND_BY_PLATFORM.get(platform, "/initiate-setup")
+
 def first_contact_turn_note(
     config: Mapping[str, Any],
     config_path: Path,
@@ -241,7 +249,7 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 
 __all__ = [
     "BUSY_INPUT_FLAG", "TOOL_PROGRESS_FLAG", "OPENCLAW_RESIDUE_FLAG", "PROFILE_BUILD_FLAG",
-    "PLAIN_INTRO_NOTE", "SETUP_OFFER_NOTE", "first_contact_turn_note",
+    "PLAIN_INTRO_NOTE", "SETUP_OFFER_NOTE", "first_contact_turn_note", "setup_command",
     "busy_input_hint_gateway", "busy_input_hint_cli", "tool_progress_hint_gateway", "tool_progress_hint_cli",
     "openclaw_residue_hint_cli", "detect_openclaw_residue", "profile_build_mode", "profile_build_directive",
     "is_seen", "mark_seen",
