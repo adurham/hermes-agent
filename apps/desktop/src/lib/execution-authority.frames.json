@@ -13,7 +13,7 @@
       "stored_session_id": "shared",
       "pending": [
        {
-        "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+        "admission_id": "ca34f607de944aa89307c78b5e8ad417",
         "ref": {
          "profile_id": "p",
          "session_id": "shared"
@@ -32,7 +32,7 @@
       "execution_generation": 0,
       "revision": 0
      },
-     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "replay_epoch": "6c1b60170eff42c0a449ad6dea5f865c",
      "seq": 1
     }
    },
@@ -42,11 +42,11 @@
     "params": {
      "authority_epoch": 1,
      "execution_generation": 1,
-     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "admission_id": "ca34f607de944aa89307c78b5e8ad417",
      "type": "message.start",
      "session_id": "shared",
      "payload": {},
-     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "replay_epoch": "6c1b60170eff42c0a449ad6dea5f865c",
      "seq": 2
     }
    },
@@ -56,14 +56,14 @@
     "params": {
      "authority_epoch": 1,
      "execution_generation": 1,
-     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "admission_id": "ca34f607de944aa89307c78b5e8ad417",
      "type": "session.info",
      "session_id": "shared",
      "payload": {
       "stored_session_id": "shared",
       "pending": [
        {
-        "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+        "admission_id": "ca34f607de944aa89307c78b5e8ad417",
         "ref": {
          "profile_id": "p",
          "session_id": "shared"
@@ -82,7 +82,7 @@
       "execution_generation": 1,
       "revision": 0
      },
-     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "replay_epoch": "6c1b60170eff42c0a449ad6dea5f865c",
      "seq": 3
     }
    },
@@ -92,7 +92,27 @@
     "params": {
      "authority_epoch": 1,
      "execution_generation": 1,
-     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
+     "admission_id": "ca34f607de944aa89307c78b5e8ad417",
+     "type": "message.complete",
+     "session_id": "shared",
+     "payload": {
+      "text": "answer:epoch1",
+      "content": "answer:epoch1",
+      "admission_id": "ca34f607de944aa89307c78b5e8ad417",
+      "outcome": "completed",
+      "status": "complete"
+     },
+     "replay_epoch": "6c1b60170eff42c0a449ad6dea5f865c",
+     "seq": 4
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 1,
+     "execution_generation": 1,
+     "admission_id": "ca34f607de944aa89307c78b5e8ad417",
      "type": "session.info",
      "session_id": "shared",
      "payload": {
@@ -103,26 +123,7 @@
       "execution_generation": 1,
       "revision": 1
      },
-     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
-     "seq": 4
-    }
-   },
-   {
-    "jsonrpc": "2.0",
-    "method": "event",
-    "params": {
-     "authority_epoch": 1,
-     "execution_generation": 1,
-     "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
-     "type": "message.complete",
-     "session_id": "shared",
-     "payload": {
-      "text": "answer:epoch1",
-      "content": "answer:epoch1",
-      "admission_id": "98fa1799e63d47f5bb880c2a2f23577a",
-      "outcome": "completed"
-     },
-     "replay_epoch": "79542b8f038a48c99e95fff17bb10feb",
+     "replay_epoch": "6c1b60170eff42c0a449ad6dea5f865c",
      "seq": 5
     }
    }
@@ -141,7 +142,7 @@
       "stored_session_id": "shared",
       "pending": [
        {
-        "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+        "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
         "ref": {
          "profile_id": "p",
          "session_id": "shared"
@@ -160,7 +161,7 @@
       "execution_generation": 1,
       "revision": 1
      },
-     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "replay_epoch": "2565ef4c47d34fe18f78c74af26e5c7c",
      "seq": 1
     }
    },
@@ -170,11 +171,11 @@
     "params": {
      "authority_epoch": 2,
      "execution_generation": 2,
-     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
      "type": "message.start",
      "session_id": "shared",
      "payload": {},
-     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "replay_epoch": "2565ef4c47d34fe18f78c74af26e5c7c",
      "seq": 2
     }
    },
@@ -184,14 +185,14 @@
     "params": {
      "authority_epoch": 2,
      "execution_generation": 2,
-     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
      "type": "session.info",
      "session_id": "shared",
      "payload": {
       "stored_session_id": "shared",
       "pending": [
        {
-        "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+        "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
         "ref": {
          "profile_id": "p",
          "session_id": "shared"
@@ -210,7 +211,7 @@
       "execution_generation": 2,
       "revision": 1
      },
-     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "replay_epoch": "2565ef4c47d34fe18f78c74af26e5c7c",
      "seq": 3
     }
    },
@@ -220,7 +221,27 @@
     "params": {
      "authority_epoch": 2,
      "execution_generation": 2,
-     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
+     "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
+     "type": "message.complete",
+     "session_id": "shared",
+     "payload": {
+      "text": "answer:epoch2",
+      "content": "answer:epoch2",
+      "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
+      "outcome": "completed",
+      "status": "complete"
+     },
+     "replay_epoch": "2565ef4c47d34fe18f78c74af26e5c7c",
+     "seq": 4
+    }
+   },
+   {
+    "jsonrpc": "2.0",
+    "method": "event",
+    "params": {
+     "authority_epoch": 2,
+     "execution_generation": 2,
+     "admission_id": "206dc02f7ede4393aa847ac53c805d9f",
      "type": "session.info",
      "session_id": "shared",
      "payload": {
@@ -231,26 +252,7 @@
       "execution_generation": 2,
       "revision": 2
      },
-     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
-     "seq": 4
-    }
-   },
-   {
-    "jsonrpc": "2.0",
-    "method": "event",
-    "params": {
-     "authority_epoch": 2,
-     "execution_generation": 2,
-     "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
-     "type": "message.complete",
-     "session_id": "shared",
-     "payload": {
-      "text": "answer:epoch2",
-      "content": "answer:epoch2",
-      "admission_id": "cc80b8fbc2954b678b9fa765e2cdd60e",
-      "outcome": "completed"
-     },
-     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "replay_epoch": "2565ef4c47d34fe18f78c74af26e5c7c",
      "seq": 5
     }
    }
@@ -268,7 +270,7 @@
       "operation": "rename",
       "title": "Renamed while idle"
      },
-     "replay_epoch": "a52a19f124b642389b2e3b48b45f2f42",
+     "replay_epoch": "2565ef4c47d34fe18f78c74af26e5c7c",
      "seq": 6
     }
    }

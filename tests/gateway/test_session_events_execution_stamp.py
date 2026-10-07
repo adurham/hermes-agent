@@ -24,7 +24,8 @@ async def test_settled_execution_stops_stamping_idle_mutations_and_desktop_fixtu
             'queued pending was stamped before any claim'
         claimed = frames[1:]
         assert [f['params']['type'] for f in claimed][:1] == ['message.start']
-        assert claimed[-1]['params']['type'] == 'message.complete'
+        assert [(f['params']['type'], f['params']['payload'].get('running')) for f in claimed[-2:]] == [
+            ('message.complete', None), ('session.info', False)], 'the idle snapshot preceded the completion'
         assert all(f['params']['authority_epoch'] == epoch for f in claimed)
         assert len({f['params']['execution_generation'] for f in claimed}) == 1
     idle = captured['epoch2']['idle_mutation_frames']

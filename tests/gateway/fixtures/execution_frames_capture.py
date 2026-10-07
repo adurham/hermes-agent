@@ -62,7 +62,9 @@ async def capture(tmp):
             await conn.resume(ref, {})
             await authority.submit(conn.actor, Submission(label, ref, {'text': label}, 'queue'))
             await authority.sessions['shared'].task
-            owners[label] = {'authority_epoch': authority.epoch, 'frames': peer.drain('message.complete')}
+            # The turn ends with its completion, then the owner's idle snapshot (running=false).
+            frames = peer.drain('message.complete') + peer.drain('session.info')
+            owners[label] = {'authority_epoch': authority.epoch, 'frames': frames}
             if label == 'epoch2':
                 revision = db.get_session('shared')['runtime_revision']
                 response = await conn.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
