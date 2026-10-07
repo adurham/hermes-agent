@@ -69,37 +69,36 @@ async def await_live_delivery(adapter, home, record, timeout, *, should_stop=Non
 
 
 async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
-    """The admission's current receipt after it settles, *timeout* lapses, or *should_stop* says so."""
-    from gateway.session_bot import _result
-    admission_id = record['admission_id']
+    """The delivery's receipt after it settles for good, *timeout* lapses, or *should_stop* says so.
+
+    Each pass re-reads which admission is live (``peer_wait_admission``): after a transient failure
+    the owner admits ONE retry, whose id is the only future that fires again; the original's interim
+    ``failed`` (retry still eligible) reads as pending, never as the answer."""
+    from gateway.session_bot import peer_wait_admission
     if record['status'] not in _PENDING:
         return record
     loop = asyncio.get_running_loop()
-    # Register the waiter BEFORE re-reading: a settle between the two either shows in the read
-    # or resolves this future; a settle before both would otherwise leave a future nobody pops.
-    waiter = authority.waiters.setdefault(admission_id, loop.create_future())
-    current = _receipt(authority, record)
     deadline = None if timeout is None else loop.time() + timeout
-    while current['status'] in _PENDING and not waiter.done():
-        if should_stop is not None and should_stop():
-            break
+    while True:
+        live, interim = peer_wait_admission(authority, record)
+        # Register the waiter BEFORE re-reading: a settle between the two either shows in the read
+        # or resolves this future; a settle before both would otherwise leave a future nobody pops.
+        waiter = None if live is None or interim else authority.waiters.setdefault(live, loop.create_future())
+        current = _receipt(authority, record)
+        if interim:
+            current['status'] = 'claimed'  # the retry is being admitted
+        if live is None or current['status'] not in _PENDING or (should_stop is not None and should_stop()):
+            return current
         remaining = None if deadline is None else deadline - loop.time()
         if remaining is not None and remaining <= 0:
-            break
-        tick = 0.5 if should_stop is not None else remaining
-        await asyncio.wait([waiter], timeout=tick if remaining is None else min(tick, remaining))
-        current = _receipt(authority, record)
-    return current
+            return current
+        tick = 0.05 if interim else (0.5 if should_stop is not None else remaining)
+        if waiter is None:
+            await asyncio.sleep(tick if remaining is None else min(tick, remaining))
+        else:
+            await asyncio.wait([waiter], timeout=tick if remaining is None else min(tick, remaining))
 
 
 def _receipt(authority, record):
     from gateway.session_bot import _result
-    from gateway.session_results import admission_result
-    current = {**record, **_result(authority, record)}
-    if current['status'] == 'failed' and not current.get('error'):
-        saved = admission_result(authority.db, record['admission_id'])
-        error = (saved or {}).get('result', {}).get('error')
-        if error:
-            from tools.bot_failure_reasons import classify_agent_error
-            current.update(error=error, reason=classify_agent_error(error))
-    return current
+    return {**record, **_result(authority, record)}

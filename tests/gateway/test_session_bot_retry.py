@@ -101,6 +101,8 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     receipt = await _settled(bot, 2)
     assert receipt['status'] == 'failed' and receipt['retry_admission_id']
+    # The relay's Desktop forwards ``reason`` to the sender verbatim (relay.ts postReply).
+    assert receipt['reason'] == 'provider_server_error' and '503' in receipt['error'], receipt
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     await recover_bot_deliveries(bot.authority)
     await asyncio.sleep(0.1)
@@ -116,3 +118,67 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
     await recover_bot_deliveries(bot.authority)
     await asyncio.sleep(0.1)
     assert [r['request_id'] for r in _admissions(bot)][2:] == ['bot:' + other]
+    from gateway.session_bot import _result
+    from tools.bot_live_delivery import _read, _root
+    auth = _result(bot.authority, _read(_root(bot.home) / f'{other}.json'))
+    assert (auth['status'], auth['reason']) == ('failed', 'provider_auth_or_access'), auth
+
+
+@pytest.mark.asyncio
+async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_open_tail(bot):
+    """Main re-ran an overflowed delivery once (compress-then-resume: the re-run's own preflight
+    compaction does the compress). The owner retry keeps that for an overflow that left no open DM
+    row, and refuses (recorded, typed) when the DM is still the durable tail: the owner execution has
+    no adoption seam, and a second copy would merge into the unanswered one."""
+    from gateway.session_bot import deliver
+    from tools.bot_live_delivery import _read, _root
+    bot.errors[:] = ["This model's maximum context length is 200000 tokens"]
+    await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
+    receipt = await _settled(bot, 2)
+    assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
+
+    other = 'e' * 32
+    bot.errors[:] = ["This model's maximum context length is 200000 tokens"]
+    bot.authority.db.append_message(bot.chat, 'user', content='overflowed dm')
+    await deliver(bot.connection, dict(id=other, profile='default', message='overflowed dm'))
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        record = _read(_root(bot.home) / f'{other}.json')
+        if (record.get('retry') or {}).get('refused'):
+            break
+    assert record['retry']['refused'] == 'open_user_tail' and len(_admissions(bot)) == 3
+    assert (record['status'], record['reason']) == ('failed', 'context_overflow'), record
+
+
+@pytest.mark.asyncio
+async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
+    """``hermes peer dm`` waits on the delivery, not on the original admission id: once that
+    fails transiently its future never fires again, and the answer is the retry's."""
+    from gateway.platforms.api_server_bot_chat import await_peer_receipt
+    from gateway.session_bot import deliver
+    gate = asyncio.Event()
+    import gateway.session_finite as finite
+    execute = finite.execute_finite_admission
+
+    async def held(authority, ref, row):
+        if row['request_id'].endswith(':retry'):
+            await gate.wait()
+        return await execute(authority, ref, row)
+
+    finite.execute_finite_admission = held
+    try:
+        bot.errors[:] = ['Error code: 429 - rate limit exceeded']
+        first = await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
+        waiting = asyncio.create_task(await_peer_receipt(bot.authority, first, 20))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if len(_admissions(bot)) == 2:
+                break
+        await asyncio.sleep(0.1)
+        assert not waiting.done(), waiting.result()
+        gate.set()
+        receipt = await asyncio.wait_for(waiting, 5)
+    finally:
+        finite.execute_finite_admission = execute
+    assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
+    assert receipt['retry_admission_id']

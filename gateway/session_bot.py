@@ -153,16 +153,55 @@ def _retry_admission(authority, record):
 
 def _result(authority, record):
     """The delivery's receipt. Once the one transient-failure retry was admitted, the sender's
-    outcome is the retry's: ``status``/``reply`` follow it (``retry_admission_id``)."""
+    outcome is the retry's: ``status``/``reply`` follow it (``retry_admission_id``).
+
+    A ``failed`` receipt carries ``error`` + a typed ``reason`` (``tools.bot_failure_reasons``):
+    the relay's Desktop forwards ``res.reason`` to the sender, which cannot re-derive it from a
+    reply that lacks the provider text."""
     retry_id = _retry_admission(authority, record)
+    current = retry_id or record['admission_id']
     if retry_id:
         status, reply = _admission_outcome(authority, retry_id)
     else:
         status, reply = _admission_outcome(authority, record['admission_id'], record)
+    error = reason = None
+    if status == 'failed':
+        error, reason = _failure(authority, current)
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
         admission_id=record['admission_id'], message=record['message'], reply=reply,
-        retry_admission_id=retry_id).items() if v is not None}
+        retry_admission_id=retry_id, error=error, reason=reason).items() if v is not None}
+
+
+def _failure(authority, admission_id):
+    """``(error, reason)`` of a failed admission from its committed result: the raw provider error
+    and the turn loop's typed verdict, classified like every other Bot lane. A refusal that never
+    ran (no result) has no provider text: ``unknown``."""
+    from gateway.session_results import admission_result
+    from tools.bot_failure_reasons import classify_agent_error, turn_failure_text
+    saved = (admission_result(authority.db, admission_id) or {}).get('result') or {}
+    error = saved.get('error') or saved.get('final_response') or 'Bot Chat delivery failed'
+    return error, classify_agent_error(turn_failure_text(saved.get('error'), saved.get('failure_reason')) or error)
+
+
+def peer_wait_admission(authority, record):
+    """``(admission_id, interim)`` a live waiter must follow; ``(None, False)`` once the delivery
+    settled for good. The retry, once admitted, is the only admission whose future fires again.
+    An original that failed while its one retry is still eligible is ``interim``: pending, never
+    the answer, while the owner's receipt task admits the retry (or records why it would not;
+    the receipt file is re-read for that, the caller's in-memory record is stale)."""
+    from tools.bot_live_delivery import _read, _root
+    retry_id = _retry_admission(authority, record)
+    if retry_id:
+        return (retry_id, False) if _admission_outcome(authority, retry_id)[0] in {'queued', 'claimed'} else (None, False)
+    status = _admission_outcome(authority, record['admission_id'], record)[0]
+    if status in {'queued', 'claimed'}:
+        return record['admission_id'], False
+    if status == 'failed':
+        saved = _read(_root(record['profile_home']) / f"{record['delivery_id']}.json") or record
+        if _retry_eligible(authority, {**record, 'retry': saved.get('retry')}):
+            return record['admission_id'], True
+    return None, False
 
 
 def _retry_identity(key):
