@@ -123,3 +123,41 @@ def test_native_pipe_authenticated_peer_and_deadline(tmp_path):
     finally:
         server.close()
     assert not server._thread.is_alive()
+
+
+@pytest.mark.platforms("windows")
+def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_path, monkeypatch):
+    """A listening pipe accepts CreateFile with no ConnectNamedPipe pending, so a client can land
+    after an idle accept is cancelled and before the next one is issued. Recycling the instance
+    with DisconnectNamedPipe there dropped that client mid-request (WinError 233). The client is
+    injected at the server's first DisconnectNamedPipe, the widest point of that window."""
+    import threading
+    import time
+    import gateway.runtime_bootstrap_windows as rbw
+    real_disconnect, injected, armed = rbw._disconnect_pipe, {}, threading.Event()
+
+    def query():
+        try:
+            injected["reply"] = json.loads(rbw.query_runtime_control(tmp_path, b"injected", 5))
+        except OSError as exc:
+            injected["error"] = repr(exc)
+
+    def disconnect_with_client_in_flight(handle):
+        if "thread" not in injected:
+            injected["thread"] = threading.Thread(target=query)
+            injected["thread"].start()
+            armed.set()
+            time.sleep(0.3)  # let the client open (idle window) or queue on WaitNamedPipe (served)
+        real_disconnect(handle)
+    monkeypatch.setattr(rbw, "_disconnect_pipe", disconnect_with_client_in_flight)
+    server = rbw.NativeControlServer(tmp_path, lambda raw, subject: json.dumps({"echo": raw.decode()}).encode() + b"\n")
+    server.start()
+    try:
+        time.sleep(0.8)  # at least one idle accept cycle
+        assert json.loads(rbw.query_runtime_control(tmp_path, b"hello", 5)) == {"echo": "hello"}
+        assert armed.wait(5)
+        injected["thread"].join(10)
+    finally:
+        server.close()
+    assert injected.get("reply") == {"echo": "injected"}, injected.get("error")
+    assert server._error is None, server._error
