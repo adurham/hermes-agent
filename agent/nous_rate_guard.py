@@ -159,9 +159,13 @@ def welcome_refusal_from_headers(
     its body named) into the ``parse_welcome_refusal`` shape. Long wait or an empty bucket =
     ``rate_limited``; a short or unexplained one = ``at_capacity``. A missing wait stays 0 so the
     breaker never trips on a guess."""
-    wait = _parse_reset_seconds(headers) or body_wait or 0.0
-    empty = any(remaining is not None and remaining <= 0
-                for remaining, _reset in _parse_buckets_from_headers(headers).values())
+    buckets = _parse_buckets_from_headers(headers).values()
+    # Only an empty bucket's reset is a wait; a healthy bucket's reset is just its window end.
+    exhausted_wait = max((reset for remaining, reset in buckets
+                          if remaining is not None and remaining <= 0 and (reset or 0) > 0), default=None)
+    wait = (exhausted_wait or parse_retry_after_seconds(lower_headers(headers).get("retry-after"))
+            or body_wait or 0.0)
+    empty = any(remaining is not None and remaining <= 0 for remaining, _reset in buckets)
     reason = "rate_limited" if wait >= WELCOME_LONG_WAIT_SECONDS or empty else "at_capacity"
     return {"reason": reason, "retry_after": max(0, int(wait)), "alternates": [], "upgrade_url": ""}
 

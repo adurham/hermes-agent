@@ -9,7 +9,7 @@ import pytest
 
 from agent.error_classifier import classify_api_error
 from agent.error_surface import build_error_surface_from_result
-from agent.nous_rate_guard import is_long_welcome_rate_limit
+from agent.nous_rate_guard import is_long_welcome_rate_limit, welcome_refusal_from_headers
 from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
 from tests.hermes_cli.anon_portal import make_jwt
 
@@ -44,6 +44,8 @@ CASES = [
     ("retry-after-only", 429, {}, {"Retry-After": "900"}, "rate_limited", True),
     ("bucket-empty", 429, {}, {"x-ratelimit-remaining-requests-1h": "0",
                               "x-ratelimit-reset-requests-1h": "3000"}, "rate_limited", True),
+    ("healthy-hourly-short-header", 429, {}, {"Retry-After": "4", "x-ratelimit-remaining-requests-1h": "750",
+                                              "x-ratelimit-reset-requests-1h": "2000"}, "at_capacity", False),
     ("short-header", 429, {}, {"Retry-After": "4"}, "at_capacity", False),
     ("bare", 429, {}, None, "at_capacity", False),
     ("unknown-reason", 429, {"reason": "something_else", "retry_after": 5}, None, "at_capacity", False),
@@ -87,3 +89,11 @@ def test_named_account_same_response_is_not_a_free_tier_refusal(case_id, status,
     result = _result(agent, error, classified, status)
     assert "free_tier" not in result
     assert "To sign in: /login." not in result["final_response"]
+
+
+@pytest.mark.parametrize("remaining,reason,retry_after", [("750", "at_capacity", 4), ("0", "rate_limited", 2000)])
+def test_header_wait_is_the_exhausted_bucket_reset_else_retry_after(remaining, reason, retry_after):
+    headers = {"Retry-After": "4", "x-ratelimit-remaining-requests-1h": remaining,
+               "x-ratelimit-reset-requests-1h": "2000"}
+    refusal = welcome_refusal_from_headers(headers)
+    assert (refusal["reason"], refusal["retry_after"]) == (reason, retry_after)
