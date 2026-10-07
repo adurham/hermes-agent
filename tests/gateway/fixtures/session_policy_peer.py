@@ -44,6 +44,19 @@ class Peer(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def _names_cwd(content, cwd):
+    """True when the terminal tool's own output names ``cwd`` in any spelling its shell uses."""
+    try:
+        content = json.loads(content)['output']
+    except (TypeError, ValueError, KeyError):
+        content = str(content)
+    forms = {str(cwd), cwd.as_posix()}
+    if os.name == 'nt' and cwd.drive:
+        forms.add('/' + cwd.drive[0].lower() + cwd.as_posix()[len(cwd.drive):])
+        return any(form.lower() in content.lower() for form in forms)
+    return any(form in content for form in forms)
+
+
 async def probe(peer):
     import websockets
     from gateway.run import GatewayRunner
@@ -116,7 +129,8 @@ async def probe(peer):
             assert (cwd / 'policy-proof.txt').is_file(), (source, str(cwd), tool_results)
             assert (cwd / 'policy-proof.txt').read_text() == 'owned'
             assert len(requests) >= 2, peer.requests
-            assert any(str(cwd) in json.dumps(m) for r in requests for m in r['messages'] if m['role'] == 'tool')
+            # Git Bash prints the MSYS form (/c/Users/...) on Windows; json.dumps doubles backslashes.
+            assert any(_names_cwd(m.get('content'), cwd) for m in tool_results), (source, str(cwd), tool_results)
             names = {t['function']['name'] for t in requests[0]['tools']}
             assert 'terminal' in names
             assert ('desktop_ui' in agent.enabled_toolsets) == (source == 'gui')
