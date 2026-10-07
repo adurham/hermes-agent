@@ -46,4 +46,3 @@ async def test_completion_carries_the_reused_final_flag(tmp_path, monkeypatch, r
     [complete] = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
     assert complete['text'] == 'answered'
     assert complete.get('response_reused', False) is reused
-
