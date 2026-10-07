@@ -371,6 +371,10 @@ class SessionAuthority:
         await self.receipt(actor, ref, admission_id)
         row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
                                             generation=generation)
+        # Before the follower is scheduled: its request must not carry the discarded text merged in.
+        from gateway.session_local_recovery import transcript_target
+        from gateway.session_results import close_discarded_turn
+        close_discarded_turn(self.db, transcript_target(self, ref))
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)

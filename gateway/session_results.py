@@ -68,3 +68,20 @@ def admission_result(db, admission_id):
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_RESULT_PREFIX + admission_id,)).fetchone()
         return json.loads(saved[0]) if saved else None
+
+
+def close_discarded_turn(db, target_id):
+    """Close a discarded ``unknown`` turn the way a failed turn is closed.
+
+    The lost input stays in the transcript for the user to resend, but an open ``user`` tail would be
+    merged into the follower's provider request by consecutive-user repair, re-sending the discarded
+    turn as context. A Hermes-authored boundary (``display_kind=failed_turn``, stripped of its type
+    before the wire) ends it. Its side effects are unknown, so the hedged copy. Idempotent on the
+    durable tail, like the gateway and core failed-turn closers."""
+    if db.latest_conversation_role(target_id) != 'user':
+        return False
+    import time
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+    db.append_message(target_id, 'assistant', PARTIAL_FAILED_TURN_NOTICE, timestamp=time.time(),
+                      display_kind=FAILED_TURN_DISPLAY_KIND)
+    return True

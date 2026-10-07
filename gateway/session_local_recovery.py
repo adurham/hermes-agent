@@ -108,15 +108,18 @@ def restore_local_session(authority, sid):
     return SessionRef(authority.profile_id, sid)
 
 
-def local_history(authority, ref):
-    """Display history from the current physical transcript; *ref* stays the logical root."""
+def transcript_target(authority, ref):
+    """The current physical transcript of logical *ref* (a local receipt's entry, else the tip)."""
     live = authority.sessions[ref.session_id]
     if live.source is not None and live.source.platform == Platform.LOCAL:
         restore_local_session(authority, ref.session_id)
-        target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
-    else:
-        target = authority.physical_target(ref)
-    return authority.db.get_messages_as_conversation(target)
+        return local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    return authority.physical_target(ref)
+
+
+def local_history(authority, ref):
+    """Display history from the current physical transcript; *ref* stays the logical root."""
+    return authority.db.get_messages_as_conversation(transcript_target(authority, ref))
 
 
 def reopen_local_session(authority, ref):

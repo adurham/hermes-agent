@@ -76,7 +76,9 @@ the follower runs exactly once. The generation must be the one stamped on the un
 row (visible in the resume/`session.info` projection), so a stale or already-resolved
 row is refused with `stale_generation`. Desktop shows such a row in the queue panel as
 "Turn lost during restart" with a **Discard** button; the gateway CLI exposes it as
-`/discard <admission_id>`. The lost input stays in the transcript for the user to resend.
+`/discard <admission_id>`. The lost input stays in the transcript for the user to resend; the
+discard closes it with a Hermes notice (like a failed turn), so it is never merged into the
+follower's model request.
 
 A messaging user (Telegram, Discord, ...) whose session is paused this way is told once per
 pause episode, through the adapter's ordinary reply path, that the conversation is paused and

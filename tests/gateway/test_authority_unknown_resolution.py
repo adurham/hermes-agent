@@ -118,3 +118,46 @@ async def test_resolve_unknown_is_fenced_by_generation_and_capability(tmp_path, 
         await owner.close()
         await reader.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_discarded_lost_turn_is_closed_and_never_merged_into_the_follower_request(tmp_path, monkeypatch):
+    """Discard keeps the lost text visible for resending, but the next provider request must not
+    glue it onto the follower (consecutive-user merge): it is closed like a failed turn."""
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+    from run_agent import AIAgent
+    from tests.acp_adapter.test_failed_turn_closure import _LoopbackProvider
+    monkeypatch.setenv('HERMES_DISABLE_PLUGINS', '1')
+    monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost')
+    store, authority, ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
+    db = authority.db
+    db.append_message('s', 'user', 'HEAD lost in restart')  # the lost turn's turn-start flush
+    viewer = AuthorityConnection(authority, Peer(), {'user_id': 'human'})
+    provider = _LoopbackProvider()
+    try:
+        await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        reply = await viewer.dispatch({'id': 2, 'method': 'prompt.resolve_unknown', 'params': {
+            'session_id': 's', 'admission_id': unknown['admission_id'],
+            'execution_generation': unknown['generation']}})
+        assert reply['result']['outcome'] == 'interrupted', reply
+        await authority.sessions['s'].task
+        rows = [m for m in db.get_messages('s') if m['role'] in ('user', 'assistant')]
+        assert [(m['role'], m['content']) for m in rows[:2]] == [
+            ('user', 'HEAD lost in restart'), ('assistant', PARTIAL_FAILED_TURN_NOTICE)]
+        assert rows[1]['display_kind'] == FAILED_TURN_DISPLAY_KIND
+        # The follower's real provider request, built from the live-replay transcript.
+        history = [m for m in store.load_transcript('s') if m.get('content') != 'ACK_FOLLOWER'
+                   and m.get('content') != 'FOLLOWER']
+        provider.script.extend({'finish_reason': 'stop', 'content': 'ok'} for _ in range(4))
+        agent = AIAgent(api_key='fixture-only', base_url=provider.base_url, provider='openai-compat',
+                        model='fixture-model', max_iterations=2, enabled_toolsets=[], quiet_mode=True,
+                        skip_context_files=True, skip_memory=True, save_trajectories=False, platform='cli')
+        await asyncio.to_thread(agent.run_conversation, 'FOLLOWER', conversation_history=history)
+        chat = [r for r in provider.requests if 'messages' in r]
+        sent = [m for m in chat[0]['messages'] if m['role'] != 'system']
+        assert [m['content'] for m in sent if m['role'] == 'user'] == ['HEAD lost in restart', 'FOLLOWER'], sent
+        assert sent[1] == {'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE}
+    finally:
+        provider.shutdown()
+        await viewer.close()
+        store.close_all_db_handles()
