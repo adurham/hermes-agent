@@ -2172,7 +2172,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
 
     def test_restores_prompts_when_count_unchanged_but_clobbered(self, tmp_path):
         """The reported incident: 6 jobs before, 6 after, every prompt == name."""
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         self._seed_jobs(jobs_path, [
@@ -2204,7 +2204,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
 
     def test_blank_prompt_is_restored_too(self, tmp_path):
         """Missing/blank prompt on a live agent job is equally unusable."""
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         self._seed_jobs(jobs_path, [{"id": "a", "name": "Cleanup", "prompt": "Clean the tmp dir."}])
@@ -2220,7 +2220,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
 
     def test_no_agent_jobs_are_untouched(self, tmp_path):
         """Script jobs have no prompt — never restored, never stomped."""
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         self._seed_jobs(jobs_path, [
@@ -2246,7 +2246,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
     def test_a_legitimate_user_edit_is_not_stomped(self, tmp_path):
         """Only prompt==name or blank restores — a genuinely different prompt
         is the user's edit during the window, not degradation."""
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         self._seed_jobs(jobs_path, [{"id": "a", "name": "Old", "prompt": "Old prompt text."}])
@@ -2262,7 +2262,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
     def test_a_legit_prompt_equal_to_name_stays(self, tmp_path):
         """A user may legitimately set prompt == name; a blank SNAPSHOT prompt
         means the snapshot has nothing better — restore nothing."""
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         # Snapshot job had a blank prompt (hand-edited oddity).
@@ -2278,7 +2278,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
 
     def test_unknown_job_ids_are_left_alone(self, tmp_path):
         """Jobs the snapshot does not know are new since the snapshot — theirs."""
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         self._seed_jobs(jobs_path, [{"id": "a", "name": "A", "prompt": "A prompt."}])
@@ -2294,7 +2294,7 @@ class TestRestoreCronPromptFieldsIfDegraded:
         assert result is None
 
     def test_healthy_file_is_untouched(self, tmp_path):
-        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         hermes_home = tmp_path / ".hermes"
         jobs_path = hermes_home / "cron" / "jobs.json"
         self._seed_jobs(jobs_path, [{"id": "a", "name": "A", "prompt": "A prompt."}])

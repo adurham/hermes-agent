@@ -11,9 +11,7 @@ and an ``__init__.py`` exposing ``register(ctx)``. Plugins register callbacks fo
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import importlib.metadata
-import inspect
 import json
 import logging
 import os
@@ -57,7 +55,7 @@ from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     _HOOK_CALLBACK_TIMEOUT_SECS, _HOOK_TIMEOUT_SUPPRESSION_SECONDS, _MAX_HOOK_CALLBACK_TIMEOUT_SECS,
     _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE, PluginDispatchMixin, PluginSystemPromptSection,
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
-    is_valid_system_prompt_section_id,
+    is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_state import (
@@ -2196,43 +2194,6 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
-
-
-_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
-
-
-def resolve_plugin_command_result(result: Any) -> Any:
-    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
-    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
-    terminal)."""
-    if not inspect.isawaitable(result):
-        return result
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(result)
-    outcome: Dict[str, Any] = {}
-    failure: Dict[str, BaseException] = {}
-    done = threading.Event()
-
-    def _runner() -> None:
-        try:
-            outcome["value"] = asyncio.run(result)
-        except BaseException as exc:  # pragma: no cover - re-raised below
-            failure["exc"] = exc
-        finally:
-            done.set()
-
-    # copy_context: the helper thread must see the caller's profile/secret scope, else an
-    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
-    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
-                     name="hermes-plugin-command-await", daemon=True).start()
-    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
-        raise TimeoutError("Plugin command async handler did not complete within "
-                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
-    if "exc" in failure:
-        raise failure["exc"]
-    return outcome.get("value")
 
 
 def get_plugin_commands() -> Dict[str, dict]:

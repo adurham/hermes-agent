@@ -180,6 +180,43 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     return hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS or hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
 
 
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
+def resolve_plugin_command_result(result: Any) -> Any:
+    """Resolve a plugin command result, awaiting async handlers: ``asyncio.run`` when no loop is
+    running, else a helper thread with its own loop (30s bound so a hung handler cannot wedge the
+    terminal)."""
+    if not inspect.isawaitable(result):
+        return result
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(result)
+    outcome: Dict[str, Any] = {}
+    failure: Dict[str, BaseException] = {}
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            outcome["value"] = asyncio.run(result)
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    # copy_context: the helper thread must see the caller's profile/secret scope, else an
+    # async hook under a running loop reads the default HERMES_HOME and get_secret raises.
+    threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
+                     name="hermes-plugin-command-await", daemon=True).start()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError("Plugin command async handler did not complete within "
+                           f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")
+    if "exc" in failure:
+        raise failure["exc"]
+    return outcome.get("value")
+
+
 class PluginDispatchMixin:
     @staticmethod
     def _hook_callback_kwargs(callback: Callable, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -205,7 +242,6 @@ class PluginDispatchMixin:
         are (loop-safe), otherwise the bare coroutine object is appended to the results and the
         plugin's body never runs (#12449).
         """
-        from hermes_cli.plugins import resolve_plugin_command_result
         return resolve_plugin_command_result(callback(**cls._hook_callback_kwargs(callback, payload)))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
@@ -419,7 +455,6 @@ class PluginDispatchMixin:
 
     def _deliver_event(self, item: _QueuedPluginEvent) -> None:
         """Deliver one queued event on the host-owned worker thread."""
-        from hermes_cli.plugins import resolve_plugin_command_result
         with self._event_lock:
             if item.generation != self._event_generation:
                 return
