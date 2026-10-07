@@ -109,3 +109,23 @@ async def test_rpc_preserves_notifications_and_errors():
                     await client.rpc("session.interrupt", session_id="stored", execution_generation=4)
                 event = await asyncio.wait_for(client.events.get(), 2)
                 assert event["params"]["text"] == "reply"
+
+
+@pytest.mark.asyncio
+async def test_yolo_slash_toggles_the_session_bypass_on_the_owner(capsys):
+    """`/yolo` in an attached `hermes chat` was refused as an unsupported command, so a `--yolo`
+    launch could not be revoked from the classic CLI; it is the owner's session-scoped config.set."""
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    calls = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            calls.append((method, params))
+            return {"key": "yolo", "value": params.get("value", "0"), "scope": "session"}
+
+    view = GatewayChatView(Peer(), {"stored_session_id": "sid"})
+    assert await view.command("/yolo off") is True
+    assert await view.command("/yolo") is True
+    assert calls == [("config.set", {"session_id": "sid", "key": "yolo", "value": "0"}),
+                     ("config.set", {"session_id": "sid", "key": "yolo"})]
+    assert "YOLO off for this session" in capsys.readouterr().out

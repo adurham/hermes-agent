@@ -217,8 +217,17 @@ class GatewayChatView:
             self.mutations.acknowledge(original, operation, payload)
             print(f"{operation}: {target}")
             return True
+        if command == "/yolo":
+            # This session's approval bypass on the owner (same verb as the TUI's /yolo and Desktop).
+            word = rest.strip().lower()
+            if word not in {"", "on", "off"}:
+                raise GatewayClientError("Usage: /yolo [on|off]")
+            result = await self.client.rpc("config.set", session_id=self.session_id, key="yolo",
+                                           **({"value": "1" if word == "on" else "0"} if word else {}))
+            print(f"YOLO {'on' if result.get('value') == '1' else 'off'} for this session")
+            return True
         if command == "/help":
-            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
+            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /yolo [on|off], /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
             return True
         raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
 
