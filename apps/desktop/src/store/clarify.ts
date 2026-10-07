@@ -315,6 +315,21 @@ export function clearSettledClarifyRequest(sessionId: string | null): void {
   }
 }
 
+/** A locked answer as the server's result carries it: a multi-select answer is stored as a JSON list. */
+function lockedAnswer(question: ClarifyQuestion, raw: string): string | string[] {
+  if (!question.multiSelect) {
+    return raw
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw)
+
+    return Array.isArray(parsed) ? parsed.map(String) : raw
+  } catch {
+    return raw
+  }
+}
+
 /**
  * Skip a parked card: clear it, answer its request with no pick, and settle it
  * as skipped. The card's Skip button uses this, and so does the composer for a
@@ -333,11 +348,14 @@ export function skipClarify(request: ClarifyRequest): void {
       ? { outcome: 'cancelled', picked: null }
       : {
           outcome: 'cancelled',
-          responses: request.questions.map(question => ({
-            question: question.question,
-            status: 'unanswered',
-            user_response: null
-          }))
+          // Answers locked server-side before a reconnect stand: the server merges them into its result too.
+          responses: request.questions.map(question => {
+            const locked = request.lockedAnswers?.[question.qid]
+
+            return locked
+              ? { question: question.question, status: 'answered', user_response: lockedAnswer(question, locked) }
+              : { question: question.question, status: 'unanswered', user_response: null }
+          })
         }
   )
 }
