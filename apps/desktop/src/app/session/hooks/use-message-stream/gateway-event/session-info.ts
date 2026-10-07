@@ -133,6 +133,19 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
   return true
 }
 
+/** Project the runtime's pending-submission receipts onto the durable
+ *  session's composer queue (keyed by stored id when known). */
+function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void {
+  const { deps, payload, sessionId } = ctx
+
+  if (sessionId) {
+    const storedId =
+      payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
+
+    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions)
+  }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -156,10 +169,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
 
-    if (sessionId) {
-      const storedId = payload?.stored_session_id ?? sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
-      reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions)
-    }
+    reconcileSessionInfoPendingSubmissions(ctx)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
@@ -407,9 +417,16 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
 
           // The owner stamps its claimed execution on the event params, not the payload.
-          const authoritative = typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
+          const authoritative =
+            typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
 
-          if (!authoritative && state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive && withinPreStartGrace) {
+          if (
+            !authoritative &&
+            state.awaitingResponse &&
+            !state.sawAssistantPayload &&
+            !state.turnLive &&
+            withinPreStartGrace
+          ) {
             return state
           }
 

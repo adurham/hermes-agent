@@ -19,12 +19,7 @@ import { clearAllPrompts, clearApprovalRequest } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import type { SessionOwnerScope } from '@/store/session-request-router'
-import {
-  $sessionTiles,
-  dropSessionState,
-  sessionTileDelegate,
-  unbindTileRuntime
-} from '@/store/session-states'
+import { $sessionTiles, dropSessionState, sessionTileDelegate, unbindTileRuntime } from '@/store/session-states'
 // Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
 // module graph into the gateway event hot path.
 import { ingestBackendSkin } from '@/themes/backend-sync'
@@ -172,44 +167,52 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (event.type === 'session.replay_gap') {
-    const runtimeId = event.session_id || ''
+  return handleReplayGapEvent(ctx)
+}
 
-    const storedSessionId = runtimeId
-      ? deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
-      : null
+/** session.replay_gap: the owner's replay window no longer covers this
+ *  viewer, so re-snapshot the matching pane or tile authoritatively. */
+function handleReplayGapEvent(ctx: GatewayEventContext): boolean {
+  const { deps, event } = ctx
 
-    const source = gatewayEventSource(event)
-
-    const ownerForStoredSession = (id: string): SessionOwnerScope =>
-      getSessionOwnerHint(id, source) ?? knownSessionOwner(ownerLookupSessionRows(), id)
-
-    if (storedSessionId && runtimeId === deps.activeSessionIdRef.current) {
-      const ownerRoute = ownerForStoredSession(storedSessionId)
-
-      if (eventSourceMatchesOwner(source, ownerRoute)) {
-        requestSessionResume(storedSessionId, ownerRoute && typeof ownerRoute === 'object' ? ownerRoute : undefined, {
-          authoritativeSnapshot: true
-        })
-
-        return true
-      }
-    }
-
-    const tile = $sessionTiles.get().find(candidate => {
-      if (candidate.runtimeId !== runtimeId) {
-        return false
-      }
-
-      return eventSourceMatchesOwner(source, candidate.ownerRoute ?? ownerForStoredSession(candidate.storedSessionId))
-    })
-
-    if (tile) {
-      void sessionTileDelegate()?.resumeTile(tile.storedSessionId, { authoritativeSnapshot: true }).catch(() => undefined)
-    }
-
-    return true
+  if (event.type !== 'session.replay_gap') {
+    return false
   }
 
-  return false
+  const runtimeId = event.session_id || ''
+
+  const storedSessionId = runtimeId ? deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId : null
+
+  const source = gatewayEventSource(event)
+
+  const ownerForStoredSession = (id: string): SessionOwnerScope =>
+    getSessionOwnerHint(id, source) ?? knownSessionOwner(ownerLookupSessionRows(), id)
+
+  if (storedSessionId && runtimeId === deps.activeSessionIdRef.current) {
+    const ownerRoute = ownerForStoredSession(storedSessionId)
+
+    if (eventSourceMatchesOwner(source, ownerRoute)) {
+      requestSessionResume(storedSessionId, ownerRoute && typeof ownerRoute === 'object' ? ownerRoute : undefined, {
+        authoritativeSnapshot: true
+      })
+
+      return true
+    }
+  }
+
+  const tile = $sessionTiles.get().find(candidate => {
+    if (candidate.runtimeId !== runtimeId) {
+      return false
+    }
+
+    return eventSourceMatchesOwner(source, candidate.ownerRoute ?? ownerForStoredSession(candidate.storedSessionId))
+  })
+
+  if (tile) {
+    void sessionTileDelegate()
+      ?.resumeTile(tile.storedSessionId, { authoritativeSnapshot: true })
+      .catch(() => undefined)
+  }
+
+  return true
 }
