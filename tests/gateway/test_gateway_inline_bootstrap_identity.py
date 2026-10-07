@@ -23,24 +23,23 @@ from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 ROOT = Path("/opt/Hermes Agent/hermes-agent")
 PY = "/opt/venv/bin/python3"
 _SCRIPT = _launchers._launcher_script("hermes", ROOT, None)
-_B64 = f"import base64; exec(base64.b64decode('{base64.b64encode(_SCRIPT.encode()).decode()}'))"
 _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
 
 
 def _forms(argv: list[str]) -> dict[str, list[str]]:
-    return {
+    forms = {
         "store-launcher": _launchers.runtime_command(ROOT, argv, python=Path(PY)),
         "launcher-script": [PY, "-I", "-c", _SCRIPT, *argv],
-        "cmd-launcher": [PY, "-I", "-c", _B64, *argv],
+        "cmd-launcher": [PY, "-I", "-c", f"import base64; exec(base64.b64decode('{base64.b64encode(_SCRIPT.encode()).decode()}'))", *argv],
         "venv-reentry": venv_sync.relaunch_command(
             Path(PY), ROOT, [str(ROOT / "hermes_cli" / "main.py"), *argv], ["/old/python", "-m", "hermes_cli.main", *argv],
             "hermes_cli.main"),
-        # A launch through the published launcher that synced dependencies first re-enters it via exec().
-        "venv-reentry-launcher": venv_sync.relaunch_command(
-            Path(PY), ROOT, ["-c", *argv], ["/old/python", "-I", "-c", _SCRIPT, *argv], None),
-        "venv-reentry-cmd-launcher": venv_sync.relaunch_command(
-            Path(PY), ROOT, ["-c", *argv], ["/old/python", "-I", "-c", _B64, *argv], None),
     }
+    # A launch through a published launcher that synced dependencies first re-enters it via exec().
+    for name in ("launcher-script", "cmd-launcher"):
+        forms[f"venv-reentry-{name}"] = venv_sync.relaunch_command(
+            Path(PY), ROOT, ["-c", *argv], ["/old/python", *forms[name][1:]], None)
+    return forms
 
 
 @pytest.mark.parametrize("join", _JOINS)

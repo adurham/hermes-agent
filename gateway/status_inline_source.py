@@ -118,8 +118,13 @@ def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
         # ``/n``), so it is matched in place by the launcher row's anchors, never decoded.
         if assigned := _ASSIGNED_ARGV.search(source):
             argv = [item.strip().strip("'\"") for item in assigned.group(1).split(",")][1:]
-        if wrapped := _EXEC_BASE64.search(target):
-            return _bootstrap_entry(f"import base64; exec(base64.b64decode('{wrapped['b64']}'))", argv)
+        if wrapped := _EXEC_BASE64.search(target):  # the .cmd launcher: its script, base64-encoded
+            import base64
+            import binascii
+            try:
+                return _bootstrap_entry(base64.b64decode(wrapped["b64"], validate=True).decode("utf-8"), argv)
+            except (binascii.Error, UnicodeDecodeError):
+                return None
         launcher = _EXEC_LAUNCHER.search(target)
         if launcher is None:
             return None
