@@ -55,6 +55,21 @@ class Model(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+async def _identify_until_ready(home, seconds):
+    """Last ``identify`` descriptor once the daemon reports ready, or when ``seconds`` elapse."""
+    desc = {}
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            desc = await asyncio.to_thread(control, home, 'identify')
+            if desc.get('state') == 'ready':
+                break
+        except (OSError, ValueError):
+            pass
+        await asyncio.sleep(.05)
+    return desc
+
+
 async def probe(root, base, mode):
     home, user = base / 'state', base / 'user'
     home.mkdir(); user.mkdir()
@@ -113,16 +128,7 @@ async def probe(root, base, mode):
                     stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
                 try:
                     ws = await asyncio.wait_for(ready.get(), 35)
-                    desc = {}
-                    deadline = time.monotonic() + 35
-                    while time.monotonic() < deadline:
-                        try:
-                            desc = await asyncio.to_thread(control, home, 'identify')
-                            if desc.get('state') == 'ready':
-                                break
-                        except (OSError, ValueError):
-                            pass
-                        await asyncio.sleep(.05)
+                    desc = await _identify_until_ready(home, 35)
                     assert desc.get('state') == 'ready', desc
                     async def send(identity, text):
                         await ws.send(json.dumps({'type': 'inbound', 'event': {'text': text,

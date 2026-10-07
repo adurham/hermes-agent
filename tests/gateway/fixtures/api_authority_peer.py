@@ -11,6 +11,17 @@ from http.server import ThreadingHTTPServer
 from shared_authority_peer import ModelPeer
 
 
+async def _poll_run_terminal(client, url, headers):
+    """Poll a /v1/runs status URL until the run reaches a terminal status (20 s budget)."""
+    async with asyncio.timeout(20):
+        while True:
+            async with client.get(url, headers=headers) as response:
+                status = await response.json()
+            if status.get('status') in ('completed', 'failed', 'cancelled'):
+                return status
+            await asyncio.sleep(.02)
+
+
 async def probe(peer):
     import aiohttp
     import websockets
@@ -80,13 +91,7 @@ async def probe(peer):
                     run_id = accepted['run_id']
                     admitted = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)
                     assert any(row['request_id'] == run_id for row in admitted), 'HTTP 202 preceded canonical admission'
-                    async with asyncio.timeout(20):
-                        while True:
-                            async with client.get(f'http://127.0.0.1:{api_port}/v1/runs/{run_id}', headers=headers) as response:
-                                status = await response.json()
-                            if status.get('status') in ('completed', 'failed', 'cancelled'):
-                                break
-                            await asyncio.sleep(.02)
+                    status = await _poll_run_terminal(client, f'http://127.0.0.1:{api_port}/v1/runs/{run_id}', headers)
                     assert status['status'] == 'completed', status
                     assert authority.agent(ref) is agent
                     admitted = list_session_admissions(authority.db, session_id=ref.session_id, pending_only=False)

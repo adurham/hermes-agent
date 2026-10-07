@@ -299,7 +299,7 @@ def records(audit):
 
 
 def test_native_gateway_runtime_live(harness):
-    home, env, peer, url, audit = harness['home'], harness['env'], harness['peer'], harness['url'], harness['audit']
+    home, env, peer = harness['home'], harness['env'], harness['peer']
     receipt = {'os': sys.platform}
 
     async def discovery_attach_and_turn(desc):

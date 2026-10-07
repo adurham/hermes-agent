@@ -60,7 +60,7 @@ for line in sys.stdin:
             original = store.rpc
             lost = []
             def lose_ack(method, **params):
-                result = original(method, **params)
+                original(method, **params)  # commit for real; only the acknowledgement is lost
                 lost.append(params)
                 raise TimeoutError('lost_ack')
             store.rpc = lose_ack

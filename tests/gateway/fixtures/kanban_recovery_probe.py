@@ -115,7 +115,6 @@ def main():
                               db=str(board_path.resolve()))
                 wait_for(lambda: peer.blocked.is_set() or any(p.poll() is not None for p in clients))
                 assert peer.blocked.is_set(), 'Owner failed to discover dispatcher board'
-                active = kb.get_task(conn, tid)
                 first = admission()
                 receipt.update(session_id=first['target_session_id'], run_id=task.current_run_id, claim_lock=task.claim_lock)
                 if mode == 'restart':

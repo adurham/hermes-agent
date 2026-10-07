@@ -18,6 +18,16 @@ from websockets.exceptions import InvalidStatus
 from tests.gateway.test_normal_runtime_boot import control
 
 
+async def _rpc_result(ws, rid):
+    """The ``result`` of the JSON-RPC reply with id ``rid``, skipping other frames (20 s budget)."""
+    async with asyncio.timeout(20):
+        while True:
+            reply = json.loads(await ws.recv())
+            if reply.get('id') == rid:
+                assert 'result' in reply, reply
+                return reply['result']
+
+
 async def _legacy_ws_snapshot(root, home, env, requests):
     legacy_home = home.parent / 'legacy-state'
     legacy_home.mkdir(mode=0o700)
@@ -47,13 +57,7 @@ async def _legacy_ws_snapshot(root, home, env, requests):
             async with connect(f'ws://127.0.0.1:{port}/api/ws?token=disposable-discovery-token') as ws:
                 for rid, (method, params) in enumerate(requests):
                     await ws.send(json.dumps({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params}))
-                    async with asyncio.timeout(20):
-                        while True:
-                            reply = json.loads(await ws.recv())
-                            if reply.get('id') == rid:
-                                assert 'result' in reply, reply
-                                results.append(reply['result'])
-                                break
+                    results.append(await _rpc_result(ws, rid))
             process.send_signal(signal.SIGINT)
             assert process.wait(timeout=20) == 0
             return results, {'legacy_ws_pid': process.pid, 'legacy_ws_port': port,
