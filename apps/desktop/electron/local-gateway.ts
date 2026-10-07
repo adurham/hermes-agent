@@ -128,6 +128,18 @@ export function staleGatewayCode(payload: Record<string, any>): { gateway: strin
   return gateway.toLowerCase() === client.toLowerCase() ? null : { gateway, client }
 }
 
+/** Loopback-only, bare-origin, session-authority endpoint or throw. */
+function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
+  const origin = new URL(endpoint.api_origin)
+
+  if (!['http:', 'https:'].includes(origin.protocol) || !['127.0.0.1', '[::1]'].includes(origin.hostname)
+      || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash
+      || !origin.port || endpoint.runtime_protocol !== 1 || !endpoint.instance_id || !endpoint.profile_id
+      || !endpoint.capabilities.includes('session-authority-v1')) {
+    throw new Error('Invalid local gateway endpoint')
+  }
+}
+
 export async function ensureLocalGateway(
   run: () => Promise<{ code: number; stdout: string; stderr?: string }>,
   beforeEnsure?: () => Promise<void>,
@@ -150,14 +162,7 @@ export async function ensureLocalGateway(
   }
 
   const endpoint: GatewayEndpoint = payload.endpoint
-  const origin = new URL(endpoint.api_origin)
-
-  if (!['http:', 'https:'].includes(origin.protocol) || !['127.0.0.1', '[::1]'].includes(origin.hostname)
-      || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash
-      || !origin.port || endpoint.runtime_protocol !== 1 || !endpoint.instance_id || !endpoint.profile_id
-      || !endpoint.capabilities.includes('session-authority-v1')) {
-    throw new Error('Invalid local gateway endpoint')
-  }
+  assertLocalGatewayEndpoint(endpoint)
 
   return { baseUrl: endpoint.api_origin, wsUrl: `${endpoint.api_origin.replace(/^http/, 'ws')}/api/ws?native_dial=unminted`, mode: 'local', source: 'local', authMode: 'native', token: '', gatewayEndpoint: endpoint }
 }
