@@ -18,7 +18,6 @@ import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
 import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { OnboardingSkip } from '@/components/onboarding-chat/skip'
-import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
@@ -32,10 +31,9 @@ import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
-import { notifyError } from '@/store/notifications'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -46,6 +44,8 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { deriveBusySubmitState } from './busy-submit-state'
+import { ComposerDockGlow, QueuedEditBanner } from './chat-bar-parts'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -60,7 +60,6 @@ import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
-import { discardLostPrompt } from './discard-lost-prompt'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
@@ -88,7 +87,7 @@ import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { PreparedImageRecovery } from './prepared-image-recovery'
-import { QueuePanel } from './queue-panel'
+import { renderComposerQueueSlot } from './queue-slot'
 import { RestoredDraftNotice } from './restored-draft-notice'
 import {
   beginComposerComposition,
@@ -432,23 +431,16 @@ export function ChatBar({
 
   const hasComposerPayload = hasText || attachments.length > 0
 
-  const canSubmit =
-    (busy || hasComposerPayload) &&
-    !(busy && isSteerableText && attachments.length === 0 && !compacting && !blockingPrompt && busyInputMode === null)
-
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  // Compaction does not: the gateway holds the correction until it finishes.
-  const canSteer = busy && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
-
-  // Ordinary busy Send follows backend policy; attachments queue and empty stops.
-  const busyAction: 'interrupt' | 'steer' | 'queue' | 'stop' = canSteer
-    ? (busyInputMode ?? 'interrupt')
-    : compacting || hasComposerPayload
-      ? 'queue'
-      : 'stop'
+  const { busyAction, canSteer, canSubmit } = deriveBusySubmitState({
+    attachmentCount: attachments.length,
+    blockingPrompt,
+    busy,
+    busyInputMode,
+    compacting,
+    hasComposerPayload,
+    hasSteerHandler: !!onSteer,
+    isSteerableText
+  })
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
@@ -1295,26 +1287,7 @@ export function ChatBar({
 
   return (
     <>
-      {dragging && poppedOut && (
-        <div
-          aria-hidden
-          // `absolute`, not `fixed`: anchor to the chat-column root (the same
-          // `relative isolate` container the docked composer centers in) so the
-          // glow spans the thread area only — never the full viewport / under the
-          // sidebar. The dock target IS the docked position, so they must share
-          // a containing block.
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32"
-          style={{
-            // A bottom-centered radial glow — soft on every side by construction,
-            // so it reads as the dock target without any hard band edges. Its
-            // intensity tracks how close the composer is to the dock (1 = peak).
-            background:
-              'radial-gradient(64% 130% at 50% 100%, color-mix(in srgb, var(--color-primary) 26%, transparent) 0%, transparent 70%)',
-            // Scaled by --dock-glow-scale (lower in light mode — see styles.css).
-            opacity: `calc(${0.1 + dockProximity * 0.57} * var(--dock-glow-scale, 1))`
-          }}
-        />
-      )}
+      {dragging && poppedOut && <ComposerDockGlow dockProximity={dockProximity} />}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         {/* Dock column: owns the composer's POSITION and stacks, bottom-up,
             [micro actions] · [status stack] · [composer] · [underside].
@@ -1369,41 +1342,21 @@ export function ChatBar({
           <StatusDrawerContent collapsed={statusDrawerCollapsed} id={statusDrawerId}>
             <ComposerStatusStack
               onSubmit={onSubmit}
-              queue={
-                activeQueueSessionKey && queuedPrompts.length > 0 ? (
-                  <QueuePanel
-                    busy={busy}
-                    editingId={queueEdit?.entryId ?? null}
-                    entries={queuedPrompts}
-                    onDelete={id => {
-                      if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
-                        exitQueuedEdit('cancel')
-                      }
-                    }}
-                    onDiscardLost={gateway ? id => {
-                      // Server-owned row: the authority's pending fanout retires it
-                      // from the queue once the acknowledgement commits. Canonical
-                      // local sessions key the queue by their own session id, so the
-                      // stored key stands in when the runtime id is not bound yet.
-                      discardLostPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway))
-                        .catch((error: unknown) => notifyError(error, t.composer.queueLostDiscard))
-                    } : undefined}
-                    onEdit={beginQueuedEdit}
-                    onResume={() => {
-                      unparkQueuedPrompts(activeQueueSessionKey)
-
-                      // Idle → kick the head immediately; busy → the settle drain
-                      // takes over now that the park is lifted.
-                      if (!busy) {
-                        void drainNextQueued()
-                      }
-                    }}
-                    onSendNow={id => void sendQueuedNow(id)}
-                    onSteerNow={id => void steerQueuedNow(id)}
-                    parked={queueParked}
-                  />
-                ) : null
-              }
+              queue={renderComposerQueueSlot({
+                activeQueueSessionKey,
+                beginQueuedEdit,
+                busy,
+                drainNextQueued,
+                exitQueuedEdit,
+                gateway,
+                queueEdit,
+                queueParked,
+                queuedPrompts,
+                sendQueuedNow,
+                sessionId,
+                steerQueuedNow,
+                t
+              })}
               sessionId={statusSessionId}
             />
           </StatusDrawerContent>
@@ -1564,30 +1517,7 @@ export function ChatBar({
                   />
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
-                  {queueEdit && editingQueuedPrompt && (
-                    <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
-                      <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                        {t.composer.editingQueuedInComposer}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          className="h-6 rounded-md px-2 text-[0.68rem]"
-                          onClick={() => exitQueuedEdit('cancel')}
-                          type="button"
-                          variant="ghost"
-                        >
-                          {t.common.cancel}
-                        </Button>
-                        <Button
-                          className="h-6 rounded-md px-2 text-[0.68rem]"
-                          onClick={() => exitQueuedEdit('save')}
-                          type="button"
-                        >
-                          {t.common.save}
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+                  {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
                   <div
                     className={cn(
