@@ -170,6 +170,7 @@ export const zhHantAssistant = {
       noAnswer: '未回答',
       confirmAndContinueLabel: '確認並繼續',
       singleSelectHint: '選一個',
+      oneQuestion: '1 個問題',
       multiSelectHint: '可多選',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
