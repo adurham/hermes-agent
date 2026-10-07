@@ -21,11 +21,34 @@ import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '
 import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
-import type { SlashCommand } from '../types.js'
+import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
 const REASONING_GLOBAL_FLAGS = new Set(['--global'])
+
+const COMPRESS_AUTHORITY_KEYS = [
+  'stored_session_id',
+  'execution_epoch',
+  'execution_generation',
+  'execution_state',
+  'running'
+] as const
+
+// Compression is not attachment: a delayed reply cannot replace a
+// newer turn/owner, nor replace its transcript with an old snapshot.
+function isStaleCompressReply(r: SessionCompressResponse, current: ReturnType<typeof getUiState>, ctx: SlashRunCtx) {
+  if (current.busy !== ctx.ui.busy || COMPRESS_AUTHORITY_KEYS.some(key => current.info?.[key] !== ctx.ui.info?.[key])) {
+    return true
+  }
+
+  return (
+    current.info?.execution_generation !== undefined &&
+    (r.info?.execution_epoch !== current.info.execution_epoch ||
+      !Number.isSafeInteger(r.info?.execution_generation) ||
+      (r.info?.execution_generation ?? -1) < current.info.execution_generation)
+  )
+}
 
 type FastModeWord = 'fast' | 'normal' | 'ultrafast'
 
@@ -271,26 +294,7 @@ export const sessionCommands: SlashCommand[] = [
           ctx.guarded<SessionCompressResponse>(r => {
             const current = getUiState()
 
-            const authorityKeys = [
-              'stored_session_id',
-              'execution_epoch',
-              'execution_generation',
-              'execution_state',
-              'running'
-            ] as const
-
-            // Compression is not attachment: a delayed reply cannot replace a
-            // newer turn/owner, nor replace its transcript with an old snapshot.
-            if (current.busy !== ctx.ui.busy || authorityKeys.some(key => current.info?.[key] !== ctx.ui.info?.[key])) {
-              return
-            }
-
-            if (
-              current.info?.execution_generation !== undefined &&
-              (r.info?.execution_epoch !== current.info.execution_epoch ||
-                !Number.isSafeInteger(r.info?.execution_generation) ||
-                (r.info?.execution_generation ?? -1) < current.info.execution_generation)
-            ) {
+            if (isStaleCompressReply(r, current, ctx)) {
               return
             }
 

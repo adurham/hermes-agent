@@ -107,6 +107,85 @@ export async function mutateCanonicalSession(
   return { result, expectedGeneration: params.expected_generation as number }
 }
 
+type CanonicalControlResult = NonNullable<Awaited<ReturnType<typeof mutateCanonicalSession>>>['result']
+
+function isSupersededControl(
+  operation: 'model' | 'branch' | 'compress',
+  result: CanonicalControlResult,
+  expectedGeneration: number,
+  ctx: SlashRunCtx
+) {
+  const current = getUiState().info
+
+  return (
+    operation !== 'branch' &&
+    (current?.execution_epoch !== ctx.ui.info?.execution_epoch ||
+      (current?.execution_generation ?? 0) > (result.execution_generation ?? expectedGeneration))
+  )
+}
+
+function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
+  if (!result.branched_session_id) {
+    throw new Error('invalid response: branch')
+  }
+
+  ctx.session.resumeById(result.branched_session_id)
+  ctx.transcript.sys(`branched → ${arg || result.branched_session_id}`)
+}
+
+function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
+  if (!result.model) {
+    throw new Error('invalid response: model switch')
+  }
+
+  patchUiState(state => ({
+    ...state,
+    info: {
+      ...state.info,
+      model: result.model,
+      execution_generation: Math.max(state.info?.execution_generation ?? 0, result.execution_generation ?? 0),
+      skills: state.info?.skills ?? {},
+      tools: state.info?.tools ?? {}
+    }
+  }))
+  ctx.transcript.sys(`model → ${result.model}`)
+}
+
+async function applyCompressResult(gw: MutationGateway, sid: string, result: CanonicalControlResult, ctx: SlashRunCtx) {
+  const before = getUiState()
+  const snapshot = asRpcResult(await gw.request('session.resume', { session_id: sid }))
+
+  if (ctx.stale() || getUiState().info !== before.info || getUiState().busy !== before.busy) {
+    return
+  }
+
+  if (!snapshot || !Array.isArray(snapshot.messages)) {
+    throw new Error('invalid response: compressed transcript')
+  }
+
+  const info = { ...before.info, ...snapshot.info }
+
+  if (
+    info.execution_epoch !== before.info?.execution_epoch ||
+    (info.execution_generation ?? -1) < (result.execution_generation ?? 0)
+  ) {
+    throw new Error('compressed transcript is stale; reopen the session')
+  }
+
+  ctx.transcript.setHistoryItems([introMsg(info), ...toTranscriptMessages(snapshot.messages)])
+  patchUiState({ info })
+  // The authority's report (headline, token line, note), as the native /compress prints it.
+  const summary = result.summary as { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
+
+  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : '✓ transcript compressed')
+
+  for (const line of [summary?.token_line, summary?.note]) {
+    if (line) {
+      ctx.transcript.sys(`  ${line}`)
+    }
+  }
+}
+
 export async function runCanonicalSessionControl(
   operation: 'model' | 'branch' | 'compress',
   arg: string,
@@ -131,75 +210,19 @@ export async function runCanonicalSessionControl(
       return
     }
 
-    const current = getUiState().info
-
-    if (
-      operation !== 'branch' &&
-      (current?.execution_epoch !== ctx.ui.info?.execution_epoch ||
-        (current?.execution_generation ?? 0) > (result.execution_generation ?? expectedGeneration))
-    ) {
+    if (isSupersededControl(operation, result, expectedGeneration, ctx)) {
       return
     }
 
     if (operation === 'branch') {
-      if (!result.branched_session_id) {
-        throw new Error('invalid response: branch')
-      }
-
-      ctx.session.resumeById(result.branched_session_id)
-      ctx.transcript.sys(`branched → ${arg || result.branched_session_id}`)
+      applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
-      if (!result.model) {
-        throw new Error('invalid response: model switch')
-      }
-
-      patchUiState(state => ({
-        ...state,
-        info: {
-          ...state.info,
-          model: result.model,
-          execution_generation: Math.max(state.info?.execution_generation ?? 0, result.execution_generation ?? 0),
-          skills: state.info?.skills ?? {},
-          tools: state.info?.tools ?? {}
-        }
-      }))
-      ctx.transcript.sys(`model → ${result.model}`)
+      applyModelResult(result, ctx)
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))
     } else {
-      const before = getUiState()
-      const snapshot = asRpcResult(await gw.request('session.resume', { session_id: ctx.sid }))
-
-      if (ctx.stale() || getUiState().info !== before.info || getUiState().busy !== before.busy) {
-        return
-      }
-
-      if (!snapshot || !Array.isArray(snapshot.messages)) {
-        throw new Error('invalid response: compressed transcript')
-      }
-
-      const info = { ...before.info, ...snapshot.info }
-
-      if (
-        info.execution_epoch !== before.info?.execution_epoch ||
-        (info.execution_generation ?? -1) < (result.execution_generation ?? 0)
-      ) {
-        throw new Error('compressed transcript is stale; reopen the session')
-      }
-
-      ctx.transcript.setHistoryItems([introMsg(info), ...toTranscriptMessages(snapshot.messages)])
-      patchUiState({ info })
-      // The authority's report (headline, token line, note), as the native /compress prints it.
-      const summary = result.summary as { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
-
-      ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : '✓ transcript compressed')
-
-      for (const line of [summary?.token_line, summary?.note]) {
-        if (line) {
-          ctx.transcript.sys(`  ${line}`)
-        }
-      }
+      await applyCompressResult(gw, ctx.sid, result, ctx)
     }
   } catch (error) {
     ctx.guardedErr(error)
