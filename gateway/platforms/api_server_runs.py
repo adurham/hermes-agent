@@ -635,6 +635,58 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             _api_server._api_request_profile.reset(token)
 
 
+def _run_idempotency_identity(self, request, body, gateway_session_key, idempotency_key) -> tuple:
+    """``(principal scope, request fingerprint)`` for a keyed POST /v1/runs; ``("", "")`` unkeyed."""
+    if not idempotency_key:
+        return "", ""
+    return self._run_idempotency_scope(request), hashlib.sha256(json.dumps(
+        {"body": body, "gateway_session_key": gateway_session_key or ""},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+
+
+def _run_user_message(raw_input, _openai_error) -> tuple:
+    """POST /v1/runs ``input`` -> ``(user_message, error_response_or_None)``."""
+    if not raw_input:
+        return None, _json_error(_openai_error, "Missing 'input' field", status=400)
+    if isinstance(raw_input, str):
+        user_message = raw_input
+    else:
+        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
+    if not user_message:
+        return None, _json_error(_openai_error, "No user message found in input", status=400)
+    return user_message, None
+
+
+def _admit_run_to_authority(
+    self, launch, run_id, session_history_delivery, _declared_selected,
+    idempotency_scope, idempotency_key, _openai_error,
+) -> Optional["web.Response"]:
+    """Admit a /v1/runs turn to the session authority FIFO -> ``None``, or the 409 refusal."""
+    from gateway.session_api_turn import admit_api_turn
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        with self._profile_scope(launch.request_profile):
+            launch.admission = admit_api_turn(self, user_message=launch.user_message,
+                conversation_history=launch.conversation_history, active_run_id=run_id,
+                run_owner_scope=self._run_owners[run_id],
+                turn_author=launch.turn_author,
+                history_from_session=session_history_delivery,
+                session_history_delivery='1' if session_history_delivery else '',
+                bind_declared_conversation=_declared_selected,
+                **launch.agent_kwargs)
+    except RuntimeStoreError as exc:
+        # A refused admission owns no run: drop every reservation so an exact
+        # retry is refused again instead of replaying a run nobody executes.
+        _forget_run(
+            self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+            self._run_statuses, self._run_owners, self._run_idempotency_ids)
+        if idempotency_key:
+            self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
+        return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+    return None
+
+
 async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Response":
     """POST /v1/runs — start an agent run, return run_id immediately."""
     _openai_error = _api_server._openai_error
@@ -658,22 +710,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return _json_error(
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
             code="invalid_idempotency_key", status=400)
-    idempotency_scope = idempotency_fingerprint = ""
-    if idempotency_key:
-        idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+    idempotency_scope, idempotency_fingerprint = _run_idempotency_identity(
+        self, request, body, gateway_session_key, idempotency_key)
     raw_input = body.get("input")
-    if not raw_input:
-        return _json_error(_openai_error, "Missing 'input' field", status=400)
-    if isinstance(raw_input, str):
-        user_message = raw_input
-    else:
-        user_message = raw_input[-1].get("content", "") if isinstance(raw_input, list) else ""
-    if not user_message:
-        return _json_error(_openai_error, "No user message found in input", status=400)
+    user_message, input_err = _run_user_message(raw_input, _openai_error)
+    if input_err is not None:
+        return input_err
     try:
         turn_author = _api_server._request_turn_author(body)
     except ValueError as exc:
@@ -764,27 +806,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
     if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
-        from gateway.session_api_turn import admit_api_turn
-        from hermes_state_runtime import RuntimeStoreError
-        try:
-            with self._profile_scope(launch.request_profile):
-                launch.admission = admit_api_turn(self, user_message=launch.user_message,
-                    conversation_history=launch.conversation_history, active_run_id=run_id,
-                    run_owner_scope=self._run_owners[run_id],
-                    turn_author=launch.turn_author,
-                    history_from_session=session_history_delivery,
-                    session_history_delivery='1' if session_history_delivery else '',
-                    bind_declared_conversation=_declared_selected,
-                    **launch.agent_kwargs)
-        except RuntimeStoreError as exc:
-            # A refused admission owns no run: drop every reservation so an exact
-            # retry is refused again instead of replaying a run nobody executes.
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners, self._run_idempotency_ids)
-            if idempotency_key:
-                self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+        refused = _admit_run_to_authority(
+            self, launch, run_id, session_history_delivery, _declared_selected,
+            idempotency_scope, idempotency_key, _openai_error)
+        if refused is not None:
+            return refused
     self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
@@ -1408,7 +1434,7 @@ async def _handle_resolve_unknown_run(
         return err
     try:
         body = await request.json()
-    except Exception:
+    except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body
         body = None
     from gateway.platforms.api_server_authority_runs import resolve_unknown_run
     from hermes_state_runtime import RuntimeStoreError
