@@ -14,9 +14,10 @@ counted and no ``pre/post_api_request`` hook fires for a step.
 
 from __future__ import annotations
 
-import uuid
+import json
 from typing import Any, Generator, Optional, Tuple
 
+from agent.message_sanitization import deterministic_call_id
 from agent.transports.types import NormalizedResponse, build_tool_call
 from agent.turn_tool_round import run_tool_round
 
@@ -37,7 +38,9 @@ def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
         s.finish_reason = "tool_calls"
         s.assistant_message = NormalizedResponse(
             content=content, finish_reason="tool_calls",
-            tool_calls=[build_tool_call(f"call_{uuid.uuid4().hex[:24]}", name, args)])
+            # Seeded by the card and its place in history: unique within the session, byte-stable on replay.
+            tool_calls=[build_tool_call(deterministic_call_id(name, json.dumps(args, sort_keys=True), len(s.messages)),
+                                        name, args)])
         verdict = _run_phase(run_tool_round, agent, s)
         if verdict.action != "continue":
             break
