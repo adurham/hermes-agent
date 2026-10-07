@@ -22,10 +22,12 @@ interface OnboardingChatGateProps {
   enabled: boolean
   onKickoff: () => Promise<GuideKickoffResult>
   requestGateway: FreeTierRequester
+  /** Only the main window runs the intro. Every window still reads the state: the provider picker,
+   *  the free-tier introduction and the usage-stats offer wait on that read (afterOnboardingStateRead). */
+  runsIntro: boolean
 }
 
-/** Mounted in the main window only: secondary windows never run the intro. */
-export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: OnboardingChatGateProps) {
+export function OnboardingChatGate({ enabled, onKickoff, requestGateway, runsIntro }: OnboardingChatGateProps) {
   const gate = useStore($onboardingGate)
 
   useEffect(() => {
@@ -37,6 +39,11 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       .then(
         state => {
           $setupProfileName.set(state.profile ?? null)
+
+          if (!runsIntro) {
+            return
+          }
+
           beginOnboardingFlow(state)
 
           if ($onboardingGate.get().guideQueued) {
@@ -46,7 +53,7 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
         error => console.warn('[onboarding] state could not be read', error)
       )
       .finally(markOnboardingStateRead)
-  }, [enabled, requestGateway])
+  }, [enabled, requestGateway, runsIntro])
 
   useEffect(() => {
     if (!enabled || !isOnboardingEnabled()) {

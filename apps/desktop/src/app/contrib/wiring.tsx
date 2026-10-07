@@ -1294,11 +1294,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {isMainWindow() && (
+      {!isAuxiliaryWindow() && (
         <OnboardingChatGate
           enabled={gatewayState === 'open'}
           onKickoff={kickoffFirstChat}
           requestGateway={ambientRequestGateway}
+          runsIntro={isMainWindow()}
         />
       )}
       {!isAuxiliaryWindow() && (
