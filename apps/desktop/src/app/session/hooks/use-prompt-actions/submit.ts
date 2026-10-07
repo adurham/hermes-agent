@@ -162,7 +162,10 @@ type SubmitReceipt = Pick<PromptSubmitResult, 'user_row_id'> & {
 
 /** A refusal the backend issued before admitting anything, so an identityless retry cannot duplicate a turn. */
 function isPreAdmissionRefusal(error: unknown): boolean {
-  if (!error || typeof error !== 'object' || !('code' in error)) { return false }
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false
+  }
+
   const { code, message } = error as { code?: unknown; message?: unknown }
 
   return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
@@ -271,11 +274,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const guardSessionId = options?.sessionId ?? activeSessionIdRef.current
       const serverQueue = serverOwnsComposerQueue(options?.storedSessionId ?? guardSessionId)
-      const queueAdmission = serverQueue && Boolean(options?.fromQueue || isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
+
+      const queueAdmission =
+        serverQueue &&
+        Boolean(options?.fromQueue || isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
 
       if (
         !hasSendable ||
-        (!serverQueue && !options?.fromQueue && isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
+        (!serverQueue &&
+          !options?.fromQueue &&
+          isTargetSessionBusy($sessionStates.get(), guardSessionId, busyRef.current))
       ) {
         return false
       }
@@ -420,10 +428,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const captured =
         options?.destination ?? captureSubmissionDestination(targetStoredSessionId ?? sessionId, ambientRequestGateway)
 
-      const retryKeyForTarget = () => preparedSubmissionKey(
-        resolveComposerSessionKey(targetStoredSessionId ?? sessionId, $sessions.get()),
-        captured, rawText, attachments, options
-      )
+      const retryKeyForTarget = () =>
+        preparedSubmissionKey(
+          resolveComposerSessionKey(targetStoredSessionId ?? sessionId, $sessions.get()),
+          captured,
+          rawText,
+          attachments,
+          options
+        )
 
       let startingRouteToken = getRouteToken()
       let retained: Awaited<ReturnType<typeof readPreparedSubmission>>
@@ -541,7 +553,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {
-        if (queueAdmission) { return }
+        if (queueAdmission) {
+          return
+        }
+
         // Recents jump on send — not stream start, not turn resolve.
         const activity = bubbleText.trim() ? { preview: bubbleText.trim() } : undefined
         touchSessionActivity(sid, activity)
@@ -608,7 +623,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       const dropOptimistic = (sid: null | string) => {
-        if (queueAdmission) { return }
+        if (queueAdmission) {
+          return
+        }
 
         // The optimistic bubble is gone, so its blob: previews die with it —
         // unless a rejected-submit restore already re-loaded the attachments
@@ -703,13 +720,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         scope.setMessages(current => [...current, buildUserMessage()])
       }
 
-      if (!options?.storedSessionId && !sessionId && routedStoredSessionId && routedSessionNeedsResume) {
-        // The URL still names a durable conversation, but a profile
-        // swap/reconnect left its volatile session binding incomplete or
-        // cross-wired. Run the full profile-aware resume path. Creating here
-        // would fork a contextless chat against whichever profile is active.
+      // The URL still names a durable conversation, but a profile
+      // swap/reconnect left its volatile session binding incomplete or
+      // cross-wired. Run the full profile-aware resume path. Creating here
+      // would fork a contextless chat against whichever profile is active.
+      // Resolves to the adopted runtime id (null when not adopted yet), or
+      // false when the submit must stop.
+      const resumeRoutedStoredSession = async (routedId: string): Promise<false | null | string> => {
         try {
-          await resumeStoredSession(routedStoredSessionId)
+          await resumeStoredSession(routedId)
         } catch {
           return abortForSessionSwitch(null)
         }
@@ -722,17 +741,17 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // The high-level resume may have already published a fresh runtime
           // for this durable session. Don't strand it: record it so the next
           // action targeting this stored session reuses it (#91276).
-          const publishedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
+          const publishedRuntimeId = getRuntimeIdForStoredSession(routedId)
 
           if (publishedRuntimeId) {
-            registerRecoveredRuntime(routedStoredSessionId, publishedRuntimeId)
+            registerRecoveredRuntime(routedId, publishedRuntimeId)
           }
 
           return abortForSessionSwitch(null)
         }
 
         const recoveredRuntimeId = activeSessionIdRef.current
-        const validatedRuntimeId = getRuntimeIdForStoredSession(routedStoredSessionId)
+        const validatedRuntimeId = getRuntimeIdForStoredSession(routedId)
 
         // Adopt the high-level resume only after its renderer-side ownership
         // publications agree. Those refs/caches update independently, so a
@@ -743,32 +762,48 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (
           recoveredRuntimeId &&
           recoveredRuntimeId === validatedRuntimeId &&
-          selectedStoredSessionIdRef.current === routedStoredSessionId
+          selectedStoredSessionIdRef.current === routedId
         ) {
-          sessionId = recoveredRuntimeId
-          seedOptimistic(sessionId)
+          seedOptimistic(recoveredRuntimeId)
+
+          return recoveredRuntimeId
         }
+
+        return null
       }
 
-      if (!sessionId && targetStoredSessionId) {
-        // A target stored session exists but its runtime binding is gone (the
-        // live session was orphan-reaped, a timeout/reconnect cleared it, or a
-        // background queue drain only has the durable id). Continue that target
-        // conversation; only a genuine new-chat draft may create a new session.
+      if (!options?.storedSessionId && !sessionId && routedStoredSessionId && routedSessionNeedsResume) {
+        const routedRuntimeId = await resumeRoutedStoredSession(routedStoredSessionId)
+
+        if (routedRuntimeId === false) {
+          return false
+        }
+
+        sessionId = routedRuntimeId
+      }
+
+      // A target stored session exists but its runtime binding is gone (the
+      // live session was orphan-reaped, a timeout/reconnect cleared it, or a
+      // background queue drain only has the durable id). Continue that target
+      // conversation; only a genuine new-chat draft may create a new session.
+      // Resolves to the rebound runtime id, or false when the submit must stop.
+      const resumeTargetStoredSession = async (storedId: string): Promise<false | string> => {
+        let resumedSessionId: null | string = null
+
         try {
           // Re-register on the session's OWNING profile — resuming on whichever
           // profile is live would fork the conversation into the wrong DB (#67603).
           // A runtime a previous drift-aborted recovery already minted for this
           // exact stored session is reused instead of resuming again.
-          const cachedRuntimeId = takeRecoveredRuntime(targetStoredSessionId)
+          const cachedRuntimeId = takeRecoveredRuntime(storedId)
 
           const resumed = cachedRuntimeId
             ? { session_id: cachedRuntimeId }
-            : await singleFlightSessionResume(targetStoredSessionId, async () => {
-                const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
+            : await singleFlightSessionResume(storedId, async () => {
+                const resumeProfile = await resolveSessionProfile(storedId)
 
                 return requestGateway<{ session_id: string }>('session.resume', {
-                  session_id: targetStoredSessionId,
+                  session_id: storedId,
                   source: 'desktop',
                   omit_messages: true,
                   ...(resumeProfile ? { profile: resumeProfile } : {})
@@ -783,14 +818,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // Keep the freshly-bound runtime findable for the next action on
             // this stored session instead of stranding it for the reaper.
             if (resumed?.session_id) {
-              registerRecoveredRuntime(targetStoredSessionId, resumed.session_id)
+              registerRecoveredRuntime(storedId, resumed.session_id)
             }
 
-            return abortForSessionSwitch(sessionId)
+            return abortForSessionSwitch(resumedSessionId)
           }
 
           if (resumed?.session_id) {
-            sessionId = resumed.session_id
+            resumedSessionId = resumed.session_id
 
             if (targetIsCurrentView()) {
               const paneRuntimeId: string | null = $activeSessionId.get()
@@ -801,10 +836,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               rebindPaneToResumedRuntime({
                 activeSessionIdRef,
                 paneState:
-                  paneRuntimeId && paneRuntimeId !== sessionId ? $sessionStates.get()[paneRuntimeId] : undefined,
-                resumedRuntimeId: sessionId,
+                  paneRuntimeId && paneRuntimeId !== resumedSessionId ? $sessionStates.get()[paneRuntimeId] : undefined,
+                resumedRuntimeId: resumedSessionId,
                 sessions: $sessions.get(),
-                storedSessionId: targetStoredSessionId,
+                storedSessionId: storedId,
                 updateSessionState
               })
             }
@@ -823,19 +858,35 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (resumeSettleDrift) {
           console.warn('[submit-drift-abort]', resumeSettleDrift, { phase: 'post-resume-settle' })
 
-          return abortForSessionSwitch(sessionId)
+          return abortForSessionSwitch(resumedSessionId)
         }
 
-        if (!sessionId) {
+        if (!resumedSessionId) {
           return abortForSessionSwitch(null)
         }
 
-        seedOptimistic(sessionId)
+        seedOptimistic(resumedSessionId)
+
+        return resumedSessionId
       }
 
-      if (!sessionId) {
+      if (!sessionId && targetStoredSessionId) {
+        const resumedRuntimeId = await resumeTargetStoredSession(targetStoredSessionId)
+
+        if (resumedRuntimeId === false) {
+          return false
+        }
+
+        sessionId = resumedRuntimeId
+      }
+
+      // Genuine new-chat draft: create the backend session it submits into.
+      // Resolves to the created runtime id, or false when the submit must stop.
+      const createSessionForSubmit = async (): Promise<false | string> => {
+        let createdId: null | string
+
         try {
-          sessionId = await createBackendSessionForSend(bubbleText, undefined, {
+          createdId = await createBackendSessionForSend(bubbleText, undefined, {
             onComposerScopeAssigned: options?.onComposerScopeAssigned
           })
         } catch (err) {
@@ -849,7 +900,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        if (!sessionId) {
+        if (!createdId) {
           // createBackendSessionForSend returns null when the user switched
           // sessions mid-create (it closes the orphaned session itself) —
           // abort silently. Anything else is a real failure worth a toast.
@@ -877,7 +928,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // a user switch when the route, selection, and stored→runtime map
         // still name this create. A real switch moves route and selection
         // onto a different chat, and that path still aborts.
-        if (activeSessionIdRef.current !== sessionId) {
+        if (activeSessionIdRef.current !== createdId) {
           // A background stream retargets only the active runtime (#47709).
           // Route and selection still name the chat create just minted, and
           // that stored id still maps to this runtime. That is not a user
@@ -888,10 +939,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           const routeTarget = routeTargetFromToken(getRouteToken())
           const routeAgrees = routeTarget === null || routeTarget === '__new__' || routeTarget === selection
 
-          if (mapped === sessionId && routeAgrees) {
-            activeSessionIdRef.current = sessionId
+          if (mapped === createdId && routeAgrees) {
+            activeSessionIdRef.current = createdId
           } else {
-            return abortForSessionSwitch(sessionId)
+            return abortForSessionSwitch(createdId)
           }
         }
 
@@ -910,7 +961,19 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // to the ambient socket — the fresh-chat owner loss behind #94071.
         targetStoredSessionId = selectedStoredSessionIdRef.current
 
-        seedOptimistic(sessionId)
+        seedOptimistic(createdId)
+
+        return createdId
+      }
+
+      if (!sessionId) {
+        const createdRuntimeId = await createSessionForSubmit()
+
+        if (createdRuntimeId === false) {
+          return false
+        }
+
+        sessionId = createdRuntimeId
       }
 
       try {
@@ -996,7 +1059,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const prepared: NonNullable<typeof retained> = retained ?? {
           id: submissionId,
-          owner: destination.owner ??
+          owner:
+            destination.owner ??
             (publishedDestination.scopeKey === destination.scopeKey ? publishedDestination.owner : undefined),
           displayText: options?.displayText,
           attachments: syncedAttachments,
@@ -1007,7 +1071,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const retryKey = retryKeyForTarget()
         await writePreparedSubmission(retryKey, prepared)
 
-        if (sessionDriftReason()) {return abortForSessionSwitch(liveSessionId)}
+        if (sessionDriftReason()) {
+          return abortForSessionSwitch(liveSessionId)
+        }
 
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. The shared
@@ -1042,9 +1108,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 const params: Record<string, unknown> = { ...prepared.params, session_id: liveId }
 
                 try {
-                  return await requestGateway<SubmitReceipt>(
-                    'prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-                  )
+                  return await requestGateway<SubmitReceipt>('prompt.submit', params, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
                 } catch (error) {
                   // 4094 is an explicit PRE-admission capability refusal; 4000 is the
                   // legacy `hermes serve` contract refusing `submission_id` as an unknown
@@ -1060,7 +1124,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                   const { submission_id: _id, ...legacyParams } = params
 
                   const result = await requestGateway<SubmitReceipt>(
-                    'prompt.submit', legacyParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
+                    'prompt.submit',
+                    legacyParams,
+                    PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
                   )
 
                   legacyAccepted = true
@@ -1096,66 +1162,86 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             { alsoTimeout: true }
           )
 
-          if (
-            !legacyAccepted &&
-            ((result?.submission_id ?? result?.admission_id) !== submissionId ||
-              (result?.session_id !== undefined && result.session_id !== receiptSessionId) ||
-              !['queued', 'started', 'terminal'].includes(result?.status ?? ''))
-          ) {
-            dropOptimistic(sessionId)
-            releaseBusy()
+          // Validate the admission receipt and bind it to the optimistic bubble.
+          // Returns false when the receipt is not this send's admission.
+          const applySubmitReceipt = (result: SubmitReceipt, receiptSessionId: string): boolean => {
+            if (
+              !legacyAccepted &&
+              ((result?.submission_id ?? result?.admission_id) !== submissionId ||
+                (result?.session_id !== undefined && result.session_id !== receiptSessionId) ||
+                !['queued', 'started', 'terminal'].includes(result?.status ?? ''))
+            ) {
+              dropOptimistic(sessionId)
+              releaseBusy()
 
-            return false
-          }
-
-          if ((result?.submission_id ?? result?.admission_id) === submissionId) {
-            trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
-              id: submissionId,
-              text,
-              displayText: options?.displayText,
-              status: result.status
-            })
-
-            // Queued is also the initial receipt for an idle session's first
-            // turn. Keep its input and any start event that raced this ACK;
-            // explicit queue-only sends never inserted an optimistic bubble.
-            if (result.status === 'terminal') {
-              // Deduplication does not start a turn or promise another terminal
-              // event. Remove our duplicate bubble, but preserve any live turn
-              // that an owner event established while the receipt was in flight.
-              const next = updateSessionState(receiptSessionId, state => ({
-                ...state,
-                messages: state.messages.filter(message => message.id !== optimisticId),
-                ...(!state.turnLive && !state.streamId && !state.sawAssistantPayload && {
-                  busy: false,
-                  awaitingResponse: false,
-                  pendingBranchGroup: null,
-                  turnStartedAt: null
-                })
-              }), targetStoredSessionId)
-
-              if (!next.busy && !next.awaitingResponse) {releaseBusy()}
+              return false
             }
+
+            if ((result?.submission_id ?? result?.admission_id) === submissionId) {
+              trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
+                id: submissionId,
+                text,
+                displayText: options?.displayText,
+                status: result.status
+              })
+
+              // Queued is also the initial receipt for an idle session's first
+              // turn. Keep its input and any start event that raced this ACK;
+              // explicit queue-only sends never inserted an optimistic bubble.
+              if (result.status === 'terminal') {
+                // Deduplication does not start a turn or promise another terminal
+                // event. Remove our duplicate bubble, but preserve any live turn
+                // that an owner event established while the receipt was in flight.
+                const next = updateSessionState(
+                  receiptSessionId,
+                  state => ({
+                    ...state,
+                    messages: state.messages.filter(message => message.id !== optimisticId),
+                    ...(!state.turnLive &&
+                      !state.streamId &&
+                      !state.sawAssistantPayload && {
+                        busy: false,
+                        awaitingResponse: false,
+                        pendingBranchGroup: null,
+                        turnStartedAt: null
+                      })
+                  }),
+                  targetStoredSessionId
+                )
+
+                if (!next.busy && !next.awaitingResponse) {
+                  releaseBusy()
+                }
+              }
+            }
+
+            const rowId = result?.user_row_id
+
+            if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
+              // The worker may finish before this acknowledgement arrives. Bind
+              // only this send's optimistic occurrence; never reset live state or
+              // assume the newest user row still belongs to this RPC.
+              updateSessionState(receiptSessionId, state => {
+                const index = state.messages.findIndex(
+                  message => message.id === optimisticId && message.role === 'user'
+                )
+
+                if (index < 0 || state.messages[index].rowId === rowId) {
+                  return state
+                }
+
+                return {
+                  ...state,
+                  messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
+                }
+              })
+            }
+
+            return true
           }
 
-          const rowId = result?.user_row_id
-
-          if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
-            // The worker may finish before this acknowledgement arrives. Bind
-            // only this send's optimistic occurrence; never reset live state or
-            // assume the newest user row still belongs to this RPC.
-            updateSessionState(receiptSessionId, state => {
-              const index = state.messages.findIndex(message => message.id === optimisticId && message.role === 'user')
-
-              if (index < 0 || state.messages[index].rowId === rowId) {
-                return state
-              }
-
-              return {
-                ...state,
-                messages: state.messages.map((message, i) => (i === index ? { ...message, rowId } : message))
-              }
-            })
+          if (!applySubmitReceipt(result, receiptSessionId)) {
+            return false
           }
 
           acceptedRuntimeSessionId = receiptSessionId
