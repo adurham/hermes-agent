@@ -85,8 +85,6 @@ def present_sections(config):
 
 
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True):
-    from hermes_cli.tools_config import _get_platform_tools
-    from toolsets import validate_toolset
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -112,6 +110,23 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
     config = present_sections(json.loads(json.dumps(config)))
+    _apply_launch_overrides(params, config)
+    enabled = _resolve_toolsets(params, config, source, safe_mode)
+    terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
+    terminal['TERMINAL_CWD'] = cwd
+    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}
+    request.setdefault('source', 'cli')
+    from gateway.session_local_mcp import private_editor_request
+    private_editor_request(request, private_secrets)
+    _extract_config_secrets(config, private_secrets)
+    _extract_config_secrets(terminal, private_secrets, (None,))
+    return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
+                              json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
+                              safe_mode=safe_mode, ignore_user_config=ignore_user_config)
+
+
+def _apply_launch_overrides(params, config):
+    """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_constants import parse_reasoning_effort
     for key in ('provider', 'base_url'):
@@ -139,6 +154,12 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
         # An explicit launch level wins over a per-model default, just like CLI.
         config['agent'].pop('reasoning_overrides', None)
+
+
+def _resolve_toolsets(params, config, source, safe_mode):
+    """Validate explicit toolsets and return the session's enabled toolset set."""
+    from hermes_cli.tools_config import _get_platform_tools
+    from toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
         if (not isinstance(explicit, list) or any(not isinstance(x, str) or not validate_toolset(x) for x in explicit)
@@ -166,17 +187,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         # Plugin toolsets are user customizations; the safe worker never imports them.
         from hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
-    terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
-    terminal['TERMINAL_CWD'] = cwd
-    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}
-    request.setdefault('source', 'cli')
-    from gateway.session_local_mcp import private_editor_request
-    private_editor_request(request, private_secrets)
-    _extract_config_secrets(config, private_secrets)
-    _extract_config_secrets(terminal, private_secrets, (None,))
-    return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
-                              json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
-                              safe_mode=safe_mode, ignore_user_config=ignore_user_config)
+    return enabled
 
 
 def _extract_config_secrets(value, private, path=()):

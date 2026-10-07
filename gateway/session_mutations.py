@@ -12,6 +12,42 @@ _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
 
 
+def _authorize_import(authority, actor, ref, params):
+    """Import authorization; returns the imported session ids the write must claim."""
+    if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
+        raise RuntimeStoreError('profile_mismatch')
+    if 'session:create' not in actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+    from hermes_state_mutations import validate_action
+    validate_action('import', params['payload'])
+    normalized, errors = authority.db._validate_import_payload(params['payload']['sessions'])
+    if errors:
+        raise RuntimeStoreError('invalid_params')
+    return tuple(item['session']['id'] for item in normalized)
+
+
+def _authorize_control(authority, actor, ref, params):
+    """Control authorization; True when the session is cold history the write must claim."""
+    from hermes_state_mutation_retirement import has_mutation_receipt
+    if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
+        raise RuntimeStoreError('profile_mismatch')
+    if 'session:control' not in actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+    cold_history = False
+    # A receipt authorizes only its original principal's exact retry; the
+    # transaction still verifies the entire digest and current epoch.
+    if not has_mutation_receipt(authority.db, actor.subject, ref.session_id, params['request_id']):
+        if ref.session_id not in authority.sessions:
+            from hermes_state_mutation_binding import authorize_history
+            with authority.db._read_ctx() as conn:
+                from gateway.session_local_migration import require_history_claim
+                require_history_claim(authority, conn, actor, ref.session_id)
+                cold_history = authorize_history(conn, actor, ref.session_id)
+        if not cold_history:
+            authority.authorize(actor, ref, 'session:control')
+    return cold_history
+
+
 async def mutate_session(authority, actor, ref, params):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
@@ -20,34 +56,11 @@ async def mutate_session(authority, actor, ref, params):
     if not isinstance(operation, str):
         raise RuntimeStoreError('invalid_params')
     cold_history = False
+    imported_ids = None
     if operation == 'import':
-        if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
-            raise RuntimeStoreError('profile_mismatch')
-        if 'session:create' not in actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
-        from hermes_state_mutations import validate_action
-        validate_action(operation, params['payload'])
-        normalized, errors = authority.db._validate_import_payload(params['payload']['sessions'])
-        if errors:
-            raise RuntimeStoreError('invalid_params')
-        imported_ids = tuple(item['session']['id'] for item in normalized)
+        imported_ids = _authorize_import(authority, actor, ref, params)
     else:
-        from hermes_state_mutation_retirement import has_mutation_receipt
-        if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
-            raise RuntimeStoreError('profile_mismatch')
-        if 'session:control' not in actor.capabilities:
-            raise RuntimeStoreError('permission_denied')
-        # A receipt authorizes only its original principal's exact retry; the
-        # transaction still verifies the entire digest and current epoch.
-        if not has_mutation_receipt(authority.db, actor.subject, ref.session_id, params['request_id']):
-            if ref.session_id not in authority.sessions:
-                from hermes_state_mutation_binding import authorize_history
-                with authority.db._read_ctx() as conn:
-                    from gateway.session_local_migration import require_history_claim
-                    require_history_claim(authority, conn, actor, ref.session_id)
-                    cold_history = authorize_history(conn, actor, ref.session_id)
-            if not cold_history:
-                authority.authorize(actor, ref, 'session:control')
+        cold_history = _authorize_control(authority, actor, ref, params)
     if operation == 'branch' and 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
@@ -109,6 +122,17 @@ async def mutate_session(authority, actor, ref, params):
             _authorize_write=authorize_write if cold_history or operation == 'import' else None)
     # Post-commit projections are idempotent reads of the committed receipt, so exact
     # retries repeat them (like delete's retirement); only the one-shot event is fenced.
+    _project_committed(authority, ref, operation, result)
+    if live is not None:
+        if operation == 'rewind':
+            authority.runner._evict_cached_agent(live.route)
+        if applied:
+            live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+    return result
+
+
+def _project_committed(authority, ref, operation, result):
+    """Publish a committed receipt's runtime projections (safe to repeat on exact retry)."""
     if operation == 'model':
         from gateway.session_local import publish_local_policy
         publish_local_policy(authority, ref.session_id)
@@ -142,9 +166,3 @@ async def mutate_session(authority, actor, ref, params):
                 evict = getattr(authority.runner, '_evict_cached_agent', None)
                 if callable(evict):
                     evict(candidate.route)
-    if live is not None:
-        if operation == 'rewind':
-            authority.runner._evict_cached_agent(live.route)
-        if applied:
-            live.event_stream.publish(ref.session_id, result, event_type='session.updated')
-    return result

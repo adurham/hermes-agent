@@ -79,6 +79,67 @@ def _sha(value):
         raise WorkRecordError("work record digest is invalid")
 
 
+def _validate_tasks(record, tasks):
+    task_ids = set()
+    for task in tasks:
+        _fields(task, _TASK_FIELDS)
+        for name in ("task_id", "thread_id", "turn_id", "member_id", "profile"):
+            _id(task[name])
+        for name in ("settlement_id", "cancel_id"):
+            if task[name] is not None:
+                _id(task[name])
+        for name in ("execution_generation", "cancel_generation"):
+            _integer(task[name])
+        _integer(task["source_event_seq"], minimum=1)
+        _sha(task["payload_sha256"])
+        if task["source_event_seq"] > record["history"]["seq"] or task["phase"] not in _PHASES or task["task_id"] in task_ids:
+            raise WorkRecordError("work record task conflicts")
+        task_ids.add(task["task_id"])
+
+
+def _validate_receipts(record, receipts, v2):
+    receipt_ids = set()
+    for receipt in receipts:
+        _fields(receipt, _RECEIPT_FIELDS)
+        for name in _RECEIPT_FIELDS - {"authority_epoch", "execution_generation"}:
+            _id(receipt[name])
+        _integer(receipt["execution_generation"], minimum=1)
+        _integer(receipt["authority_epoch"], minimum=1)
+        if (receipt["room_id"] != record["room_id"]
+                or receipt["authority_gateway_id"] != receipt["home_install_id"]
+                or (not v2 and (receipt["home_install_id"] != record["home_install_id"] or receipt["authority_epoch"] != 1))):
+            raise WorkRecordError("work record receipt lineage conflicts")
+        key = tuple(receipt[k] for k in sorted(_RECEIPT_FIELDS - {"run_id", "session_id"}))
+        if key in receipt_ids:
+            raise WorkRecordError("work record receipt is duplicated")
+        receipt_ids.add(key)
+
+
+def _validate_stop(record):
+    _fields(record["stop"], {"closing", "revocation_complete", "seq", "cancel_id"})
+    for key in ("closing", "revocation_complete"):
+        if type(record["stop"][key]) is not bool:
+            raise WorkRecordError("work record closing fact is invalid")
+    _integer(record["stop"]["seq"])
+    if record["stop"]["seq"] > record["history"]["seq"]:
+        raise WorkRecordError("work record stop is beyond its prefix")
+    if record["stop"]["cancel_id"] is not None:
+        _id(record["stop"]["cancel_id"])
+
+
+def _validate_availability(record):
+    if record["availability"] not in {"available", "unavailable"} or record["reason"] not in {
+        None, "task_store_missing", "unsupported_task", "bounds_exceeded"}:
+        raise WorkRecordError("work record availability is invalid")
+    if (record["availability"] == "available") != (record["reason"] is None):
+        raise WorkRecordError("work record availability conflicts")
+    tasks, receipts = record["tasks"], record["receipts"]
+    if not isinstance(tasks, list) or len(tasks) > MAX_TASKS or not isinstance(receipts, list) or len(receipts) > MAX_RECEIPTS:
+        raise WorkRecordError("work record list exceeds its bound")
+    if record["availability"] == "unavailable" and (tasks or receipts):
+        raise WorkRecordError("unavailable work record must not appear complete")
+
+
 def validate(record: dict) -> dict:
     v2 = isinstance(record, dict) and type(record.get("version")) is int and record["version"] == 2
     _fields(record, _FIELDS | {"lineage_sha256", "incompleteness"} if v2 else _FIELDS)
@@ -101,54 +162,10 @@ def validate(record: dict) -> dict:
     _sha(record["history"]["event_sha256"])
     if record["limitations"] != LIMITATIONS:
         raise WorkRecordError("work record limitations are required")
-    if record["availability"] not in {"available", "unavailable"} or record["reason"] not in {
-        None, "task_store_missing", "unsupported_task", "bounds_exceeded"}:
-        raise WorkRecordError("work record availability is invalid")
-    if (record["availability"] == "available") != (record["reason"] is None):
-        raise WorkRecordError("work record availability conflicts")
-    tasks, receipts = record["tasks"], record["receipts"]
-    if not isinstance(tasks, list) or len(tasks) > MAX_TASKS or not isinstance(receipts, list) or len(receipts) > MAX_RECEIPTS:
-        raise WorkRecordError("work record list exceeds its bound")
-    if record["availability"] == "unavailable" and (tasks or receipts):
-        raise WorkRecordError("unavailable work record must not appear complete")
-    task_ids, receipt_ids = set(), set()
-    for task in tasks:
-        _fields(task, _TASK_FIELDS)
-        for name in ("task_id", "thread_id", "turn_id", "member_id", "profile"):
-            _id(task[name])
-        for name in ("settlement_id", "cancel_id"):
-            if task[name] is not None:
-                _id(task[name])
-        for name in ("execution_generation", "cancel_generation"):
-            _integer(task[name])
-        _integer(task["source_event_seq"], minimum=1)
-        _sha(task["payload_sha256"])
-        if task["source_event_seq"] > record["history"]["seq"] or task["phase"] not in _PHASES or task["task_id"] in task_ids:
-            raise WorkRecordError("work record task conflicts")
-        task_ids.add(task["task_id"])
-    for receipt in receipts:
-        _fields(receipt, _RECEIPT_FIELDS)
-        for name in _RECEIPT_FIELDS - {"authority_epoch", "execution_generation"}:
-            _id(receipt[name])
-        _integer(receipt["execution_generation"], minimum=1)
-        _integer(receipt["authority_epoch"], minimum=1)
-        if (receipt["room_id"] != record["room_id"]
-                or receipt["authority_gateway_id"] != receipt["home_install_id"]
-                or (not v2 and (receipt["home_install_id"] != record["home_install_id"] or receipt["authority_epoch"] != 1))):
-            raise WorkRecordError("work record receipt lineage conflicts")
-        key = tuple(receipt[k] for k in sorted(_RECEIPT_FIELDS - {"run_id", "session_id"}))
-        if key in receipt_ids:
-            raise WorkRecordError("work record receipt is duplicated")
-        receipt_ids.add(key)
-    _fields(record["stop"], {"closing", "revocation_complete", "seq", "cancel_id"})
-    for key in ("closing", "revocation_complete"):
-        if type(record["stop"][key]) is not bool:
-            raise WorkRecordError("work record closing fact is invalid")
-    _integer(record["stop"]["seq"])
-    if record["stop"]["seq"] > record["history"]["seq"]:
-        raise WorkRecordError("work record stop is beyond its prefix")
-    if record["stop"]["cancel_id"] is not None:
-        _id(record["stop"]["cancel_id"])
+    _validate_availability(record)
+    _validate_tasks(record, record["tasks"])
+    _validate_receipts(record, record["receipts"], v2)
+    _validate_stop(record)
     _sha(record["digest"])
     if record["digest"] != digest({k: v for k, v in record.items() if k not in {"revision", "digest"}}):
         raise WorkRecordError("work record content digest conflicts")
