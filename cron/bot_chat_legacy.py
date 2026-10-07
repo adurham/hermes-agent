@@ -80,7 +80,7 @@ def _dispose(path: Path, record: dict) -> bool:
             # The door is idempotent per id (a replay returns the existing receipt), so the
             # record stays queued for the next tick; log loudly once, quietly after.
             logger.log(logging.DEBUG if path in _warned else logging.WARNING,
-                       "Legacy Bot Chat pending record %s not handed off yet: %s", path, exc)
+                       "Legacy Bot Chat pending record %s not handed off yet: %s", path, exc, exc_info=True)
             _warned.add(path)
             return False
         receipt_status = receipt.get("status") if isinstance(receipt, dict) else None
@@ -104,7 +104,7 @@ def drain_legacy_pending() -> None:
             atomic_json_write(path, record, fsync_dir=True, mode=0o600)
         except Exception as exc:
             logger.log(logging.DEBUG if path in _warned else logging.WARNING,
-                       "Legacy Bot Chat pending record %s left queued: %s", path, exc)
+                       "Legacy Bot Chat pending record %s left queued: %s", path, exc, exc_info=True)
             _warned.add(path)
             continue
         logger.info("Legacy Bot Chat pending record %s -> %s", path.name, record["status"])
