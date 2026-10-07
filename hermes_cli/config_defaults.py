@@ -1168,7 +1168,7 @@ DEFAULT_CONFIG = {
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
+            "model": "base",  # tiny, base, small, medium, large-v3, turbo
             "language": "",  # auto-detect; set "en", "es", ... to force
             "initial_prompt": "",
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
@@ -1320,9 +1320,9 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "holographic", "retaindb", "byterover", or a catalog-installed one ("honcho", "hindsight",
-        # "supermemory", "mem0").
+        # External memory provider plugin (empty = built-in only); only ONE at a time: "holographic",
+        # "retaindb", "byterover", or a catalog-installed one ("honcho", "hindsight", "supermemory",
+        # "mem0", "openviking").
         "provider": "",
     },
     # Subagent delegation — override the provider:model used by delegate_task so children run on a
