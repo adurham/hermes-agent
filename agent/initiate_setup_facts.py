@@ -13,6 +13,7 @@ import platform
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 from hermes_constants import get_optional_skills_dir
@@ -28,7 +29,7 @@ _SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.I)
 
 FORK_QUESTION = "Know what you'd like it to make?"
 # Reading the Blender plugin's app declaration takes the network.
-_BLENDER_DEADLINE_S = 5
+_APP_STATE_DEADLINE_S = 5
 
 _BLENDER_TASK = {"id": "plugin:blender", "label": "Help me make something in Blender", "plugins": ["blender"]}
 _NVIDIA_TASK = {
@@ -245,23 +246,40 @@ def fork_card(cards: dict) -> dict:
     return {**fork, "options": ordered[:2] + fork["options"]}
 
 
-def _blender_state() -> str:
-    """Blender's state as the plugins card and the installer judge it: the resolver over the Blender plugin's
-    pinned ``app:`` declaration. ``unknown`` when that takes longer than the deadline."""
+def _app_states(names: list[str]) -> dict[str, str]:
+    """Each catalog plugin's app state as the plugins card and the installer judge it: the resolver over the
+    plugin's pinned ``app:`` declaration. Read in parallel; ``unknown`` for any that takes longer than the deadline."""
     from agent.memory_provider import spawn_context_thread
     from hermes_cli.plugin_catalog import get_live_catalog_entry
     from hermes_cli.plugin_catalog_presence import presence
 
-    box: dict = {}
+    states: dict[str, str] = {}
 
-    def read() -> None:
-        entry = get_live_catalog_entry("blender")
-        box["state"] = presence(entry).state if entry else "unknown"
+    def read(name: str) -> None:
+        entry = get_live_catalog_entry(name)
+        states[name] = presence(entry).state if entry else "unknown"
 
-    worker = spawn_context_thread(read, name="initiate-setup-blender")
-    worker.start()
-    worker.join(_BLENDER_DEADLINE_S)
-    return box.get("state", "unknown")
+    workers = [spawn_context_thread(lambda n=name: read(n), name=f"initiate-setup-{name}") for name in names]
+    for worker in workers:
+        worker.start()
+    deadline = time.monotonic() + _APP_STATE_DEADLINE_S
+    for worker in workers:
+        worker.join(max(0.0, deadline - time.monotonic()))
+    return {name: states.get(name, "unknown") for name in names}
+
+
+def _plugin_tasks(block: dict) -> list[dict]:
+    """The fork's plugin rows, each offered only when the app its plugins need is there: the installer refuses a
+    plugin whose app is missing, so the card never offers one."""
+    nvidia = block.get("has_nvidia_gpu") and block["machine"].get("os_family") == "win32"
+    states = _app_states(["blender", *(_NVIDIA_TASK["plugins"] if nvidia else [])])
+    tasks = []
+    nvidia_plugins = [name for name in _NVIDIA_TASK["plugins"] if nvidia and states[name] != "missing_app"]
+    if nvidia_plugins:
+        tasks.append({**_NVIDIA_TASK, "plugins": nvidia_plugins})
+    if states["blender"] != "missing_app":
+        tasks.append(_BLENDER_TASK)
+    return tasks
 
 
 def _description(block: dict) -> str:
@@ -289,10 +307,7 @@ def setup_cards(block: dict) -> dict:
     Blender preselect, the handoff text the fork result carries, and the machine line ``start_chat`` appends
     to the task chat's first message."""
     kind, description = block["machine_kind"], _description(block)
-    plugin_tasks = [_NVIDIA_TASK] if block.get("has_nvidia_gpu") and block["machine"].get("os_family") == "win32" else []
-    blender = _blender_state()
-    if blender != "missing_app":
-        plugin_tasks.append(_BLENDER_TASK)
+    plugin_tasks = _plugin_tasks(block)
     ram = f", {block['machine']['ram_gb']} GB RAM" if block["machine"].get("ram_gb") else ""
     return {
         "learned": [f"This {kind}: {description}{ram}."],
