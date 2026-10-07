@@ -49,16 +49,28 @@ class SessionToolRetriesMixin:
             return []
         lineage = self._resume_lineage_ids(session_id)
         key = self.TOOL_RETRY_METADATA_KEY
+        select = ("SELECT id, tool_name, display_metadata FROM messages "
+                  f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
+                  f"AND {_sql_json_extract('display_metadata', '$.' + key)} IS NOT NULL ORDER BY id")
+
+        def _unannounced(row) -> Optional[Dict[str, Any]]:
+            meta = self._decode_display_metadata(row["display_metadata"]) or {}
+            retried = meta.get(key)
+            if not isinstance(retried, dict) or retried.get("announced") or not isinstance(retried.get("result"), dict):
+                return None
+            return meta
+
+        # Every turn asks; almost none have a retry to announce. Read first so those turns never take the write lock.
+        if not any(_unannounced(row) for row in self._read_all(select, tuple(lineage))):
+            return []
+
         def _do(conn):
             pending = []
-            for row in conn.execute("SELECT id, tool_name, display_metadata FROM messages "
-                    f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
-                    f"AND {_sql_json_extract('display_metadata', '$.' + key)} IS NOT NULL ORDER BY id",
-                    tuple(lineage)).fetchall():
-                meta = self._decode_display_metadata(row["display_metadata"]) or {}
-                retried = meta.get(key)
-                if not isinstance(retried, dict) or retried.get("announced") or not isinstance(retried.get("result"), dict):
+            for row in conn.execute(select, tuple(lineage)).fetchall():
+                meta = _unannounced(row)
+                if meta is None:
                     continue
+                retried = meta[key]
                 retried["announced"] = True
                 conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))
                 pending.append({"result": retried["result"], "tool_name": row["tool_name"] or "tool"})
