@@ -152,6 +152,20 @@ def is_long_welcome_rate_limit(error_context: Any) -> bool:
     return _safe_float(refusal.get("retry_after"), 0.0) >= WELCOME_LONG_WAIT_SECONDS
 
 
+def welcome_refusal_from_headers(
+    headers: Optional[Mapping[str, str]], *, body_wait: Optional[float] = None,
+) -> dict[str, Any]:
+    """A free-tier 429 that carried no structured ``reason``, read from its headers (else the wait
+    its body named) into the ``parse_welcome_refusal`` shape. Long wait or an empty bucket =
+    ``rate_limited``; a short or unexplained one = ``at_capacity``. A missing wait stays 0 so the
+    breaker never trips on a guess."""
+    wait = _parse_reset_seconds(headers) or body_wait or 0.0
+    empty = any(remaining is not None and remaining <= 0
+                for remaining, _reset in _parse_buckets_from_headers(headers).values())
+    reason = "rate_limited" if wait >= WELCOME_LONG_WAIT_SECONDS or empty else "at_capacity"
+    return {"reason": reason, "retry_after": max(0, int(wait)), "alternates": [], "upgrade_url": ""}
+
+
 def _parse_buckets_from_headers(
     headers: Optional[Mapping[str, str]],
 ) -> dict[str, tuple[Optional[int], Optional[float]]]:
