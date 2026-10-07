@@ -135,67 +135,19 @@ export function QueuePanel({
                     </Button>
                   </Tip>
                 )}
-                {lost && onDiscardLost ? (
-                  <Tip label={c.queueLostDiscardTip}>
-                    <Button
-                      aria-label={c.queueLostDiscard}
-                      className="h-5 rounded-md px-1.5 text-[0.66rem]"
-                      data-slot="queue-lost-discard"
-                      onClick={() => onDiscardLost(entry.id)}
-                      size="micro"
-                      type="button"
-                      variant="text"
-                    >
-                      {c.queueLostDiscard}
-                    </Button>
-                  </Tip>
-                ) : (
-                  !entry.serverStatus && (
-                    <>
-                <Tip label={c.queueEdit}>
-                  <Button
-                    aria-label={c.queueEdit}
-                    className="size-5 rounded-md"
-                    disabled={Boolean(editingId) && !isEditing}
-                    onClick={() => onEdit(entry)}
-                    size="icon-xs"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Pencil className={iconSize.xs} />
-                  </Button>
-                </Tip>
-                {canSteer && (
-                  <Tip label={c.queueSteer}>
-                    <Button
-                      aria-label={c.queueSteer}
-                      className="size-5 rounded-md"
-                      disabled={isEditing}
-                      onClick={() => onSteerNow?.(entry.id)}
-                      size="icon-xs"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <SteeringWheel className={iconSize.xs} />
-                    </Button>
-                  </Tip>
-                )}
-                <Tip label={busy ? c.queueSendNext : c.queueSend}>
-                  <Button
-                    aria-label={busy ? c.queueSendNext : c.queueSend}
-                    className="size-5 rounded-md"
-                    disabled={isEditing}
-                    onClick={() => onSendNow(entry.id)}
-                    size="icon-xs"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <CornerDownLeft className={iconSize.xs} />
-                  </Button>
-                </Tip>
-                    </>
-                  )
-                )}
+                {renderEntryActions({
+                  busy,
+                  c,
+                  editingId,
+                  entry,
+                  isEditing,
+                  lost,
+                  onDiscardLost,
+                  onEdit,
+                  onSendNow,
+                  onSteerNow,
+                  canSteer
+                })}
               </>
             }
             trailingVisible={isEditing || lost}
@@ -225,5 +177,96 @@ export function QueuePanel({
         )
       })}
     </StatusSection>
+  )
+}
+
+interface EntryActionsArgs {
+  busy: boolean
+  c: Translations['composer']
+  canSteer: boolean
+  editingId: null | string
+  entry: QueuedPromptEntry
+  isEditing: boolean
+  lost: boolean
+  onDiscardLost?: (id: string) => void
+  onEdit: (entry: QueuedPromptEntry) => void
+  onSendNow: (id: string) => void
+  onSteerNow?: (id: string) => void
+}
+
+/** Per-row trailing actions: discard for a lost row, else edit/steer/send for a local one. */
+function renderEntryActions({
+  busy,
+  c,
+  canSteer,
+  editingId,
+  entry,
+  isEditing,
+  lost,
+  onDiscardLost,
+  onEdit,
+  onSendNow,
+  onSteerNow
+}: EntryActionsArgs) {
+  return lost && onDiscardLost ? (
+    <Tip label={c.queueLostDiscardTip}>
+      <Button
+        aria-label={c.queueLostDiscard}
+        className="h-5 rounded-md px-1.5 text-[0.66rem]"
+        data-slot="queue-lost-discard"
+        onClick={() => onDiscardLost(entry.id)}
+        size="micro"
+        type="button"
+        variant="text"
+      >
+        {c.queueLostDiscard}
+      </Button>
+    </Tip>
+  ) : (
+    !entry.serverStatus && (
+      <>
+        <Tip label={c.queueEdit}>
+          <Button
+            aria-label={c.queueEdit}
+            className="size-5 rounded-md"
+            disabled={Boolean(editingId) && !isEditing}
+            onClick={() => onEdit(entry)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Pencil className={iconSize.xs} />
+          </Button>
+        </Tip>
+        {canSteer && (
+          <Tip label={c.queueSteer}>
+            <Button
+              aria-label={c.queueSteer}
+              className="size-5 rounded-md"
+              disabled={isEditing}
+              onClick={() => onSteerNow?.(entry.id)}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <SteeringWheel className={iconSize.xs} />
+            </Button>
+          </Tip>
+        )}
+        <Tip label={busy ? c.queueSendNext : c.queueSend}>
+          <Button
+            aria-label={busy ? c.queueSendNext : c.queueSend}
+            className="size-5 rounded-md"
+            disabled={isEditing}
+            onClick={() => onSendNow(entry.id)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <CornerDownLeft className={iconSize.xs} />
+          </Button>
+        </Tip>
+      </>
+    )
   )
 }

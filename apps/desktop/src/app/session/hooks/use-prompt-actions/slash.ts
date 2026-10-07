@@ -216,16 +216,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       const retryOptions = { ...options, retryText: rawCommand }
 
       try {
-        const prepared = await readPreparedSubmission(preparedSubmissionKey(
-          resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
-          destination, rawCommand, options?.attachments ?? $composerAttachments.get(), retryOptions
-        ))
+        const prepared = await readPreparedSubmission(
+          preparedSubmissionKey(
+            resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
+            destination,
+            rawCommand,
+            options?.attachments ?? $composerAttachments.get(),
+            retryOptions
+          )
+        )
 
         if (prepared) {
           return await submitPromptText(prepared.text, {
-            ...retryOptions, sessionId: initialRuntimeId ?? undefined,
-            storedSessionId: initialStoredId, displayText: prepared.displayText,
-            submission_id: prepared.id, destination
+            ...retryOptions,
+            sessionId: initialRuntimeId ?? undefined,
+            storedSessionId: initialStoredId,
+            displayText: prepared.displayText,
+            submission_id: prepared.id,
+            destination
           })
         }
       } catch (err) {
@@ -282,7 +290,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // to updateSessionState re-keyed the tile's cache entry onto the
         // primary's stored session. Fall back to the selection only for a
         // session with no published state yet (a draft this call just created).
-        const storedSessionId = $sessionStates.get()[sessionId]?.storedSessionId ?? initialStoredId ??
+        const storedSessionId =
+          $sessionStates.get()[sessionId]?.storedSessionId ??
+          initialStoredId ??
           (!initialRuntimeId && activeSessionIdRef.current === sessionId ? selectedStoredSessionIdRef.current : null)
 
         // Header carries the command token only. The full invocation would
@@ -364,18 +374,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // that the backend wants shown as a system line before the message
           // is acted on. Mirrors the TUI's createSlashHandler — without it a
           // `/goal <text>` looked like it did nothing.
-          if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
-            renderSlashOutput(dispatch.notice.trim())
+          const renderDispatchNotice = () => {
+            if ((dispatch.type === 'send' || dispatch.type === 'prefill') && dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice.trim())
 
-            // `/goal <text>` returns its "⊙ Goal set …" notice here and kicks
-            // off the first turn immediately; the backend only emits a
-            // `status.update kind:"goal"` after that turn's post-turn judge
-            // runs. Seed the goal store from the notice so the indicator shows
-            // the active goal right away instead of after the first turn.
-            if (name === 'goal') {
-              applyGoalStatusText(sessionId, dispatch.notice.trim())
+              // `/goal <text>` returns its "⊙ Goal set …" notice here and kicks
+              // off the first turn immediately; the backend only emits a
+              // `status.update kind:"goal"` after that turn's post-turn judge
+              // runs. Seed the goal store from the notice so the indicator shows
+              // the active goal right away instead of after the first turn.
+              if (name === 'goal') {
+                applyGoalStatusText(sessionId, dispatch.notice.trim())
+              }
             }
           }
+
+          renderDispatchNotice()
 
           const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
 

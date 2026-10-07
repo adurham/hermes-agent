@@ -278,14 +278,18 @@ export function useComposerSubmit({
     // command, so it falls back to the ordinary-message behavior.
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
 
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)) {
-      void skipClarifyRequest(sessionId)
+    const skipParkedCards = () => {
+      if (payloadPresent && !queueEdit && !isSideQuestion && hasClarifyRequest(sessionId)) {
+        void skipClarifyRequest(sessionId)
+      }
+
+      // Same for a pending connection card: ordinary typing continues the operation.
+      if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
+        void skipConnectionRequest(sessionId)
+      }
     }
 
-    // Same for a pending connection card: ordinary typing continues the operation.
-    if (payloadPresent && !queueEdit && !isSideQuestion && hasConnectionRequest(sessionId)) {
-      void skipConnectionRequest(sessionId)
-    }
+    skipParkedCards()
 
     // Approval / sudo / secret prompts also park the turn inside a tool batch,
     // but typing CANNOT answer them (no message text approves a command or
@@ -295,6 +299,14 @@ export function useComposerSubmit({
     // interrupted." — the message looks eaten. Queue the words as the next turn
     // instead; the prompt stays answerable and the queue drains on settle.
     const blockingPrompt = !queueEdit && hasBlockingPromptRequest(sessionId)
+
+    const routeBusyText = () => {
+      if (busyInputMode === 'queue') {
+        queueCurrentDraft()
+      } else if (busyInputMode !== null) {
+        steerDraft(busyInputMode)
+      }
+    }
 
     if (queueEdit) {
       exitQueuedEdit('save')
@@ -330,11 +342,7 @@ export function useComposerSubmit({
         // already ended, steerDraft re-queues so nothing is lost. Compaction is
         // the gateway's call: it answers `queued` under the compression lock.
         // Unloaded policy (null) must not turn an intended queue into an interrupt.
-        if (busyInputMode === 'queue') {
-          queueCurrentDraft()
-        } else if (busyInputMode !== null) {
-          steerDraft(busyInputMode)
-        }
+        routeBusyText()
       } else if (payloadPresent) {
         // Attachments can't ride a redirect (no tool-result image carriage) —
         // queue the whole payload for the next turn. Same for a turn parked on

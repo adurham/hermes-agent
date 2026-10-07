@@ -4,7 +4,6 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { hermesApi } from '@/api/client'
 import { type ResolvedOwner, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { attachmentPathNeedsUpload } from '@/lib/attachment-upload-policy'
@@ -28,11 +27,9 @@ import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
-import { $activeGatewayProfile } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import {
   $busy,
-  $connection,
   $currentCwd,
   $messages,
   $terminalBackend,
@@ -77,6 +74,7 @@ import { useSlashCommand } from './slash'
 import { captureSteeringSession } from './steering-session'
 import { captureSubmissionDestination } from './submission-destination'
 import { useSubmitPrompt } from './submit'
+import { uploadServerOwnedImage } from './upload-server-image'
 import {
   blobToDataUrl,
   delay,
@@ -132,22 +130,7 @@ export async function uploadComposerAttachment(
   if (attachment.kind === 'image' && serverOwnsComposerQueue(storedSessionId ?? opts.sessionId)) {
     // Pin HTTP to the same owner before the native byte read yields. Images
     // are immutable admission payloads, never legacy agent.pending_images.
-    const owner = destination.owner
-    const connectionId = typeof owner === 'object' && owner ? owner.connectionId : $connection.get()?.connectionId
-    const profile = typeof owner === 'object' && owner ? owner.targetProfile || owner.profile : owner || $activeGatewayProfile.get()
-
-    const dataUrl = attachment.previewUrl?.includes(';base64,')
-      ? attachment.previewUrl
-      : await window.hermesDesktop?.readFileDataUrl(path)
-
-    if (!dataUrl) { throw new Error(`Could not read ${label}`) }
-
-    const result = await hermesApi<{ path: string; mime_type: string }>({
-      method: 'POST', path: '/api/chat/image-upload', connectionId: connectionId ?? 'local', profile,
-      body: { data_url: dataUrl, filename: label }
-    })
-
-    return { ...attachment, path: result.path, mime: result.mime_type, attachedSessionId: opts.sessionId, uploadState: undefined }
+    return await uploadServerOwnedImage(attachment, destination, path, label, opts.sessionId)
   }
 
   // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
@@ -890,7 +873,8 @@ export function usePromptActions({
                 const message = state.messages.find(candidate => candidate.id === messageId)
 
                 // A newer reply may precede this ACK; it already owns its boundary.
-                const hasNewReply = state.messages.slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
+                const hasNewReply = state.messages
+                  .slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
                   .some(candidate => candidate.role === 'assistant')
 
                 return message && state.streamId && !hasNewReply
