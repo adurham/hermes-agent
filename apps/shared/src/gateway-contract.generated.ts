@@ -643,6 +643,7 @@ export interface FreeTierStatusResult {
   retryable?: boolean | null
   retry_after?: number | null
   challenge?: FreeTierChallengePayload | null
+  nudge_due_in?: number | null
 }
 /** ``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge`` event, and ``free_tier.status``'s ``challenge`` field for a client that connected after it. */
 export interface FreeTierChallengePayload {
@@ -673,6 +674,9 @@ export interface FreeTierProvisionResult {
 }
 export interface FreeTierAckNoticeResult {
   acked: boolean
+}
+export interface FreeTierClaimNudgeResult {
+  claimed: boolean
 }
 /** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer) and it is not a ``reask``: an "off" from before the type-ahead fix, offered once more with the reason. */
 export interface SharedMetricsConsentResult {
@@ -5108,6 +5112,8 @@ export interface RpcMethods {
   'free_tier.ack_notice': { params: ProfileParams; result: FreeTierAckNoticeResult }
   /** Report a browser window outcome for the matching pending attempt; mint remains authoritative. */
   'free_tier.challenge_result': { params: FreeTierChallengeResultParams; result: FreeTierChallengeResult }
+  /** Claim the due sign-in offer; true for exactly one caller each time an offer comes due. */
+  'free_tier.claim_nudge': { params: ProfileParams; result: FreeTierClaimNudgeResult }
   /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
   'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
   /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
@@ -5562,6 +5568,7 @@ export const RPC_METHODS = [
   'file.attach',
   'free_tier.ack_notice',
   'free_tier.challenge_result',
+  'free_tier.claim_nudge',
   'free_tier.provision',
   'free_tier.status',
   'gateway.capabilities',

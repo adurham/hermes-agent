@@ -1033,6 +1033,24 @@
       }
     },
     {
+      "name": "free_tier.claim_nudge",
+      "summary": "Claim the due sign-in offer; true for exactly one caller each time an offer comes due.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FreeTierClaimNudgeResult"
+        }
+      }
+    },
+    {
       "name": "free_tier.provision",
       "summary": "Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.",
       "params": [
@@ -14271,6 +14289,20 @@
         "title": "FreeTierChallengeResultParams",
         "type": "object"
       },
+      "FreeTierClaimNudgeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "claimed"
+        ],
+        "title": "FreeTierClaimNudgeResult",
+        "type": "object"
+      },
       "FreeTierProvisionResult": {
         "additionalProperties": false,
         "properties": {
@@ -14424,6 +14456,18 @@
               }
             ],
             "default": null
+          },
+          "nudge_due_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nudge Due In"
           }
         },
         "required": [
