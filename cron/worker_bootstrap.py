@@ -26,7 +26,8 @@ return normally.
 
 That boot covers dependencies only. ``hermes_bootstrap`` also finishes a pending source update
 and may relaunch the process into a fresh one (``hermes_cli/venv_sync.py::relaunch_command``, an
-``-I`` interpreter that ignores the pinned ``PYTHONPATH``). ``finish_worker_boot()`` runs it from
+``-I`` interpreter that ignores the pinned ``PYTHONPATH``), and re-executes it after restoring a
+tree a killed ``hermes update`` half-wrote. ``finish_worker_boot()`` runs it from
 the worker's ``__main__`` before the payload is read, so a relaunch replays the whole worker: the
 payload is still on disk and the marker still set, and the new process boots its dependencies
 again. Left to ``run_agent``'s import inside ``run_one_job``, the relaunch came after the ack, with
@@ -61,14 +62,7 @@ def finish_worker_boot() -> None:
     Not from ``worker_bootstrap()``: while ``-m cron.scheduler`` executes ``cron/__init__.py``,
     ``sys.argv[0]`` is still ``-m`` and ``__main__`` has no spec, so the relaunch command could
     not name the module to re-run. In ``__main__`` both are set.
-
-    ``run_agent``'s other import-time relaunch -- restoring a tree a killed ``hermes update``
-    half-wrote -- runs here too: the worker never loads ``hermes_cli.main``, so left to
-    ``run_one_job`` it re-executed the worker after the ack, onto a deleted payload.
     """
     import hermes_bootstrap  # noqa: F401
-    from hermes_cli import _early_recovery
 
-    if _early_recovery.restore_interrupted_pull():
-        _early_recovery.relaunch_after_restore()
     os.environ.pop(WORKER_MARKER, None)
