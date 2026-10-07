@@ -428,7 +428,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/handoff-result",
         "apps/desktop/electron/desktop-installation",
         "apps/desktop/electron/backend-discovery",
-        "apps/desktop/electron/host-backend-attach",
+        "apps/desktop/electron/local-gateway",  # gateway ensure: code_sha vs checkout, restart on skew
         "apps/desktop/electron/bundle-swap",
         "apps/desktop/electron/app-installer-file",
         "scripts/desktop-update/",
@@ -446,8 +446,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "scripts/msix-shared.mjs",
         # The launchers the Desktop relaunches through reach the launch-time repair first.
         "hermes_cli/_launchers.py",
-        # The backend's /api/health `commit`, which host-backend-attach compares to the
-        # checkout before attaching to a running backend after an update.
+        # The backend's /api/health `commit`, which the Desktop compares to the checkout
+        # before attaching to a running backend after an update.
         "hermes_cli/web_routers/status.py",
     ),
 }
