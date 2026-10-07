@@ -133,7 +133,6 @@ export function SetupChoosePending({
       const live = removing ? undefined : LIVE_LOOK[kind]
 
       stageSetupChoose(requestId, {
-        labels: rowLabels,
         picked: question.multiSelect
           ? removing
             ? current.picked.filter(value => value !== id)
@@ -144,7 +143,9 @@ export function SetupChoosePending({
       })
       live?.apply(id, setMode)
     },
-    [kind, mode, question.multiSelect, requestId, rowLabels, setMode]
+    // Value-stable deps only: the effect below writes this into the store the card reads, so a dep that
+    // changes identity every render redraws the card forever (React #185). The labels effect stages the row names.
+    [kind, mode, question.multiSelect, requestId, setMode]
   )
 
   // Composer text that names a row picks it through this card, so the typed pick applies its look too.
