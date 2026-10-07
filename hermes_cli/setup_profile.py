@@ -225,6 +225,25 @@ def _write_state(path: Path, state: dict) -> None:
     atomic_json_write(path / profiles_mod.SETUP_PROFILE_MARKER, state)
 
 
+def release_setup_copy(copy_dir: Path, *, from_setup: bool) -> None:
+    """A copy of a profile (clone, clone-all, import, distribution install) is never the setup profile: drop the
+    marker, and when the source was the setup profile, the setup toolsets its config grants (``_write_setup_config``)."""
+    (copy_dir / profiles_mod.SETUP_PROFILE_MARKER).unlink(missing_ok=True)
+    config_path = copy_dir / "config.yaml"
+    if not from_setup or not config_path.is_file():
+        return
+    from hermes_cli.config import atomic_config_replace, read_user_config_raw
+    config = read_user_config_raw(config_path)
+    platforms = dict(config.get("platform_toolsets") or {})
+    if platforms.pop("cli", None) is None:
+        return
+    if platforms:
+        config["platform_toolsets"] = platforms
+    else:
+        config.pop("platform_toolsets", None)
+    atomic_config_replace(config_path, config)
+
+
 def _write_setup_config(path: Path) -> None:
     from agent.skill_utils import parse_config_string_list
     from hermes_cli.config import atomic_config_write, read_user_config_raw

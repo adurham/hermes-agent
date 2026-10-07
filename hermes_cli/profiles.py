@@ -1281,7 +1281,6 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    (profile_dir / SETUP_PROFILE_MARKER).unlink(missing_ok=True)
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -1437,6 +1436,9 @@ def create_profile(
             _clone_all_into(source_dir, staging, canon)
         else:
             _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
+        if source_dir is not None:
+            from hermes_cli.setup_profile import release_setup_copy
+            release_setup_copy(staging, from_setup=(source_dir / SETUP_PROFILE_MARKER).is_file())
         if source_dir is not None and not clone_channels:
             from hermes_cli.profile_channels import strip_channel_settings
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
@@ -2359,7 +2361,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                     shutil.rmtree(child)
                 else:
                     child.unlink()
-        (final_source / SETUP_PROFILE_MARKER).unlink(missing_ok=True)
+        from hermes_cli.setup_profile import release_setup_copy
+        release_setup_copy(final_source, from_setup=(final_source / SETUP_PROFILE_MARKER).is_file())
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
 
