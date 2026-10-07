@@ -14,10 +14,16 @@ resumed by ``_resume_windows_gateways_after_update`` (which dispatches here on
 ``platform == "posix"``), adopted by the next ``hermes update`` and resumed by the next launch
 when this process dies.
 
-* systemd ``hermes-gateway*`` units and launchd ``ai.hermes.gateway*`` jobs are stopped and
-  started through their supervisor, so it cannot respawn them on old code mid-update.
-* bare ``gateway run`` processes are drained (planned-stop marker, then the control socket's
-  ``pause-for-update``, SIGTERM fallback) and replayed from their recorded argv + home.
+* every gateway is drained first: the control socket's ``pause-for-update`` runs the same
+  ``request_restart`` drain as the post-update restart's SIGUSR1 (refuse new turns, let the
+  in-flight ones finish within ``agent.restart_after_turn_timeout``, then exit), waited for within
+  that restart's budget. The request is recorded before it is sent, and carries no planned-stop
+  marker (the gateway's marker watcher would take the immediate stop path instead).
+* systemd ``hermes-gateway*`` units and launchd ``ai.hermes.gateway*`` jobs are then stopped and
+  later started through their supervisor, so it cannot respawn them on old code mid-update; one
+  that does not take the drain gets its supervisor's stop at once.
+* bare ``gateway run`` processes that do not answer get marker + SIGTERM, and are replayed from
+  their recorded argv + home.
 * the updater never kills itself: a unit whose cgroup holds this process (``/update`` from
   chat: the update runs in the gateway unit's cgroup, which ``systemctl stop`` kills) is
   stopped only after this process moved into a transient scope of its own. A launchd job
@@ -27,6 +33,7 @@ when this process dies.
 
 from __future__ import annotations
 
+import copy
 import os
 import signal
 import subprocess
@@ -94,11 +101,14 @@ def _unit_cgroup(scope_cmd: list, unit: str) -> str | None:
 
 
 def _pid_cgroup(pid: int | str = "self") -> str | None:
-    """The cgroup-v2 path of *pid* (``None``: not Linux, v1-only, or unreadable)."""
+    """The systemd cgroup path of *pid*: the unified (v2) line, else the v1 ``name=systemd``
+    hierarchy, which systemd names units in identically. ``None``: not Linux or unreadable, which
+    callers must treat as unknown, never as outside a unit."""
     with suppress(OSError):
-        for line in Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").splitlines():
-            if line.startswith("0::"):
-                return line[3:].strip()
+        lines = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8").splitlines()
+        unified = next((line[3:].strip() for line in lines if line.startswith("0::")), "")
+        legacy = next((line.split(":", 2)[2].strip() for line in lines if ":name=systemd:" in line), "")
+        return unified or legacy or None
     return None
 
 
@@ -133,7 +143,7 @@ def _discover_systemd() -> list[dict]:
                 continue
             seen_pids.add(pid)  # a legacy per-profile unit sharing the multiplexer's PID is one process
             units.append({"kind": "systemd", "scope": scope, "unit": name, "pid": pid,
-                          "cgroup": _unit_cgroup(scope_cmd, name)})
+                          "cgroup": _unit_cgroup(scope_cmd, name), "home": _home_of(pid)})
     return units
 
 
@@ -155,8 +165,18 @@ def _discover_launchd() -> list[dict]:
         if domain is None or not pid or pid <= 0:
             continue
         plist = get_launchd_plist_path().with_name(f"{label}.plist")
-        jobs.append({"kind": "launchd", "label": label, "domain": domain, "plist": str(plist), "pid": int(pid)})
+        jobs.append({"kind": "launchd", "label": label, "domain": domain, "plist": str(plist), "pid": int(pid),
+                     "home": _home_of(int(pid))})
     return jobs
+
+
+def _home_of(pid: int) -> str | None:
+    """The Hermes home *pid* serves (its control socket lives there), or ``None``."""
+    from hermes_cli.update_fleet_scope import gateway_pid_home
+    with suppress(Exception):
+        if home := gateway_pid_home(pid):
+            return str(home)
+    return None
 
 
 def _supervisor_markers(pid: int) -> str | None:
@@ -235,8 +255,13 @@ def _ppid(pid: int) -> int:
 
 def _escape_cgroup(unit: dict) -> bool:
     """Move this process (and its ancestors in the same unit, e.g. ``/update``'s bash wrapper)
-    into a transient scope so stopping *unit* cannot kill it. True when out (or never in)."""
-    if not _inside(_pid_cgroup(), unit.get("cgroup")):
+    into a transient scope so stopping *unit* cannot kill it. True only when proven out: a
+    membership that cannot be read (either side) keeps the unit running, since its stop would take
+    this update down with it."""
+    own, unit_cgroup = _pid_cgroup(), unit.get("cgroup")
+    if own is None or not unit_cgroup:
+        return False
+    if not _inside(own, unit_cgroup):
         return True
     from gateway.status import looks_like_gateway_command_line
     pids, pid = [], os.getpid()
@@ -257,7 +282,7 @@ def _escape_cgroup(unit: dict) -> bool:
                    stdin=subprocess.DEVNULL, timeout=15, check=False)
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
-        if not _inside(_pid_cgroup(), unit["cgroup"]):
+        if (now := _pid_cgroup()) is not None and not _inside(now, unit_cgroup):
             return True
         time.sleep(0.1)
     return False
@@ -274,8 +299,8 @@ def _left_running(units: list[dict], jobs: list[dict]) -> tuple[list[dict], list
         elif _escape_cgroup(unit):
             keep_units.append(unit)
         else:
-            notices.append(f"  ↷ {unit['unit']} keeps running until after the update (this update runs "
-                           "inside its cgroup and could not move out)")
+            notices.append(f"  ↷ {unit['unit']} keeps running until after the update (this update could "
+                           "not prove it runs outside that unit's cgroup)")
     for job in jobs:
         if (_is_pid_ancestor_of_current_process(job["pid"])
                 or os.environ.get("XPC_SERVICE_NAME") == job["label"]):
@@ -309,11 +334,15 @@ def _stop_unit(unit: dict) -> None:
 
 
 def _start_unit(unit: dict) -> int:
-    """Start *unit* through systemd; the new MainPID (raises when it does not come up)."""
-    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid, _wait_for_service_active
+    """Start *unit* through systemd; the new MainPID (raises when it does not come up). The unit
+    gets the definition repair the restart it replaces ran first (``_restart_one_systemd_gateway_unit``)."""
+    from hermes_cli.update_cmd_fleet import (
+        _repair_unit_without_fatal_exit_park, _systemctl, _unit_main_pid, _wait_for_service_active,
+    )
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:
         raise RuntimeError(f"no privilege to start system unit {unit['unit']}")
+    _repair_unit_without_fatal_exit_park(unit["unit"], unit["scope"])
     _systemctl(cmd + ["reset-failed", unit["unit"]], timeout=10)
     result = _systemctl(cmd + ["start", unit["unit"]], timeout=_STOP_TIMEOUT_S)
     scope_cmd = ["systemctl", "--user"] if unit["scope"] == "user" else ["systemctl"]
@@ -322,22 +351,30 @@ def _start_unit(unit: dict) -> int:
     return _unit_main_pid(scope_cmd, unit["unit"])
 
 
-def _stop_job(job: dict) -> None:
+def _stop_job(job: dict, *, drained: bool = False) -> None:
+    """Boot *job* out of launchd. *drained*: its gateway already exited through the drain; the
+    bootout only keeps KeepAlive from serving the update."""
+    from hermes_cli.gateway import _locate_launchd_gateway_service
     from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
-    from hermes_cli.update_fleet_scope import gateway_pid_home
-    if home := gateway_pid_home(job["pid"]):
-        _write_update_planned_stop_marker(Path(home), job["pid"])
+    if not drained and job.get("home"):
+        _write_update_planned_stop_marker(Path(job["home"]), job["pid"])
     result = subprocess.run(["launchctl", "bootout", f"{job['domain']}/{job['label']}"],
                             capture_output=True, text=True, encoding="utf-8", errors="replace",
                    stdin=subprocess.DEVNULL, timeout=90, check=False)
-    if result.returncode != 0 and _alive(job["pid"], None):
-        raise PauseRefused(f"launchctl bootout {job['label']} failed: {(result.stderr or '').strip()}")
     _wait_gone([job["pid"]], 30.0)
+    # KeepAlive may have respawned the drained gateway already: the job, not the old PID, decides.
+    if result.returncode != 0 and (_locate_launchd_gateway_service(job["label"])[1] or 0) > 0:
+        raise PauseRefused(f"launchctl bootout {job['label']} failed: {(result.stderr or '').strip()}")
 
 
 def _start_job(job: dict) -> None:
-    from hermes_cli.gateway import _launchctl_bootstrap, _wait_for_launchd_service_pid
-    _launchctl_bootstrap(job["domain"], job["plist"], job["label"])
+    """Load and start *job*. The invoking profile's plist is regenerated first, as the restart it
+    replaces does (``launchd_restart``); that refresh also loads it."""
+    from hermes_cli.gateway import (
+        _launchctl_bootstrap, _wait_for_launchd_service_pid, get_launchd_label, refresh_launchd_plist_if_needed,
+    )
+    if not (job["label"] == get_launchd_label() and refresh_launchd_plist_if_needed()):
+        _launchctl_bootstrap(job["domain"], job["plist"], job["label"])
     subprocess.run(["launchctl", "kickstart", f"{job['domain']}/{job['label']}"],
                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                    stdin=subprocess.DEVNULL, timeout=30, check=False)
@@ -365,43 +402,93 @@ def _wait_gone(pids, timeout: float, born: dict | None = None) -> set[int]:
     return live
 
 
-def _drain_timeout(acks: list[dict]) -> float:
-    from hermes_cli.gateway import _get_restart_drain_timeout
-    budget = 30.0
-    with suppress(Exception):
-        budget = max(float(_get_restart_drain_timeout()), 1.0)
-    with suppress(Exception):
-        budget = max([budget, *(float(a.get("drain_timeout") or 0) + 10.0 for a in acks)])
-    return budget
-
-
-def _stop_bare(token: dict, bare: list[dict]) -> None:
-    """Drain every bare gateway (marker + socket pause, SIGTERM fallback), then kill survivors of
-    the same birth. A stopped bare gateway is never relaunched by anything but this pause."""
+def _ask_to_drain(entry: dict) -> bool:
+    """Ask the gateway over its control socket to finish its in-flight turns and exit; True on its
+    ACK. That is the ``request_restart`` drain the post-update restart uses (SIGUSR1); SIGTERM,
+    ``systemctl stop`` and ``launchctl bootout`` enter ``stop()`` at once and cut a turn off. No
+    planned-stop marker on this path: the gateway's marker watcher takes that same immediate
+    signal-stop path, and could fire before the request lands. The caller records the request
+    (``mark_stop_sent``) BEFORE sending it, so a request that reaches the gateway after this update
+    died still leaves the evidence that keeps the drained gateway's restart debt."""
     from gateway.control_socket import pause_gateway_for_update
-    from hermes_cli import update_pause_record as pause_record
+    if not entry.get("home"):
+        return False
+    try:
+        ack = pause_gateway_for_update(Path(entry["home"]))
+    except Exception:  # health: allow BLE001 -- no answer is the pre-verb gateway: the fallback stop handles it
+        return False
+    return bool(ack and (ack.get("pausing") or ack.get("already_stopping")))
+
+
+def _stop_at_once(entry: dict) -> None:
+    """The stop for a gateway that did not take the drain: its supervisor's, else marker + SIGTERM."""
     from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
-    acks, signalled = [], []
-    for entry in bare:
-        pid, home = entry["pid"], Path(entry["home"])
-        _write_update_planned_stop_marker(home, pid)
-        ack = None
-        with suppress(Exception):
-            ack = pause_gateway_for_update(home)
-        if ack and (ack.get("pausing") or ack.get("already_stopping")):
-            acks.append(ack)
+    if entry.get("kind") == "systemd":
+        _stop_unit(entry)
+    elif entry.get("kind") == "launchd":
+        _stop_job(entry)
+    else:
+        _write_update_planned_stop_marker(Path(entry["home"]), entry["pid"])
+        with suppress(ProcessLookupError, PermissionError):
+            os.kill(entry["pid"], signal.SIGTERM)
+
+
+def _drain_budget() -> float:
+    """The post-update restart's wait for a drained gateway (after-turn wait + stop drain + headroom)."""
+    from hermes_cli.update_cmd_fleet import _gateway_drain_budget
+    return _gateway_drain_budget()
+
+
+def _stop_gateways(token: dict, entries: list[dict]) -> None:
+    """Drain every gateway (bare ones SIGTERMed when they do not answer), then wait for all of them
+    within one drain budget. A supervised gateway that exited through the drain is stopped through
+    its supervisor at once: its exit 75 asks for a restart, which systemd honours after
+    ``RestartSec=5`` and launchd immediately, still on the old tree. Past the budget a supervised
+    survivor gets its supervisor's stop and a bare one SIGKILL, as the restart path escalates."""
+    from hermes_cli import update_pause_record as pause_record
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    budget, waiting = _drain_budget(), []
+    for entry in entries:
+        pause_record.mark_stop_sent(token, entry["pid"])  # before the request: see _ask_to_drain
+        if _ask_to_drain(entry):
+            waiting.append(entry)
+        else:
+            _stop_at_once(entry)
+            if not entry.get("kind"):
+                waiting.append(entry)  # a SIGTERMed bare gateway is waited for like a drained one
+    if not waiting:
+        return
+    print(f"  ⏳ Waiting up to {budget:.0f}s for in-flight turns on {_names(waiting)} to finish before the update...")
+    ticks = [drain_progress_reporter(Path(e["home"]) if e.get("home") else None, budget_s=budget) for e in waiting]
+    deadline = time.monotonic() + budget
+    while waiting and time.monotonic() < deadline:
+        for entry in [e for e in waiting if not _alive(e["pid"], e.get("ct"))]:
+            waiting.remove(entry)
+            _disarm(entry)
+        for tick in ticks if waiting else ():
+            tick()
+        time.sleep(0.2)
+    for entry in waiting:
+        if entry.get("kind"):
+            _stop_at_once(entry)
         else:
             with suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signal.SIGTERM)
-            signalled.append(pid)
-        pause_record.mark_stop_sent(token, pid)
-    born = {e["pid"]: e["ct"] for e in bare}
-    survivors = _wait_gone(born, _drain_timeout(acks), born)
-    for pid in survivors:
-        with suppress(ProcessLookupError, PermissionError):
-            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
-    if _wait_gone(survivors, 10.0, born):
-        raise PauseRefused("gateway PID(s) " + ", ".join(map(str, sorted(survivors))) + " did not stop")
+                os.kill(entry["pid"], getattr(signal, "SIGKILL", signal.SIGTERM))
+    bare = [e for e in waiting if not e.get("kind")]
+    if left := _wait_gone([e["pid"] for e in bare], 10.0, {e["pid"]: e.get("ct") for e in bare}):
+        raise PauseRefused("gateway PID(s) " + ", ".join(map(str, sorted(left))) + " did not stop")
+
+
+def _disarm(entry: dict) -> None:
+    """A drained gateway exited: keep its supervisor from bringing it back during the update."""
+    if entry.get("kind") == "systemd":
+        _stop_unit(entry)
+    elif entry.get("kind") == "launchd":
+        _stop_job(entry, drained=True)
+
+
+def _names(entries: list[dict]) -> str:
+    return ", ".join(e.get("unit") or e.get("label") or f"gateway PID {e['pid']}" for e in entries)
 
 
 def _gateway_on_home(home: str, exclude: set[int]) -> int | None:
@@ -416,6 +503,20 @@ def _gateway_on_home(home: str, exclude: set[int]) -> int | None:
     return int(pid) if pid and int(pid) not in exclude else None
 
 
+def _replay_env(home: str) -> dict:
+    """The environment a replayed gateway starts with, as the restart watcher it replaces chose it
+    (``_spawn_gateway_restart_watcher``): a named profile's gateway, replayed by an update launched
+    under that same profile, inherits the launcher's environment (an exported bot token may be its
+    only credential). The multiplexing root, and any home other than the launcher's, get that home's
+    own secrets and none of the launcher's (``served_profile_child_env``)."""
+    from hermes_constants import get_default_hermes_root, get_routing_process_hermes_home
+    from tools.environments.local import build_subprocess_env, served_profile_child_env
+    target = Path(home).resolve()
+    if target != get_default_hermes_root().resolve() and target == get_routing_process_hermes_home().resolve():
+        return build_subprocess_env(scrub_secrets=False, inherit_profile_home=False, extra={"HERMES_HOME": home})
+    return served_profile_child_env(target_home=home, inherit_credentials=True)
+
+
 def _relaunch_bare(entry: dict) -> int:
     """Replay a bare gateway from its recorded argv under its recorded home; the new PID once it
     is serving. A gateway already serving that home (an earlier attempt's) is adopted instead."""
@@ -423,9 +524,7 @@ def _relaunch_bare(entry: dict) -> int:
         return existing
     logs = Path(entry["home"]) / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    from tools.environments.local import served_profile_child_env
-    # That home's own secrets, never the updater's: its environ holds the launch profile's .env.
-    env = served_profile_child_env(target_home=entry["home"], inherit_credentials=True)
+    env = _replay_env(entry["home"])
     for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
         env.pop(leaked, None)
     with open(logs / "gateway-update-resume.log", "ab") as log:
@@ -479,31 +578,38 @@ def _pause(token: dict) -> str | None:
     supervised = units + jobs
     if not supervised and not bare:
         return None
+    from gateway.status import get_process_start_time
+    from hermes_cli.update_cmd_windows import _planned_stop_marker_path
+    before = copy.deepcopy(token)  # what this attempt may add; a failed record puts it back
     for entry in supervised + bare:
-        entry["ct"] = entry.get("ct") or pause_record.identity(entry["pid"])["ct"]
+        entry["ct"] = get_process_start_time(entry["pid"])  # native birth stamp: what _alive compares
     token["posix_units"] = [*token.get("posix_units", []), *supervised]
     token["unmapped"] = [*token.get("unmapped", []), *bare]
     token["unmapped_pids"] = [*token.get("unmapped_pids", []), *(e["pid"] for e in bare)]
-    token["identities"] = {**token.get("identities", {}), **{str(e["pid"]): e["ct"] for e in supervised + bare}}
+    # Recovery judges liveness by the canonical identity (``ct:<unix seconds>``), never the native stamp.
+    token["identities"] = {**token.get("identities", {}),
+                           **{str(e["pid"]): pause_record.identity(e["pid"])["ct"] for e in supervised + bare}}
     token["resume_needed"] = True
     try:
-        from hermes_cli.update_cmd_windows import _planned_stop_marker_path
         pause_record.record_pause(token, None, [])
         pause_record.mark_stop_requested(
             token, [e["pid"] for e in supervised + bare],
-            markers={e["pid"]: _planned_stop_marker_path(Path(e["home"])) for e in bare})
+            markers={e["pid"]: _planned_stop_marker_path(Path(e["home"])) for e in supervised + bare if e.get("home")})
     except Exception as exc:  # health: allow BLE001 -- no durable record, no stop
-        token["resume_needed"] = False
+        # Nothing was stopped: this attempt's id must not arm the checkout's tree gate, whose
+        # required record write would then refuse the update. An adopted obligation stays as it was.
+        if token.get("pause_id") != before.get("pause_id"):
+            with suppress(Exception):
+                pause_record.discharge(token)
+        token.clear()
+        token.update(before)
         print(f"  ⚠ Could not record the gateways to pause ({exc}); they keep running and are restarted after the update")
         return None
     # From here a refusal or a crash leaves the set owed: the command's own exit resume (registered
     # in ``_cmd_update_impl`` for this token), else the next launch's recovery, restarts it.
     token["posix_stopped"] = True
     try:
-        for entry in supervised:
-            (_stop_unit if entry["kind"] == "systemd" else _stop_job)(entry)
-            pause_record.mark_stop_sent(token, entry["pid"])
-        _stop_bare(token, bare)
+        _stop_gateways(token, supervised + bare)
     except Exception as exc:  # health: allow BLE001 -- roll back: restart the stopped set, update unpaused
         print(f"  ⚠ Could not pause every gateway ({exc}); restarting them, the update continues without the pause")
         try:

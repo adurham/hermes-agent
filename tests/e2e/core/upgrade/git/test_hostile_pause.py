@@ -14,7 +14,7 @@ and the durable pause record ``update_pause_record`` keeps in the root hermes ho
 (c) the fetch fails (origin unreachable): nothing is stopped.
 (d) ``--no-gateway-restart``: nothing is stopped before the move (the user manages gateways).
 (e) SIGKILL mid-stop: the gateway is SIGSTOPped so the updater blocks in its control-socket pause
-    request with the planned-stop request on disk; the whole update tree is SIGKILLed there. The
+    request with that request recorded; the whole update tree is SIGKILLed there. The
     next ``hermes`` launch must leave exactly one gateway serving: none lost, none duplicated.
 (f) SIGKILL after the commit, before the restart: the release's dependency preparation holds while
     a toggle exists; the update tree is SIGKILLed once HEAD is the release and the gateway is
@@ -364,7 +364,6 @@ def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
         before = _start_gateway(host, w, "e")
         gw_pid, sha = int(before["pid"]), w.head()
         _publish_release(w, "e")
-        marker = w.sb.hermes_home / ".gateway-planned-stop.json"
         procs0 = {p["pid"] for p in host.procs()}
         host.kill(gw_pid, signal.SIGSTOP)  # the socket pause request queues; the updater waits on it
         killed: list[int] = []
@@ -372,14 +371,13 @@ def test_sigkill_mid_stop_next_launch_restores_exactly_the_set(w):
             upd = host.spawn([w.sb.hermes, "update", "--yes", "--branch", "main"], log=w.sb.root / "update-e.log")
 
             def _request_on_disk():
+                # The pause records its request before sending it (no planned-stop marker on the drain path).
                 if not host.alive(upd):
                     raise AssertionError("premise: the update exited before its stop request:\n"
                                          + _read(w.sb.root / "update-e.log")[-6000:])
-                with contextlib.suppress(OSError, ValueError):
-                    return json.loads(marker.read_text(encoding="utf-8-sig")).get("target_pid") == gw_pid
-                return False
+                return any(str(gw_pid) in ((r.get("token") or {}).get("stop_sent") or []) for r in _record(w))
 
-            H.wait_for(_request_on_disk, timeout=900, interval=0.2, what="the updater's stop request on disk")
+            H.wait_for(_request_on_disk, timeout=900, interval=0.2, what="the updater's recorded stop request")
             time.sleep(1.0)  # inside the socket call now (its timeout is seconds, the drain minutes)
             rec_at_kill = _record(w)
             killed = _kill_born_after(host, procs0, keep={gw_pid})
