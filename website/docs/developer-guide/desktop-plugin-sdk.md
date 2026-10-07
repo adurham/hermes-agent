@@ -1136,8 +1136,8 @@ the descriptor so two sources exposing the same profile name cannot collide.
 
 A call that has to open a connection to another profile dials at background priority
 by default. After a failed dial to that profile, background calls fail fast while the
-reconnect backoff runs (*Backend for "<profile>" is reconnecting; retry after it
-settles.*) instead of redialing on every tick. When the call IS a user action (a save,
+reconnect backoff runs (`Backend for "<profile>" is reconnecting; retry after it settles.`)
+instead of redialing on every tick. When the call IS a user action (a save,
 a button press, a dialog opening), pass
 `host.requestProfile(route, method, params, undefined, { spawnPriority: 'foreground' })`
 so it dials at once. Keep the background default for polling and roster warming.
