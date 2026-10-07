@@ -1302,12 +1302,7 @@ class GatewayShutdownMixin:
                     with suppress(Exception):
                         _mm.flush_pending(timeout=10)
                 # Pass the real transcript so ``on_session_end`` hooks don't see the empty default.
-                # ``_session_messages`` may be absent on ``object.__new__`` test stubs, hence getattr.
-                # ``_session_messages`` is set on ``AIAgent`` (run_agent.py:1518) and refreshed at the end
-                # of every ``run_conversation`` turn via ``_persist_session``; on an agent built through
-                # ``object.__new__`` (test stubs) the attribute may be absent, so ``getattr`` with a
-                # ``None`` default keeps the call signature-compatible with the pre-fix behaviour
-                # (``shutdown_memory_provider(messages=None)``). See #15165.
+                # ``_session_messages`` may be absent on ``object.__new__`` test stubs, hence getattr (#15165).
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):
                     agent.shutdown_memory_provider(session_messages)
