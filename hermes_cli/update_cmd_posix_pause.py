@@ -405,13 +405,12 @@ def _stop_bare(token: dict, bare: list[dict]) -> None:
 
 
 def _gateway_on_home(home: str, exclude: set[int]) -> int | None:
-    """The gateway serving *home*: its runtime lock + PID file, verified against the live process.
-
-    Never a process scan: a replayed ``gateway run`` matches the canonical matcher for the moment
-    before it finds the home already served and exits, so only the lock holder counts."""
-    from gateway.status import get_running_pid
+    """The gateway serving *home*, by the canonical identity reader (PID file + runtime lock,
+    then the runtime status record), never a process scan: a replayed ``gateway run`` matches the
+    process matcher for the moment before it finds the home already served and exits."""
+    from gateway.status import live_gateway_pid_for_home
     try:
-        pid = get_running_pid(Path(home) / "gateway.pid", cleanup_stale=False)
+        pid = live_gateway_pid_for_home(Path(home))
     except Exception:  # health: allow BLE001 -- unreadable identity files: nothing proven to adopt
         return None
     return int(pid) if pid and int(pid) not in exclude else None
