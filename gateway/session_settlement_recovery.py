@@ -94,6 +94,31 @@ def commit_and_publish(authority, live, ref, row, response, outcome, captured, s
         _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)
 
 
+# Pauses between settlement attempts after a transient storage error (held writer past its
+# patience, full disk). Bounded: the attempts after the last one fall back to the unknown fence.
+_SETTLE_RETRY_DELAYS_S = (0.5, 2.0)
+
+
+async def settle_with_retry(authority, live, ref, row, response, outcome, captured, settlement):
+    """Commit the captured result, retrying a transient storage failure a bounded number of times.
+
+    One locked or full write must not turn a finished answer into an ``unknown`` turn whose result
+    lives only in memory. Retrying is exact: a write that committed before reporting failure is
+    read back by ``finish_result``, and a failure after the commit (``settled`` set) never retries.
+    A fence refusal (``RuntimeStoreError``) is not transient and is raised at once."""
+    from gateway.session_runtime_workers import track_mutation
+    for delay in (*_SETTLE_RETRY_DELAYS_S, None):
+        try:
+            return await asyncio.shield(track_mutation(authority, asyncio.to_thread(
+                commit_and_publish, authority, live, ref, row, response, outcome, captured, settlement)))
+        except (OSError, sqlite3.Error) as exc:
+            if delay is None or 'settled' in settlement:
+                raise
+            logger.warning('Settlement of admission %s deferred by storage (%r); retrying in %.1fs',
+                           row['admission_id'], exc, delay)
+            await asyncio.sleep(delay)
+
+
 def publish_terminal(authority, ref, row, settled, response, captured):
     """Cleanup cannot withhold a committed outcome; publication is attempted once."""
     _publish_completion(authority, authority.sessions[ref.session_id], ref, row, settled, response, captured)

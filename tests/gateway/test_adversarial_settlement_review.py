@@ -51,13 +51,16 @@ async def test_discard_during_recovery_stamp_does_not_replay_head_or_lose_follow
         return row['request_id']
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
     original = session_results.finish_result
+    # Storage stays down across every bounded settlement attempt, so the claim reaches the
+    # recovery stamp; it comes back once the stamp is entered (the follower settles normally).
+    monkeypatch.setattr(session_settlement_recovery, '_SETTLE_RETRY_DELAYS_S', (0.01, 0.01), raising=False)
     def unavailable(*args, **kwargs):
-        monkeypatch.setattr(session_results, 'finish_result', original)
         raise OSError('lost settlement')
     monkeypatch.setattr(session_results, 'finish_result', unavailable)
     mark = session_settlement_recovery._mark_unknown
     entered, release = threading.Event(), threading.Event()
     def held_mark(*args):
+        monkeypatch.setattr(session_results, 'finish_result', original)
         result = mark(*args)
         entered.set()
         assert release.wait(10)

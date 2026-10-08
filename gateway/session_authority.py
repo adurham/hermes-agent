@@ -642,12 +642,10 @@ class SessionAuthority:
                 # Redaction, encoding and the SQLite write run off-loop: one turn's settlement must
                 # not stall every other session. Commit and completion share one stream-lock hold
                 # there; a tracked writer outlives a cancelled drain like the recovery stamp does.
-                from gateway.session_runtime_workers import track_mutation
-                from gateway.session_settlement_recovery import commit_and_publish
+                from gateway.session_settlement_recovery import settle_with_retry
                 captured = self.pending_results.get(admission_id)
                 try:
-                    await asyncio.shield(track_mutation(self, asyncio.to_thread(
-                        commit_and_publish, self, live, ref, row, response, outcome, captured, settlement)))
+                    await settle_with_retry(self, live, ref, row, response, outcome, captured, settlement)
                 finally:
                     if 'settled' in settlement:
                         settled, response = settlement['settled'], settlement['response']
