@@ -599,7 +599,7 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                             sequence, operation, payload):
     """One closed durable mutation and receipt; never call a self-committing API here."""
     from hermes_state_worker_context import worker_context, worker_prompt, worker_sidecars, worker_tool_names
-    from hermes_state_worker_compression import WORKER_COMPRESSION_HANDLERS, worker_receipt_assignment
+    from hermes_state_worker_compression import WORKER_COMPRESSION_HANDLERS
     from hermes_state_worker_lifecycle import WORKER_LIFECYCLE_HANDLERS
     handlers = {
         **WORKER_LIFECYCLE_HANDLERS,
@@ -615,6 +615,21 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         **{name: (lambda db, conn, sid, p, op=name: _worker_turn(db, conn, sid, p, op))
            for name in ('turn.acquire', 'turn.renew', 'turn.release')},
     }
+    return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
+                                generation=generation, sequence=sequence, operation=operation,
+                                payload=payload, handlers=handlers)
+
+
+def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,
+                         operation, payload, handlers):
+    """The one worker receipt transaction every ``worker.persist`` family shares.
+
+    An exact (execution, sequence, digest) retry returns the stored result; otherwise the
+    epoch, assignment, live status and next sequence are fenced, ``handlers[operation]`` runs on
+    the transaction connection (it must not commit), and its result is stored as the receipt.
+    ``execution.finish`` is the only operation that makes the execution terminal.
+    """
+    from hermes_state_worker_compression import worker_receipt_assignment
     if type(sequence) is not int or sequence < 1 or not isinstance(operation, str) or operation not in handlers:
         raise RuntimeStoreError('invalid_params')
     encoded = _json(payload)
