@@ -272,7 +272,8 @@ def worker_archive(db, conn, sid, payload):
     value = archive_on_connection(db, conn, sid, payload['messages'], model_config_patch=patch,
         watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'],
         carried_messages=carried, covered_ids=covered, unresolved_held=unresolved)
-    return {'value': value, 'row_ids': [message['_row_id'] for message in payload['messages']]}
+    from hermes_state_runtime import row_annotations
+    return {'value': value, 'annotations': row_annotations(payload['messages'])}
 
 
 def _migrate_worker_automation(db, conn, parent, child):
@@ -339,8 +340,9 @@ def worker_publish(db, conn, sid, payload):
                  "WHERE json_extract(lineage_json,'$[#-1]')=? AND generation=? AND owner_epoch=? "
                  "AND status IN ('started','unknown')",
                  (child, sid, worker['generation'], worker['owner_epoch']))
+    from hermes_state_runtime import row_annotations
     return {'value': None, 'worker_assignment': {'parent': sid, 'session_id': child},
-            'row_ids': [message['_row_id'] for message in payload['messages']]}
+            'annotations': row_annotations(payload['messages'])}
 
 
 def worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest):

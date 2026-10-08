@@ -7,7 +7,9 @@ import json
 import uuid
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, PERSISTENCE_ONLY_MESSAGE_FIELDS
+from agent.message_metadata import (
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
+)
 from hermes_state_keys import admission_fingerprint
 
 
@@ -512,9 +514,12 @@ _MESSAGE_FIELDS = frozenset({
 # Compaction handoffs (archive/publish) also carry the summary's user-turn flag. This is the closed
 # boundary the owner validates AND the projection the worker facade applies to live dicts first.
 HANDOFF_MESSAGE_FIELDS = _MESSAGE_FIELDS | {'_compressed_summary_has_user_turn'}
-# Row state the owner's transcript repair stamps on each message (main mutates the caller's dict
-# in place; a worker gets it back as an annotation). None = absent, so a stale adoption is cleared.
-_ROW_ANNOTATION_KEYS = ('_row_id', 'timestamp', DB_ROW_SNAPSHOT, CANONICAL_ROW)
+# Row state the owner's insert and transcript repair stamp on each message (main mutates the caller's
+# dict in place; a worker gets it back as an annotation). None = absent, so a stale adoption is cleared.
+# The owner-minted identity rides too: a worker dict without it re-mints a new uid on every later
+# archive/rotation copy, so the logical message changes identity across generations.
+_ROW_ANNOTATION_KEYS = ('_row_id', 'timestamp', DB_ROW_SNAPSHOT, CANONICAL_ROW,
+                        MESSAGE_UID, TOOL_CALL_UIDS, TOOL_CALL_UID)
 
 
 def row_annotations(messages):

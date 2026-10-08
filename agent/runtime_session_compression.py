@@ -77,8 +77,8 @@ class RuntimeSessionCompressionMixin:
             model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
             tail_count=tail_count, carried_messages=carried, covered_ids=covered_ids,
             unresolved_held=unresolved))
-        for message, row_id in zip(compacted_messages, result['row_ids'], strict=True):
-            message['_row_id'] = row_id
+        from agent.runtime_session_store import apply_row_annotations
+        apply_row_annotations(compacted_messages, result['annotations'])
         return result['value']
 
     def publish_compression_child(self, *, parent_session_id, child_session_id, source, messages,
@@ -91,8 +91,8 @@ class RuntimeSessionCompressionMixin:
             cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
             require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
             lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling))
-        for message, row_id in zip(messages, result['row_ids'], strict=True):
-            message['_row_id'] = row_id
+        from agent.runtime_session_store import apply_row_annotations
+        apply_row_annotations(messages, result['annotations'])
 
     def _compression_receipt_journal(self, candidate, result):
         assignment = result.get('worker_assignment')
