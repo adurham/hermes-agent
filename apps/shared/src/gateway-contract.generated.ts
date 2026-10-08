@@ -1917,6 +1917,29 @@ export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
 }
+/** Client→server method params / server→client request params. Unknown keys are rejected. */
+export type Params = Record<string, never>
+/** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``full_name`` is the OS account's real name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none. */
+export interface MachineFactsResult {
+  machine: MachineInfo
+  machine_kind: string
+  has_nvidia_gpu: boolean
+  is_spark: boolean
+  locale?: string | null
+  full_name?: string | null
+}
+/** Measured hardware; a key that was not measured is absent. */
+export interface MachineInfo {
+  os_family?: string | null
+  os_release?: string | null
+  native_arch?: string | null
+  cpu_model?: string | null
+  ram_gb?: number | null
+  gpu_class?: string | null
+  vendor?: string | null
+  wsl?: boolean | null
+  container?: boolean | null
+}
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -2157,8 +2180,6 @@ export interface ProfilesGetAssetResult {
   size?: number | null
   data?: string | null
 }
-/** Client→server method params / server→client request params. Unknown keys are rejected. */
-export type Params = Record<string, never>
 /** ``created`` is false when an existing setup profile was found (and returned untouched). */
 export interface OnboardingEnsureSetupProfileResult {
   name: string
@@ -5224,6 +5245,8 @@ export interface RpcMethods {
   'learning.frames': { params: LearningFramesParams; result: LearningFramesResult }
   /** Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend. */
   'llm.oneshot': { params: LlmOneshotParams; result: LlmOneshotResult }
+  /** Facts about the machine running this backend and its OS account, for the desktop first run. */
+  'machine.facts': { params: Params; result: MachineFactsResult }
   /** Curated MCP presets with per-profile installed/enabled state and the env keys each needs. */
   'mcp.catalog': { params: ProfileParams; result: McpCatalogResult }
   /** Add a server to the profile's config from a catalog preset and/or an explicit config. */
@@ -5645,6 +5668,7 @@ export const RPC_METHODS = [
   'learning.edit',
   'learning.frames',
   'llm.oneshot',
+  'machine.facts',
   'mcp.catalog',
   'mcp.servers.add',
   'mcp.servers.list',

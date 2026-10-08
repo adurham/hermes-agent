@@ -1735,6 +1735,24 @@
       }
     },
     {
+      "name": "machine.facts",
+      "summary": "Facts about the machine running this backend and its OS account, for the desktop first run.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MachineFactsResult"
+        }
+      }
+    },
+    {
       "name": "mcp.catalog",
       "summary": "Curated MCP presets with per-profile installed/enabled state and the env keys each needs.",
       "params": [
@@ -17902,6 +17920,175 @@
           "deferred_by_goal"
         ],
         "title": "LoopSnapshot",
+        "type": "object"
+      },
+      "MachineFactsResult": {
+        "additionalProperties": false,
+        "description": "``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``full_name`` is the OS account's\nreal name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none.",
+        "properties": {
+          "machine": {
+            "$ref": "#/components/schemas/MachineInfo"
+          },
+          "machine_kind": {
+            "title": "Machine Kind",
+            "type": "string"
+          },
+          "has_nvidia_gpu": {
+            "title": "Has Nvidia Gpu",
+            "type": "boolean"
+          },
+          "is_spark": {
+            "title": "Is Spark",
+            "type": "boolean"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Locale"
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Full Name"
+          }
+        },
+        "required": [
+          "machine",
+          "machine_kind",
+          "has_nvidia_gpu",
+          "is_spark"
+        ],
+        "title": "MachineFactsResult",
+        "type": "object"
+      },
+      "MachineInfo": {
+        "additionalProperties": false,
+        "description": "Measured hardware; a key that was not measured is absent.",
+        "properties": {
+          "os_family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Os Family"
+          },
+          "os_release": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Os Release"
+          },
+          "native_arch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Native Arch"
+          },
+          "cpu_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cpu Model"
+          },
+          "ram_gb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ram Gb"
+          },
+          "gpu_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gpu Class"
+          },
+          "vendor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Vendor"
+          },
+          "wsl": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Wsl"
+          },
+          "container": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Container"
+          }
+        },
+        "title": "MachineInfo",
         "type": "object"
       },
       "McpCatalogEntry": {
