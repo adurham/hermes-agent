@@ -145,9 +145,16 @@ def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
         blocked = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (session_id,)).fetchall()
         if any(row[0] == 'unknown' for row in blocked):
             raise RuntimeStoreError('unknown_execution')
-        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status='unknown'", (session_id,)).fetchone():
+        # A worker follows its physical transcript (compression publish / local reset target)
+        # while this FIFO stays keyed on the logical owner: scan the whole lineage.
+        from hermes_state_local_lineage import local_physical_target
+        lineage = {*_canonical_chain(conn, session_id), *_canonical_chain(conn, local_physical_target(conn, session_id))}
+        marks = ','.join('?' * len(lineage))
+        workers = {row[0] for row in conn.execute(
+            f"SELECT status FROM worker_executions WHERE session_id IN ({marks}) AND status!='terminal'", tuple(lineage))}
+        if 'unknown' in workers:
             raise RuntimeStoreError('unknown_execution')
-        if blocked or conn.execute("SELECT 1 FROM worker_executions WHERE session_id=? AND status IN ('registered','running')", (session_id,)).fetchone():
+        if blocked or workers:
             return None
         row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq LIMIT 1", (session_id,)).fetchone()
         if row is None:
