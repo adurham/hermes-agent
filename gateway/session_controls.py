@@ -281,11 +281,11 @@ class AuthorityConnection:
 
     async def describe(self, ref, params):
         await self.ping(ref, params)
-        from gateway.session_policy import CREATE_FIELDS
+        from gateway.session_policy import CREATE_FIELDS, SURFACES
         return {'instance_id': self.authority.instance_id, 'profile_id': self.authority.profile_id,
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1', 'acp-session-mcp-v1'],
-                'session_create': {'sources': ['cli', 'tui', 'gui', 'acp'],
+                'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})}}
 
     async def info(self, ref, params):
@@ -319,6 +319,7 @@ class AuthorityConnection:
                                   'message_count': row.get('message_count', 0),
                                   'running': found.session_id in self.authority.sessions}],
                     'scope': 'stored'}
+        from hermes_state_sessions import INTERNAL_LISTING_SOURCES
         sessions = []
         for sid in tuple(self.authority.sessions):
             candidate = SessionRef(self.actor.profile_id, sid)
@@ -329,6 +330,10 @@ class AuthorityConnection:
                     raise
                 continue
             row = self.authority.db.get_session(sid)
+            # The human picker feed (TUI switcher): kanban workers and `--source tool` integrations
+            # are not conversations, as on every other picker (INTERNAL_LISTING_SOURCES).
+            if row.get('source') in INTERNAL_LISTING_SOURCES:
+                continue
             sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
                              'message_count': row.get('message_count', 0),

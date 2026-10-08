@@ -54,7 +54,7 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     session = conn.execute('SELECT source,session_key FROM sessions WHERE id=?', (session_id,)).fetchone()
     # Only compute registrations are currently enabled. Native/child origins need
     # an owner-reserved source envelope, not worker-selected transport identities.
-    if session is None or session['source'] not in ('cli', 'tui', 'gui'):
+    if session is None or session['source'] not in ('cli', 'tui', 'gui', 'tool'):
         raise RuntimeStoreError('unsupported_producer')
     if (payload['parent_session_id'] != session_id
             or payload['session_key'] != (session['session_key'] or '')

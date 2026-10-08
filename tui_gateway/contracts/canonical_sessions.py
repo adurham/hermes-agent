@@ -16,7 +16,7 @@ class CanonicalSessionParams(ProfileParams):
 
 class CanonicalCreateParams(ProfileParams):
     request_id: str | None = None
-    source: Literal['cli', 'tui', 'gui', 'acp'] = 'cli'
+    source: Literal['cli', 'tui', 'gui', 'acp', 'tool'] = 'cli'
     cwd: str | None = None
     model: str | None = None
     provider: str | None = None

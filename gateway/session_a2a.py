@@ -47,7 +47,7 @@ def forward_author(policy):
 
 
 def storage_source(db, source, session_id, fallback):
-    """Retain the owner's native label when its transport refreshes peer metadata."""
+    """Retain the owner's creation label when its LOCAL transport refreshes peer metadata."""
     from gateway.config import Platform
     if source.platform != Platform.LOCAL or not str(source.chat_id).startswith('local-'):
         return fallback
@@ -55,7 +55,11 @@ def storage_source(db, source, session_id, fallback):
     receipt = local_receipt(db, source.chat_id)
     if session_id not in receipt.get('lineage', [receipt['session_id']]):
         raise RuntimeStoreError('admission_conflict')
-    return 'a2a' if receipt['policy']['source'] == 'a2a' else fallback
+    # Producer labels (a2a, cron, kanban, bot_room, ``--source tool``) survive the refresh: pickers
+    # filter on them (kanban/tool hidden, cron in its own section). Interactive
+    # surfaces keep the transport's ``local``, outside the state-owned stale-open sweeps keyed on cli/tui/acp.
+    label = receipt['policy']['source']
+    return fallback if label in {'cli', 'tui', 'gui', 'acp'} else label
 
 
 async def forward(connection, params):

@@ -4684,7 +4684,7 @@ export interface GroupsDiscardResult {
 export interface CanonicalCreateParams {
   profile?: string | null
   request_id?: string | null
-  source?: 'cli' | 'tui' | 'gui' | 'acp'
+  source?: 'cli' | 'tui' | 'gui' | 'acp' | 'tool'
   cwd?: string | null
   model?: string | null
   provider?: string | null

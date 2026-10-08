@@ -8519,7 +8519,8 @@
               "cli",
               "tui",
               "gui",
-              "acp"
+              "acp",
+              "tool"
             ],
             "title": "Source",
             "type": "string"

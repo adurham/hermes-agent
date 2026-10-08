@@ -41,7 +41,7 @@ def managed_policy(authority, ref):
     if policy.config().get('gateway', {}).get('managed_workers') is not True:
         return None
     request = json.loads(policy.request_json)
-    if policy.source != 'cli' or request.get('provider') != 'custom' or not request.get('base_url'):
+    if policy.platform != 'cli' or request.get('provider') != 'custom' or not request.get('base_url'):
         raise RuntimeStoreError('unsupported_managed_policy')
     return policy
 
