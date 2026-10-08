@@ -406,7 +406,9 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     _record_tool_trust_metadata(name, config, server._tools, key)
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
-    if (_core._server_registry_scope(name) or '').startswith('editor-session:'):
+    # Judged by the connection's owner scope (the ``(scope, name)`` key the registration below
+    # publishes into), never by the bare name resolved in the caller's context.
+    if (_core._server_registry_scope(key) or '').startswith('editor-session:'):
         import json
         from hermes_state_runtime import RuntimeStoreError
         manifest = json.dumps({c.registry_name: c.schema for c in candidates}, sort_keys=True)
