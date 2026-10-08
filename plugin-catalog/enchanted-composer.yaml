@@ -1,0 +1,34 @@
+name: enchanted-composer
+repo: https://github.com/noxius-studium/enchanted-composer
+sha: 18ce8b912ae2d35773f7ccd24fb864e334af3b54
+title: Enchanted Composer
+description: >-
+  Draft enhancement, reusable prompt libraries, undo/redo, and owner-bound full-duplex voice
+  for Hermes Desktop. Disclosure — explicit voice use captures microphone audio; subscription
+  voice starts the official Codex app-server child process, API billing sends SDP to the
+  configured HTTPS offer endpoint, and a custom bridge uses the configured WSS endpoint. The
+  plugin stores non-secret settings and bounded local activity, reads a bounded SOUL.md for the
+  captured profile, and has no telemetry, self-updater, or Codex OAuth-file access. Its product
+  design and implementation are original; no external plugin source, UI, CSS, images, or
+  generated runtime files are included.
+maintainer: Deadtrix21
+tier: community
+category: voice
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/noxius-studium/enchanted-composer/blob/18ce8b912ae2d35773f7ccd24fb864e334af3b54/README.md
+version: "0.2.0"
+image: https://raw.githubusercontent.com/noxius-studium/enchanted-composer/18ce8b912ae2d35773f7ccd24fb864e334af3b54/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/noxius-studium/enchanted-composer/18ce8b912ae2d35773f7ccd24fb864e334af3b54/docs/media/enhancement-desktop.png
+  - https://raw.githubusercontent.com/noxius-studium/enchanted-composer/18ce8b912ae2d35773f7ccd24fb864e334af3b54/docs/media/voice-desktop.png
+  - https://raw.githubusercontent.com/noxius-studium/enchanted-composer/18ce8b912ae2d35773f7ccd24fb864e334af3b54/docs/media/prompts-mobile.png
+readme: true
+platforms: []
+known_issues:
+  - Codex subscription authentication is managed with `codex login` outside Hermes; the plugin does not read or write Codex OAuth files.
+  - Full two-sided persistent voice history and a phone voice client are not included in version 0.2.0.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
