@@ -1,29 +1,9 @@
-exclude = [
-    ".bzr",
-    ".git",
-    ".pyenv",
-    ".pytest_cache",
-    ".pytype",
-    ".ruff_cache",
-    ".venv",
-    ".vscode",
-    "__pypackages__",
-]
-
 # Same as Black.
 line-length = 88
 indent-width = 4
 
 # Assume Python 3.14
 target-version = "py314"
-
-
-# Allow fix for all enabled rules (when `--fix`) is provided.
-fixable = ["ALL"]
-unfixable = []
-
-# Allow unused variables when underscore-prefixed.
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [format]
 # Like Black, use double quotes for strings.
@@ -39,6 +19,25 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [lint]
+exclude = [
+    ".bzr",
+    ".git",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+  ]
+
+# Allow fix for all enabled rules (when `--fix`) is provided.
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
 select = [
   "YTT101",
   "YTT102",
