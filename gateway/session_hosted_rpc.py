@@ -15,6 +15,8 @@ from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
 _RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
+# Encoded receipts per ``results`` read; under the 512 KiB private-socket response line.
+_RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
@@ -188,6 +190,32 @@ class HostedRoomAuthorityRPC:
                 history.append({**receipt, 'role': 'assistant', 'content': receipt['text']})
         return history
 
+    async def _results(self, params):
+        """Terminal receipts only, never the transcript: one bounded response line.
+
+        ``admission_ids`` narrows the read to the caller's pending callbacks. Each text
+        keeps just over the driver's persisted bound, so its own truncation (and notice)
+        is unchanged; newest receipts win the byte budget and the rest follow next poll.
+        """
+        wanted = params.get('admission_ids')
+        if wanted is not None and (not isinstance(wanted, list) or len(wanted) > 256
+                                   or not all(isinstance(i, str) and i for i in wanted)):
+            raise RuntimeStoreError('invalid_params')
+        from tui_gateway.hosted_room_driver import MAX_TERMINAL_TEXT_BYTES
+        receipts, used = [], 0
+        for row, task, generation in reversed(self._rows()):
+            if row['status'] != 'terminal' or (wanted is not None and row['admission_id'] not in wanted):
+                continue
+            receipt = self._terminal(row, task, generation)
+            raw = receipt['text'].encode('utf-8')
+            if len(raw) > MAX_TERMINAL_TEXT_BYTES:
+                receipt['text'] = raw[:MAX_TERMINAL_TEXT_BYTES + 4].decode('utf-8', 'ignore')
+            used += len(json.dumps(receipt))
+            if receipts and used > _RESULTS_BUDGET_BYTES:
+                break
+            receipts.append(receipt)
+        return receipts[::-1]
+
     async def _info(self, params):
         rows = self._rows()
         for row, task, generation in rows:
@@ -266,6 +294,10 @@ class HostedRoomAuthorityRPC:
 
     def history(self, *, profile, session_id, source):
         return self._call('history', profile=profile, session_id=session_id, source=source)
+
+    def results(self, *, profile, session_id, source, admission_ids=None):
+        return self._call('results', profile=profile, session_id=session_id, source=source,
+                          admission_ids=admission_ids)
 
     def info(self, *, profile, session_id, source):
         return self._call('info', profile=profile, session_id=session_id, source=source)
