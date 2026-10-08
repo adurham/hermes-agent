@@ -56,7 +56,10 @@ def test_worker_route_and_api_content_preserve_exact_usage_and_target_fences(tmp
         row = db.get_session('owned')
         assert (row['input_tokens'], row['output_tokens']) == (24, 10)
         assert row['billing_provider'] == 'provider-two'
-        assert row['system_prompt'] is None
+        # Direct-writer parity: a route write never touches the frozen prompt snapshot (W6).
+        assert row['system_prompt'] == 'stable-prefix'
+        with db._read_ctx() as conn:
+            assert conn.execute('SELECT COUNT(*) FROM system_prompts WHERE prompt=?', ('stable-prefix',)).fetchone()[0] == 1
         store.append_messages_batch('owned', [{'role': 'user', 'content': [{'type': 'text', 'text': 'visible'}]}])
         assert store.set_latest_user_api_content('owned', 'wrong', 'must-not-land') == 0
         assert store.set_latest_user_api_content('owned', [{'type': 'text', 'text': 'visible'}], 'wire-only') == 1

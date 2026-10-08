@@ -133,10 +133,10 @@ def worker_billing_route(db, conn, session_id, payload):
     if (set(payload) != {'provider', 'base_url', 'billing_mode'}
             or any(payload[k] is not None and not isinstance(payload[k], str) for k in payload)):
         raise RuntimeStoreError('invalid_params')
-    conn.execute('UPDATE sessions SET billing_provider=?,billing_base_url=?,billing_mode=COALESCE(?,billing_mode),'
-                 'system_prompt=NULL,system_prompt_hash=NULL WHERE id=?',
-                 (payload['provider'], payload['base_url'], payload['billing_mode'], session_id))
-    db._delete_unreferenced_system_prompts(conn)
+    # Same contract as SessionDB.update_session_billing_route: route writers never touch the
+    # stored prompt; only session.prompt replaces the frozen snapshot.
+    conn.execute('UPDATE sessions SET billing_provider=?,billing_base_url=?,billing_mode=COALESCE(?,billing_mode) '
+                 'WHERE id=?', (payload['provider'], payload['base_url'], payload['billing_mode'], session_id))
     return {'value': None}
 
 
