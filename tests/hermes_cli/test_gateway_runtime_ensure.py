@@ -431,3 +431,25 @@ def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, mon
     finally:
         owner.close()
     assert spawned == [home.resolve()]
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch):
+    """The one start this call requested exited without leaving an owner: report it, never
+    `starting` until the deadline, and never launch a second daemon."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    children = []
+
+    def dead_start(target, **kwargs):
+        children.append(subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"]))
+        return children[-1]
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", dead_start)
+    before = time.monotonic()
+    result = runtime.ensure_gateway_runtime(home, timeout=20.0)
+    assert time.monotonic() - before < 10
+    assert (result.state, result.reason_code) == ("inaccessible", "runtime_exited")
+    assert "status 3" in result.detail and len(children) == 1

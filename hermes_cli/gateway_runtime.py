@@ -230,17 +230,26 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     deadline = time.monotonic() + timeout
     home = Path(_canonical_home(profile_home))
     requested = False
+    child = None
     delay = 0.025
     try:
         while True:
             # The install-root marker also covers profiles.
             if _update_fenced({home, get_process_hermes_home(), get_default_hermes_root()}):
                 return GatewayDiscovery("draining", reason_code="update_paused")
+            # Poll BEFORE discovering: an exit observed first, then "absent", cannot be a child that
+            # published its owner a moment later. A winning racer shows up as starting/ready instead.
+            status = child.poll() if child is not None else None
             observed = discover_gateway_endpoint(home, timeout=remaining(deadline))
             if observed.reason_code == "control_timeout":
                 return GatewayDiscovery("starting", reason_code="deadline")
             if observed.state not in {"absent", "starting"}:
                 return observed
+            if status is not None and observed.state == "absent":
+                # The one start this invocation requested died without leaving an owner: waiting
+                # out the deadline cannot change that, and this call never launches a second one.
+                return GatewayDiscovery("inaccessible", reason_code="runtime_exited", detail=(
+                    f"gateway exited with status {status}; see logs/gateway-stdio.log of the started profile"))
             if observed.state == "starting":
                 requested = True
             # A default multiplexer that is still starting will serve this named profile; never
@@ -267,7 +276,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                     start_existing_gateway_service(service, deadline=deadline)
                 else:
                     from hermes_cli.gateway_runtime_start import spawn_unmanaged_gateway
-                    spawn_unmanaged_gateway(target, deadline=deadline)
+                    child = spawn_unmanaged_gateway(target, deadline=deadline)
                 requested = True
             time.sleep(min(delay, remaining(deadline)))
             delay = min(delay * 1.5, 0.25)
