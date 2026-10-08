@@ -335,7 +335,7 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
-    out: list[dict] = []
+    out: list[tuple[tuple[float, str], dict]] = []
     # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
     # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
     # by filename ordered them by ``uuid4().hex`` — at random.
@@ -345,18 +345,21 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
                 path.unlink()
             continue
         claimed = base / CLAIMED_DIR / path.name
+        order = _queued_at(path)
         with contextlib.suppress(OSError, ValueError):
-            os.replace(path, claimed)  # atomic claim
+            os.replace(path, claimed)  # atomic claim; the rename keeps the enqueue mtime
             envelope = json.loads(claimed.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
-            out.append(envelope)
-    seen = {row["id"] for row in out}
+            out.append((order, envelope))
+    seen = {row["id"] for _order, row in out}
+    # One enqueue-ordered list: a claimed-but-unanswered DM (Desktop reconnected before its reply)
+    # is OLDER than mail queued since, so appending replays after fresh rows reversed them.
     out.extend(_replay_unanswered(root, base, seen, now))
-    return out
+    return [envelope for _order, envelope in sorted(out, key=lambda item: item[0])]
 
 
-def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> list[dict]:
+def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> list[tuple[tuple[float, str], dict]]:
     """``claimed/`` canonical envelopes whose reply has not landed yet, replayed on EVERY drain.
 
     A drained envelope is not "delivered": its stable id is handed out again until the target's
@@ -366,9 +369,10 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
     authority, which admits one turn per id and answers a retry with the existing record — never a
     second turn. Once ``created_at + REPLY_WAIT_SECONDS`` passes with no reply the waiter is gone
     (or about to be): a ``delivery_timeout`` reply is written so it learns, and the envelope is
-    never handed out again.
+    never handed out again. Each envelope comes back with its ``_queued_at`` enqueue key so the
+    drain can merge it with fresh outbox rows in send order.
     """
-    out: list[dict] = []
+    out: list[tuple[tuple[float, str], dict]] = []
     for path in sorted((base / CLAIMED_DIR).glob("*.json"), key=_queued_at):
         if (base / REPLIES_DIR / path.name).exists():
             continue
@@ -386,7 +390,7 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
                     f"no reply from {label} within {REPLY_WAIT_SECONDS}s of sending — the Desktop picked "
                     "the message up but never reported a delivery. It will not be retried; resend if it matters."))
                 continue
-            out.append(envelope)
+            out.append((_queued_at(path), envelope))
     return out
 
 

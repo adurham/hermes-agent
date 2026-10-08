@@ -612,6 +612,30 @@ def test_the_outbox_is_claimed_oldest_first(root):
     assert [e["message"] for e in claimed] == ["do this first", "then this"]
 
 
+def test_replayed_unanswered_dm_precedes_mail_queued_after_it(root):
+    """A Desktop that reconnects before the first DM's reply drains it again as a replay, beside a
+    second DM queued since. Both reach the target's delivery lane in this list's order, so the
+    claimed-but-unanswered one (sent first) must come first — not after the fresh outbox row."""
+    first = bot_relay.enqueue_envelope(
+        root, target=_target(), message="do this first",
+        sender_profile="default", sender_handle="hermes",
+    )
+    base = bot_relay.relay_root(root)
+    now = _time2.time()
+    _os2.utime(base / bot_relay.OUTBOX_DIR / f"{first['id']}.json", (now - 2, now - 2))
+    assert [e["id"] for e in bot_relay.claim_pending_envelopes(root)] == [first["id"]]
+    second = bot_relay.enqueue_envelope(
+        root, target=_target(), message="then this",
+        sender_profile="default", sender_handle="hermes",
+    )
+    _os2.utime(base / bot_relay.OUTBOX_DIR / f"{second['id']}.json", (now - 1, now - 1))
+
+    drained = bot_relay.claim_pending_envelopes(root)
+
+    assert [e["message"] for e in drained] == ["do this first", "then this"]
+    assert [e["id"] for e in drained] == [first["id"], second["id"]]  # stable ids, no re-mint
+
+
 def test_drain_delivers_fresh_envelope_under_ttl(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="on time",
