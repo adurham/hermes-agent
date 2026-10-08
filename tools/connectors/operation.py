@@ -41,6 +41,8 @@ class Target:
     extra: dict[str, Any] = field(default_factory=dict)
     # The install step an ``initiated`` catalog row is in (an ``InstallPhase`` id); drawn only then.
     phase: Optional[str] = None
+    # The name of the one hosted account this target connects or repairs; absent for the connector's default account.
+    alias: Optional[str] = None
 
     @property
     def resolved(self) -> bool:
@@ -49,6 +51,8 @@ class Target:
     def snapshot(self, *, with_url: bool = True) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value,
                                "resolved": self.resolved}
+        if self.alias:
+            out["alias"] = self.alias
         if self.phase and self.state == TargetState.initiated:
             out["phase"] = self.phase
         if self.detail:

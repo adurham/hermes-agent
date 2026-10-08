@@ -23,8 +23,9 @@ class AccountOperationStart:
     failed: bool = False
 
 
-def _matching_open_operation(names: list[str], *, profile_home: str | None) -> ConnectionOperation | None:
-    matches = [live.find_target(name, profile_home=profile_home) for name in names]
+def _matching_open_operation(names: list[str], *, alias: str | None,
+                             profile_home: str | None) -> ConnectionOperation | None:
+    matches = [live.find_target(name, alias=alias, profile_home=profile_home) for name in names]
     first = next((operation for operation in matches if operation is not None), None)
     if first is None:
         return None
@@ -38,12 +39,14 @@ def find_or_start_operation(
     *,
     action: str,
     profile_home: str | None,
+    alias: str | None = None,
 ) -> AccountOperationStart:
+    """``alias`` names the one account of ``names[0]`` to connect; the caller passes one name with it."""
     with _start_lock:
-        if operation := _matching_open_operation(names, profile_home=profile_home):
+        if operation := _matching_open_operation(names, alias=alias, profile_home=profile_home):
             return AccountOperationStart(operation=operation, started=False)
         operation = ConnectionOperation(
-            [Target(name, "connector", action) for name in names],
+            [Target(name, "connector", action, alias=alias) for name in names],
             session_key=f"account:{uuid.uuid4().hex}",
         )
         started = AccountOperationStart(operation=operation, started=True)
