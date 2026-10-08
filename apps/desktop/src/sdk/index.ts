@@ -22,10 +22,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { capabilityScoped, getApiRequestConnection } from '@/api/client'
-
-import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
-
-const mutatePersistedVisibility = createSessionMutationClient()
+import { mutateSessionFenced } from '@/api/sessions'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -108,6 +105,8 @@ import {
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
+
+import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
 
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
@@ -1520,7 +1519,7 @@ export const host = {
     const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
     const payload = { hidden: options.hidden, profile }
 
-    return mutatePersistedVisibility(
+    return mutateSessionFenced(
       JSON.stringify([scope, options.sessionId, payload]),
       () =>
         hermesApi<SessionMutationSnapshot>({
