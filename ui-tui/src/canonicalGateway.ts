@@ -86,9 +86,13 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
 
-  // The launcher exports `--max-turns 5` as the string "5"; the policy
-  // requires an int, so the environment's text form is undone here.
-  if (env.HERMES_TUI_MAX_TURNS) { options.max_turns = Number(env.HERMES_TUI_MAX_TURNS) }
+  // The launcher exports `--max-turns 5` as the string "5": numbers ride as
+  // ints (0 / -1 = unlimited), and a word ("none", "unlimited") stays text
+  // for the policy to read — `Number` would turn it into NaN, sent as null.
+  if (env.HERMES_TUI_MAX_TURNS) {
+    const turns = Number(env.HERMES_TUI_MAX_TURNS)
+    options.max_turns = Number.isInteger(turns) ? turns : env.HERMES_TUI_MAX_TURNS.trim()
+  }
 
   // `hermes --tui --yolo` / `--ignore-rules` export HERMES_YOLO_MODE / HERMES_IGNORE_RULES (the in-process
   // TUI read them); over the canonical gateway they must ride session.create as frozen launch flags or the

@@ -17,6 +17,9 @@ it('rebuilds --max-turns from the launcher environment as the integer the sessio
   const options = localCreationOptions({ HERMES_TUI_MAX_TURNS: '5', HERMES_MODEL: 'local-model' } as NodeJS.ProcessEnv)
   expect(options.max_turns).toBe(5)
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('max_turns')
+  // The pre-gateway "unlimited" spellings reach session.create as values the policy reads, never NaN/null.
+  const wire = (value: string) => JSON.parse(JSON.stringify(localCreationOptions({ HERMES_TUI_MAX_TURNS: value } as NodeJS.ProcessEnv))).max_turns
+  expect(['0', '-1', 'none', 'unlimited'].map(wire)).toEqual([0, -1, 'none', 'unlimited'])
 })
 
 it('carries `hermes --tui --yolo` (HERMES_YOLO_MODE) onto session.create as the frozen launch flag', () => {

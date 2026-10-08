@@ -128,6 +128,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
+    from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
     for key in ('provider', 'base_url'):
         if key in params:
@@ -144,10 +145,13 @@ def _apply_launch_overrides(params, config):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
     if 'max_turns' in params:
+        # The spellings `--max-turns` always took: a positive cap, or 0 / -1 / "none" / "unlimited"
+        # for no cap (resolve_turn_limit). Frozen normalized; anything unreadable is refused.
         value = params['max_turns']
-        if type(value) is not int or value <= 0:
+        limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
+        if not limit:
             raise RuntimeStoreError('invalid_params')
-        config.setdefault('agent', {})['max_turns'] = value
+        config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
             raise RuntimeStoreError('invalid_params')

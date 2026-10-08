@@ -73,10 +73,26 @@ def test_launch_options_are_frozen_and_validated(tmp_path):
     cfg['agent']['reasoning_effort'] = 'none'
     assert policy.reasoning_config == parse_reasoning_effort('high')
     assert build_policy(dict(cwd=str(tmp_path), ignore_rules=False), cfg).ignore_rules is False
-    for bad in ({'max_turns': True}, {'max_turns': 0}, {'reasoning': 'garbage'},
+    for bad in ({'max_turns': True}, {'max_turns': 'garbage'}, {'max_turns': 2.5}, {'reasoning': 'garbage'},
                 {'ignore_rules': 'false'}, {'base_url': 'http://user:secret@localhost/v1'}):
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             build_policy(dict(cwd=str(tmp_path), **bad), cfg)
+
+
+def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
+    """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
+    freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""
+    import argparse
+    import sys
+    from gateway.session_policy import build_policy
+    from hermes_cli.gateway_chat import _launch_flags, _requested_policy
+    cfg = {'agent': {'max_turns': 8}}
+    for spelling in (0, -1, 'none', 'unlimited', '0'):
+        assert build_policy(dict(cwd=str(tmp_path), max_turns=spelling), cfg).max_turns == sys.maxsize, spelling
+    assert build_policy(dict(cwd=str(tmp_path), max_turns='12'), cfg).max_turns == 12
+    for zero in (0, -1):
+        args = argparse.Namespace(max_turns=zero, model=None, ignore_rules=False, yolo=False)
+        assert _launch_flags(args) == _requested_policy(args) == {'max_turns': zero}
 
 
 def test_explicit_key_is_private_and_missing_after_restart_fails_closed(tmp_path):

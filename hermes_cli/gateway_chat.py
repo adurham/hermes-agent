@@ -110,7 +110,7 @@ async def run_gateway_chat(args, emitter=None):
             if source not in contract.get("sources", []):
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])
-            policy = {key: getattr(args, key) for key in _POLICY if getattr(args, key, None) not in (None, False)}
+            policy = _launch_flags(args)
             if create_if_missing:
                 policy["title"] = title
             if isinstance(policy.get("toolsets"), str):
@@ -149,8 +149,14 @@ async def run_gateway_chat(args, emitter=None):
 _RESUME_POLICY_MISMATCH = "Resume retains gateway session policy; creation overrides are unsupported on resume."
 
 
+def _launch_flags(args):
+    """The creation flags the user passed. Identity, not equality: ``--max-turns 0`` (unlimited)
+    is a value, while ``0 == False`` would drop it to the profile default."""
+    return {key: value for key in _POLICY if (value := getattr(args, key, None)) is not None and value is not False}
+
+
 def _requested_policy(args):
-    policy = {key: getattr(args, key) for key in _POLICY if getattr(args, key, None) not in (None, False)}
+    policy = _launch_flags(args)
     if isinstance(policy.get("toolsets"), str):
         policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
     if getattr(args, "source", None):
