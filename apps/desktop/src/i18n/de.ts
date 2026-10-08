@@ -1233,9 +1233,7 @@ export const deOverrides = {
         maxLines: 'Datei-Seitenlimit',
         maxLineLength: 'Zeilenlängenlimit'
       },
-      codeExecution: {
-        mode: 'Code-Ausführungsmodus'
-      },
+      codeExecution: { mode: 'Code-Ausführungsmodus' },
       approvals: {
         mode: 'Genehmigungsmodus',
         timeout: 'Genehmigungs-Timeout',
@@ -4010,6 +4008,7 @@ export const deOverrides = {
     queueResumeTip: 'Durch Stopp pausiert — fortsetzen, um die eingereihten Turns zu senden',
     queueLostNote: 'Turn beim Neustart verloren',
     restoreImageDraft: 'Bildentwurf wiederherstellen',
+    queueCancelFailed: 'Der wartende Zug konnte nicht entfernt werden',
     queueLostDiscard: 'Verwerfen',
     queueLostDiscardTip:
       'Das Gateway wurde mitten im Turn neu gestartet und kann ihn nicht abschließen. Verwirf ihn, damit die eingereihten Turns dahinter laufen.',

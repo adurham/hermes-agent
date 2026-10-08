@@ -3052,6 +3052,7 @@ export interface Translations extends NoticeTranslations {
     queueDelete: string
     queueLostNote: string
     restoreImageDraft: string
+    queueCancelFailed: string
     queueLostDiscard: string
     queueLostDiscardTip: string
     queueResume: string
