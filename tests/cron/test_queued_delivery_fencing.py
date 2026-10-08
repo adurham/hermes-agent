@@ -44,3 +44,14 @@ def test_dead_drain_owner_settles_the_run_it_fenced_unknown(tmp_path, monkeypatc
     assert sent == [], "an uncertain send is never retried"
     assert saved["last_status"] == "delivery_failed" and "unknown" in saved["last_delivery_error"]
     assert executions.get_execution(execution["id"])["delivery_outcome"] == "failed"
+
+
+def test_origin_with_no_resolvable_target_is_not_configured_never_delivered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(scheduler, "run_job", lambda job, **kw: (True, "raw", "the result", None))
+    job = jobs.create_job(prompt="p", schedule="every 1h", deliver="origin")
+    scheduler.run_one_job(job)
+    execution = executions.latest_execution(job["id"])
+    assert delivery_queue.get_status(execution["id"]) is None, "no target: nothing is queued"
+    assert execution["delivery_outcome"] == "not_configured"
+    assert jobs.get_job(job["id"])["last_status"] == "ok"

@@ -3141,10 +3141,16 @@ def _save_compose_deliver(
 
     if not d.should_deliver:
         return
+    d.unresolved_origin = (
+        _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
+        and not _resolve_delivery_targets(job, for_failure=not d.success)
+    )
     execution_id = job.get('execution_id')
     if execution_id and not job.get('no_agent'):
         from cron.delivery_queue import enqueue
-        if _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "local":
+        # Nothing to send: an origin-less job is ``not_configured``, never a queued "delivery".
+        if d.unresolved_origin or _normalize_deliver_value(
+                _delivery_lane_value(job, for_failure=not d.success)) == "local":
             return
         queued_job = dict(job)
         if d.failure_incident_id:
@@ -3159,10 +3165,6 @@ def _save_compose_deliver(
             d.delivery_attempted = True
         job['last_delivery_queued'] = {'canonical': {'status': queued['status'], 'execution_id': execution_id}}
         return
-    d.unresolved_origin = (
-        _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
-        and not _resolve_delivery_targets(job, for_failure=not d.success)
-    )
     try:
         with fence.side_effect_fence() as owns_delivery:
             if not owns_delivery:
