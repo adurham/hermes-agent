@@ -44,14 +44,7 @@ if [ "${1:-}" = "--in-container" ]; then
     # (linkerconfig on-device). Inside the container the tree lives at
     # $PAYLOAD_ROOT/python$PREFIX, so the dynamic linker needs to be told
     # where the payload's libs live before any staged binary runs.
-    # $SYSTEM_LIBCXX_DIR leads on purpose. The payload pins libc++ 29, but the toolchain below
-    # needs the libc++ 30 that apt installs, and a library found on LD_LIBRARY_PATH beats the
-    # binary's own RUNPATH. With the payload dir first, apt's cmake cannot start, scikit-build-core
-    # reads that as "no cmake" and compiles one from PyPI source (pillow -> pybind11 -> cmake
-    # bootstrap). The dir holds only that one symlink, made after apt runs, so no other payload
-    # lib is shadowed.
-    SYSTEM_LIBCXX_DIR="$PREFIX/tmp/system-libcxx"
-    export LD_LIBRARY_PATH="$SYSTEM_LIBCXX_DIR:$PAYLOAD_ROOT/python$PREFIX/lib:$PAYLOAD_ROOT/node$PREFIX/lib:$PAYLOAD_ROOT/runtime-libs/lib:$PREFIX/lib"
+    export LD_LIBRARY_PATH="$PAYLOAD_ROOT/python$PREFIX/lib:$PAYLOAD_ROOT/node$PREFIX/lib:$PAYLOAD_ROOT/runtime-libs/lib:$PREFIX/lib"
     if [ -n "$PAYLOAD_ROOT" ] && [ -x "$STAGED_PY" ]; then
         PY="$STAGED_PY"
         log "Using the staged payload Python ($PY)"
@@ -84,10 +77,11 @@ if [ "${1:-}" = "--in-container" ]; then
             libyaml openssl readline zlib liblzma libsqlite ncurses \
             || fail "apt install of the build toolchain failed"
     fi
-    mkdir -p "$SYSTEM_LIBCXX_DIR"
-    ln -sf "$PREFIX/lib/libc++_shared.so" "$SYSTEM_LIBCXX_DIR/libc++_shared.so"
+    # The payload's libc++ leads LD_LIBRARY_PATH, so it must be the one apt's cmake needs. If the
+    # pin table drifts from the pool, cmake cannot start and scikit-build-core compiles one from
+    # PyPI source, which takes 30 minutes to fail. Say so now.
     cmake -E capabilities >/dev/null 2>&1 \
-        || fail "container cmake cannot start; the wheel build would compile cmake from source"
+        || fail "container cmake cannot start (payload libc++ older than apt's? run: hermes pm update --termux)"
     # BINARIES, not package names: the rust package provides rustc/cargo
     # (there is no `rust` binary).
     for tool in clang rustc cargo make git; do
