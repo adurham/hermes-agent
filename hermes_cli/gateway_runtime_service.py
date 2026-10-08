@@ -185,7 +185,7 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
 
 
 def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _startup_dir, _schtasks_encoding
+    from hermes_cli.gateway_windows import _schtasks_encoding
     suffix = service_suffix(home)
     name = f"Hermes_Gateway{'_' + suffix if suffix else ''}"
     result = _run(["schtasks.exe", "/Query", "/FO", "CSV", "/NH"], deadline, encoding=_schtasks_encoding())
@@ -205,10 +205,11 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_identity_unverified")
         _verify_binding(verify_windows_task, definition.stdout, home, *accounts[0])
         return ExistingService("windows", ("schtasks.exe", "/Run", "/TN", name))
-    # Startup-folder entries are installed persistence too, but have no independent
-    # start supervisor. Do not bypass them with a job-bound unmanaged child.
-    if any(_exists(_startup_dir() / f"{name}.{ext}") for ext in ("cmd", "vbs")):
-        raise RuntimeStartError("startup_service_requires_login")
+    # A Startup-folder entry (the fallback when Scheduled Task install was declined/blocked) is login
+    # persistence only, with no start verb or identity to verify. Starting a stopped owner is the
+    # same detached direct spawn manual `hermes gateway start` uses beside it; the unmanaged path
+    # pins the explicit home and refuses a job-bound (no-breakaway) child, and the runtime lock
+    # plus host attach arbitrate against the entry firing again at the next login.
     return None
 
 
