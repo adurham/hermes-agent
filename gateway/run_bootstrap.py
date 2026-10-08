@@ -243,9 +243,9 @@ async def _start_gateway_start_control_socket(runner):
     try:
         # Started immediately after the PID-file claim: winning that O_EXCL race is the moment this process
         # becomes the authoritative gateway for its HERMES_HOME, so from here on "does a socket answer?" is
-        # a truthful liveness/identity query for updater and fleet consumers. Strictly non-fatal: a bind
-        # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
-        # this feature. See #92091.
+        # a truthful liveness/identity query for updater and fleet consumers. Returns None on failure and
+        # start_gateway aborts startup: the listener mints every local client's attach ticket, so a
+        # gateway without it can serve no local session. See #92091.
         from gateway.control_socket import GatewayControlServer, build_identify_payload
         from gateway.run_profile_reconcile import (
             migrate_profile_identity_verb, purge_profile_identity_verb,
@@ -328,7 +328,7 @@ async def _start_gateway_start_control_socket(runner):
             # that starts the control socket (not only start_gateway) exposes it.
             runner.session_control_server = _control_server
     except Exception as _cs_exc:
-        logger.debug("Control socket startup failed (non-fatal): %s", _cs_exc)
+        logger.error("Control socket startup failed; the gateway cannot start without it: %s", _cs_exc)
         _control_server = None
     return _control_server
 
@@ -739,7 +739,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             name="planned-stop-watcher")
         _planned_stop_watcher_thread.start()
 
-        # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.
+        # Right after the PID claim (which makes us authoritative). Fatal: local clients attach only
+        # with tickets minted on this listener, so startup aborts without it.
         _control_server = await _start_gateway_start_control_socket(runner)
         if _control_server is None:
             raise RuntimeError("gateway session bootstrap control listener unavailable")
