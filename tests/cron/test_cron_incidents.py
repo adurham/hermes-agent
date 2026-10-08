@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import cron.incidents as incidents
+from cron import incidents
 import cron.jobs as cron_jobs
 import cron.scheduler as sched
 from hermes_time import now as _hermes_now

@@ -31,7 +31,7 @@ from hermes_cli.config import cfg_get
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
+    from gateway.run import GatewayRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -478,8 +478,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         last question — between two cards it only opens a bubble the next boundary closes."""
         from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
         from tools.clarify_gateway import CANCELLED, SKIPPED
-        answers: Dict[str, Any] = {}
-        reply: Dict[str, Any] = {"answers": answers, "outcome": "submitted"}
+        answers: dict[str, Any] = {}
+        reply: dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         last = len(questions) - 1
         for index, entry in enumerate(questions):
             question = f"{entry['question']}\n{t('gateway.clarify.skip_hint')}"

@@ -44,9 +44,9 @@ class TestChatVerboseArg:
             captured.update(vars(args))
             return 0
         fake_banner = types.ModuleType("hermes_cli.banner")
-        setattr(fake_banner, "prefetch_update_check", lambda: None)
+        fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("tools.skills_sync")
-        setattr(fake_skills_sync, "sync_skills", lambda quiet=True: None)
+        fake_skills_sync.sync_skills = lambda quiet=True: None
 
         monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", launch)
         monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)

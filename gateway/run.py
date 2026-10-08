@@ -5,7 +5,7 @@ Run via ``python -m gateway.run`` or ``python cli.py --gateway``."""
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:  # a partial ``hermes update`` can leave the bootstrap unregistered
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -474,7 +474,7 @@ def _gateway_platform_value(platform: Any) -> str:
 
 
 def _non_conversational_metadata(
-    metadata: Optional[Dict[str, Any]] = None, *, platform: Any = None) -> Optional[Dict[str, Any]]:
+    metadata: Optional[dict[str, Any]] = None, *, platform: Any = None) -> Optional[dict[str, Any]]:
     """Mark Discord lifecycle/status sends without changing other platforms."""
     if _gateway_platform_value(platform) != "discord":
         return metadata
@@ -483,7 +483,7 @@ def _non_conversational_metadata(
     return merged
 
 
-def _interim_metadata(metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _interim_metadata(metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Mark a mid-turn status/advisory send as NOT the turn-final.
 
     Stream-is-the-message adapters seal the live stream with the first unmarked send to an armed (chat, turn)
@@ -493,7 +493,7 @@ def _interim_metadata(metadata: Optional[Dict[str, Any]] = None) -> Dict[str, An
     return merged
 
 
-def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[Dict[str, Any]]) -> bool:
+def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[dict[str, Any]]) -> bool:
     """Keep gateway hygiene from rebuilding a live session's system prompt.
 
     Hygiene lacks the live prompt environment, so a rebuild (persisted by compression) would strip external
@@ -542,7 +542,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
 
 
 def _gateway_loop_exception_handler(
-    loop: "asyncio.AbstractEventLoop", context: Dict[str, Any]) -> None:
+    loop: "asyncio.AbstractEventLoop", context: dict[str, Any]) -> None:
     """Loop-level safety net for transient network errors (installed once by ``start_gateway``).
 
     Logs WARNING with traceback; non-transient errors go to the default handler so real bugs surface.
@@ -961,7 +961,7 @@ def _warm_turn_machinery_sync() -> int:
     TTL cache), the local Python toolchain probe (#106064), and the default route's context-window
     metadata (#105986) — a catalog HTTP probe that must not sit between the first inbound turn and its
     inference request. Context files remain lazy because they need the active turn's agent."""
-    import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
+    import run_agent  # heavy import graph, cached in sys.modules
     import model_tools
 
     # Warm the schemas the turn will actually build: the profile's own toolsets (`video`, `image_gen`
@@ -995,12 +995,12 @@ def _warm_turn_machinery_sync() -> int:
     return len(tool_defs)
 
 
-def _as_thread_info(info: Any) -> Optional[Tuple[str, str]]:
+def _as_thread_info(info: Any) -> Optional[tuple[str, str]]:
     """*info* as a (thread_id, initial_name) pair, or None if it isn't one.
 
     The pair crosses the relay connector boundary, so its shape is the connector's word, not ours."""
     if isinstance(info, tuple) and len(info) == 2 and all(isinstance(x, str) for x in info):
-        return cast(Tuple[str, str], info)
+        return cast(tuple[str, str], info)
     return None
 
 
@@ -1119,8 +1119,8 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
 
 
 def _build_replay_entry(
-    role: str, content: Any, msg: Dict[str, Any], preserve_timestamp: bool = False
-) -> Dict[str, Any]:
+    role: str, content: Any, msg: dict[str, Any], preserve_timestamp: bool = False
+) -> dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving ``_ASSISTANT_REPLAY_FIELDS``.
 
     ``preserve_timestamp``: only user rows need it (stale-dangerous-confirmation stripper). Falsy fields are
@@ -1133,7 +1133,7 @@ def _build_replay_entry(
     send no ``reasoning_content`` at all on the next turn, which can cause HTTP 400 from strict thinking
     providers.
     """
-    entry: Dict[str, Any] = {"role": role, "content": content}
+    entry: dict[str, Any] = {"role": role, "content": content}
     # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
     # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
     _sidecar = msg.get("api_content")
@@ -1239,7 +1239,7 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
-def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> bool:
+def _has_replayable_sidecar(role: Any, content: Any, msg: dict[str, Any]) -> bool:
     """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
 
     A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
@@ -1254,8 +1254,8 @@ def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> boo
 
 
 def _build_gateway_agent_history(
-    history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    history: list[dict[str, Any]], *, channel_prompt: Optional[str] = None,
+    inject_timestamps: bool = False) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
@@ -1266,8 +1266,8 @@ def _build_gateway_agent_history(
     )
 
     _msg_tz = _get_msg_tz()
-    agent_history: List[Dict[str, Any]] = []
-    observed_group_context: List[str] = []
+    agent_history: list[dict[str, Any]] = []
+    observed_group_context: list[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
     for msg in history or []:
@@ -1330,7 +1330,7 @@ def _build_gateway_agent_history(
 
 
 def _select_cached_agent_history(
-    persisted_history: List[Dict[str, Any]], live_history: Any) -> List[Dict[str, Any]]:
+    persisted_history: list[dict[str, Any]], live_history: Any) -> list[dict[str, Any]]:
     """Prefer the cached live transcript only when it is longer AND has a real, non-ephemeral unpersisted row.
 
     Guards FTS write-corruption amnesia (stale reload while the cached agent holds unpersisted rows). Length
@@ -1374,7 +1374,7 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
     return message
 
 
-def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
+def _last_transcript_timestamp(history: Optional[list[dict[str, Any]]]) -> Any:
     """Return the ``timestamp`` of the last usable (non-metadata) transcript row, if any.
 
     ``None`` when the last usable row has no timestamp — callers treat that as "fresh" (legacy rows)."""
@@ -1398,7 +1398,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "image
 
 # Replay-history canonicalization lives in agent/replay_cleanup.py so every resume
 # surface and the send path share one implementation.
-from agent.replay_cleanup import canonicalize_replay_history  # noqa: E402
+from agent.replay_cleanup import canonicalize_replay_history
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
@@ -1437,12 +1437,12 @@ _TOOL_MEDIA_RE = re.compile(
 
 
 # Shared with cron delivery and gateway background tasks; canonical names live in gateway.media_repair.
-from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id  # noqa: E402
+from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id
 
 
 def _collect_auto_append_media_tags(
-    messages: List[Dict[str, Any]], history_offset: int = 0,
-    history_media_paths: Optional[set] = None) -> tuple[List[str], bool]:
+    messages: list[dict[str, Any]], history_offset: int = 0,
+    history_media_paths: Optional[set] = None) -> tuple[list[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
     Producer allowlist: docs/logs/search results contain example MEDIA: strings that must never become
@@ -1463,7 +1463,7 @@ def _collect_auto_append_media_tags(
 
     tool_name_by_call_id = _tool_name_by_call_id(new_messages)
 
-    media_tags: List[str] = []
+    media_tags: list[str] = []
     has_voice_directive = False
     for msg in new_messages:
         if msg.get("role") not in ("tool", "function"):
@@ -1500,7 +1500,7 @@ def _collect_auto_append_media_tags(
     return media_tags, has_voice_directive
 
 
-def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
+def _collect_history_media_paths(agent_history: list[dict[str, Any]]) -> set:
     """Dedup set of media paths already delivered (JSON-payload and assistant-message shapes alike).
 
     Missing the JSON-payload shape caused #46627; missing the assistant-message shape caused repeated
@@ -1973,7 +1973,7 @@ _DISPLAY_ENV_BRIDGE = {
     "busy_ack_enabled": "HERMES_GATEWAY_BUSY_ACK_ENABLED"}
 
 
-def _bridge_section_to_env(section: Any, mapping: Dict[str, str]) -> None:
+def _bridge_section_to_env(section: Any, mapping: dict[str, str]) -> None:
     """Export every present ``mapping`` key of a config section as ``str(value)``."""
     if isinstance(section, dict):
         for cfg_key, env_var in mapping.items():
@@ -3407,7 +3407,7 @@ class GatewayRunner(
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
-    _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
+    _profile_failed_platforms: Optional[dict[str, dict[Platform, asyncio.Task]]] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
     _startup_warmup_task: Optional[asyncio.Task] = None
@@ -3434,7 +3434,7 @@ class GatewayRunner(
     _pending_approvals = legacy_dict_property("_pending_approvals")
     _update_prompt_pending = legacy_dict_property("_update_prompt_pending")
 
-    def _sessions_map(self) -> Dict[str, "SessionState"]:
+    def _sessions_map(self) -> dict[str, "SessionState"]:
         """Per-session state map; lazily created so bare ``object.__new__`` test runners work."""
         sessions = self.__dict__.get("_sessions")
         if sessions is None:
@@ -3461,7 +3461,7 @@ class GatewayRunner(
         state = self._peek_session_state(session_key)
         return state is not None and state.turn.agent is not None
 
-    def _running_agent_items(self) -> List[tuple]:
+    def _running_agent_items(self) -> list[tuple]:
         """(session_key, agent) pairs for sessions with a running turn (incl. pending sentinels)."""
         return [(key, state.turn.agent) for key, state in self._sessions_map().items()
                 if state.turn.agent is not None]
@@ -3496,16 +3496,16 @@ class GatewayRunner(
             set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
-        self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self.adapters: dict[Platform, BasePlatformAdapter] = {}
         # Non-None means SessionDB init failed — the gateway broadcasts a one-time warning to the home
         # channel(s) after connecting so the user learns persistence is broken before /resume fails.
         # See #88235.
         self._session_db_init_error: Optional[str] = None
         # Non-default profiles' adapters by profile then Platform; self.adapters stays the default's map.
-        self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        self._profile_adapters: dict[str, dict[Platform, BasePlatformAdapter]] = {}
         # Each SERVED profile's gateway config, as loaded once by ``_load_secondary_profile_config``.
         # ``self.config`` is only the launch profile's: anything host-wide (restart notices) needs these.
-        self._profile_configs: Dict[str, Any] = {}
+        self._profile_configs: dict[str, Any] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -3645,7 +3645,7 @@ class GatewayRunner(
             return
 
         raw_volumes = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
-        volumes: List[str] = []
+        volumes: list[str] = []
         if raw_volumes:
             try:
                 parsed = json.loads(raw_volumes)
@@ -3766,7 +3766,7 @@ class GatewayRunner(
         return {id(a) for _, a in self._running_agent_items()
                 if a is not None and a is not _AGENT_PENDING_SENTINEL}
 
-    def _snapshot_running_agents(self) -> Dict[str, Any]:
+    def _snapshot_running_agents(self) -> dict[str, Any]:
         return {k: a for k, a in self._running_agent_items() if a is not _AGENT_PENDING_SENTINEL}
 
     # ---- Tunables consumed by the run_* mixins (kept on the class: tests and plugins patch them) ----
@@ -3811,7 +3811,7 @@ class GatewayRunner(
     # Command-specific mid-run reject texts (busy_policy == "reject" with a busy_handler naming an
     # entry here); all other rejected commands get the generic text in _dispatch_busy_slash_command.
     # Values are catalog keys; ``run_busy._dispatch_busy_slash_command`` resolves them with ``t()``.
-    _BUSY_REJECT_TEXT: Dict[str, str] = {
+    _BUSY_REJECT_TEXT: dict[str, str] = {
         "model": "gateway.busy.reject_model",
         "codex-runtime": "gateway.busy.reject_codex_runtime",
         "moa": "gateway.busy.reject_moa"}
@@ -3917,7 +3917,7 @@ class GatewayRunner(
         history: Any = None
 
     def _thread_metadata_for_source(
-        self, source, reply_to_message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        self, source, reply_to_message_id: Optional[str] = None) -> Optional[dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None), getattr(source, "chat_id", None),
@@ -3957,11 +3957,11 @@ class GatewayRunner(
     def _thread_metadata_for_target(
         self, platform: Optional[Platform], chat_id: Optional[str], thread_id: Optional[str], *,
         chat_type: Optional[str] = None, reply_to_message_id: Optional[str] = None,
-        adapter: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+        adapter: Optional[Any] = None) -> Optional[dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
         if thread_id is None:
             return None
-        metadata: Dict[str, Any] = {"thread_id": thread_id}
+        metadata: dict[str, Any] = {"thread_id": thread_id}
         if self._is_telegram_dm_topic_target(
             platform, chat_id, thread_id, chat_type=chat_type, adapter=adapter):
             metadata["telegram_dm_topic_reply_fallback"] = True
@@ -4441,7 +4441,7 @@ def _housekeeping_plugin_update_check() -> None:
     maybe_run_gateway_check(log=logger)
 
 
-def _launch_sessions_dir(config) -> Optional[Tuple[Path, Path]]:
+def _launch_sessions_dir(config) -> Optional[tuple[Path, Path]]:
     """``(launch home, its configured transcript dir)``, or ``None`` when the gateway carries none.
 
     MUST be called outside any profile scope — ``get_hermes_home()`` is what identifies the launch
@@ -4453,7 +4453,7 @@ def _launch_sessions_dir(config) -> Optional[Tuple[Path, Path]]:
     return get_hermes_home(), Path(sessions_dir)
 
 
-def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:
+def _profile_sessions_dir(launch: Optional[tuple[Path, Path]]) -> Path:
     """Transcript dir of the profile currently in scope.
 
     ``gateway.sessions_dir`` overrides the LAUNCH profile's transcript dir only; every other served
@@ -4467,7 +4467,7 @@ def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:
     return home / "sessions"
 
 
-def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = None) -> None:
+def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
     by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
     SessionDB — SQLite connections are thread-bound.
@@ -5101,7 +5101,7 @@ def _refresh_host_gateway_record(runner) -> None:
 
 # Bootstrap phases bound on the facade: ``_host_attach_or_none`` reads the replace step through this
 # module, and the lifecycle tests patch/drive these phases as ``gateway.run`` attributes.
-from gateway.run_bootstrap import (  # noqa: E402
+from gateway.run_bootstrap import (
     _start_gateway_make_shutdown_signal_handler, _start_gateway_replace_existing_instance,
     _start_gateway_shutdown_tail, _start_gateway_start_cron_and_housekeeping,
 )

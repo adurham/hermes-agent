@@ -87,7 +87,7 @@ def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: _owner(tmp_path))
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)
-    monkeypatch.setattr(delivery._sched, "load_config", lambda: {})
+    monkeypatch.setattr(delivery._sched, "load_config", dict)
     monkeypatch.setattr(config, "load_gateway_config", lambda: None)
     monkeypatch.setattr(subprocess, "run", Mock(side_effect=AssertionError("CLI")))
     updates = []
