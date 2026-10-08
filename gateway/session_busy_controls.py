@@ -30,7 +30,7 @@ async def busy_config(connection, ref, params, *, write=False):
     if params.get('key') == 'verbose' and not set(params) - allowed and ref.session_id:
         return verbose_config(connection, ref, params, write)
     if params.get('key') == 'yolo' and not set(params) - allowed and ref.session_id:
-        return yolo_config(connection, ref, params, write)
+        return await yolo_config(connection, ref, params, write)
     if (set(params) - allowed or not ref.session_id or params.get('key') != 'busy'
             or (write and params.get('value') not in ('interrupt', 'steer', 'queue'))):
         raise RuntimeStoreError('invalid_params')
@@ -73,10 +73,12 @@ def verbose_config(connection, ref, params, write):
 _YOLO_WORDS = {'1': True, 'on': True, 'true': True, '0': False, 'off': False, 'false': False}
 
 
-def yolo_config(connection, ref, params, write):
+async def yolo_config(connection, ref, params, write):
     """Session-scoped /yolo (TUI slash + Shift+Tab, Desktop toggle): this session's approval bypass,
     never HERMES_YOLO_MODE or approvals.mode. A ``--yolo`` launch is seeded first, so revoking it
-    here is not re-enabled by the next turn's launch seeding."""
+    here is not re-enabled by the next turn's launch seeding. The route's persisted copy
+    (``SessionEntry.yolo``, re-armed every turn by ``_restore_session_yolo``) is written before the
+    live flag, like the messaging ``/yolo``, so an OFF here is not revived by the next turn."""
     value = params.get('value')
     if write and value is not None and str(value).strip().lower() not in _YOLO_WORDS:
         raise RuntimeStoreError('invalid_params')
@@ -84,12 +86,18 @@ def yolo_config(connection, ref, params, write):
     from gateway.session_policy import policy_for_source
     from tools.approval import apply_launch_yolo, disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     live = connection.authority.sessions[ref.session_id]
-    policy = policy_for_source(connection.authority.runner, live.source)
+    runner = connection.authority.runner
+    policy = policy_for_source(runner, live.source)
     if policy is not None and policy.yolo:
         apply_launch_yolo(live.route)
-    enabled = is_session_yolo_enabled(live.route)
+    store = runner.async_session_store if getattr(runner, 'session_store', None) is not None else None
+    entry = await store.lookup_by_session_key(live.route) if store is not None else None
+    # After a restart only the persisted copy is set until the next turn re-arms it: still ON.
+    enabled = is_session_yolo_enabled(live.route) or getattr(entry, 'yolo', False) is True
     if write:
         enabled = not enabled if value is None else _YOLO_WORDS[str(value).strip().lower()]
+        if store is not None:
+            await store.set_session_yolo(live.route, enabled)
         (enable_session_yolo if enabled else disable_session_yolo)(live.route)
     return {'key': 'yolo', 'value': '1' if enabled else '0', 'scope': 'session'}
 
