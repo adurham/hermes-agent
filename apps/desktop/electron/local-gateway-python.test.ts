@@ -46,6 +46,38 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
       await expect(mintGatewayTicketWithPython(backend, cwd, endpoint, 'interactive')).rejects.toThrow('Gateway ticket')
     }
 
+    // The profile home gets Python's full home policy: a private-group 0775 home mints, the same
+    // home with a named-user ACL (group bits become the mask) is refused with its reason.
+    // The expected verdict is Python's own home_mode_unsafe for this host's group (a CI runner's
+    // primary group need not be private), so this is a parity check, not a host assumption.
+    override = {}
+    const { execFileSync } = await import('node:child_process')
+
+    const unsafe = () => execFileSync(python, ['-c', 'import sys; from pathlib import Path; '
+      + 'from hermes_cli.gateway_runtime_discovery import home_mode_unsafe as u; p = Path(sys.argv[1]); '
+      + 'print(int(u(p.lstat(), p)))', home], { env: { ...process.env, PYTHONPATH: root }, encoding: 'utf8' }).trim() === '1'
+
+    const expectVerdict = async () => {
+      const mint = mintGatewayTicketWithPython(backend, cwd, endpoint, 'interactive')
+
+      await (unsafe() ? expect(mint).rejects.toMatchObject({ reason: 'unsafe_control_permissions' })
+        : expect(mint).resolves.toBe('private-grant'))
+    }
+
+    await fs.chmod(home, 0o775)
+    await expectVerdict()
+    let acl = false
+
+    try { execFileSync('setfacl', ['-m', 'u:nobody:rwx', home]); acl = true } catch { acl = false }
+
+    if (acl) {
+      expect(unsafe(), 'a named-user ACL makes the group bits a mask').toBe(true)
+      await expectVerdict()
+      execFileSync('setfacl', ['-b', home])
+    }
+
+    await fs.chmod(home, 0o700)
+
     // A served secondary carries the multiplexer's control_home: the ticket is minted by THAT
     // home's socket (the profile home has none), still bound to the secondary's identity.
     override = {}

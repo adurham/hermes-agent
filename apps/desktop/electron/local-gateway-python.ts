@@ -12,17 +12,26 @@ interface TicketEndpoint {
 
 // Reuse the runtime's SID-validated, deadline-bounded pipe client. No Node pipe
 // connection may bypass GetNamedPipeServerProcessId / token-owner validation.
+// POSIX: the profile home gets the full home policy (private-group + ACL proof that Node cannot
+// make); the control home is checked again by connect_private. A refusal reports its reason.
 const TICKET_SCRIPT = `
-import json, sys
+import json, os, sys
 from pathlib import Path
 from types import SimpleNamespace
 from hermes_cli.gateway_client import _session_ticket
+from hermes_cli.gateway_runtime_discovery import DiscoveryError, _private_node
 request = json.loads(sys.stdin.buffer.read(65537))
 endpoint = SimpleNamespace(**{'control_home': None, **request['endpoint']})
 home = Path(endpoint.profile_id)
 if str(home.resolve()) != endpoint.profile_id or endpoint.runtime_protocol != 1:
     raise ValueError('invalid ticket endpoint')
-ticket = _session_ticket(home, endpoint, purpose=request['purpose'])
+try:
+    if os.name != 'nt':
+        _private_node(home, kind='directory', home=True)
+    ticket = _session_ticket(home, endpoint, purpose=request['purpose'])
+except DiscoveryError as exc:
+    sys.stdout.write(json.dumps({'error': exc.reason}))
+    sys.exit(3)
 sys.stdout.write(json.dumps({'ticket': ticket}))
 `
 
@@ -41,7 +50,14 @@ export function mintGatewayTicketWithPython(
     }))
 
     let stdout = ''
-    const fail = () => reject(new Error('Gateway ticket bootstrap failed'))
+
+    const fail = () => {
+      let reason: unknown
+
+      try { reason = JSON.parse(stdout).error } catch { reason = undefined }
+      reject(Object.assign(new Error('Gateway ticket bootstrap failed'), typeof reason === 'string' ? { reason } : {}))
+    }
+
     const timer = setTimeout(() => { child.kill(); fail() }, 10_000)
     child.on('error', fail)
     child.stdin.on('error', fail)

@@ -380,8 +380,9 @@ test.skipIf(process.platform === 'win32')('a supported home mode mints its ticke
       expect(await mintLocalGatewayTicket(endpoint)).toBe('grant')
     }
 
-    for (const mode of [0o757, 0o703]) {
+    for (const mode of [0o757, 0o703, 0o775]) {
       await fs.chmod(home, mode)
+      // 0775 with no Python client configured: group-write Node cannot prove private is refused.
       await expect(mintLocalGatewayTicket(endpoint)).rejects.toThrow('Unsafe gateway control path')
     }
   } finally {
@@ -412,4 +413,45 @@ test('main issues native-gateway REST calls only through the shared descriptor t
   expect(transport).toBeGreaterThan(0)
   expect(source.slice(transport, transportEnd)).toContain('headers: descriptor.headers')
   expect(outside.match(/fetchJson\([^)]*\{[^}]*gatewayDescriptor\b/g) ?? []).toEqual([])
+})
+
+// A group-writable home (umask-002 user-private-group default) is decided by the runtime's own
+// home policy, which Node cannot evaluate: the mint goes through the Python ticket client, and a
+// refusal there names the fix instead of failing as a stale gateway.
+test.skipIf(process.platform === 'win32')('a group-writable home mints through the Python policy; a shared group names the fix', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const { configurePythonGatewayTicketClient, isStaleLocalGatewayError, mintLocalGatewayTicket } = await import('./local-gateway')
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-group-home-')))
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const calls: string[] = []
+  let verdict: 'grant' | 'shared' = 'grant'
+
+  configurePythonGatewayTicketClient(async (ep, purpose) => {
+    calls.push(`${ep.profile_id}:${purpose}`)
+
+    if (verdict === 'shared') {throw Object.assign(new Error('Gateway ticket bootstrap failed'), { reason: 'unsafe_control_permissions' })}
+
+    return 'python-grant'
+  })
+
+  try {
+    await fs.chmod(home, 0o775)
+    expect(await mintLocalGatewayTicket(endpoint, 'native-http')).toBe('python-grant')
+    expect(calls).toEqual([`${home}:native-http`])
+
+    verdict = 'shared'
+    const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
+    expect(failure.message).toBe(`Profile home is writable by a group other accounts share: run chmod g-w '${home}'`)
+    expect(isStaleLocalGatewayError(failure)).toBe(false)
+
+    await fs.chmod(home, 0o757)
+    await expect(mintLocalGatewayTicket(endpoint)).rejects.toThrow('Unsafe gateway control path')
+    expect(calls).toHaveLength(2)
+  } finally {
+    configurePythonGatewayTicketClient(undefined as never)
+    await fs.chmod(home, 0o700)
+    await fs.rm(home, { recursive: true, force: true })
+  }
 })
