@@ -289,6 +289,13 @@ def validate_task_manifest(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+# (state.db, blob root) pairs whose schema, event reconciliation and prune already ran in this
+# process. Callers build a store per operation (one per attachment chunk); startup work and
+# its write locks must not repeat on every read.
+_STARTED: set[tuple[str, str, int, int] | None] = set()
+_STARTED_LOCK = threading.Lock()
+
+
 class HostedRoomAttachmentStore:
     """SQLite-owned metadata and private, content-deduplicated blob bytes."""
 
@@ -313,10 +320,27 @@ class HostedRoomAttachmentStore:
         self.gateway_quota_count = max(1, int(gateway_quota_count))
         self._lock = threading.RLock()
         self._prepare_private_root()
-        conn = self._connect()
-        conn.close()
-        self.reconcile_room_events()
-        self.prune()
+        with _STARTED_LOCK:
+            if self._startup_key() in _STARTED:
+                return
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                self._initialize(conn)
+                conn.commit()
+            finally:
+                conn.close()
+            self.reconcile_room_events()
+            self.prune()
+            _STARTED.add(self._startup_key())
+
+    def _startup_key(self) -> tuple[str, str, int, int] | None:
+        """Identity of the database FILE, so a recreated state.db is set up again."""
+        try:
+            info = self.db_path.stat()
+        except OSError:
+            return None
+        return str(self.db_path.resolve()), str(self.root.resolve()), info.st_dev, info.st_ino
 
     def _prepare_private_root(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -398,11 +422,7 @@ class HostedRoomAttachmentStore:
         try:
             apply_wal_with_fallback(conn, db_label="state.db (hosted room attachments)")
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("BEGIN IMMEDIATE")
-            self._initialize(conn)
-            conn.commit()
         except Exception:
-            conn.rollback()
             conn.close()
             raise
         return conn
