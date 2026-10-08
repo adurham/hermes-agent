@@ -110,7 +110,9 @@ def snapshot_automation(authority, adapter, event, identity):
         raise RuntimeStoreError('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact
     # committed source's private proof, revalidated against the live connector.
-    restored = restore_native({'text': event.text, 'native_text_v1': envelope}, runner)
+    # Recheck only the source/provenance: a completed input's retained media is already released.
+    restored = restore_native({'text': event.text, 'native_text_v1': {
+        key: value for key, value in envelope.items() if key != 'media'}}, runner)
     if (restored.source.to_dict() != event.source.to_dict()
             or runner._adapter_for_source(restored.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')

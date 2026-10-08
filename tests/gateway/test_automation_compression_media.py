@@ -55,3 +55,29 @@ async def test_completion_after_compression_admits_to_the_logical_root(tmp_path,
     assert completion_admission(runner, event)['admission_id'] == rows[-1]['admission_id']
     await asyncio.sleep(0)
 
+
+@pytest.mark.asyncio
+async def test_text_completion_after_a_released_photo_input_is_admitted(tmp_path, monkeypatch):
+    from gateway.platforms.base import get_image_cache_dir
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session_ingress_media import release_admission_media
+    from hermes_state_runtime import claim_session_input, list_session_admissions, settle_session_input
+    from tests.gateway.test_completion_admission import pending
+
+    runner, _, authority, source = await _discord_owner(tmp_path, monkeypatch)
+    photo = get_image_cache_dir() / 'photo.png'
+    photo.write_bytes(b'\x89PNG\r\n\x1a\n' + b'\x00' * 32)
+    receipt = await _admit_human(runner, authority, MessageEvent(
+        text='look', source=source, message_id='photo', message_type=MessageType.PHOTO,
+        media_urls=[str(photo)], media_types=['image/png']))
+    sid = receipt.ref.session_id
+    started = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    settle_session_input(authority.db, epoch=authority.epoch, admission_id=started['admission_id'],
+                         generation=started['generation'], outcome='completed')
+    assert release_admission_media(authority.db, started['admission_id']) == 1  # what _drain does
+    key = runner.session_store._generate_session_key(source)
+    assert await runner._deliver_async_delegation_group([dict(pending(key, 'after-photo'), parent_session_id=sid)])
+    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+    assert len(rows) == 2 and 'after-photo' in rows[-1]['payload']['text'], rows
+    assert 'media' not in rows[-1]['payload']['native_text_v1']
+    await asyncio.sleep(0)
