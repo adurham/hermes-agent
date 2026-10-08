@@ -578,15 +578,25 @@ class SessionAuthority:
                 response = 'The admitted turn failed.'
                 outcome = 'failed'
             settled = None
+            settlement = {}
             try:
-                with live.event_stream.lock:
-                    from gateway.session_results import finish_result
-                    captured = self.pending_results.get(admission_id)
-                    settled, response = finish_result(self.db, epoch=self.epoch, row=row,
-                        response=response, outcome=outcome, result=captured)
-                    self.pending_results.pop(admission_id, None)
-                    from gateway.session_settlement_recovery import publish_terminal
-                    publish_terminal(self, ref, row, settled, response, captured)
+                # Redaction, encoding and the SQLite write run off-loop: one turn's settlement must
+                # not stall every other session. Commit and completion share one stream-lock hold
+                # there; a tracked writer outlives a cancelled drain like the recovery stamp does.
+                from gateway.session_runtime_workers import track_mutation
+                from gateway.session_settlement_recovery import commit_and_publish
+                captured = self.pending_results.get(admission_id)
+                try:
+                    await asyncio.shield(track_mutation(self, asyncio.to_thread(
+                        commit_and_publish, self, live, ref, row, response, outcome, captured, settlement)))
+                finally:
+                    if 'settled' in settlement:
+                        settled, response = settlement['settled'], settlement['response']
+                        self.pending_results.pop(admission_id, None)
+                # Idle follows the completion; its bot receipt wakeups are loop tasks. A delete
+                # that committed while the write yielded already retired this live entry.
+                if self.sessions.get(ref.session_id) is live:
+                    self._publish_pending(ref)
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception(
