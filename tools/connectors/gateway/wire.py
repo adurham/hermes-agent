@@ -184,6 +184,8 @@ class ConnectorAccount(_Wire):
     alias: Optional[str] = None
     # The newest active account for this connector: the one the vendor executes with.
     active: bool
+    # Retired by a reconnect that replaced it; kept, never selectable.
+    disabled: bool = False
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
 

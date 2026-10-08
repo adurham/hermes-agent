@@ -116,6 +116,7 @@ def _account_row(account):
         label=account["label"],
         alias=account.get("alias"),
         active=account["active"],
+        disabled=bool(account.get("disabled")),
         created_at=account["createdAt"],
         updated_at=account["updatedAt"],
     )

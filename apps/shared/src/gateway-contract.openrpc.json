@@ -10211,6 +10211,11 @@
             "title": "Active",
             "type": "boolean"
           },
+          "disabled": {
+            "default": false,
+            "title": "Disabled",
+            "type": "boolean"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -11260,6 +11265,19 @@
             ],
             "default": null,
             "title": "Alias"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
           }
         },
         "required": [

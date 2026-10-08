@@ -1151,6 +1151,7 @@ export interface ConnectorsConnectParams {
   connectors: string[]
   reconnect?: boolean
   alias?: string | null
+  connection_id?: string | null
 }
 /** ``methods_connectors._reissue`` / ``managed._off_desktop_result``: the operation the connect opened; ``status``/``note`` ride along from the tool result. */
 export interface ConnectorsConnectResult {
@@ -1215,6 +1216,7 @@ export interface ConnectorAccountRow {
   label: string
   alias?: string | null
   active: boolean
+  disabled?: boolean
   created_at: string
   updated_at: string
 }

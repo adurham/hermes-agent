@@ -43,6 +43,8 @@ class Target:
     phase: Optional[str] = None
     # The name of the one hosted account this target connects or repairs; absent for the connector's default account.
     alias: Optional[str] = None
+    # The existing account a reconnect repairs, by id: an unnamed account, which no alias can address.
+    repair_id: Optional[str] = None
 
     @property
     def resolved(self) -> bool:
