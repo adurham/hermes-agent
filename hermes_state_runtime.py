@@ -476,6 +476,12 @@ def adopt_worker_execution(db, *, epoch: int, execution_id: str, session_id: str
             raise RuntimeStoreError('stale_generation')
         if not hmac.compare_digest(row['adoption_digest'], digest):
             raise RuntimeStoreError('permission_denied')
+        # An admission-reserved worker reports to the reserving owner over that owner's pipes and
+        # dies with them, so only its same-epoch handshake adopts it. A late handshake reaching a
+        # restarted owner would re-arm the recovered `unknown` admission as `started` with nobody
+        # left to settle it (and Discard refuses `started`); refuse it so recovery's verdict stands.
+        if execution_id.startswith('admission-worker:') and row['owner_epoch'] != epoch:
+            raise RuntimeStoreError('stale_epoch')
         linked = _linked_worker_admission(
             conn, session_id, generation, row['owner_epoch'], ('started', 'unknown'))
         if linked is not None:
