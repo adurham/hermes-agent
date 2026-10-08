@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 from agent.managed_worker import accept_result, encode_frame, read_frame
 from gateway.session_worker_reservation import reserve_admission_worker
@@ -115,6 +116,9 @@ class ManagedWorker:
         # Latched the moment Stop is admitted, before any pipe write: the owner's read loop
         # supervises it even while the child has not yet said hello or read its bootstrap.
         self.stop = asyncio.Event()
+        # Monotonic instant of the FIRST Stop: one acknowledgment budget runs from here, never
+        # renewed by the child's later output or by a repeated Stop.
+        self.stopped_at = None
         self.writer = threading.Thread(target=self._write_controls, name='managed-control-writer', daemon=True)
 
     def _write_controls(self):
@@ -132,25 +136,40 @@ class ManagedWorker:
         if self.closed.is_set():
             raise RuntimeStoreError('managed_worker_lost')
         if frame == {'type': 'stop'}:
+            if self.stopped_at is None:
+                self.stopped_at = time.monotonic()
             self.stop.set()
         try:
             self.commands.put_nowait(frame)
         except queue.Full as exc:
             raise RuntimeStoreError('worker_control_backpressure') from exc
 
+    def _stop_budget(self, ack):
+        """Seconds left of the ``ack`` window that opened at the first Stop (zero before the
+        child can receive controls)."""
+        if self.stopped_at is None:
+            self.stopped_at = time.monotonic()
+        return self.stopped_at + ack - time.monotonic()
+
     async def next_frame(self, timeout, ack):
-        """Read one frame. A requested Stop bounds the wait to ``ack`` seconds (zero before the
-        child can receive controls) and, unanswered, escalates instead of leaving the turn
-        started behind a silent-but-alive child."""
+        """Read one frame. A requested Stop bounds supervision to ``ack`` seconds TOTAL from the
+        first Stop: a child that keeps emitting valid frames is escalated on the same deadline as a
+        silent one, instead of leaving the turn started behind it."""
         reader = asyncio.ensure_future(asyncio.to_thread(read_frame, self.process.stdout))
         stopper = asyncio.ensure_future(self.stop.wait())
         try:
-            done, _ = await asyncio.wait({reader, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-            if reader not in done and stopper in done and ack:
-                done, _ = await asyncio.wait({reader}, timeout=ack)
-            if reader in done:
-                return reader.result()
-            raise RuntimeStoreError('managed_worker_stopped' if self.stop.is_set() else 'managed_worker_hello_timeout')
+            if not self.stop.is_set():
+                done, _ = await asyncio.wait({reader, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                if reader in done:
+                    return reader.result()
+                if not self.stop.is_set():
+                    raise RuntimeStoreError('managed_worker_hello_timeout')
+            remaining = self._stop_budget(ack)
+            if remaining > 0:
+                done, _ = await asyncio.wait({reader}, timeout=remaining)
+                if reader in done:
+                    return reader.result()
+            raise RuntimeStoreError('managed_worker_stopped')
         finally:
             stopper.cancel()
             reader.cancel()
