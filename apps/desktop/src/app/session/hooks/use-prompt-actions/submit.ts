@@ -48,8 +48,10 @@ import type { CreateBackendSessionForSend } from '../use-session-actions/create-
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
+  adoptPreparedSubmission,
+  type PreparedSubmission,
   preparedSubmissionKey,
-  readPreparedSubmission,
+  preparedSubmissionSlot,
   removePreparedSubmission,
   writePreparedSubmission
 } from './prepared-submissions'
@@ -438,10 +440,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         )
 
       let startingRouteToken = getRouteToken()
-      let retained: Awaited<ReturnType<typeof readPreparedSubmission>>
+      let retained: PreparedSubmission | undefined
+      let retainedKey: string | undefined
 
       try {
-        retained = await readPreparedSubmission(retryKeyForTarget())
+        const adopted = await adoptPreparedSubmission(retryKeyForTarget())
+        retained = adopted?.entry
+        retainedKey = adopted?.key
 
         // A legacy send has no deduplication identity. After an ambiguous ACK
         // even an upgraded server cannot safely admit it under the saved ID.
@@ -1068,7 +1073,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           params: submitParams(liveSessionId)
         }
 
-        const retryKey = retryKeyForTarget()
+        const retryKey = retainedKey ?? (await preparedSubmissionSlot(retryKeyForTarget()))
         await writePreparedSubmission(retryKey, prepared)
 
         if (sessionDriftReason()) {

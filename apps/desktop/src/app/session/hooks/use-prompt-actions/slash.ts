@@ -68,7 +68,7 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
-import { preparedSubmissionKey, readPreparedSubmission } from './prepared-submissions'
+import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
 import { captureSubmissionDestination } from './submission-destination'
@@ -229,6 +229,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         options?.destination ?? captureSubmissionDestination(initialStoredId ?? initialRuntimeId, ambientRequestGateway)
 
       const requestGateway = destination.requestGateway
+
       // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
       // or after a reload. It rides retryOptions so a prepared-submission retry stays hidden too.
       const retryOptions = {
@@ -238,7 +239,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       }
 
       try {
-        const prepared = await readPreparedSubmission(
+        const prepared = (await adoptPreparedSubmission(
           preparedSubmissionKey(
             resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
             destination,
@@ -246,7 +247,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             options?.attachments ?? $composerAttachments.get(),
             retryOptions
           )
-        )
+        ))?.entry
 
         if (prepared) {
           return await submitPromptText(prepared.text, {
