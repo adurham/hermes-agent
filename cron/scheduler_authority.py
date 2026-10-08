@@ -89,6 +89,7 @@ def reconcile_pending(*, allow_connect=True):
     from cron.jobs import pause_job, mark_job_run, save_job_output
     from cron.scheduler import _compose_run_delivery, _is_cron_silence_response
     from cron.delivery_queue import enqueue
+    from cron.executions import finish_execution
     import logging
 
     root = get_hermes_home() / 'cron' / 'admissions'
@@ -125,8 +126,13 @@ def reconcile_pending(*, allow_connect=True):
                 enqueue(params['request_id'], job, content, for_failure=not success)
             mark_job_run(job['id'], success, error, status='delivery_queued' if deliver else None,
                          execution_id=params['request_id'])
+            # The journal is the only link from the firer's ledger row to this receipt: settle
+            # the row (when its firer exited before its own bookkeeping) before deleting it.
+            from cron.delivery_outcome import settle_quietly, settled_outcome
+            finish_execution(params['request_id'], success=success, error=error, departed_owner=True,
+                             delivery_outcome=(settled_outcome(params['request_id']) or 'queued')
+                             if deliver else 'suppressed')
             if deliver:
-                from cron.delivery_outcome import settle_quietly
                 settle_quietly(job['id'], params['request_id'])
             journal.unlink(missing_ok=True)
         except Exception:

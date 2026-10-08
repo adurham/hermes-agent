@@ -68,3 +68,61 @@ def test_failed_manual_run_exits_nonzero(monkeypatch):
     from hermes_cli import cron
     monkeypatch.setattr(cron, '_cron_api', lambda **kw: {'success': True, 'job': {'executed': True, 'execution_success': False}})
     assert cron._job_action('run', 'job', 'Triggered') == 1
+
+
+def _owner(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
+    db = SessionDB(tmp_path / 'state.db')
+    runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()), adapters={})
+    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='test'))
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    runner.session_authority = authority
+    return authority, db
+
+
+def test_recovered_receipt_settles_the_departed_firers_execution_row(tmp_path, monkeypatch):
+    """The firing process created and started the execution row, then exited after the owner
+    finished. Recovery books the job from the receipt and must settle that SAME ledger row
+    before the journal (its only link to the receipt) is deleted — not leave it running for
+    the dead-owner sweep to rewrite as unknown."""
+    import os
+    import subprocess
+    import sys
+    from cron import scheduler_authority, executions
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='original', schedule='every 1h', deliver='local')
+        authority, db = _owner(tmp_path, monkeypatch)
+        firer = subprocess.run([sys.executable, '-c', (
+            'import sys; from cron.executions import create_execution, mark_execution_running;'
+            f'r = create_execution({job["id"]!r}, source="direct"); mark_execution_running(r["id"]);'
+            'print(r["id"])')], env={**os.environ, 'HERMES_HOME': str(tmp_path)},
+            capture_output=True, text=True, check=True, timeout=60)
+        fire = firer.stdout.strip().splitlines()[-1]
+        assert executions.get_execution(fire)['status'] == 'running'
+
+        async def probe():
+            params = {'job_id': job['id'], 'request_id': fire, 'extra_prompt': None}
+            receipt = await session_cron.operation(authority, 'submit', params)
+            row = claim_session_input(db, epoch=authority.epoch, session_id=receipt['session_id'])
+            settle_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed',
+                                 result={'result': {'cron_result': [True, 'document', 'answer', None]}, 'usage': {}})
+            journal = scheduler_authority.journal_path(job['id'], fire)
+            journal.parent.mkdir(parents=True)
+            journal.write_text(json.dumps({'params': params, 'receipt': None}))
+            session_cron.bind_owner(authority)
+            try:
+                await asyncio.to_thread(scheduler_authority.reconcile_pending)
+            finally:
+                session_cron.unbind_owner(authority)
+            assert not journal.exists()
+        try:
+            asyncio.run(probe())
+        finally:
+            db.close()
+        settled = executions.get_execution(fire)
+        assert (settled['status'], settled['delivery_outcome']) == ('completed', 'queued')
+        assert executions.recover_interrupted_executions() == 0
+        assert executions.get_execution(fire)['status'] == 'completed'
+

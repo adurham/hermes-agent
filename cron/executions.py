@@ -311,20 +311,37 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
 
 def finish_execution(
     execution_id: str, *, success: bool, error: Optional[str] = None,
-    delivery_outcome: Optional[str] = None,
+    delivery_outcome: Optional[str] = None, departed_owner: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Write a terminal result once; terminal attempts cannot be rewritten."""
+    """Write a terminal result once; terminal attempts cannot be rewritten.
+
+    Only the owning process may finish its attempt. ``departed_owner`` is the one exception:
+    receipt recovery (``cron.scheduler_authority.reconcile_pending``) holds the owner's
+    terminal canonical result for an attempt whose firing process provably exited before its
+    own bookkeeping. It settles that attempt with the receipt's verdict instead of leaving it
+    ``running`` for the dead-owner sweep to rewrite as ``unknown``; a live or same-process
+    owner still finishes its own row.
+    """
     now = _hermes_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
+        owner = (_PROCESS_ID, os.getpid())
+        if departed_owner:
+            row = conn.execute(
+                """SELECT process_id, pid, process_started_at FROM executions
+                   WHERE id=? AND status IN ('claimed','running')""", (execution_id,)).fetchone()
+            if (row is None or row["process_id"] == _PROCESS_ID
+                    or _owner_is_live(int(row["pid"]), row["process_started_at"])):
+                return None
+            owner = (row["process_id"], row["pid"])
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
                    handoff_started_at=NULL, delivery_outcome=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
+            (status, now, detail, delivery_outcome, execution_id, *owner),
         )
         if cur.rowcount != 1:
             return None
