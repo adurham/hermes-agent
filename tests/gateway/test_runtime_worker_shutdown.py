@@ -84,3 +84,31 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeypatch):
+    """A writer that outlives TURN_SETTLE_SECONDS must not abort the stop sequence: the rest of
+    shutdown (tickets, API, adapters, flush, exit state) still runs and the watchdog stays armed."""
+    late, wedged = asyncio.Event(), threading.Event()
+    task = asyncio.create_task(late.wait())
+    agent = SimpleNamespace(hard_interrupt=lambda message=None: None)
+    live = SimpleNamespace(task=task, route='r', event_stream=SimpleNamespace(execution={}))
+    authority = SimpleNamespace(sessions={'s': live}, _managed_workers={}, pending_stops={}, profile_id='p',
+                                _turn_workers={1: (SimpleNamespace(worker_done=wedged), [agent])})
+    revoked, stopped = [], []
+    runner = SimpleNamespace(session_authority=authority, _running_agents={},
+                             session_ticket_store=SimpleNamespace(revoke=lambda: revoked.append(True)),
+                             session_api=SimpleNamespace())
+    authority.runner = runner
+    async def stop_api(handle):
+        stopped.append(handle)
+    monkeypatch.setattr('gateway.run_api.stop_gateway_api', stop_api)
+    monkeypatch.setattr(run_runtime, 'TURN_SETTLE_SECONDS', 0.05)
+    try:
+        await asyncio.wait_for(run_runtime.settle_gateway_runtime(runner), 5)
+        assert revoked == [True] and stopped == [runner.session_api]
+        assert not task.done(), 'late work is left for recovery, not cancelled into a false settlement'
+    finally:
+        late.set()
+        await asyncio.gather(task, return_exceptions=True)

@@ -396,7 +396,9 @@ async def settle_gateway_runtime(runner):
 
     A managed turn still running here gets its Stop first (its worker acknowledges or is
     terminated, and the admission settles interrupted or ``unknown``); a task that still misses
-    TURN_SETTLE_SECONDS retains ownership until its writer stops."""
+    TURN_SETTLE_SECONDS is logged and left running for recovery. The stop sequence continues:
+    the executor quiesce skips the DB close while a writer is live, and process exit releases
+    the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
     authorities = _authorities(runner)
     stop_managed_turns(runner)
     tasks = [task for authority in authorities for task in _authority_tasks(authority)]
@@ -406,10 +408,15 @@ async def settle_gateway_runtime(runner):
             if not task.cancelled():
                 task.exception()
         if pending:
-            raise TimeoutError('Runtime workers did not settle; ownership retained')
+            logger.warning('%d authority task(s) did not settle within %.0fs; left for recovery',
+                           len(pending), TURN_SETTLE_SECONDS)
     from gateway.session_runtime_workers import join_authority_work
     for authority in authorities:
-        await join_authority_work(authority, 0)
+        try:
+            await join_authority_work(authority, 0)
+        except TimeoutError:
+            logger.warning('Profile %s still has live writers at shutdown; its admissions stay for recovery',
+                           getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
     from gateway.session_acp_lifecycle import end_idle_acp_sessions
