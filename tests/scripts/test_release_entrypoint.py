@@ -67,8 +67,10 @@ def _publish_tag(repo, version, commit):
 def _release(repo, commit, **overrides):
     from scripts.releases.entrypoint import release
 
+    # Fixtures pin their own published head so they do not track the production seed.
     arguments = {"bump": "patch", "repo": repo, "remote": "origin",
-                 "repository": "example/hermes-agent", "execute": lambda _command: None}
+                 "repository": "example/hermes-agent", "execute": lambda _command: None,
+                 "published": ("0.21.4", None)}
     return release(commit, **{**arguments, **overrides})
 
 
@@ -694,7 +696,7 @@ def test_concurrent_claim_loser_reports_the_remote_winner_and_the_version_stays_
     fresh = tmp_path / "fresh"
     git(tmp_path, "clone", "--quiet", origin, str(fresh))
     refs = git(fresh, "tag", "--list", "rc.*").splitlines()
-    assert derive_next_version(published=None, bump="patch") == "0.21.5"
+    assert derive_next_version(published="0.21.4", bump="patch") == "0.21.5"
     assert next_attempt("0.21.5", refs) == 2
 
 
