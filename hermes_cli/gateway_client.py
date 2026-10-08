@@ -31,6 +31,15 @@ class GatewayRPCError(GatewayClientError):
     """A received owner refusal, distinct from an ambiguous transport failure."""
 
 
+class GatewayUnavailableError(GatewayClientError):
+    """No ready owner to dial: ``state`` is ``ensure_gateway_runtime``'s verdict (``draining`` while an
+    update holds the install, ``starting`` past the deadline, ...). Nothing was submitted."""
+
+    def __init__(self, message, state):
+        super().__init__(message)
+        self.state = state
+
+
 class GatewayClient:
     def __init__(self, websocket):
         self.websocket = websocket
@@ -142,7 +151,8 @@ async def connect_gateway():
         result = await asyncio.to_thread(ensure_gateway_runtime, home)
         if result.state != "ready" or result.endpoint is None:
             detail = f" ({result.detail})" if getattr(result, "detail", None) else ""
-            raise GatewayClientError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}{detail}")
+            raise GatewayUnavailableError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}{detail}",
+                                          result.state)
         endpoint = result.endpoint
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
         url, protocols = gateway_ws_target(endpoint, ticket)
