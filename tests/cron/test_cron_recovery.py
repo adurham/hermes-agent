@@ -155,3 +155,33 @@ def test_owner_refused_fire_is_booked_failed_and_retires_its_journal(tmp_path, m
         finally:
             db.close()
         assert jobs.get_job(job['id'])['state'] != 'paused'
+
+
+def test_admission_journal_survives_power_loss(tmp_path, monkeypatch):
+    """The journal is the only evidence that a lost reply may have been admitted, so its rename
+    is made durable (directory fsync), not left in the page cache until the next flush."""
+    import utils
+    from cron import scheduler_authority
+    synced = []
+    real = utils.fsync_directory
+    monkeypatch.setattr(utils, 'fsync_directory', lambda path: (synced.append(str(path)), real(path)))
+    workdir = tmp_path / 'work'
+    workdir.mkdir()
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='original', schedule='every 1h', deliver='local', workdir=str(workdir))
+        workdir.rmdir()
+        authority, db = _owner(tmp_path, monkeypatch)
+
+        async def probe():
+            session_cron.bind_owner(authority)
+            try:
+                await asyncio.to_thread(
+                    scheduler_authority.run_canonical_job, jobs.get_job(job['id']), execution_id='fire')
+            finally:
+                session_cron.unbind_owner(authority)
+        try:
+            asyncio.run(probe())
+        finally:
+            db.close()
+    journal_dir = str(scheduler_authority.journal_path(job['id'], 'fire').parent)
+    assert journal_dir in synced

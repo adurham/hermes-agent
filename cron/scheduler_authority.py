@@ -36,7 +36,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
 
     def save():
         root.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(journal, record, mode=0o600)
+        # The journal is the only evidence a lost reply was admitted: survive power loss.
+        atomic_json_write(journal, record, mode=0o600, fsync_dir=True)
 
     async def refused(call, exc):
         # A lost reply may still have been admitted. Only the owner's own verdict (a bounded
@@ -59,6 +60,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
             raise
         record['receipt'] = receipt
         save()
+        # Cron turns run for minutes: back the status read off to 2 s instead of 10 reads/s.
+        delay = .1
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 await call('cancel', receipt)
@@ -68,7 +71,8 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 return tuple(state['result'])
             if state['status'] == 'unknown':
                 raise CronExecutionUnknown('unknown_execution: cron admission was not replayed')
-            await asyncio.sleep(.1)
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 2.0)
 
     async def remote():
         async with connect_gateway() as client:
