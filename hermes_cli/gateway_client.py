@@ -12,6 +12,14 @@ import time
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL as GATEWAY_WS_PROTOCOL
 
 GATEWAY_WS_TICKET_PREFIX = "hermes-gateway-ticket."
+# Per-request answer budget. Owner verbs are admissions/reads that answer promptly; the one that
+# legitimately runs long passes its own budget (``rpc(..., _timeout=...)``).
+DEFAULT_RPC_TIMEOUT = 30
+# Canonical ``/compress`` answers only after the summary call(s) and the commit: a long session's
+# summary routinely takes more than 30 s (``auxiliary.compression.timeout`` defaults to 120 s per
+# request, ``compression.context_total_ceiling_seconds`` to 600 s). Same budget as Desktop's
+# ``SESSION_COMPRESS_TIMEOUT_MS`` so every surface gives up at the same point.
+COMPRESS_RPC_TIMEOUT = 660
 
 
 def gateway_ws_target(endpoint, ticket):
@@ -125,14 +133,16 @@ class GatewayClient:
                 self.events.get_nowait()
             self.events.put_nowait(error)
 
-    async def rpc(self, method, **params):
+    async def rpc(self, method, *, _timeout=None, **params):
+        """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
+        overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer."""
         self.sequence += 1
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         try:
             await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
-            return await asyncio.wait_for(future, 30)
+            return await asyncio.wait_for(future, DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout)
         finally:
             self.pending.pop(rid, None)
 

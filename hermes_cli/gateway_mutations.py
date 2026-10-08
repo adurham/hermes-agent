@@ -1,7 +1,7 @@
 """Prepared native controls retain their identity across ambiguous RPC replies."""
 import json
 import uuid
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT, GatewayClientError
 
 
 class PreparedMutations:
@@ -19,7 +19,10 @@ class PreparedMutations:
         entry = self.pending[key]
         if 'result' not in entry:
             try:
-                entry['result'] = await client.rpc('session.mutate', **entry['params'])
+                # A compression answers after its summary + commit; the default budget would report
+                # a timeout while the owner (which shields the mutation) still commits it.
+                budget = {'_timeout': COMPRESS_RPC_TIMEOUT} if operation == 'compress' else {}
+                entry['result'] = await client.rpc('session.mutate', **budget, **entry['params'])
             except GatewayClientError as exc:
                 # A disconnect is not a definitive authority refusal. Preserve
                 # the tuple; never refresh its preconditions behind the user.
