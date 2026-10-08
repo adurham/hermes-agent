@@ -114,7 +114,7 @@ class TestMissingProviderKeyBlocks:
         job = _job()
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, resolve=_AuthErrorFactory())
 
         assert agent_constructed is False
@@ -181,7 +181,7 @@ class TestMissingProviderKeyBlocks:
         job = _job()
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, resolve=resolve)
 
         assert agent_constructed is True
@@ -210,7 +210,7 @@ class TestMissingProviderKeyBlocks:
         job = _job(provider="anthropic", model="claude-sonnet-5")
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, resolve=resolve)
 
         assert agent_constructed is False
@@ -224,7 +224,7 @@ class TestHealthyJobUnaffected:
         job = _job()
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path)
 
         assert success is True
@@ -309,7 +309,7 @@ class TestSkillReadiness:
         job = _job(skills=["needy-skill"])
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, output, _final_response, error, agent_constructed = \
                 _run_job_patched(job, tmp_path, skill_view=fake_skill_view)
 
         assert agent_constructed is False
@@ -334,7 +334,7 @@ class TestSkillReadiness:
         job = _job(skills=["ready-skill"])
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            success, output, final_response, error, agent_constructed = \
+            success, _output, _final_response, _error, agent_constructed = \
                 _run_job_patched(job, tmp_path, skill_view=fake_skill_view)
 
         assert success is True
@@ -348,7 +348,7 @@ class TestDeliveryPlatform:
             cron_jobs.save_jobs([job])
             with patch("cron.scheduler_delivery._is_known_delivery_platform",
                        return_value=False):
-                success, output, final_response, error, agent_constructed = \
+                success, output, _final_response, error, agent_constructed = \
                     _run_job_patched(job, tmp_path)
 
         assert agent_constructed is False

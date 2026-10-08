@@ -447,7 +447,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     from scripts.releases import channel_releases, docker, sequencer, store
 
     manifest_digest = hashlib.sha256(b"m").hexdigest()
-    _tags, releases, run = _sequencer_fixture(
+    _tags, _releases, run = _sequencer_fixture(
         "0.21.5", manifest_digest=manifest_digest, drafts_on_claim_tag=True)
     events = []
     head = ["0.21.4"]

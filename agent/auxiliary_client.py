@@ -7693,7 +7693,7 @@ def _ladder_parameter_rungs(
         if hit is None:
             break
         rungs.remove(hit)
-        matches, strip, message, remember = hit
+        _matches, strip, message, remember = hit
         retry_kwargs = strip(kwargs)
         logger.info("Auxiliary %s%s: %s: %s", task or "call", tag, message, first_err)
         rejection = first_err

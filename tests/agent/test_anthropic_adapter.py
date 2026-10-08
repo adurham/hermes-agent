@@ -723,7 +723,7 @@ class TestConvertMessages:
             },
             {"role": "user", "content": "Hi"},
         ]
-        system, result = convert_messages_to_anthropic(messages)
+        system, _result = convert_messages_to_anthropic(messages)
         # When cache_control is present, system should be a list of blocks
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}

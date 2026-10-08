@@ -968,7 +968,7 @@ class VoiceReceiver:
                 logger.debug("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
             return
         first_byte = data[0]
-        _, _, seq, timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
+        _, _, seq, _timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
         if ssrc == self._bot_ssrc:
             return
         # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
@@ -3398,7 +3398,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
-        thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
+        thread_channel, thread_id, _starter_msg, message_id = self._forum_thread_parts(thread)
         message_ids = [message_id]
         warnings: list[str] = []
         for chunk in chunks[1:]:
@@ -3442,7 +3442,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 getattr(forum_channel, "id", "?"), e,
             )
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
-        thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
+        _thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
         if file is not None or files:
             attachments = getattr(starter_msg, "attachments", None) or []
             if not attachments:

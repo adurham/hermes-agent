@@ -3237,7 +3237,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
         """DELETE /api/sessions/{session_id}."""
         session_id = request.match_info["session_id"]
-        session, err = await self._get_existing_session_or_404(session_id)
+        _session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = await self._ensure_session_db_async()

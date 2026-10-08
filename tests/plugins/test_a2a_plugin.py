@@ -669,7 +669,7 @@ class TestReplyCapture:
 
         try:
             asyncio.run(run())
-            state, text = fut.result(timeout=0)
+            state, _text = fut.result(timeout=0)
             assert state == protocol.STATE_FAILED
         finally:
             adapter._pop_pending("task-fail")

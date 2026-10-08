@@ -1841,7 +1841,7 @@ class TestMcpInvocationResolution:
             '{"command":"cua-driver","args":"mcp"}}'  # args should be list
         )
         with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
-            cmd, args = _resolve_mcp_invocation("cua-driver")
+            _cmd, args = _resolve_mcp_invocation("cua-driver")
         assert args == ["mcp"]
 
 
@@ -2176,7 +2176,7 @@ class TestCuaToolCoverageExpansion:
         id without the wrapper clobbering it."""
         backend = self._backend()
         backend.call_tool("any_tool", {"session": "harness-1", "arg": 1})
-        name, args = backend._session.call_tool.call_args.args
+        _name, args = backend._session.call_tool.call_args.args
         assert args["session"] == "harness-1"
 
 

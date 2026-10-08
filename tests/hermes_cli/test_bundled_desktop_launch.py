@@ -292,7 +292,7 @@ class TestCmdGuiOnABundle:
         checkout = tmp_path / "hermes-agent"
         (checkout / "apps" / "desktop").mkdir(parents=True)
         (checkout / "apps" / "desktop" / "package.json").write_text("{}\n")
-        code, builds, launches = self._run(monkeypatch, checkout, self._args())
+        _code, builds, launches = self._run(monkeypatch, checkout, self._args())
 
         assert launches == []
         assert any("npm" in " ".join(cmd) for cmd in builds), builds
