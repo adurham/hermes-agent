@@ -1,6 +1,7 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
 from contextlib import contextmanager
+from collections import deque
 from dataclasses import asdict, replace
 import json
 import os
@@ -120,6 +121,14 @@ class ManagedWorker:
         # renewed by the child's later output or by a repeated Stop.
         self.stopped_at = None
         self.writer = threading.Thread(target=self._write_controls, name='managed-control-writer', daemon=True)
+        # One dedicated reader thread per worker (never the loop's shared default executor, which
+        # parked pipe reads would exhaust). It reads one frame per demand, so the pipe keeps its
+        # backpressure, and posts it here; a cancelled next_frame leaves the frame for the next.
+        self.reader = None
+        self._demand = threading.Semaphore(0)
+        self._requested = False
+        self._frames = deque()
+        self._arrived = None
 
     def _write_controls(self):
         try:
@@ -131,6 +140,37 @@ class ManagedWorker:
                 self.send(frame)
         except (OSError, ValueError):
             self.closed.set()
+
+    def _read_frames(self, loop):
+        """Reader thread body. It owns ``stdout``: no other thread closes it under a blocked read."""
+        try:
+            while self._demand.acquire() and not self.closed.is_set():
+                try:
+                    item = read_frame(self.process.stdout)
+                except Exception as exc:
+                    item = exc  # EOF / invalid frame: handed to the owner, which raises it
+                try:
+                    loop.call_soon_threadsafe(self._deliver, item)
+                except RuntimeError:
+                    return  # the owner loop has closed; nobody is left to read for
+                if isinstance(item, Exception):
+                    return
+        finally:
+            self.process.stdout.close()
+
+    def _deliver(self, item):
+        self._frames.append(item)
+        self._arrived.set()
+
+    def _take(self):
+        item = self._frames[0]
+        if isinstance(item, Exception):
+            raise item  # stays queued: the reader has exited, every later read fails the same way
+        self._frames.popleft()
+        self._requested = False
+        if not self._frames:
+            self._arrived.clear()
+        return item
 
     def control(self, frame):
         if self.closed.is_set():
@@ -155,24 +195,30 @@ class ManagedWorker:
         """Read one frame. A requested Stop bounds supervision to ``ack`` seconds TOTAL from the
         first Stop: a child that keeps emitting valid frames is escalated on the same deadline as a
         silent one, instead of leaving the turn started behind it."""
-        reader = asyncio.ensure_future(asyncio.to_thread(read_frame, self.process.stdout))
+        if self.reader is None:
+            self._arrived = asyncio.Event()
+            self.reader = threading.Thread(target=self._read_frames, args=(asyncio.get_running_loop(),),
+                                           name='managed-frame-reader', daemon=True)
+            self.reader.start()
+        if not self._frames and not self._requested:
+            self._requested = True
+            self._demand.release()
+        arrived = asyncio.ensure_future(self._arrived.wait())
         stopper = asyncio.ensure_future(self.stop.wait())
         try:
-            if not self.stop.is_set():
-                done, _ = await asyncio.wait({reader, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-                if reader in done:
-                    return reader.result()
-                if not self.stop.is_set():
+            if not self._frames and not self.stop.is_set():
+                await asyncio.wait({arrived, stopper}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                if not self._frames and not self.stop.is_set():
                     raise RuntimeStoreError('managed_worker_hello_timeout')
             remaining = self._stop_budget(ack)
-            if remaining > 0:
-                done, _ = await asyncio.wait({reader}, timeout=remaining)
-                if reader in done:
-                    return reader.result()
-            raise RuntimeStoreError('managed_worker_stopped')
+            if not self._frames and remaining > 0:
+                await asyncio.wait({arrived}, timeout=remaining)
+            if not self._frames:
+                raise RuntimeStoreError('managed_worker_stopped')
+            return self._take()
         finally:
             stopper.cancel()
-            reader.cancel()
+            arrived.cancel()
 
     def interrupt(self):
         self.control({'type': 'stop'})
@@ -200,6 +246,7 @@ class ManagedWorker:
 
     def close(self):
         self.closed.set()
+        self._demand.release()  # a reader parked between frames exits; one mid-read ends at EOF
         if self.process.poll() is None:
             self._signal_worker(kill=False)
             self.process.terminate()
@@ -214,7 +261,10 @@ class ManagedWorker:
         if self.writer.ident is not None:
             self.writer.join(timeout=5)
         self.process.stdin.close()
-        self.process.stdout.close()
+        if self.reader is None:
+            self.process.stdout.close()
+        else:
+            self.reader.join(timeout=5)
 
 
 def interrupt_managed(authority, actor, ref, generation):
