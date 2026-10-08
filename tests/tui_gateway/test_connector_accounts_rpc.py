@@ -108,6 +108,36 @@ def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monke
     assert mints == []
 
 
+def test_a_session_retry_with_the_open_accounts_id_reissues_it(monkeypatch):
+    from tools.connectors.contract import Actor, TargetState
+    from tools.connectors.operation import ConnectionOperation, Target
+
+    transport = _Transport()
+    session = dict(transport=transport, agent=None, session_key="retry-sid", history=[],
+                   history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
+                   source="desktop")
+    monkeypatch.setitem(server._sessions, "retry-sid", session)
+    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    operation = ConnectionOperation([Target("gmail", "connector", "reconnect", alias="work")], session_key="retry-sid")
+    live.open(operation)
+    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/1",
+                         connection_id="ca_work")
+    operation.transition("gmail", TargetState.failed, Actor.backend_watcher, detail="expired")
+    mints = []
+
+    class Client:
+        def connections(self, names, **kwargs):
+            mints.append((tuple(names), kwargs.get("connection_id")))
+            return {"results": [{"connector": n, "status": "initiated", "connect_url": "https://l/2",
+                                 "connection_id": "ca_work2"} for n in names]}
+
+    monkeypatch.setattr("tools.connectors.managed.managed_client", Client)
+    reply = _rpc("connectors.connect", transport, owner={"type": "session", "session_id": "retry-sid"},
+                 connectors=["gmail"], reconnect=True, connection_id="ca_work")
+    assert "result" in reply, reply
+    assert mints == [(("gmail",), "ca_work")]
+
+
 def test_rename_to_a_name_another_account_holds_is_alias_taken(monkeypatch):
     def taken(self, connection_id, alias):
         raise IdempotencyConflict("alias taken", code="alias_taken", status=409)
