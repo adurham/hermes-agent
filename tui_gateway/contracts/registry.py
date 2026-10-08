@@ -45,12 +45,16 @@ class EventContract:
 
 
 METHODS: dict[str, MethodContract] = {}
+# ``hermes-gateway-v1`` verbs only ``gateway/session_controls.py::AuthorityConnection`` serves
+# (``contracts/canonical.py``); a name both dispatchers serve keeps its one ``METHODS`` entry.
+CANONICAL_METHODS: dict[str, MethodContract] = {}
 SERVER_REQUESTS: dict[str, ServerRequestContract] = {}
 EVENTS: dict[str, EventContract] = {}
 
 
 def _declare(table: dict, entry) -> None:
-    if entry.name in table:
+    if entry.name in table or (table in (METHODS, CANONICAL_METHODS)
+                               and entry.name in (METHODS.keys() | CANONICAL_METHODS.keys())):
         raise RuntimeError(f"contract declared twice: {entry.name}")
     table[entry.name] = entry
 
@@ -58,6 +62,12 @@ def _declare(table: dict, entry) -> None:
 def method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
     entry = MethodContract(name, params, result, doc)
     _declare(METHODS, entry)
+    return entry
+
+
+def canonical_method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
+    entry = MethodContract(name, params, result, doc)
+    _declare(CANONICAL_METHODS, entry)
     return entry
 
 
@@ -107,6 +117,18 @@ def validate_params(contract: MethodContract | ServerRequestContract, params: di
                               "the Hermes backend are out of sync (different versions); run `hermes update` "
                               "and restart both")
     return params, None
+
+
+def canonical_param_problems(contract: MethodContract, params: dict) -> list[str]:
+    """Key paths the canonical dispatcher refuses (``4001 invalid_params``): unknown and missing
+    keys — the closed set its handlers enforced by hand. Value/type checks stay in the handlers,
+    which own their domain reasons (``stale_generation``, ``not_found``, …)."""
+    try:
+        contract.params.model_validate(params)
+    except ValidationError as exc:
+        return [".".join(str(p) for p in err.get("loc", ())) or "params" for err in exc.errors()
+                if err.get("type") in ("extra_forbidden", "missing")]
+    return []
 
 
 def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:
