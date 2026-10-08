@@ -215,7 +215,7 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg
 def _coerce_duration_seconds(value: Any) -> Optional[int]:
     """Round a raw length to whole positive seconds, or None if unusable."""
     try:
-        secs = int(round(float(value)))
+        secs = round(float(value))
     except (TypeError, ValueError):
         return None
     return secs if secs > 0 else None

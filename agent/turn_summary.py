@@ -149,7 +149,7 @@ def format_elapsed(seconds: float) -> str:
     seconds = max(seconds, 0.0)
     if seconds < 60:
         return f"{seconds:.1f}s"
-    minutes, rest = divmod(int(round(seconds)), 60)
+    minutes, rest = divmod(round(seconds), 60)
     return f"{minutes}m{rest:02d}s"
 
 

@@ -184,8 +184,8 @@ def _build_codex_gpt5_autoraise_notice(
     else:
         # Static fallback: codex-spark is natively 128K; gpt-5.4/5.5/5.6 are capped at 272K.
         cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
-    from_pct = int(round(autoraise["from"] * 100))
-    to_pct = int(round(autoraise["to"] * 100))
+    from_pct = round(autoraise["from"] * 100)
+    to_pct = round(autoraise["to"] * 100)
     return (
         f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
@@ -225,8 +225,8 @@ def _codex_gpt55_autoraise_notice_state(autoraise: dict[str, Any]) -> str:
     different autoraised Codex model re-notifies once.
     """
     model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
-    from_pct = int(round(float(autoraise["from"]) * 100))
-    to_pct = int(round(float(autoraise["to"]) * 100))
+    from_pct = round(float(autoraise["from"]) * 100)
+    to_pct = round(float(autoraise["to"]) * 100)
     return f"{model}:{from_pct}:{to_pct}"
 
 

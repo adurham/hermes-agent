@@ -190,7 +190,7 @@ def estimate_tokens_from_schemas(tool_defs: Iterable[dict[str, Any]]) -> int:
             return len(json.dumps(td, ensure_ascii=False, separators=(",", ":")))
         except (TypeError, ValueError):
             return len(str(td))
-    return int(math.ceil(sum(map(_chars, tool_defs)) / CHARS_PER_TOKEN))
+    return math.ceil(sum(map(_chars, tool_defs)) / CHARS_PER_TOKEN)
 
 
 def should_activate(config: ToolSearchConfig, deferrable_tokens: int,
