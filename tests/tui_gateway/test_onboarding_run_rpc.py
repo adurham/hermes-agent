@@ -69,6 +69,25 @@ def test_skip_leaves_the_first_chat_offer_alone(launched_under_work):
     assert PROFILE_BUILD_FLAG not in (_onboarding(root).get("seen") or {})
 
 
+def test_a_failed_write_fails_the_call_and_writes_nothing(launched_under_work, monkeypatch):
+    # The offer flag and run land in one write: if it fails the caller sees an error and neither is applied.
+    from hermes_cli import config as config_mod
+
+    root, _work = launched_under_work
+    real_write = config_mod.atomic_config_write
+
+    def refuse_the_offer_flag(path, data, **kwargs):
+        if PROFILE_BUILD_FLAG in ((data.get("onboarding") or {}).get("seen") or {}):
+            raise OSError("disk full")
+        real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(config_mod, "atomic_config_write", refuse_the_offer_flag)
+
+    assert "error" in _call("onboarding.set_run", {"run": False, "mark_profile_offered": True})
+    assert "run" not in _onboarding(root)
+    assert PROFILE_BUILD_FLAG not in (_onboarding(root).get("seen") or {})
+
+
 def test_set_run_requires_a_bool(launched_under_work):
     assert "error" in _call("onboarding.set_run", {})
     assert "error" in _call("onboarding.set_run", {"run": "yes"})

@@ -63,13 +63,17 @@ def should_run() -> bool:
     return value if isinstance(value, bool) else not install_has_history(get_default_hermes_root())
 
 
-def set_run(value: bool) -> None:
-    """Persist ``onboarding.run`` in the root ``config.yaml``, keeping every other key and comment."""
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
+def set_run(value: bool, *, mark_profile_offered: bool = False) -> None:
+    """Persist ``onboarding.run`` (and, with *mark_profile_offered*, ``onboarding.seen.profile_build_offered``)
+    in the root ``config.yaml`` as one write, keeping every other key and comment. A failed write raises."""
+    from agent.onboarding import PROFILE_BUILD_FLAG
+    from hermes_cli import config as config_mod
 
     path = _root_config()
-    config = read_user_config_raw(path)
-    if not isinstance(config.get("onboarding"), dict):
-        config["onboarding"] = {}
-    config["onboarding"]["run"] = value
-    atomic_config_write(path, config)
+    with config_mod._CONFIG_LOCK:
+        config = config_mod.read_user_config_raw(path)
+        section = config_mod._ensure_dict(config, "onboarding")
+        section["run"] = value
+        if mark_profile_offered:
+            config_mod._ensure_dict(section, "seen")[PROFILE_BUILD_FLAG] = True
+        config_mod.atomic_config_write(path, config)

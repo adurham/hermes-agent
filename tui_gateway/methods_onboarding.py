@@ -57,14 +57,14 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.set_run")
 def _(rid, params: dict) -> dict:
-    from agent.onboarding import PROFILE_BUILD_FLAG, mark_seen
     from hermes_cli.onboarding_run import set_run
-    from hermes_constants import get_default_hermes_root
     if not isinstance(params.get("run"), bool):
         return _err(rid, 4002, "onboarding.set_run requires a boolean 'run'")
-    set_run(params["run"])
-    if params.get("mark_profile_offered"):
-        mark_seen(get_default_hermes_root() / "config.yaml", PROFILE_BUILD_FLAG)
+    try:
+        set_run(params["run"], mark_profile_offered=bool(params.get("mark_profile_offered")))
+    except Exception as e:
+        logger.exception("onboarding.set_run failed")
+        return _err(rid, 5077, str(e))
     return _ok(rid, _run_state())
 
 
