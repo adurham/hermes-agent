@@ -12,12 +12,29 @@ export function preparedJournal(userData: string, origin: string) {
   const file = path.join(userData, `prepared-submissions-${createHash('sha256').update(origin).digest('hex')}.json`)
 
   const read = (): Record<string, unknown> => {
+    let raw: string
+
     try {
-      return JSON.parse(fs.readFileSync(file, 'utf8'))
+      raw = fs.readFileSync(file, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {return {}}
       throw error
     }
+
+    try {
+      const parsed: unknown = JSON.parse(raw)
+
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {return parsed as Record<string, unknown>}
+    } catch { /* quarantined below */ }
+
+    // A torn/garbled journal (crash mid-write on a filesystem without atomic rename, disk
+    // corruption) is unrecoverable as JSON. Throwing here blocked every later send of the origin,
+    // since each send must journal first. Move it aside with its bytes intact for diagnosis; its
+    // uncertain entries are lost to automatic retry, which only ever was an explicit user action.
+    fs.renameSync(file, `${file}.corrupt-${Date.now()}`)
+    console.warn(`[prepared-submissions] quarantined unreadable journal ${path.basename(file)}`)
+
+    return {}
   }
 
   return {
