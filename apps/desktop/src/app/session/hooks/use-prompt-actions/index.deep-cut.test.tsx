@@ -33,6 +33,51 @@ describe('usePromptActions deep-cut confirm across a session switch (#133716)', 
     clearNotifications()
     setMessages([])
     $busy.set(false)
+    dropSessionState(RUNTIME_SESSION_ID)
+    dropSessionState(RUNTIME_SESSION_B)
+  })
+
+  it('drops an initial deep-regenerate confirm answered after the user switched sessions', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('old prompt')], role: 'user', rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('old reply')], role: 'assistant', timestamp: 1 },
+      { id: 'u2', parts: [textPart('new prompt')], role: 'user', rowId: 13, timestamp: 2 },
+      { id: 'a2', parts: [textPart('new reply')], role: 'assistant', timestamp: 3 }
+    ]
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const submits: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+      }
+
+      return {} as never
+    }) as unknown as GatewayMock
+
+    setMessages(seed as never)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={RUNTIME_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seed}
+      />
+    )
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        activeSessionIdRef.current = RUNTIME_SESSION_B
+        settleConfirm(true)
+      }
+    })
+
+    await handle!.reloadFromMessage('a1')
+    stopConfirming()
+
+    expect(submits).toEqual([])
   })
 
   it('drops a 4033 confirm answered after the user switched sessions (#133716)', async () => {
@@ -207,7 +252,7 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     dropSessionState('other-runtime')
   })
 
-  it('a stale-target retry whose refresh shows a new later turn does not reuse the deep confirm', async () => {
+  it('a stale-target retry whose refresh shows a new later turn asks again before retrying', async () => {
     const seed = [
       { id: 'u1', parts: [textPart('first')], role: 'user', rowId: 11, timestamp: 0 },
       { id: 'a1', parts: [textPart('reply')], role: 'assistant', timestamp: 1 },
@@ -253,8 +298,10 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
       />
     )
 
+    let confirms = 0
     const stopConfirming = $confirmRequest.listen(request => {
       if (request) {
+        confirms += 1
         settleConfirm(true)
       }
     })
@@ -267,9 +314,9 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     } as never)
     stopConfirming()
 
+    expect(confirms).toBe(2)
     expect(submits).toHaveLength(2)
-    expect(submits[1]).toMatchObject({ truncate_before_row_id: 21 })
-    expect(submits[1]).not.toHaveProperty('confirm_deep_truncate')
+    expect(submits[1]).toMatchObject({ confirm_deep_truncate: true, truncate_before_row_id: 21 })
   })
 
   it('a deep-edit confirm answered after a session switch sends nothing and leaves the new session idle', async () => {
