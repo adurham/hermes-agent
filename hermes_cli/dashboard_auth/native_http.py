@@ -29,11 +29,8 @@ def native_profile_scope(request):
     if grant is None:
         yield
         return
-    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home = Path(grant['profile_id'])
-    if home.resolve() == get_process_hermes_home().resolve():
-        yield
-        return
     token = set_hermes_home_override(str(home))
     try:
         yield
