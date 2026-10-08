@@ -109,9 +109,12 @@ def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:
 
 
 def _multiplexer_starting(home: Path) -> bool:
+    """The root's reservation is pending AND that root's boot policy would serve *home*. A
+    ``gateway.standalone: true`` secondary is never served by it, so a reserved (or ready) root
+    must not make its client wait out the deadline instead of starting the profile's own owner."""
     from hermes_cli.gateway_runtime_discovery import missing_owner_state
-    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
-    root = multiplexer_root_for(home)
+    from hermes_cli.gateway_runtime_multiplex import implied_host_root
+    root = implied_host_root(home)
     return root is not None and missing_owner_state(root) == "starting"
 
 

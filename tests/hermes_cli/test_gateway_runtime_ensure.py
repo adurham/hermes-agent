@@ -407,3 +407,27 @@ def test_cold_start_target_follows_boot_multiplex_policy(tmp_path, monkeypatch, 
     runtime.ensure_gateway_runtime(home, timeout=0.3)
 
     assert spawned == [{"root": root, "home": home}[owner].resolve()]
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, monkeypatch):
+    """A held root reservation means "the multiplexer is coming" only for profiles its boot policy
+    serves; a `gateway.standalone: true` secondary must still get its own owner started."""
+    from gateway.runtime_ownership import ProfileOwnership
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+
+    root = tmp_path / ".hermes"
+    home = root / "profiles" / "alpha"
+    home.mkdir(parents=True, mode=0o700)
+    (root / "config.yaml").write_text("model: {default: m}\n", encoding="utf-8")
+    (home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
+    spawned = []
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+    owner = ProfileOwnership()
+    owner.reserve([root])
+    try:
+        runtime.ensure_gateway_runtime(home, timeout=0.5)
+    finally:
+        owner.close()
+    assert spawned == [home.resolve()]
