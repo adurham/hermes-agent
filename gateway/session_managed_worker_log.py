@@ -79,7 +79,7 @@ def drain_worker_stderr(stream, path, pid, scrub):
             try:
                 line = _redact(chunk.decode('utf-8', 'replace'), scrub)
                 _append(path, f'[pid {pid}] ' + (line if whole else line[:KEPT_LINE_CHARS] + ' [truncated]\n'))
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 # Keep draining regardless: a child blocked on a full stderr pipe would wedge.
                 if not warned:
                     warned = True

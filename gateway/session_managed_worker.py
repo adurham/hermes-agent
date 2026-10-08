@@ -150,8 +150,8 @@ class ManagedWorker:
             while self._demand.acquire() and not self.closed.is_set():
                 try:
                     item = read_frame(self.process.stdout)
-                except Exception as exc:
-                    item = exc  # EOF / invalid frame: handed to the owner, which raises it
+                except (EOFError, ValueError, OSError, RecursionError) as exc:
+                    item = exc  # EOF / invalid or oversized frame / closed pipe: the owner raises it
                 try:
                     loop.call_soon_threadsafe(self._deliver, item)
                 except RuntimeError:
@@ -178,9 +178,10 @@ class ManagedWorker:
     def drain_stderr(self, path):
         """Route the child's stderr (its tracebacks and redirected prints) into the profile's
         bounded, redacted, private log instead of discarding it."""
+        from agent.memory_provider import spawn_context_thread
         from gateway.session_managed_worker_log import drain_worker_stderr
-        self.stderr_drain = threading.Thread(target=drain_worker_stderr, name='managed-stderr-drain', daemon=True,
-                                             args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
+        self.stderr_drain = spawn_context_thread(drain_worker_stderr, name='managed-stderr-drain',
+                                                 args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
         self.stderr_drain.start()
 
     def control(self, frame):
@@ -208,8 +209,9 @@ class ManagedWorker:
         silent one, instead of leaving the turn started behind it."""
         if self.reader is None:
             self._arrived = asyncio.Event()
-            self.reader = threading.Thread(target=self._read_frames, args=(asyncio.get_running_loop(),),
-                                           name='managed-frame-reader', daemon=True)
+            from agent.memory_provider import spawn_context_thread
+            self.reader = spawn_context_thread(self._read_frames, name='managed-frame-reader',
+                                               args=(asyncio.get_running_loop(),))
             self.reader.start()
         if not self._frames and not self._requested:
             self._requested = True
