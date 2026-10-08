@@ -278,6 +278,7 @@ def _worker_env(authority):
 
 
 async def execute_managed(authority, ref, row, policy):
+    from gateway.run_turn_progress import publish_worker_tool_event
     env = await asyncio.to_thread(_worker_env, authority)
     cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
     process = await asyncio.to_thread(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
@@ -321,10 +322,7 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
                 continue
-            if (kind in {'tool.start', 'tool.complete'} and set(frame) == {'type', 'tool_call_id', 'name'}
-                    and isinstance(frame['tool_call_id'], str) and isinstance(frame['name'], str)):
-                authority.publish_execution(ref.session_id, row['generation'], kind,
-                    {'tool_call_id': frame['tool_call_id'], 'name': frame['name']})
+            if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
                 result = frame['result']

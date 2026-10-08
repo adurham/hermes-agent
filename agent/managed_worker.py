@@ -223,6 +223,17 @@ def retire_agent(agent):
     agent.release_clients()
 
 
+def tool_frame(call_id, name, args, *result):
+    """The callback arguments an in-process turn publishes from (executor-redacted display args,
+    the result and its failure verdict); the owner builds the shared tool event from them."""
+    frame = {'tool_call_id': str(call_id or ''), 'name': str(name or 'tool'), 'args': args if isinstance(args, dict) else {}}
+    if result:
+        from agent.display import _detect_tool_failure
+        frame['result'] = result[0] if isinstance(result[0], str) else str(result[0])
+        frame['is_error'] = bool(_detect_tool_failure(frame['name'], result[0])[0])
+    return json.loads(json.dumps(frame, default=str))
+
+
 def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
@@ -263,8 +274,9 @@ def execute(frame, channel):
                 skip_memory=policy.ignore_rules, skip_background_review=True, quiet_mode=True,
                 stream_delta_callback=lambda text: channel.send('delta', text=text) if text else None,
                 clarify_callback=controls.clarify,
-                tool_start_callback=lambda call_id, name, args: channel.send('tool.start', tool_call_id=call_id, name=name),
-                tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete', tool_call_id=call_id, name=name))
+                tool_start_callback=lambda call_id, name, args: channel.send('tool.start', **tool_frame(call_id, name, args)),
+                tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
+                                                                                         **tool_frame(call_id, name, args, result)))
             controls.agent = agent
             if controls.stopped.is_set():
                 agent.interrupt()

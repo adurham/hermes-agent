@@ -221,7 +221,14 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
                                replay_epoch=restored['result']['replay_epoch'], last_sequence=0)
             tools = [e for e in replay['result']['events'] if e['type'] in {'tool.start', 'tool.complete'}]
             assert tools and tools[0]['type'] == 'tool.start' and tools[-1]['type'] == 'tool.complete', replay
-            assert str(target) not in json.dumps(tools) and 'MANAGED_TOOL_EFFECT' not in json.dumps(tools), tools
+            # The ordinary turn's payload (Ink: tool_id/context; ACP: args/result/is_error); the same
+            # viewer already reads these rows through session.resume, so the stream withholds nothing.
+            start = tools[0]['payload']
+            done = next(e['payload'] for e in tools if e['type'] == 'tool.complete' and e['payload']['tool_id'] == 'managed-tool')
+            assert start['tool_id'] == 'managed-tool' and start['context'], tools
+            assert start['args']['command'] == peer.command and done['is_error'] is False, tools
+            if not peer.control_mode and worker_action != 'background':
+                assert 'MANAGED_TOOL_EFFECT' in done['result'], tools
         rows = query('SELECT role,content FROM messages WHERE session_id=? ORDER BY id', (sid,))
         assert sum(role == 'user' and 'DO_MANAGED_TOOL' in content for role, content in rows) == 1, rows
         assert sum(role == 'assistant' and 'MANAGED_TOOL_DONE' in (content or '') for role, content in rows) == 1, rows
