@@ -89,3 +89,41 @@ def test_worker_route_and_api_content_preserve_exact_usage_and_target_fences(tmp
     finally:
         store.close()
         db.close()
+
+
+def test_turn_prologue_row_backfills_land_through_the_worker_like_direct(worker):
+    """The real prologue (agent/turn_context.py) updates an already-materialized user row by ``_row_id``:
+    the api_content sidecar after in-place preflight compaction, and the multimodal context part. The
+    managed facade must implement both row-addressed ops, fenced to its own session's active user rows,
+    or the durable row silently diverges from what the model saw (helix4u #4)."""
+    import threading
+    import types
+    from agent.turn_context import _append_multimodal_context, _stamp_api_content_sidecar
+    db, store = worker
+    db.create_session('direct', 'cli')
+
+    def newest_user(sid):
+        with db._read_ctx() as conn:
+            return tuple(conn.execute("SELECT content, api_content FROM messages WHERE session_id=? AND role='user' "
+                                      "ORDER BY id DESC LIMIT 1", (sid,)).fetchone())
+
+    durable = {}
+    for sid, sdb in (('direct', db), ('owned', store)):
+        agent = types.SimpleNamespace(_session_db=sdb, session_id=sid, _session_persist_lock=threading.Lock(),
+                                      _persist_user_message_override=None, _last_compaction_in_place=True)
+        text = [{'role': 'user', 'content': 'question'}]
+        sdb.archive_and_compact(sid, text, tail_count=0)
+        _stamp_api_content_sidecar(agent, text, 0, '', 'PLUGIN CONTEXT', preflight_compressed=True)
+        sidecar = newest_user(sid)
+        sdb.append_messages_batch(sid, [{'role': 'assistant', 'content': 'ok'}])
+        parts = [{'role': 'user', 'content': [{'type': 'text', 'text': 'look'},
+                                               {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AA=='}}]}]
+        sdb.append_messages_batch(sid, parts)
+        _append_multimodal_context(agent, parts[0], '', 'PLUGIN CONTEXT', preflight_compressed=False)
+        durable[sid] = (sidecar, newest_user(sid)[0])
+    assert durable['owned'] == durable['direct'] == (('question', 'question\n\nPLUGIN CONTEXT'),
+                                                     'look\n[screenshot]\nPLUGIN CONTEXT')
+    foreign = db.append_message('foreign', 'user', 'private')
+    assert store.set_user_message_content('owned', foreign, 'overwritten') == 0
+    assert store.set_message_api_content('owned', foreign, 'private', 'injected') == 0
+    assert newest_user('foreign') == ('private', None)

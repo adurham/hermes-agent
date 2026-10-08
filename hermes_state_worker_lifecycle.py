@@ -151,6 +151,33 @@ def worker_api_content(db, conn, session_id, payload):
     return {'value': value}
 
 
+def _row_id(payload):
+    row_id = payload.get('row_id')
+    if type(row_id) is not int or row_id <= 0:
+        raise RuntimeStoreError('invalid_params')
+    return row_id
+
+
+def worker_message_api_content(db, conn, session_id, payload):
+    """Row-addressed sidecar backfill, same guards as ``SessionDB.set_message_api_content``."""
+    from hermes_state_messages import _scrub_surrogates
+    if set(payload) != {'row_id', 'content', 'api_content'} or not isinstance(payload['api_content'], str):
+        raise RuntimeStoreError('invalid_params')
+    return {'value': conn.execute(
+        "UPDATE messages SET api_content=? WHERE id=? AND session_id=? AND role='user' AND active=1 AND content IS ?",
+        (_scrub_surrogates(payload['api_content']), _row_id(payload), session_id,
+         db._encode_content(payload['content']))).rowcount}
+
+
+def worker_user_content(db, conn, session_id, payload):
+    """Rewrite ONE active user row of this session, same guards as ``SessionDB.set_user_message_content``."""
+    if set(payload) != {'row_id', 'content'}:
+        raise RuntimeStoreError('invalid_params')
+    return {'value': conn.execute(
+        "UPDATE messages SET content=? WHERE id=? AND session_id=? AND role='user' AND active=1",
+        (db._encode_content(payload['content']), _row_id(payload), session_id)).rowcount}
+
+
 WORKER_LIFECYCLE_HANDLERS = {
     'session.title': worker_title,
     'session.title_source': worker_title_source,
@@ -159,6 +186,8 @@ WORKER_LIFECYCLE_HANDLERS = {
     'session.activity_clear': worker_activity_clear,
     'session.billing_route': worker_billing_route,
     'session.api_content': worker_api_content,
+    'session.message_api_content': worker_message_api_content,
+    'session.user_content': worker_user_content,
     'session.create': worker_create,
     'session.end': worker_end,
     'session.lifecycle': worker_lifecycle,
