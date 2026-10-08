@@ -7753,6 +7753,40 @@
         "title": "CatalogApproved",
         "type": "object"
       },
+      "CatalogPluginPresence": {
+        "additionalProperties": false,
+        "description": "A named catalog plugin this OS runs. ``state`` is the pinned ``plugin.json`` app declaration judged\non this host; ``sentence`` names what is missing (empty when present or unknown); ``disclosure`` is the\ncatalog description's ``Disclosure:`` sentence (empty when it has none).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CatalogAppState"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          },
+          "disclosure": {
+            "title": "Disclosure",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "title",
+          "state",
+          "sentence",
+          "disclosure"
+        ],
+        "title": "CatalogPluginPresence",
+        "type": "object"
+      },
       "CatalogScan": {
         "additionalProperties": false,
         "description": "The catalog's security scan of the pinned commit; read-only on the card.",
@@ -22977,7 +23011,8 @@
           "update",
           "remove",
           "settings",
-          "onboarding"
+          "onboarding",
+          "presence"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -23007,7 +23042,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);\n``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);\n``presence``: ``names`` (catalog names, answered in that order).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -23145,6 +23180,21 @@
             ],
             "default": null,
             "title": "Values"
+          },
+          "names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Names"
           }
         },
         "title": "PluginsManageParams",
@@ -23481,6 +23531,21 @@
             ],
             "default": null,
             "title": "Onboarding"
+          },
+          "presence": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CatalogPluginPresence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Presence"
           }
         },
         "title": "PluginsManageResult",

@@ -1911,7 +1911,13 @@ def _plugins_onboarding(rid, params):
     return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
 
 
-_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "toggle": _plugins_toggle, "install": _plugins_install,
+def _plugins_presence(rid, params):
+    """Named catalog plugins this OS runs, in the order asked, each with its app state and disclosure."""
+    return _ok(rid, {"presence": _tools_mod("hermes_cli.plugin_catalog_presence").presence_for(params.get("names") or [])})
+
+
+_PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "presence": _plugins_presence,
+                    "toggle": _plugins_toggle, "install": _plugins_install,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 
