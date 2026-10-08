@@ -243,22 +243,25 @@ class GatewayChatView:
             return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
         return 3
 
-    async def _write_usage_file(self, admission, outcome):
-        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote, read from the
-        result the owner committed with this admission's settlement (best-effort, never raises)."""
+    async def _settled_result(self, admission):
+        """The structured result the owner committed with this admission's settlement — the same
+        dict the in-process one-shot got from ``run_conversation`` (best-effort, never raises)."""
         from websockets.exceptions import WebSocketException
-        from hermes_cli.oneshot import _write_usage_file
-        result = {}
         try:
             receipt = await self.client.rpc("prompt.receipt", session_id=self.session_id,
                                             admission_id=admission, include_result=True)
-            result = dict(receipt.get("result") or {})
+            return dict(receipt.get("result") or {})
         # Transport loss / refusal, or a receipt whose ``result`` is not a mapping.
         except (GatewayClientError, OSError, TimeoutError, WebSocketException,
                 AttributeError, TypeError, ValueError) as exc:
-            # The ledger is still written from the outcome alone; a missing receipt is not fatal.
-            logger.debug("usage-file receipt for %s unavailable: %s", admission, exc)
-        result.setdefault("session_id", self.session_id)
+            # The exit code and ledger still follow the settled outcome; a missing receipt is not fatal.
+            logger.debug("settled result for %s unavailable: %s", admission, exc)
+            return {}
+
+    def _write_usage_file(self, result, outcome):
+        """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
+        from hermes_cli.oneshot import _write_usage_file
+        result = {**result, "session_id": result.get("session_id") or self.session_id}
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)
 
@@ -296,19 +299,28 @@ class GatewayChatView:
                     await self.changed.wait()
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
+                text = terminal.get("text") or terminal.get("content") or ""
+                # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
+                # 'completed' with ``completed: False`` in its committed result. Judge both with the
+                # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
+                from hermes_cli.oneshot import _oneshot_exit_code
+                from hermes_cli.turn_exit import turn_exit_code
+                result = await self._settled_result(admission)
+                result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
+                              interrupted=bool(result.get("interrupted")) or outcome == "cancelled")
+                exit_code = (_oneshot_exit_code(text, result) if self.unattended
+                             else turn_exit_code(result, kanban_worker=False))
                 if self.usage_file:
-                    await self._write_usage_file(admission, outcome)
+                    self._write_usage_file(result, outcome)
                 if self.emitter is not None:
-                    return self.emitter.emit_result(
-                        {"final_response": terminal.get("text") or terminal.get("content") or "",
-                         "failed": outcome not in ("completed", "cancelled"), "interrupted": outcome == "cancelled"},
-                        session_id=self.session_id, exit_code=130 if outcome == "cancelled" else 0)
-                print(terminal.get("text") or terminal.get("content") or "", flush=True)
+                    return self.emitter.emit_result({**result, "final_response": text},
+                                                    session_id=self.session_id, exit_code=exit_code)
+                print(text, flush=True)
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have
                 # advanced it past the row printed at start).
                 print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
-                return 0 if outcome == "completed" else 1
+                return exit_code
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
             from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
