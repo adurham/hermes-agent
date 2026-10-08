@@ -84,6 +84,11 @@ _RESPONSES_FINGERPRINT_KEYS = (
 )
 
 
+def _idempotency_conflict():
+    from gateway.platforms.api_server import _openai_error
+    return web.json_response(_openai_error('admission_conflict', code='admission_conflict'), status=409)
+
+
 def _response_status(result):
     if result.get('interrupted'):
         return 'cancelled'
@@ -1101,7 +1106,7 @@ class OpenAICompatRoutesMixin:
                 env = await st.emit_completed()
                 if durable_key is not None:
                     headers = {k: v for k, v in response.headers.items() if k.startswith('X-Hermes-')}
-                    self._response_store.put(durable_key[0], {
+                    self._response_store.claim(durable_key[0], {
                         'fingerprint': durable_key[1], 'response': env, 'headers': headers,
                         'events': st.recorded_events})
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -1161,12 +1166,12 @@ class OpenAICompatRoutesMixin:
             idempotency_scope = self._run_idempotency_scope(request)
             durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
                            _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
+            # A record without ``response`` is a claim held by a request still running (or never
+            # settled): a different body under it conflicts exactly as under a settled one.
             replay = self._response_store.get(durable_key[0])
-            if replay is not None:
-                if replay.get('fingerprint') != durable_key[1]:
-                    from gateway.platforms.api_server import _openai_error
-                    return durable_key, idempotency_scope, idempotency_key, web.json_response(
-                        _openai_error('admission_conflict', code='admission_conflict'), status=409)
+            if replay is not None and replay.get('fingerprint') != durable_key[1]:
+                return durable_key, idempotency_scope, idempotency_key, _idempotency_conflict()
+            if replay is not None and replay.get('response') is not None:
                 if stream:
                     return (durable_key, idempotency_scope, idempotency_key,
                             await self._replay_sse_responses(request, replay))
@@ -1269,6 +1274,10 @@ class OpenAICompatRoutesMixin:
                     f'{idempotency_scope}\0{idempotency_key}'.encode()).hexdigest()
                 run_kwargs['session_id'] = session_id
             run_kwargs['request_id'] = f'responses:{idempotency_scope}:{idempotency_key}'
+            # Claimed for this body before admission: the first writer keeps the key, so a different
+            # body racing it is refused here rather than admitted beside it (and replayed later).
+            if self._response_store.claim(durable_key[0], {'fingerprint': durable_key[1]})['fingerprint'] != durable_key[1]:
+                return _idempotency_conflict()
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -1348,7 +1357,7 @@ class OpenAICompatRoutesMixin:
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         if durable_key is not None:
-            self._response_store.put(durable_key[0], {
+            self._response_store.claim(durable_key[0], {
                 'fingerprint': durable_key[1], 'response': response_data, 'headers': response_headers})
         return web.json_response(response_data, headers=response_headers)
 

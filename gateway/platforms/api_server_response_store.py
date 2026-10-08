@@ -77,6 +77,25 @@ class ResponseStore:
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()))
+        self._evict_and_commit()
+
+    def claim(self, response_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """First writer keeps an idempotency record: insert when absent, settle a pending one (no
+        ``response`` yet) with the same ``fingerprint``, never replace a settled or foreign one.
+        Returns the record now stored, so the caller compares its fingerprint."""
+        encoded = json.dumps(data, default=str)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
+            (response_id, encoded, time.time()))
+        self._conn.execute(
+            "UPDATE responses SET data = ? WHERE response_id = ? AND json_extract(data, '$.response') IS NULL"
+            " AND json_extract(data, '$.fingerprint') = json_extract(?, '$.fingerprint')",
+            (encoded, response_id, encoded))
+        stored = self._conn.execute("SELECT data FROM responses WHERE response_id = ?", (response_id,)).fetchone()
+        self._evict_and_commit()
+        return json.loads(stored[0])
+
+    def _evict_and_commit(self) -> None:
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
             evict_ids = [row[0] for row in self._conn.execute(
