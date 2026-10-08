@@ -232,16 +232,19 @@ async def run_api_turn(adapter, *, approval_notify_callback=None, approval_sessi
 
 async def observe_api_turn(admitted, **kwargs):
     authority, ref, row = admitted
-    if row['status'] == 'unknown':
+    from hermes_state_runtime import get_session_admission
+    # The admission-time snapshot is stale once a drain already running ahead claims and settles
+    # (or a stop cancels) the row; a waiter registered after that is never resolved. The current
+    # row decides, read with no suspension before the waiter is registered.
+    status = (get_session_admission(authority.db, admission_id=row['admission_id']) or row)['status']
+    if status == 'unknown':
         raise RuntimeStoreError('unknown_execution')
-    if row['status'] == 'terminal':
-        result = admission_result(authority.db, row['admission_id'])
-        if result is None:
-            raise RuntimeStoreError('unknown_execution')
+    if status == 'terminal':
+        result, usage = _settled_api_result(authority, row['admission_id'])
         callback = kwargs.get('stream_delta_callback')
         if callback:
-            callback(result['result'].get('final_response') or '')
-        return result['result'], result['usage']
+            callback(result.get('final_response') or '')
+        return result, usage
     waiter = authority.waiters.setdefault(row['admission_id'], asyncio.get_running_loop().create_future())
     observers = getattr(authority, 'api_observers', None)
     if observers is None:
@@ -260,10 +263,14 @@ async def observe_api_turn(admitted, **kwargs):
         registered.remove(observer)
         if not registered:
             observers.pop(row['admission_id'], None)
-    saved = admission_result(authority.db, row['admission_id'])
+    return _settled_api_result(authority, row['admission_id'])
+
+
+def _settled_api_result(authority, admission_id):
+    saved = admission_result(authority.db, admission_id)
     if saved is None:
         from hermes_state_runtime import get_session_admission
-        current = get_session_admission(authority.db, admission_id=row['admission_id'])
+        current = get_session_admission(authority.db, admission_id=admission_id)
         if current['outcome'] == 'cancelled':
             return {'final_response': '', 'interrupted': True, 'completed': False}, {}
         raise RuntimeStoreError('unknown_execution')
