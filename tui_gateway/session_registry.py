@@ -689,21 +689,35 @@ def _fallback_session_info(session: dict) -> dict:
     }
 
 
+def _durable_ids(msg) -> set:
+    """A row's durable identities: its ``message_uid`` (and the uids a merged turn absorbed), else ``_row_id``."""
+    if not isinstance(msg, dict):
+        return set()
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
+    ids = {("uid", uid) for uid in [msg.get(MESSAGE_UID), *(msg.get(ABSORBED_MESSAGE_UIDS) or ())] if isinstance(uid, str) and uid}
+    row_id = msg.get("_row_id")
+    return ids | ({("row", row_id)} if isinstance(row_id, int) and not isinstance(row_id, bool) else set())
+
+
 def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) -> list[dict]:
     """Merge the persisted DISPLAY lineage with the in-memory live history: ``db_display`` is verbatim and
     candidate-inclusive (verification rows the model history collapses out) but can lag by a flush;
     ``in_memory`` is the recency authority but the collapsed *model* projection. Keep the DB display as base,
-    append only the in-memory tail past the last DB row's ``(role, text)`` anchor — the verification answer
-    survives a warm switch AND a not-yet-flushed live turn is kept."""
+    append only the in-memory tail past the live copy of the last DB row — the verification answer survives a
+    warm switch AND a not-yet-flushed live turn is kept. The anchor is the row's durable identity: matching on
+    ``(role, text)`` picked the LAST equal text, so a repeated message ("ok" again) hid the unflushed turn.
+    Content is the anchor only when no live row carries that identity (rows that never got one)."""
     if not db_display:
         return in_memory
     if not in_memory:
         return db_display
 
-    def _key(msg: dict) -> tuple:
-        return (msg.get("role"), _coerce_message_text(msg.get("content")))
-    anchor = _key(db_display[-1])
-    last_shared = max((idx for idx, msg in enumerate(in_memory) if isinstance(msg, dict) and _key(msg) == anchor), default=-1)
+    anchor_ids = _durable_ids(db_display[-1])
+    last_shared = max((idx for idx, msg in enumerate(in_memory) if _durable_ids(msg) & anchor_ids), default=-1)
+    if last_shared == -1:
+        anchor = (db_display[-1].get("role"), _coerce_message_text(db_display[-1].get("content")))
+        last_shared = max((idx for idx, msg in enumerate(in_memory) if isinstance(msg, dict)
+                           and (msg.get("role"), _coerce_message_text(msg.get("content"))) == anchor), default=-1)
     if last_shared == -1:
         return db_display  # DB tail not in memory (DB ahead, or diverged) — trust it over duplicating
     return list(db_display) + list(in_memory[last_shared + 1 :])

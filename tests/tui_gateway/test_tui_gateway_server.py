@@ -3452,6 +3452,28 @@ def test_reconcile_display_with_live_trusts_db_when_tail_absent():
     assert server._reconcile_display_with_live(db_display, []) == db_display
 
 
+def test_live_visible_history_keeps_an_unflushed_repeat_of_the_last_turn_real_db(tmp_path):
+    """The live tail is anchored on the last DB row's durable id, not its text: sending the same words again
+    ("ok" -> "done") before the flush must not fold the new turn into the persisted one."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="tui")
+    db.append_message("s1", role="user", content="ok")
+    db.append_message("s1", role="assistant", content="done")
+    live = db.get_messages_as_conversation("s1") + [
+        {"role": "user", "content": "ok"}, {"role": "assistant", "content": "done"}]
+
+    merged = server._live_visible_history({"session_key": "s1"}, db, live)
+    assert [m["content"] for m in merged] == ["ok", "done", "ok", "done"]
+    # Fully flushed: the same four rows, never doubled.
+    for msg in live[2:]:
+        db.append_message("s1", role=msg["role"], content=msg["content"])
+    flushed = db.get_messages_as_conversation("s1")
+    assert [m["content"] for m in server._live_visible_history({"session_key": "s1"}, db, flushed)] == [
+        "ok", "done", "ok", "done"]
+
+
 def test_live_visible_history_matches_eager_resume_with_real_db(tmp_path):
     """E2E cross-builder consistency against a real SessionDB.
 
