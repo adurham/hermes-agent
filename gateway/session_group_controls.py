@@ -281,10 +281,13 @@ def _profiles(authority, actor, home, params):
         else:
             owner_filter, owner_params = 'user_id=? AND ', (actor.subject,)
         with authority.db._lock:
+            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+            hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
             latest = authority.db._conn.execute(
                 f"SELECT id FROM sessions WHERE {owner_filter}chat_id LIKE 'local-%' AND archived=0 "
+                f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
                 "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
-                owner_params).fetchone()
+                (*owner_params, *INTERNAL_LISTING_SOURCES)).fetchone()
         if latest:
             row['last_session'] = summary(authority.db.get_session(latest[0]))
     profiles = [row]

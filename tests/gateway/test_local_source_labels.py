@@ -1,5 +1,5 @@
 """A canonical local session keeps the source label it was created with, and human pickers hide the
-non-conversation labels (``tool`` integrations) as on the classic surfaces."""
+non-conversation labels (``tool`` integrations, finite ``oneshot`` runs) as on the classic surfaces."""
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,3 +51,19 @@ async def test_source_tool_is_admitted_stored_and_hidden_from_pickers(tmp_path, 
     await conn.close()
     authority.db.close()
 
+
+@pytest.mark.asyncio
+async def test_finite_oneshot_sessions_stay_out_of_every_owner_picker(tmp_path, monkeypatch):
+    authority, store = await _authority(tmp_path, monkeypatch)
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})
+    chat = await _create(conn, authority, store, 'cli', 'chat')
+    oneshot = await _create(conn, authority, store, 'oneshot', 'finite')
+    assert authority.db.get_session(oneshot)['source'] == 'oneshot'
+    # The newest local row is the one-shot; the TUI switcher and the Bots roster preview skip it.
+    authority.db.append_message(oneshot, 'user', 'scripted')
+    listed = await conn.dispatch({'id': 9, 'method': 'session.list', 'params': {}})
+    assert [row['id'] for row in listed['result']['sessions']] == [chat]
+    profiles = await conn.dispatch({'id': 10, 'method': 'profiles.list', 'params': {}})
+    assert profiles['result']['profiles'][0]['last_session']['id'] == chat
+    await conn.close()
+    authority.db.close()

@@ -307,8 +307,8 @@ def execute(frame, channel):
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
                 reasoning_config=policy.reasoning_config,
-                # ``tool`` is a storage label for a CLI-surface agent (session_policy.SURFACES).
-                platform=policy.platform if policy.source == 'tool' else policy.source,
+                # ``tool`` / ``oneshot`` are storage labels for a CLI-surface agent (session_policy.SURFACES).
+                platform=policy.platform if policy.source in ('tool', 'oneshot') else policy.source,
                 gateway_session_key=frame['route'], user_id=frame['user_id'], chat_id=frame['chat_id'],
                 skip_context_files=policy.ignore_rules, load_soul_identity=not policy.ignore_rules,
                 skip_memory=policy.ignore_rules, skip_background_review=True, quiet_mode=True,

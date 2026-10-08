@@ -55,8 +55,8 @@ def storage_source(db, source, session_id, fallback):
     receipt = local_receipt(db, source.chat_id)
     if session_id not in receipt.get('lineage', [receipt['session_id']]):
         raise RuntimeStoreError('admission_conflict')
-    # Producer labels (a2a, cron, kanban, bot_room, ``--source tool``) survive the refresh: pickers
-    # filter on them (kanban/tool hidden, cron in its own section). Interactive
+    # Producer labels (a2a, cron, kanban, bot_room, ``--source tool``, finite ``oneshot`` runs) survive the
+    # refresh: pickers filter on them (kanban/tool/oneshot hidden, cron in its own section). Interactive
     # surfaces keep the transport's ``local``, outside the state-owned stale-open sweeps keyed on cli/tui/acp.
     label = receipt['policy']['source']
     return fallback if label in {'cli', 'tui', 'gui', 'acp'} else label

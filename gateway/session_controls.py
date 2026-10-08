@@ -330,8 +330,8 @@ class AuthorityConnection:
                     raise
                 continue
             row = self.authority.db.get_session(sid)
-            # The human picker feed (TUI switcher): kanban workers and `--source tool` integrations
-            # are not conversations, as on every other picker (INTERNAL_LISTING_SOURCES).
+            # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
+            # finite one-shot runs are not conversations, as on every other picker.
             if row.get('source') in INTERNAL_LISTING_SOURCES:
                 continue
             sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',

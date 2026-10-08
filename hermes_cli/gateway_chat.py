@@ -78,6 +78,14 @@ def _caller_cwd(args) -> str:
 
 async def run_gateway_chat(args, emitter=None):
     from hermes_cli.gateway_chat_view import GatewayChatView
+    query = getattr(args, "query", None) or getattr(args, "q", None)
+    oneshot_prompt = getattr(args, "oneshot", None)
+    if isinstance(oneshot_prompt, str):
+        query = oneshot_prompt
+    quiet = bool(getattr(args, "quiet", False) or oneshot_prompt or emitter is not None)
+    # Finite: answer one prompt and exit (-z, --oneshot, -Q, stream-json, or -q off a TTY).
+    oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
+                   (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
     async with connect_gateway() as client:
         description = await client.rpc("runtime.describe")
         title = continue_title(args)
@@ -101,8 +109,11 @@ async def run_gateway_chat(args, emitter=None):
             check_resume_policy(args, snapshot)
         else:
             contract = description.get("session_create", {})
-            source = getattr(args, "source", None) or "cli"
-            if source not in contract.get("sources", []):
+            # Finite runs are stored as ``oneshot`` (hidden from human pickers, still CLI history);
+            # an explicit ``--source`` always wins. A remote gateway predating the label stores ``cli``.
+            sources = contract.get("sources", [])
+            source = getattr(args, "source", None) or ("oneshot" if oneshot and "oneshot" in sources else "cli")
+            if source not in sources:
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])
             policy = _requested_policy(args)
@@ -127,13 +138,6 @@ async def run_gateway_chat(args, emitter=None):
         print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
         if emitter is not None:
             emitter.bind_session(snapshot["stored_session_id"])
-        query = getattr(args, "query", None) or getattr(args, "q", None)
-        oneshot_prompt = getattr(args, "oneshot", None)
-        if isinstance(oneshot_prompt, str):
-            query = oneshot_prompt
-        quiet = bool(getattr(args, "quiet", False) or oneshot_prompt or emitter is not None)
-        oneshot = bool(oneshot_prompt or getattr(args, "oneshot_exit", False) or quiet or
-                       (query and not (sys.stdin.isatty() and sys.stdout.isatty())))
         view = GatewayChatView(client, snapshot, quiet=quiet, emitter=emitter,
                                usage_file=getattr(args, "usage_file", None))
         view.unattended = isinstance(oneshot_prompt, str)

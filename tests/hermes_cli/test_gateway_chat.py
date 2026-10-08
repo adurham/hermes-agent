@@ -96,6 +96,40 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_finite_runs_create_oneshot_sessions_and_explicit_source_wins(monkeypatch, tmp_path):
+    """Finite ``-q``/``-z`` runs are stored as ``oneshot`` (kept out of human pickers); ``--source``
+    always wins, and a gateway that does not advertise ``oneshot`` still gets a plain ``cli`` run."""
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    created, sources = [], ["cli", "tool", "oneshot"]
+
+    class Peer:
+        async def rpc(self, method, **params):
+            if method == "runtime.describe":
+                return {"session_create": {"sources": sources, "parameters": ["cwd", "request_id", "source"]}}
+            created.append(params["source"])
+            return {"stored_session_id": "stored"}
+
+    @asynccontextmanager
+    async def connected():
+        yield Peer()
+
+    async def rendered(self, query, *, oneshot):
+        return 0
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", rendered)
+    monkeypatch.chdir(tmp_path)
+    for args in (argparse.Namespace(query="q", quiet=True), argparse.Namespace(oneshot="z"),
+                 argparse.Namespace(query="q", quiet=True, source="tool")):
+        assert await gateway_chat.run_gateway_chat(args) == 0
+    sources.remove("oneshot")
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True)) == 0
+    assert created == ["oneshot", "oneshot", "tool", "cli"]
+
+
+@pytest.mark.asyncio
 async def test_rpc_preserves_notifications_and_errors():
     import asyncio
     import json

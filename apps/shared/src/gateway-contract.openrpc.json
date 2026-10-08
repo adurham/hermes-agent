@@ -8520,7 +8520,8 @@
               "tui",
               "gui",
               "acp",
-              "tool"
+              "tool",
+              "oneshot"
             ],
             "title": "Source",
             "type": "string"

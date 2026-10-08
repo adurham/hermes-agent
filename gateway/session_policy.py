@@ -13,9 +13,10 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id'})
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
-# Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) runs as
-# the CLI but keeps its own stored label, so human pickers hide it (INTERNAL_LISTING_SOURCES).
-SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli'}
+# Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
+# ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
+# pickers hide them (INTERNAL_LISTING_SOURCES).
+SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
 
 
 @dataclass(frozen=True)
