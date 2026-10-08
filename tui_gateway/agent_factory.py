@@ -182,6 +182,8 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
+    from agent.voice_turn_route import session_runtime_view
+    agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
@@ -223,7 +225,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
-        model = str(getattr(agent, "model", "") or "").strip()
+        model = str(model_config.get("model") or "").strip()
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
