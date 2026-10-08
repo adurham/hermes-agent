@@ -13,6 +13,7 @@ platforms: []
 known_issues:
   - Requires Hermes main containing f12e6b66d960a92d9d4779cfcc628ab9cb02555b (generic plugin OAuth auxiliary routing); the September 24, 2026 release lacks it.
   - Live /model and Desktop catalog probing for non-api_key profiles depends on upstream PR 122203; hermes model setup already fetches the live account catalog.
+  - Older cores may incorrectly warn about this provider's vendor/model IDs in hermes doctor; generic profile namespace support is proposed in upstream PR 134900.
 capabilities:
   provides_tools: []
   provides_hooks: []
