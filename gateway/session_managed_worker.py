@@ -113,6 +113,9 @@ class ManagedWorker:
             stopper.cancel()
             reader.cancel()
 
+    def interrupt(self):
+        self.control({'type': 'stop'})
+
     def respond(self, kind, prompt_id, value):
         self.control({'type': kind, 'prompt_id': prompt_id, 'value': value})
 
@@ -246,12 +249,18 @@ async def execute_managed(authority, ref, row, policy):
     if workers is None:
         workers = authority._managed_workers = {}
     workers[ref.session_id] = worker
+    # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
+    # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
+    authority.adopt_agent(ref.session_id, row['generation'], worker)
     accepted = None
     scope = None
     try:
         # The interpreter behind the handle introduces itself first; the owner verifies that
         # identity (alive, same birth, descends from the handle) before reserving for it.
         hello = await worker.next_frame(HELLO_SECONDS, ack=0)
+        if worker.stop.is_set():
+            # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
+            raise RuntimeStoreError('managed_worker_stopped')
         scope = reserve_admission_worker(authority, admission_id=row['admission_id'],
                     process=process, principal_id=row['principal_id'], hello=hello)
         worker.worker = (scope['pid'], scope['birth'])
