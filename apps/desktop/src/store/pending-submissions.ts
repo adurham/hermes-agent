@@ -27,12 +27,24 @@ export function trackPendingSubmission(key: string, entry: PendingSubmission): v
 // Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
 type RawReceipts = any[]
 
+// An admission only moves forward: queued -> started -> (unknown after an owner restart) ->
+// retired (gone from the pending set: terminal). Snapshots can arrive out of order (a resume
+// result racing the live fanout, a replayed session.info), so a receipt weaker than the strongest
+// state already observed for its admission is stale and never repaints the queue.
+const STATUS_RANK: Record<string, number> = { queued: 0, started: 1, unknown: 2, retired: 3 }
+// Retired identities are remembered per session only as long as a late snapshot can matter.
+const RETIRED_MEMORY = 200
+
+const isStale = (raw: { admission_id: string; status: string }, known: Record<string, PendingSubmission>) =>
+  (STATUS_RANK[raw.status] ?? 0) < (STATUS_RANK[known[raw.admission_id]?.status ?? ''] ?? -1)
+
 function collectReceipts(value: RawReceipts, known: Record<string, PendingSubmission>) {
   const receipts = new Map<string, PendingSubmission>()
   const admissionByInput = new Map<string, string>()
 
   for (const raw of value) {
-    if (!raw || typeof raw.admission_id !== 'string' || !['queued', 'started', 'unknown'].includes(raw.status)) {
+    if (!raw || typeof raw.admission_id !== 'string' || !['queued', 'started', 'unknown'].includes(raw.status) ||
+        isStale(raw, known)) {
       continue
     }
 
@@ -91,15 +103,22 @@ function projectQueue(
 }
 
 function updateKnownReceipts(known: Record<string, PendingSubmission>, value: RawReceipts): void {
-  // Only observed server records may be retired by their later absence.
+  // Only observed server records may be retired by their later absence. The retirement is kept
+  // (text dropped) so a stale snapshot that still lists the admission cannot resurrect its card.
   for (const [id, entry] of Object.entries(known)) {
-    if (entry.status && !value.some(raw => raw?.admission_id === id)) {
-      delete known[id]
+    if (entry.status && entry.status !== 'retired' && !value.some(raw => raw?.admission_id === id)) {
+      known[id] = { id, text: '', status: 'retired' }
     }
   }
 
+  const retired = Object.keys(known).filter(id => known[id].status === 'retired')
+
+  for (const id of retired.slice(0, Math.max(0, retired.length - RETIRED_MEMORY))) {
+    delete known[id]
+  }
+
   for (const raw of value) {
-    if (typeof raw?.admission_id === 'string') {
+    if (typeof raw?.admission_id === 'string' && !isStale(raw, known)) {
       known[raw.admission_id] = {
         ...known[raw.admission_id],
         id: raw.admission_id,

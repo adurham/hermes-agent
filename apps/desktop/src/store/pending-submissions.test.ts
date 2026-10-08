@@ -77,3 +77,20 @@ it('persists identified direct submissions independently of the automatic local 
   expect(stored.chat.direct).toMatchObject({ id: 'direct', text: 'hello' })
   expect(getQueuedPrompts('chat')).toEqual([])
 })
+
+it('never lets a stale queue snapshot repaint an admission already seen started or retired', () => {
+  const queued = [{ admission_id: 'a', status: 'queued', user: 'later' }]
+  reconcilePendingSubmissions('mono', queued)
+  reconcilePendingSubmissions('mono', [{ ...queued[0], status: 'started' }])
+  reconcilePendingSubmissions('mono', queued)
+  expect(getQueuedPrompts('mono')).toEqual([])
+
+  reconcilePendingSubmissions('mono', [])
+  reconcilePendingSubmissions('mono', queued)
+  expect(getQueuedPrompts('mono')).toEqual([])
+
+  // A started turn the owner lost across a restart legitimately moves on to `unknown`.
+  reconcilePendingSubmissions('mono', [{ admission_id: 'b', status: 'started', user: 'lost' }])
+  reconcilePendingSubmissions('mono', [{ admission_id: 'b', status: 'unknown', user: 'lost' }])
+  expect(getQueuedPrompts('mono').map(entry => [entry.id, entry.serverStatus])).toEqual([['b', 'unknown']])
+})
