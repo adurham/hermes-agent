@@ -121,3 +121,44 @@ async def test_transient_settlement_failure_commits_the_completed_result(tmp_pat
     assert calls == ['head', 'follower'], 'a settlement retry must never re-run inference'
     completions = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
     assert [c['text'] for c in completions] == ['head done', 'follower done']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('storage_down', [False, True])
+async def test_recovered_native_reply_is_sent_only_after_its_outcome_commits(tmp_path, monkeypatch, storage_down):
+    """A recovered turn with no live delivery waiter is answered by the drain itself. The platform
+    send must follow the terminal commit: if settlement cannot commit, the admission is fenced
+    unknown and the user is never told an answer the FIFO lost. Inference runs exactly once."""
+    from gateway import session_ingress, session_results
+    from gateway import session_settlement_recovery as recovery
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_authority import LiveSession
+    from gateway.session_contract import Principal, SessionRef
+    from tests.gateway.test_prompt_attachments import _authority as _store_authority
+
+    calls, sent = [], []
+    async def answer(event):
+        calls.append(event.text)
+        return 'model reply'
+    authority = await _store_authority(tmp_path, monkeypatch, answer)
+    authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='c'), 's')
+    authority.runner._adapter_for_source = lambda source: object()
+    async def deliver(adapter, event, session_key, response):
+        sent.append((response, get_session_admission(authority.db, admission_id=event.message_id)['status']))
+    monkeypatch.setattr(session_ingress, 'deliver_response', deliver)
+    if storage_down:
+        monkeypatch.setattr(recovery, '_SETTLE_RETRY_DELAYS_S', (0.01,), raising=False)
+        def unavailable(*args, **kwargs):
+            raise OSError('settlement storage unavailable')
+        monkeypatch.setattr(session_results, 'finish_result', unavailable)
+    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    receipt = await authority.submit(actor, Submission('recovered', SessionRef('p', 's'), {'text': 'hi'}, 'queue'))
+    await asyncio.wait_for(authority.sessions['s'].task, 10)
+    status = get_session_admission(authority.db, admission_id=receipt.admission_id)['status']
+    assert calls == ['hi']
+    if storage_down:
+        assert status == 'unknown' and sent == [], 'an unsettled admission was answered externally'
+    else:
+        assert status == 'terminal' and sent == [('model reply', 'terminal')]
+    assert receipt.admission_id not in authority.pending_deliveries

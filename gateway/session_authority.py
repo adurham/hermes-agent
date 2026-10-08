@@ -64,6 +64,8 @@ class SessionAuthority:
         self.events = {}
         self.native_waiters = set()
         self.pending_results = {}
+        # Replies of recovered no-waiter turns, sent only once their terminal outcome commits.
+        self.pending_deliveries = {}
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
@@ -699,6 +701,11 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
                 self.pending_stops.pop(ref.session_id, None)
+                if settled is None:
+                    # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
+                    self.pending_deliveries.pop(admission_id, None)
+            from gateway.session_ingress import deliver_settled
+            await deliver_settled(self, admission_id)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(response)

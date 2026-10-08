@@ -92,18 +92,11 @@ async def execute_admission(authority, ref, row):
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
     provenance = row['payload'].get('native_text_v1', {}).get('provenance')
-    from gateway.run import _profile_runtime_scope
-    # Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
-    # config, secrets, state.db), never the launch profile's ambient scope; native provenance
-    # refines it. A single-profile gateway keeps its ambient scope byte-for-byte.
-    scope = nullcontext()
-    if getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False):
-        from gateway.session_authorities import owner_scope
-        scope = owner_scope(authority, hydrate_secrets=True)
+    home = None
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         home = restore_provenance(authority.runner, event.source, provenance)
-        scope = _profile_runtime_scope(home)
+    scope = _execution_scope(authority, home)
     from gateway.config import Platform
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
@@ -144,13 +137,47 @@ async def execute_admission(authority, ref, row):
             if not native and not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:
-                    await deliver_response(adapter, event, live.route, response)
+                    # A recovered turn with no live delivery waiter: the drain sends this only after
+                    # it commits the terminal outcome (deliver_settled), so a failed settlement never
+                    # leaves an externally answered admission started -> unknown.
+                    authority.pending_deliveries[row['admission_id']] = (
+                        adapter, event, live.route, response, home)
             return response
     finally:
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)
         admission_author.reset(author_token)
+
+
+def _execution_scope(authority, home):
+    """Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
+    config, secrets, state.db), never the launch profile's ambient scope; native provenance
+    (``home``) refines it. A single-profile gateway keeps its ambient scope byte-for-byte."""
+    if home is not None:
+        from gateway.run import _profile_runtime_scope
+        return _profile_runtime_scope(home)
+    if getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False):
+        from gateway.session_authorities import owner_scope
+        return owner_scope(authority, hydrate_secrets=True)
+    return nullcontext()
+
+
+async def deliver_settled(authority, admission_id):
+    """Send a recovered no-waiter turn's reply after its terminal outcome committed. A send
+    failure cannot rewrite that outcome; it is logged, and inference never runs again."""
+    delivery = authority.pending_deliveries.get(admission_id)
+    if delivery is None:
+        return
+    adapter, event, session_key, response, home = delivery
+    try:
+        with _execution_scope(authority, home):
+            await deliver_response(adapter, event, session_key, response)
+    except Exception:
+        logger.exception('Delivery of settled admission %s failed', admission_id)
+    finally:
+        # Held until the send returns: an empty map means every settled reply was handed over.
+        authority.pending_deliveries.pop(admission_id, None)
 
 
 async def deliver_response(adapter, event, session_key, response):
