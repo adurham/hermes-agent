@@ -17,8 +17,9 @@ def journal_path(job_id, request_id):
 
 def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
     from gateway.session_cron import owner_for_home, operation
-    from hermes_cli.gateway_client import connect_gateway
+    from hermes_cli.gateway_client import GatewayClientError, connect_gateway
     from hermes_constants import get_hermes_home
+    from hermes_state_runtime import RuntimeStoreError
     from utils import atomic_json_write
 
     params = {'job_id': job['id'], 'request_id': execution_id or job.get('execution_id') or uuid.uuid4().hex,
@@ -37,11 +38,25 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
         root.mkdir(parents=True, exist_ok=True)
         atomic_json_write(journal, record, mode=0o600)
 
+    async def refused(call, exc):
+        # A lost reply may still have been admitted. Only the owner's own verdict (a bounded
+        # reason code, never a disconnect/timeout) that its ledger holds no admission for this
+        # fire is a refusal: book it as an ordinary failed run, never unknown.
+        verdict = isinstance(exc, RuntimeStoreError) or (
+            isinstance(exc, GatewayClientError) and str(exc).replace('_', '').isalnum())
+        return verdict and (await call('recover', params))['status'] == 'missing'
+
     async def observe(call):
         nonlocal attempted
         attempted = True
         save()
-        receipt = await call('submit', params)
+        try:
+            receipt = await call('submit', params)
+        except (RuntimeStoreError, GatewayClientError) as exc:
+            if await refused(call, exc):
+                journal.unlink(missing_ok=True)
+                attempted = False
+            raise
         record['receipt'] = receipt
         save()
         while True:

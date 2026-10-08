@@ -126,3 +126,32 @@ def test_recovered_receipt_settles_the_departed_firers_execution_row(tmp_path, m
         assert executions.recover_interrupted_executions() == 0
         assert executions.get_execution(fire)['status'] == 'completed'
 
+
+
+def test_owner_refused_fire_is_booked_failed_and_retires_its_journal(tmp_path, monkeypatch):
+    """A definite pre-admission refusal (the job's workdir was removed) is an ordinary failed
+    run: it must not raise CronExecutionUnknown, keep a journal, or pause the job on every
+    later tick after the operator fixes the configuration."""
+    from cron import scheduler_authority
+    workdir = tmp_path / 'work'
+    workdir.mkdir()
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='original', schedule='every 1h', deliver='local', workdir=str(workdir))
+        workdir.rmdir()
+        authority, db = _owner(tmp_path, monkeypatch)
+
+        async def probe():
+            session_cron.bind_owner(authority)
+            try:
+                result = await asyncio.to_thread(
+                    scheduler_authority.run_canonical_job, jobs.get_job(job['id']), execution_id='fire')
+                assert result[0] is False and 'invalid_params' in result[3]
+                assert not scheduler_authority.journal_path(job['id'], 'fire').exists()
+                await asyncio.to_thread(scheduler_authority.reconcile_pending)
+            finally:
+                session_cron.unbind_owner(authority)
+        try:
+            asyncio.run(probe())
+        finally:
+            db.close()
+        assert jobs.get_job(job['id'])['state'] != 'paused'
