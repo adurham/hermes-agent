@@ -348,6 +348,20 @@ def _setup_tui_worktree() -> dict:
     return wt_info
 
 
+def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Optional[str]) -> None:
+    """A --safe-mode / --ignore-user-config session reads no profile default model, so the owner
+    refuses its session.create without one (bare invalid_params). Say so before the TUI starts,
+    as classic chat does; a resume reuses the frozen route and needs none."""
+    from utils import is_truthy_value
+    bypass = any(is_truthy_value(env.get(name)) for name in ("HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"))
+    if bypass and not resume_session_id and not (model or env.get("HERMES_MODEL", "").strip()):
+        print("Error: --safe-mode / --ignore-user-config (or HERMES_IGNORE_USER_CONFIG=1) read no profile "
+              "default model: pass --model explicitly.\n"
+              "  Example: hermes --tui --safe-mode --provider openrouter --model anthropic/claude-sonnet-4",
+              file=sys.stderr)
+        raise SystemExit(1)
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None, tui_dev: bool = False, native_mode: Optional[bool] = None,
     model: Optional[str] = None,
@@ -364,6 +378,7 @@ def _launch_tui(
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    _require_bypass_model(env, model, resume_session_id)
     # The directory this launch was invoked from is the source of truth. An inherited
     # HERMES_CWD (exported by an outer `hermes --tui`, or by the user's own shell) merely
     # names *a* real directory, so the is_dir() repair in _apply_tui_python_env keeps it
