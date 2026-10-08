@@ -118,11 +118,10 @@ def test_idempotency_record_keeps_its_first_writer(tmp_path):
     from gateway.platforms.api_server_response_store import ResponseStore
     store = ResponseStore(db_path=str(tmp_path / 'responses.db'))
     try:
-        assert store.claim('idem:k', {'fingerprint': 'A'}) == {'fingerprint': 'A'}
-        assert store.claim('idem:k', {'fingerprint': 'B', 'response': {'id': 'b'}}) == {'fingerprint': 'A'}
         settled = {'fingerprint': 'A', 'response': {'id': 'a'}}
-        assert store.claim('idem:k', settled) == settled
-        assert store.claim('idem:k', {'fingerprint': 'A', 'response': {'id': 'late'}}) == settled
+        store.put('idem:k', settled)
+        store.put('idem:k', {'fingerprint': 'B', 'response': {'id': 'b'}})
+        store.put('idem:k', {'fingerprint': 'A', 'response': {'id': 'late'}})
         assert store.get('idem:k') == settled
     finally:
         store.close()

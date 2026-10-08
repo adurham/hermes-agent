@@ -1235,7 +1235,6 @@ class OpenAICompatRoutesMixin:
             replay = response_store.get(durable_key[0])
             if replay is not None:
                 if replay.get('fingerprint') != durable_key[1]:
-                    from gateway.platforms.api_server import _openai_error
                     return durable_key, idempotency_scope, idempotency_key, web.json_response(
                         _openai_error('admission_conflict', code='admission_conflict'), status=409)
                 if stream:
