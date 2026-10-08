@@ -16,8 +16,13 @@ def run_admission(adapter, run_id):
     authority = _authority(adapter)
     if authority is None:
         return None
+    # A streaming completion's public run id names its admission through the in-memory binding
+    # its own request holds; every other run id is the admission's durable request id.
+    alias = getattr(adapter, '_run_admission_aliases', {}).get(run_id)
+    column, value = ('admission_id', alias) if alias else ('request_id', run_id)
     with authority.db._read_ctx() as conn:
-        rows = conn.execute("SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (run_id,)).fetchall()
+        rows = conn.execute(f"SELECT * FROM session_admissions WHERE principal_id='api' AND {column}=?",
+                            (value,)).fetchall()
     if len(rows) > 1:
         raise RuntimeStoreError('admission_conflict')
     return (authority, _row(rows[0])) if rows else None

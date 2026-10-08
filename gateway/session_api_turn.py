@@ -191,9 +191,29 @@ def _recover_api_turns(adapter, authority):
             logging.getLogger(__name__).warning('API session %s paused: %s', sid, exc.reason)
 
 
-async def run_api_turn(adapter, **kwargs):
+async def run_api_turn(adapter, *, approval_notify_callback=None, approval_session_key=None, **kwargs):
     admitted = admit_api_turn(adapter, **kwargs)
-    return await observe_api_turn(admitted, **kwargs)
+    if approval_notify_callback is None or not approval_session_key:
+        return await observe_api_turn(admitted, **kwargs)
+    # A streaming surface advertises its own run id (``chatcmpl-*`` / ``run_*``): bind it to this
+    # exact admission so ``/v1/runs/{id}/approval`` answers the shared, generation-fenced prompt,
+    # and hand that prompt to the stream's notifier in the event shape it already emits.
+    aliases = adapter._run_admission_aliases
+    aliases[approval_session_key] = admitted[2]['admission_id']
+
+    def sink(event_type, prompt):
+        if event_type == 'approval.request':
+            choices = prompt.get('choices') or ()
+            approval_notify_callback({
+                **{k: v for k, v in prompt.items() if k not in ('kind', 'prompt_id', 'choices')},
+                'request_id': prompt['prompt_id'], 'allow_session': 'session' in choices,
+                'allow_permanent': 'always' in choices})
+    try:
+        with observe_api_controls(admitted, sink):
+            return await observe_api_turn(admitted, **kwargs)
+    finally:
+        if aliases.get(approval_session_key) == admitted[2]['admission_id']:
+            aliases.pop(approval_session_key)
 
 
 async def observe_api_turn(admitted, **kwargs):

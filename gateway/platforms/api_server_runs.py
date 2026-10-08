@@ -230,6 +230,8 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._stopping_run_ids: set[str] = set()
     self._shutdown_interrupted_run_ids: set[str] = set()
     self._run_shutdown_requested_at: Optional[float] = None
+    # Streaming run id -> its canonical admission id, held while that request observes the turn.
+    self._run_admission_aliases: dict[str, str] = {}
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
