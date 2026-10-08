@@ -149,6 +149,11 @@ def _session_connector_rpc(rid, request, session, action):
             return _connector_rpc_error(
                 rid, 4004, ConnectorErrorReason.unknown_operation, "No open connection operation for this session."
             )
+        # A retry without an alias means the open target; one naming another account must not re-mint this one.
+        if request.alias is not None and any(
+                (target := operation.target(name)) is not None and target.alias != request.alias
+                for name in request.connectors):
+            return _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_target, "No such target on the open operation.")
         return _reissue(rid, operation, args)
     raw = model_tools.handle_function_call(
         "manage_connections",
