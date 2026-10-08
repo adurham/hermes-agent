@@ -65,7 +65,7 @@ def authority_delivery(home, params):
     """Call only this home's already-running authority; never start a fallback."""
     import asyncio
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
-    from hermes_cli.gateway_client import GatewayClient, _session_ticket
+    from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GatewayClient, _session_ticket, gateway_ws_target
     from websockets.asyncio.client import connect
 
     home = Path(home).resolve()
@@ -76,11 +76,10 @@ def authority_delivery(home, params):
             raise ValueError('profile authority is not ready')
         endpoint = discovery.endpoint
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
-        url = endpoint.api_origin.replace('http:', 'ws:').replace('https:', 'wss:') + '/api/ws'
+        url, protocols = gateway_ws_target(endpoint, ticket)
         # Loopback authority dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
-        async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket],
-                           open_timeout=10, proxy=None) as ws:
-            if ws.subprotocol != 'hermes-gateway-v1':
+        async with connect(url, subprotocols=protocols, open_timeout=10, proxy=None) as ws:
+            if ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise ValueError('authority protocol mismatch')
             async with GatewayClient(ws) as client:
                 return await client.rpc('bot_relay.deliver', **params)

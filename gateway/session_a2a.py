@@ -114,7 +114,8 @@ async def forward(connection, params):
 
 async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, text, timeout):
     """Transport-only caller; a timeout never cancels or re-identifies accepted work."""
-    from hermes_cli.gateway_client import GatewayClient, GatewayClientError, _session_ticket
+    from hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, GatewayClientError,
+        _session_ticket, gateway_ws_target)
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
     from websockets.asyncio.client import connect
     home = await asyncio.to_thread(Path(home).resolve)
@@ -123,12 +124,11 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
         if ready.state != 'ready' or ready.endpoint is None:
             raise GatewayClientError(f'gateway_{ready.state}:{ready.reason_code or "not_ready"}')
         ticket = await asyncio.to_thread(_session_ticket, home, ready.endpoint)
-        url = ready.endpoint.api_origin.replace('https:', 'wss:').replace('http:', 'ws:') + '/api/ws'
-        protocols = ['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket]
+        url, protocols = gateway_ws_target(ready.endpoint, ticket)
         # Loopback authority dial: never through HTTP(S)_PROXY (websockets>=14 honours it by default).
         async with connect(url, subprotocols=protocols, open_timeout=10, max_size=8 * 1024 * 1024,
                            proxy=None) as ws:
-            if ws.subprotocol != protocols[0]:
+            if ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise GatewayClientError('gateway_protocol_mismatch')
             async with GatewayClient(ws) as client:
                 params = dict(agent=agent, tenant=tenant, peer=peer, context_id=context_id, input_id=input_id, text=text)
