@@ -17,14 +17,15 @@ def branch_in_transaction(db, conn, session_id, payload):
     saved = json.loads(row[0])
     target = validate_local_lineage(conn, saved)
     require_idle(db, conn, list({session_id, target}))
+    # Late: the routing entry/key are gateway types (the gateway imports this store at module level).
     from gateway.session import SessionEntry, SessionSource
     from gateway.config import Platform
-    from gateway.session_local_recovery import local_identity
+    from hermes_state_keys import local_identity, profile_from_session_key
     request_id = 'branch:' + uuid.uuid4().hex
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
     source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm')
-    from gateway.session import build_session_key, SessionStore
-    route = build_session_key(source, profile=SessionStore._profile_from_session_key(saved['route']))
+    from gateway.session import build_session_key
+    route = build_session_key(source, profile=profile_from_session_key(saved['route']))
     from gateway.session_lifecycle import _now
     now = _now()
     entry = SessionEntry(route, child, now, now, origin=source, platform=Platform.LOCAL)

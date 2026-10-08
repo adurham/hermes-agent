@@ -8,7 +8,7 @@ import uuid
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
 from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, PERSISTENCE_ONLY_MESSAGE_FIELDS
-from gateway.session_admission import admission_fingerprint
+from hermes_state_keys import admission_fingerprint
 
 
 class RuntimeStoreError(ValueError):

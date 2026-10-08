@@ -1,19 +1,13 @@
 """Restore only private, profile-bound local policy into the existing authority."""
-import hashlib
-import json
 import logging
 from pathlib import Path
 
 from gateway.config import Platform
 from gateway.session import SessionEntry, SessionSource
 from gateway.session_contract import SessionRef
+from hermes_state_keys import local_identity
 from hermes_state_local import POLICY_PREFIX, local_receipt
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
-
-
-def local_identity(profile_id, principal_id, request_id):
-    identity = json.dumps([profile_id, principal_id, request_id], separators=(',', ':'))
-    return 'local-' + hashlib.sha256(identity.encode()).hexdigest()
 
 
 def local_adapter_map(authority):

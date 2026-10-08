@@ -54,13 +54,8 @@ class SessionRecoveryMixin:
     @staticmethod
     def _profile_from_session_key(session_key: Optional[str]) -> Optional[str]:
         """Extract the profile namespace encoded in a gateway session key."""
-        if not session_key:
-            return None
-        parts = str(session_key).split(":")
-        if len(parts) < 2 or parts[0] != "agent":
-            return None
-        from gateway.session import profile_from_session_key_namespace
-        return profile_from_session_key_namespace(parts[1] or "main")
+        from hermes_state_keys import profile_from_session_key
+        return profile_from_session_key(session_key)
 
     @staticmethod
     def _active_profile_name() -> str:
