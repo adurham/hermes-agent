@@ -12,6 +12,7 @@ interface ExecutionAuthority {
  * its string form because epochs are opaque identities, never ordered.
  */
 export interface ExecutionStampedEvent {
+  admission_id?: unknown
   authority_epoch?: unknown
   execution_generation?: unknown
   payload?: unknown
@@ -46,6 +47,21 @@ function fencedByPrevious(previous: ExecutionAuthority, type: string, epoch: str
   return false
 }
 
+/** An unstamped lifecycle frame: no execution is claimed, so it changes nothing the fence tracks. */
+function acceptUnstampedLifecycle(previous: ExecutionAuthority | undefined, type: string, event?: ExecutionStampedEvent): boolean {
+  // An admission-only frame (a queued row's cancellation: the owner's epoch and the row's
+  // admission, no execution generation) is never a turn's lifecycle, before or after one.
+  if (event?.authority_epoch !== undefined && typeof event.admission_id === 'string') {return false}
+
+  if (!previous) {return true}
+  const payload = event?.payload as Record<string, unknown> | undefined
+  // The owner's idle snapshot (queue, revision) carries the session's last generation in its
+  // payload; only an older owner's is stale.
+  const generation = payload?.execution_generation
+
+  return type === 'session.info' && payload?.running !== true && typeof generation === 'number' && generation >= previous.generation
+}
+
 /** Each transport consumer owns its map; epochs are opaque, never ordered. */
 export function acceptExecutionEvent(
   authorities: Map<string, ExecutionAuthority>,
@@ -64,7 +80,7 @@ export function acceptExecutionEvent(
     return !stamp || !previous || (previous.epoch === stamp.epoch && previous.generation === stamp.generation && !previous.terminal)
   }
 
-  if (!stamp) {return !previous}
+  if (!stamp) {return acceptUnstampedLifecycle(previous, type, event)}
   const { epoch, generation } = stamp
   const terminal = type === 'message.complete' || type === 'message.error' || payload?.running === false
 
