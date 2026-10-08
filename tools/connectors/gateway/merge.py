@@ -82,9 +82,10 @@ def partition_calls(calls: Sequence[Any]) -> Partition:
 def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict[str, Any]:
     """Use the shared CONNECTION_REQUIRED shape so links render consistently."""
     error = remote.get("error") if isinstance(remote, Mapping) else None
+    account = _opt_str(remote.get("account")) if isinstance(remote, Mapping) else None
     if not isinstance(error, Mapping):
         data = remote.get("data") if isinstance(remote, Mapping) else None
-        return {"index": planned.position, "name": planned.name, "response": data}
+        return _with_account({"index": planned.position, "name": planned.name, "response": data}, account)
 
     code = str(error.get("code") or "PROVIDER_ERROR")
     message = str(error.get("message") or "The gateway reported an error.")
@@ -104,7 +105,13 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
         hint = _opt_str(error.get("hint"))
         if hint:
             payload["hint"] = hint
-    return {"index": planned.position, "name": planned.name, "error": payload}
+    return _with_account({"index": planned.position, "name": planned.name, "error": payload}, account)
+
+
+def _with_account(entry: dict[str, Any], account: Optional[str]) -> dict[str, Any]:
+    if account:
+        entry["account"] = account
+    return entry
 
 
 def splice_remote_results(

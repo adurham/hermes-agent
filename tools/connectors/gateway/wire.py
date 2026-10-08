@@ -106,8 +106,8 @@ class ConnectorExecuteCall(_Wire):
     connector: str
     tool: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    # On the wire for the multi-account switch; never sent by hermes today, because the vendor answers
-    # 400 to any value while multi-account is off (contract probe F2).
+    # Never sent by hermes: the model picks an account with the ``connector_alias`` argument, which
+    # the gateway strips and resolves itself.
     account: Optional[str] = None
 
 
@@ -125,6 +125,8 @@ class ConnectorExecuteResult(_Wire):
     tool: str = ""
     data: Any = None
     error: Optional[ConnectorToolError] = None
+    # The alias of the account the call ran under; null when that account has no alias.
+    account: Optional[str] = None
 
 
 class ConnectorExecuteResponse(_Wire):

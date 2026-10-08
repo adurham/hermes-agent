@@ -279,7 +279,10 @@ def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
             error["connection_id"] = result.error.connection_id
         if result.error.hint:
             error["hint"] = result.error.hint
-    return {"data": result.data, "error": error}
+    entry = {"data": result.data, "error": error}
+    if result.account:
+        entry["account"] = result.account
+    return entry
 
 
 def _safe_json(response: Any) -> Any:
