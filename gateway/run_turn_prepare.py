@@ -32,8 +32,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
-    from gateway.run import GatewayRunner  # noqa: F401
-    from gateway.run_turn_runner import TurnRunner  # noqa: F401
+    from gateway.run import GatewayRunner
+    from gateway.run_turn_runner import TurnRunner
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -52,6 +52,12 @@ def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
     frozen = policy.config(authority)
     key = launch_key(authority, policy)
     launch_url = json.loads(policy.request_json).get('base_url')
+    if launch_url:
+        # The creation request is immutable identity, not the current selection: once a canonical
+        # model mutation moved the route off the launch endpoint, the policy's selection wins.
+        from hermes_cli.route_identity import normalize_route_base_url
+        if normalize_route_base_url(launch_url) != normalize_route_base_url(policy.base_url):
+            launch_url = None
     # Every rung reads the session's FROZEN config, never live config.yaml: a later
     # ``model.base_url`` edit must not carry this route's frozen credential to the new host
     # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
@@ -659,7 +665,7 @@ class GatewayTurnPrepareMixin:
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
-        turn_sidecar_notes: List[str] = []
+        turn_sidecar_notes: list[str] = []
         if _was_auto_reset:
             await self._hmwa_deliver_auto_reset_notice(session_entry, source, turn_sidecar_notes)
 

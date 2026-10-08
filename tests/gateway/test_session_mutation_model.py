@@ -119,7 +119,7 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
     from gateway.session_contract import Submission
     from gateway.session_controls import AuthorityConnection
     from gateway.session_local import create_local_session
-    import hermes_cli.model_switch as model_switch
+    from hermes_cli import model_switch
     import hermes_state_runtime as rt
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
@@ -171,7 +171,7 @@ async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import bind_launch_key, build_policy, restore_policy
     from hermes_state import SessionDB
-    import hermes_cli.model_switch as model_switch
+    from hermes_cli import model_switch
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='b', target_provider='anthropic', provider_changed=True,
         base_url='https://api.anthropic.com'))
@@ -189,3 +189,48 @@ async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp
                                                        {'model': 'b', 'provider': 'anthropic'}, prepared))['policy'])
         assert switched.credential_ref is None, 'the launch key crossed into another provider'
         assert switched.config(authority)['providers']['mine']['api_key'] == 'sk-config-secret'
+
+
+@pytest.mark.asyncio
+async def test_committed_model_selection_is_the_next_resolved_runtime(tmp_path, monkeypatch):
+    """custom -> custom on a new origin: the committed policy and the next resolved runtime agree on
+    endpoint, protocol and credentials. The creation request's launch URL, the old endpoint's launch
+    key, its key_env pointer, api_mode and context pin must not survive; a same-route re-pick keeps them."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+    old_url, new_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.2:9/v1'
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+        runner = SimpleNamespace(session_authority=authority,
+                                 _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-endpoint-a'}))
+        authority.runner = runner
+        config = {'model': {'provider': 'custom', 'default': 'a', 'base_url': old_url, 'api_mode': 'chat_completions',
+                            'context_length': 4096, 'key_env': 'ENDPOINT_A_KEY'}}
+        private = {}
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'a', 'provider': 'custom', 'base_url': old_url,
+                               'api_key': 'sk-endpoint-a'}, config, private_secrets=private)
+        policy = bind_launch_key(authority, 'sid', policy, 'sk-endpoint-a', config_secrets=private)
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+
+        async def switch(url, mode):
+            monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+                success=True, new_model='b', target_provider='custom', base_url=url, api_mode=mode))
+            switched = restore_policy((await prepare_model(authority, SimpleNamespace(source=None, route='r'),
+                                                           {'model': 'b'}, prepared))['policy'])
+            return switched, _resolve_policy_agent_runtime(runner, switched)[1]
+
+        moved, runtime = await switch(new_url, 'anthropic_messages')
+        committed = moved.config()['model']
+        assert (committed['base_url'], committed['api_mode']) == (new_url, 'anthropic_messages')
+        assert 'context_length' not in committed and 'key_env' not in committed
+        assert moved.credential_ref is None, "endpoint A's launch key crossed to another origin"
+        assert (runtime['base_url'].rstrip('/'), runtime['api_mode']) == (new_url, 'anthropic_messages')
+        assert runtime['api_key'] != 'sk-endpoint-a'
+        same, runtime = await switch(old_url, 'chat_completions')
+        assert same.credential_ref is not None and same.config()['model']['key_env'] == 'ENDPOINT_A_KEY'
+        assert (runtime['base_url'].rstrip('/'), runtime['api_key']) == (old_url, 'sk-endpoint-a')
