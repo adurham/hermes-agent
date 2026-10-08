@@ -33,11 +33,14 @@ export function runGatewayEnsure(
     // profile or an import crash explain themselves here while stdout stays empty.
     child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
     child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
+    // A client that exits on SIGTERM still resolves (callers such as restartLocalGatewayOwner log a
+    // non-zero exit and re-ensure); only one that outlives the force-kill deadline rejects. An
+    // expired run never reads as success, and its last diagnostic line names the deadline.
     child.on('close', code => {
       clearTimeout(timer)
       clearTimeout(forceTimer)
 
-      if (expired) { reject(expired) }
+      if (expired) { resolve({ code: code || 7, stdout, stderr: `${stderr}\n${expired.message}`.trim() }) }
       else { resolve({ code: code ?? 7, stdout, stderr }) }
     })
   })
