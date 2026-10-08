@@ -301,6 +301,7 @@ async def _record_reply(authority, home, key, future):
         record.update(_result(authority, record))
         if not paused:
             await _maybe_retry(authority, home, path, record)
+        record.update(_delivery_result(authority, record))
         await write_receipt(home, record)
         remember_receipt(authority, home, record)
 
