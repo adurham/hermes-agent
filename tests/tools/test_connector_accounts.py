@@ -121,6 +121,27 @@ def test_reconnect_with_an_alias_repairs_it_even_when_another_account_is_healthy
     assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": None, "connection_id": "ca_work"}]
 
 
+def test_reconnect_of_an_unnamed_account_by_its_label_repairs_that_account_by_id():
+    gateway = _Gateway(connected={"gmail"})
+    accounts = [_account("home", "me@example.com"), _account(None, "gmail_old-label", status="expired")]
+    _run({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "gmail_old-label"}]}, gateway, accounts)
+    assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": None,
+                              "connection_id": "ca_gmail_old-label"}]
+
+
+def test_a_pending_link_reaches_the_model_with_its_account_id_and_no_link():
+    from tools.connectors.gateway.merge import PlannedCall, render_remote_entry
+
+    planned = PlannedCall(position=0, name="connectors__gmail__FETCH_EMAILS", connector="gmail",
+                          tool="FETCH_EMAILS", arguments={})
+    entry = render_remote_entry(planned, {"data": None, "error": {
+        "code": "CONNECTION_REQUIRED", "message": "Connect this app to continue.", "connector": "gmail",
+        "connection_id": "ca_pending", "hint": "The user already has a sign-in link for this account."}})
+    assert entry["error"]["connection_id"] == "ca_pending"
+    assert "connect_url" not in entry["error"]
+    assert "already has a sign-in link" in entry["error"]["hint"]
+
+
 def test_reconnect_of_a_name_no_account_has_yet_sends_the_alias():
     gateway = _Gateway()
     _run({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "work"}]}, gateway,
