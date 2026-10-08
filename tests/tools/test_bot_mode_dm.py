@@ -649,15 +649,18 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     assert _runner_author(calls[0]["command"]) == {"id": "bot:coder", "name": "coder", "is_bot": True}
 
 
-def test_unavailable_authority_is_reported_never_worked_around(tmp_path, monkeypatch):
-    """No canonical target: the sender learns the outcome is unknown and nothing
-    else (no CLI, no background runner) is started."""
+@pytest.mark.parametrize("lookup", ["not_ready", "no_owner"])
+def test_unavailable_authority_is_reported_never_worked_around(tmp_path, monkeypatch, lookup):
+    """No canonical target, found BEFORE any intent is pinned: nothing was admitted, so the sender
+    gets a definite, resendable ``runtime_unavailable`` refusal (never the ambiguous "do not
+    resend" state) and nothing else (no CLI, no background runner) is started."""
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")
     from tools import bot_live_delivery as live
 
-    def unavailable(home):
-        raise ValueError("profile authority is not ready")
+    def unavailable(home):  # "no_owner": discovery is ready but the profile has no store (None)
+        if lookup == "not_ready":
+            raise ValueError("profile authority is not ready")
 
     monkeypatch.setattr(live, "find_canonical_live_owner", unavailable)
     monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
@@ -669,9 +672,9 @@ def test_unavailable_authority_is_reported_never_worked_around(tmp_path, monkeyp
     result = json.loads(
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
-    assert result["status"] == "ambiguous"
-    assert "not ready" in result["error"] and "Do not resend" in result["error"]
-    assert Path(result["evidence_file"]).read_text(encoding="utf-8").endswith("hi")
+    assert result["reason"] == "runtime_unavailable" and "status" not in result
+    assert "NOT sent" in result["error"] and "Do not resend" not in result["error"]
+    assert list(tmp_path.glob("*.live.json")) == []  # no intent: nothing can replay this DM
 
 
 def test_notification_spawn_failure_is_reported_after_admission(tmp_path, monkeypatch):
