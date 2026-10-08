@@ -787,11 +787,57 @@ def _worktree_branch_pushed_exact(
         return False
 
 
+_RETAINED_LOCK_RE = re.compile(r"hermes session=(\S+) db=(.+)$")
+
+
+def _retain_worktree_for_session(repo_root: str, worktree_path: str, session_id: str, db_path) -> bool:
+    """Re-lock a ``--tui -w`` tree its exiting launcher retains, naming the session that uses it.
+
+    The launch lock's ``hermes pid=<pid>`` dies with the launcher, and the next launch's stale
+    prune would then reap a clean tree whose session (its frozen cwd) is still resumable. The
+    replacement lock stays live while that session can be resumed (``_retained_session_is_live``).
+    """
+    _git_quiet(["worktree", "unlock", worktree_path], repo_root, log="worktree unlock before retain failed")
+    try:
+        result = _git(["worktree", "lock", "--reason", f"hermes session={session_id} db={db_path}",
+                       worktree_path], repo_root)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("worktree retain lock failed for %s: %s", worktree_path, exc)
+        return False
+    return result.returncode == 0
+
+
+def _retained_session_is_live(session_id: str, db_path: str) -> bool:
+    """Whether a retained tree's session is still resumable: its row exists with history or
+    pending gateway work. A missing store means the profile is gone; unreadable fails SAFE (live)."""
+    import sqlite3
+    from urllib.parse import quote
+
+    path = Path(db_path)
+    if not path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=2)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM sessions s WHERE s.id=? AND (s.message_count>0 OR EXISTS ("
+                "SELECT 1 FROM session_admissions a WHERE a.target_session_id=s.id AND a.status!='terminal'))",
+                (session_id,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.debug("retained worktree session check failed (%s); keeping tree", exc)
+        return True
+    return row is not None
+
+
 def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10):
-    """Lock state: ``"live"`` (owning pid runs), ``"dead"`` (pid gone / non-hermes reason), None (unlocked).
+    """Lock state: ``"live"`` (owning pid runs / retained session resumable), ``"dead"`` (pid or
+    session gone / non-hermes reason), None (unlocked).
 
     ``hermes -w`` locks with reason ``hermes pid=<pid>``; ``worktree remove --force`` refuses
-    locked trees, so a crashed session's lock would keep its tree forever. Fails SAFE toward "live".
+    locked trees, so a crashed session's lock would keep its tree forever. A tree the TUI
+    retained on exit is locked ``hermes session=<id> db=<state.db>`` instead. Fails SAFE toward "live".
     """
     try:
         listing = _git_out(["worktree", "list", "--porcelain"], repo_root, timeout=timeout)
@@ -812,6 +858,8 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
             if current != target:
                 continue
             reason = line[len("locked"):].strip()
+            if retained := _RETAINED_LOCK_RE.search(reason):
+                return "live" if _retained_session_is_live(*retained.groups()) else "dead"
             m = re.search(r"hermes pid=(\d+)", reason)
             if not m:
                 # A foreign lock here is a leftover; the age/dirty/unpushed gates already passed.

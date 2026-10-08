@@ -471,11 +471,19 @@ def _launch_tui(
         if code in {0, 130}:
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
+        attached_session = _read_tui_active_session_file(active_session_file) or resume_session_id
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
         if wt_info:
             # Quitting detaches a viewer; the gateway may still be executing in
             # this checkout and future resumes retain its frozen cwd.
+            if attached_session:
+                # The launch lock names this (exiting) pid; hand it to the session so a later
+                # launch's stale prune keeps the tree while the session is resumable.
+                from hermes_cli.config import get_hermes_home
+                from hermes_cli.worktree_ops import _retain_worktree_for_session
+                _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
+                                             get_hermes_home() / "state.db")
             print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
