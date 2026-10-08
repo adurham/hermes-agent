@@ -30,15 +30,16 @@ class _Transport:
 
     def write(self, obj):
         self.frames.append(obj)
-        self.arrived.set()
+        if obj.get("id") == 1:
+            self.arrived.set()
         return True
 
     def close(self):
         pass
 
 
-def _rpc(method, **params):
-    transport = _Transport()
+def _rpc(method, transport=None, **params):
+    transport = transport or _Transport()
     reply = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, transport)
     if reply is not None:
         return reply
@@ -66,6 +67,34 @@ def test_account_connect_with_an_alias_mints_that_account(monkeypatch):
     assert minted.wait(2)
     assert mints == [(("gmail",), False, "work")]
     assert [(t["name"], t.get("alias")) for t in reply["result"]["targets"]] == [("gmail", "work")]
+
+
+def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monkeypatch):
+    from tools.connectors.contract import Actor, TargetState
+    from tools.connectors.operation import ConnectionOperation, Target
+
+    transport = _Transport()
+    session = dict(transport=transport, agent=None, session_key="alias-sid", history=[],
+                   history_lock=threading.Lock(), history_version=0, running=False, attached_images=[],
+                   source="desktop")
+    monkeypatch.setitem(server._sessions, "alias-sid", session)
+    monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
+    operation = ConnectionOperation([Target("gmail", "connector", "connect", alias="home")], session_key="alias-sid")
+    live.open(operation)
+    operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/1")
+    operation.transition("gmail", TargetState.failed, Actor.backend_watcher, detail="expired")
+    mints = []
+
+    class Client:
+        def connections(self, names, **kwargs):
+            mints.append((tuple(names), kwargs.get("alias")))
+            return {"results": []}
+
+    monkeypatch.setattr("tools.connectors.managed.managed_client", Client)
+    reply = _rpc("connectors.connect", transport, owner={"type": "session", "session_id": "alias-sid"},
+                 connectors=["gmail"], alias="work")
+    assert reply["error"]["code"] == 4004
+    assert mints == []
 
 
 def test_rename_to_a_name_another_account_holds_is_alias_taken(monkeypatch):

@@ -118,6 +118,39 @@ def test_reconnect_with_an_alias_repairs_it_even_when_another_account_is_healthy
     assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": "work"}]
 
 
+def test_reconnect_with_an_alias_mints_nothing_when_the_account_list_cannot_be_read():
+    from tools.connectors.gateway.errors import ToolGatewayError
+
+    gateway = _Gateway()
+    with patch("tools.connectors.managed.WATCH_TICK_SECONDS", 0.0), \
+         patch("tools.connectors.managed.portal_accounts", side_effect=ToolGatewayError("down", status=503)):
+        out = json.loads(manage_connections({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "work"}]},
+                                            client_factory=lambda: gateway, connection_callback=lambda _p: None,
+                                            session_id="s1"))
+    assert gateway.mints == []
+    assert "error" in out
+
+
+def test_rename_sends_the_new_name_for_the_resolved_account():
+    from tools.connectors.portal.client import PortalConnectorClient
+
+    sent = []
+
+    class Transport:
+        def request(self, method, url, *, headers=None, json=None, timeout=None):
+            sent.append((method, url, json))
+            return _Response({"connectionId": "ca_work", "connector": "gmail", "status": "active", "label": "me@corp.example",
+                              "alias": json["alias"], "active": True, "createdAt": "t", "updatedAt": "t"})
+
+    client = PortalConnectorClient(transport=Transport(), endpoint_resolver=lambda: "https://portal.test",
+                                   header_provider=lambda _url: {"Authorization": "Bearer t"})
+    with patch("tools.connectors.portal.client.PortalConnectorClient", return_value=client):
+        out = _run({"action": "rename", "connectors": [{"name": "gmail", "alias": "work", "to": "office"}]},
+                   _Gateway(), [_account("home", "me@example.com"), _account("work", "me@corp.example")])
+    assert sent == [("PATCH", "https://portal.test/api/v1/connectors/accounts/ca_work", {"alias": "office"})]
+    assert out["renamed"] == {"connector": "gmail", "alias": "office", "label": "me@corp.example"}
+
+
 def test_rename_of_an_unknown_name_lists_the_names_that_exist():
     accounts = [_account("home", "me@example.com"), _account(None, "me@corp.example")]
     with patch("tools.connectors.portal.client.PortalConnectorClient.rename_account") as rename:
