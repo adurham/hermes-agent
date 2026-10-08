@@ -1,8 +1,11 @@
 import asyncio
 import concurrent.futures
+import contextlib
 import datetime
 import json
 import threading
+
+import pytest
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
@@ -469,3 +472,51 @@ def test_legacy_fallback_keeps_the_ticket_profile_for_sessionless_scoped_handler
     reply = _drive_authority_fallback(monkeypatch, capabilities=_INTERACTIVE, profile_id=str(secondary),
                                       method="probe.scoped")
     assert reply["result"]["home"] == str(secondary)
+
+
+@pytest.mark.parametrize("method,params", [
+    ("session.delete", {"session_id": "owned"}),
+    ("session.archive", {"session_id": "owned", "archived": True}),
+])
+def test_legacy_fallback_never_writes_an_authority_owned_session(monkeypatch, tmp_path, method, params):
+    """A session write the authority answers -32601 for must not reach the legacy writer: it would
+    change the authority's state.db behind its receipts and revision fence (and a delete would leave
+    the authority holding a live session whose row is gone)."""
+    from types import SimpleNamespace
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("owned", source="tui")
+        revision = db.get_session("owned")["runtime_revision"]
+        authority = SessionAuthority(SimpleNamespace(_draining=False), profile_id=str(tmp_path),
+                                     instance_id="current", db=db, epoch=begin_runtime_epoch(db, instance_id="current"))
+        authority.sessions["owned"] = LiveSession(None, "route")
+        monkeypatch.setattr(server, "_profile_db", lambda *_a, **_k: contextlib.nullcontext(db))
+        sent, inbound = [], [json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})]
+
+        class FakeWS:
+            scope = {"hermes.session_authority": authority}
+
+            async def accept(self, **_kw):
+                pass
+
+            async def send_text(self, line):
+                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+            async def receive_text(self):
+                if inbound:
+                    return inbound.pop()
+                raise ws_mod._WebSocketDisconnect()
+
+            async def close(self, **_kw):
+                pass
+
+        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "owner", "instance_id": "current"}))
+        reply = next(frame for frame in sent if frame.get("id") == 1)
+        assert reply["error"]["code"] == -32601, reply
+        row = db.get_session("owned")
+        assert row is not None and not row.get("archived") and row["runtime_revision"] == revision
+        assert "owned" in authority.sessions

@@ -311,11 +311,12 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
         return await asyncio.to_thread(server.dispatch, req, transport)
     resp = await authority_connection.dispatch(req)
     actor = authority_connection.actor
-    if _is_unknown_method(resp) and req_method in server._methods and legacy_fallback_allowed(actor):
+    if (_is_unknown_method(resp) and req_method in server._methods
+            and legacy_fallback_allowed(actor, req_method)):
         # Session verbs live on the authority; everything else the sidecar still
-        # registers (pet, wake word, active-session list, connectors) keeps its
-        # legacy handler. A real -32601 reaches the client only for methods
-        # neither side knows, which is what its version-skew notice keys on.
+        # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
+        # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
+        # method neither side knows, which is what the client's version-skew notice keys on.
         resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
     return resp
 
