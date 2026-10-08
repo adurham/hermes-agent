@@ -129,6 +129,24 @@ def test_reconnect_of_an_unnamed_account_by_its_label_repairs_that_account_by_id
                               "connection_id": "ca_gmail_old-label"}]
 
 
+def test_reconnect_of_a_healthy_unnamed_account_by_label_mints_nothing_unless_forced():
+    accounts = [_account("home", "me@example.com"), _account(None, "gmail_old-label")]
+    gateway = _Gateway()
+    _run({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "gmail_old-label"}]}, gateway, accounts)
+    assert gateway.mints == []
+    _run({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "gmail_old-label"}], "force": True},
+         gateway, accounts)
+    assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": None,
+                              "connection_id": "ca_gmail_old-label"}]
+
+
+def test_an_open_repair_of_one_account_is_not_reused_for_another():
+    repair = op.ConnectionOperation([op.Target("gmail", "connector", "reconnect", repair_id="ca_a")], session_key="s1")
+    live.open(repair)
+    assert live.find_target("gmail", repair_id="ca_a") is repair
+    assert live.find_target("gmail", repair_id="ca_b") is None
+
+
 def test_a_pending_link_reaches_the_model_with_its_account_id_and_no_link():
     from tools.connectors.gateway.merge import PlannedCall, render_remote_entry
 

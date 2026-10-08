@@ -40,6 +40,9 @@ class _Transport:
 
 def _rpc(method, transport=None, **params):
     transport = transport or _Transport()
+    # A shared transport still holds the previous call's reply; read only this call's frames.
+    transport.frames.clear()
+    transport.arrived.clear()
     reply = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, transport)
     if reply is not None:
         return reply
@@ -93,6 +96,14 @@ def test_a_session_retry_for_another_account_does_not_re_mint_the_open_one(monke
     monkeypatch.setattr("tools.connectors.managed.managed_client", Client)
     reply = _rpc("connectors.connect", transport, owner={"type": "session", "session_id": "alias-sid"},
                  connectors=["gmail"], alias="work")
+    assert reply["error"]["code"] == 4004
+    live.close(operation)
+    unnamed = ConnectionOperation([Target("gmail", "connector", "reconnect", repair_id="ca_home")], session_key="alias-sid")
+    live.open(unnamed)
+    unnamed.transition("gmail", TargetState.initiated, Actor.backend_watcher, connect_url="https://l/2")
+    unnamed.transition("gmail", TargetState.failed, Actor.backend_watcher, detail="expired")
+    reply = _rpc("connectors.connect", transport, owner={"type": "session", "session_id": "alias-sid"},
+                 connectors=["gmail"], reconnect=True, connection_id="ca_work")
     assert reply["error"]["code"] == 4004
     assert mints == []
 
