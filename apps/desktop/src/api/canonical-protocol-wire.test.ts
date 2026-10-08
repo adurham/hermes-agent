@@ -92,7 +92,14 @@ test('a compress settle resumes under the caller\'s original timeout and abort s
     await client.request('session.resume', { session_id: 's' })
     const controller = new AbortController()
     await client.request('session.compress', { session_id: 's' }, 7_000, controller.signal)
-    expect(wire.slice(1).map(([method, timeoutMs]) => [method, timeoutMs])).toEqual([['session.mutate', 7_000], ['session.resume', 7_000]])
+    // Both legs spend one shared caller deadline (canonical-deadline.test pins the exact
+    // remaining budget), so each gets a positive share of the 7 s, never the 120 s default.
+    expect(wire.slice(1).map(([method]) => method)).toEqual(['session.mutate', 'session.resume'])
+    const [mutateMs, resumeMs] = wire.slice(1).map(([, timeoutMs]) => timeoutMs as number)
+    expect(mutateMs).toBeGreaterThan(0)
+    expect(mutateMs).toBeLessThanOrEqual(7_000)
+    expect(resumeMs).toBeGreaterThan(0)
+    expect(resumeMs).toBeLessThanOrEqual(mutateMs)
     expect(wire[2][2]).toBe(controller.signal)
   } finally {
     spy.mockRestore()
