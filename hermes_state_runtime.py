@@ -494,44 +494,6 @@ def adopt_worker_execution(db, *, epoch: int, execution_id: str, session_id: str
     return db._execute_write(write)
 
 
-def persist_worker_message(db, *, epoch: int, execution_id: str, session_id: str,
-                           generation: int, sequence: int, role: str, content: str) -> dict:
-    """Typed text append primitive, NOT a general remote SessionDB implementation.
-
-    Structured tools/reasoning/usage/compression require their own typed operations.
-    No caller-supplied callable can commit inside this transaction.
-    """
-    import time
-    if type(sequence) is not int or sequence < 1 or role not in ('user', 'assistant', 'system') or not isinstance(content, str):
-        raise RuntimeStoreError('invalid_params')
-    digest = admission_fingerprint(canonical_target=session_id, payload={'operation': 'append_text', 'role': role, 'content': content})
-    def write(conn):
-        _epoch(conn, epoch)
-        row = _worker_assignment(conn, execution_id, session_id, generation)
-        if row['owner_epoch'] != epoch:
-            raise RuntimeStoreError('stale_epoch')
-        old = conn.execute('SELECT * FROM worker_receipts WHERE execution_id=? AND sequence=?', (execution_id, sequence)).fetchone()
-        if old is not None:
-            if old['payload_digest'] != digest:
-                raise RuntimeStoreError('admission_conflict')
-            return json.loads(old['result_json'])
-        if row['status'] == 'terminal':
-            raise RuntimeStoreError('stale_generation')
-        if sequence != row['last_sequence'] + 1:
-            raise RuntimeStoreError('invalid_params')
-        db._check_transcript_write_guards(conn, session_id, None)
-        now = time.time()
-        message = conn.execute('INSERT INTO messages(session_id,role,content,timestamp) VALUES(?,?,?,?)', (session_id, role, db._encode_content(content), now))
-        conn.execute('UPDATE sessions SET message_count=message_count+1,last_activity_at=?,runtime_revision=runtime_revision+1 WHERE id=?', (now, session_id))
-        result = {'message_id': message.lastrowid}
-        conn.execute('INSERT INTO worker_receipts(execution_id,sequence,payload_digest,result_json) VALUES(?,?,?,?)', (execution_id, sequence, digest, json.dumps(result, ensure_ascii=True, allow_nan=False)))
-        conn.execute("UPDATE worker_executions SET last_sequence=?,status='running' WHERE execution_id=?", (sequence, execution_id))
-        return result
-    return db._execute_write(write)
-
-
-
-
 _MESSAGE_FIELDS = frozenset({
     'role', 'content', 'tool_name', 'tool_calls', 'tool_call_id', 'token_count',
     'finish_reason', 'reasoning', 'reasoning_content', 'reasoning_details',
@@ -684,39 +646,3 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (session_id,))
         return result
     return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
-
-
-def finish_worker_execution(db, *, epoch: int, execution_id: str, session_id: str,
-                            generation: int) -> dict:
-    def write(conn):
-        _epoch(conn, epoch)
-        row = _worker_assignment(conn, execution_id, session_id, generation)
-        if row['owner_epoch'] != epoch:
-            raise RuntimeStoreError('stale_epoch')
-        if row['status'] == 'terminal':
-            return _worker_public(row)
-        linked = _linked_worker_admission(conn, session_id, generation, epoch, ('started',))
-        changed = conn.execute(
-            "UPDATE worker_executions SET status='terminal' WHERE execution_id=? AND status!='terminal'",
-            (execution_id,))
-        if changed.rowcount != 1:
-            raise RuntimeStoreError('stale_generation')
-        if linked is not None:
-            changed = conn.execute("""UPDATE session_admissions
-                SET status='terminal',outcome='completed'
-                WHERE admission_id=? AND status='started' AND owner_epoch=? AND generation=?""",
-                (linked['admission_id'], epoch, generation))
-            if changed.rowcount != 1:
-                raise RuntimeStoreError('stale_generation')
-            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
-                         (linked['target_session_id'],))
-        result = _worker_public(row)
-        result['status'] = 'terminal'
-        return result
-    result = db._execute_write(write)
-    with db._read_ctx() as conn:
-        linked = _linked_worker_admission(conn, session_id, generation, epoch, ('terminal',))
-    if linked is not None:
-        from gateway.session_ingress_media import release_admission_media
-        release_admission_media(db, linked['admission_id'])
-    return result

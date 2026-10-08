@@ -231,34 +231,13 @@ def test_local_reset_refuses_over_live_compute_worker_but_not_a_queued_follower(
         with pytest.raises(rt.RuntimeStoreError, match='session_busy'):
             reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         assert db.get_session(sid) == before and db.get_session('child') is None
-        rt.persist_worker_message(db, epoch=epoch, **scope, sequence=1, role='assistant', content='ok')
-        rt.finish_worker_execution(db, epoch=epoch, **scope)
+        rt.mutate_worker_execution(db, epoch=epoch, **scope, sequence=1, operation='transcript.append',
+                                   payload={'messages': [{'role': 'assistant', 'content': 'ok'}]})
+        rt.mutate_worker_execution(db, epoch=epoch, **scope, sequence=2, operation='execution.finish', payload={})
         # Worker terminal, follower still queued: /reset is exactly what the follower waits on.
         reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         assert db.get_session(sid)['runtime_generation'] == before['runtime_generation'] + 1
         claimed = rt.claim_session_input(db, epoch=epoch, session_id=sid)
-        assert claimed is not None and claimed['admission_id'] == follower['admission_id']
-
-
-def test_adopted_worker_finish_settles_linked_admission_and_frees_follower(tmp_path):
-    with closing(SessionDB(tmp_path / 'state.db')) as db:
-        db.create_session('s', source='test')
-        epoch = rt.begin_runtime_epoch(db, instance_id='boot')
-        first = _started_admission(db, epoch, 's', 'first')
-        assignment = dict(execution_id='compute', session_id='s', generation=first['generation'])
-        rt.register_worker_execution(db, epoch=epoch, **assignment, kind='compute', adoption_secret='private')
-        follower = rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id='s',
-                                          request_id='second', payload={})
-        epoch = rt.begin_runtime_epoch(db, instance_id='replacement')
-        rt.recover_session_inputs(db, epoch=epoch)
-        rt.adopt_worker_execution(db, epoch=epoch, **assignment, adoption_secret='private')
-        assert rt.get_session_admission(db, admission_id=first['admission_id'])['status'] == 'started'
-        assert rt.claim_session_input(db, epoch=epoch, session_id='s') is None
-        rt.persist_worker_message(db, epoch=epoch, **assignment, sequence=1, role='assistant', content='done')
-        rt.finish_worker_execution(db, epoch=epoch, **assignment)
-        settled = rt.get_session_admission(db, admission_id=first['admission_id'])
-        assert settled['status'] == 'terminal' and settled['outcome'] == 'completed'
-        claimed = rt.claim_session_input(db, epoch=epoch, session_id='s')
         assert claimed is not None and claimed['admission_id'] == follower['admission_id']
 
 

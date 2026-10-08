@@ -23,8 +23,9 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
         row = rt.claim_session_input(db, epoch=epoch, session_id='used')
         rt.register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='used',
             generation=row['generation'], kind='compute', adoption_secret='owned-proof')
-        worker_result = rt.persist_worker_message(db, epoch=epoch, execution_id='worker', session_id='used',
-            generation=row['generation'], sequence=1, role='assistant', content='worker history')
+        worker_append = {'messages': [{'role': 'assistant', 'content': 'worker history'}]}
+        worker_result = rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='used',
+            generation=row['generation'], sequence=1, operation='transcript.append', payload=worker_append)
         result = {'result': {'final_response': 'exact reply', 'messages': []}, 'usage': {'input_tokens': 7}}
         retain_result(db, epoch=epoch, row=row, result=result)
         snap = db.get_session('used')
@@ -53,7 +54,7 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
         from hermes_state_terminal import terminal_worker_receipt
         worker_args = dict(execution_id='worker', session_id='used', generation=row['generation'], sequence=1,
             adoption_secret='owned-proof', payload_digest=rt.admission_fingerprint(canonical_target='used',
-                payload={'operation': 'append_text', 'role': 'assistant', 'content': 'worker history'}))
+                payload={'operation': 'transcript.append', 'payload': worker_append}))
         assert terminal_worker_receipt(db, **worker_args) == worker_result
         with pytest.raises(rt.RuntimeStoreError, match='permission_denied'):
             terminal_worker_receipt(db, **(worker_args | {'adoption_secret': 'foreign'}))
@@ -61,8 +62,8 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
             with pytest.raises(rt.RuntimeStoreError):
                 rt.admit_session_input(db, epoch=epoch, **(args | change))
         with pytest.raises(rt.RuntimeStoreError):
-            rt.persist_worker_message(db, epoch=epoch, execution_id='worker', session_id='used',
-                generation=row['generation'], sequence=2, role='assistant', content='late')
+            rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='used',
+                generation=row['generation'], sequence=2, operation='transcript.append', payload=worker_append)
 
 
 def test_nonterminal_obligations_prevent_any_retirement(tmp_path):
