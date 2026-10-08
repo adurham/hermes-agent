@@ -239,3 +239,20 @@ it('keeps the caption and its image token in the composer when the pending-input
     expect(h.request.mock.calls.find(([method]) => method === 'prompt.submit')![1].attachments).toHaveLength(1)
   } finally { chmodSync(journal, 0o700); h.close() }
 })
+
+it('a failed attempt write leaves the queue head claimable instead of wedged in flight', async () => {
+  const h = mount(true)
+  const journal = join(h.home, 'tui-pending-inputs')
+
+  try {
+    h.composer.actions.enqueue('later please')
+    chmodSync(journal, 0o500)
+    expect(h.composer.actions.dequeue()).toBeUndefined()
+    expect(h.composer.refs.queueRef.current[0]).toMatchObject({ text: 'later please' })
+    expect(h.composer.refs.queueRef.current[0]!.inFlight).toBeFalsy()
+    chmodSync(journal, 0o700)
+    const claimed = h.composer.actions.dequeue()
+    expect(claimed).toMatchObject({ text: 'later please', inFlight: true })
+    expect(typeof claimed!.settle).toBe('function')
+  } finally { chmodSync(journal, 0o700); h.close() }
+})
