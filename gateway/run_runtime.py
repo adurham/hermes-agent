@@ -164,6 +164,56 @@ def _authority_tasks(authority):
     return list(dict.fromkeys(tasks))
 
 
+# How long a Stopped turn gets to settle durably before its task is cancelled: a managed worker
+# acknowledges Stop within STOP_ACK_SECONDS (30) or is terminated, then closed (<=10).
+TURN_SETTLE_SECONDS = 45.0
+
+
+def managed_turn_count(runner):
+    """Managed-worker turns across every served authority: out-of-process work that
+    ``_running_agents`` never sees. A worker registers before it can be reserved, and a draining
+    owner refuses the reservation, so nothing unbootstrapped can start work behind this count."""
+    return sum(1 for authority in _authorities(runner)
+               for worker in list(getattr(authority, '_managed_workers', {}).values()) if not worker.closed.is_set())
+
+
+def stop_authority_turns(authority):
+    """Cooperative Stop for every managed turn *authority* is executing: the control a user's Stop
+    sends. The worker acknowledges or is terminated within STOP_ACK_SECONDS; the admission then
+    settles through its own fenced path (interrupted, or durable ``unknown``)."""
+    from hermes_state_runtime import RuntimeStoreError
+    signalled = 0
+    for worker in list(getattr(authority, '_managed_workers', {}).values()):
+        if worker.closed.is_set():
+            continue
+        try:
+            worker.control({'type': 'stop'})
+        except RuntimeStoreError as exc:
+            # A full control queue: control() latched worker.stop first, and the owner's read
+            # loop escalates on that latch alone (terminate after STOP_ACK_SECONDS).
+            logger.debug('managed Stop not queued (%s); the latch escalates it', exc.reason)
+        signalled += 1
+    return signalled
+
+
+def stop_managed_turns(runner):
+    """``stop_authority_turns`` across every served authority (whole-runtime shutdown)."""
+    return sum(stop_authority_turns(authority) for authority in _authorities(runner))
+
+
+async def _settle_tasks(tasks, timeout):
+    """Wait up to *timeout* for *tasks*; cancel the rest and give their cleanup the same bound.
+    Returns the tasks that missed the first deadline."""
+    if not tasks:
+        return set()
+    _, late = await asyncio.wait(tasks, timeout=timeout)
+    for task in late:
+        task.cancel()
+    if late:
+        await asyncio.wait(late, timeout=timeout)
+    return late
+
+
 async def _retire_profile_authority(authority):
     """Stop profile-local services/tasks before its ownership is released."""
     from gateway.session_cron import unbind_owner
@@ -323,10 +373,17 @@ async def drain_gateway_runtime(runner):
 
 
 async def settle_gateway_runtime(runner):
-    """Keep authority tasks alive until their last durable settlement write."""
-    tasks = [task for authority in _authorities(runner) for task in _authority_tasks(authority)]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    """Keep authority tasks alive until their last durable settlement write, within a bound.
+
+    A managed turn still running here gets its Stop first (its worker acknowledges or is
+    terminated, and the admission settles interrupted or ``unknown``); a task that still misses
+    TURN_SETTLE_SECONDS is cancelled, which leaves its admission for recovery, never settled."""
+    authorities = _authorities(runner)
+    stop_managed_turns(runner)
+    tasks = [task for authority in authorities for task in _authority_tasks(authority)]
+    late = await _settle_tasks(tasks, TURN_SETTLE_SECONDS)
+    if late:
+        logger.warning('%d authority task(s) did not settle within %.0fs; cancelled', len(late), TURN_SETTLE_SECONDS)
     # Sockets closed in drain_gateway_runtime; work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
     from gateway.session_acp_lifecycle import end_idle_acp_sessions
