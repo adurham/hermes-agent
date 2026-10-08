@@ -23,7 +23,10 @@ def branch_in_transaction(db, conn, session_id, payload):
     from hermes_state_keys import local_identity, profile_from_session_key
     request_id = 'branch:' + uuid.uuid4().hex
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
-    source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm')
+    # The child keeps the parent's owning profile: a served secondary's origin names it
+    # (``local_source``), and restore compares the stored origin against that exactly.
+    source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm',
+                           profile=saved['entry']['origin'].get('profile'))
     from gateway.session import build_session_key
     route = build_session_key(source, profile=profile_from_session_key(saved['route']))
     from gateway.session_lifecycle import _now
