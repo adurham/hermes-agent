@@ -1,13 +1,13 @@
 name: commandcode-oauth
 repo: https://github.com/NanamiMio/hermes-commandcode-oauth
-sha: ef99c1a3a860357f56b7e2b073d4dd428561019f
+sha: 232f2d14d96ad4197a596feaec309c43c6aa9c84
 description: Command Code CLI-key model provider with live setup discovery, plan limits and failover classification. Disclosure — uses the CLI-internal api.commandcode.ai/alpha/generate endpoint and CLI client headers, sends the full conversation, tool schemas, cwd path and OS/Python version, and imports a static key from the read-only CLI credential file or a browser hand-off; no OAuth exchange takes place. Hermes also bundles commandcode for the documented Provider API.
 maintainer: NanamiMio
 tier: community
 category: models
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/NanamiMio/hermes-commandcode-oauth#readme
-version: "0.1.1"
+version: "0.1.2"
 readme: true
 platforms: []
 known_issues:
