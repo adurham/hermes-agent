@@ -169,7 +169,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
       // A settle follow-up (compress -> resume) inherits the caller's deadline and cancellation.
       const followUp = (m: string, p: Record<string, unknown>) => this.request(m, p, timeoutMs, signal)
-      const settled = this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), followUp) as T
+      const settled = await this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), followUp) as T
 
       if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
         this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> })
