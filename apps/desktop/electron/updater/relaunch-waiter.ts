@@ -72,16 +72,39 @@ function errorText(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
 }
 
-function waiterLogTail(maxChars: number = 1500): string {
-  const file: string = path.join(os.tmpdir(), RELAUNCH_WAITER_LOG_FILENAME)
+/** Max bytes read from the shared script log: a failure report must not scale with its history. */
+export const RELAUNCH_WAITER_LOG_TAIL_BYTES = 16 * 1024
+
+/**
+ * The script log is shared by every attempt, so keep only this attempt's lines
+ * (the script tags each with its stage dir name) from a bounded suffix.
+ */
+export function waiterLogTail(
+  file: string,
+  attempt: string,
+  maxBytes: number = RELAUNCH_WAITER_LOG_TAIL_BYTES
+): string {
+  let text: string
 
   try {
-    const text: string = fs.readFileSync(file, 'utf8').trim()
+    const fd: number = fs.openSync(file, 'r')
 
-    return `${file}:\n${text.slice(-maxChars)}`
+    try {
+      const size: number = fs.fstatSync(fd).size
+      const length: number = Math.min(size, maxBytes)
+      const buffer: Buffer = Buffer.alloc(length)
+      fs.readSync(fd, buffer, 0, length, size - length)
+      text = buffer.toString('utf8')
+    } finally {
+      fs.closeSync(fd)
+    }
   } catch {
     return `${file}: not written (the script never ran far enough to log)`
   }
+
+  const lines: string[] = text.split(/\r?\n/).filter((line: string): boolean => line.includes(`[${attempt}]`))
+
+  return `${file}:\n${lines.length ? lines.join('\n') : 'no lines from this attempt'}`
 }
 
 /** Pure: the exact argv the waiter is spawned with. */
@@ -184,6 +207,8 @@ export async function startRelaunchWaiter(
 
   let closed = false
   const startedAt = Date.now()
+  const attempt: string = path.basename(staging.stageDir)
+  const waiterLogPath: string = path.join(os.tmpdir(), RELAUNCH_WAITER_LOG_FILENAME)
 
   const closedPromise = new Promise<void>(resolve => {
     child.once('close', () => {
@@ -248,7 +273,7 @@ export async function startRelaunchWaiter(
         log(
           `[updates] relaunch waiter: exited before its handshake after ${Date.now() - startedAt}ms ` +
             `(exit code ${code ?? 'none'}, signal ${signal ?? 'none'}; 1 = script error, 2 = identity ` +
-            `${options.identityName} not found or has no app id)\n${waiterLogTail()}`
+            `${options.identityName} not found or has no app id)\n${waiterLogTail(waiterLogPath, attempt)}`
         )
       }
 
@@ -276,7 +301,7 @@ export async function startRelaunchWaiter(
     if (!closed) {
       log(
         `[updates] relaunch waiter: no handshake within ${handshakeTimeoutMs}ms ` +
-          `(pid ${child.pid ?? 'none'}); stopping it\n${waiterLogTail()}`
+          `(pid ${child.pid ?? 'none'}); stopping it\n${waiterLogTail(waiterLogPath, attempt)}`
       )
     }
 
