@@ -161,3 +161,31 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
         await owner.close()
         store.close_all_db_handles()
 
+
+@pytest.mark.asyncio
+async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp_path, monkeypatch):
+    """A session created with an explicit --api-key AND secret-bearing config can change provider:
+    the launch key must not cross providers, the frozen config secrets stay bound."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import bind_launch_key, build_policy, restore_policy
+    from hermes_state import SessionDB
+    import hermes_cli.model_switch as model_switch
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='b', target_provider='anthropic', provider_changed=True,
+        base_url='https://api.anthropic.com'))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db, runner=SimpleNamespace(
+            _resolve_session_agent_runtime=lambda **k: (None, {'api_key': 'sk-launch'})))
+        private = {}
+        config = {'model': {'provider': 'openrouter', 'default': 'a'},
+                  'providers': {'mine': {'api_key': 'sk-config-secret', 'base_url': 'http://127.0.0.1:9/v1'}}}
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'a', 'api_key': 'sk-launch'}, config, private_secrets=private)
+        policy = bind_launch_key(authority, 'sid', policy, 'sk-launch', config_secrets=private)
+        assert policy.credential_ref and policy.config_secret_ref
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        switched = restore_policy((await prepare_model(authority, SimpleNamespace(source=None, route='r'),
+                                                       {'model': 'b', 'provider': 'anthropic'}, prepared))['policy'])
+        assert switched.credential_ref is None, 'the launch key crossed into another provider'
+        assert switched.config(authority)['providers']['mine']['api_key'] == 'sk-config-secret'

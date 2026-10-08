@@ -229,7 +229,9 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         keys = authority._local_launch_keys = {}
     ref = f'{authority.instance_id}:{authority.epoch}:{session_id}'
     old = keys.get(ref)
-    if old is not None and (api_key is None or not hmac.compare_digest(old, api_key)):
+    # Only a key that IS being bound can conflict: binding config secrets alone (a provider
+    # change drops the launch key) must not be refused by the key the session already holds.
+    if api_key is not None and old is not None and not hmac.compare_digest(old, api_key):
         raise RuntimeStoreError('admission_conflict')
     configs = getattr(authority, '_local_config_secrets', None)
     if configs is None:
