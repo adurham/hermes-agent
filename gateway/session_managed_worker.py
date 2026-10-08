@@ -251,8 +251,9 @@ def _prompt_frame(authority, ref, row, worker, frame):
 def _worker_env(authority):
     """Child env for the OWNING profile under multiplex: its HERMES_HOME plus its ``.env``
     secrets over a scrubbed base, never the launch profile's process environment (the same
-    rule MCP stdio children and shell hooks follow). Single-profile gateways inherit the
-    process env byte-for-byte, exactly as before."""
+    rule MCP stdio children and shell hooks follow) — except for the launch profile's own
+    worker, whose scope legitimately includes its frozen launch env. Single-profile gateways
+    inherit the process env byte-for-byte, exactly as before."""
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home
@@ -271,15 +272,35 @@ def _worker_env(authority):
     # Strip the RAW environ before the constructor injects this turn's own session/bridge context:
     # a launch ``.env`` name (HERMES_SESSION_ID...) must not erase a value derived for this turn.
     env = build_subprocess_env(base=strip_launch_profile_env(os.environ.copy(), home), scrub_secrets=True)
+    secrets = build_profile_secret_scope(home)
     if routed:
         # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
         # forward launch-process provider credentials that no .env or source snapshot recorded.
         _scrub_credentials(env, inherit_credentials=False)
-    env.update({k: v for k, v in build_profile_secret_scope(home).items() if v is not None})
+    else:
+        secrets = {**_launch_env_only_credentials(home, env), **secrets}
+    env.update({k: v for k, v in secrets.items() if v is not None})
     env['HERMES_HOME'] = str(home)
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env
+
+
+def _launch_env_only_credentials(home, env):
+    """Credentials the LAUNCH profile's owner resolves from its frozen launch env
+    (``launch_secret_scope``: systemd ``Environment=`` / ``op run`` keys with no ``.env`` line) that
+    the scrub removed from *env* — the same mapping the owner's own ``get_secret`` reads for this
+    profile. Credential names only: non-credential names the constructor removed on purpose
+    (unbound session context, venv markers) stay removed, and Hermes-internal secrets
+    (``AUXILIARY_*_API_KEY``, relay auth) never reach a child. Only the launch home's worker calls
+    this; a routed home's worker sees its own files only."""
+    from tools.environments.local import _scrub_credentials
+    from tools.environments.local_env_policy import _is_hermes_internal_secret
+    from tui_gateway.launch_profile_policy import launch_secret_scope
+    missing = {k: v for k, v in launch_secret_scope(home).items()
+               if k not in env and not _is_hermes_internal_secret(k)}
+    plain = _scrub_credentials(dict(missing), inherit_credentials=False)
+    return {k: v for k, v in missing.items() if k not in plain}
 
 
 def _interrupted_before_bootstrap(authority, row):
