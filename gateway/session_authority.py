@@ -367,12 +367,28 @@ class SessionAuthority:
                                       payload=payload, intent=request.intent,
                                       _authorize_write=_authorize_write)
         except Exception:
-            from gateway.session_ingress_media import release_unheld_media
-            release_unheld_media(self.db, payload.get('attachments_v1', {}).get('media', []))
+            self._release_refused_capture(request, payload)
             raise
         self._publish_pending(request.ref)
         self._schedule(request.ref)
         return self._receipt(row)
+
+    def _release_refused_capture(self, request, payload):
+        """A refused submission's captured bytes have no owner unless another admission holds the
+        same bytes. They become durable retirement candidates (collected again by delete/prune if
+        this pass fails), then a holder-aware release runs. Its failure is logged and never replaces
+        the refusal the client must see (e.g. ``admission_conflict``)."""
+        media = payload.get('attachments_v1', {}).get('media', [])
+        if not media:
+            return
+        from hermes_state_media import collect_retired_media, retire_media
+        try:
+            self.db._execute_write(lambda conn: retire_media(conn, {'attachments_v1': {'media': media}}))
+            collect_retired_media(self.db)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                'Releasing refused attachments of request %s failed', request.request_id)
 
     async def receipt(self, actor, ref, admission_id):
         self.authorize(actor, ref, 'session:submit')

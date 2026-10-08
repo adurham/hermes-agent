@@ -155,3 +155,44 @@ async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_pat
     await authority.resolve_unknown(actor, SessionRef('p', 's'), receipt.admission_id, row['generation'])
     assert rt.get_session_admission(authority.db, admission_id=receipt.admission_id)['status'] == 'terminal'
     assert not os.path.exists(committed)
+
+
+@pytest.mark.asyncio
+async def test_refused_image_capture_is_released_without_masking_the_refusal(tmp_path, monkeypatch):
+    """A local submit captures image bytes before admission can refuse them. The refused capture is
+    released holder-aware (the accepted admission's bytes stay), and a collection failure never
+    replaces the refusal the client must see."""
+    from gateway import session_ingress_media
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+
+    def submit(data):
+        return authority.submit(actor, Submission('r-conflict', SessionRef('p', 's'), {'text': 'look', 'attachments': [
+            {'path': cache_image_from_bytes(data, '.png'), 'mime': 'image/png'}]}, 'queue'))
+    await submit(_ONE_PX_PNG)
+    retained = lambda: sorted(p.parent.name for p in session_ingress_media._media_root().glob('*/*'))
+    accepted = retained()
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        await submit(_ONE_PX_PNG + b'B')
+    assert retained() == accepted, 'the refused capture must be released, the accepted one kept'
+
+    release = session_ingress_media.release_unheld_media
+    def collection_fails(*args, **kwargs):
+        raise OSError('collection write failed')
+    monkeypatch.setattr(session_ingress_media, 'release_unheld_media', collection_fails)
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        await submit(_ONE_PX_PNG + b'C')
+    assert len(list_session_admissions(authority.db, session_id='s')) == 1
+    # The failed collection stays a durable obligation the next retirement sweep honours.
+    monkeypatch.setattr(session_ingress_media, 'release_unheld_media', release)
+    from hermes_state_media import collect_retired_media
+    collect_retired_media(authority.db)
+    assert retained() == accepted
