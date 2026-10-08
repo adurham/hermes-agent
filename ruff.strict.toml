@@ -414,7 +414,7 @@ select = [
   #  "FURB192",
   "RUF007",
   "RUF008",
-  #  "RUF009",
+  "RUF009",
   "RUF010",
   #  "RUF012",
   "RUF013",
