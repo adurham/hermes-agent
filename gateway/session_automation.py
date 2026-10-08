@@ -30,7 +30,9 @@ def completion_admission(runner, event):
         return None
     from hermes_state_runtime import list_session_admissions
     identity = producer_identity(runner, event)
-    sid = entry.origin.chat_id if entry.origin.platform == Platform.LOCAL else entry.session_id
+    # Compression moves the route's transcript to a child; admissions stay on the logical root.
+    sid = (entry.origin.chat_id if entry.origin.platform == Platform.LOCAL
+           else authority.logical_owner(entry.session_id))
     for row in list_session_admissions(authority.db, session_id=sid, pending_only=False):
         descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
         if identity in descriptor.get('identities', [descriptor.get('identity')]):
@@ -99,7 +101,9 @@ def snapshot_automation(authority, adapter, event, identity):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
     from hermes_state_runtime import list_session_admissions
-    prior = list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)
+    # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
+    owner = authority.logical_owner(entry.session_id)
+    prior = list_session_admissions(authority.db, session_id=owner, pending_only=False)
     envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
                      if 'native_text_v1' in r['payload']), None)
     if envelope is None or 'provenance' not in envelope:
@@ -117,7 +121,7 @@ def snapshot_automation(authority, adapter, event, identity):
     envelope = {'source': source, 'route': entry.session_key,
         'timestamp': datetime.fromtimestamp(0, timezone.utc).isoformat(),
         'event': {'message_id': identity}, 'provenance': provenance,
-        'automation': {'identity': identity, 'owner': entry.session_id}}
+        'automation': {'identity': identity, 'owner': owner}}
     envelope['automation'].update(notification)
     if getattr(event, '_heartbeat_session_id', None):
         envelope['automation']['heartbeat'] = event._heartbeat_session_id
@@ -132,7 +136,9 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
     event = restore_native(payload, runner)
     envelope = payload['native_text_v1']
     entry = _owner(runner, event)
-    if (entry.session_id != session_id or envelope['automation']['owner'] != session_id
+    from gateway.session_authorities import active_authority
+    if (entry.session_id != session_id
+            or envelope['automation']['owner'] != active_authority(runner).logical_owner(session_id)
             or runner.session_store._generate_session_key(available_source) != entry.session_key
             or adapter is None or runner._adapter_for_source(event.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
@@ -199,7 +205,7 @@ async def admit_automation(authority, adapter, event, identity):
     authority._require_admission_open()
     payload, entry = snapshot_automation(authority, adapter, event, identity)
     from gateway.session_authority import LiveSession
-    sid = payload.get('local_automation_v1', {}).get('owner', entry.session_id)
+    sid = (payload.get('local_automation_v1') or payload['native_text_v1']['automation'])['owner']
     ref = SessionRef(authority.profile_id, sid)
     authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
     row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
