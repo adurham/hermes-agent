@@ -53,9 +53,10 @@ def _bootstrap(authority, ref, row, policy, scope):
                 terminal[path[1]] = value
     live = authority.sessions[ref.session_id]
     # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
-    # the admission's one-shot flags, bound in the owner only for in-process turns.
+    # the admission's one-shot flags and the route's YOLO as of now, never the frozen launch flag.
     request = dict(json.loads(policy.request_json), turn_v1={
-        'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True})
+        'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
+        'yolo': _session_yolo(authority, live.route, policy)})
     hydrated = replace(policy, config_json=json.dumps(policy.config(authority)), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
@@ -67,19 +68,35 @@ def _bootstrap(authority, ref, row, policy, scope):
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
 
 
+def _session_yolo(authority, route, policy):
+    """The route's bypass as the in-process turn arms it on the owner, the one place a revocation
+    is recorded: a ``--yolo`` launch seeded once per boundary, then the persisted ``/yolo`` copy."""
+    from gateway.run_agent_cache import GatewayAgentCacheMixin
+    from tools.approval import apply_launch_yolo, is_session_yolo_enabled
+    if policy.yolo:
+        apply_launch_yolo(route)
+    store = getattr(authority.runner, 'session_store', None)
+    if store is not None:
+        GatewayAgentCacheMixin._restore_session_yolo(route, store.lookup_by_session_key(route))
+    return is_session_yolo_enabled(route)
+
+
 @contextmanager
 def worker_turn_scope(frame):
     """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
-    (execute_finite_admission), so ``chat -q``/``-z`` never park a prompt. Frames without it
-    bind nothing."""
+    (execute_finite_admission, the route's YOLO), so ``chat -q``/``-z`` never park a prompt and
+    the session's current YOLO governs this child. Frames without it bind nothing."""
     from gateway.session_finite import finite_turn_scope
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
     if turn is None:
         yield
         return
-    if (not isinstance(turn, dict) or set(turn) != {'finite', 'unattended'}
+    if (not isinstance(turn, dict) or set(turn) != {'finite', 'unattended', 'yolo'}
             or any(type(v) is not bool for v in turn.values()) or (turn['unattended'] and not turn['finite'])):
         raise ValueError('invalid_managed_worker_bootstrap')
+    if turn['yolo']:
+        from tools.approval import enable_session_yolo
+        enable_session_yolo(frame['route'])
     with finite_turn_scope(turn['finite'], turn['unattended']):
         yield
 
@@ -287,7 +304,8 @@ async def execute_managed(authority, ref, row, policy):
                     process=process, principal_id=row['principal_id'], hello=hello)
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
-        await asyncio.to_thread(worker.send, _bootstrap(authority, ref, row, policy, scope))
+        frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
+        await asyncio.to_thread(worker.send, frame)
         worker.writer.start()
         while True:
             frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)

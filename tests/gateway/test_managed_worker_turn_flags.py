@@ -112,3 +112,17 @@ def test_one_shot_managed_turns_never_park_an_approval(tmp_path):
         assert target.exists()
     _run(tmp_path, scenario)
 
+
+@pytest.mark.platforms("linux")
+def test_managed_turn_follows_the_sessions_current_yolo(tmp_path):
+    async def scenario(ws, sid, turn, target):
+        on = await rpc(ws, 'config.set', session_id=sid, key='yolo', value='1')
+        assert on['result']['value'] == '1', on
+        assert await turn(ws, sid, 'yolo-on') == 'settled'
+        assert not target.exists()
+        # A revocation reaches the next child; it is not a frozen launch flag.
+        off = await rpc(ws, 'config.set', session_id=sid, key='yolo', value='0')
+        assert off['result']['value'] == '0', off
+        assert await turn(ws, sid, 'yolo-off') == 'prompted'
+        assert target.exists()
+    _run(tmp_path, scenario)
