@@ -35,7 +35,9 @@ def _open_close(path):
 
 
 def _io_open_close(path):
-    with open(path, encoding="utf-8"):
+    # io.open is a separate guarded entry point from builtins.open (HomeIOGuard wraps both);
+    # bare `open` would only re-exercise the builtin-open case above.
+    with io.open(path, encoding="utf-8"):  # noqa: UP020 — exercise io.open separately
         pass
 
 

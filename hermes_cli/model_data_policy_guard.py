@@ -58,6 +58,7 @@ def data_training_warning(
     model_name: str,
     *,
     provider: Optional[str] = None,
+    # Reserved for host-scoped rules (e.g. third-party relays) — unused for now, on purpose.
     base_url: Optional[str] = None,
 ) -> Optional[DataTrainingWarning]:
     """Warning payload when *model_name* selects a data-training tier, else ``None``. Call after model

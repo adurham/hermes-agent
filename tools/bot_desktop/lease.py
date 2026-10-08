@@ -161,7 +161,12 @@ def on_change(listener: Callable[[str, Lease], None]) -> Callable[[], None]:
 
 
 def _notify(key: str, lease: Lease) -> None:
-    for cb in _listeners:
+    # Snapshot under the lock: a viewer disconnecting on another thread runs unsubscribe()
+    # concurrently with this loop; removing an entry from the live list mid-iteration skips
+    # the next listener, and a still-connected viewer misses the lease transition.
+    with _lock:
+        listeners = list(_listeners)
+    for cb in listeners:
         try:
             cb(key, lease)
         except Exception:  # a broken subscriber must not wedge the handoff

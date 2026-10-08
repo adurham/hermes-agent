@@ -11,6 +11,8 @@ except ModuleNotFoundError as exc:
 import logging
 import os
 import functools
+# Tests patch shutil/time/datetime through the cli facade; siblings also resolve datetime
+# lazily through it — these imports are load-bearing despite being unused in this file.
 import shutil
 import sys
 import re
