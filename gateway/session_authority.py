@@ -216,6 +216,13 @@ class SessionAuthority:
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
 
+    def wake_after_worker(self, session_id):
+        """A worker execution on ``session_id`` (a logical owner or its compression continuation)
+        ended: a drain that parked behind it re-runs. A no-op while a drain is running."""
+        for sid in dict.fromkeys((session_id, self.logical_owner(session_id))):
+            if sid in self.sessions:
+                self._schedule(SessionRef(self.profile_id, sid))
+
     def _pause(self, ref, reason):
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
         drain; only the process-local messaging delivery waiters on this session are released,
@@ -513,6 +520,12 @@ class SessionAuthority:
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
+                return
+            if row is None and first is not None:
+                # Not empty: a live worker (or a claim this drain does not own) blocks the head.
+                # Release the delivery waiters like any pause; the worker's finish wakes the FIFO
+                # (``wake_after_worker``) and the drain then answers through the adapter.
+                self._pause(ref, 'session_busy')
                 return
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
