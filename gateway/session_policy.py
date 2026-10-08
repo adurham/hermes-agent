@@ -317,6 +317,33 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
                    config_secret_ref=config_ref if config_secrets else None)
 
 
+def release_launch_secrets(authority, session_ids):
+    """Drop retired sessions' launch keys, frozen config secrets and editor MCP servers.
+
+    They live only in this authority's memory for the session's lifetime; a deleted session can
+    never run again, so keeping them would hold its credentials until the process exits."""
+    import hashlib
+    from gateway.session_policy_credentials import PREFIX
+    retired = {str(sid) for sid in session_ids}
+    if not retired:
+        return
+    prefix = f'{authority.instance_id}:{authority.epoch}:'
+    keys = getattr(authority, '_local_launch_keys', None) or {}
+    for ref in [ref for ref in keys if ref.startswith(prefix) and ref[len(prefix):] in retired]:
+        del keys[ref]
+    configs = getattr(authority, '_local_config_secrets', None) or {}
+    for ref in list(configs):
+        if ref.startswith(PREFIX):
+            owner = json.loads(ref[len(PREFIX):]).get('session')
+        else:
+            owner = ref[len(prefix):] if ref.startswith(prefix) else None
+        if owner in retired:
+            del configs[ref]
+    editors = getattr(authority, '_local_editor_mcp', None) or {}
+    for sid in retired:
+        editors.pop('editor-session:' + hashlib.sha256(f'{authority.profile_id}:{sid}'.encode()).hexdigest(), None)
+
+
 def launch_key(authority, policy):
     if policy.credential_ref is None:
         return None

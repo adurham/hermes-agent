@@ -198,6 +198,8 @@ def _project_committed(authority, ref, operation, result):
         store = getattr(authority.runner, 'session_store', None)
         if store is not None:
             store.retire_runtime_sessions(result['deleted_ids'])
+        from gateway.session_policy import release_launch_secrets
+        release_launch_secrets(authority, result['deleted_ids'])
         for sid in result['deleted_ids']:
             candidate = authority.sessions.pop(sid, None)
             if candidate is not None:
