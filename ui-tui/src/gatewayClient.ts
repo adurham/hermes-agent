@@ -114,11 +114,17 @@ const redactUrl = (raw: string): string => {
 
 export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
 
-const bootstrapLocalGateway = async (start: boolean): Promise<LocalGatewayGrant> => {
+// Reconnects after the first launch are discovery-only, except that a bounded number per window
+// may re-ensure an owner that crashed (gateway_bootstrap.py --recover decides from the owner's
+// retained runtime record; an explicitly stopped gateway is never resurrected).
+export const OWNER_RECOVERY_LIMIT = 3
+export const OWNER_RECOVERY_WINDOW_MS = 60_000
+
+const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<LocalGatewayGrant> => {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
   const { stdout } = await promisify(execFile)(resolvePython(),
-    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : [])],
+    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
     { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
 
   return JSON.parse(stdout) as LocalGatewayGrant
@@ -168,11 +174,14 @@ export class GatewayClient extends EventEmitter {
   private bootstrapError: Error | null = null
   private localStarted = false
   private localGeneration = 0
+  private recoveryAttempts: number[] = []
   isCanonical = false
   private creationContract?: CreationContract
   private describeFlight?: Promise<void>
 
-  constructor(private bootstrap: (start: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway) {
+  constructor(
+    private bootstrap: (start: boolean, recover?: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway
+  ) {
     super()
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
@@ -484,9 +493,10 @@ export class GatewayClient extends EventEmitter {
   private startLocalGateway() {
     const generation = ++this.localGeneration
     const start = !this.localStarted
+    const recover = !start && this.claimOwnerRecovery()
     this.localStarted = true
     this.bootstrapError = null
-    this.bootstrapFlight = this.bootstrap(start).then(grant => {
+    this.bootstrapFlight = this.bootstrap(start, recover).then(grant => {
       if (this.disposed || generation !== this.localGeneration) { return }
       this.attachUrl = grant.url
       this.isCanonical = true
@@ -501,6 +511,19 @@ export class GatewayClient extends EventEmitter {
       this.channel.detach(this.bootstrapError)
       this.scheduleReconnect()
     })
+  }
+
+  /** One slot of the sliding owner re-ensure budget, so a crash-looping owner is not respawned forever. */
+  private claimOwnerRecovery(now = Date.now()) {
+    this.recoveryAttempts = this.recoveryAttempts.filter(at => now - at < OWNER_RECOVERY_WINDOW_MS)
+
+    if (this.recoveryAttempts.length >= OWNER_RECOVERY_LIMIT) {
+      return false
+    }
+
+    this.recoveryAttempts.push(now)
+
+    return true
   }
 
   private startAttachedGateway(attachUrl: string, protocols?: string[]) {

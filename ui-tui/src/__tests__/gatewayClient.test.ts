@@ -237,6 +237,26 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); vi.useRealTimers() }
   })
 
+  it('re-ensures a crashed owner on a bounded number of reconnects, then stays discovery-only', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
+    const bootstrap = vi.fn().mockResolvedValueOnce(grant).mockRejectedValue(new Error('gateway absent: not ready'))
+    const gw = new GatewayClient(bootstrap)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.open()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.close()
+      // Five reconnects inside one recovery window.
+      await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * (1 + 2 + 4 + 8 + 16))
+      expect(bootstrap.mock.calls.map(([start, recover]) => [start, Boolean(recover)])).toEqual([
+        [true, false], [false, true], [false, true], [false, true], [false, false], [false, false]])
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
   it('waits for websocket open and resolves RPC requests', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()

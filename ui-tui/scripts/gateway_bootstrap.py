@@ -1,4 +1,10 @@
-"""Ink's private pipe bootstrap; the child is a client, never an agent owner."""
+"""Ink's private pipe bootstrap; the child is a client, never an agent owner.
+
+``--start`` ensures the owner (first launch). A reconnect discovers only, except ``--recover``
+re-ensures an owner that CRASHED: discovery finds none while its retained runtime record still
+claims it live and the operator recorded no stop intent. An explicitly stopped gateway (its
+record says ``stopped``) is never resurrected by a reconnect.
+"""
 import contextlib
 import json
 import os
@@ -7,8 +13,22 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+# ``gateway_state`` values only a live owner publishes; ``hermes gateway stop`` and planned stops
+# persist ``stopped``, so a dead process still claiming one of these did not stop cleanly.
+_LIVE_CLAIMS = frozenset({"running", "starting", "draining", "degraded"})
 
-def bootstrap(start: bool) -> dict:
+
+def owner_crashed(home: Path) -> bool:
+    """After discovery answered ``absent``: did the owner serving *home* die without a clean stop?"""
+    from gateway.status import read_runtime_status
+    from hermes_cli.gateway_runtime_multiplex import implied_host_root, multiplexer_serves_home
+    owner = multiplexer_serves_home(home) or implied_host_root(home) or home
+    record = read_runtime_status(owner / "gateway_state.json")
+    return (isinstance(record, dict) and record.get("desired_state") != "stopped"
+            and record.get("gateway_state") in _LIVE_CLAIMS)
+
+
+def bootstrap(start: bool, recover: bool = False) -> dict:
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
     from hermes_cli.gateway_runtime_discovery import connect_private
@@ -22,6 +42,8 @@ def bootstrap(start: bool) -> dict:
         os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=30) if start
                else discover_gateway_endpoint(home, timeout=5))
+    if not start and recover and receipt.state == "absent" and owner_crashed(home):
+        receipt = ensure_gateway_runtime(home, timeout=30)
     if receipt.state != "ready" or receipt.endpoint is None:
         raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}")
     endpoint = receipt.endpoint
@@ -54,7 +76,7 @@ def bootstrap(start: bool) -> dict:
 if __name__ == "__main__":
     try:
         with contextlib.redirect_stdout(sys.stderr):
-            result = bootstrap("--start" in sys.argv)
+            result = bootstrap("--start" in sys.argv, recover="--recover" in sys.argv)
         print(json.dumps(result))
     # Discovery/ticket failures: missing modules, socket/pipe I/O (incl. timeouts), DiscoveryError and
     # bad JSON (ValueError), rejected grants (RuntimeError), malformed reply shapes. Anything else
