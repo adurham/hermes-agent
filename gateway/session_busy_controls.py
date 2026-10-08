@@ -27,6 +27,11 @@ def authorize(connection, ref, params, capability):
 
 
 async def busy_config(connection, ref, params, *, write=False):
+    if write and params.get('key') == 'model':
+        # The legacy picker verb. On the owner a model pick is ``session.mutate`` operation=model
+        # (revision-fenced, retry-idempotent, selection-guarded); a config write would bypass all
+        # three. Refused before authorization or any read: nothing is written or deferred.
+        raise RuntimeStoreError('use_session_mutation_model')
     allowed = {'session_id', 'profile', 'key'} | ({'value'} if write else set())
     if params.get('key') == 'verbose' and not set(params) - allowed and ref.session_id:
         return verbose_config(connection, ref, params, write)

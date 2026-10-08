@@ -8347,6 +8347,7 @@
       },
       "CanonicalConfigSetParams": {
         "additionalProperties": false,
+        "description": "``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is\nthe revision-fenced ``session.mutate`` operation, never a config write.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -8368,7 +8369,8 @@
             "enum": [
               "busy",
               "verbose",
-              "yolo"
+              "yolo",
+              "model"
             ],
             "title": "Key",
             "type": "string"
@@ -8376,6 +8378,18 @@
           "value": {
             "default": null,
             "title": "Value"
+          },
+          "confirm_expensive_model": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Confirm Expensive Model"
           }
         },
         "required": [

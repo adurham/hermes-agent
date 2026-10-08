@@ -17,8 +17,12 @@ class CanonicalConfigGetResult(ConfigGetResult):
 
 
 class CanonicalConfigSetParams(CanonicalSessionParams):
-    key: Literal['busy', 'verbose', 'yolo']
+    """``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is
+    the revision-fenced ``session.mutate`` operation, never a config write."""
+
+    key: Literal['busy', 'verbose', 'yolo', 'model']
     value: JsonValue = None
+    confirm_expensive_model: bool | None = None
 
 
 class CanonicalAttachedImageResult(AttachedImageResult):

@@ -4880,11 +4880,13 @@ export interface CanonicalConfigGetResult {
   key?: string | null
   scope?: string | null
 }
+/** ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
 export interface CanonicalConfigSetParams {
   profile?: string | null
   session_id: string
-  key: 'busy' | 'verbose' | 'yolo'
+  key: 'busy' | 'verbose' | 'yolo' | 'model'
   value?: unknown
+  confirm_expensive_model?: boolean | null
 }
 export interface CanonicalProfilesParams {
   profile?: string | null
