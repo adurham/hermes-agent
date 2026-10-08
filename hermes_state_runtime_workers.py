@@ -24,8 +24,10 @@ def runtime_lineage(conn, session_id):
 
 
 def worker_states(conn, session_id):
-    return {row[0] for sid in runtime_lineage(conn, session_id) for row in conn.execute(
-        "SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal'", (sid,))}
+    # One indexed probe for the whole lineage (json_each: no bound-parameter limit on long chains).
+    return {row[0] for row in conn.execute(
+        "SELECT DISTINCT status FROM worker_executions WHERE session_id IN (SELECT value FROM json_each(?)) "
+        "AND status IN ('registered','running','unknown')", (json.dumps(sorted(runtime_lineage(conn, session_id))),))}
 
 
 def discard_orphan_workers_on_reset(conn, session_ids):

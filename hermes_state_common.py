@@ -537,6 +537,10 @@ CREATE TABLE IF NOT EXISTS worker_executions (
     adoption_digest TEXT NOT NULL,
     last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0)
 );
+-- Lineage-wide worker exclusion (claim/register/reset) probes every row of a conversation's lineage
+-- inside the write transaction; without this each probe scanned the whole (only-growing) table.
+CREATE INDEX IF NOT EXISTS idx_worker_executions_session_status
+    ON worker_executions(session_id, status);
 CREATE TABLE IF NOT EXISTS worker_receipts (
     execution_id TEXT NOT NULL REFERENCES worker_executions(execution_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL CHECK (sequence > 0),
