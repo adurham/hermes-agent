@@ -26,6 +26,7 @@ import {
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
+  textPart,
   toChatMessages
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
@@ -980,9 +981,46 @@ export function useSessionActions({
         runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
         ensureSessionState(created.session_id, stored)
         upsertOptimisticSession(created, stored, null, text.trim())
+        // The route's warm resume paints this cached state as-is, so the first
+        // user message has to be in it, as a composer send seeds it.
+        const firstMessageId = `user-${created.session_id}`
+        updateSessionState(
+          created.session_id,
+          state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: firstMessageId,
+                role: 'user',
+                parts: [textPart(text.trim())],
+                timestamp: Date.now() / 1000
+              }
+            ],
+            awaitingResponse: true,
+            busy: true,
+            turnStartedAt: state.turnStartedAt ?? Date.now()
+          }),
+          stored
+        )
         // Submit the exact runtime id returned by session.create so this
         // atomic path cannot fall back to a route token (#85590).
-        await requestGateway('prompt.submit', { session_id: created.session_id, text })
+        await requestGateway('prompt.submit', { session_id: created.session_id, text }).catch((error: unknown) => {
+          // A refused prompt leaves no turn behind, so its bubble and spinner go too.
+          updateSessionState(
+            created.session_id,
+            state => ({
+              ...state,
+              messages: state.messages.filter(message => message.id !== firstMessageId),
+              awaitingResponse: false,
+              busy: false,
+              turnStartedAt: null
+            }),
+            stored
+          )
+
+          throw error
+        })
         navigate(sessionRoute(stored), { replace: true })
 
         return { runtimeSessionId: created.session_id, sessionId: stored }
@@ -999,7 +1037,8 @@ export function useSessionActions({
       navigate,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
-      selectedStoredSessionIdRef
+      selectedStoredSessionIdRef,
+      updateSessionState
     ]
   )
 
