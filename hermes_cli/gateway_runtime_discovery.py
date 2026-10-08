@@ -1,4 +1,5 @@
-"""Bounded local-control discovery without diagnostic fallback or mutation."""
+"""Bounded local-control discovery without diagnostic fallback or mutation (the one exception: an
+upgraded same-owner ``gateway.lock`` is narrowed to 0600, see :func:`_private_lock`)."""
 
 from __future__ import annotations
 
@@ -177,13 +178,34 @@ def _identify_response(data: bytes) -> dict:
     return response["result"]
 
 
+def _private_lock(lock: Path) -> None:
+    """Validate ``gateway.lock``; narrow an upgraded same-owner lock to 0600 first.
+
+    Main created the inode with ``open(path, "a+")`` under the umask (0644), and lock inodes are
+    never replaced, so without this an upgraded home reads ``inaccessible`` forever and nothing
+    auto-starts its owner. Only the mode is touched, only on a regular single-link inode this user
+    owns, through a NOFOLLOW descriptor; a foreign or non-regular node still raises."""
+    try:
+        _private_node(lock, kind="file")
+    except DiscoveryError as exc:
+        if exc.reason != "unsafe_control_permissions":
+            raise
+        from gateway.runtime_ownership import tighten_lock_mode
+        fd = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # windows-footgun: ok — POSIX lock only
+        try:
+            tighten_lock_mode(fd)
+        finally:
+            os.close(fd)
+        _private_node(lock, kind="file")
+
+
 def missing_owner_state(home: Path) -> Literal["starting", "absent", "inaccessible"]:
     """A reservation before PID/control publication already excludes a new owner."""
     from gateway.status import _is_gateway_runtime_lock_active_strict
     lock = home / "gateway.lock"
     try:
         if os.name != "nt":
-            _private_node(lock, kind="file")
+            _private_lock(lock)
         return "starting" if _is_gateway_runtime_lock_active_strict(lock) else "absent"
     except FileNotFoundError:
         return "absent"
