@@ -251,7 +251,10 @@ cd ~/.hermes/plugins/calculator
 manifest parser, namespaced import, `register(ctx)`, hook registry, and tool
 registry used by Hermes itself. It reports invalid hook names, callbacks that do
 not accept `**kwargs`, registration failures, and drift between declared and
-registered tools/hooks. Pass `--ci` to exit non-zero on an error:
+registered tools/hooks. For a package with a `desktop/plugin.js`, it also warns
+when the Desktop app is running a stale copy of it (see
+[Developing a unified package](../desktop-plugin-sdk.md#developing-a-unified-package)).
+Pass `--ci` to exit non-zero on an error:
 
 ```bash
 hermes plugins doctor . --ci
