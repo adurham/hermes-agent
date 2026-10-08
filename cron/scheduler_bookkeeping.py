@@ -23,3 +23,25 @@ def finish_interrupted_run(job, execution_id, delivery_error):
             logger.debug('Failed recording delivery_error for interrupted job %s: %s', job['id'], exc, exc_info=True)
     scheduler.finish_execution(execution_id, success=False,
                                error='Interrupted by gateway shutdown before terminal completion.')
+
+
+def _classify_delivery_outcome(
+    *, delivery_error, should_deliver: bool, unresolved_origin: bool,
+    normalized_deliver: str, incident_acked: bool, success: bool,
+    delivery_queued=None, notification_suppressed: bool = False,
+) -> str:
+    if delivery_error:
+        return "failed"
+    if should_deliver and delivery_queued:
+        return "queued"
+    if notification_suppressed:
+        return "suppressed"
+    if should_deliver and unresolved_origin:
+        return "not_configured"
+    if should_deliver and normalized_deliver != "local":
+        return "delivered"
+    if incident_acked and not success:
+        # Failure ping withheld for a known signature: operator acked it, or it was already
+        # alerted inside the reminder cooldown (vs. plain "suppressed").
+        return "suppressed_acked"
+    return "suppressed"

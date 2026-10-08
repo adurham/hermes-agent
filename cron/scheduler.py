@@ -521,6 +521,7 @@ from cron.executions import (
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, settle_unstarted_execution, terminalize_dead_owner)
 from cron.scheduler_liveness import ExecutionProgressStamper, _inactivity_watchdog_loop
+from cron.scheduler_bookkeeping import _classify_delivery_outcome
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -2933,28 +2934,6 @@ def _record_fire_ownership_lost(
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost; stale result was discarded.")
-
-
-def _classify_delivery_outcome(
-    *, delivery_error, should_deliver: bool, unresolved_origin: bool,
-    normalized_deliver: str, incident_acked: bool, success: bool,
-    delivery_queued=None, notification_suppressed: bool = False,
-) -> str:
-    if delivery_error:
-        return "failed"
-    if should_deliver and delivery_queued:
-        return "queued"
-    if notification_suppressed:
-        return "suppressed"
-    if should_deliver and unresolved_origin:
-        return "not_configured"
-    if should_deliver and normalized_deliver != "local":
-        return "delivered"
-    if incident_acked and not success:
-        # Failure ping withheld for a known signature: operator acked it, or it was already
-        # alerted inside the reminder cooldown (vs. plain "suppressed").
-        return "suppressed_acked"
-    return "suppressed"
 
 
 def _compose_run_delivery(
