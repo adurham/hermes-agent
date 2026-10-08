@@ -76,13 +76,10 @@ def _session_yolo(authority, route, policy):
     """The route's bypass as the in-process turn arms it on the owner, the one place a revocation
     is recorded: a ``--yolo`` launch seeded once per boundary, then the persisted ``/yolo`` copy."""
     from tools.approval import is_session_yolo_enabled
-    from tools.approval_yolo import apply_launch_yolo, restore_gateway_yolo
+    from tools.approval_yolo import restore_gateway_yolo
     store = getattr(authority.runner, 'session_store', None)
     entry = store.lookup_by_session_key(route) if store is not None else None
-    if entry is not None:
-        restore_gateway_yolo(route, entry.yolo is True)
-    elif policy.yolo:
-        apply_launch_yolo(route)
+    restore_gateway_yolo(route, getattr(entry, 'yolo', None), launch=bool(policy.yolo))
     return is_session_yolo_enabled(route)
 
 

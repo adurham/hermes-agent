@@ -437,11 +437,13 @@ class GatewayAgentCacheMixin:
                 clear(session_key)
             except Exception as e:
                 logger.debug("Failed to clear %s state for session boundary %s: %s", what, session_key, e)
-        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it.
+        # The persisted /yolo copy dies with the in-memory one, or the next turn's restore revives it. None, not
+        # False: the next conversation follows its launch policy again (seeded once per boundary), and a
+        # toggle-less chat stays off.
         store = getattr(self, "session_store", None)
         if store is not None:
             try:
-                store.set_session_yolo(session_key, False)
+                store.set_session_yolo(session_key, None)
             except Exception:
                 # Never fails the boundary itself, but a surviving ON would come back after a restart.
                 logger.warning("Failed to clear persisted yolo for session boundary %s", session_key, exc_info=True)

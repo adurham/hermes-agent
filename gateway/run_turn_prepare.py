@@ -634,7 +634,7 @@ class GatewayTurnPrepareMixin:
         from gateway.run import _load_gateway_config
         from tools.approval_yolo import restore_gateway_yolo
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
-        restore_gateway_yolo(session_key, session_entry.yolo is True)
+        restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)

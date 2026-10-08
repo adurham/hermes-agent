@@ -71,9 +71,17 @@ def apply_launch_yolo(session_key: str) -> None:
     approval.enable_session_yolo(session_key)
 
 
-def restore_gateway_yolo(session_key: str, persisted: bool) -> None:
-    """Restore the authoritative routing value, including OFF, before frozen launch seeding."""
+def restore_gateway_yolo(session_key: str, persisted: Optional[bool], *, launch: bool = False) -> None:
+    """Restore the authoritative routing value, including OFF, before frozen launch seeding.
+
+    ``persisted`` None means nobody toggled this route: the ``--yolo`` launch policy (*launch*) is seeded
+    once per boundary instead, so an untouched entry never reads as a revocation.
+    """
     if not session_key:
+        return
+    if persisted is None:
+        if launch:
+            apply_launch_yolo(session_key)
         return
     with approval._lock:
         if session_key in approval._launch_yolo_applied:
