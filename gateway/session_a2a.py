@@ -128,15 +128,29 @@ async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, t
                 raise GatewayClientError('gateway_protocol_mismatch')
             async with GatewayClient(ws) as client:
                 params = dict(agent=agent, tenant=tenant, peer=peer, context_id=context_id, input_id=input_id, text=text)
+                backoff = .25
                 while True:
                     receipt = await client.rpc('a2a.forward', **params)
                     if receipt['status'] == 'unknown':
                         raise GatewayClientError('unknown_execution')
                     if receipt['status'] == 'terminal':
                         return receipt
-                    # Consume projections while polling the exact durable input receipt.
-                    while not client.events.empty():
-                        event = client.events.get_nowait()
-                        if isinstance(event, Exception):
-                            raise event
-                    await asyncio.sleep(.1)
+                    # The forward subscribed this socket to the session: wait for the admission's
+                    # completion frame, re-reading the exact durable receipt on a backed-off
+                    # safety tick (a frame lost to a replay gap) instead of a fixed 100 ms poll.
+                    try:
+                        async with asyncio.timeout(backoff):
+                            await _completion(client, receipt['admission_id'])
+                    except TimeoutError:
+                        backoff = min(backoff * 2, 5.0)
+
+
+async def _completion(client, admission_id):
+    """Consume projections until this admission's completion frame; a transport error raises."""
+    while True:
+        event = await client.events.get()
+        if isinstance(event, Exception):
+            raise event
+        frame = event.get('params') or {}
+        if frame.get('type') == 'message.complete' and (frame.get('payload') or {}).get('admission_id') == admission_id:
+            return

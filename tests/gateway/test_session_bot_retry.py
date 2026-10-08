@@ -224,3 +224,33 @@ async def test_receipt_file_stays_pending_while_a_draining_owner_leaves_the_retr
     assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
     assert [r['request_id'] for r in _admissions(bot)] == ['bot:' + KEY, 'bot:' + KEY + ':retry']
 
+
+@pytest.mark.asyncio
+async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot):
+    """The cross-process mailbox lock guards one receipt write, taken off the event loop: a DM
+    runner (another process) holding it delays only that write, never every other session, socket
+    and delivery on the owner's loop, and never across an admission await."""
+    import threading
+    import time
+    from gateway.session_bot import deliver
+    from hermes_cli.active_sessions import _FileLock
+    from tools.bot_live_delivery import _locked, _root
+    with _locked(bot.home):
+        pass
+    held, release = threading.Event(), threading.Event()
+
+    def foreign_holder():
+        with _FileLock(_root(bot.home) / '.lock'):
+            held.set()
+            release.wait(1.0)
+    threading.Thread(target=foreign_holder, daemon=True).start()
+    assert held.wait(5)
+    delivering = asyncio.create_task(deliver(bot.connection, dict(id=KEY, profile='default', message='ping')))
+    started = time.monotonic()
+    for _ in range(5):
+        await asyncio.sleep(0.02)
+    loop_stall = time.monotonic() - started
+    release.set()
+    receipt = await asyncio.wait_for(delivering, 5)
+    assert loop_stall < 0.5, f'event loop blocked {loop_stall:.2f}s behind a foreign mailbox lock holder'
+    assert receipt['status'] in {'queued', 'claimed', 'settled'}, receipt

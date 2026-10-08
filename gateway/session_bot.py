@@ -214,6 +214,39 @@ def _retry_due(authority, record):
     return _retry_eligible(authority, {**record, 'retry': retry})
 
 
+_UNCHECKED = object()
+
+
+def _store(home, record, *, expect=_UNCHECKED):
+    """Pin a receipt another process may still move (a new or legacy ticket) under the
+    cross-process mailbox lock, held for this one write: never across an admission, a FIFO wait or
+    a recovery scan, and taken off-loop (``asyncio.to_thread``). ``expect`` (the status read before,
+    None = absent) makes it a compare-and-set that refuses when another writer moved the ticket
+    first, e.g. a DM runner's ``cancel_queued_delivery``."""
+    with _locked(home) as root:
+        path = root / f"{record['delivery_id']}.json"
+        if expect is not _UNCHECKED and (_read(path) or {}).get('status') != expect:
+            return False
+        _write(path, record)
+        return True
+
+
+def _publish(home, record):
+    """Republish a pinned receipt in place. Once pinned (``ambiguous`` → canonical) only this owner
+    writes it, and every foreign writer refuses it, so an atomic rename needs no cross-process lock;
+    publishing in the same step the admission settles keeps the file ahead of any reply."""
+    _write(_root(home) / f"{record['delivery_id']}.json", record)
+
+
+def _mailbox_order(authority):
+    """Orders this owner's read-admit-publish sequences per receipt in-process. An asyncio lock:
+    a contender yields to the event loop instead of blocking it on the file lock."""
+    order = getattr(authority, '_bot_mailbox_order', None)
+    if order is None:
+        order = authority._bot_mailbox_order = asyncio.Lock()
+    return order
+
+
 def _retry_identity(key):
     return 'bot:' + key + ':retry'
 
@@ -236,7 +269,7 @@ def _retry_eligible(authority, record):
     return result_retry_action(saved['result']) != RETRY_NONE
 
 
-async def _maybe_retry(authority, home, path, record):
+async def _maybe_retry(authority, home, record):
     """Admit the delivery's one retry under a DERIVED identity recorded on the same receipt, so a
     repeated deliver(), an owner restart or a second settle re-reads that admission instead of
     minting another. The identity is written before the admission: a death in that two-store window
@@ -265,7 +298,7 @@ async def _maybe_retry(authority, home, path, record):
             return  # nothing recorded: the restarted owner's recovery re-evaluates the same gate
         record['retry'] = {'identity': identity, 'refused': exc.reason}
         record.update(_result(authority, record))  # the refusal makes the original's failure final
-        _write(path, record)
+        _publish(home, record)
         return
     event = MessageEvent(text=record['message'], source=live.source, internal=True,
         message_id=identity, metadata={'gateway_session_key': live.route, 'gateway_session_id': entry.session_id})
@@ -274,22 +307,21 @@ async def _maybe_retry(authority, home, path, record):
     if record.get('author') is not None:
         event.metadata['turn_author'] = dict(record['author'])
     record['retry'] = {'identity': identity}
-    _write(path, record)
+    _publish(home, record)
     receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
     record.update(_result(authority, record))
-    _write(path, record)
     if receipt.status in {'queued', 'started'}:
         _watch_reply(authority, home, record['delivery_id'], receipt.admission_id)
+    _publish(home, record)
 
 
 async def _record_reply(authority, home, key, future):
     await asyncio.shield(future)
-    with _locked(home) as root:
-        path = root / f'{key}.json'
-        record = _read(path)
+    async with _mailbox_order(authority):
+        record = _read(_root(home) / f'{key}.json')
         record.update(_result(authority, record))
-        _write(path, record)
-        await _maybe_retry(authority, home, path, record)
+        _publish(home, record)
+        await _maybe_retry(authority, home, record)
 
 
 def relay_operation(connection, operation, params):
@@ -335,8 +367,8 @@ async def _migrate(authority, actor, home, root):
             if active:
                 raise RuntimeStoreError('runtime_coordination_required')
         if record['status'] == 'claimed':
-            record.update(status='ambiguous', reason='unknown_execution')
-            _write(path, record)
+            await asyncio.to_thread(_store, home, dict(record, status='ambiguous', reason='unknown_execution'),
+                                    expect='claimed')
             continue
         await _admit(authority, actor, home, root, _delivery_id(record['delivery_id']),
                      record['message'], ref, live, entry, author=parse_turn_author(record.get('author')), legacy=record,
@@ -346,18 +378,19 @@ async def _migrate(authority, actor, home, root):
 async def recover_bot_deliveries(authority):
     """Rebuild derivative replies and queued legacy admissions at owner startup."""
     home = Path(authority.db.db_path).parent.resolve()
-    with _locked(home) as root:
+    root = _root(home)
+    async with _mailbox_order(authority):
         records = list(_scan_records(root))
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue
             record.update(_result(authority, record))
-            _write(path, record)
             live, interim = peer_wait_admission(authority, record)
             if live is not None and not interim:
                 _watch_reply(authority, home, record['delivery_id'], live)
-            else:
-                await _maybe_retry(authority, home, path, record)
+            _publish(home, record)
+            if live is None or interim:
+                await _maybe_retry(authority, home, record)
         row = authority.db.get_session_by_title('Bot Chat')
         if row is None:
             return
@@ -404,33 +437,28 @@ async def deliver(connection, params):
     if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
         raise RuntimeStoreError('invalid_params')
     authority._require_admission_open()
-    with _locked(home) as root:
-        path = root / f'{key}.json'
+    # In-process order only: the cross-process file lock is taken for the pin write alone, off-loop
+    # (``_store``), so a foreign holder or a slow admission never stalls this loop or another delivery.
+    async with _mailbox_order(authority):
+        path = _root(home) / f'{key}.json'
         record = _read(path)
+        if record is None or not record.get('admission_id'):
+            await _migrate(authority, actor, home, path.parent)
+            record = _read(path)
         if record is not None and record.get('admission_id'):
             if (record['message'] != message or record['principal_id'] != actor.subject
                     or record.get('author') != author
                     or record.get('notification_category', 'result') != category):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
-            await _maybe_retry(authority, home, path, record)
-            return _result(authority, record)
-        await _migrate(authority, actor, home, root)
-        record = _read(path)
-        if record is not None and record.get('admission_id'):
-            if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author
-                    or record.get('notification_category', 'result') != category):
-                raise RuntimeStoreError('admission_conflict')
-            authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
-            await _maybe_retry(authority, home, path, record)
+            await _maybe_retry(authority, home, record)
             return _result(authority, record)
         if record is not None:
             raise RuntimeStoreError('unknown_execution')
         ref, live, entry = _target(authority, actor)
         if params.get('session_id', entry.session_id) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
-        return await _admit(authority, actor, home, root, key, message, ref, live, entry, author=author,
+        return await _admit(authority, actor, home, path.parent, key, message, ref, live, entry, author=author,
                             notification_category=category)
 
 
@@ -438,7 +466,6 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
                  notification_category='result'):
     from gateway.session_automation import automation_notification_metadata
     notification = automation_notification_metadata({'notification_category': notification_category})
-    path = root / f'{key}.json'
     event = MessageEvent(text=message, source=live.source, internal=True,
         message_id='bot:' + key, metadata={'gateway_session_key': live.route,
                                          'gateway_session_id': entry.session_id})
@@ -452,11 +479,17 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     record.update(notification)
     if author is not None:
         record['author'] = dict(author)
-    _write(path, record)
+    # Compare-and-set against the state this owner read: a DM runner may cancel a queued legacy
+    # ticket between the scan and this pin, and that cancellation wins.
+    if not await asyncio.to_thread(_store, home, record, expect=(legacy or {}).get('status')):
+        if legacy is not None:
+            return None  # that cancellation (or a late claim) stands; nothing was admitted
+        raise RuntimeStoreError('admission_conflict')
     receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
     record.update(status='canonical', admission_id=receipt.admission_id)
     record.update(_result(authority, record))  # publish the outcome senders poll, not a bare marker
-    _write(path, record)
     if receipt.status in {'queued', 'started'}:
+        # Its task publishes the settled receipt once this delivery releases the in-process order.
         _watch_reply(authority, home, key, receipt.admission_id)
+    _publish(home, record)
     return _result(authority, record)
