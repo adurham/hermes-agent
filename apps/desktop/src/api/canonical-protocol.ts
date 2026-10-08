@@ -38,6 +38,22 @@ export function slashMutation(command: string): { operation: string; payload: Re
   return { operation: name, payload: arg ? { [field]: arg } : {} }
 }
 
+// The composer picker's `config.set key=model` value: `<model> --provider <id> [--session]`. The
+// canonical model mutation is always session-scoped policy (the authority never rewrites
+// config.yaml from it), so `--session` carries no extra meaning; any other flag has no canonical
+// field and stays on config.set for the authority to refuse explicitly.
+export function pickerModelMutation(value: unknown): { model: string; provider: string } | null {
+  const [model, ...flags] = String(value ?? '').trim().split(/\s+/)
+  const sessionOnly = flags.at(-1) === '--session'
+  const rest = sessionOnly ? flags.slice(0, -1) : flags
+
+  if (!model || model.startsWith('-') || rest.length !== 2 || rest[0] !== '--provider' || !rest[1] || rest[1].startsWith('-')) {
+    return null
+  }
+
+  return { model, provider: rest[1] }
+}
+
 function mutationSummary(operation: string, value: Record<string, unknown>): string {
   if (operation === 'model') { return `model: ${value.model}${value.provider ? ` (${value.provider})` : ''}` }
 
@@ -93,7 +109,7 @@ export class CanonicalDesktopProtocol {
     // rebinds the live event transport and returns the same snapshot shape.
     if (method === 'session.activate') { return 'session.resume' }
 
-    return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
+    return (method === 'slash.exec' || method === 'config.set') && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
   private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
@@ -177,6 +193,12 @@ export class CanonicalDesktopProtocol {
       const payload = typeof params.title === 'string' && params.title ? { title: params.title } : {}
 
       return this.retainedMutation(parent, params.profile, 'branch', payload, true)
+    }
+
+    if (method === 'config.set' && params.key === 'model') {
+      const pick = pickerModelMutation(params.value)
+
+      if (pick) { return this.retainedMutation(params.session_id, params.profile, 'model', pick, true) }
     }
 
     if (method === 'slash.exec') {
@@ -277,7 +299,7 @@ export class CanonicalDesktopProtocol {
       this.revisions.set(canonicalSessionKey(value.session_id, params.profile), value.revision)
     }
 
-    if (MUTATION_METHODS.has(method) || (method === 'slash.exec' && typeof params.operation === 'string')) {
+    if (MUTATION_METHODS.has(method) || ((method === 'slash.exec' || method === 'config.set') && typeof params.operation === 'string')) {
       return this.mutationReceipt(method, params, value)
     }
 

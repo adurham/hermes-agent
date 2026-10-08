@@ -209,3 +209,20 @@ test('the dedicated compress action becomes a fenced canonical mutation and sett
   expect(await protocol.settle('session.title', { session_id: 's' }, untouched, fakeRequest)).toBe(untouched)
   expect(calls).toHaveLength(1)
 })
+
+test('the composer model picker travels as the canonical model mutation, not an unsupported config.set', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 2 })
+
+  for (const value of ['gpt-5 --provider openrouter', 'gpt-5 --provider openrouter --session']) {
+    const pick = protocol.prepare('config.set', { session_id: 's', key: 'model', value })
+    expect(protocol.wire('config.set', pick)).toBe('session.mutate')
+    expect(pick).toEqual({ session_id: 's', request_id: expect.any(String), expected_revision: 3, expected_generation: 2, operation: 'model', payload: { model: 'gpt-5', provider: 'openrouter' } })
+    expect(protocol.result('config.set', pick, { session_id: 's', revision: 4, operation: 'model', model: 'gpt-5', provider: 'openrouter' })).toMatchObject({ ok: true, model: 'gpt-5' })
+    protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 2 })
+  }
+
+  // Other preferences, and model flags the mutation has no field for, keep their own route.
+  expect(protocol.wire('config.set', protocol.prepare('config.set', { session_id: 's', key: 'busy', value: 'queue' }))).toBe('config.set')
+  expect(protocol.wire('config.set', protocol.prepare('config.set', { session_id: 's', key: 'model', value: 'gpt-5 --global' }))).toBe('config.set')
+})
