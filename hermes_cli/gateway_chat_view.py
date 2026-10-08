@@ -37,6 +37,9 @@ class GatewayChatView:
         self.completions = {}
         self.changed = asyncio.Event()
         self.failure = None
+        # Set once with ``failure``: the interactive composer races its line read against it so a
+        # dead owner ends the REPL immediately instead of on the next keypress.
+        self.failed = asyncio.Event()
         from hermes_cli.gateway_mutations import PreparedMutations
         self.mutations = PreparedMutations()
 
@@ -67,8 +70,7 @@ class GatewayChatView:
         while True:
             event = await self.client.events.get()
             if isinstance(event, Exception):
-                self.failure = event
-                self.changed.set()
+                self._fail(event)
                 return
             params = event.get("params", {})
             if params.get("session_id") != self.session_id:
@@ -76,8 +78,7 @@ class GatewayChatView:
             kind, payload = params.get("type"), params.get("payload", {})
             self.generation = params.get("execution_generation", self.generation)
             if kind == "session.replay_gap":
-                self.failure = GatewayClientError("session_replay_gap")
-                self.changed.set()
+                self._fail(GatewayClientError("session_replay_gap"))
                 return
             admission = params.get("admission_id") or payload.get("admission_id")
             if self.finite and kind in _BLOCKING_CONTROL_EVENTS:
@@ -97,6 +98,28 @@ class GatewayChatView:
                     continue
             self._dispatch_event(kind, admission, payload)
             self.changed.set()
+
+    def _fail(self, error):
+        self.failure = error
+        self.failed.set()
+        self.changed.set()
+
+    async def _read_line(self, prompt, symbol):
+        """The next composer line, or ``""`` once the event stream failed first (``self.failure``
+        is then set). The pending read is cancelled (prompt_toolkit restores the terminal) so the
+        caller reports the unknown outcome without waiting for a keypress."""
+        reader = asyncio.ensure_future(prompt.prompt_async(symbol))
+        failed = asyncio.ensure_future(self.failed.wait())
+        try:
+            await asyncio.wait({reader, failed}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            failed.cancel()
+        if reader.done():
+            return reader.result()
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
+        return ""
 
     def _dispatch_event(self, kind, admission, payload):
         handler = {
@@ -358,7 +381,8 @@ class GatewayChatView:
             with patch_stdout():
                 while not self.failure:
                     try:
-                        text = (await prompt.prompt_async(prompt_symbol)).strip()
+                        # Empty when the stream failed first: the loop guard then raises it.
+                        text = (await self._read_line(prompt, prompt_symbol)).strip()
                         if not text:
                             continue
                         if text.startswith("/"):
