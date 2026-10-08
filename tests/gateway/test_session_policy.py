@@ -34,9 +34,73 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
         list(pool.map(run, policies))
     assert dict(os.environ) == before
     for params in ({'source': 'cron'}, {'toolsets': ['not-a-toolset']}, {'cwd': '.'},
-                   {'provider': 12}, {'skills': ['x']}, {'toolsets': ['desktop_ui'], 'source': 'cli'}):
+                   {'provider': 12}, {'skills': 'x'}, {'skills': []}, {'pass_session_id': 1},
+                   {'toolsets': ['desktop_ui'], 'source': 'cli'}):
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             build_policy(params, {})
+
+
+@pytest.mark.asyncio
+async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_path, monkeypatch):
+    """`-s/--skills`, `--checkpoints`, `--pass-session-id`, `--accept-hooks` (and an exported
+    HERMES_ACCEPT_HOOKS=1, which the TUI forwards) were refused by session.create, so no session
+    could be created with them. They are this session's creation policy, applied by the owner."""
+    import json
+    from types import SimpleNamespace
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_policy import restore_policy
+    from hermes_state_local import local_receipt
+    from agent import shell_hooks
+    from hermes_cli.plugins import get_plugin_manager
+
+    home = tmp_path / 'home'
+    (home / 'skills' / 'launch-fixture').mkdir(parents=True)
+    (home / 'skills' / 'launch-fixture' / 'SKILL.md').write_text(
+        '---\nname: launch-fixture\ndescription: fixture\n---\n\nLAUNCH_SKILL_BODY\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.delenv('HERMES_ACCEPT_HOOKS', raising=False)
+    hook = tmp_path / 'hook.sh'
+    hook.write_text('#!/bin/sh\nexit 0\n')
+    cfg = {'platform_toolsets': {'cli': []}, 'hooks': {'pre_tool_call': [{'command': str(hook)}]}}
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: cfg)
+    monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')
+    monkeypatch.setattr(get_plugin_manager(), '_hooks', {})
+    shell_hooks.reset_for_tests()
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='first')
+    connection = AuthorityConnection(authority, object(), {'user_id': 'human'})
+
+    async def create(request_id, **params):
+        reply = await connection.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': request_id, 'source': 'tui', 'cwd': str(tmp_path), **params}})
+        return reply.get('result', {}).get('session_id') or reply['error']['message']
+
+    launch = dict(skills=['launch-fixture', 'missing-typo'], checkpoints=True, pass_session_id=True, accept_hooks=True)
+    sid = await create('launch', **launch)
+    def frozen(session_id):
+        return restore_policy(local_receipt(authority.db, session_id)['policy'])
+    policy = frozen(sid)
+    assert 'LAUNCH_SKILL_BODY' in policy.skills_prompt and policy.pass_session_id and policy.checkpoints_enabled
+    assert str(hook) in (home / shell_hooks.ALLOWLIST_FILENAME).read_text()
+    assert len(get_plugin_manager()._hooks['pre_tool_call']) == 1
+    # Retrying the request id resumes the frozen route; nothing re-renders or re-registers.
+    assert await create('launch', **launch) == sid
+    assert len(get_plugin_manager()._hooks['pre_tool_call']) == 1
+    plain = frozen(await create('plain'))
+    assert plain.skills_prompt is None and not plain.pass_session_id and not plain.checkpoints_enabled
+    # Never silently dropped: nothing resolving, bad shapes, or profile reads on a bypass launch refuse.
+    for params in ({'skills': ['missing-typo']}, {'skills': 'launch-fixture'}, {'checkpoints': 'yes'},
+                   {'model': 'm', 'safe_mode': True, 'skills': ['launch-fixture']}):
+        assert await create('refused-' + json.dumps(params), **params) in {'unknown_skill', 'invalid_params'}, params
+    # An exported HERMES_ACCEPT_HOOKS=1 must not brick a --safe-mode TUI: no profile hooks, no refusal.
+    assert (await create('safe', model='m', safe_mode=True, accept_hooks=True)).startswith('local-')
 
 
 def test_launch_policy_reaches_real_turn_runner(tmp_path):

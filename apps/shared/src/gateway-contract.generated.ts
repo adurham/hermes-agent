@@ -4697,6 +4697,10 @@ export interface CanonicalCreateParams {
   yolo?: boolean
   safe_mode?: boolean
   ignore_user_config?: boolean
+  skills?: string[] | null
+  checkpoints?: boolean
+  accept_hooks?: boolean
+  pass_session_id?: boolean
   editor?: Record<string, unknown> | null
   title?: string | null
   hidden?: boolean

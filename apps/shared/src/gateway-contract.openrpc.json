@@ -8646,6 +8646,36 @@
             "title": "Ignore User Config",
             "type": "boolean"
           },
+          "skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skills"
+          },
+          "checkpoints": {
+            "default": false,
+            "title": "Checkpoints",
+            "type": "boolean"
+          },
+          "accept_hooks": {
+            "default": false,
+            "title": "Accept Hooks",
+            "type": "boolean"
+          },
+          "pass_session_id": {
+            "default": false,
+            "title": "Pass Session Id",
+            "type": "boolean"
+          },
           "editor": {
             "anyOf": [
               {

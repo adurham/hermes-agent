@@ -14,23 +14,18 @@ from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 # These options change execution or require frontend facilities not yet exposed by
 # the authority. Reject them, rather than mutate process-wide gateway settings.
 _UNSUPPORTED = (
-    "image", "skills", "worktree", "w", "checkpoints", "pass_session_id",
-    "accept_hooks",
+    "image", "worktree", "w",
     "no_restore_cwd",
     "run_budget", "verbose", "compact",
     "list_tools", "list_toolsets",
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
-           "yolo", "safe_mode", "ignore_user_config")
+           "yolo", "safe_mode", "ignore_user_config", "skills", "checkpoints", "accept_hooks", "pass_session_id")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
     "image": "attach the image in `hermes --tui` or the Desktop app",
-    "skills": "`hermes --tui -s <skill>`",
     "worktree": "`hermes --tui -w`",
     "w": "`hermes --tui -w`",
-    "checkpoints": "`checkpoints.enabled: true` in config.yaml, or `hermes --tui --checkpoints`",
-    "pass_session_id": "`hermes --tui --pass-session-id`",
-    "accept_hooks": "`hooks_auto_accept: true` in config.yaml, or `hermes --tui --accept-hooks`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
     "run_budget": "`agent.run_budget_seconds` in config.yaml",
     "verbose": "`hermes logs --follow`, or `hermes --tui -v`",
@@ -110,11 +105,14 @@ async def run_gateway_chat(args, emitter=None):
             if source not in contract.get("sources", []):
                 raise GatewayClientError(f"Gateway does not support source {source!r}")
             parameters = contract.get("parameters", [])
-            policy = _launch_flags(args)
+            policy = _requested_policy(args)
+            policy.pop("source", None)
             if create_if_missing:
                 policy["title"] = title
-            if isinstance(policy.get("toolsets"), str):
-                policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
+            # The documented `HERMES_ACCEPT_HOOKS=1` opt-in, as the in-process CLI read it; a
+            # creation flag of THIS session only (a resume keeps the frozen route's consent).
+            if os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in {"1", "true", "yes", "on"}:
+                policy["accept_hooks"] = True
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd
@@ -159,6 +157,13 @@ def _requested_policy(args):
     policy = _launch_flags(args)
     if isinstance(policy.get("toolsets"), str):
         policy["toolsets"] = [name.strip() for name in policy["toolsets"].split(",") if name.strip()]
+    if "skills" in policy:
+        # `-s a,b -s c` (argparse append) or cli.main's comma string: one deduplicated list.
+        raw = policy["skills"] if isinstance(policy["skills"], (list, tuple)) else [policy["skills"]]
+        names = [name.strip() for item in raw for name in str(item).split(",") if name.strip()]
+        policy["skills"] = list(dict.fromkeys(names))
+        if not policy["skills"]:
+            policy.pop("skills")
     if getattr(args, "source", None):
         policy["source"] = args.source
     return policy

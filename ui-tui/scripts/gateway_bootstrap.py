@@ -17,7 +17,8 @@ def bootstrap(start: bool) -> dict:
     # Launch policy travels in session.create, not into daemon-wide defaults.
     for key in ("HERMES_MODEL", "HERMES_INFERENCE_MODEL", "HERMES_TUI_PROVIDER",
                 "HERMES_INFERENCE_PROVIDER", "HERMES_TUI_TOOLSETS", "HERMES_TUI_SKILLS",
-                "HERMES_CWD", "TERMINAL_CWD", "HERMES_YOLO", "HERMES_ACCEPT_HOOKS"):
+                "HERMES_CWD", "TERMINAL_CWD", "HERMES_YOLO", "HERMES_ACCEPT_HOOKS",
+                "HERMES_TUI_CHECKPOINTS", "HERMES_TUI_PASS_SESSION_ID"):
         os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=30) if start
                else discover_gateway_endpoint(home, timeout=5))

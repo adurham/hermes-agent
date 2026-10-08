@@ -29,6 +29,10 @@ class CanonicalCreateParams(ProfileParams):
     yolo: bool = False
     safe_mode: bool = False
     ignore_user_config: bool = False
+    skills: list[str] | None = None
+    checkpoints: bool = False
+    accept_hooks: bool = False
+    pass_session_id: bool = False
     editor: dict[str, JsonValue] | None = None
     title: str | None = None
     hidden: bool = False

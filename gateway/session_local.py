@@ -111,7 +111,7 @@ def _bypass_policy(params, *, private_secrets):
     return build_policy(params, defaults, private_secrets=private_secrets, profile_terminal=False)
 
 
-def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
+def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
@@ -154,6 +154,12 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
                 raise RuntimeStoreError('admission_conflict')
         return restore_local_session(authority, sid)
+    from gateway.session_policy import launch_skills
+    if launch_skills(params) and skills_prompt is None:
+        # `-s` is rendered off-loop by the RPC handler (render_launch_skills); a caller that
+        # skipped it must not mint a session silently missing its preload.
+        raise RuntimeStoreError('invalid_params')
+    policy = replace(policy, skills_prompt=skills_prompt)
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets)
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)

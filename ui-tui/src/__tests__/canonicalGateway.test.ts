@@ -15,11 +15,21 @@ it('retains prepared identity and rejects unsupported TUI launch policy instead 
   const contract = { sources: ['tui'], parameters: ['request_id', 'source', 'model', 'cwd', 'toolsets'] }
   expect(canonicalRequest('session.create', { request_id: 'fresh', model: 'local-model', cwd: '/tmp/project' }, contract)).toEqual({ method: 'session.create', params: { request_id: 'fresh', source: 'tui', model: 'local-model', cwd: '/tmp/project' } })
   expect(() => canonicalRequest('session.create', {}, { sources: ['cli'], parameters: [] })).toThrow('tui')
-  expect(() => canonicalRequest('session.create', { skills: ['test'] }, contract)).toThrow('skills')
+  expect(() => canonicalRequest('session.create', { yolo: true }, contract)).toThrow('yolo')
   expect(canonicalRequest('prompt.submit', { session_id: 'sid', submission_id: 'prepared-id', text: 'hello', queued: true }, contract).params).toEqual({ session_id: 'sid', input_id: 'prepared-id', text: 'hello', queued: true })
   expect(sharedControlParams({ sharedControl: { session_id: 'sid', execution_generation: 9, prompt_id: 'approval-9' } })).toEqual({ session_id: 'sid', execution_generation: 9, prompt_id: 'approval-9' })
   const receipt = canonicalResult('prompt.submit', { admission_id: 'server-admission', ref: { profile_id: '/tmp/profile', session_id: 'sid' }, status: 'queued' }, { input_id: 'prepared-id' })
   expect(receipt).toMatchObject({ admission_id: 'server-admission', input_id: 'prepared-id', target_profile_home: '/tmp/profile', target_session_id: 'sid' })
+})
+
+it('carries -s/--checkpoints/--pass-session-id/--accept-hooks (and exported HERMES_ACCEPT_HOOKS=1) onto session.create', () => {
+  const options = localCreationOptions({ HERMES_TUI_SKILLS: 'a, b,a', HERMES_TUI_CHECKPOINTS: '1',
+    HERMES_TUI_PASS_SESSION_ID: '1', HERMES_ACCEPT_HOOKS: '1' } as NodeJS.ProcessEnv)
+
+  expect(options).toEqual({ skills: ['a', 'b'], checkpoints: true, pass_session_id: true, accept_hooks: true })
+  expect(localCreationOptions({ HERMES_ACCEPT_HOOKS: '0', HERMES_TUI_SKILLS: ' , ' } as NodeJS.ProcessEnv)).toEqual({})
+  const contract = { sources: ['tui'], parameters: ['request_id', 'source', ...Object.keys(options)] }
+  expect(canonicalRequest('session.create', { request_id: 'owned', ...options }, contract).params).toMatchObject(options)
 })
 
 it('rebuilds --max-turns from the launcher environment as the integer the session policy requires', () => {

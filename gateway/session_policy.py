@@ -9,7 +9,8 @@ from hermes_state_runtime import RuntimeStoreError
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
-                           'yolo', 'safe_mode', 'ignore_user_config'})
+                           'yolo', 'safe_mode', 'ignore_user_config',
+                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id'})
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp'}
@@ -33,6 +34,9 @@ class LocalSessionPolicy:
     # route; safe_mode always implies ignore_user_config (normalized once in build_policy).
     safe_mode: bool = False
     ignore_user_config: bool = False
+    # `-s/--skills` blocks rendered once at creation (render_launch_skills): the session's
+    # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
+    skills_prompt: str | None = None
 
     def config(self, authority=None):
         config = present_sections(json.loads(self.config_json))
@@ -65,6 +69,17 @@ class LocalSessionPolicy:
         """`hermes chat --yolo`: this session's dangerous-command approvals are bypassed, exactly the
         scope `/yolo` gives a messaging chat; never the process-wide HERMES_YOLO_MODE."""
         return json.loads(self.request_json).get('yolo', False)
+
+    @property
+    def pass_session_id(self):
+        """`--pass-session-id`: the session id rides the agent's system prompt."""
+        return json.loads(self.request_json).get('pass_session_id', False)
+
+    @property
+    def checkpoints_enabled(self):
+        """Frozen `checkpoints.enabled` (`--checkpoints` folds into it); legacy bool form accepted."""
+        section = self.config().get('checkpoints', {})
+        return bool(section.get('enabled', False) if isinstance(section, dict) else section)
 
     @property
     def max_turns(self):
@@ -109,6 +124,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         raise RuntimeStoreError('invalid_params')
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
+    launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
     _apply_launch_overrides(params, config)
     enabled = _resolve_toolsets(params, config, source, safe_mode)
@@ -141,9 +157,13 @@ def _apply_launch_overrides(params, config):
                         or url.username or url.password or url.query or url.fragment):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo'):
+    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id'):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
+    if params.get('checkpoints'):
+        section = config.get('checkpoints')
+        section = dict(section) if isinstance(section, dict) else {'enabled': bool(section)} if section else {}
+        config['checkpoints'] = {**section, 'enabled': True}
     if 'max_turns' in params:
         # The spellings `--max-turns` always took: a positive cap, or 0 / -1 / "none" / "unlimited"
         # for no cap (resolve_turn_limit). Frozen normalized; anything unreadable is refused.
@@ -215,6 +235,46 @@ def _extract_config_secrets(value, private, path=()):
             _extract_config_secrets(child, private, child_path)
 
 
+def launch_skills(params):
+    """The validated `-s/--skills` identifiers of a create request (empty when absent). Skills
+    live in the profile, which a bypass launch must never read: refused there, not dropped."""
+    skills = params.get('skills', [])
+    if (('skills' in params and (not isinstance(skills, list) or not skills
+                                 or any(not isinstance(s, str) or not s.strip() for s in skills)))
+            or (skills and any(params.get(name) is True for name in BYPASS_FIELDS))):
+        raise RuntimeStoreError('invalid_params')
+    return [s.strip() for s in skills]
+
+
+def render_launch_skills(params, session_id):
+    """`-s/--skills` preload blocks for a new session, rendered ONCE at creation and frozen in its
+    policy (the CLI's startup preload). Blocking skill-tree reads: callers run it off the owner
+    loop. A typo among good names is logged and skipped, like the CLI; none resolving refuses."""
+    skills = launch_skills(params)
+    if not skills:
+        return None
+    from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
+    prompt, loaded, missing = build_preloaded_skills_prompt(skills, task_id=session_id)
+    if not loaded:
+        raise RuntimeStoreError('unknown_skill')
+    if missing:
+        import logging
+        logging.getLogger(__name__).warning('Skipping %s for session %s; continuing with: %s',
+                                            format_missing_skills(missing), session_id, ', '.join(loaded))
+    return prompt or None
+
+
+def accept_launch_hooks(policy):
+    """`--accept-hooks` / `HERMES_ACCEPT_HOOKS=1` on a launch: consent to the profile's configured
+    shell hooks (recorded in the per-user allowlist, as the in-process CLI/TUI did) and register
+    them on this owner. A bypass launch has no profile hooks to consent to (main's safe mode
+    registered none either), so the flag is a no-op there rather than a refusal. Allowlist file
+    lock + write: callers run it off the owner loop."""
+    if json.loads(policy.request_json).get('accept_hooks') and not policy.ignore_user_config:
+        from agent.shell_hooks import register_from_config
+        register_from_config(policy.config(), accept_hooks=True)
+
+
 def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None):
     """CLI keys live only in this authority lifetime, never its durable receipt.
 
@@ -277,6 +337,7 @@ def restore_policy(data):
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
+                or not isinstance(policy.skills_prompt, (str, type(None)))
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace

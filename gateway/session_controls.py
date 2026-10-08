@@ -248,7 +248,24 @@ class AuthorityConnection:
             raise RuntimeStoreError('invalid_params')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
-            ref = create_local_session(self.authority, self.actor, params)
+            skills_prompt = None
+            if 'skills' in params:
+                # Skill files are read off the owner loop, once per NEW session (a retried
+                # request_id resumes the frozen policy and never re-renders).
+                import asyncio
+                from gateway.session_local_recovery import local_identity
+                from gateway.session_policy import render_launch_skills
+                params.setdefault('request_id', uuid.uuid4().hex)
+                sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
+                if self.authority.db.get_session(sid) is None:
+                    skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
+            ref = create_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
+            if params.get('accept_hooks') is True:
+                import asyncio
+                from gateway.session_policy import accept_launch_hooks, restore_policy
+                from hermes_state_local import local_receipt
+                policy = restore_policy(local_receipt(self.authority.db, ref.session_id)['policy'])
+                await asyncio.to_thread(accept_launch_hooks, policy)
             if title:
                 title_new_session(self.authority, ref, title)
             if hidden:

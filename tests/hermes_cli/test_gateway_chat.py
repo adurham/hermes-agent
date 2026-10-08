@@ -8,7 +8,7 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
     from hermes_cli import gateway_chat
     calls = []
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: calls.append(True))
-    for option in ("checkpoints", "worktree", "run_budget"):
+    for option in ("image", "worktree", "run_budget"):
         args = argparse.Namespace(**{option: True})
         assert gateway_chat.launch_from_args(args) == 2
         assert option.replace("_", "-") in capsys.readouterr().err
@@ -38,9 +38,9 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
     refusal prints a command they can run as-is."""
     from hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
-    assert gateway_chat.launch_from_args(argparse.Namespace(checkpoints=True, run_budget=30.0)) == 2
+    assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True, run_budget=30.0)) == 2
     err = capsys.readouterr().err
-    assert "--checkpoints: use" in err and "checkpoints.enabled" in err
+    assert "--worktree: use" in err and "hermes --tui -w" in err
     assert "--run-budget: use" in err and "run_budget_seconds" in err
     for name in gateway_chat._UNSUPPORTED:
         assert name in gateway_chat._RELOCATED, f"{name} refused without saying where it went"
@@ -64,7 +64,9 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
         async def rpc(self, method, **params):
             calls.append((method, params))
             if method == "runtime.describe":
-                return {"session_create": {"sources": ["cli"], "parameters": ["cwd", "model", "toolsets", "request_id", "source"]}}
+                return {"session_create": {"sources": ["cli"], "parameters": [
+                    "cwd", "model", "toolsets", "request_id", "source", "skills", "checkpoints", "accept_hooks",
+                    "pass_session_id"]}}
             return {"stored_session_id": "stored"}
 
     @asynccontextmanager
@@ -78,12 +80,18 @@ async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch,
     monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
     monkeypatch.setattr(GatewayChatView, "run", rendered)
     monkeypatch.chdir(tmp_path)
-    args = argparse.Namespace(query="literal", model="explicit-model", toolsets="terminal, file", quiet=True)
+    # `-s a,b -s a` + the session-scoped launch flags + an exported HERMES_ACCEPT_HOOKS=1 ride the
+    # create (the classic client is a gateway client; nothing is refused or dropped).
+    monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+    args = argparse.Namespace(query="literal", model="explicit-model", toolsets="terminal, file", quiet=True,
+                              skills=["a,b", "a"], checkpoints=True, pass_session_id=True)
     assert await gateway_chat.run_gateway_chat(args) == 0
     create = calls[1][1]
     assert create["cwd"] == str(tmp_path)
     assert create["model"] == "explicit-model"
     assert create["toolsets"] == ["terminal", "file"]
+    assert create["skills"] == ["a", "b"] and create["checkpoints"] is create["pass_session_id"] is True
+    assert create["accept_hooks"] is True
     assert create["source"] == "cli" and create["request_id"]
 
 

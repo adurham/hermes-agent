@@ -77,14 +77,17 @@ export function canonicalEvent<T extends { type: string; payload?: any }>(event:
 
 export function localCreationOptions(env = process.env): Record<string, unknown> {
   const fields: Record<string, string | undefined> = {
-    model: env.HERMES_MODEL, provider: env.HERMES_TUI_PROVIDER, cwd: env.HERMES_CWD,
-    skills: env.HERMES_TUI_SKILLS, checkpoints: env.HERMES_TUI_CHECKPOINTS,
-    accept_hooks: env.HERMES_ACCEPT_HOOKS
+    model: env.HERMES_MODEL, provider: env.HERMES_TUI_PROVIDER, cwd: env.HERMES_CWD
   }
 
   const options: Record<string, unknown> = Object.fromEntries(Object.entries(fields).filter(([, value]) => value))
 
   if (env.HERMES_TUI_TOOLSETS) { options.toolsets = env.HERMES_TUI_TOOLSETS.split(',') }
+
+  // `hermes --tui -s a,b`: the owner renders these into the session's frozen prompt.
+  const skills = [...new Set((env.HERMES_TUI_SKILLS ?? '').split(/[,\n]/).map(name => name.trim()).filter(Boolean))]
+
+  if (skills.length) { options.skills = skills }
 
   // The launcher exports `--max-turns 5` as the string "5": numbers ride as
   // ints (0 / -1 = unlimited), and a word ("none", "unlimited") stays text
@@ -99,9 +102,13 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   // session prompts anyway / still loads rules, SOUL, memory and skills.auto_load.
   const truthy = (value?: string) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
 
+  // `--checkpoints` / `--pass-session-id` / `--accept-hooks` (and an exported HERMES_ACCEPT_HOOKS=1)
+  // are this session's creation policy too: the owner applies them, nothing reads them in-process.
   for (const [field, value] of [
     ['yolo', env.HERMES_YOLO_MODE], ['ignore_rules', env.HERMES_IGNORE_RULES],
-    ['safe_mode', env.HERMES_SAFE_MODE], ['ignore_user_config', env.HERMES_IGNORE_USER_CONFIG]
+    ['safe_mode', env.HERMES_SAFE_MODE], ['ignore_user_config', env.HERMES_IGNORE_USER_CONFIG],
+    ['checkpoints', env.HERMES_TUI_CHECKPOINTS], ['pass_session_id', env.HERMES_TUI_PASS_SESSION_ID],
+    ['accept_hooks', env.HERMES_ACCEPT_HOOKS]
   ] as const) {
     if (truthy(value)) { options[field] = true }
   }
