@@ -202,7 +202,11 @@ def _watch_submitter(db, run_id):
 
 def run_worker_turns(agent, frame, history):
     from gateway.session_managed_worker import worker_turn_scope
+    from gateway.session_surface import arm_surface_turn
     with worker_turn_scope(frame):
+        # The agent consumes explicit one-turn attributes, not the ContextVar: arm them exactly as
+        # the in-process runner does (voice route marker + surface note on the user message).
+        arm_surface_turn(agent)
         return _run_worker_turns(agent, frame, history)
 
 

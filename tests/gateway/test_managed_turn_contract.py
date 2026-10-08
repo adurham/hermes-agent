@@ -107,6 +107,32 @@ def test_current_yolo_revocation_overrides_frozen_launch(tmp_path, monkeypatch):
     clear_session('managed-contract')
 
 
+
+def test_committed_surface_crosses_the_bootstrap_validated_and_one_turn_only(tmp_path, monkeypatch):
+    from agent.managed_worker import validate_bootstrap
+    from gateway.session_kanban import run_worker_turns
+    from tools.voice_live import VOICE_LIVE_TURN_NOTE
+    frame, (authority, ref, row, policy, scope) = assignment(tmp_path, monkeypatch)
+    surface = {'surface': 'voice-live', 'voice_context': 'User: UNIQUE_PRIOR_CONTEXT', 'voice_turn': True}
+    from gateway.session_managed_worker import _bootstrap
+    voiced = validate_bootstrap(json.loads(json.dumps(_bootstrap(
+        authority, ref, {'payload': {**row['payload'], 'surface_v1': surface}}, policy, scope))))
+    seen = []
+    agent = SimpleNamespace(valid_tool_names=set(), run_conversation=lambda text, **kw: seen.append(
+        (agent._voice_turn_pending, agent._gateway_turn_context_notes)) or {'final_response': 'ok'})
+    run_worker_turns(agent, voiced, [])
+    run_worker_turns(agent, frame, [])  # the same (reused) agent's next, plain turn
+    (marker, notes), plain = seen
+    assert marker is True and notes.startswith(VOICE_LIVE_TURN_NOTE) and 'UNIQUE_PRIOR_CONTEXT' in notes
+    assert plain == (False, '')
+    # The child re-checks the object with the admission validator: no smuggled model input.
+    request = json.loads(voiced['policy']['request_json'])
+    request['turn_v1']['surface_v1'] = {'voice_context': 'User: smuggled'}
+    forged = {**voiced, 'policy': {**voiced['policy'], 'request_json': json.dumps(request)}}
+    with pytest.raises(ValueError, match='invalid_managed_worker_bootstrap'):
+        run_worker_turns(agent, forged, [])
+    assert len(seen) == 2
+
 @pytest.mark.asyncio
 async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, monkeypatch):
     from gateway import session_managed_worker as managed

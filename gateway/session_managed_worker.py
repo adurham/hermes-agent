@@ -60,10 +60,12 @@ def _bootstrap(authority, ref, row, policy, scope):
                 terminal[path[1]] = value
     live = authority.sessions[ref.session_id]
     # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
-    # the admission's one-shot flags and the route's YOLO as of now, never the frozen launch flag.
+    # the admission's one-shot flags, the route's YOLO as of now (never the frozen launch flag) and
+    # the committed surface (HUD / live voice / voice turn) when admission recorded one.
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
-        'yolo': _session_yolo(authority, live.route, policy)})
+        'yolo': _session_yolo(authority, live.route, policy),
+        **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
     request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
     hydrated = replace(policy, config_json=json.dumps(_worker_config(authority, policy)), request_json=json.dumps(request),
@@ -109,20 +111,27 @@ def _session_yolo(authority, route, policy):
 @contextmanager
 def worker_turn_scope(frame):
     """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
-    (execute_finite_admission, the route's YOLO), so ``chat -q``/``-z`` never park a prompt and
-    the session's current YOLO governs this child. Frames without it bind nothing."""
+    (execute_finite_admission, the route's YOLO, the committed surface), so ``chat -q``/``-z``
+    never park a prompt, the session's current YOLO governs this child and a HUD / live-voice /
+    voice turn reaches the model as it does in process. Frames without it bind nothing."""
     from gateway.session_finite import finite_turn_scope
+    from gateway.session_surface import restore_surface, surface_turn_scope
     turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
     if turn is None:
         yield
         return
-    if (not isinstance(turn, dict) or set(turn) != {'finite', 'unattended', 'yolo'}
-            or any(type(v) is not bool for v in turn.values()) or (turn['unattended'] and not turn['finite'])):
+    flags = {k: v for k, v in turn.items() if k != 'surface_v1'} if isinstance(turn, dict) else None
+    if (flags is None or set(flags) != {'finite', 'unattended', 'yolo'}
+            or any(type(v) is not bool for v in flags.values()) or (turn['unattended'] and not turn['finite'])):
         raise ValueError('invalid_managed_worker_bootstrap')
+    try:
+        surface = restore_surface(turn['surface_v1']) if 'surface_v1' in turn else None
+    except RuntimeStoreError as exc:
+        raise ValueError('invalid_managed_worker_bootstrap') from exc
     if turn['yolo']:
         from tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
-    with finite_turn_scope(turn['finite'], turn['unattended']):
+    with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface):
         yield
 
 

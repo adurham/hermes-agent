@@ -385,14 +385,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
-        from gateway.session_surface import surface_turn_note, surface_voice_turn
-        # auxiliary.voice_chat route: a voice note, or a canonical admission committed as a voice turn.
-        agent._voice_turn_pending = ctx.voice_turn or surface_voice_turn()
         self._merge_turn_request_overrides(agent, turn_route)
-        # Must-deliver notes for THIS turn ride the current user message (api_content sidecar), never
-        # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
-        agent._gateway_turn_context_notes = "\n\n".join(
-            note for note in (*runner._consume_pending_turn_sidecar_notes(ctx.session_key), surface_turn_note(agent)) if note)
+        from gateway.session_surface import arm_surface_turn
+        # auxiliary.voice_chat route (a voice note, or an admission committed as a voice turn) and
+        # this turn's must-deliver notes; a managed worker arms its agent through the same helper.
+        arm_surface_turn(agent, runner._consume_pending_turn_sidecar_notes(ctx.session_key), voice_turn=ctx.voice_turn)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
