@@ -62,6 +62,8 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # Set by profile retirement (unserve): the drain claims no successor after its running turn.
+        self.retiring = False
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -93,7 +95,7 @@ class SessionAuthority:
             raise RuntimeStoreError('permission_denied')
 
     def _require_admission_open(self):
-        if self.runner._draining:
+        if self.runner._draining or self.retiring:
             raise RuntimeStoreError('runtime_draining')
 
     def logical_owner(self, session_id):

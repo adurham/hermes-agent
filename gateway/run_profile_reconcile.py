@@ -358,9 +358,14 @@ class GatewayProfileReconcileMixin:
             # Its session authority and reservation go before the store handles: the authority owns the
             # state.db writer, and the next restart must not try to reserve a home that no longer exists.
             from gateway.run_runtime import release_profile_home, unserve_profile_runtime
+            retired = True
             if getattr(self, "session_authorities", None) is not None:
                 with _log_suppressed(logging.WARNING, "session authority retirement failed for %s", name, exc_info=True):
-                    await unserve_profile_runtime(self, home)
+                    retired = await unserve_profile_runtime(self, home)
+            if not retired:
+                # A turn outlived its Stop: its thread may still write this home, so keep the
+                # gateway.lock and store handles (no replacement owner) until this process exits.
+                return
             release_profile_home(self, home)
             with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
                 from hermes_state_registry import close_all_under
