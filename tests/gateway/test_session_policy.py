@@ -280,6 +280,57 @@ def test_frozen_bare_custom_route_keeps_its_endpoint_pool_and_launch_key_wins(tm
     assert (runtimes[1]['api_key'], runtimes[1]['credential_pool']) == ('sk-launch-explicit', None)
 
 
+def _frozen_fixture_routes(tmp_path, monkeypatch, *launches):
+    """Freeze ``custom_providers: Fixture`` at endpoint A with a pool-only key in auth.json, freeze one
+    route per launch ``base_url``, then edit the LIVE entry to endpoint B; return each route's runtime."""
+    import json
+    from types import SimpleNamespace
+    from gateway.session_policy import build_policy, bind_launch_key
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from hermes_cli.config_effective import load_user_config_effective
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+
+    def write(url):
+        (home / 'config.yaml').write_text(json.dumps({'model': {'provider': 'fixture', 'default': 'm'},
+                                                      'custom_providers': [{'name': 'Fixture', 'base_url': url}]}))
+    write('https://a.fixture.example/v1')
+    (home / 'auth.json').write_text(json.dumps({'version': 1, 'providers': {}, 'credential_pool': {'custom:fixture': [
+        {'id': 'k1', 'label': 'a', 'auth_type': 'api_key', 'priority': 0, 'source': 'manual',
+         'access_token': 'sk-pool-key-for-endpoint-a'}]}}))
+    authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=None)
+    policies = []
+    for n, url in enumerate(launches):
+        private = {}
+        params = {'cwd': str(tmp_path), 'model': 'm', 'provider': 'fixture'} | ({'base_url': url} if url else {})
+        policy = build_policy(params, load_user_config_effective(home / 'config.yaml'), private_secrets=private)
+        policies.append(bind_launch_key(authority, f's{n}', policy, None, config_secrets=private))
+    write('https://b.fixture.example/v1')
+    runner = SimpleNamespace(session_authority=authority)
+    runtimes = []
+    for policy in policies:
+        monkeypatch.setattr('gateway.session_policy.policy_for_source', lambda runner, source, p=policy: p)
+        runtimes.append(GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, source=SimpleNamespace())[1])
+    return runtimes
+
+
+def test_frozen_named_route_keeps_its_pool_after_live_endpoint_edit(tmp_path, monkeypatch):
+    """A frozen named route stays on endpoint A after the live entry moves to B; A's pool key goes
+    with it (the pool-key lookup reads the FROZEN entry, not live config) instead of no-key-required."""
+    (runtime,) = _frozen_fixture_routes(tmp_path, monkeypatch, None)
+    assert (runtime['base_url'], runtime['api_key']) == ('https://a.fixture.example/v1', 'sk-pool-key-for-endpoint-a')
+    assert runtime['credential_pool'] is not None
+
+
+def test_frozen_launch_url_override_never_borrows_the_named_pool(tmp_path, monkeypatch):
+    """R2-M1 under a frozen route: a launch ``base_url`` B for the provider frozen at A never borrows
+    A's pool key, even after the live entry is edited to B."""
+    (runtime,) = _frozen_fixture_routes(tmp_path, monkeypatch, 'https://b.fixture.example/v1')
+    assert runtime['base_url'] == 'https://b.fixture.example/v1'
+    assert (runtime['api_key'], runtime['credential_pool']) == ('no-key-required', None)
+
+
 def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
     """A not-yet-built session with no launch model/provider runs on ``nous/welcome`` on the free
     tier (the agent build pins it), so ``session.info`` says so; an explicit launch model stands."""
@@ -287,7 +338,7 @@ def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from gateway.session_local import _lazy_model
     from gateway.session_policy import build_policy
-    import hermes_cli.anon_auth as anon_auth
+    from hermes_cli import anon_auth
     authority = SimpleNamespace(runner=None, profile_id='fixture')
     monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: True)
     configured = replace(build_policy({'cwd': str(tmp_path)}, {'model': {'default': 'cfg-model'}}), model='cfg-model')

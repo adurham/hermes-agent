@@ -372,7 +372,10 @@ def _try_resolve_from_custom_pool(
     """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
     rp = _rp()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
+        frozen = rp._FROZEN_RUNTIME_CONFIG.get()
+        scope = {} if frozen is None else {"config": frozen}
+        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name, **scope))
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.
