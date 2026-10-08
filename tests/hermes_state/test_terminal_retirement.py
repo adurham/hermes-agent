@@ -50,7 +50,9 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
         replay = rt.admit_session_input(db, epoch=epoch, **args)
         assert replay['admission_id'] == row['admission_id'] and replay['status'] == 'terminal'
         assert replay['payload'] == {}, 'input history must not be archived in the identity tombstone'
-        assert admission_result(db, row['admission_id']) == result
+        # Settlement stores this turn's suffix, flagged so no reader re-derives a boundary from it.
+        assert admission_result(db, row['admission_id']) == {
+            'result': {**result['result'], '_messages_are_turn_suffix': True}, 'usage': result['usage']}
         from hermes_state_terminal import terminal_worker_receipt
         worker_args = dict(execution_id='worker', session_id='used', generation=row['generation'], sequence=1,
             adoption_secret='owned-proof', payload_digest=rt.admission_fingerprint(canonical_target='used',
@@ -170,6 +172,9 @@ def test_deleting_a_session_drops_transcript_copies_from_its_terminal_results(tm
                 'final_response': f'a{turn}', 'messages': list(history), 'last_reasoning': 'SECRET_HISTORY why',
                 'completed': True, 'api_calls': 1, 'input_tokens': 5}, 'usage': {'input_tokens': 5, 'output_tokens': 2}})
             rows.append(row)
+            # Each live receipt holds only its own turn's output, never the cumulative history.
+            assert admission_result(db, row['admission_id'])['result']['messages'] == [
+                {'role': 'assistant', 'content': f'a{turn}'}]
         db.delete_session('gone')
         with db._read_ctx() as c:
             blobs = ''.join(v for (v,) in c.execute("SELECT value FROM state_meta WHERE key LIKE 'gateway.admission.result.v1.%'"))
@@ -178,5 +183,6 @@ def test_deleting_a_session_drops_transcript_copies_from_its_terminal_results(tm
                                         payload={'text': 'SECRET_HISTORY q2'})
         assert replay['admission_id'] == rows[2]['admission_id'] and replay['status'] == 'terminal'
         assert admission_result(db, replay['admission_id']) == {'result': {
-            'final_response': 'a2', 'messages': [], 'completed': True, 'api_calls': 1, 'input_tokens': 5},
+            'final_response': 'a2', 'messages': [], 'completed': True, 'api_calls': 1, 'input_tokens': 5,
+            '_messages_are_turn_suffix': True},
             'usage': {'input_tokens': 5, 'output_tokens': 2}}
