@@ -9,7 +9,7 @@ import { map, type MapStore } from 'nanostores'
 
 import type { HermesApiRequest } from '@/global'
 
-import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol } from './canonical-protocol'
+import { CANONICAL_GATEWAY_PROTOCOL, CanonicalDesktopProtocol, siblingRoute } from './canonical-protocol'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -159,20 +159,21 @@ export class HermesGateway extends JsonRpcGatewayClient {
       return this.request<T>('clarify.respond', { session_id: promptSession, request_id: params.request_id, answer }, timeoutMs, signal)
     }
 
-    await this.attachForRequest(method, params)
+    const route = this.sessionRoute(params)
+    await this.attachForRequest(method, { ...params, ...route })
 
     const prepared = this.protocol.prepare(method, params)
     const wireMethod = this.protocol.wire(method, prepared)
 
     try {
-      const result = await super.request<T>(wireMethod, prepared, timeoutMs, signal)
+      const result = await super.request<T>(wireMethod, { ...prepared, ...route }, timeoutMs, signal)
 
       // A settle follow-up (compress -> resume) inherits the caller's deadline and cancellation.
       const followUp = (m: string, p: Record<string, unknown>) => this.request(m, p, timeoutMs, signal)
       const settled = await this.protocol.settle(method, prepared, this.protocol.result(method, prepared, result), followUp) as T
 
       if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
-        this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> })
+        this.adoptAttachedSnapshot(settled as { session_id?: string; prompts?: Array<Record<string, unknown>> }, route.profile)
       }
 
       return settled
@@ -180,6 +181,28 @@ export class HermesGateway extends JsonRpcGatewayClient {
       this.protocol.failure(prepared, error)
       throw error
     }
+  }
+
+  // Sibling-profile routes by session. The primary socket serves every profile the host
+  // multiplexes and the authority selects one PER REQUEST from `profile`, so the route rides
+  // beside payload translation: rebuilt mutations, prompt replies and settle follow-ups (which
+  // name only the session) keep the route the session was last addressed with.
+  private readonly routes = new Map<string, string>()
+
+  private sessionRoute(params: Record<string, unknown>): { profile?: string } {
+    const sid = String(params.session_id ?? params.parent_session_id ?? '')
+
+    if (typeof params.profile === 'string') {
+      const route = siblingRoute(params.profile)
+
+      if (sid) { if (route) { this.routes.set(sid, route) } else { this.routes.delete(sid) } }
+
+      return route ? { profile: route } : {}
+    }
+
+    const remembered = this.routes.get(sid)
+
+    return remembered ? { profile: remembered } : {}
   }
 
   // Resume the session (and, for branch-like methods, its parent) on THIS socket before a
@@ -198,11 +221,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
     }
   }
 
-  private adoptAttachedSnapshot(settled: { session_id?: string; prompts?: Array<Record<string, unknown>> }): void {
+  private adoptAttachedSnapshot(settled: { session_id?: string; prompts?: Array<Record<string, unknown>> }, route?: string): void {
     // Prompts still open on the authority re-deliver like `open_requests` after a reconnect.
     const sid = settled.session_id
 
     if (sid) { this.attached.add(sid) }
+
+    // A sibling create learns its session id only here.
+    if (sid && route) { this.routes.set(sid, route) }
 
     for (const prompt of (settled.prompts ?? [])) {
       this.deliverCanonicalPrompt({ type: `${prompt.kind}.request`, session_id: sid, payload: prompt }, true)

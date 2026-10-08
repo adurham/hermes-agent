@@ -16,10 +16,12 @@ test('a cold attach delivers the snapshot prompt and marks the session attached'
     socket.on('message', (bytes: Buffer) => {
       const frame = JSON.parse(bytes.toString())
       sent.push(frame)
+
       const result = frame.method === 'session.resume'
         ? { session_id: 's', stored_session_id: 's', revision: 2, execution_generation: 5, running: true, messages: [],
             prompts: [{ kind: 'clarify', prompt_id: 'c1', execution_generation: 5, question: 'Which target?', choices: [] }] }
         : { status: 'resolved' }
+
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
     })
   })
