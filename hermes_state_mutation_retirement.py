@@ -116,6 +116,17 @@ def delete_in_transaction(db, conn, session_id, payload):
     return set(), {'deleted_ids': targets}
 
 
+def entry_session_id(raw):
+    """The ``session_id`` a stored routing/receipt JSON object names, else None. Unrelated rows
+    are not validated here: a malformed one (an array, invalid JSON) names no target, so it can
+    neither be retired nor abort the delete of a different session; the routing loader skips it too."""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value.get('session_id') if isinstance(value, dict) else None
+
+
 def retire_routes(conn, session_ids):
     # OR IGNORE: the marker is a fact, not a receipt; re-retiring an id that was recreated
     # beside its tombstone must not abort the delete that removes it again.
@@ -125,6 +136,6 @@ def retire_routes(conn, session_ids):
         conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
-        if json.loads(row['entry_json']).get('session_id') in targets:
+        if entry_session_id(row['entry_json']) in targets:
             conn.execute('DELETE FROM gateway_routing WHERE scope=? AND session_key=?',
                          (row['scope'], row['session_key']))

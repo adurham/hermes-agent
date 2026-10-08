@@ -57,6 +57,18 @@ def commit_local_session(db, *, epoch, receipt):
     return db._execute_write(write)
 
 
+def _policy_target(raw):
+    """Current physical target a creation receipt routes to; None for a malformed receipt, which
+    then stays (its own reads already refuse it as ``storage_unavailable``) and cannot abort
+    the delete of an unrelated session."""
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    entry = value.get('entry') if isinstance(value, dict) else None
+    return entry.get('session_id') if isinstance(entry, dict) else None
+
+
 def retire_local_receipts(conn, session_ids):
     """Deletion fence half for owner receipts. A local creation policy carries the launch request
     (``request_json``: a cron fire's job and raw prompt), so it goes exactly when its route does:
@@ -69,7 +81,7 @@ def retire_local_receipts(conn, session_ids):
     # Prefix scans (GLOB uses the key index), not one LIKE per id: a prune retires thousands.
     gone = [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
                                                (POLICY_PREFIX + '*',))
-            if json.loads(value).get('entry', {}).get('session_id') in targets]
+            if _policy_target(value) in targets]
     gone += [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
                                                 (API_DECLARED_PREFIX + '*',)) if value in targets]
     gone += [API_BINDING_PREFIX + sid for sid in targets]

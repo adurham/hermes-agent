@@ -186,3 +186,38 @@ def test_deleting_a_session_drops_transcript_copies_from_its_terminal_results(tm
             'final_response': 'a2', 'messages': [], 'completed': True, 'api_calls': 1, 'input_tokens': 5,
             '_messages_are_turn_suffix': True},
             'usage': {'input_tokens': 5, 'output_tokens': 2}}
+
+
+@pytest.mark.parametrize('stray', [
+    "INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('','other','[]',0)",
+    "INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('','other','{bad',0)",
+    "INSERT INTO state_meta(key,value) VALUES('gateway.local_policy.v1:other','[]')",
+    "INSERT INTO state_meta(key,value) VALUES('gateway.local_policy.v1:other','{\"entry\": []}')",
+])
+@pytest.mark.parametrize('delete', ['canonical', 'legacy', 'prune'])
+def test_a_malformed_unrelated_route_or_policy_row_cannot_abort_a_delete(tmp_path, stray, delete):
+    """W15 / routing-array: deletion fences decode every routing entry and creation receipt to
+    find the target's; one unrelated malformed row must not roll back an unrelated delete."""
+    import time
+    with SessionDB(tmp_path / 'state.db') as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        db.create_session('target', source='api_server')
+        db._execute_write(lambda c: c.execute(stray))
+        if delete == 'canonical':
+            snap = db.get_session('target')
+            rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='target', request_id='d',
+                operation='delete', payload={}, expected_revision=snap['runtime_revision'],
+                expected_generation=snap['runtime_generation'])
+        elif delete == 'legacy':
+            assert db.delete_session('target')
+        else:
+            old = time.time() - 100 * 86400
+            db._execute_write(lambda c: c.execute('UPDATE sessions SET started_at=?, ended_at=? WHERE id=?',
+                                                  (old, old, 'target')))
+            assert db.prune_sessions(older_than_days=30) == 1
+        assert db.get_session('target') is None
+        from hermes_state_mutation_retirement import retired_session
+        assert retired_session(db, 'target')
+        with db._read_ctx() as c:  # the unrelated row is left exactly as it was
+            assert c.execute("SELECT (SELECT COUNT(*) FROM gateway_routing) + (SELECT COUNT(*) FROM state_meta "
+                             "WHERE key GLOB 'gateway.local_policy.v1:*')").fetchone()[0] == 1
