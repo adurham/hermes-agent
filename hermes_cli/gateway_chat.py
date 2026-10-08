@@ -28,7 +28,7 @@ _RELOCATED = {
     "w": "`hermes --tui -w`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
     "run_budget": "`agent.run_budget_seconds` in config.yaml",
-    "verbose": "`hermes logs --follow`, or `hermes --tui -v`",
+    "verbose": "`hermes logs --follow`, or `hermes chat --tui -v`",
     "compact": "`display.compact: true` in config.yaml",
     "list_tools": "`hermes tools list`",
     "list_toolsets": "`hermes tools list`",

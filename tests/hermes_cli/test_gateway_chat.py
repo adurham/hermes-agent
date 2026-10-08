@@ -171,3 +171,17 @@ async def test_yolo_slash_toggles_the_session_bypass_on_the_owner(capsys):
     assert calls == [("config.set", {"session_id": "sid", "key": "yolo", "value": "0"}),
                      ("config.set", {"session_id": "sid", "key": "yolo"})]
     assert "YOLO off for this session" in capsys.readouterr().out
+
+
+def test_every_relocation_hint_names_a_command_that_parses():
+    """A refusal that points at `hermes --tui --checkpoints` / `hermes --tui -v` must not send the
+    user to a command argparse rejects."""
+    import re
+    import shlex
+    from hermes_cli import gateway_chat
+    from hermes_cli.main import _build_cli_parser
+    parser = _build_cli_parser()
+    parser = parser[0] if isinstance(parser, tuple) else parser
+    for hint in gateway_chat._RELOCATED.values():
+        for command in re.findall(r"`(hermes [^`]*)`", hint):
+            parser.parse_args([arg for arg in shlex.split(command)[1:] if not arg.startswith("<")])
