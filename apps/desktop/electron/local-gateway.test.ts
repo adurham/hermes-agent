@@ -347,7 +347,7 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
   try {
     const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
     expect(failure).toBeInstanceOf(Error)
-    expect(failure.message).toBe('Unsafe gateway control path')
+    expect(failure.message).toBe(`Unsafe gateway control path: '${socketPath}' is accessible to other users (mode 660): run chmod go-rwx '${socketPath}'`)
     expect(isStaleLocalGatewayError(failure)).toBe(false)
     expect(isStaleLocalGatewayError(new Error('EACCES: permission denied'))).toBe(false)
   } finally {

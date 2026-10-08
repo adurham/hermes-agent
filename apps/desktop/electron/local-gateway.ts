@@ -273,10 +273,36 @@ export function createLocalGatewayDials() {
 async function privateNode(file: string, kind: 'directory' | 'socket' | 'file' | 'home'): Promise<boolean> {
   const node = await fs.lstat(file)
   const valid = { directory: node.isDirectory(), home: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
+  const uid = process.getuid?.()
+  const quoted = shellQuote(file)
 
-  if (!valid || node.uid !== process.getuid?.() || (node.mode & (kind === 'home' ? 0o002 : 0o077))) {throw new Error('Unsafe gateway control path')}
+  // Not stale (a re-ensure of the same home would hit the same refusal): name the repair.
+  if (!valid) {
+    const found = node.isSymbolicLink() ? 'a symlink' : node.isDirectory() ? 'a directory' : node.isFile() ? 'a regular file' : node.isSocket() ? 'a socket' : 'another file type'
+
+    // The socket, pointer and fallback directory are the gateway's to recreate; a home is not.
+    throw new Error(kind === 'home'
+      ? `Unsafe gateway control path: profile home ${quoted} is ${found}, not a directory: move it aside and recreate the profile`
+      : `Unsafe gateway control path: ${quoted} should be a ${kind} but is ${found}: remove it, then run hermes gateway restart`)
+  }
+
+  if (node.uid !== uid) {
+    throw new Error(`Unsafe gateway control path: ${quoted} is owned by uid ${node.uid}, not this user (uid ${uid}): run sudo chown ${uid} ${quoted}`)
+  }
+
+  if (kind === 'home' && node.mode & 0o002) {
+    throw new Error(`Unsafe gateway control path: profile home ${quoted} is writable by other users (mode ${(node.mode & 0o777).toString(8)}): run chmod o-w ${quoted}`)
+  }
+
+  if (kind !== 'home' && node.mode & 0o077) {
+    throw new Error(`Unsafe gateway control path: ${quoted} is accessible to other users (mode ${(node.mode & 0o777).toString(8)}): run chmod go-rwx ${quoted}`)
+  }
 
   return kind === 'home' && Boolean(node.mode & 0o020)
+}
+
+function shellQuote(file: string): string {
+  return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
@@ -315,13 +341,13 @@ export function configurePythonGatewayTicketClient(client: NonNullable<typeof py
 }
 
 async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http', homes: string[]) {
-  if (!pythonTicketClient) {throw new Error('Unsafe gateway control path')}
+  if (!pythonTicketClient) {throw new Error(`Unsafe gateway control path: profile home is group-writable and this Desktop cannot verify the group is private: run chmod g-w ${homes.map(shellQuote).join(' ')}`)}
 
   try {
     return await pythonTicketClient(endpoint, purpose)
   } catch (error) {
     if ((error as { reason?: string })?.reason !== 'unsafe_control_permissions') {throw error}
-    const quoted = homes.map(home => `'${home.replace(/'/g, `'\\''`)}'`).join(' ')
+    const quoted = homes.map(shellQuote).join(' ')
 
     throw new Error(`Profile home is writable by a group other accounts share: run chmod g-w ${quoted}`)
   }
