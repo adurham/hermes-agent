@@ -17,6 +17,10 @@ from hermes_state_runtime import RuntimeStoreError
 from utils import fsync_directory
 
 
+_API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
+_SHA256_NAME = re.compile(r'[0-9a-f]{64}')
+
+
 def _media_root():
     from gateway.platforms.base import get_document_cache_dir
     return get_document_cache_dir().resolve() / 'native-inputs'
@@ -202,6 +206,31 @@ def validate_media_batch_size(sizes):
         raise RuntimeStoreError('invalid_params') from exc
 
 
+# A hosted room's non-image document is retained under ``native-inputs/<sha256>/<name>`` like any
+# other input, but rides in the committed prompt as a path line (``session_hosted_attachments``),
+# not as a structured reference. Same literal the hosted payload builders append.
+HOSTED_DOCUMENT_LINE = '\n[Shared attachment] file: '
+_HOSTED_DOCUMENT_RE = re.compile(re.escape(HOSTED_DOCUMENT_LINE) + r'([^\n]+)\n')
+
+
+def hosted_document_references(request_id, payload):
+    """Retained document references a hosted admission's prompt names (``[]`` for other rows).
+
+    Only content-addressed names under this profile's retained root count, and never an API
+    image name: those are held by ``api_turn_v1`` in every status, so a member's prompt text
+    can name one without gaining deletion authority over it."""
+    if not str(request_id).startswith('hosted:') or not isinstance(payload.get('text'), str):
+        return []
+    root = _media_root()
+    references = []
+    for value in _HOSTED_DOCUMENT_RE.findall(payload['text']):
+        path = Path(value)
+        if (path.is_absolute() and path.parent.parent == root and _SHA256_NAME.fullmatch(path.parent.name)
+                and not _API_IMAGE_NAME.fullmatch(path.name)):
+            references.append({'path': value, 'sha256': path.parent.name})
+    return references
+
+
 def admission_media_references(payload):
     """Native references eligible as deletion candidates after terminal settlement."""
     return list(payload.get('attachments_v1', {}).get('media', ())) + list(
@@ -209,19 +238,23 @@ def admission_media_references(payload):
 
 
 def _held_media_paths(conn):
-    # Project only references, not potentially large inline-image/history payloads.
-    rows = conn.execute("""SELECT status, json_extract(payload_json,
-            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media')
+    # Project only references, not potentially large inline-image/history payloads; a live hosted
+    # row's prompt is projected too, because its documents are held by text, not by a reference.
+    rows = conn.execute("""SELECT status, request_id, json_extract(payload_json,
+            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media'),
+            CASE WHEN status!='terminal' AND request_id LIKE 'hosted:%'
+                 THEN json_extract(payload_json, '$.text') END
             FROM session_admissions WHERE status!='terminal'
             OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL""").fetchall()
     held = set()
-    for status, encoded in rows:
+    for status, request_id, encoded, text in rows:
         attachments, native, api = json.loads(encoded)
         # API images remain canonical history context after the turn completes.
         references = list(api or ())
         if status != 'terminal':
             references.extend(attachments or ())
             references.extend(native or ())
+            references.extend(hosted_document_references(request_id, {'text': text}))
         held.update(reference['path'] for reference in references)
     return held
 
@@ -261,10 +294,11 @@ def release_admission_media(db, admission_id):
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0
-    return release_unheld_media(db, admission_media_references(row['payload']), retain_history=False)
-
-
-_API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
+    released = release_unheld_media(db, admission_media_references(row['payload']), retain_history=False)
+    # A hosted document is named in the prompt the transcript keeps, so it is history context like
+    # an API image: it goes once no live row and no transcript row names it (session deletion then
+    # collects it through ``retire_media``), never while a follow-up turn can still be told to read it.
+    return released + release_unheld_media(db, hosted_document_references(row['request_id'], row['payload']))
 
 
 def collect_unheld_api_images(db):

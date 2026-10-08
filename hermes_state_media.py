@@ -5,9 +5,9 @@ import json
 PREFIX = 'gateway.media.retired.v1.'
 
 
-def retire_media(conn, payload):
-    references = [*payload.get('attachments_v1', {}).get('media', []),
-                  *payload.get('native_text_v1', {}).get('media', []),
+def retire_media(conn, payload, request_id=''):
+    from gateway.session_ingress_media import admission_media_references, hosted_document_references
+    references = [*admission_media_references(payload), *hosted_document_references(request_id, payload),
                   *payload.get('api_turn_v1', {}).get('media', [])]
     for reference in references:
         key = PREFIX + hashlib.sha256(reference['path'].encode()).hexdigest()

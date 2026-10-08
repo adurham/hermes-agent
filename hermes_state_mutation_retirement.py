@@ -48,7 +48,7 @@ def retire_terminal_receipts(conn, session_ids):
         for raw in admissions:
             row = dict(raw)
             from hermes_state_media import retire_media
-            retire_media(conn, json.loads(row['payload_json']))
+            retire_media(conn, json.loads(row['payload_json']), row['request_id'])
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
             row['lineage_json'] = '[]'
