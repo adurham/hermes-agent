@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 
@@ -235,16 +236,34 @@ def release_admission_media(db, admission_id):
     replayed. Rows that are not terminal (queued, started, unknown) may still
     execute, so any path they reference stays on disk; API image references stay
     on disk in every status because they remain history context after settlement,
-    and are holders only, never deletion candidates. Different regular files can
-    collect independently; physical aliases and uncertain stat results retain
-    conservatively. A shared hardlink can consequently retain an extra old alias.
+    and are holders only (see ``collect_unheld_api_images``). Different regular
+    files can collect independently; physical aliases and uncertain stat results
+    retain conservatively. A shared hardlink can consequently retain an extra old alias.
     """
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(db, admission_id=admission_id)
     if row is None or row['status'] != 'terminal':
         return 0
-    mine = admission_media_references(row['payload'])
-    if not mine:
+    return release_unheld_media(db, admission_media_references(row['payload']))
+
+
+_API_IMAGE_NAME = re.compile(r'api_[0-9a-f]{32}\.(png|jpg|gif|webp)')
+
+
+def collect_unheld_api_images(db):
+    """Collect retained API images no admission holds any more: deleting a chat retires its
+    admissions and erases their references, so those bytes have no owner left. Only the exact
+    name ``commit_api_images`` gives (``api_<sha256[:32]><ext>`` under its own digest) is a
+    candidate; retained hosted documents are held by prompt text, never by a media reference."""
+    root = _media_root()
+    return release_unheld_media(db, [
+        {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
+        if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+
+
+def release_unheld_media(db, references):
+    """Delete each retained reference no admission holds (by path or physical identity)."""
+    if not references:
         return 0
     root = _media_root()
     def collect(conn):
@@ -253,7 +272,7 @@ def release_admission_media(db, admission_id):
         if identities is None:
             return 0
         released = 0
-        for reference in mine:
+        for reference in references:
             path = Path(reference['path'])
             if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
                 continue

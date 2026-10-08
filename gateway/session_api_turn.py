@@ -121,9 +121,6 @@ def admit_api_turn(adapter, **kwargs):
     existing = authority.db.get_session(sid)
     if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
         raise RuntimeStoreError('permission_denied')
-    if isinstance(kwargs['user_message'], list):
-        from gateway.session_api_media import commit_api_images
-        payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
     if kwargs.get('turn_author') is not None:
         from agent.turn_author import parse_turn_author
         author = parse_turn_author(kwargs['turn_author'])
@@ -131,6 +128,21 @@ def admit_api_turn(adapter, **kwargs):
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
+    if not isinstance(kwargs['user_message'], list):
+        return _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
+    from gateway.session_api_media import commit_api_images
+    from gateway.session_ingress_media import release_unheld_media
+    payload['api_turn_v1']['media'] = commit_api_images(kwargs['user_message'])
+    try:
+        return _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs)
+    finally:
+        # Retained bytes belong to an accepted admission. A refused request (or an exact retry of
+        # a retired one, whose references were erased) owns nothing, so its bytes are collected
+        # unless another admission holds them. Capture, admission and release share this loop.
+        release_unheld_media(authority.db, payload['api_turn_v1']['media'])
+
+
+def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
@@ -173,7 +185,9 @@ def recover_api_turns(adapter):
 
 def _recover_api_turns(adapter, authority):
     from hermes_state_runtime import list_session_admissions
+    from gateway.session_ingress_media import collect_unheld_api_images
     import logging
+    collect_unheld_api_images(authority.db)
     with authority.db._read_ctx() as conn:
         targets = [row[0] for row in conn.execute(
             "SELECT DISTINCT target_session_id FROM session_admissions WHERE principal_id='api' AND status='queued'")]
