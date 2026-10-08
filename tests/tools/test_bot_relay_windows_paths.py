@@ -51,6 +51,9 @@ def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     sibling.touch()
     sibling.chmod(0o755)
     monkeypatch.setattr("sys.executable", str(bin_dir / "python"))
+    # The checkout's own published launcher (.hermes/bin, written by scripts/run_tests.sh's venv
+    # step) outranks the sibling by design (#124868): keep it out of this probe.
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "checkout" / "tools" / "bot_relay.py"))
 
     assert bot_relay._hermes_cli() == str(sibling)
 
