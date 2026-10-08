@@ -59,17 +59,20 @@ def _status_by_slug(client: Any) -> dict[str, dict[str, Any]]:
     return {str(i.get("connector", "")).lower(): i for i in client.list_connectors() if isinstance(i, dict)}
 
 
-def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reinitiate: bool, actor: Actor) -> None:
+def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reinitiate: bool, actor: Actor,
+         connection_id: Optional[str] = None) -> None:
     """Mint links for ``names`` and apply the gateway's per-app answer to the operation. ``actor`` is
     the watcher on the first mint and the user on Try again. The operation id rides along so the
-    vendor's done page can name it on the way back to the desktop."""
+    vendor's done page can name it on the way back to the desktop. ``connection_id`` names the one
+    existing account a repair restarts; the gateway then needs no alias to find it."""
     from tools.connectors.gateway.client import return_to_args
 
     if not names:
         return
     # One aliased target per call, so the alias of the first named target is the request's.
-    alias = next((t.alias for t in operation.targets if t.name in names and t.alias), None)
-    response = client.connections(names, reinitiate=reinitiate, alias=alias, **return_to_args(op=operation.op_id))
+    alias = None if connection_id else next((t.alias for t in operation.targets if t.name in names and t.alias), None)
+    response = client.connections(names, reinitiate=reinitiate, alias=alias, connection_id=connection_id,
+                                  **return_to_args(op=operation.op_id))
     for entry in response.get("results", []):
         name = str(entry.get("connector") or "").lower()
         target = operation.target(name)
@@ -212,7 +215,9 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
                 operation.transition(name, TargetState.connected, Actor.backend_watcher)
             else:
                 repair.append(name)
-        mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher)
+        # A named target is alone in its call, so at most one account id applies.
+        account = next((status[n].get("connection_id") for n in repair if status.get(n, {}).get("connection_id")), None)
+        mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
         _mark_misrouted(operation)
 
     return prepare
@@ -225,15 +230,20 @@ def portal_accounts() -> list[dict[str, Any]]:
 
 
 def _alias_status(targets: list[Target]) -> Optional[dict[str, dict[str, Any]]]:
-    """``{slug: {"connected": bool}}`` for an aliased target, read from that account's own row;
-    ``None`` when no target is aliased. A failed read raises: guessing "not connected" would send
-    the user through a new login for an account that may be healthy."""
+    """``{slug: {"connected": bool, "connection_id": str | None}}`` for an aliased target, read from
+    that account's own row (``connection_id`` is None when no account has that name yet); ``None``
+    when no target is aliased. A failed read raises: guessing "not connected" would send the user
+    through a new login for an account that may be healthy."""
     aliased = [t for t in targets if t.alias]
     if not aliased:
         return None
     rows = portal_accounts()
-    return {t.name: {"connected": any(r.get("connector") == t.name and r.get("alias") == t.alias
-                                      and r.get("status") == "active" for r in rows)} for t in aliased}
+    status: dict[str, dict[str, Any]] = {}
+    for t in aliased:
+        row = next((r for r in rows if r.get("connector") == t.name and r.get("alias") == t.alias), None)
+        status[t.name] = {"connected": bool(row) and row.get("status") == "active",
+                          "connection_id": row.get("connectionId") if row else None}
+    return status
 
 
 def _targets(targets: list[HostedTarget], action: str) -> list[Target]:

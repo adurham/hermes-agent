@@ -104,12 +104,14 @@ class ConnectorClient:
 
     def connections(
         self, connectors: Sequence[str], *, reinitiate: bool = False, alias: Optional[str] = None,
-        return_to: Optional[str] = None, op: Optional[str] = None,
+        connection_id: Optional[str] = None, return_to: Optional[str] = None, op: Optional[str] = None,
     ) -> dict[str, Any]:
         """Never retry: the gateway cannot deduplicate authorization starts. ``alias`` names the one
-        account the request connects (or, with ``reinitiate``, repairs)."""
+        account the request connects (or, with ``reinitiate``, repairs); ``connection_id`` names an
+        existing account to repair, named or not."""
         body = wire.ConnectorConnectionsRequest(
-            connectors=list(connectors), reinitiate=reinitiate, alias=alias, return_to=return_to, op=op,
+            connectors=list(connectors), reinitiate=reinitiate, alias=alias, connection_id=connection_id,
+            return_to=return_to, op=op,
         ).model_dump(by_alias=True, exclude_none=True)
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()

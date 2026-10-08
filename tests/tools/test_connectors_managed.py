@@ -54,7 +54,7 @@ class GatewayFake:
         self.lists += 1
         return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
 
-    def connections(self, connectors, *, reinitiate=False, alias=None, return_to=None, op=None):
+    def connections(self, connectors, *, reinitiate=False, alias=None, connection_id=None, return_to=None, op=None):
         self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "alias": alias,
                            "return_to": return_to, "op": op})
         results = []

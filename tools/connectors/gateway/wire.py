@@ -140,6 +140,8 @@ class ConnectorConnectionsRequest(_Wire):
     connectors: list[str]
     reinitiate: bool = False
     alias: Optional[str] = None
+    # The existing account a reinitiate repairs; sent instead of ``alias`` when known.
+    connection_id: Optional[str] = Field(default=None, alias="connectionId")
     return_to: Optional[ConnectorReturnTarget] = Field(default=None, alias="returnTo")
     # The caller's operation id, echoed on the hermes://connections/done link.
     op: Optional[str] = Field(default=None, min_length=1, max_length=128)

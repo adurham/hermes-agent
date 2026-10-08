@@ -3,7 +3,7 @@
 Contracts:
 - the account a call ran under reaches the model on the single-call and the batch path
 - connect with an alias asks the gateway for that account; reconnect with an alias repairs that
-  account even when another account of the same connector is healthy
+  account by its connection id even when another account of the same connector is healthy
 - rename resolves the name to the account; an unknown name lists the valid names
 - an open operation for one account is never reused for another account of the same connector
 """
@@ -80,8 +80,11 @@ class _Gateway:
     def list_connectors(self, *, timeout=None):
         return [{"connector": "gmail", "enabled": True, "connected": "gmail" in self.connected}]
 
-    def connections(self, connectors, *, reinitiate=False, alias=None, return_to=None, op=None):
-        self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "alias": alias})
+    def connections(self, connectors, *, reinitiate=False, alias=None, connection_id=None, return_to=None, op=None):
+        mint = {"connectors": tuple(connectors), "reinitiate": reinitiate, "alias": alias}
+        if connection_id:
+            mint["connection_id"] = connection_id
+        self.mints.append(mint)
         return {"results": [{"connector": c, "status": "initiated", "connection_id": f"ca_{c}_{len(self.mints)}",
                              "connect_url": f"https://connect.example/{c}"} for c in connectors]}
 
@@ -115,6 +118,13 @@ def test_reconnect_with_an_alias_repairs_it_even_when_another_account_is_healthy
     gateway = _Gateway(connected={"gmail"})
     accounts = [_account("home", "me@example.com"), _account("work", "me@corp.example", status="expired")]
     _run({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "work"}]}, gateway, accounts)
+    assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": None, "connection_id": "ca_work"}]
+
+
+def test_reconnect_of_a_name_no_account_has_yet_sends_the_alias():
+    gateway = _Gateway()
+    _run({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "work"}]}, gateway,
+         [_account("home", "me@example.com")])
     assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": "work"}]
 
 
