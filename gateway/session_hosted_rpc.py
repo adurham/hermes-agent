@@ -76,8 +76,16 @@ class HostedRoomAuthorityRPC:
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.session_policy import build_policy
         from gateway.session_local import create_local_session
+        from agent.skill_utils import parse_config_string_list
         private = {}
-        policy = build_policy({'source': 'gui'}, _load_gateway_config(), private_secrets=private)
+        config = _load_gateway_config()
+        # A room has no clarification reply (group controls expose approvals only), so a member
+        # turn that called clarify would block for clarify_timeout with its question unseen. As
+        # for cron, freeze it out; the member asks its question in the room reply instead.
+        agent = dict(config.get('agent') or {})
+        agent['disabled_toolsets'] = sorted(
+            set(parse_config_string_list(agent.get('disabled_toolsets'))) | {'clarify'})
+        policy = build_policy({'source': 'gui'}, {**config, 'agent': agent}, private_secrets=private)
         policy = replace(policy, source='bot_room', platform='bot_room',
                          model=policy.model or _resolve_gateway_model(policy.config()),
                          toolsets=tuple(sorted(set(policy.toolsets) | {'bot_room'})))
