@@ -124,7 +124,12 @@ async def mutate_session(authority, actor, ref, params):
     # retries repeat them (like delete's retirement); only the one-shot event is fenced.
     _project_committed(authority, ref, operation, result)
     if live is not None:
-        if operation == 'rewind':
+        # The cached agent is the rewind's to repair only while the session is still at the
+        # receipt's execution generation (rewind advances the expected one by exactly one):
+        # once a later admission claimed, the cache holds ITS agent, and evicting it would
+        # make Stop latch instead of arriving.
+        if (operation == 'rewind' and authority.db.get_session(ref.session_id)['runtime_generation']
+                == params['expected_generation'] + 1):
             authority.runner._evict_cached_agent(live.route)
         if applied:
             live.event_stream.publish(ref.session_id, result, event_type='session.updated')
