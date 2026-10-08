@@ -161,7 +161,7 @@ function ChipPicker({
         <SearchField onChange={setQuery} placeholder={t.assistant.setupChoose.findApp} value={query} />
       ) : null}
       <div role="group">
-        <FadeScroll className="grid grid-cols-3 gap-2 p-1" maxHeight="18rem">
+        <FadeScroll className="grid grid-cols-3 gap-2 p-1" fade="1.5rem" maxHeight="18rem" pad="1.5rem">
           {rows.map((row, index) =>
             search && !row.label.toLowerCase().includes(search) ? null : (
               <PickerItem active={cursor === index} className="rounded-[6px]" key={row.id}>
