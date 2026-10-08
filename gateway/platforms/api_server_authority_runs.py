@@ -124,8 +124,8 @@ async def resolve_unknown_run(adapter, run_id, body):
     if body['admission_id'] != row['admission_id']:
         raise RuntimeStoreError('not_found')
     generation = body['execution_generation']
-    if row['status'] != 'unknown' or type(generation) is not int or generation != row['generation']:
-        raise RuntimeStoreError('stale_generation')
+    # Status/generation are the store's decision (``resolve_unknown_session_input``): it also replays the
+    # committed receipt to an exact retry whose acknowledgement was lost, which a pre-check here refused.
     actor = Principal(
         'api', authority.profile_id, frozenset({'session:submit', 'session:control'}),
         'api-run:' + run_id)

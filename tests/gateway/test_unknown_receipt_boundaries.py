@@ -1,34 +1,22 @@
 """Receipt retries preserve transcript boundaries, successor ownership and media identity."""
 
 
-
 from pathlib import Path
-
-
-
 from types import SimpleNamespace
-
-
 
 import pytest
 
-
-
 from gateway.session_authority import LiveSession
-
-
-
 from gateway.session_contract import Principal, SessionRef, Submission
-
-
-
 from gateway.session_results import admission_result, finish_result
-
-
-
-from hermes_state_runtime import (RuntimeStoreError, admit_session_input, begin_runtime_epoch,
-    claim_session_input, get_session_admission, recover_session_inputs)
-
+from hermes_state_runtime import (
+    RuntimeStoreError,
+    admit_session_input,
+    begin_runtime_epoch,
+    claim_session_input,
+    get_session_admission,
+    recover_session_inputs,
+)
 
 
 @pytest.mark.asyncio
