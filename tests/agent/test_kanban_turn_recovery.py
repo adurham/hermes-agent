@@ -644,7 +644,8 @@ async def test_non_worker_one_shot_prints_its_exit_summary(capsys):
     view = GatewayChatView(_Owner(), {"stored_session_id": "stored"}, quiet=True)
     assert await asyncio.wait_for(view.run("hello", oneshot=True), 2) == 1
     out, err = capsys.readouterr()
-    assert submitted == ["prompt.submit"]
+    # One admission, never a resubmit; the settled-result read (prompt.receipt) is read-only.
+    assert submitted.count("prompt.submit") == 1 and set(submitted) <= {"prompt.submit", "prompt.receipt"}
     assert "API call failed" in out and "session_id: stored" in err
 
 

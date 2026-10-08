@@ -51,7 +51,8 @@ def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(m
     ref = SessionRef('profile', 's')
     live = SimpleNamespace(task=None)
     authority = SimpleNamespace(profile_id='profile', pending_results={}, waiters={}, sessions={'s': live},
-                                check_approval_generation=lambda *a: None)
+                                check_approval_generation=lambda *a: None,
+                                adopt_agent=lambda session_id, generation, worker: None)
     runner = SimpleNamespace(session_authority=authority)
     row = {'admission_id': 'adm', 'principal_id': 'owner', 'generation': 3, 'payload': {'text': 'go'}}
 
