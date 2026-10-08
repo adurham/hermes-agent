@@ -3149,9 +3149,14 @@ def _save_compose_deliver(
         queued_job = dict(job)
         if d.failure_incident_id:
             queued_job["_failure_incident_id"] = d.failure_incident_id
-        queued = enqueue(execution_id, queued_job, deliver_content, for_failure=not d.success)
-        # The queue owns this send even if subsequent bookkeeping fails.
-        d.delivery_attempted = True
+        # The queue row IS the send: publish it under the same fence as a direct send, so a claim
+        # stolen after the lost() sample above cannot leave this stale fire's notice queued.
+        with fence.side_effect_fence() as owns_delivery:
+            if not owns_delivery:
+                raise _FireClaimLostDuringSideEffect
+            queued = enqueue(execution_id, queued_job, deliver_content, for_failure=not d.success)
+            # The queue owns this send even if subsequent bookkeeping fails.
+            d.delivery_attempted = True
         job['last_delivery_queued'] = {'canonical': {'status': queued['status'], 'execution_id': execution_id}}
         return
     d.unresolved_origin = (
