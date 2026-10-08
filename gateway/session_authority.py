@@ -506,6 +506,9 @@ class SessionAuthority:
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
+                # A viewer that left while this work ran could not end the ACP session then.
+                from gateway.session_acp_lifecycle import end_idle_acp_session
+                end_idle_acp_session(self, ref.session_id)
                 return
             admission_id = row['admission_id']
             with live.event_stream.lock:
