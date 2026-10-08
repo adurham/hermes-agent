@@ -584,7 +584,10 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 async def get_session_mutation_snapshot(session_id: str, request: Request, profile: Optional[str] = None):
     from hermes_cli.web_server_sessions import _session_mutation_context
     authority, _actor = _session_mutation_context(request, profile)
-    row = authority.db.get_session(session_id)
+    if authority is None:  # standalone serve: the counters the offline receipt checks
+        row = await asyncio.to_thread(_with_db, profile, lambda db: db.get_session(session_id), read_only=True)
+    else:
+        row = authority.db.get_session(session_id)
     # An absent import anchor has revision zero by the owner's storage contract,
     # not by a client guessing after a failed or stale detail request.
     return {'session_id': session_id, 'exists': row is not None,
