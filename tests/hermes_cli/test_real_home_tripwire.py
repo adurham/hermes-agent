@@ -35,7 +35,7 @@ def _open_close(path):
 
 
 def _io_open_close(path):
-    with io.open(path, encoding="utf-8"):
+    with open(path, encoding="utf-8"):
         pass
 
 
@@ -142,7 +142,7 @@ def test_close_keeps_a_reused_descriptors_new_owner(tmp_path, monkeypatch):
         original_close(fd)
         reopened.append(os.open(second, os.O_RDONLY))
 
-    guard = HomeIOGuard(lambda: [])
+    guard = HomeIOGuard(list)
     try:
         with monkeypatch.context() as patcher:
             patcher.setattr(os, "close", close_and_reopen)
