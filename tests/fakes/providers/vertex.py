@@ -109,7 +109,7 @@ class Drop:
     after_chars: int = 10
 
 
-Response = Union[Say, Call, Fail, Drop]
+Response = Say | Call | Fail | Drop
 Responder = Callable[[dict[str, Any]], Response]
 
 

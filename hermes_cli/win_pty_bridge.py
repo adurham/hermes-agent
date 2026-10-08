@@ -132,7 +132,7 @@ class WinPtyBridge:
                 asyncio.shield(write_future),
                 timeout=max(0.0, timeout),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._stop_stalled_write(write_future)
             return False
         except asyncio.CancelledError:
@@ -144,7 +144,7 @@ class WinPtyBridge:
         try:
             await asyncio.wait_for(asyncio.shield(write_future), timeout=_WRITE_SHUTDOWN_GRACE)
             return
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         except Exception:
             return
@@ -158,7 +158,7 @@ class WinPtyBridge:
                 asyncio.shield(write_future),
                 timeout=_WRITE_SHUTDOWN_GRACE,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # The worker is still parked inside pywinpty after terminate(); it
             # now occupies a default-executor thread until the process exits.
             _log.warning(

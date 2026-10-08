@@ -666,7 +666,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def _card_frame(
         self, chat_id: str, op: str, reply_to: Optional[str], metadata: dict[str, Any], **fields: Any
-    ) -> Union[SendResult, dict[str, Any]]:
+    ) -> SendResult | dict[str, Any]:
         """Emit one task-card op: the connector result dict, or a failed SendResult
         when the lane is unavailable / the transport raised.
 
@@ -1265,7 +1265,7 @@ class RelayAdapter(BasePlatformAdapter):
                 await asyncio.wait_for(
                     self._revocation_monitor, timeout=_RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
             self._revocation_monitor = None
         if self._transport is not None:
@@ -1511,7 +1511,7 @@ class RelayAdapter(BasePlatformAdapter):
             self._auto_thread_waiters[key] = waiter
         try:
             await asyncio.wait_for(waiter.wait(), timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         finally:
             # Only the waiter we installed, and only if no later call replaced it; a

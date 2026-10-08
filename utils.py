@@ -165,7 +165,7 @@ def _copy_fallback(tmp_str: str, real_path: str) -> None:
     os.unlink(tmp_str)
 
 
-def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
+def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
     Resolves a symlink first so ``os.replace`` writes the real file in place and the symlink
@@ -212,7 +212,7 @@ def _publish_path(target_str: str) -> str:
     return os.path.realpath(target_str) if os.path.islink(target_str) else target_str
 
 
-def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
+def mkstemp_beside(target: str | Path, **kw: Any) -> tuple[int, str]:
     """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
 
     A temp staged next to a symlink whose target lives on another filesystem turns the publish
@@ -232,7 +232,7 @@ def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
         return tempfile.mkstemp(dir=link_dir, **kw)
 
 
-def fsync_directory(path: Union[str, Path]) -> None:
+def fsync_directory(path: str | Path) -> None:
     """Best-effort fsync of a directory entry so a just-renamed file survives power loss.
 
     No-op on Windows (directories can't be opened with ``os.open``; the file fsync still applies)
@@ -252,7 +252,7 @@ def fsync_directory(path: Union[str, Path]) -> None:
         os.close(fd)
 
 
-def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> None:
+def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
     """``shutil.rmtree`` that can also delete read-only trees.
 
     ``shutil.rmtree`` stops at the first entry it cannot unlink.  Git marks
@@ -336,7 +336,7 @@ def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True
     return mode if mode is not None or path.exists() else create_mode
 
 
-def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
+def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
                       preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
                       fsync_dir: bool = False) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
@@ -352,7 +352,7 @@ def atomic_write_text(path: Union[str, Path], content: str, *, encoding: str = "
                   preserve_owner=preserve_mode, fsync_dir=fsync_dir)
 
 
-def atomic_write_bytes(path: Union[str, Path], content: bytes, *, tmp_prefix: str = ".tmp_",
+def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",
                        mode: "int | None" = None, fsync_dir: bool = False) -> None:
     """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
     path = Path(path)
@@ -378,7 +378,7 @@ def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_k
 
 
 def atomic_json_write(
-    path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
+    path: str | Path, data: Any, *, indent: int = 2, mode: int | None = None,
     ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
@@ -394,7 +394,7 @@ def atomic_json_write(
                   fsync_dir=fsync_dir)
 
 
-def read_json_or_empty(path: Union[str, Path]) -> dict:
+def read_json_or_empty(path: str | Path) -> dict:
     """The JSON object at *path*, or ``{}`` when the file is missing, unreadable, malformed or
     not an object. The read half of every ``read → merge → atomic_json_write`` config store
     (memory-provider ``save_config``), so a corrupt sidecar degrades to defaults instead of
@@ -406,7 +406,7 @@ def read_json_or_empty(path: Union[str, Path]) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: str = "", log: logging.Logger | None = None) -> bool:
+def warn_if_credential_file_broadly_readable(path: str | Path, *, label: str = "", log: logging.Logger | None = None) -> bool:
     """Warn when a credential file is group/world-readable; True when a warning was emitted.
 
     Hand-made secret files (or ones older Hermes wrote without an explicit mode) commonly end up
@@ -426,7 +426,7 @@ def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: s
     return True
 
 
-def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
+def atomic_yaml_write(path: str | Path, data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
                       extra_content: str | None = None, create_mode: "int | None" = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
@@ -458,7 +458,7 @@ def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
-def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
+def atomic_roundtrip_yaml_update(path: str | Path, key_path: str, value: Any) -> None:
     """Update one dotted YAML key while preserving comments, ordering, quoting and Unicode.
 
     Narrower than :func:`atomic_yaml_write` on purpose: for user-edited config files where a
@@ -526,7 +526,7 @@ def _rt_value(value: Any) -> Any:
     return value
 
 
-def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
+def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
                                extra_content_on_create: "str | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
@@ -604,7 +604,7 @@ _YAML_FILE_CACHE: dict = {}
 _YAML_FILE_CACHE_LOCK = threading.Lock()
 
 
-def load_yaml_file_readonly(path: Union[str, Path]) -> Any:
+def load_yaml_file_readonly(path: str | Path) -> Any:
     """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
 
     Returns the cached object itself — callers must never mutate it. Parse errors propagate and

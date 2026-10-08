@@ -82,7 +82,7 @@ class FunctionCall:
     args: dict[str, Any] | str = field(default_factory=dict)
 
 
-Item = Union[Reasoning, Message, FunctionCall]
+Item = Reasoning | Message | FunctionCall
 
 
 @dataclass
@@ -115,7 +115,7 @@ class HttpError:
     retry_after: float | None = None
 
 
-Step = Union[Turn, SoftFail, HttpError]
+Step = Turn | SoftFail | HttpError
 Responder = Callable[[dict[str, Any]], Step]
 
 _REQUEST_ADAPTER = TypeAdapter(ResponseCreateParamsStreaming)

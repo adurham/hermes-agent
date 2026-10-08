@@ -195,4 +195,5 @@ class StandinServer:
             p = {k: (v[:80] + "…" if isinstance(v, str) and len(v) > 80 else v) for k, v in c.params.items()
                  if k not in ("reply_markup", "blocks", "embeds", "components")}
             out.append(f"  {'!' if c.faulted else ' '}{c.method} {json.dumps(p, default=str)[:240]}")
-        return "--- stand-in calls (last %d)\n%s" % (len(rows), "\n".join(out))
+        return f'''--- stand-in calls (last {len(rows):d})\n{"""
+""".join(out)}'''

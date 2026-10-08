@@ -304,8 +304,7 @@ def render_sources(
             key = f"source{s['id']}"
             title = s.get("title") or s["url"]
             lines.append(
-                "@misc{%s,\n  title = {%s},\n  howpublished = {\\url{%s}},\n  note = {Accessed %s}\n}"
-                % (key, title, s["url"], s.get("accessed", ""))
+                "@misc{{{},\n  title = {{{}}},\n  howpublished = {{\\url{{{}}}}},\n  note = {{Accessed {}}}\n}}".format(key, title, s["url"], s.get("accessed", ""))
             )
         return "\n".join(lines)
     if style == "footnotes":

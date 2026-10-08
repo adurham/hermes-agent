@@ -150,7 +150,7 @@ async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cre
         await session.close()
         logger.warning("proxy: upstream connection failed: %s", exc)
         return _json_error(502, f"upstream connection failed: {exc}", code="upstream_unreachable"), None
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await session.close()
         return _json_error(504, "upstream request timed out", code="upstream_timeout"), None
     except Exception:

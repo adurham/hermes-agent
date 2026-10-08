@@ -390,7 +390,7 @@ async def _wait_for_ready_or_bot_exit(
             {ready_task, bot_task}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED,
         )
         if not done:
-            raise asyncio.TimeoutError
+            raise TimeoutError
         if bot_task in done:
             exc = bot_task.exception()
             if exc is not None:
@@ -1658,7 +1658,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
             self._wire_plugin_handlers(self._client)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
             # Cancel the bot task so a discarded adapter can't fire on_message (two clients answering).
             await self._cancel_bot_task()
@@ -1799,7 +1799,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         if not self._ready_event.is_set():
             try:
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
@@ -2101,9 +2101,9 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             try:
                 done, _pending = await asyncio.wait({close_task}, timeout=1.0)
                 if close_task not in done:
-                    raise asyncio.TimeoutError
+                    raise TimeoutError
                 await close_task
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("[%s] Timed out closing unhealthy Discord client", self.name)
                 close_task.cancel()
                 close_task.add_done_callback(_consume_background_task_result)
@@ -2166,7 +2166,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                     asyncio.gather(*pending, return_exceptions=True),
                     timeout=self._text_batch_flush_deadline_seconds(),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "[%s] Text-batch flush timed out; cancelling remaining tasks", self.name,
                 )
@@ -2443,7 +2443,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 self.name, summary["total"], summary["unchanged"], summary["updated"],
                 summary["recreated"], summary["created"], summary["deleted"],
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "[%s] Slash command sync timed out — Discord rate-limit bucket "
                 "may be saturated; will retry on next reconnect",
@@ -3962,7 +3962,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 vc.play(source, after=_after)
                 try:
                     await asyncio.wait_for(done.wait(), timeout=playback_timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("Voice playback timed out after %.1fs", playback_timeout)
                     vc.stop()
                 return True

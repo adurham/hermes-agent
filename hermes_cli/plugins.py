@@ -888,7 +888,7 @@ class PluginContext:
         return count
 
     def register_locale(
-        self, lang: str, source: Union[str, Path, Mapping[str, Any]], *, endonym: Optional[str] = None,
+        self, lang: str, source: str | Path | Mapping[str, Any], *, endonym: Optional[str] = None,
         rtl: bool = False, surface: str = "core",
     ) -> PluginRegistration:
         """Register a language-pack layer for ``lang`` (``pl``, ``pt-br``): ``source`` is a YAML file path or
@@ -913,7 +913,7 @@ class PluginContext:
         return handle
 
     def register_locale_dir(
-        self, path: Union[str, Path], *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        self, path: str | Path, *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> list[PluginRegistration]:
         """Register every ``<lang>[.tui|.desktop].yaml`` under ``path`` (a pack's ``locales/`` dir). The
         loader calls this for plugins declaring ``provides_locales``; ``metadata`` maps ids to
@@ -955,7 +955,7 @@ class PluginContext:
         return handle
 
     def register_system_prompt_section(
-        self, id: str, content: Union[str, Callable[[Mapping[str, Any]], str]], *,
+        self, id: str, content: str | Callable[[Mapping[str, Any]], str], *,
         position: str = "after_memory", max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
     ) -> PluginRegistration:
         """Register bounded context frozen into each new session prompt. Callables receive a

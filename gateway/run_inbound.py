@@ -1039,7 +1039,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 from agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)
             return output or t("gateway.quick_command.no_output")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return t("gateway.quick_command.timed_out")
         except Exception as e:
             return t("gateway.quick_command.error", error=e)

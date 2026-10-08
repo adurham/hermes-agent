@@ -819,7 +819,7 @@ class GatewayTurnMixin:
         fence = attempt.commit_fence
         while True:
             if fence.is_cancelled:
-                raise asyncio.TimeoutError
+                raise TimeoutError
             # Charge the idle budget from the LAST PROGRESS event, else silence can approach 2x timeout.
             _hyg_waited = time.monotonic() - attempt.wait_started
             _slice = min(
@@ -836,7 +836,7 @@ class GatewayTurnMixin:
             try:
                 _compressed, _ = await asyncio.wait_for(asyncio.shield(attempt.future), timeout=_slice)
                 return _compressed
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if fence.is_cancelled:
                     raise
                 _hyg_waited = time.monotonic() - attempt.wait_started
@@ -1327,7 +1327,7 @@ class GatewayTurnMixin:
                 _compressed = await self._hmwa_hygiene_wait_for_summary(attempt, hs, session_entry)
             except HygieneTurnHoldExceeded:
                 _compressed = await self._hmwa_hygiene_on_turn_hold(attempt, hs, session_entry, session_key, source)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _compressed = await self._hmwa_hygiene_on_timeout(attempt, hs, session_entry, session_key, source)
             except BaseException:
                 self._hmwa_hygiene_on_unwind(attempt, hs, session_entry, session_key)
@@ -2902,7 +2902,7 @@ class GatewayTurnMixin:
             if stream_task:
                 try:
                     await asyncio.wait_for(stream_task, timeout=5.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except (TimeoutError, asyncio.CancelledError):
                     stream_task.cancel()
 
         _elapsed = time.time() - _start
@@ -3270,7 +3270,7 @@ class GatewayTurnMixin:
         """Give the stream consumer task 5s to flush, then cancel it."""
         try:
             await asyncio.wait_for(stream_task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             stream_task.cancel()
             with suppress(asyncio.CancelledError):
                 await stream_task

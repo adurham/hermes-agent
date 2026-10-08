@@ -318,7 +318,7 @@ class CronJobCreate(BaseModel):
     # same user-facing strings the CLI accepts ('forever'/'once'/'3'). Normalization and
     # validation happen in cron.jobs.create_job via normalize_repeat_value — the shared
     # chokepoint with the CLI and update paths — so an unparseable value 400s there.
-    repeat: Optional[Union[int, str]] = None
+    repeat: Optional[int | str] = None
     skills: Optional[list[str]] = None
     model: Optional[str] = None
     provider: Optional[str] = None

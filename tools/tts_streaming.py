@@ -512,7 +512,7 @@ class XAIStreamer(StreamingTTSProvider):
                     message = await asyncio.wait_for(
                         ws.recv(), timeout=self._RECV_TIMEOUT_S
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     raise RuntimeError(f"xAI streaming TTS: no audio for {self._RECV_TIMEOUT_S}s")
                 except websockets.exceptions.ConnectionClosedOK:
                     return  # clean close, with or without audio.done

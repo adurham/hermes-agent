@@ -215,7 +215,7 @@ class UrlSource(GuardedFetchMixin, SkillSource):
         referenced = _referenced_support_paths(text)
         if referenced is None:
             return None
-        files: dict[str, Union[str, bytes]] = {"SKILL.md": text}
+        files: dict[str, str | bytes] = {"SKILL.md": text}
         base_url = url.rsplit("/", 1)[0] + "/"
         for rel_path in sorted(referenced):
             support_url = urljoin(base_url, quote(rel_path, safe="/"))

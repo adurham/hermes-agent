@@ -434,7 +434,7 @@ class SimplexAdapter(BasePlatformAdapter):
         try:
             await ws.send(json.dumps({"corrId": corr_id, "cmd": command}))
             return await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("SimpleX: command timed out: %s", command[:50])
         except Exception as e:
             logger.warning("SimpleX: command failed: %s — %s", command[:50], e)

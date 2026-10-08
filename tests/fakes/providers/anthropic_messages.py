@@ -78,7 +78,7 @@ class ToolUse:
     id: str | None = None
 
 
-Block = Union[Thinking, Text, ToolUse]
+Block = Thinking | Text | ToolUse
 
 
 @dataclass
@@ -110,7 +110,7 @@ class DropStream:
     after_deltas: int = 2
 
 
-Response = Union[Reply, ApiError, DropStream]
+Response = Reply | ApiError | DropStream
 Responder = Callable[[dict[str, Any]], Response]
 
 _ERROR_MODELS: dict[str, type] = {

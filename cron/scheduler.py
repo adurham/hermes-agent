@@ -565,7 +565,7 @@ _parallel_pools: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
 _parallel_pool_max_workers: dict[str, Optional[int]] = {}
 
 
-def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple:
+def _inflight_key(job_id: str, home: Optional[Path | str] = None) -> tuple:
     """``(home key, job id)`` — the identity of one in-flight cron run.
 
     ONE gateway process ticks every profile, so a job id alone is not unique: two profiles
@@ -771,7 +771,7 @@ def get_restart_wait_cron_counts() -> dict:
     }
 
 
-def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool:
+def is_job_running(job_id: str, home: Optional[Path | str] = None) -> bool:
     """True when THIS process has an in-flight run of ``job_id`` FOR ``home`` (default: the active
     cron scope's home).
 
@@ -834,7 +834,7 @@ def try_register_running_job(job_id: str, *, owner=None, future=_FUTURE_PENDING)
 
 
 def release_running_job(
-    job_id: str, home: Optional[Union[Path, str]] = None, *, owner=None,
+    job_id: str, home: Optional[Path | str] = None, *, owner=None,
 ) -> None:
     """Remove the registration unless an explicit ``owner`` has been replaced.
 

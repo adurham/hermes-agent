@@ -1133,7 +1133,7 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             try:
                 seq, event = await asyncio.wait_for(
                     q.get(), timeout=_api_server.CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await _write(b": keepalive\n\n")
                 continue
             if event is _RUN_STREAM_SUBSCRIBER_OVERFLOW:

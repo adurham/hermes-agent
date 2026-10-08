@@ -37,7 +37,7 @@ async def _iter_stream_items(stream_q, agent_task, response):
     while True:
         try:
             item = await asyncio.wait_for(stream_q.get(), timeout=0.5)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if agent_task.done():
                 while True:
                     try:

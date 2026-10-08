@@ -89,7 +89,7 @@ class ToolUse:
     tool_use_id: str = ""
 
 
-Block = Union[Text, Reasoning, ToolUse]
+Block = Text | Reasoning | ToolUse
 
 
 @dataclass
@@ -132,7 +132,7 @@ class Drop:
     clean: bool = False
 
 
-Reply = Union[Turn, HttpError, StreamException, Drop]
+Reply = Turn | HttpError | StreamException | Drop
 
 
 # --------------------------------------------------------------------------------------------------

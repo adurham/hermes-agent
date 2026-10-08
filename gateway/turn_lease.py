@@ -120,7 +120,7 @@ class SessionTurnLeaseRegistry:
         lease.pending_acquires += 1
         try:
             await asyncio.wait_for(lease.lock.acquire(), timeout=wait)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "turn lease wait timed out after %.0fs on session %s (waiter: routing key %s gen "
                 "%s; holder: routing key %s gen %s) — failing closed: refusing to run this turn "

@@ -341,7 +341,7 @@ async def console_ws(ws: WebSocket) -> None:
         except asyncio.CancelledError:
             await _unwind_console_worker(worker, scope, "cancelled")
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await _unwind_console_worker(worker, scope, "timed out")
             if command_id == command_generation:
                 pending_confirmation = None

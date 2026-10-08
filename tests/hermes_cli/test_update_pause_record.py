@@ -178,13 +178,13 @@ def test_an_adopted_baseline_never_replaces_this_runs_own(tmp_path, monkeypatch)
 
 def _orphan(tmp_path: Path, profiles: dict) -> None:
     """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
-    owner = _child("""
+    owner = _child(f"""
         import time
         from hermes_cli import update_pause_record as r
-        r.write(r.stamp_tree({"resume_needed": True, "profiles": %r}), owner=r.identity())
+        r.write(r.stamp_tree({{"resume_needed": True, "profiles": {profiles!r}}}), owner=r.identity())
         print("written", flush=True)
         time.sleep(120)
-    """ % profiles, env={"HERMES_HOME": str(tmp_path)})
+    """, env={"HERMES_HOME": str(tmp_path)})
     assert owner.stdout.readline().strip() == "written"
     owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
     owner.wait(timeout=10)

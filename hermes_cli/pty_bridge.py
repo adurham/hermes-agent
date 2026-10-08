@@ -202,7 +202,7 @@ class PtyBridge:
             loop.add_writer(self._fd, _mark_ready)
             await asyncio.wait_for(ready, timeout=timeout)
             return not self._closed
-        except (asyncio.TimeoutError, OSError, ValueError):
+        except (TimeoutError, OSError, ValueError):
             return False
         finally:
             try:

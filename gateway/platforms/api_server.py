@@ -3720,7 +3720,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     await response.write(b": keepalive\n\n")
                     continue
                 if item is None:

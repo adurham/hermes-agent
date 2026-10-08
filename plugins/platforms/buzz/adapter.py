@@ -407,7 +407,7 @@ async def _exec_buzz(
     try:
         stdin_bytes = input_text.encode("utf-8") if input_text is not None else None
         stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         detail = {"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"}
@@ -989,7 +989,7 @@ class BuzzAdapter(BasePlatformAdapter):
         try:
             await asyncio.wait_for(self._ws_ready.wait(), timeout=_WS_AUTH_TIMEOUT + 5)
             return True
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             logger.warning("Buzz: WebSocket did not authenticate in time")
             await cancel_task(self._ws_task)
             self._ws_task = None

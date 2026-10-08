@@ -112,7 +112,7 @@ class Raw:
     content_type: str = "application/json"
 
 
-Response = Union[Text, ToolCall, Error, Hang, DropMidStream, StallMidStream, Raw]
+Response = Text | ToolCall | Error | Hang | DropMidStream | StallMidStream | Raw
 Responder = Callable[[dict[str, Any]], Response]
 
 

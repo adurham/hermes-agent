@@ -86,7 +86,7 @@ class CDropToolCall:
     partial_args: str = '{"path": "x'
 
 
-Step = Union[CText, CTools, CError, CStreamError, CDropToolCall]
+Step = CText | CTools | CError | CStreamError | CDropToolCall
 Responder = Callable[[dict[str, Any]], Step]
 
 _STREAM_ADAPTER = TypeAdapter(CompletionCreateParamsStreaming)

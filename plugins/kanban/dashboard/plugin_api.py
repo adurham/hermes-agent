@@ -1828,7 +1828,7 @@ async def stream_events(ws: WebSocket):
                 msg = await asyncio.wait_for(ws.receive(), timeout=_EVENT_POLL_SECONDS)
                 if msg["type"] == "websocket.disconnect":
                     return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # no client message — poll the DB
             cursor, events = await tail.poll(cursor)
             if events:

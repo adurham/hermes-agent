@@ -41,7 +41,7 @@ class SkillMeta:
 class SkillBundle:
     """A downloaded skill ready for quarantine/scanning/installation."""
     name: str
-    files: dict[str, Union[str, bytes]]   # relative_path -> file content
+    files: dict[str, str | bytes]   # relative_path -> file content
     source: str
     identifier: str
     trust_level: str

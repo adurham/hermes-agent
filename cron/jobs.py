@@ -183,7 +183,7 @@ def _current_cron_store() -> _CronStorePaths:
 
 
 @contextlib.contextmanager
-def use_cron_store(home: Union[str, Path]):
+def use_cron_store(home: str | Path):
     """Route cron storage to ``home`` without mutating process globals."""
     token = _cron_store_override.set(
         _CronStorePaths.for_dir(Path(home).expanduser().resolve() / "cron"))
@@ -1387,15 +1387,12 @@ def load_jobs() -> list[dict[str, Any]]:
             # shape; the repair below rewrites it with replace=True.
             skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
             if skipped:
-                notes.append("Skipping %d non-dict entr%s in id-keyed jobs map: %s" % (
-                    len(skipped), "y" if len(skipped) == 1 else "ies",
-                    ", ".join(map(repr, skipped))))
+                notes.append(f"Skipping {len(skipped):d} non-dict entr{('y' if len(skipped) == 1 else 'ies')} in id-keyed jobs map: {', '.join(map(repr, skipped))}")
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
             unmergeable = True
         elif not isinstance(jobs, list):
-            notes.append("Replacing invalid jobs.json 'jobs' field (%s) with an empty list"
-                         % type(jobs).__name__)
+            notes.append(f"Replacing invalid jobs.json 'jobs' field ({type(jobs).__name__}) with an empty list")
             jobs = []
             repair = "invalid jobs field replaced with list"
             unmergeable = True
@@ -1410,9 +1407,7 @@ def load_jobs() -> list[dict[str, Any]]:
         # Every reader and the due scan index records as dicts: one junk entry would crash the
         # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
         # Types only: the raw values are arbitrary file content and must not reach the logs.
-        notes.append("Skipping %d non-object entr%s in jobs.json (types: %s)" % (
-            len(junk), "y" if len(junk) == 1 else "ies",
-            ", ".join(sorted({type(j).__name__ for j in junk}))))
+        notes.append(f"Skipping {len(junk)} non-object entr{'y' if len(junk) == 1 else 'ies'} in jobs.json (types: {', '.join(sorted({type(j).__name__ for j in junk}))})")
         jobs = [j for j in jobs if isinstance(j, dict)]
         repair = repair or "non-object entries dropped"
     for job in jobs:
@@ -1828,7 +1823,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
-    context_from: Optional[Union[str, list[str]]] = None,
+    context_from: Optional[str | list[str]] = None,
     enabled_toolsets: Optional[list[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
@@ -2741,7 +2736,7 @@ def _machine_id() -> str:
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
     manual: bool = False, return_job: bool = False,
-) -> Union[bool, dict[str, Any]]:
+) -> bool | dict[str, Any]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
     fence + file lock: reject missing/terminal/paused jobs unless ``force`` (explicit manual

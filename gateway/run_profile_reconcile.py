@@ -130,7 +130,7 @@ class GatewayProfileReconcileMixin:
                     pid = await asyncio.wait_for(
                         self._run_housekeeping_in_executor(live_gateway_pid_for_home, current[name]),
                         timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Unprovable is not "own gateway running": skip it this cycle without
                     # warning about (or remembering) a gateway that may not exist. Warn once
                     # per stall; a peer that stays wedged repeats at DEBUG every cycle.
