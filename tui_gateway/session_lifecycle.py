@@ -396,7 +396,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
     # Returned to the client by ``session.close`` (the TUI shows them after its /new reset); reaper paths have no client.
-    session["_end_msgs"] = _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+    session["_end_msgs"] = _notify_session_boundary("on_session_finalize", session_id, _session_source(session)) or []
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.
