@@ -74,6 +74,9 @@ def finish_result(db, *, epoch, row, response, outcome, result=None):
     if outcome in ('failed', 'interrupted'):
         value['failed' if outcome == 'failed' else 'interrupted'] = True
         value['completed'] = False
+    # Compact before redacting, so the walk covers this turn's output, not every earlier turn.
+    from hermes_state_terminal import compact_result
+    result = compact_result(result, user_message=row['payload'].get('text'))
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
         generation=row['generation'], outcome=outcome, result=_redacted(result))
     return settled, response

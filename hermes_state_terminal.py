@@ -22,6 +22,9 @@ def compact_result(result, *, user_message=None):
     if not isinstance(value, dict):
         return result
     value = dict(value)
+    # The tool schema list rides every turn result for in-process transcript logging; it is the
+    # same session-wide copy each turn (tens of KB, more with MCP) and no stored-result reader uses it.
+    value.pop('tools', None)
     messages = value.get('messages')
     if isinstance(messages, list):
         # Agent results include all previous turns. APIs only project this turn's

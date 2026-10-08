@@ -20,7 +20,7 @@ def has_mutation_receipt(db, principal_id, session_id, request_id):
         return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone() is not None
 
 
-_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning'})
+_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning', 'tools'})
 
 
 def _compact_result(conn, admission_id):
