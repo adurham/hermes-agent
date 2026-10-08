@@ -707,11 +707,9 @@ def _legacy_display_anchor(display: list[dict], memory: list[dict]) -> int:
         if not isinstance(msg, dict):
             continue
         value = (msg.get('role'), _coerce_message_text(msg.get('content')))
-        while cursor < len(prefix) and prefix[cursor] != value:
-            cursor += 1  # Verification candidates may be absent from the model projection.
-        if cursor == len(prefix):
-            return -1
-        cursor += 1
+        if value not in prefix[cursor:]:
+            continue  # live-only row (persist override, injected note): never exhausts the display prefix
+        cursor = prefix.index(value, cursor) + 1  # verification candidates may be absent from the model projection
         if cursor == len(prefix):
             return index
     return -1
