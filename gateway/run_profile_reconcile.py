@@ -329,9 +329,8 @@ class GatewayProfileReconcileMixin:
         """
         from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
         from gateway.run_runtime import release_profile_home, unserve_profile_runtime
-        if getattr(self, 'session_authorities', None) is not None:
-            if not await unserve_profile_runtime(self, home):
-                raise TimeoutError('Profile workers did not stop; ownership retained')
+        # Retire before teardown; a False verdict (writer outlived its Stop) is honoured below.
+        retired = getattr(self, 'session_authorities', None) is None or await unserve_profile_runtime(self, home)
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
         for task in tasks:
@@ -359,6 +358,12 @@ class GatewayProfileReconcileMixin:
             for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
                 with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
                     self._evict_cached_agent(key)
+            if not retired:
+                # A writer outlived its Stop and may still write this home: the profile leaves the
+                # served set (ingress is gone above) but keeps its reservation and store handles until
+                # this process exits. Raising here aborted the reconcile for every other profile.
+                logger.error("[MULTIPLEX] Profile '%s' unrouted, but a turn outlived its Stop; ownership retained", name)
+                return
             # Its session authority and reservation go before the store handles: the authority owns the
             # state.db writer, and the next restart must not try to reserve a home that no longer exists.
             release_profile_home(self, home)

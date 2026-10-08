@@ -112,3 +112,28 @@ async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeyp
     finally:
         late.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_unserve_keeps_ownership_without_aborting_the_reconcile(tmp_path, monkeypatch):
+    """A profile whose writer outlived its Stop is unrouted but keeps its reservation and store
+    handles; the reconcile is not aborted, so the other removed profile is still unserved."""
+    from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
+    stuck, gone = tmp_path / 'stuck', tmp_path / 'gone'
+    async def unserve(runner, home):
+        return home != stuck
+    released, closed = [], []
+    monkeypatch.setattr(run_runtime, 'unserve_profile_runtime', unserve)
+    monkeypatch.setattr(run_runtime, 'release_profile_home', lambda runner, home: released.append(home))
+    monkeypatch.setattr('hermes_state_registry.close_all_under', lambda home: closed.append(home))
+    runner = SimpleNamespace(session_authorities=object(), _profile_failed_platforms={}, _profile_adapters={},
+        _served_profile_homes={'stuck': stuck, 'gone': gone}, _served_profile_signatures={}, _agent_cache={},
+        _evict_cached_agent=lambda key: None, served_profile_names=lambda: sorted(runner._served_profile_homes),
+        _live_resource_claims=lambda active: {}, _record_served_profiles=lambda active, homes: None)
+    monkeypatch.setattr('hermes_cli.profiles.profiles_to_serve', lambda **kwargs: [])
+    runner._unserve_profile = GatewayProfileReconcileMixin._unserve_profile.__get__(runner)
+    result = await GatewayProfileReconcileMixin._apply_profile_changes(
+        runner, {}, [], ['stuck', 'gone'], [], reason='watcher')
+    assert result['removed'] == ['stuck', 'gone']
+    assert released == [gone] and closed == [gone], 'ownership of the stuck profile was released'
+    assert runner._served_profile_homes == {}
