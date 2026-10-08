@@ -41,6 +41,12 @@ def run_projection(adapter, run_id):
             status = 'cancelled'
         elif result.get('failed') or result.get('error'):
             status = 'failed'
+        elif row['outcome'] == 'completed' and saved:
+            # The run SSE's own mapper: a `partial` or `completed: false` turn (iteration
+            # budget, truncation) settles with outcome `completed` but is a failed run there,
+            # so polling must not report `completed` for the same receipt.
+            from gateway.platforms.api_server_runs import terminal_run_status
+            status = terminal_run_status(result)[0]
     pending = []
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':
