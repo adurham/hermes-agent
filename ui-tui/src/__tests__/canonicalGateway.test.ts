@@ -24,3 +24,9 @@ it('carries `hermes --tui --yolo` (HERMES_YOLO_MODE) onto session.create as the 
   expect(localCreationOptions({ HERMES_YOLO_MODE: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty('yolo')
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('yolo')
 })
+
+it('carries `hermes --tui --ignore-rules` (HERMES_IGNORE_RULES) onto session.create as the frozen launch flag', () => {
+  expect(localCreationOptions({ HERMES_IGNORE_RULES: '1' } as NodeJS.ProcessEnv).ignore_rules).toBe(true)
+  expect(localCreationOptions({ HERMES_IGNORE_RULES: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty('ignore_rules')
+  expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('ignore_rules')
+})

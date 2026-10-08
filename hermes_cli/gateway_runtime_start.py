@@ -33,9 +33,11 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float) -> subproces
         env[_WINDOWS_GATEWAY_BREAKAWAY_ENV] = "1"
     env.update(HERMES_HOME=str(home), HERMES_GATEWAY_DETACHED="1", PYTHONIOENCODING="utf-8")
     # Profile selection is the explicit home, not the invoking client's display
-    # name. Runtime policy comes from that profile, never a launcher's --yolo.
+    # name. Runtime policy comes from that profile, never a launcher's --yolo/--ignore-rules
+    # (those ride the launching session's frozen policy, not every later session's daemon).
     env.pop("HERMES_PROFILE", None)
     env.pop("HERMES_YOLO_MODE", None)
+    env.pop("HERMES_IGNORE_RULES", None)
     remaining(deadline)
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)

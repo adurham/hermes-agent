@@ -90,9 +90,14 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   // requires an int, so the environment's text form is undone here.
   if (env.HERMES_TUI_MAX_TURNS) { options.max_turns = Number(env.HERMES_TUI_MAX_TURNS) }
 
-  // `hermes --tui --yolo` exports HERMES_YOLO_MODE=1 (the in-process TUI read it); over the canonical
-  // gateway it must ride session.create as the frozen launch flag or the session prompts anyway.
-  if (['1', 'true', 'yes', 'on'].includes((env.HERMES_YOLO_MODE ?? '').trim().toLowerCase())) { options.yolo = true }
+  // `hermes --tui --yolo` / `--ignore-rules` export HERMES_YOLO_MODE / HERMES_IGNORE_RULES (the in-process
+  // TUI read them); over the canonical gateway they must ride session.create as frozen launch flags or the
+  // session prompts anyway / still loads rules, SOUL, memory and skills.auto_load.
+  const truthy = (value?: string) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
+
+  if (truthy(env.HERMES_YOLO_MODE)) { options.yolo = true }
+
+  if (truthy(env.HERMES_IGNORE_RULES)) { options.ignore_rules = true }
 
   return options
 }
