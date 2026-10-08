@@ -99,3 +99,30 @@ async def test_lost_ack_retry_reconciles_a_queued_image_after_staging_is_gone(tm
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
         await submit('r-fresh')
     assert [row['request_id'] for row in list_session_admissions(authority.db, session_id='s')] == ['r-lost']
+
+
+@pytest.mark.asyncio
+async def test_retry_with_the_same_image_restaged_under_a_new_name_replays(tmp_path, monkeypatch):
+    """Retry identity is the committed bytes, not the client's disposable staging filename: the
+    same request re-staged under a new name replays the admission instead of conflicting, and
+    different bytes under the same request id still conflict."""
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_authority import SessionAuthority
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+
+    def submit(path):
+        return authority.submit(actor, Submission('r-same', SessionRef('p', 's'),
+            {'text': 'look', 'attachments': [{'path': path, 'mime': 'image/png'}]}, 'queue'))
+    first = await submit(cache_image_from_bytes(_ONE_PX_PNG, '.png'))
+    restaged = cache_image_from_bytes(_ONE_PX_PNG, '.png')
+    assert (await submit(restaged)).admission_id == first.admission_id
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        await submit(cache_image_from_bytes(_ONE_PX_PNG + b'\0', '.png'))
+    assert len(list_session_admissions(authority.db, session_id='s')) == 1

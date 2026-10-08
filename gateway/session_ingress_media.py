@@ -60,25 +60,36 @@ def admit_attachments(attachments, *, admitted=None):
     paths = [Path(item['path']) for item in attachments]
     if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
         raise RuntimeStoreError('invalid_params')
+    mimes = [item['mime'] for item in attachments]
+    row = admitted() if admitted is not None else None
+    committed = row['payload'].get('attachments_v1') if row is not None else None
     # A hardlink placed in staging is a second name for a file outside it (~/.ssh/id_rsa).
     try:
         if any(path.lstat().st_nlink != 1 for path in paths):
             raise RuntimeStoreError('invalid_params')
+        # Retry identity is the committed bytes, not the disposable staging name: a client that
+        # re-staged the same image under a new name is retrying, not sending different work.
+        retry = (committed is not None and committed['media_types'] == mimes
+                 and [r['sha256'] for r in committed['media']] == [_sha256(path) for path in paths])
     except FileNotFoundError as exc:
-        row = admitted() if admitted is not None else None
-        committed = row['payload'].get('attachments_v1') if row is not None else None
-        if (row is None or committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
-                or committed['media_types'] != [item['mime'] for item in attachments]):
+        if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
+                or committed['media_types'] != mimes):
             raise RuntimeStoreError('invalid_params') from exc
+        retry = True
+    except (OSError, ValueError) as exc:
+        raise RuntimeStoreError('invalid_params') from exc
+    if retry:
         # A live row still executes these bytes, so they must verify; a terminal row is
         # exact-retry evidence by digest only. ``admit_session_input`` still checks the digest.
         if row['status'] != 'terminal':
             restore_native_media(committed['media'])
         return {'attachments_v1': committed}
-    except OSError as exc:
-        raise RuntimeStoreError('invalid_params') from exc
-    return {'attachments_v1': {'media': capture_native_media(paths),
-                               'media_types': [item['mime'] for item in attachments]}}
+    return {'attachments_v1': {'media': capture_native_media(paths), 'media_types': mimes}}
+
+
+def _sha256(path):
+    with _open_regular(path) as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def restore_attachments(payload):
