@@ -241,11 +241,16 @@ export function createLocalGatewayDials() {
   }
 }
 
-async function privateNode(file: string, kind: 'directory' | 'socket' | 'file') {
+// A profile home keeps the operator's mode (Python `home_mode_unsafe`: HERMES_HOME_MODE 0750/0701,
+// a 0755 home): read/search bits grant nothing against the 0600 socket; only write by another user
+// could swap it. Python admits group-write solely for a proven-private group without an ACL, which
+// Node cannot establish (no xattrs/NSS), so it is refused here, as Python treats the unprovable.
+// The socket, pointer and fallback directory stay owner-only.
+async function privateNode(file: string, kind: 'directory' | 'socket' | 'file' | 'home') {
   const node = await fs.lstat(file)
-  const valid = { directory: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
+  const valid = { directory: node.isDirectory(), home: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
 
-  if (!valid || node.uid !== process.getuid?.() || (node.mode & 0o077)) {throw new Error('Unsafe gateway control path')}
+  if (!valid || node.uid !== process.getuid?.() || (node.mode & (kind === 'home' ? 0o022 : 0o077))) {throw new Error('Unsafe gateway control path')}
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
@@ -322,7 +327,7 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
 
   for (const dir of new Set([home, controlHome])) {
     if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
-    await privateNode(dir, 'directory')
+    await privateNode(dir, 'home')
   }
 
   let socketPath: string

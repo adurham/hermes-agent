@@ -299,6 +299,42 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
   }
 })
 
+// R7: the profile home keeps the operator's mode (Python `home_mode_unsafe`: HERMES_HOME_MODE
+// 0750/0701, a 0755 home); only write by another user can swap the socket. The socket stays 0600.
+test.skipIf(process.platform === 'win32')('a supported home mode mints its ticket; a home others can write is refused', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { mintLocalGatewayTicket } = await import('./local-gateway')
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-home-mode-')))
+  const socketPath = path.join(home, 'gateway.sock')
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+
+  const server = net.createServer(socket => socket.once('data', () => {
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket: 'grant' } }) + '\n')
+  }))
+
+  await new Promise<void>(resolve => server.listen(socketPath, resolve))
+  await fs.chmod(socketPath, 0o600)
+
+  try {
+    for (const mode of [0o700, 0o755, 0o750, 0o701]) {
+      await fs.chmod(home, mode)
+      expect(await mintLocalGatewayTicket(endpoint)).toBe('grant')
+    }
+
+    for (const mode of [0o757, 0o703]) {
+      await fs.chmod(home, mode)
+      await expect(mintLocalGatewayTicket(endpoint)).rejects.toThrow('Unsafe gateway control path')
+    }
+  } finally {
+    await fs.chmod(home, 0o700)
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
 test('a ?profile= request on the shared host descriptor mints for the sibling profile home', () => {
   const endpoint = { profile_id: '/h/.hermes', instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
   expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' })
