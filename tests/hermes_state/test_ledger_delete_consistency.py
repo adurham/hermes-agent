@@ -273,3 +273,40 @@ def test_local_reset_stamps_ended_at_on_the_same_float_clock_as_started_at(tmp_p
         reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         parent = db.get_session(sid)
         assert parent['ended_at'] >= max(parent['started_at'], before)
+
+
+def test_pending_and_idle_probes_do_not_scan_finished_history(tmp_path, monkeypatch):
+    """pastels minor: ``status!='terminal'`` cannot bound the (session, status) indexes, so every
+    pending/idle probe walked the session's whole finished ledger. Probes must stay O(live rows)."""
+    from contextlib import nullcontext
+    from hermes_state_local import end_idle_local_session
+    from hermes_state_mutation_guards import require_idle
+    from hermes_state_mutation_retirement import _LIVE_LEDGER_SQL
+    with closing(SessionDB(tmp_path / 'state.db')) as db:
+        db.create_session('s', source='api_server')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        def history(conn):
+            conn.executemany(
+                "INSERT INTO session_admissions(admission_id,request_id,principal_id,target_session_id,lineage_json,"
+                "payload_json,payload_digest,intent,status,outcome,owner_epoch,generation) "
+                "VALUES(?,?,'p','s','[]','{}','d','queue','terminal','completed',1,1)",
+                [(f'a{i}', f'r{i}') for i in range(20000)])
+            conn.executemany("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,"
+                             "status,adoption_digest) VALUES(?,'s','compute',1,1,'terminal','d')",
+                             [(f'w{i}',) for i in range(20000)])
+        db._execute_write(history)
+        monkeypatch.setattr(db, '_read_ctx', lambda: nullcontext(db._conn))
+        ticks = []
+        db._conn.set_progress_handler(lambda: ticks.append(1) and 0, 1000)
+        probes = {
+            'pending': lambda: rt.list_session_admissions(db, session_id='s'),
+            'require_idle': lambda: db._execute_write(lambda c: require_idle(db, c, ['s'])),
+            'prune_live_check': lambda: db._execute_write(lambda c: c.execute(_LIVE_LEDGER_SQL, ('s', 's')).fetchone()),
+            'end_idle': lambda: end_idle_local_session(db, epoch=epoch, session_id='s', target_id='s', reason='idle'),
+        }
+        for name, probe in probes.items():
+            ticks.clear()
+            probe()
+            # A scan of 40k finished rows is hundreds of thousands of VM steps; a bounded probe is a few.
+            assert len(ticks) < 20, f'{name} scanned finished history ({len(ticks)}k VM steps)'
+        db._conn.set_progress_handler(None, 0)

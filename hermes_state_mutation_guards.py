@@ -16,7 +16,7 @@ def require_not_executing(conn, session_ids):
     (registered/running/unknown are all live), so any non-terminal worker is executing."""
     for sid in session_ids:
         admissions = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('started','unknown')", (sid,)).fetchall()
-        workers = conn.execute("SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal'", (sid,)).fetchall()
+        workers = conn.execute("SELECT status FROM worker_executions WHERE session_id=? AND status IN ('registered','running','unknown')", (sid,)).fetchall()
         states = {row[0] for row in [*admissions, *workers]}
         if 'unknown' in states:
             raise RuntimeStoreError('unknown_execution')
@@ -44,8 +44,8 @@ def require_target_advanceable(db, conn, session_ids):
 
 def require_idle(db, conn, session_ids):
     for sid in session_ids:
-        admissions = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'", (sid,)).fetchall()
-        workers = conn.execute("SELECT status FROM worker_executions WHERE session_id=? AND status!='terminal'", (sid,)).fetchall()
+        admissions = conn.execute("SELECT status FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')", (sid,)).fetchall()
+        workers = conn.execute("SELECT status FROM worker_executions WHERE session_id=? AND status IN ('registered','running','unknown')", (sid,)).fetchall()
         states = {row[0] for row in [*admissions, *workers]}
         if 'unknown' in states:
             raise RuntimeStoreError('unknown_execution')

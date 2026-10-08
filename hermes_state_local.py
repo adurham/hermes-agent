@@ -109,10 +109,10 @@ def end_idle_local_session(db, *, epoch, session_id, target_id, reason):
     the row open; one committed after is reopened by the drain (``reopen_local_session``)."""
     def write(conn):
         _epoch(conn, epoch)
-        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'",
+        if conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')",
                         (session_id,)).fetchone():
             return 0
-        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id IN (?,?) AND status!='terminal'",
+        if conn.execute("SELECT 1 FROM worker_executions WHERE session_id IN (?,?) AND status IN ('registered','running','unknown')",
                         (session_id, target_id)).fetchone():
             return 0
         return db._end_and_bump(conn, 'UPDATE sessions SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL',

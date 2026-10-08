@@ -79,8 +79,8 @@ def retire_terminal_receipts(conn, session_ids):
         conn.execute('DELETE FROM session_admissions WHERE target_session_id=?', (sid,))
 
 
-_LIVE_LEDGER_SQL = """SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'
-    UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
+_LIVE_LEDGER_SQL = """SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')
+    UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? AND status IN ('registered','running','unknown') LIMIT 1"""
 
 
 def retire_sessions(conn, session_ids):

@@ -136,8 +136,11 @@ def get_session_admission(db, *, admission_id: str) -> dict | None:
 
 def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
     with db._read_ctx() as conn:
-        return [_row(row) for row in conn.execute('''SELECT * FROM session_admissions
-            WHERE target_session_id=? AND (?=0 OR status!='terminal') ORDER BY seq''', (session_id, int(pending_only)))]
+        # Pending is an explicit index-range IN, not ``!='terminal'``: a negated status cannot
+        # bound the (target, status, seq) index, so every probe scanned the session's history.
+        sql = ("SELECT * FROM session_admissions WHERE target_session_id=? "
+               + ("AND status IN ('queued','started','unknown') " if pending_only else "") + "ORDER BY seq")
+        return [_row(row) for row in conn.execute(sql, (session_id,))]
 
 
 def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
@@ -454,7 +457,7 @@ def register_worker_execution(db, *, epoch: int, execution_id: str, session_id: 
             return _worker_public(old)
         from hermes_state_runtime_workers import runtime_lineage, worker_states
         targets = runtime_lineage(conn, session_id)
-        if require_idle and any(conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'", (sid,)).fetchone() for sid in targets):
+        if require_idle and any(conn.execute("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown')", (sid,)).fetchone() for sid in targets):
             raise RuntimeStoreError('stale_generation')
         if worker_states(conn, session_id):
             raise RuntimeStoreError('stale_generation')
