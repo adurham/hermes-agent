@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
 from tools.connectors.gateway.config import operation_session_key
-from tools.connectors.gateway.errors import RateLimited
+from tools.connectors.gateway.errors import RateLimited, ToolGatewayError
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
 from tools.connectors.targets import HostedTarget, catalog_names, hosted_names, misrouted_to_hosted_error
@@ -232,7 +232,7 @@ def _alias_status(targets: list[Target]) -> Optional[dict[str, dict[str, Any]]]:
         return None
     try:
         rows = portal_accounts()
-    except Exception as exc:
+    except ToolGatewayError as exc:
         logger.debug("connector accounts read for reconnect failed: %s", exc)
         rows = []
     return {t.name: {"connected": any(r.get("connector") == t.name and r.get("alias") == t.alias
@@ -264,7 +264,7 @@ def _status_result(client: Any, connectors: list[str]) -> str:
         items = [i for i in items if str(i.get("connector", "")).lower() in wanted]
     try:
         rows = portal_accounts()
-    except Exception as exc:
+    except ToolGatewayError as exc:
         # The account list is extra detail; the connector list alone still answers status.
         logger.debug("connector accounts for status failed: %s", exc)
     else:
@@ -283,7 +283,7 @@ def _status_result(client: Any, connectors: list[str]) -> str:
 def _rename_result(target: HostedTarget) -> str:
     """Rename the one account of ``target.name`` called ``target.alias`` (or, when unnamed, labelled
     so) to ``target.to``. Synchronous: no operation and no card."""
-    from tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict, ToolGatewayError
+    from tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict
     from tools.connectors.portal.client import PortalConnectorClient
 
     rows = [r for r in portal_accounts() if str(r.get("connector", "")).lower() == target.name]
