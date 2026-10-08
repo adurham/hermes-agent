@@ -7,7 +7,7 @@ Neither assignment secrets nor launch credentials appear in argv or logs.
 # Spawned as a bare ``sys.executable -m``: in a PM install that interpreter carries no dependencies
 # until hermes_bootstrap selects the committed environment, so it must be the first import.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise
@@ -382,8 +382,9 @@ def hello():
 def main():
     channel = WorkerChannel(os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0))  # windows-footgun: ok — binary frames
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    # This process's own stderr only (the owner discards it): never the channel, and never the
-    # profile's log files, which the module contract keeps free of assignment secrets.
+    # This process's own stderr only, never the channel. The owner drains it into the profile's
+    # private managed-worker.log, redacting each line (patterns plus this worker's launch key and
+    # assignment secret) before it reaches disk; this process never opens a profile log itself.
     if not logger.handlers:
         logger.addHandler(logging.StreamHandler(sys.stderr))
     logger.propagate = False

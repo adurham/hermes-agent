@@ -128,7 +128,7 @@ async def test_stop_during_environment_preparation_prevents_bootstrap(tmp_path, 
     monkeypatch.setattr(managed, '_worker_env', env)
     monkeypatch.setattr(managed.subprocess, 'Popen', lambda *a, **k: object())
     monkeypatch.setattr(managed, 'ManagedWorker', Worker)
-    authority = SimpleNamespace(pending_stops={}, pending_results={})
+    authority = SimpleNamespace(profile_id='profile', pending_stops={}, pending_results={})
     def adopt(sid, generation, worker):
         if authority.pending_stops.pop(sid, None) == generation:
             worker.interrupt()

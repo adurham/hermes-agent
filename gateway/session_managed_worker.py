@@ -129,6 +129,9 @@ class ManagedWorker:
         self._requested = False
         self._frames = deque()
         self._arrived = None
+        self.stderr_drain = None
+        # Exact secrets this worker was handed; the stderr sink scrubs them besides the patterns.
+        self.secrets = []
 
     def _write_controls(self):
         try:
@@ -171,6 +174,14 @@ class ManagedWorker:
         if not self._frames:
             self._arrived.clear()
         return item
+
+    def drain_stderr(self, path):
+        """Route the child's stderr (its tracebacks and redirected prints) into the profile's
+        bounded, redacted, private log instead of discarding it."""
+        from gateway.session_managed_worker_log import drain_worker_stderr
+        self.stderr_drain = threading.Thread(target=drain_worker_stderr, name='managed-stderr-drain', daemon=True,
+                                             args=(self.process.stderr, path, self.process.pid, lambda: self.secrets))
+        self.stderr_drain.start()
 
     def control(self, frame):
         if self.closed.is_set():
@@ -265,6 +276,10 @@ class ManagedWorker:
             self.process.stdout.close()
         else:
             self.reader.join(timeout=5)
+        if self.stderr_drain is not None:
+            self.stderr_drain.join(timeout=5)  # EOF once the child is gone; the thread closes it
+        elif self.process.stderr is not None:
+            self.process.stderr.close()
 
 
 def interrupt_managed(authority, actor, ref, generation):
@@ -384,13 +399,17 @@ async def execute_managed(authority, ref, row, policy):
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
         from gateway.session_worker_spawn import acquire_process
+        from gateway.session_managed_worker_log import worker_log_path
+        log_path = worker_log_path(authority.profile_id)
         process = await acquire_process(subprocess.Popen, [sys.executable, '-m', 'agent.managed_worker'],
-            cwd=cwd, stdin=subprocess.PIPE, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, close_fds=True)
+            cwd=cwd, stdin=subprocess.PIPE, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, close_fds=True)
     except asyncio.CancelledError:
         # acquire_process owns late-child cleanup; no bootstrap or reservation was sent.
         return _interrupted_before_bootstrap(authority, row)
     worker = ManagedWorker(process)
+    if log_path is not None:
+        worker.drain_stderr(log_path)
     workers = getattr(authority, '_managed_workers', None)
     if workers is None:
         workers = authority._managed_workers = {}
@@ -412,6 +431,7 @@ async def execute_managed(authority, ref, row, policy):
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
+        worker.secrets.extend(v for v in (frame['api_key'], scope['secret']) if isinstance(v, str) and v)
         await asyncio.to_thread(worker.send, frame)
         worker.writer.start()
         while True:

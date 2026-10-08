@@ -23,7 +23,7 @@ async def test_cancelled_spawn_reaps_late_child(monkeypatch):
         return child
     monkeypatch.setattr(managed.subprocess, 'Popen', spawn)
     monkeypatch.setattr(managed, '_worker_env', lambda authority: None)
-    authority = SimpleNamespace(pending_results={})
+    authority = SimpleNamespace(profile_id='profile', pending_results={})
     task = asyncio.create_task(managed.execute_managed(
         authority, SimpleNamespace(session_id='s'), {'admission_id': 'unstarted'}, None))
     try:
