@@ -73,8 +73,9 @@ def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reini
         return
     # One aliased target per call, so the first named target is the request's.
     named = next((t for t in operation.targets if t.name in names and t.alias), None)
-    if reinitiate and connection_id is None and named is not None:
-        connection_id = named.connection_id
+    if reinitiate and connection_id is None:
+        repaired = next((t.repair_id for t in operation.targets if t.name in names and t.repair_id), None)
+        connection_id = repaired or (named.connection_id if named is not None else None)
     alias = None if connection_id or named is None else named.alias
     response = client.connections(names, reinitiate=reinitiate, alias=alias, connection_id=connection_id,
                                   **return_to_args(op=operation.op_id))
@@ -215,7 +216,11 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
         status = _alias_status(operation.targets) or _status_by_slug(client)
         repair = []
         for name in names:
-            if status.get(name, {}).get("connected"):
+            target = operation.target(name)
+            if target is not None and target.repair_id:
+                # Asked to repair one account by id: the connector's other accounts say nothing about it.
+                repair.append(name)
+            elif status.get(name, {}).get("connected"):
                 operation.transition(name, TargetState.initiated, Actor.backend_watcher)
                 operation.transition(name, TargetState.connected, Actor.backend_watcher)
             else:
@@ -245,7 +250,13 @@ def _alias_status(targets: list[Target]) -> Optional[dict[str, dict[str, Any]]]:
     rows = portal_accounts()
     status: dict[str, dict[str, Any]] = {}
     for t in aliased:
-        row = next((r for r in rows if r.get("connector") == t.name and r.get("alias") == t.alias), None)
+        mine = [r for r in rows if r.get("connector") == t.name and not r.get("disabled")]
+        row = next((r for r in mine if r.get("alias") == t.alias), None)
+        if row is None:
+            # An unnamed account is addressed by its label, as rename does; it stays unnamed.
+            row = next((r for r in mine if not r.get("alias") and r.get("label") == t.alias), None)
+            if row is not None:
+                t.alias, t.repair_id = None, row.get("connectionId")
         status[t.name] = {"connected": bool(row) and row.get("status") == "active",
                           "connection_id": row.get("connectionId") if row else None}
     return status
@@ -282,14 +293,17 @@ def _status_result(client: Any, connectors: list[str]) -> str:
     else:
         by_slug: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            by_slug.setdefault(str(row.get("connector", "")).lower(), []).append(
-                {"alias": row.get("alias"), "label": row.get("label"), "status": row.get("status"),
-                 "active": row.get("active")})
+            entry = {"alias": row.get("alias"), "label": row.get("label"), "status": row.get("status"),
+                     "active": row.get("active")}
+            if row.get("disabled"):
+                entry["retired"] = True
+            by_slug.setdefault(str(row.get("connector", "")).lower(), []).append(entry)
         items = [dict(i, accounts=by_slug.get(str(i.get("connector", "")).lower(), [])) for i in items]
     return json.dumps({"connectors": items, "hint": (
         "connected=false means calls to that connector will return CONNECTION_REQUIRED. "
         "Use action 'connect' to start an authorization. 'accounts' lists each account by its name "
-        "(alias) and the vendor's label.")}, ensure_ascii=False)
+        "(alias) and the vendor's label; address an unnamed account by its label. A retired account was "
+        "replaced by a reconnect and is kept only for the record.")}, ensure_ascii=False)
 
 
 def _rename_result(target: HostedTarget) -> str:

@@ -97,6 +97,10 @@ def render_remote_entry(planned: PlannedCall, remote: Mapping[str, Any]) -> dict
             hint=_opt_str(error.get("hint")),
             surface=connection_surface(),
         )
+        # The account the link repairs or waits on; with no connect_url the user already holds its link.
+        connection_id = _opt_str(error.get("connection_id"))
+        if connection_id:
+            payload["connection_id"] = connection_id
     else:
         payload = {"code": code, "message": message}
         connector = _opt_str(error.get("connector"))

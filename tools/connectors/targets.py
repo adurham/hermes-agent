@@ -113,6 +113,9 @@ def _validate_accounts(action: str, managed: list[HostedTarget]) -> Optional[str
         return _bad_alias("to", managed[0].to)
     if any(t.alias for t in managed) and len(managed) > 1:
         return "a call with an 'alias' takes that one target only; name other accounts in separate calls."
+    if action == "reconnect":
+        # Like rename, a repair may address an unnamed account by its label; the account read checks it.
+        return None
     return next((e for t in managed if (e := _bad_alias("alias", t.alias))), None)
 
 
