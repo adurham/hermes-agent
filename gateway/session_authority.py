@@ -231,9 +231,14 @@ class SessionAuthority:
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
         drain; process-local delivery/HTTP/producer waiters on this session are released,
         with the reason instead of a reply, so an adapter loop is never parked on a turn that
-        will not run. The ingress turns that refusal into one user-facing notice per episode."""
+        will not run. The ingress turns that refusal into one user-facing notice per episode.
+        ``session_busy`` is transient (a registered worker finishes and wakes the FIFO), so only
+        the messaging delivery waiters are released for it; an API/webhook/Bot observer keeps
+        waiting for the answer instead of reporting accepted work as a conflict."""
         for row in list_session_admissions(self.db, session_id=ref.session_id):
             admission_id = row['admission_id']
+            if reason == 'session_busy' and admission_id not in self.native_waiters:
+                continue
             self.native_waiters.discard(admission_id)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():

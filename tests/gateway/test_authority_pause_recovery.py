@@ -19,24 +19,24 @@ def session(owner):
 
 
 @pytest.mark.asyncio
-async def test_worker_block_releases_waiter_and_finish_wakes_queued_input(owner, monkeypatch):
+async def test_busy_head_keeps_api_waiter_until_the_worker_finish_answers_it(owner, monkeypatch):
+    """session_busy is transient: an API turn queued behind a compute worker must get its answer
+    once the worker finishes, not RuntimeStoreError('session_busy') (HTTP 409) for accepted work."""
     from gateway.session_worker import worker_request
-    ref = session(owner)
+    owner.db.create_session('s', source='api_server')
+    owner.sessions['s'] = LiveSession(SessionSource(Platform.API_SERVER, 'chat'), 'route')
+    ref = SessionRef(owner.profile_id, 's')
     register_worker_execution(owner.db, epoch=owner.epoch, execution_id='worker', session_id='s',
         generation=0, kind='compute', adoption_secret='private')
-    row = admit_session_input(owner.db, epoch=owner.epoch, principal_id='human', session_id='s',
+    row = admit_session_input(owner.db, epoch=owner.epoch, principal_id='api', session_id='s',
                               request_id='queued', payload={'text': 'next'})
-    waiter = owner.waiters[row['admission_id']] = asyncio.get_running_loop().create_future()
-    await owner._drain(ref)
-    assert waiter.done(), 'a blocked FIFO left its accepted input observer parked'
-    with pytest.raises(RuntimeStoreError, match='session_busy'):
-        await waiter
-    assert get_session_admission(owner.db, admission_id=row['admission_id'])['status'] == 'queued'
-    seen = []
+    waiter = owner.waiters.setdefault(row['admission_id'], asyncio.get_running_loop().create_future())
     async def execute(authority, ref, row):
-        seen.append(row['request_id'])
         return 'done'
     monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    monkeypatch.setattr('gateway.session_api_turn.check_api_turn', lambda *a, **k: None)
+    await owner._drain(ref)
+    assert get_session_admission(owner.db, admission_id=row['admission_id'])['status'] == 'queued'
     # Process identity is independent of this test's real receipt and scheduler path.
     monkeypatch.setattr('gateway.session_worker._claim', lambda *args: 'private')
     connection = SimpleNamespace(authority=owner, actor=Principal('human', owner.profile_id,
@@ -45,7 +45,9 @@ async def test_worker_block_releases_waiter_and_finish_wakes_queued_input(owner,
         execution_id='worker', generation=0, pid=1, birth=1, secret='private', epoch=owner.epoch,
         sequence=1, operation='execution.finish', payload={}), operation='persist')
     await owner.sessions['s'].task
-    assert seen == ['queued']
+    assert get_session_admission(owner.db, admission_id=row['admission_id'])['outcome'] == 'completed'
+    assert waiter.done() and waiter.exception() is None, f'accepted work reported as {waiter.exception()!r}'
+    assert waiter.result() == 'done'
 
 
 @pytest.mark.asyncio
