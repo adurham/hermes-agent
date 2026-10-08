@@ -37,7 +37,7 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
-def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
+def file_signature(st: os.stat_result) -> tuple[int, int, int, int]:
     """Change-detection key for a stat result: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
 
     mtime + size alone miss a replacement that preserves both (``cp -p``, ``rsync -t``, a tar
@@ -49,7 +49,7 @@ def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
     return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 
-def _preserve_file_mode(path: Path) -> "int | None":
+def _preserve_file_mode(path: Path) -> int | None:
     """Permission bits of *path* if it exists, else ``None``."""
     try:
         return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
@@ -57,7 +57,7 @@ def _preserve_file_mode(path: Path) -> "int | None":
         return None
 
 
-def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
+def _preserve_file_owner(path: Path) -> tuple[int, int] | None:
     """Owning ``(uid, gid)`` of *path* on POSIX, else ``None``."""
     try:
         st = path.stat() if os.name == "posix" else None
@@ -66,7 +66,7 @@ def _preserve_file_owner(path: Path) -> "tuple[int, int] | None":
     return (st.st_uid, st.st_gid) if st else None
 
 
-def _restore_file_metadata(path: Path, owner: "tuple[int, int] | None", mode: "int | None") -> None:
+def _restore_file_metadata(path: Path, owner: tuple[int, int] | None, mode: int | None) -> None:
     """Best-effort re-apply of uid/gid and permission bits after an atomic replace.
 
     Docker/NAS installs often run some commands as root on a volume owned by the runtime user;
@@ -82,7 +82,7 @@ def _restore_file_metadata(path: Path, owner: "tuple[int, int] | None", mode: "i
             os.chmod(path, mode)
 
 
-def default_new_file_mode() -> "int | None":
+def default_new_file_mode() -> int | None:
     """The mode ``open(path, "w")`` gives a file it has to create (``0o666 & ~umask``); ``None``
     when the umask cannot be read or on non-POSIX hosts (Windows mode bits are synthesized).
 
@@ -101,11 +101,11 @@ def default_new_file_mode() -> "int | None":
     return 0o666 & ~current
 
 
-def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
+def _restore_file_owner(path: Path, owner: tuple[int, int] | None) -> None:
     _restore_file_metadata(path, owner, None)
 
 
-def _restore_file_mode(path: Path, mode: "int | None") -> None:
+def _restore_file_mode(path: Path, mode: int | None) -> None:
     _restore_file_metadata(path, None, mode)
 
 
@@ -287,7 +287,7 @@ def rmtree_readonly(path: str | Path, *, ignore_errors: bool = False) -> None:
             raise
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: int | None = None,
                   preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
@@ -330,14 +330,14 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
         raise
 
 
-def _mode_for_write(path: Path, create_mode: "int | None", preserve: bool = True) -> "int | None":
+def _mode_for_write(path: Path, create_mode: int | None, preserve: bool = True) -> int | None:
     """Existing permission bits of *path* (when *preserve*), else *create_mode* for a new file."""
     mode = _preserve_file_mode(path) if preserve else None
     return mode if mode is not None or path.exists() else create_mode
 
 
 def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8", tmp_prefix: str = ".tmp_",
-                      preserve_mode: bool = False, create_mode: "int | None" = None, mode: "int | None" = None,
+                      preserve_mode: bool = False, create_mode: int | None = None, mode: int | None = None,
                       fsync_dir: bool = False) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
@@ -353,14 +353,14 @@ def atomic_write_text(path: str | Path, content: str, *, encoding: str = "utf-8"
 
 
 def atomic_write_bytes(path: str | Path, content: bytes, *, tmp_prefix: str = ".tmp_",
-                       mode: "int | None" = None, fsync_dir: bool = False) -> None:
+                       mode: int | None = None, fsync_dir: bool = False) -> None:
     """Bytes variant of :func:`atomic_write_text` (encrypted blobs, key material)."""
     path = Path(path)
     _atomic_write(path, lambda f: f.write(content), prefix=tmp_prefix, binary=True, preserve_owner=False,
                   mode=mode if mode is not None else _preserve_file_mode(path), fsync_dir=fsync_dir)
 
 
-def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_kwargs: dict) -> None:
+def _dump_json(data: Any, f, *, indent: int | None, ensure_ascii: bool, dump_kwargs: dict) -> None:
     """``json.dump`` that survives surrogate-escaped strings.
 
     ``os.fsdecode`` of a non-UTF-8 filename/argv yields lone surrogates (``'\\udcff'``); a utf-8
@@ -427,7 +427,7 @@ def warn_if_credential_file_broadly_readable(path: str | Path, *, label: str = "
 
 
 def atomic_yaml_write(path: str | Path, data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
-                      extra_content: str | None = None, create_mode: "int | None" = None) -> None:
+                      extra_content: str | None = None, create_mode: int | None = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
@@ -449,7 +449,7 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None) -> None:
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: str | None = None) -> None:
     def _write(f) -> None:
         yaml_rt.dump(config, f)
         if extra_content:
@@ -527,7 +527,7 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: str | Path, new_state: dict, *,
-                               extra_content_on_create: "str | None" = None) -> None:
+                               extra_content_on_create: str | None = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE on-disk primitive for ``config.yaml`` (production callers reach it through

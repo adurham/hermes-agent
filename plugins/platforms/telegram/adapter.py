@@ -74,7 +74,7 @@ async def _await_with_thread_deadline(
     return result.value
 
 
-def _iter_exception_graph(error: BaseException) -> "Iterator[BaseException]":
+def _iter_exception_graph(error: BaseException) -> Iterator[BaseException]:
     """Yield ``error`` and every ``__cause__``/``__context__`` ancestor (DFS, cycle-safe) —
     PTB wraps httpx errors, so classifiers must inspect the whole graph."""
     seen: set[int] = set()
@@ -203,7 +203,7 @@ _FLOOD_INLINE_WAIT_CAP_SECS = 5.0
 _TELEGRAM_CHAT_OUTBOUND_BUDGET_SECS = 1.0
 
 
-def _flood_cap_result(wait: float) -> "SendResult":
+def _flood_cap_result(wait: float) -> SendResult:
     """The shared fail-closed SendResult for an over-cap flood wait."""
     return SendResult(success=False, error=f"flood_control:{wait}", retry_after=float(wait))
 
@@ -751,7 +751,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return False
         return not bool(getattr(self, "_fatal_error_retryable", True))
 
-    def _replacement_telegram_adapter(self) -> Optional["TelegramAdapter"]:
+    def _replacement_telegram_adapter(self) -> Optional[TelegramAdapter]:
         """Live adapter if the reconnect watcher replaced us in ``runner.adapters`` (an in-flight
         ``send()`` still holds the old instance whose ``_bot`` stays None)."""
         runner = getattr(self, "gateway_runner", None)
@@ -4371,7 +4371,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     _MODEL_PAGE_SIZE = 8
 
     @staticmethod
-    def _provider_button(p: dict) -> "InlineKeyboardButton":
+    def _provider_button(p: dict) -> InlineKeyboardButton:
         count = p.get("total_models", len(p.get("models", [])))
         label = f"{p['name']} ({count})"
         if p.get("is_current"):
@@ -4615,7 +4615,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None)
 
-    async def _handle_inline_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+    async def _handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Answer ``@botname <query>`` with a searchable command/skill picker (the ``/`` menu is capped at
         60 slots). Results are computed per keystroke, 50 per page; tapping sends ``/cmd`` text as the
         user, so dispatch flows through the normal command path. Inline queries arrive from ANY chat, so
@@ -4680,7 +4680,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await query.answer(text=denial_text)
         return False
 
-    async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+    async def _handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""
         query = update.callback_query
         if not query or not query.data:
@@ -6851,7 +6851,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         await self._flush_buffered(
             self._media_group_events, self._media_group_tasks, media_group_id, self.MEDIA_GROUP_WAIT_SECONDS, "media-group")
 
-    async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
+    async def _handle_sticker(self, msg: Message, event: MessageEvent) -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""
         from gateway.sticker_cache import (
             get_cached_description, cache_sticker_description_async, build_sticker_injection,

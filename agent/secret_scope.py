@@ -307,7 +307,7 @@ def _parse_env_value(raw_value: str) -> str:
 # symlink repointed mid-read can't file one file's contents under another's identity.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
-_ENV_FILE_CACHE: "OrderedDict[str, tuple[tuple, dict[str, str]]]" = OrderedDict()
+_ENV_FILE_CACHE: OrderedDict[str, tuple[tuple, dict[str, str]]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 

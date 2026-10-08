@@ -3250,7 +3250,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 await self._add_reaction(message, "❌")
 
     @staticmethod
-    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+    def _message_reference_from_ids(message_id, channel) -> discord.MessageReference:
         """ids-built reply reference — no fetch_message round trip. fail_if_not_exists=False
         keeps sends to deleted targets degrading to the send-side 10008 retry."""
         return discord.MessageReference(
@@ -4243,7 +4243,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         )
 
     async def _check_slash_authorization(
-        self, interaction: "discord.Interaction", command_text: str,
+        self, interaction: discord.Interaction, command_text: str,
     ) -> bool:
         """Mirror on_message's gates onto a slash invocation.
         Returns False only *after* sending the ephemeral rejection, so the caller just stops."""
@@ -4253,7 +4253,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         return await self._reject_slash(interaction, command_text, reason=reason or "unauthorized")
 
     async def _reject_slash(
-        self, interaction: "discord.Interaction", command_text: str, *, reason: str,
+        self, interaction: discord.Interaction, command_text: str, *, reason: str,
     ) -> bool:
         """Send ephemeral reject + log + schedule admin alert; returns False.
         Tolerates a missing ``interaction.user`` (fail-closed branch routes malformed payloads here)."""
@@ -4750,7 +4750,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             if not self._skill_entries:
                 return
 
-            async def _autocomplete_name(interaction: "discord.Interaction", current: str) -> list:
+            async def _autocomplete_name(interaction: discord.Interaction, current: str) -> list:
                 """Filter skills by typed prefix against name and description (Discord caps at 25).
                 Unauthorized users get ``[]``: no catalog leak, no per-keystroke ephemeral rejections."""
                 try:
@@ -4778,7 +4778,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 args=_t_discord("platform.discord.command.skill.arg_args", _DISCORD_APP_COMMAND_TEXT_LIMIT),
             )
             @discord.app_commands.autocomplete(name=_autocomplete_name)
-            async def _skill_handler(interaction: "discord.Interaction", name: str, args: str = ""):
+            async def _skill_handler(interaction: discord.Interaction, name: str, args: str = ""):
                 # Authorize BEFORE lookup so unknown/known names reject identically (no catalog probing).
                 if not await self._check_slash_authorization(interaction, "/skill"):
                     return
@@ -5267,7 +5267,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             return 50
 
     async def _fetch_channel_context(
-        self, channel: Any, before: "DiscordMessage", reply_target: Optional[Any] = None,
+        self, channel: Any, before: DiscordMessage, reply_target: Optional[Any] = None,
     ) -> str:
         """Fetch recent channel messages; returns a ``[Recent channel messages]`` block or "".
         Scans back from *before* to the bot's own message or ``history_backfill_limit``; with
@@ -5525,7 +5525,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             pass
         return thread
 
-    async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
+    async def _auto_create_thread(self, message: DiscordMessage) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
         Primary path and seed-message fallback each retry once after a short backoff (transient errors).
 
@@ -6940,11 +6940,11 @@ def _define_discord_view_classes() -> None:
             return f"{prefix}{truncated.rstrip() + _DISCORD_ELLIPSIS}"
 
         def _make_choice_callback(self, index: int, choice: str):
-            async def _callback(interaction: "discord.Interaction"):
+            async def _callback(interaction: discord.Interaction):
                 await self._resolve_choice(interaction, index, choice)
             return _callback
 
-        async def _finish(self, interaction: "discord.Interaction", color, footer: str, *, log_edit_failure: bool) -> None:
+        async def _finish(self, interaction: discord.Interaction, color, footer: str, *, log_edit_failure: bool) -> None:
             """Disable the buttons and stamp the embed; fall back to a bare defer."""
             self.resolved = True
             self._disable_all()
@@ -6962,7 +6962,7 @@ def _define_discord_view_classes() -> None:
                 except Exception:
                     pass
 
-        async def _resolve_choice(self, interaction: "discord.Interaction", index: int, choice: str) -> None:
+        async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
             if not await self._gate(
                 interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),
@@ -6995,7 +6995,7 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.error("Discord clarify resolve_gateway_clarify failed (id=%s): %s", self.clarify_id, exc)
 
-        async def _on_other(self, interaction: "discord.Interaction") -> None:
+        async def _on_other(self, interaction: discord.Interaction) -> None:
             """Flip the clarify entry into text-capture mode."""
             if not await self._gate(
                 interaction, resolved_msg=t("platform.discord.prompt.clarify_already_answered"),

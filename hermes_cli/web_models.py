@@ -444,7 +444,7 @@ class ProfileCreate(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
-    mcp_servers: list["MCPServerCreate"] = []
+    mcp_servers: list[MCPServerCreate] = []
     keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,
     # so HERMES_HOME can't redirect it); PIDs go back for the UI to poll.

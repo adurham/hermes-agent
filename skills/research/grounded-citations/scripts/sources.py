@@ -118,7 +118,7 @@ class _LedgerLock:
         self.timeout = timeout
         self.fd: int | None = None
 
-    def __enter__(self) -> "_LedgerLock":
+    def __enter__(self) -> _LedgerLock:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout
         while True:

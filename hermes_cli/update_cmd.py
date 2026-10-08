@@ -1319,12 +1319,12 @@ def _missing_branch_stop(git_cmd, branch) -> str:
 class _CheckoutPlan:
     """What the pre-pull checkout phase decided (see ``_prepare_checkout_for_update``)."""
 
-    auto_stash_ref: "str | None"
+    auto_stash_ref: str | None
     commit_count: int
     in_place_update: bool
     parked_branch_switched: bool
     prompt_for_restore: bool
-    switch_block_reason: "str | None"
+    switch_block_reason: str | None
     upstream_checked: bool
     pre_sync_sha: str | None = None
     rollback_branch: str | None = None
@@ -1334,7 +1334,7 @@ class _CheckoutPlan:
 
 def _apply_parked_branch_guard(
     git_cmd, branch, current_branch, *, switch_branch, _windows_gateway_resume
-) -> tuple[bool, bool, "str | None"]:
+) -> tuple[bool, bool, str | None]:
     """Decide how a checkout parked on another branch is brought to *branch* (stash-switch-pull-
     switch-back used to "update" main while the running code stayed behind).
 

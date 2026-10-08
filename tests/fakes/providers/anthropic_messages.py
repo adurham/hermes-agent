@@ -313,13 +313,13 @@ class AnthropicMessagesServer:
         self._httpd: ThreadingHTTPServer | None = None
         self._tool_seq = 0
 
-    def __enter__(self) -> "AnthropicMessagesServer":
+    def __enter__(self) -> AnthropicMessagesServer:
         return self.start()
 
     def __exit__(self, *_exc: object) -> None:
         self.stop()
 
-    def start(self) -> "AnthropicMessagesServer":
+    def start(self) -> AnthropicMessagesServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         self._httpd.daemon_threads = True
         threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": 0.05},

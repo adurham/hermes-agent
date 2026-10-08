@@ -79,12 +79,12 @@ _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
-def _quota_reset_seconds(m: "re.Match[str]") -> float:
+def _quota_reset_seconds(m: re.Match[str]) -> float:
     value = float(m.group(1))
     return value / 1000.0 if m.group(2).lower() == "ms" else value
 
 
-def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
+def _resets_in_seconds(m: re.Match[str]) -> Optional[float]:
     if not any(m.groups()):  # "resets in" with no unit-bearing number: not this grammar
         return None
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)

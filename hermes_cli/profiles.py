@@ -450,7 +450,7 @@ def profile_exists(name: str) -> bool:
     return named_profile_is_live(profile_dir)
 
 
-def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
+def profile_matches_home(name: str, home: Path | None = None) -> bool:
     """True when *name* refers to the profile served from *home* (default: current home).
 
     Lets single-profile gateways decide whether a ``/p/<profile>/`` URL prefix is

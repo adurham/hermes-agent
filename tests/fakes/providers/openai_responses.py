@@ -299,7 +299,7 @@ class FakeResponsesServer:
         self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
 
-    def __enter__(self) -> "FakeResponsesServer":
+    def __enter__(self) -> FakeResponsesServer:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _handler_for(self))
         server.daemon_threads = True
         self._server = server

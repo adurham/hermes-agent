@@ -655,7 +655,7 @@ def remember_temperature_rejection(
 
 def _fixed_temperature_for_model(
     model: Optional[str], base_url: Optional[str] = None, provider: Optional[str] = None,
-) -> "Optional[float] | object":
+) -> Optional[float] | object:
     """``OMIT_TEMPERATURE`` (drop the key; Kimi/Moonshot, OpenAI reasoning families, routes that
     already rejected it), a fixed ``float``, or ``None``."""
     if _is_kimi_model(model):
@@ -7016,7 +7016,7 @@ def _client_streams_internally(client: Any) -> bool:
 
 
 _MANAGED_LOCAL_STATE_TTL_S = 15.0
-_managed_local_cache: "tuple[float, str]" = (0.0, "")
+_managed_local_cache: tuple[float, str] = (0.0, "")
 
 
 def _managed_local_netloc() -> str:
@@ -7123,7 +7123,7 @@ def _create_with_progress(
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
 
-def _stream_request_plan(kwargs: dict[str, Any]) -> "tuple[dict[str, Any], str, float]":
+def _stream_request_plan(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, float]:
     """(stream kwargs, model name, total ceiling) for a streamed re-aggregation."""
     stream_kwargs = dict(kwargs)
     stream_kwargs["stream"] = True
@@ -7190,7 +7190,7 @@ def _create_with_progress_once(
 
 def _aggregate_chat_stream(
     chunks: Any, *, model: str = "", total_ceiling: Optional[float] = None,
-    no_progress: "Optional[tuple[float, Optional[float]]]" = None,
+    no_progress: Optional[tuple[float, Optional[float]]] = None,
 ) -> Any:
     """Consume a chunk stream into a complete response; TimeoutError (phrased "timed out" so
     ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
@@ -7576,7 +7576,7 @@ _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
 )
 
 
-def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
+def _rung(step: _LadderStep, accept: Callable[[Exception], bool]):
     """One ladder rung: perform ``step``; yields ``(response, None)`` on success,
     ``(None, exc)`` when ``accept(exc)`` lets the next rung handle it, else re-raises."""
     try:

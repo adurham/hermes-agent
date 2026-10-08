@@ -80,7 +80,7 @@ class EnvRequirement:
     default: Optional[str] = None
 
     @classmethod
-    def from_dict(cls, data: Any) -> "EnvRequirement":
+    def from_dict(cls, data: Any) -> EnvRequirement:
         if not isinstance(data, dict):
             raise DistributionError(f"env_requires entry must be a mapping, got {type(data).__name__}")
         name = _str(data, "name").strip()
@@ -116,7 +116,7 @@ class DistributionManifest:
     installed_at: str = ""
 
     @classmethod
-    def from_dict(cls, data: Any) -> "DistributionManifest":
+    def from_dict(cls, data: Any) -> DistributionManifest:
         if not isinstance(data, dict):
             raise DistributionError(f"{MANIFEST_FILENAME} must be a mapping, got {type(data).__name__}")
         name = _str(data, "name").strip()

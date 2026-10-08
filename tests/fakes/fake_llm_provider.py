@@ -153,7 +153,7 @@ class FakeLLMServer:
         self._tool_seq = 0
 
     # lifecycle
-    def __enter__(self) -> "FakeLLMServer":
+    def __enter__(self) -> FakeLLMServer:
         self.start()
         return self
 

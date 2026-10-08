@@ -1753,7 +1753,7 @@ def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
 
 
 def _last_auth_error_marker(
-    provider: str, error: "AuthError", *, reason: str, default_code: Optional[str] = None,
+    provider: str, error: AuthError, *, reason: str, default_code: Optional[str] = None,
 ) -> dict[str, Any]:
     """The ``last_auth_error`` record persisted when dead OAuth material is quarantined."""
     return {
@@ -1765,7 +1765,7 @@ def _last_auth_error_marker(
 _FLAT_OAUTH_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at")
 
 
-def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: "AuthError") -> None:
+def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: AuthError) -> None:
     """Strip dead tokens from a flat OAuth state after a terminal runtime refresh failure so
     subsequent calls fail fast without a network retry (mirrors the Nous / xAI / Codex pattern)."""
     for _k in _FLAT_OAUTH_TOKEN_KEYS:
@@ -1798,7 +1798,7 @@ _NOUS_PORTAL_ALLOWED_HOSTS: frozenset[str] = frozenset({
 # per-turn HERMES_HOME override a multiplex gateway sets), so a single slot would hand profile A's
 # Portal bearer to profile B for up to the TTL.
 _RESOLVE_TOKEN_CACHE_LOCK = threading.Lock()
-_RESOLVE_TOKEN_CACHE: "dict[str, tuple[float, str]]" = {}
+_RESOLVE_TOKEN_CACHE: dict[str, tuple[float, str]] = {}
 _RESOLVE_TOKEN_CACHE_TTL_S = 5.0
 
 

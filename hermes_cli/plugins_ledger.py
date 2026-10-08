@@ -40,7 +40,7 @@ class PluginRegistration:
     # See #91701.
     persistent: bool = False
     _disposed: bool = field(default=False, init=False, repr=False)
-    _on_dispose: Optional[Callable[["PluginRegistration"], None]] = field(default=None, init=False, repr=False)
+    _on_dispose: Optional[Callable[[PluginRegistration], None]] = field(default=None, init=False, repr=False)
 
     @property
     def active(self) -> bool:

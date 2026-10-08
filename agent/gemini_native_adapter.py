@@ -850,7 +850,7 @@ class GeminiNativeClient:
         return {"Content-Type": "application/json", "Accept": "application/json", **self._auth_headers(),
                 "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
 
-    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> "GeminiAPIError":
+    def _http_error(self, response: httpx.Response, body_text: Optional[str] = None) -> GeminiAPIError:
         return gemini_http_error(response, body_text=body_text, api_key=self.api_key, base_url=self.base_url)
 
     @staticmethod

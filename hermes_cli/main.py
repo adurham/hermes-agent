@@ -185,7 +185,7 @@ def _run_and_exit_oneshot(
         _exit_after_oneshot(rc)
 
 
-def _warn_if_unsupervised_pid1(pid: "int | None" = None) -> None:
+def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:
     """Warn when this process is PID 1 with nothing above it to reap orphans.
 
     The official image's ENTRYPOINT (``docker/entrypoint-dispatch.sh`` -> s6-overlay's
@@ -244,7 +244,7 @@ def _set_process_title() -> None:
 # in: mouse-residue suppression reads this BEFORE `_apply_profile_override()`
 # sets HERMES_HOME, and a cache keyed on nothing pinned every later caller to
 # the default home's interface for the whole run (#116902).
-_EARLY_INTERFACE_CACHE: "tuple[str, str] | None" = None
+_EARLY_INTERFACE_CACHE: tuple[str, str] | None = None
 
 
 def _early_interface_config_path() -> str:
@@ -280,7 +280,7 @@ def _config_default_interface_early() -> str:
     return value
 
 
-def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
+def _wants_tui_early(argv: list[str] | None = None) -> bool:
     """Earliest TUI decision, usable before argparse/config imports.
 
     Precedence: ``--cli`` wins, then ``--tui``/``HERMES_TUI=1``, then a

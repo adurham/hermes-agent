@@ -389,7 +389,7 @@ class FakeVertex:
         self._tls: ssl.SSLContext | None = None
 
     # lifecycle
-    def __enter__(self) -> "FakeVertex":
+    def __enter__(self) -> FakeVertex:
         self.start()
         return self
 

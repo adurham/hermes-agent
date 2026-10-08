@@ -80,7 +80,7 @@ class CanonicalUsage:
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.output_tokens
 
-    def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
+    def __add__(self, other: CanonicalUsage) -> CanonicalUsage:
         """Sum two usage buckets. ``raw_usage`` (single-response detail) is
         dropped; ``request_count`` adds so callers see how many API calls a
         combined figure covers."""

@@ -120,7 +120,7 @@ class HostRecord:
         }
 
     @classmethod
-    def from_json(cls, payload: Any) -> Optional["HostRecord"]:
+    def from_json(cls, payload: Any) -> Optional[HostRecord]:
         if not isinstance(payload, dict):
             return None
         pid = payload.get("pid")

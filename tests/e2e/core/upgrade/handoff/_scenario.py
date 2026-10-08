@@ -250,7 +250,7 @@ class WorkerSampler:
                 pass
             self._stop.wait(self.interval)
 
-    def __enter__(self) -> "WorkerSampler":
+    def __enter__(self) -> WorkerSampler:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self

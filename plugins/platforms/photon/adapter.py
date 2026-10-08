@@ -592,7 +592,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # markdown path renders a fence as inline Unicode monospace, not a block.
         self.supports_code_blocks = False
         self._sidecar_proc: Optional[subprocess.Popen] = None
-        self._http_client: Optional["httpx.AsyncClient"] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
         self._respawn_lock: Optional[asyncio.Lock] = None
         self._sidecar_supervisor_task = self._inbound_task = self._sidecar_health_task = None
         self._watchdog_task: Optional[asyncio.Task] = None
@@ -618,7 +618,7 @@ class PhotonAdapter(BasePlatformAdapter):
     # -- Group-mention gating (parity with BlueBubbles) ----------------------------
 
     @staticmethod
-    def _compile_mention_patterns(raw: Any) -> "list[re.Pattern]":
+    def _compile_mention_patterns(raw: Any) -> list[re.Pattern]:
         """``raw``: list, string (JSON list or comma/newline-separated) or None (defaults)."""
         return compile_mention_patterns(
             raw, log_prefix="photon", defaults=_DEFAULT_MENTION_PATTERNS, logger_=logger)

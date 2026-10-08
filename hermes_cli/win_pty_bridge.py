@@ -45,7 +45,7 @@ class WinPtyBridge:
     ``run_in_executor``; ConPTY has no selectable fd, so reads poll and writes run in a worker
     thread to keep the same non-blocking event-loop contract as the POSIX bridge."""
 
-    def __init__(self, proc: "PtyProcess") -> None:  # type: ignore[name-defined]
+    def __init__(self, proc: PtyProcess) -> None:  # type: ignore[name-defined]
         self._proc = proc
         self._closed = False
 
@@ -56,7 +56,7 @@ class WinPtyBridge:
     @classmethod
     def spawn(
         cls, argv: Sequence[str], *, cwd: Optional[str] = None, env: Optional[dict] = None,
-        cols: int = 80, rows: int = 24) -> "WinPtyBridge":
+        cols: int = 80, rows: int = 24) -> WinPtyBridge:
         if not _PTY_AVAILABLE:
             if PtyProcess is None:
                 raise PtyUnavailableError("pywinpty is not installed. Run hermes pm repair, then restart Hermes.")
@@ -187,7 +187,7 @@ class WinPtyBridge:
         except Exception:
             pass
 
-    def __enter__(self) -> "WinPtyBridge":
+    def __enter__(self) -> WinPtyBridge:
         return self
 
     def __exit__(self, *_exc) -> None:

@@ -56,7 +56,7 @@ COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 # the outer one, and the boundary finalize must see exactly its own
 # process's receipt. Same pattern as pm.receipt's ContextVars — no
 # manager object.
-_current: contextvars.ContextVar[Optional["UpdateReceipt"]] = contextvars.ContextVar(
+_current: contextvars.ContextVar[Optional[UpdateReceipt]] = contextvars.ContextVar(
     "update_receipt_current", default=None
 )
 #: The terminal outcome of the run the enclosing command scope finalized or adopted (from a

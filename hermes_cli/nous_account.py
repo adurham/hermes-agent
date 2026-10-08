@@ -20,7 +20,7 @@ NousAccountInfoSource = Literal["jwt", "account_api", "inference_key", "none", "
 TOOL_COVERAGE_CATEGORIES = ("firecrawl", "fal", "fal-video", "openai-audio", "browser-use", "modal")
 
 _ACCOUNT_INFO_CACHE_TTL = 60
-_account_info_cache: tuple[str, float, "NousPortalAccountInfo"] | None = None
+_account_info_cache: tuple[str, float, NousPortalAccountInfo] | None = None
 _ACCOUNT_INFO_CACHE_LOCK = threading.Lock()
 
 
@@ -73,7 +73,7 @@ FREE_TIER_NEEDS_ACCOUNT = "This needs a Nous account. Run `hermes auth upgrade`.
 FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /login to sign in."
 
 
-def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
+def _is_anonymous_tier(account_info: Optional[NousPortalAccountInfo]) -> bool:
     return account_info is not None and account_info.is_anonymous_tier
 
 

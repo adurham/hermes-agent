@@ -459,7 +459,7 @@ class GeminiFake:
         self._thread = threading.Thread(target=self._server.serve_forever, name="gemini-fake", daemon=True)
 
     # lifecycle ---------------------------------------------------------------------------------
-    def __enter__(self) -> "GeminiFake":
+    def __enter__(self) -> GeminiFake:
         self._thread.start()
         return self
 

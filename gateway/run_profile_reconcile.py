@@ -34,7 +34,7 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 
-def profile_serve_signature(home: "Path") -> tuple:
+def profile_serve_signature(home: Path) -> tuple:
     """Cheap change detector for a served profile's credentials/config: file signature per file."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
@@ -49,7 +49,7 @@ def profile_serve_signature(home: "Path") -> tuple:
 class GatewayProfileReconcileMixin:
     """Runtime reconciliation of the multiplexed served-profile set (hot add / unroute / credential-add)."""
 
-    _served_profile_homes: Optional[dict[str, "Path"]] = None
+    _served_profile_homes: Optional[dict[str, Path]] = None
     _served_profile_signatures: Optional[dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
     _profile_own_gateway_warned: Optional[set[str]] = None
@@ -239,7 +239,7 @@ class GatewayProfileReconcileMixin:
             except Exception:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
-    async def _unserve_profile(self, name: str, home: "Path") -> None:
+    async def _unserve_profile(self, name: str, home: Path) -> None:
         """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
         bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
         The releasing process is not always the deleter (#130244): under multiplexing THIS gateway

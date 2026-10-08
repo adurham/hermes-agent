@@ -76,7 +76,7 @@ class LoginControl:
     max_length: Optional[int] = None
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "LoginControl":
+    def from_dict(cls, raw: dict[str, Any]) -> LoginControl:
         form_index = raw.get("formIndex", raw.get("form_index"))
         max_length = raw.get("maxLength", raw.get("max_length"))
         return cls(

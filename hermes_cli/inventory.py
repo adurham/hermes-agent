@@ -28,7 +28,7 @@ class ConfigContext:
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
         current_base_url: Optional[str] = None,
-    ) -> "ConfigContext":
+    ) -> ConfigContext:
         """Copy with TRUTHY overrides applied: the TUI reads agent attributes that may be empty strings
         before an agent is spawned — empties must not clobber the disk-config values."""
         overrides = (("current_provider", current_provider), ("current_model", current_model),
@@ -956,7 +956,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["unavailable_models"] = []
 
 
-def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
     before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is

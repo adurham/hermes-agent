@@ -209,12 +209,12 @@ class SignalAdapter(BasePlatformAdapter):
         self._account_normalized = self.account.strip()
         # Recently sent timestamps filter echo-backs (Note to Self / linked-device sync-sents); LRU + TTL
         # so a pending echo in a chatty group isn't evicted by many outbounds.
-        self._recent_sent_timestamps: "OrderedDict[int, float]" = OrderedDict()
+        self._recent_sent_timestamps: OrderedDict[int, float] = OrderedDict()
         self._max_recent_timestamps = 512
         self._recent_sent_ttl_seconds = 300.0
         # Separate FIFO of outbound timestamps: Signal quote.id is the quoted message's timestamp, so
         # replies to this bot are recognised after the echo was consumed.
-        self._sent_message_timestamps: "OrderedDict[str, None]" = OrderedDict()
+        self._sent_message_timestamps: OrderedDict[str, None] = OrderedDict()
         self._max_sent_message_timestamps = 500
         # Best-effort number↔ACI/PNI UUID mapping so sends can upgrade a number to the UUID signal-cli prefers.
         self._recipient_uuid_by_number: dict[str, str] = {}
@@ -950,7 +950,7 @@ class SignalAdapter(BasePlatformAdapter):
         ok = isinstance(raw, dict) and raw.get("sender") and raw.get("timestamp_ms")
         return (raw["sender"], raw["timestamp_ms"]) if ok else None
 
-    def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
+    def _reactions_enabled(self, event: MessageEvent = None) -> bool:
         """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
         so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
         if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
@@ -963,7 +963,7 @@ class SignalAdapter(BasePlatformAdapter):
         if self._reactions_enabled(event) and (target := self._extract_reaction_target(event)):
             await self.send_reaction(event.source.chat_id, "👀", *target)
 
-    async def on_processing_complete(self, event: MessageEvent, outcome: "ProcessingOutcome") -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap 👀 for ✅/❌; on CANCELLED the 👀 stays to keep reflecting "in progress" (matches Telegram)."""
         if outcome == ProcessingOutcome.CANCELLED or not self._reactions_enabled(event):
             return

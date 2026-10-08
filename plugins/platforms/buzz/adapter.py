@@ -570,7 +570,7 @@ class BuzzAdapter(BasePlatformAdapter):
         self._member_cache: dict[str, tuple[float, list[str]]] = {}  # (monotonic, pubkeys)
         self._profile_name_cache: dict[str, tuple[float, str]] = {}
         # inbound event_id -> thread root (None when top-level), so send() joins the user's thread instead of nesting.
-        self._thread_roots: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._thread_roots: OrderedDict[str, Optional[str]] = OrderedDict()
 
     @property
     def name(self) -> str:

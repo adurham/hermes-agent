@@ -108,7 +108,7 @@ class PtyBridge:
     WebSocket task, never the dashboard event loop.
     """
 
-    def __init__(self, proc: "ptyprocess.PtyProcess"):  # type: ignore[name-defined]
+    def __init__(self, proc: ptyprocess.PtyProcess):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
@@ -128,7 +128,7 @@ class PtyBridge:
     @classmethod
     def spawn(
         cls, argv: Sequence[str], *, cwd: Optional[str] = None, env: Optional[dict] = None, cols: int = 80, rows: int = 24
-    ) -> "PtyBridge":
+    ) -> PtyBridge:
         """Spawn ``argv`` behind a new PTY and return a bridge."""
         if not _PTY_AVAILABLE:
             if sys.platform.startswith("win"):
@@ -374,7 +374,7 @@ class PtyBridge:
         except Exception:
             pass
 
-    def __enter__(self) -> "PtyBridge":
+    def __enter__(self) -> PtyBridge:
         return self
 
     def __exit__(self, *_exc) -> None:

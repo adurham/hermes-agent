@@ -127,7 +127,7 @@ class NtfyAdapter(BasePlatformAdapter):
         self._publish_topic: str = _extra_or_secret(extra, "publish_topic", "NTFY_PUBLISH_TOPIC") or self._topic
         self._token: str = _extra_or_secret(extra, "token", "NTFY_TOKEN")
         self._stream_task: Optional[asyncio.Task] = None
-        self._http_client: Optional["httpx.AsyncClient"] = None
+        self._http_client: Optional[httpx.AsyncClient] = None
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
 
     # -- Connection lifecycle -----------------------------------------------

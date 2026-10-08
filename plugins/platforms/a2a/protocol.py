@@ -79,7 +79,7 @@ def build_agent_card(*, name: str, url: str, description: str, skills: Optional[
     return card
 
 
-def skills_from_toolsets(toolsets: "list[str] | dict[str, list[str]] | None") -> list[dict]:
+def skills_from_toolsets(toolsets: list[str] | dict[str, list[str]] | None) -> list[dict]:
     """A2A skill descriptors from toolset names or a toolset -> tool-names mapping (tool names
     become tags, max 10)."""
     if not isinstance(toolsets, dict):
@@ -296,7 +296,7 @@ class TaskStore:
     _MAX_TERMINAL = 500
 
     def __init__(self) -> None:
-        self._tasks: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._tasks: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._watchers: dict[str, list[Future]] = {}
         self._lock = threading.Lock()
 

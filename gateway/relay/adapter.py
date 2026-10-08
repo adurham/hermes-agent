@@ -179,7 +179,7 @@ class RelayAdapter(BasePlatformAdapter):
         self._revocation_monitor: Optional[asyncio.Task[None]] = None
         # Lazily built client for the connector's /relay/media routes; None when
         # dial URL or creds are absent (media lanes degrade to text fallbacks).
-        self._media_client: Optional["RelayMediaClient"] = None
+        self._media_client: Optional[RelayMediaClient] = None
         # prompt_id -> pending-prompt state for the interactive `prompt` op; the
         # user's pick comes back as a prompt_response naming this id and resolves the
         # waiting primitive like native button callbacks. Expire lazily (_pop_prompt).
@@ -193,7 +193,7 @@ class RelayAdapter(BasePlatformAdapter):
         self._prompt_owner_nonce: str = secrets.token_hex(3)
         # Prompt ids this process already resolved, newest last (repeat answers are
         # consumed silently instead of treated as stale).
-        self._resolved_prompts: "OrderedDict[str, float]" = OrderedDict()
+        self._resolved_prompts: OrderedDict[str, float] = OrderedDict()
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property

@@ -47,7 +47,7 @@ _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
 # --- Connection / board helpers ---------------------------------------------
 
-def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
+def _ws_upgrade_authorized(ws: WebSocket) -> bool:
     """Authorize a WS upgrade via the dashboard's canonical gate (``web_server_chat._ws_auth_ok``:
     ``?token=`` / ``?ticket=`` / ``?internal=``) so this endpoint can never drift from core
     auth; accepts when the dashboard isn't importable (bare-FastAPI test harness)."""
