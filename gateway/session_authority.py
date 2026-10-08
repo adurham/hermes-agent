@@ -547,12 +547,14 @@ class SessionAuthority:
                 return
             if row is False:
                 continue
+            if row is None and first is not None:
+                # A live worker (or a claim this drain does not own) blocks the head: the same
+                # pause episode, so its notice is not repeated for every message queued behind it.
+                self._pause(ref, 'session_busy')
+                return
             # The FIFO is moving again (or empty): the next pause is a new episode.
             live.pause_notified = False
             if row is None:
-                if first is not None:
-                    self._pause(ref, 'session_busy')
-                    return
                 from gateway.session_acp_lifecycle import end_idle_acp_session
                 end_idle_acp_session(self, ref.session_id)
                 return

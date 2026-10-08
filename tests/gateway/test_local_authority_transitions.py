@@ -151,3 +151,24 @@ async def test_branch_route_uses_store_clock_and_deleted_policy_is_retired(tmp_p
     finally:
         await connection.close()
         owner.db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_busy_pause_keeps_the_notice_episode(tmp_path, monkeypatch):
+    """A head blocked behind running work is the same pause episode: the "saved, will be answered"
+    notice is not repeated for every message queued behind it."""
+    from hermes_state_runtime import admit_session_input, claim_session_input
+    owner, connection, ref = await local_session(tmp_path, monkeypatch)
+    live = owner.sessions[ref.session_id]
+    try:
+        for request_id in ('running', 'queued'):
+            admit_session_input(owner.db, epoch=owner.epoch, principal_id=connection.actor.subject,
+                                session_id=ref.session_id, request_id=request_id, payload={'text': request_id})
+            if request_id == 'running':
+                assert claim_session_input(owner.db, epoch=owner.epoch, session_id=ref.session_id) is not None
+        live.pause_notified = True  # the user was already told about this busy episode
+        await owner._drain(ref)
+        assert live.pause_notified is True, 'session_busy pause reset the notice episode'
+    finally:
+        await connection.close()
+        owner.db.close()
