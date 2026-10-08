@@ -20,6 +20,23 @@ def has_mutation_receipt(db, principal_id, session_id, request_id):
         return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone() is not None
 
 
+_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning'})
+
+
+def _compact_result(conn, admission_id):
+    """A retired result keeps the exact-retry outcome (final response, flags, usage/accounting)
+    but not the transcript copies a turn result carries (cumulative ``messages``, reasoning)."""
+    from hermes_state_terminal import RESULT_PREFIX
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()
+    if saved is None:
+        return
+    value = json.loads(saved[0])
+    result = value.get('result')
+    if isinstance(result, dict):
+        value['result'] = {**{k: v for k, v in result.items() if k not in _TRANSCRIPT_FIELDS}, 'messages': []}
+    conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(value), RESULT_PREFIX + admission_id))
+
+
 def retire_terminal_receipts(conn, session_ids):
     from hermes_state_terminal import ADMISSION_PREFIX, WORKER_PREFIX, identity_key
     for sid in session_ids:
@@ -33,6 +50,7 @@ def retire_terminal_receipts(conn, session_ids):
             # Keep the digest for exact retries, not another copy of user input/history.
             row['payload_json'] = '{}'
             row['lineage_json'] = '[]'
+            _compact_result(conn, row['admission_id'])
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (ADMISSION_PREFIX + row['admission_id'], _json(row)))
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
