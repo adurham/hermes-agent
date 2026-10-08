@@ -226,13 +226,11 @@ class SessionAuthority:
 
     def _pause(self, ref, reason):
         """The FIFO stopped without claiming its head. Committed rows stay queued for a later
-        drain; only the process-local messaging delivery waiters on this session are released,
+        drain; process-local delivery/HTTP/producer waiters on this session are released,
         with the reason instead of a reply, so an adapter loop is never parked on a turn that
         will not run. The ingress turns that refusal into one user-facing notice per episode."""
         for row in list_session_admissions(self.db, session_id=ref.session_id):
             admission_id = row['admission_id']
-            if admission_id not in self.native_waiters:
-                continue
             self.native_waiters.discard(admission_id)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
@@ -528,6 +526,7 @@ class SessionAuthority:
 
     async def _drain(self, ref):
         from gateway.session_finite import execute_finite_admission
+        from gateway.session_managed_worker import ManagedExecutionUnknown
         live = self.sessions[ref.session_id]
         while True:
             try:
@@ -558,6 +557,12 @@ class SessionAuthority:
             try:
                 response = await execute_finite_admission(self, ref, row)
                 outcome = 'completed'
+            except ManagedExecutionUnknown:
+                with live.event_stream.lock:
+                    live.event_stream.execution = {}
+                self.pending_stops.pop(ref.session_id, None)
+                self._pause(ref, 'unknown_execution')
+                return
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception('Admitted turn %s failed', admission_id)
