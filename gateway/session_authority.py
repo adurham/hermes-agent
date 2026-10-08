@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, field
 from functools import partial
+import sqlite3
 import uuid
 
 from gateway.session_contract import (
@@ -21,6 +22,9 @@ from hermes_state_runtime import (
     cancel_session_input, claim_session_input, get_session_admission,
     list_session_admissions, recover_session_inputs, resolve_unknown_session_input,
 )
+
+# Capped backoff for a claim refused by transient storage (writer lock, full disk).
+_CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
 
 
 @dataclass
@@ -555,6 +559,7 @@ class SessionAuthority:
         from gateway.session_finite import execute_finite_admission
         from gateway.session_managed_worker import ManagedExecutionUnknown
         live = self.sessions[ref.session_id]
+        backoff = 0.0
         while True:
             try:
                 row, first = await self._claim_next(ref, live)
@@ -563,6 +568,21 @@ class SessionAuthority:
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
                 return
+            except (OSError, sqlite3.OperationalError) as exc:
+                # A writer held past its patience or a full disk is transient, and every _schedule
+                # caller is event-driven: a dead drain would strand the committed head and hang its
+                # waiters until the next submit. Retry in place (like recover_failed_settlement),
+                # keeping waiters: releasing them fails requests that would run a moment later.
+                if self.runner._draining or self.retiring or self.sessions.get(ref.session_id) is not live:
+                    self._pause(ref, 'runtime_draining')
+                    return
+                backoff = min(max(backoff * 2, _CLAIM_RETRY_MIN_S), _CLAIM_RETRY_MAX_S)
+                import logging
+                logging.getLogger(__name__).warning(
+                    'Session %s claim deferred by storage (%r); retrying in %.1fs', ref.session_id, exc, backoff)
+                await asyncio.sleep(backoff)
+                continue
+            backoff = 0.0
             if row is False:
                 continue
             if row is None and first is not None:

@@ -229,3 +229,43 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
                 if r['admission_id'] == head.admission_id]
         assert row['status'] == 'unknown', 'explicit recovery is possible without inventing a terminal result'
         assert authority.sessions['s'].event_stream.execution == {}, 'stamp cleared even on failure'
+
+
+@pytest.mark.asyncio
+async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_path, monkeypatch):
+    """A writer held past the claim's patience (or a full disk) is transient. The drain must not die
+    with the committed head queued and its waiter parked forever: every _schedule caller is
+    event-driven, so nothing would re-arm it. It retries in place and runs the head once."""
+    import sqlite3
+    from gateway import session_authority, session_finite
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(db, '_WRITE_PATIENCE_S', 0.2)
+    monkeypatch.setattr(session_authority, '_CLAIM_RETRY_MIN_S', 0.05, raising=False)
+    ran = []
+
+    async def execute(authority, ref, row):
+        ran.append(row['request_id'])
+        return 'done'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    schedule = authority._schedule
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        head = await _submit(authority, 'head')
+        waiter = authority.waiters.setdefault(head.admission_id, asyncio.get_running_loop().create_future())
+        blocker = sqlite3.connect(tmp_path / 'state.db', isolation_level=None)
+        blocker.execute('BEGIN IMMEDIATE')
+        try:
+            schedule(REF)
+            task = authority.sessions['s'].task
+            await asyncio.sleep(0.6)
+            assert not task.done(), task.exception() if task.done() else None
+            assert not waiter.done(), 'a transient storage error must not release accepted work'
+        finally:
+            blocker.execute('ROLLBACK')
+            blocker.close()
+        assert await asyncio.wait_for(waiter, 10) == 'done'
+        await asyncio.wait_for(task, 5)
+    assert ran == ['head']
+    row, = list_session_admissions(db, session_id='s', pending_only=False)
+    assert (row['status'], row['outcome']) == ('terminal', 'completed')
