@@ -70,6 +70,18 @@ def test_a_login_handle_is_never_offered_as_the_name(machine, monkeypatch, full)
     assert machine()["full_name"] is None
 
 
+@pytest.mark.parametrize(("os_family", "mac_ver", "release"), [
+    ("darwin", "26.0.1", "26.0.1"),
+    ("darwin", "", "25.0.0"),  # no macOS version reported: fall back to the kernel release
+    ("linux", "26.0.1", "25.0.0"),
+])
+def test_os_release_is_the_macos_version_on_a_mac(machine, monkeypatch, os_family, mac_ver, release):
+    monkeypatch.setattr(summary.platform, "mac_ver", lambda: (mac_ver, ("", "", ""), ""))
+    monkeypatch.setattr(summary.platform, "release", lambda: "25.0.0")
+
+    assert machine(os_family=os_family)["machine"]["os_release"] == release
+
+
 def test_cached_per_process(machine, monkeypatch):
     first = machine()
     monkeypatch.setattr(facts, "os_family", lambda: "darwin")

@@ -147,6 +147,11 @@ def _machine_kind(os_family: str, spark: bool) -> str:
     return {"darwin": "Mac", "win32": "PC"}.get(os_family, "computer")
 
 
+def _os_release(os_family: str) -> str:
+    # On a Mac platform.release() is the Darwin kernel version (25.x), not the macOS version (26.x).
+    return (platform.mac_ver()[0] if os_family == "darwin" else "") or platform.release()
+
+
 @functools.cache
 def summary() -> dict:
     """This machine and account as measured. ``machine`` leaves out a key that was not measured;
@@ -156,7 +161,7 @@ def summary() -> dict:
     spark = is_spark(os_family, arch, gpu, cpu)
     machine = {
         "os_family": os_family,
-        "os_release": platform.release(),
+        "os_release": _os_release(os_family),
         "native_arch": arch,
         "cpu_model": cpu,
         "ram_gb": round(ram / 2**30) if ram else None,
