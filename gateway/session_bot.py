@@ -13,7 +13,7 @@ from gateway.session_contract import Principal, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_live_delivery import _delivery_id, _locked, _read, _write
+from tools.bot_live_delivery import _delivery_id, _locked, _read, _root, _write
 
 
 _CANONICAL_RECEIPT_STATUSES = frozenset({
@@ -164,6 +164,10 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, retry_id)
     else:
         status, reply = _admission_outcome(authority, record['admission_id'], record)
+        if status == 'failed' and _retry_due(authority, record):
+            # Interim, never the answer: the one retry is admitted next (or by the restarted
+            # owner's recovery while this one drains). Senders poll the published receipt file.
+            status = 'claimed'
     error = reason = None
     if status == 'failed':
         error, reason = _failure(authority, current)
@@ -190,18 +194,24 @@ def peer_wait_admission(authority, record):
     An original that failed while its one retry is still eligible is ``interim``: pending, never
     the answer, while the owner's receipt task admits the retry (or records why it would not;
     the receipt file is re-read for that, the caller's in-memory record is stale)."""
-    from tools.bot_live_delivery import _read, _root
     retry_id = _retry_admission(authority, record)
     if retry_id:
         return (retry_id, False) if _admission_outcome(authority, retry_id)[0] in {'queued', 'claimed'} else (None, False)
     status = _admission_outcome(authority, record['admission_id'], record)[0]
     if status in {'queued', 'claimed'}:
         return record['admission_id'], False
-    if status == 'failed':
-        saved = _read(_root(record['profile_home']) / f"{record['delivery_id']}.json") or record
-        if _retry_eligible(authority, {**record, 'retry': saved.get('retry')}):
-            return record['admission_id'], True
+    if status == 'failed' and _retry_due(authority, record):
+        return record['admission_id'], True
     return None, False
+
+
+def _retry_due(authority, record):
+    """The failed original's one retry is still to be admitted. Its refusal is recorded on the
+    receipt file; an in-memory record without the ``retry`` marker re-reads it there."""
+    retry = record.get('retry')
+    if retry is None:
+        retry = (_read(_root(record['profile_home']) / f"{record['delivery_id']}.json") or {}).get('retry')
+    return _retry_eligible(authority, {**record, 'retry': retry})
 
 
 def _retry_identity(key):
@@ -254,6 +264,7 @@ async def _maybe_retry(authority, home, path, record):
         if exc.reason == 'runtime_draining':
             return  # nothing recorded: the restarted owner's recovery re-evaluates the same gate
         record['retry'] = {'identity': identity, 'refused': exc.reason}
+        record.update(_result(authority, record))  # the refusal makes the original's failure final
         _write(path, record)
         return
     event = MessageEvent(text=record['message'], source=live.source, internal=True,
@@ -342,9 +353,9 @@ async def recover_bot_deliveries(authority):
                 continue
             record.update(_result(authority, record))
             _write(path, record)
-            if record['status'] in {'queued', 'claimed'}:
-                _watch_reply(authority, home, record['delivery_id'],
-                             record.get('retry_admission_id') or record['admission_id'])
+            live, interim = peer_wait_admission(authority, record)
+            if live is not None and not interim:
+                _watch_reply(authority, home, record['delivery_id'], live)
             else:
                 await _maybe_retry(authority, home, path, record)
         row = authority.db.get_session_by_title('Bot Chat')
@@ -444,6 +455,7 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     _write(path, record)
     receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
     record.update(status='canonical', admission_id=receipt.admission_id)
+    record.update(_result(authority, record))  # publish the outcome senders poll, not a bare marker
     _write(path, record)
     if receipt.status in {'queued', 'started'}:
         _watch_reply(authority, home, key, receipt.admission_id)

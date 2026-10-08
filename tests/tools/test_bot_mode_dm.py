@@ -260,6 +260,15 @@ class _FakeAuthority:
             raise ValueError("admission_conflict")
         return {k: record[k] for k in ("status", "delivery_id", "profile_home", "session_id", "reply")}
 
+    def settle(self, delivery_id, **outcome):
+        """The owner settles the admission and republishes its receipt file (what waiters poll)."""
+        from tools import bot_live_delivery as live
+
+        record = self.records[delivery_id]
+        record.update(outcome)
+        with live._locked(record["profile_home"]) as root:
+            live._write(root / f"{delivery_id}.json", record)
+
 
 def _canonical_target(monkeypatch, *targets: Path) -> _FakeAuthority:
     """Every ``targets`` profile home has a ready authority (its Bot Chat is admitted canonically);
@@ -724,7 +733,7 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
     assert queued["status"] == "queued"
     # The authority settles the admission as failed; a retry of the same runner
     # reads that exact receipt (same id) and never admits or executes again.
-    authority.records[queued["delivery_id"]]["status"] = "failed"
+    authority.settle(queued["delivery_id"], status="failed")
     from tools import bot_live_delivery as live
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: pytest.fail("intent is pinned"))
     assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
@@ -750,8 +759,7 @@ def _admitted_live_dm(tmp_path, monkeypatch, delivery_id):
 def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
     """A retained admission still delivers its reply after the first wait window (main a94b9758313)."""
     live, authority, record = _admitted_live_dm(tmp_path, monkeypatch, "a" * 32)
-    settling = threading.Timer(0.05, lambda: authority.records[record["delivery_id"]].update(
-        status="settled", reply="PONG"))
+    settling = threading.Timer(0.05, lambda: authority.settle(record["delivery_id"], status="settled", reply="PONG"))
     settling.start()
     try:
         exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
@@ -1172,7 +1180,7 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     waiting.start()
     time.sleep(0.05)
     pending_kept = waiting.is_alive() and intent.exists() and dm_file.exists()
-    authority.records[record["delivery_id"]].update(status="settled", reply="ok")
+    authority.settle(record["delivery_id"], status="settled", reply="ok")
     waiting.join(timeout=2)
 
     assert pending_kept, "a pending delivery keeps its intent while the runner waits"

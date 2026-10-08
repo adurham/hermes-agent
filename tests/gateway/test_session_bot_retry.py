@@ -182,3 +182,45 @@ async def test_peer_dm_waiter_follows_the_retry_admission_to_its_answer(bot):
         finite.execute_finite_admission = execute
     assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
     assert receipt['retry_admission_id']
+
+
+@pytest.mark.asyncio
+async def test_receipt_file_stays_pending_while_a_draining_owner_leaves_the_retry_to_its_successor(bot):
+    """Senders wait on the published receipt file, not an authority RPC. An original that failed
+    transiently while the owner drains is interim there (``claimed``), never the final ``failed``:
+    the restarted owner's recovery admits the one retry and the same wait gets its answer."""
+    from gateway.session_bot import deliver, recover_bot_deliveries
+    from tools.bot_live_delivery import await_delivery_async
+    import gateway.session_finite as finite
+    started, gate = asyncio.Event(), asyncio.Event()
+    execute = finite.execute_finite_admission
+
+    async def held(authority, ref, row):
+        if not row['request_id'].endswith(':retry'):
+            started.set()
+            await gate.wait()
+        return await execute(authority, ref, row)
+
+    finite.execute_finite_admission = held
+    try:
+        bot.errors[:] = ['Error code: 429 - rate limit exceeded']
+        await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
+        await asyncio.wait_for(started.wait(), 5)
+        bot.authority.runner._draining = True  # shutdown starts while the original runs
+        gate.set()
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if _admissions(bot)[0]['status'] == 'terminal':
+                break
+        await asyncio.sleep(0.1)
+        interim = await await_delivery_async(bot.home, KEY, 0.2)
+        assert interim['status'] == 'claimed' and len(_admissions(bot)) == 1, interim
+        waiting = asyncio.create_task(await_delivery_async(bot.home, KEY, 10))
+        bot.authority.runner._draining = False  # the successor owner's startup recovery
+        await recover_bot_deliveries(bot.authority)
+        receipt = await asyncio.wait_for(waiting, 10)
+    finally:
+        finite.execute_finite_admission = execute
+    assert (receipt['status'], receipt['reply']) == ('settled', 'pong'), receipt
+    assert [r['request_id'] for r in _admissions(bot)] == ['bot:' + KEY, 'bot:' + KEY + ':retry']
+

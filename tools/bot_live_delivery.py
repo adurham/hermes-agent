@@ -332,6 +332,17 @@ _PENDING = ("queued", "claimed")
 _POLL_SECONDS = 0.5
 
 
+def _poll_receipt(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
+    """A waiter's read: the receipt file the owner republishes when the admission settles (and on
+    restart recovery). Never an authority RPC: a wait outlives owner restarts, and replaying the
+    envelope (``read_delivery_result``) is for producers re-confirming their admission."""
+    record = _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+    if record is not None and record.get("status") == "canonical":
+        # Admitted with its outcome not yet published (an older owner's last write): pending.
+        return {**record, "status": "queued"}
+    return record
+
+
 def await_delivery(
     profile_home: Path | str, delivery_id: str, timeout: float | None,
     *, should_stop: Callable[[], bool] | None = None,
@@ -342,11 +353,12 @@ def await_delivery(
     Desktop relay, ``hermes peer dm`` and ``hermes peer run``) waits on the same receipt; keeping
     the loop here is what stops the lanes drifting (one lane returned a receipt sentence instead
     of the reply, two never waited at all). Returns the last record read — still pending when the
-    budget lapsed, None when the receipt was never readable.
+    budget lapsed, None when the receipt was never readable. Polls the local receipt file only, so
+    an owner restart mid-wait is just a longer pending stretch.
     """
     deadline = None if timeout is None else time.monotonic() + timeout
     while True:
-        record = read_delivery_result(profile_home, delivery_id)
+        record = _poll_receipt(profile_home, delivery_id)
         if record is None or record["status"] not in _PENDING:
             return record
         if should_stop is not None and should_stop():
@@ -366,7 +378,7 @@ async def await_delivery_async(
 
     deadline = None if timeout is None else time.monotonic() + timeout
     while True:
-        record = await asyncio.to_thread(read_delivery_result, profile_home, delivery_id)
+        record = await asyncio.to_thread(_poll_receipt, profile_home, delivery_id)
         if record is None or record["status"] not in _PENDING:
             return record
         if should_stop is not None and should_stop():
