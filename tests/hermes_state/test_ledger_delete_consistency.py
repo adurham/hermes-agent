@@ -279,3 +279,17 @@ def test_discarding_an_unadmitted_row_leaves_no_fence_but_an_admitted_row_is_fen
         _settled_admission(db, epoch, 'used')
         assert db.discard_unadmitted_session('used') is True
         assert db.get_meta(RETIRED_PREFIX + 'used') is not None
+
+
+def test_local_reset_stamps_ended_at_on_the_same_float_clock_as_started_at(tmp_path):
+    """``ended_at`` uses the ``time.time()`` clock of ``started_at`` and every sibling end path:
+    SQLite's integer-second clock truncates, so a reset in the same second as the creation
+    recorded a session that ended before it started."""
+    from hermes_state_local_lineage import reset_local_target
+    with closing(SessionDB(tmp_path / 'state.db')) as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        sid, reset = _local_session(db, epoch)
+        before = time.time()
+        reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
+        parent = db.get_session(sid)
+        assert parent['ended_at'] >= max(parent['started_at'], before)
