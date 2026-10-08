@@ -112,9 +112,28 @@ def _create_bot_chat(authority, actor):
     from gateway.session_local import create_local_session
     from gateway.session_local_title import title_new_session
     ref = create_local_session(authority, actor, {
-        'request_id': 'bot-chat:' + authority.profile_id, 'source': 'cli', 'cwd': str(Path.home())})
+        'request_id': _bot_chat_creation_id(authority, actor), 'source': 'cli', 'cwd': str(Path.home())})
     title_new_session(authority, ref, 'Bot Chat')
     return ref
+
+
+def _bot_chat_creation_id(authority, actor):
+    """The first creation identity whose session is not spent. Generation 0 keeps the historical
+    ``bot-chat:<profile>`` id; a generation is spent once its session was deleted (retired: a retry
+    must never resurrect it) or renamed (titled, but not "Bot Chat" — or the lookup had found it),
+    and a replacement takes the next one. Derived from durable rows only, so a restart and two
+    concurrent deliveries (this runs on the owner loop with no await) pick the same identity. An
+    existing UNtitled session is the same creation interrupted before its title: it is reused."""
+    from gateway.session_local_recovery import local_identity
+    from hermes_state_mutation_retirement import retired_session
+    base, generation = 'bot-chat:' + authority.profile_id, 0
+    while True:
+        request_id = base if generation == 0 else f'{base}:{generation}'
+        sid = local_identity(authority.profile_id, actor.subject, request_id)
+        row = authority.db.get_session(sid)
+        if not retired_session(authority.db, sid) and (row is None or not row.get('title')):
+            return request_id
+        generation += 1
 
 
 def _admission_outcome(authority, admission_id, fallback=None):
