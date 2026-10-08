@@ -630,6 +630,42 @@ def test_abandon_clears_one_of_two_attempts_a_concurrent_cut_left(source):
         _release(source, _advance(source, "later"), execute=_must_not_execute)
 
 
+def test_a_local_only_attempt_tag_is_not_a_claim(source):
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+    git(source, "tag", "-a", "rc.915-v0.21.5", commit, "-m", "claim")
+
+    assert _abandon(source, "0.21.5")["marker"] == "abandoned-rc.1-v0.21.5"
+    result = _release(source, _advance(source, "later"))
+    assert result["tag"] == "rc.2-v0.21.5"
+
+
+def test_a_local_only_tag_of_the_next_attempt_name_is_replaced_by_the_claim(source):
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+    _mark(source, "0.21.5")
+    stray = _advance(source, "stray")
+    git(source, "tag", "-a", "rc.2-v0.21.5", stray, "-m", "stray")
+    later = _advance(source, "later")
+
+    assert _release(source, later)["tag"] == "rc.2-v0.21.5"
+
+    remote = git(source, "ls-remote", "origin", "refs/tags/rc.2-v0.21.5^{}").split()[0]
+    assert remote == later
+    assert git(source, "rev-parse", "rc.2-v0.21.5^{commit}") == later
+
+
+def test_a_local_only_marker_of_the_attempt_name_is_replaced_by_the_abandon(source):
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+    git(source, "tag", "-a", "abandoned-rc.1-v0.21.5", commit, "-m", "stray")
+
+    assert _abandon(source, "0.21.5")["marker"] == "abandoned-rc.1-v0.21.5"
+
+    assert git(source, "ls-remote", "origin", "refs/tags/abandoned-rc.1-v0.21.5")
+    assert "stray" not in git(source, "tag", "-l", "abandoned-rc.1-v0.21.5", "--format=%(contents)")
+
+
 def _clones(source, tmp_path):
     origin = git(source, "remote", "get-url", "origin")
     clones = []
@@ -698,6 +734,65 @@ def test_concurrent_claim_loser_reports_the_remote_winner_and_the_version_stays_
     refs = git(fresh, "tag", "--list", "rc.*").splitlines()
     assert derive_next_version(published="0.21.4", bump="patch") == "0.21.5"
     assert next_attempt("0.21.5", refs) == 2
+
+
+def _claim_pushed_after_the_fetch(monkeypatch, tmp_path, source, version, attempt):
+    """Another maintainer pushes ``rc.<attempt>-v<version>`` right after this process's fetch."""
+    from scripts.releases import entrypoint
+
+    original_git = entrypoint._git
+    pushed = []
+
+    def git_then_a_concurrent_claim(repo, *args):
+        result = original_git(repo, *args)
+        if args[0] == "fetch" and not pushed:
+            pushed.append(True)
+            _origin, (other, _unused) = _clones(source, tmp_path)
+            git(other, "checkout", "--quiet", "origin/main")
+            _claim(other, version, git(other, "rev-parse", "HEAD"), attempt=attempt)
+        return result
+
+    monkeypatch.setattr(entrypoint, "_git", git_then_a_concurrent_claim)
+    return pushed
+
+
+def test_abandon_cleans_up_a_claim_pushed_between_its_fetch_and_its_claim_list(
+        source, tmp_path, monkeypatch):
+    pushed = _claim_pushed_after_the_fetch(monkeypatch, tmp_path, source, "0.21.5", attempt=1)
+    calls = []
+
+    result = _abandon(source, "0.21.5", calls=calls,
+                      draft={"tagName": "rc.1-v0.21.5", "isDraft": True, "isPrerelease": False})
+
+    # The attempt was listed after the fetch, so its tag object had to be fetched
+    # before the draft was deleted: the marker is what clears the attempt.
+    assert pushed
+    assert result["marker"] == "abandoned-rc.1-v0.21.5"
+    assert calls == [["gh", "release", "delete", "rc.1-v0.21.5", "--repo", "example/hermes-agent", "--yes"]]
+    assert "refs/tags/abandoned-rc.1-v0.21.5" in git(source, "ls-remote", "origin", "refs/tags/*")
+
+
+def test_a_local_tag_that_differs_from_the_remote_claim_of_that_name_is_refreshed(source):
+    commit = git(source, "rev-parse", "HEAD")
+    _claim(source, "0.21.5", commit)
+    other = _advance(source, "other")
+    git(source, "tag", "-f", "-a", "rc.1-v0.21.5", other, "-m", "stray")
+
+    assert _abandon(source, "0.21.5")["marker"] == "abandoned-rc.1-v0.21.5"
+
+    # The marker records the remote claim's commit, not the stray local tag's.
+    assert git(source, "rev-parse", "abandoned-rc.1-v0.21.5^{commit}") == commit
+
+
+def test_release_refuses_on_a_claim_pushed_between_its_fetch_and_its_claim_list(
+        source, tmp_path, monkeypatch):
+    from scripts.releases.entrypoint import ReleaseRefused
+
+    pushed = _claim_pushed_after_the_fetch(monkeypatch, tmp_path, source, "0.21.5", attempt=1)
+
+    with pytest.raises(ReleaseRefused, match="rc.1-v0.21.5 is outstanding"):
+        _release(source, git(source, "rev-parse", "HEAD"), execute=_must_not_execute)
+    assert pushed
 
 
 def test_a_concurrent_cut_of_another_version_is_stopped_before_dispatch(

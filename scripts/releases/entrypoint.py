@@ -34,11 +34,23 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=repo, text=True, encoding="utf-8").strip()
 
 
-def _claims(repo: Path) -> list[str]:
-    """Every local attempt ref and abandon marker ref."""
-    listed = _git(repo, "tag", "--list", *_ATTEMPT_GLOBS)
-    return [ref for ref in listed.splitlines()
-            if parse_attempt_ref(ref) or parse_marker_ref(ref)]
+def _claims(repo: Path, remote: str) -> list[str]:
+    """Every attempt ref and abandon marker ref on ``remote``, fetched.
+
+    The remote is the only authority. A local tag that was never pushed (a
+    failed claim, a hand-made ref) is not a claim and must not count. The
+    listed refs are fetched by exact name before this returns, so the list and
+    its objects are one snapshot: a claim pushed after an earlier fetch is
+    local here, and a stray local tag of a listed name is replaced by the
+    remote's.
+    """
+    listed = _git(repo, "ls-remote", "--tags", remote, *(f"refs/tags/{glob}" for glob in _ATTEMPT_GLOBS))
+    refs = (line.split("\t", 1)[1].removeprefix("refs/tags/")
+            for line in listed.splitlines() if "\t" in line)
+    claims = sorted({ref for ref in refs if parse_attempt_ref(ref) or parse_marker_ref(ref)})
+    if claims:
+        _git(repo, "fetch", remote, *(f"+refs/tags/{ref}:refs/tags/{ref}" for ref in claims))
+    return claims
 
 
 def _claim_commit(repo: Path, tag: str) -> str:
@@ -89,7 +101,7 @@ def _outstanding_attempts(repo: Path, remote: str) -> list[tuple[str, int, str]]
             published[version] = bool(_git(repo, "ls-remote", remote, f"refs/tags/v{version}"))
         return published[version]
 
-    return outstanding_attempts(_claims(repo), is_published)
+    return outstanding_attempts(_claims(repo, remote), is_published)
 
 
 def _outstanding_attempt(repo: Path, remote: str) -> tuple[str, int, str] | None:
@@ -143,10 +155,11 @@ def _require_ancestry(repo: Path, commit: str, published_commit: str | None) -> 
             f"{commit} does not descend from the published stable head {published_commit}")
 
 
-def _next_claim_epoch(repo: Path) -> int:
+def _next_claim_epoch(repo: Path, claims: list[str]) -> int:
+    """One past the newest claim epoch; ``claims`` are fetched, so their objects are local."""
     epochs = _git(repo, "for-each-ref", "refs/tags/rc.*", "--format=%(refname:strip=2) %(taggerdate:unix)")
     previous = [int(stamp) for ref, _, stamp in (line.partition(" ") for line in epochs.splitlines())
-                if parse_attempt_ref(ref) and stamp.isdigit()]
+                if ref in claims and parse_attempt_ref(ref) and stamp.isdigit()]
     return max(int(time.time()), max(previous, default=0) + 1)
 
 
@@ -205,7 +218,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         raise ReleaseRefused(
             f"v{version} already has a final tag. Its publication is still finishing. "
             "Wait for Stable Release Publication, then cut again.")
-    attempt = next_attempt(version, _claims(repo))
+    claims = _claims(repo, remote)
+    attempt = next_attempt(version, claims)
     tag = attempt_ref(version, attempt)
     # Built before the claim: a body GitHub refuses would otherwise burn the attempt.
     body = draft_body(version=version, attempt_ref=tag, notes=_changelog(
@@ -216,7 +230,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         raise ReleaseRefused(
             f"the {tag} draft body is {len(body)} characters; GitHub accepts at most "
             f"{GITHUB_BODY_LIMIT}. Nothing was claimed. Re-run with --no-changelog.")
-    claim_epoch = _next_claim_epoch(repo)
+    claim_epoch = _next_claim_epoch(repo, claims)
     claim = json.dumps({
         "schema": 1,
         "version": version,
@@ -228,7 +242,9 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
         "claimEpoch": claim_epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.check_output(
-        ["git", "tag", "-a", tag, commit, "-m", claim], cwd=repo,
+        # -f replaces a local-only tag of this name (not a claim, so never on
+        # the remote); the push below stays non-forcing.
+        ["git", "tag", "-f", "-a", tag, commit, "-m", claim], cwd=repo,
         text=True, encoding="utf-8",
         env={**os.environ, "GIT_COMMITTER_DATE": f"@{claim_epoch} +0000"},
     )
@@ -333,9 +349,9 @@ def _release_view(tag: str, repository: str, inspect) -> dict | None:
         raise
 
 
-def _outstanding_ref(repo: Path, version: str) -> str:
+def _outstanding_ref(repo: Path, remote: str, version: str) -> str:
     """The attempt ref whose draft the publication pass must find."""
-    attempt = next_attempt(version, _claims(repo)) - 1
+    attempt = next_attempt(version, _claims(repo, remote)) - 1
     if attempt < 1:
         raise ReleaseRefused(f"stable {version} has no claimed attempt to publish")
     return attempt_ref(version, attempt)
@@ -352,7 +368,7 @@ def _preflight_publish(version: str, repository: str, inspect, head_version,
     # The draft lives on the attempt ref, never on the final tag and never on
     # the old v{version}-rc shape.
     _refresh_claims(repo, remote)
-    attempt_ref = _outstanding_ref(repo, version)
+    attempt_ref = _outstanding_ref(repo, remote, version)
     rows = [(tag, row) for tag in (f"v{version}", attempt_ref)
             if (row := _release_view(tag, repository, inspect)) is not None]
     if len(rows) != 1 or rows[0][0] != attempt_ref or rows[0][1].get("isDraft") is not True:
@@ -413,7 +429,8 @@ def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, 
     marker = marker_ref(version, attempt)
     message = json.dumps({"schema": 1, "version": version, "attempt": attempt, "attemptRef": tag},
                          sort_keys=True, separators=(",", ":"))
-    _git(repo, "tag", "-a", marker, f"{tag}^{{commit}}", "-m", message)
+    # -f replaces a local-only marker of this name; the push stays non-forcing.
+    _git(repo, "tag", "-f", "-a", marker, f"{tag}^{{commit}}", "-m", message)
     try:
         _git(repo, "push", remote, f"refs/tags/{marker}")
     except subprocess.CalledProcessError as error:
