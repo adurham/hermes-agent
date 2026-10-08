@@ -108,7 +108,9 @@ def reconcile_pending(*, allow_connect=True):
     from hermes_cli.gateway_client import connect_gateway
     from cron.executions import execution_owner_live
     from cron.jobs import pause_job
-    from cron.scheduler import _RunDelivery, _FireOwnership, _save_compose_deliver, _finish_completed_run
+    from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
+                                _save_compose_deliver, _finish_completed_run)
+    from cron.scheduler_bookkeeping import fail_empty_response
     from utils import atomic_json_write
     import logging
 
@@ -147,12 +149,16 @@ def reconcile_pending(*, allow_connect=True):
             success, output, answer, error = state['result']
             job = dict(state['job'], **(state.get('job_flags') or {}))
             job['execution_id'] = params['request_id']
-            delivery = _RunDelivery(job, success, error)
+            # The same result verdicts as the ordinary tail: an agent-declared [CRON_FAILURE] and a
+            # blank answer are failures, whichever process books them.
+            success, error, declared = _apply_agent_failure_marker(job, success, error, answer)
+            delivery = _RunDelivery(job, success, error, agent_declared=declared)
             # The canonical receipt supplies the result; a dead scheduler's fire claim does not
             # authorize replay and must not prevent finishing its durable bookkeeping.
             fence = _FireOwnership(dict(job, fire_claim=None))
             _save_compose_deliver(delivery, fence, answer, output, adapters=None, loop=None,
                                  verbose=False, execution_token=None)
+            fail_empty_response(delivery, answer)
             _finish_completed_run(delivery, None, params['request_id'], recovered=True)
         except Exception:
             logging.getLogger(__name__).warning('Cron receipt recovery deferred: %s', journal, exc_info=True)

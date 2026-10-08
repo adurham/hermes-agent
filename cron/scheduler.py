@@ -3476,10 +3476,8 @@ def _run_one_job_body(
             _record_fire_ownership_lost(job, fire_owner, execution_id)
             return True
 
-        # Empty final_response is a soft failure so last_status is not "ok".
-        if d.success and not final_response.strip():
-            d.success = False
-            d.error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+        from cron.scheduler_bookkeeping import fail_empty_response
+        fail_empty_response(d, final_response)
 
         if _fire_claim_ownership_lost():
             # #105861: the claim check is one sample; a miss AFTER a completed delivery must not

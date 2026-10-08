@@ -115,3 +115,26 @@ def test_direct_retry_reuses_generated_fire_identity(monkeypatch, initial):
         with pytest.raises(scheduler_authority.CronExecutionUnknown):
             scheduler_authority.run_canonical_job(job)
     assert requests[0] == requests[1]
+
+
+@pytest.mark.parametrize('answer', ['  \n', '[CRON_FAILURE]\nchild task failed'], ids=['blank', 'declared'])
+def test_recovered_receipt_books_the_same_failure_verdicts_as_the_firer(tmp_path, monkeypatch, answer):
+    """A blank answer and an agent-declared [CRON_FAILURE] fail the run on the ordinary tail;
+    receipt recovery must not book the same result green (ok / delivery_queued -> ok)."""
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        monkeypatch.setattr('cron.delivery_queue.DELIVERY_DB', tmp_path / 'deliveries.db')
+        job = jobs.create_job(prompt='report', schedule='every 1h', deliver='telegram:1')
+        execution = executions.create_execution(job['id'], source='test')
+        executions.mark_execution_running(execution['id'])
+        with executions._transaction() as conn:
+            conn.execute('UPDATE executions SET process_id=?,pid=? WHERE id=?', ('old-owner', 999999, execution['id']))
+        params = {'job_id': job['id'], 'request_id': execution['id'], 'extra_prompt': None}
+        journal = scheduler_authority.journal_path(job['id'], execution['id'])
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps({'params': params, 'receipt': None}))
+        peer(monkeypatch, lambda method, params: {'status': 'terminal', 'job': job,
+                                                 'result': [True, 'document', answer, None]})
+        scheduler_authority.reconcile_pending()
+        saved = jobs.get_job(job['id'])
+        assert (saved['last_status'], saved['failure_streak']) == ('error', 1)
+        assert executions.get_execution(execution['id'])['status'] == 'failed'
