@@ -4,7 +4,7 @@ import { applyRuntimeInfo } from '@/app/session/hooks/use-session-actions/utils'
 import { isSteerableEntry } from '@/store/composer-queue'
 
 import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from './composer-queue'
-import { reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
+import { readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -54,10 +54,10 @@ it('recovers remote pending text into the queue and journal without a local subm
   reconcilePendingSubmissions('chat', snapshot)
   expect(getQueuedPrompts('chat').map(({ id, text, serverStatus }) => ({ id, text, serverStatus })))
     .toEqual(snapshot.map(({ admission_id, user, status }) => ({ id: admission_id, text: user, serverStatus: status })))
-  const journal = JSON.parse(window.localStorage.getItem('hermes.desktop.pendingSubmissions.v1')!)
+  const journal = readPendingSubmissions('chat')
 
   for (const receipt of snapshot) {
-    expect(journal.chat[receipt.admission_id].text).toBe(receipt.user)
+    expect(journal[receipt.admission_id].text).toBe(receipt.user)
   }
 })
 
@@ -73,8 +73,7 @@ it('maps optimistic input identity to the admission identity before local drain 
 
 it('persists identified direct submissions independently of the automatic local queue', () => {
   trackPendingSubmission('chat', { id: 'direct', text: 'hello' })
-  const stored = JSON.parse(window.localStorage.getItem('hermes.desktop.pendingSubmissions.v1')!)
-  expect(stored.chat.direct).toMatchObject({ id: 'direct', text: 'hello' })
+  expect(readPendingSubmissions('chat').direct).toMatchObject({ id: 'direct', text: 'hello' })
   expect(getQueuedPrompts('chat')).toEqual([])
 })
 

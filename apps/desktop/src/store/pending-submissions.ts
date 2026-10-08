@@ -1,27 +1,70 @@
 import { getQueuedPrompts, type QueuedPromptEntry, writeSessionQueue } from './composer-queue'
 
-const STORAGE_KEY = 'hermes.desktop.pendingSubmissions.v1'
+// One localStorage key per (session, admission). Every Desktop window of the origin shares this
+// storage with last-writer-wins per KEY, so a single journal blob let one window's
+// read-modify-write silently drop an entry another window had just tracked. Per-entry keys make
+// each write touch only the record it owns.
+const ENTRY_PREFIX = 'hermes.desktop.pendingSubmissions.v2:'
+// The pre-v2 single blob, read for upgrade and drained per session as entries are rewritten.
+const LEGACY_KEY = 'hermes.desktop.pendingSubmissions.v1'
 interface PendingSubmission {
   id: string
   text: string
   displayText?: string
   status?: string
 }
-type Journal = Record<string, Record<string, PendingSubmission>>
 
-const readJournal = (): Journal => {
+const entryKey = (session: string, id: string) => `${ENTRY_PREFIX}${JSON.stringify([session, id])}`
+
+const parse = <T>(raw: null | string, fallback: T): T => {
   try {
-    return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}') as Journal
+    return raw ? (JSON.parse(raw) as T) : fallback
   } catch {
-    return {}
+    return fallback
+  }
+}
+
+/** Every tracked/observed pending submission of one session, keyed by id. */
+export function readPendingSubmissions(session: string): Record<string, PendingSubmission> {
+  const entries: Record<string, PendingSubmission> = { ...parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session] }
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index)
+
+    if (!key?.startsWith(ENTRY_PREFIX)) { continue }
+    const [owner, id] = parse(key.slice(ENTRY_PREFIX.length), [] as unknown[])
+    const entry = parse<null | PendingSubmission>(window.localStorage.getItem(key), null)
+
+    if (owner === session && typeof id === 'string' && entry) { entries[id] = entry }
+  }
+
+  return entries
+}
+
+function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): void {
+  for (const id of Object.keys(before)) {
+    if (!(id in after)) { window.localStorage.removeItem(entryKey(session, id)) }
+  }
+
+  for (const [id, entry] of Object.entries(after)) {
+    if (JSON.stringify(before[id]) !== JSON.stringify(entry)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
+  }
+
+  // Upgrade: once this session's entries live in v2 keys, drop its slice of the legacy blob.
+  const legacy = parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, unknown>)
+
+  if (session in legacy) {
+    for (const [id, entry] of Object.entries(after)) { window.localStorage.setItem(entryKey(session, id), JSON.stringify(entry)) }
+    delete legacy[session]
+
+    if (Object.keys(legacy).length) { window.localStorage.setItem(LEGACY_KEY, JSON.stringify(legacy)) }
+    else { window.localStorage.removeItem(LEGACY_KEY) }
   }
 }
 
 // Not an outbox: an uncertain accepted input must never be replayed automatically.
 export function trackPendingSubmission(key: string, entry: PendingSubmission): void {
-  const journal = readJournal()
-  journal[key] = { ...journal[key], [entry.id]: entry }
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(entry))
 }
 
 // Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
@@ -134,17 +177,15 @@ export function reconcilePendingSubmissions(key: string, value: unknown): void {
     return
   }
 
-  const journal = readJournal()
-  const known = journal[key] ?? {}
+  const before = readPendingSubmissions(key)
+  const known = { ...before }
   const { receipts, admissionByInput } = collectReceipts(value, known)
 
   const current = getQueuedPrompts(key)
   const next = projectQueue(current, receipts, admissionByInput)
 
   updateKnownReceipts(known, value)
-
-  journal[key] = known
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  writeEntries(key, before, known)
 
   if (JSON.stringify(current) !== JSON.stringify(next)) {
     writeSessionQueue(key, next)
