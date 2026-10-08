@@ -272,6 +272,62 @@ test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its c
   }
 })
 
+// The owner rewrites `gateway.sock.path` (O_TRUNC, then write) when it rebinds its fallback socket:
+// a dial landing mid-rewrite, or on a pointer an earlier owner left, must re-ensure like any other
+// stale owner instead of surfacing a raw error the renderer's reconnect backoff repeats forever.
+test.skipIf(process.platform === 'win32')('a corrupt control pointer is a stale owner: the redial re-ensures and attaches to the republished socket', async () => {
+  const crypto = await import('node:crypto')
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const net = await import('node:net')
+  const { isStaleLocalGatewayError, mintLocalGatewayTicket, redialLocalGateway } = await import('./local-gateway')
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-pointer-')))
+  const runtime = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-gw-')))
+  const hash = crypto.createHash('sha256').update(home).digest('hex').slice(0, 16)
+  const socketPath = path.join(runtime, `hermes-gw-${hash}`, 'control.sock')
+  const pointer = path.join(home, 'gateway.sock.path')
+  const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  await fs.mkdir(path.dirname(socketPath), { mode: 0o700 })
+
+  const server = net.createServer(socket => socket.once('data', () => {
+    socket.end(JSON.stringify({ protocol: 1, id: 1, ok: true, result: { profile_id: home, instance_id: 'owner', ticket: 'grant-republished' } }) + '\n')
+  }))
+
+  await new Promise<void>(resolve => server.listen(socketPath, resolve))
+  await fs.chmod(socketPath, 0o600)
+  await fs.writeFile(pointer, '', { mode: 0o600 })
+
+  try {
+    const failure = await mintLocalGatewayTicket(endpoint).catch(error => error)
+    expect(failure.message).toBe('Invalid gateway control pointer')
+    expect(isStaleLocalGatewayError(failure)).toBe(true)
+    expect(isStaleLocalGatewayError(new Error('Noncanonical gateway profile'))).toBe(true)
+
+    let ensures = 0
+    let forgets = 0
+
+    const ticket = await redialLocalGateway({
+      ensure: async () => {
+        ensures += 1
+
+        if (ensures === 2) {await fs.writeFile(pointer, socketPath, { mode: 0o600 })}
+
+        return endpoint
+      },
+      forget: () => { forgets += 1 },
+      use: e => mintLocalGatewayTicket(e)
+    })
+
+    expect(ticket).toBe('grant-republished')
+    expect([ensures, forgets]).toEqual([2, 1])
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await fs.rm(home, { recursive: true, force: true })
+    await fs.rm(runtime, { recursive: true, force: true })
+  }
+})
+
 test.skipIf(process.platform === 'win32')('a group-accessible control socket is refused as unsafe, and unrelated errors are never stale', async () => {
   const fs = await import('node:fs/promises')
   const os = await import('node:os')
