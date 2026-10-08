@@ -1,4 +1,4 @@
-"""Persisted hosted policies decline a question without a reply channel."""
+"""Persisted hosted policies decline a question without a reply channel; local ones still ask."""
 import asyncio
 import threading
 import time
@@ -51,3 +51,10 @@ def test_hosted_clarify_is_declined_without_waiting(ask):
     assert (response, answered) == (UNDELIVERED_DECLINED, False)
     assert elapsed < 5, 'the member waited for an answer nobody can submit'
 
+
+def test_local_choice_prompt_still_accepts_a_typed_answer(ask):
+    outcomes = []
+    (response, answered), _ = ask('cli', on_sent=lambda key: outcomes.append(
+        clarify_mod.attempt_text_response_for_session(key, 'something else entirely')))
+    assert outcomes == [clarify_mod.TEXT_RESOLVED]
+    assert (response, answered) == ('something else entirely', True)
