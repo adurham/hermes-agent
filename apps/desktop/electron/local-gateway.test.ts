@@ -3,6 +3,7 @@ import path from 'node:path'
 import { expect, test, vi } from 'vitest'
 
 import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
   // #68367: a sibling profile's `gateway ensure` must not see the launch profile's dotenv
@@ -58,13 +59,12 @@ test('canonical ensure cannot cross a rejected update or profile lifecycle gate'
 
 test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HTTP respects supported home mode %o and mints fresh purpose-bound grants', async mode => {
   const fs = await import('node:fs/promises')
-  const os = await import('node:os')
   const path = await import('node:path')
   const net = await import('node:net')
   const { nativeGatewayHttpHeaders } = await import('./local-gateway')
   // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
   // profile_id, so the endpoint must carry the realpath or identities never match.
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-http-')))
+  const home = await shortSocketTmpDir('desktop-http-')
   await fs.chmod(home, mode)
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
   const requests: any[] = []
@@ -95,11 +95,10 @@ test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HT
 
 test.skipIf(process.platform === 'win32')('a served secondary mints its ticket through the multiplexer control socket, bound to its own profile', async () => {
   const fs = await import('node:fs/promises')
-  const os = await import('node:os')
   const path = await import('node:path')
   const net = await import('node:net')
   const { mintLocalGatewayTicket } = await import('./local-gateway')
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-mux-')))
+  const root = await shortSocketTmpDir('desktop-mux-')
   const secondary = path.join(root, 'profiles', 'cold')
   await fs.mkdir(secondary, { recursive: true, mode: 0o700 })
   await fs.chmod(root, 0o700)
@@ -220,13 +219,12 @@ test('a dial that keeps failing after one re-ensure surfaces the error instead o
 
 test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its control socket is a stale owner, not a raw filesystem error', async () => {
   const fs = await import('node:fs/promises')
-  const os = await import('node:os')
   const path = await import('node:path')
   const net = await import('node:net')
   const { mintLocalGatewayTicket, redialLocalGateway } = await import('./local-gateway')
   // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
   // profile_id, so the endpoint must carry the realpath or identities never match.
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-redial-')))
+  const home = await shortSocketTmpDir('desktop-redial-')
   const socketPath = path.join(home, 'gateway.sock')
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
 
@@ -283,12 +281,11 @@ test.skipIf(process.platform === 'win32')('a stopped gateway that unlinked its c
 test.skipIf(process.platform === 'win32')('a corrupt control pointer is a stale owner: the redial re-ensures and attaches to the republished socket', async () => {
   const crypto = await import('node:crypto')
   const fs = await import('node:fs/promises')
-  const os = await import('node:os')
   const path = await import('node:path')
   const net = await import('node:net')
   const { isStaleLocalGatewayError, mintLocalGatewayTicket, redialLocalGateway } = await import('./local-gateway')
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-pointer-')))
-  const runtime = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-gw-')))
+  const home = await shortSocketTmpDir('desktop-pointer-')
+  const runtime = await shortSocketTmpDir('desktop-gw-')
   const hash = crypto.createHash('sha256').update(home).digest('hex').slice(0, 16)
   const socketPath = path.join(runtime, `hermes-gw-${hash}`, 'control.sock')
   const pointer = path.join(home, 'gateway.sock.path')
@@ -335,13 +332,12 @@ test.skipIf(process.platform === 'win32')('a corrupt control pointer is a stale 
 
 test.skipIf(process.platform === 'win32')('a group-accessible control socket is refused as unsafe, and unrelated errors are never stale', async () => {
   const fs = await import('node:fs/promises')
-  const os = await import('node:os')
   const path = await import('node:path')
   const net = await import('node:net')
   const { isStaleLocalGatewayError, mintLocalGatewayTicket } = await import('./local-gateway')
   // macOS: os.tmpdir() is /var/..., a symlink to /private/var; the gateway canonicalises
   // profile_id, so the endpoint must carry the realpath or identities never match.
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-unsafe-')))
+  const home = await shortSocketTmpDir('desktop-unsafe-')
   const socketPath = path.join(home, 'gateway.sock')
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
   const server = net.createServer(socket => socket.end())
@@ -364,11 +360,10 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
 // 0750/0701, a 0755 home); only write by another user can swap the socket. The socket stays 0600.
 test.skipIf(process.platform === 'win32')('a supported home mode mints its ticket; a home others can write is refused', async () => {
   const fs = await import('node:fs/promises')
-  const os = await import('node:os')
   const path = await import('node:path')
   const net = await import('node:net')
   const { mintLocalGatewayTicket } = await import('./local-gateway')
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-home-mode-')))
+  const home = await shortSocketTmpDir('desktop-home-mode-')
   const socketPath = path.join(home, 'gateway.sock')
   const endpoint = { profile_id: home, instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
 

@@ -1,17 +1,17 @@
 import fs from 'node:fs/promises'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 
 import { expect, test } from 'vitest'
 
 import { closeGatewayTicketBridges, mintGatewayTicketWithPython } from './local-gateway-python'
+import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 // This exercises the real helper process and protocol on this host. The native
 // probe separately exercises Windows SID checks and HTTP/WS admission.
 test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, owner, protocol and purpose', async () => {
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-')))
-  const mux = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gw-bridge-mux-')))
+  const home = await shortSocketTmpDir('gw-bridge-')
+  const mux = await shortSocketTmpDir('gw-bridge-mux-')
   const root = path.resolve('../..')
   // The JS-only CI runner has no repository venv; this helper uses stdlib only.
   const python = process.env.HERMES_TEST_PYTHON || 'python3'
