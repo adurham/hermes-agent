@@ -1,6 +1,6 @@
 name: iowap
 repo: https://github.com/iowap-org/iowap-hermes-integration
-sha: 8c383b7dbb7b24eb0ce54373530bd0a4aeeb2141
+sha: 6ca7224380112f233a70b71bba26c9a352eac80f
 description: >-
   Fleet control for Hermes Desktop: live statusbar chip (N/M IOWAP nodes online),
   a draggable fleet pane, a full fleet page (status, load, queue depth,
