@@ -1792,7 +1792,7 @@ class TestMcpInvocationResolution:
             yield
 
     @staticmethod
-    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception = None):
+    def _fake_run(stdout: str = "", returncode: int = 0, raises: Exception | None = None):
         """Build a patched subprocess.run that yields the supplied result."""
         from unittest.mock import MagicMock
         def _run(*args, **kwargs):

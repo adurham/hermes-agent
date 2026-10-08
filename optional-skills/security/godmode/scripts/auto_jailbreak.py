@@ -343,7 +343,7 @@ def _get_current_model() -> tuple:
         return None, None
 
 
-def _get_api_key(base_url: str = None) -> str:
+def _get_api_key(base_url: str | None = None) -> str:
     """Get the appropriate API key."""
     if base_url and "openrouter" in base_url:
         return os.getenv("OPENROUTER_API_KEY", "")
@@ -387,7 +387,7 @@ def _build_messages(system_prompt=None, prefill=None, query=None):
     return messages
 
 
-def _write_config(system_prompt: str = None, prefill_file: str = None):
+def _write_config(system_prompt: str | None = None, prefill_file: str | None = None):
     """Write jailbreak settings to config.yaml (merges, doesn't overwrite)."""
     cfg = {}
     if CONFIG_PATH.exists():

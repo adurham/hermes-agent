@@ -326,7 +326,7 @@ class TestAgentCardV1:
             "web": ["web_search", "web_extract"],
             "terminal": ["terminal"],
         })
-        web = [s for s in skills if s["name"] == "web"][0]
+        web = next(s for s in skills if s["name"] == "web")
         assert "web_search" in web["tags"]
         assert "web_extract" in web["tags"]
 

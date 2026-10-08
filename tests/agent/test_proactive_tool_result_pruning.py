@@ -69,7 +69,7 @@ def _build(n_pairs, big_indices, big_chars=9000, small="ok"):
 
 
 def _tool_by_id(msgs, cid):
-    return [m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid][0]
+    return next(m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid)
 
 
 def test_prunes_below_compression_threshold():

@@ -231,7 +231,7 @@ def _cursor_skip_prefix(messages: list, cursor: Optional[dict]) -> int:
 
 
 def sanitize_tool_call_arguments(
-    messages: list, *, logger=None, session_id: str = None, cursor: Optional[dict] = None
+    messages: list, *, logger=None, session_id: str | None = None, cursor: Optional[dict] = None
 ) -> int:
     """Repair corrupted assistant tool-call argument JSON in-place.
     ``cursor["prefix"]`` holds strong refs (not ``id()``: address reuse aliases) to the
@@ -2545,7 +2545,7 @@ def _pre_tool_block_message(agent, function_name, function_args, effective_task_
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
-                 tool_call_id: Optional[str] = None, messages: list = None,
+                 tool_call_id: Optional[str] = None, messages: list | None = None,
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
                  tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,

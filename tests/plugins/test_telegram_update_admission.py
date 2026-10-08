@@ -883,6 +883,6 @@ async def test_slow_update_does_not_block_other_chats(monkeypatch):
                 break
             await asyncio.sleep(0.02)
         await asyncio.gather(*adapter._pending_text_batch_tasks.values())
-        assert [e.source.chat_id for e in delivered][0] == "43"
+        assert next(e.source.chat_id for e in delivered) == "43"
         same_chat = "\n".join(e.text for e in delivered if e.source.chat_id == "42")
         assert same_chat == "hello\nsecond"

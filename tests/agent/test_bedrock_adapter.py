@@ -293,7 +293,7 @@ class TestConvertMessagesToConverse:
             "toolResult" in b for b in m["content"]
         )]
         assert len(tool_result_msg) == 1
-        tr = [b for b in tool_result_msg[0]["content"] if "toolResult" in b][0]
+        tr = next(b for b in tool_result_msg[0]["content"] if "toolResult" in b)
         assert tr["toolResult"]["toolUseId"] == "call_1"
         assert tr["toolResult"]["content"][0]["text"] == "file contents here"
 

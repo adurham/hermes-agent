@@ -1766,8 +1766,8 @@ class TestParallelTick:
 
         assert result == 2
         # With max_workers=1, second job starts after first ends
-        end_s1 = [t for action, jid, t in call_times if action == "end" and jid == "s1"][0]
-        start_s2 = [t for action, jid, t in call_times if action == "start" and jid == "s2"][0]
+        end_s1 = next(t for action, jid, t in call_times if action == "end" and jid == "s1")
+        start_s2 = next(t for action, jid, t in call_times if action == "start" and jid == "s2")
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
 class TestDeliverResultTimeoutCancelsFuture:

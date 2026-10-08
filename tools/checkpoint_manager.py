@@ -1117,7 +1117,7 @@ class CheckpointManager:
         self,
         working_dir: str,
         commit_hash: str,
-        file_path: str = None,
+        file_path: str | None = None,
         safe: bool = False,
     ) -> dict:
         """Restore files to a checkpoint state.
