@@ -3,6 +3,7 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import asdict, replace
 import json
+import os
 import queue
 import threading
 from types import SimpleNamespace
@@ -267,7 +268,9 @@ def _worker_env(authority):
     from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
     # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
-    env = strip_launch_profile_env(build_subprocess_env(scrub_secrets=True), home)
+    # Strip the RAW environ before the constructor injects this turn's own session/bridge context:
+    # a launch ``.env`` name (HERMES_SESSION_ID...) must not erase a value derived for this turn.
+    env = build_subprocess_env(base=strip_launch_profile_env(os.environ.copy(), home), scrub_secrets=True)
     if routed:
         # Same rule as served_profile_child_env: env_passthrough / first-party carve-outs must not
         # forward launch-process provider credentials that no .env or source snapshot recorded.
