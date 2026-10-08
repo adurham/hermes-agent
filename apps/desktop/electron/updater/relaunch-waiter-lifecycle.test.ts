@@ -276,6 +276,21 @@ test('the script log report keeps only this attempt, reads a bounded suffix, and
     assert.match(report, /Jörg fehlgeschlagen/)
     assert.doesNotMatch(report, /not mine|stale line|\[hermes-relaunch-old\]/)
     assert.equal(waiterLogTail(file, 'hermes-relaunch-gone'), `${file}:\nno lines from this attempt`)
+    // Every physical line of a multi-line script error carries the tag, so none is dropped.
+    fs.writeFileSync(
+      file,
+      [
+        't [hermes-relaunch-me] pid=3 failed: Exception: run.ps1:1',
+        't [hermes-relaunch-me] pid=3 Line |',
+        't [hermes-relaunch-me] pid=3  | first line second line third line',
+        't [hermes-relaunch-other] pid=4 not mine'
+      ].join('\n'),
+      'utf8'
+    )
+    const multi: string = waiterLogTail(file, 'hermes-relaunch-me')
+    assert.match(multi, /Line \|/)
+    assert.match(multi, /third line/)
+    assert.doesNotMatch(multi, /not mine/)
     assert.match(waiterLogTail(path.join(dir, 'absent.log'), 'x'), /not written/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

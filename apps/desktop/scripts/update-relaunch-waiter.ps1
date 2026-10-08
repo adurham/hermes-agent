@@ -16,7 +16,14 @@ $Attempt = Split-Path -Leaf (Split-Path -Parent $ReadyFile)
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 try { if ((Test-Path -LiteralPath $LogFile) -and (Get-Item -LiteralPath $LogFile).Length -gt 65536) { Remove-Item -LiteralPath $LogFile -Force } } catch {}
 function Write-WaiterLog([string]$Message) {
-  try { [IO.File]::AppendAllText($LogFile, ('{0} [{1}] pid={2} {3}' -f (Get-Date -Format o), $Attempt, $PID, $Message) + "`n", $Utf8NoBom) } catch {}
+  # Tag every physical line: a multi-line error (message, location, details) must survive the parent's attempt filter.
+  try {
+    $stamp = Get-Date -Format o
+    $lines = @($Message -split '\r?\n' | Where-Object { $_.Trim() })
+    if (-not $lines) { return }
+    $text = ($lines | ForEach-Object { '{0} [{1}] pid={2} {3}' -f $stamp, $Attempt, $PID, $_ }) -join "`n"
+    [IO.File]::AppendAllText($LogFile, $text + "`n", $Utf8NoBom)
+  } catch {}
 }
 
 try {
