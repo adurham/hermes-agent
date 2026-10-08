@@ -1,4 +1,5 @@
 """Session-scoped busy preferences and controls of the existing execution only."""
+import asyncio
 from functools import partial
 from pathlib import Path
 
@@ -76,29 +77,33 @@ _YOLO_WORDS = {'1': True, 'on': True, 'true': True, '0': False, 'off': False, 'f
 async def yolo_config(connection, ref, params, write):
     """Session-scoped /yolo (TUI slash + Shift+Tab, Desktop toggle): this session's approval bypass,
     never HERMES_YOLO_MODE or approvals.mode. A ``--yolo`` launch is seeded first, so revoking it
-    here is not re-enabled by the next turn's launch seeding. The route's persisted copy
-    (``SessionEntry.yolo``, re-armed every turn by ``_restore_session_yolo``) is written before the
-    live flag, like the messaging ``/yolo``, so an OFF here is not revived by the next turn."""
+    here is not re-enabled by the next turn's launch seeding. The write goes through the shared
+    ``tools.approval_yolo.toggle_session_yolo`` contract on the route's persisted copy
+    (``SessionEntry.yolo``, re-armed every turn by ``restore_session_yolo``), like the messaging
+    ``/yolo``: persisted before the live flip, so an OFF here is not revived by the next turn."""
     value = params.get('value')
     if write and value is not None and str(value).strip().lower() not in _YOLO_WORDS:
         raise RuntimeStoreError('invalid_params')
     authorize(connection, ref, params, 'session:control' if write else 'session:read')
     from gateway.session_policy import policy_for_source
-    from tools.approval import apply_launch_yolo, disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
+    from tools.approval import is_session_yolo_enabled
+    from tools.approval_yolo import apply_launch_yolo, toggle_session_yolo
     live = connection.authority.sessions[ref.session_id]
     runner = connection.authority.runner
     policy = policy_for_source(runner, live.source)
     if policy is not None and policy.yolo:
         apply_launch_yolo(live.route)
-    store = runner.async_session_store if getattr(runner, 'session_store', None) is not None else None
-    entry = await store.lookup_by_session_key(live.route) if store is not None else None
+    store = getattr(runner, 'session_store', None)
+    entry = await runner.async_session_store.lookup_by_session_key(live.route) if store is not None else None
     # After a restart only the persisted copy is set until the next turn re-arms it: still ON.
-    enabled = is_session_yolo_enabled(live.route) or getattr(entry, 'yolo', False) is True
+    persisted = getattr(entry, 'yolo', False) is True
+    enabled = is_session_yolo_enabled(live.route) or persisted
     if write:
-        enabled = not enabled if value is None else _YOLO_WORDS[str(value).strip().lower()]
-        if store is not None:
-            await store.set_session_yolo(live.route, enabled)
-        (enable_session_yolo if enabled else disable_session_yolo)(live.route)
+        persist = (lambda on: store.set_session_yolo(live.route, on)) if store is not None else None
+        # Off the loop: the persist is a routing-store write (thread-safe), as in the messaging /yolo.
+        enabled = await asyncio.to_thread(
+            toggle_session_yolo, live.route, None if value is None else _YOLO_WORDS[str(value).strip().lower()],
+            persisted=persisted, persist=persist)
     return {'key': 'yolo', 'value': '1' if enabled else '0', 'scope': 'session'}
 
 

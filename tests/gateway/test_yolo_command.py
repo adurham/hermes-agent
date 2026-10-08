@@ -99,6 +99,7 @@ async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_pa
     conversation boundary (/new, /resume) clears both copies so a restart cannot revive it."""
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
+    from tools.approval_yolo import restore_session_yolo
 
     def _runner():
         runner = _make_runner()
@@ -114,13 +115,13 @@ async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_pa
 
     disable_session_yolo(key)  # a new process starts with an empty in-memory approval set
     second = _runner()
-    second._restore_session_yolo(key, second.session_store.get_or_create_session(event.source))
+    restore_session_yolo(key, second.session_store.get_or_create_session(event.source).yolo)
     assert is_session_yolo_enabled(key) is True
 
     second._clear_session_boundary_security_state(key)
     assert is_session_yolo_enabled(key) is False
     third = _runner()
-    third._restore_session_yolo(key, third.session_store.get_or_create_session(event.source))
+    restore_session_yolo(key, third.session_store.get_or_create_session(event.source).yolo)
     assert is_session_yolo_enabled(key) is False
 
 
@@ -132,6 +133,7 @@ async def test_owner_yolo_off_is_not_revived_by_the_persisted_restore(tmp_path):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_busy_controls import busy_config
+    from tools.approval_yolo import restore_session_yolo
 
     runner = _make_runner()
     runner.session_store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
@@ -145,5 +147,5 @@ async def test_owner_yolo_off_is_not_revived_by_the_persisted_restore(tmp_path):
 
     off = await busy_config(connection, ref, {"session_id": "sid", "key": "yolo", "value": "0"}, write=True)
     assert off["value"] == "0" and is_session_yolo_enabled(key) is False
-    runner._restore_session_yolo(key, runner.session_store.get_or_create_session(event.source))
+    restore_session_yolo(key, runner.session_store.get_or_create_session(event.source).yolo)
     assert is_session_yolo_enabled(key) is False

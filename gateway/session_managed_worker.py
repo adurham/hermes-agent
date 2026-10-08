@@ -71,13 +71,13 @@ def _bootstrap(authority, ref, row, policy, scope):
 def _session_yolo(authority, route, policy):
     """The route's bypass as the in-process turn arms it on the owner, the one place a revocation
     is recorded: a ``--yolo`` launch seeded once per boundary, then the persisted ``/yolo`` copy."""
-    from gateway.run_agent_cache import GatewayAgentCacheMixin
-    from tools.approval import apply_launch_yolo, is_session_yolo_enabled
+    from tools.approval import is_session_yolo_enabled
+    from tools.approval_yolo import apply_launch_yolo, restore_session_yolo
     if policy.yolo:
         apply_launch_yolo(route)
     store = getattr(authority.runner, 'session_store', None)
     if store is not None:
-        GatewayAgentCacheMixin._restore_session_yolo(route, store.lookup_by_session_key(route))
+        restore_session_yolo(route, getattr(store.lookup_by_session_key(route), 'yolo', False) is True)
     return is_session_yolo_enabled(route)
 
 
