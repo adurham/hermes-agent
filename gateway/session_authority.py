@@ -394,6 +394,10 @@ class SessionAuthority:
         row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
                                             generation=generation,
                                             _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost))
+        # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
+        # would otherwise stay on disk forever (the drain releases only settled turns).
+        from gateway.session_ingress_media import release_admission_media
+        release_admission_media(self.db, admission_id)
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)

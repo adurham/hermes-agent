@@ -126,3 +126,32 @@ async def test_retry_with_the_same_image_restaged_under_a_new_name_replays(tmp_p
     with pytest.raises(RuntimeStoreError, match='admission_conflict'):
         await submit(cache_image_from_bytes(_ONE_PX_PNG + b'\0', '.png'))
     assert len(list_session_admissions(authority.db, session_id='s')) == 1
+
+
+@pytest.mark.asyncio
+async def test_discarding_a_lost_image_turn_releases_its_committed_bytes(tmp_path, monkeypatch):
+    """A turn lost across an owner restart and Discarded is terminal: its committed image bytes
+    are released like a settled turn's, never left on disk for the life of the profile."""
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_authority import SessionAuthority
+    import hermes_state_runtime as rt
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    from gateway import session_local_recovery
+    monkeypatch.setattr(session_local_recovery, 'transcript_target', lambda authority, ref: ref.session_id)
+    actor = Principal('human', 'p', frozenset({'session:submit', 'session:control'}), 't')
+    receipt = await authority.submit(actor, Submission('img', SessionRef('p', 's'),
+        {'text': 'look', 'attachments': [{'path': cache_image_from_bytes(_ONE_PX_PNG, '.png'),
+                                          'mime': 'image/png'}]}, 'queue'))
+    committed = rt.get_session_admission(authority.db, admission_id=receipt.admission_id)[
+        'payload']['attachments_v1']['media'][0]['path']
+    row = rt.claim_session_input(authority.db, epoch=authority.epoch, session_id='s')
+    authority.epoch = rt.begin_runtime_epoch(authority.db, instance_id='restarted')
+    rt.recover_session_inputs(authority.db, epoch=authority.epoch)
+    await authority.resolve_unknown(actor, SessionRef('p', 's'), receipt.admission_id, row['generation'])
+    assert rt.get_session_admission(authority.db, admission_id=receipt.admission_id)['status'] == 'terminal'
+    assert not os.path.exists(committed)
