@@ -226,15 +226,12 @@ def portal_accounts() -> list[dict[str, Any]]:
 
 def _alias_status(targets: list[Target]) -> Optional[dict[str, dict[str, Any]]]:
     """``{slug: {"connected": bool}}`` for an aliased target, read from that account's own row;
-    ``None`` when no target is aliased. A failed read counts as not connected, so the repair mints."""
+    ``None`` when no target is aliased. A failed read raises: guessing "not connected" would send
+    the user through a new login for an account that may be healthy."""
     aliased = [t for t in targets if t.alias]
     if not aliased:
         return None
-    try:
-        rows = portal_accounts()
-    except ToolGatewayError as exc:
-        logger.debug("connector accounts read for reconnect failed: %s", exc)
-        rows = []
+    rows = portal_accounts()
     return {t.name: {"connected": any(r.get("connector") == t.name and r.get("alias") == t.alias
                                       and r.get("status") == "active" for r in rows)} for t in aliased}
 
