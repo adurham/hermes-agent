@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+import itertools
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +596,7 @@ class TestAnthropicAdapterMultimodal:
         span = range(OUTBOUND_IMAGE_LIMIT - 2, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
         counts = [placeholder_count(n) for n in span]
         assert all(n - c <= OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
-        steps = sum(a != b for a, b in zip(counts, counts[1:]))
+        steps = sum(a != b for a, b in itertools.pairwise(counts))
         assert steps == 3, (
             f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "
             "each step invalidates the cached prefix"

@@ -33,6 +33,7 @@ from agent.conversation_compression import (
 )
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from hermes_state import SessionDB
+import itertools
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegram"):
@@ -1289,7 +1290,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         assert "task A" in tail["content"]
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
 
@@ -1356,7 +1357,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
         db_msgs = db.get_messages(agent.session_id)
@@ -1369,7 +1370,7 @@ class TestTodoSnapshotMergedNotDuplicated:
         )
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(db_msgs, db_msgs[1:])
+            for previous, current in itertools.pairwise(db_msgs)
         )
 
 
@@ -1426,7 +1427,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in tail
         assert not any(
             previous.get("role") == current.get("role") == "user"
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
@@ -1621,7 +1622,7 @@ class TestTodoSnapshotScaffoldingTails:
         assert "api_content" not in repaired
         assert not any(
             previous.get("role") == current.get("role")
-            for previous, current in zip(compressed, compressed[1:])
+            for previous, current in itertools.pairwise(compressed)
         )
 
     def test_multimodal_content_survives_and_synthetic_provenance_clears(

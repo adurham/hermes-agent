@@ -18,6 +18,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -107,7 +108,7 @@ def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = 
         "from_message_id": prev.get("id"), "to_message_id": nxt.get("id"),
         "from_role": prev.get("role"), "to_role": nxt.get("role"),
         "gap_ms": max(0, round((nxt_ts - prev_ts) * 1000)),
-    } for (prev, prev_ts), (nxt, nxt_ts) in zip(timestamped, timestamped[1:])]
+    } for (prev, prev_ts), (nxt, nxt_ts) in itertools.pairwise(timestamped)]
     iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
     first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
     return {

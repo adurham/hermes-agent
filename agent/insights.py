@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
 from hermes_cli.timefmt import coerce_epoch
 from hermes_time import safe_strftime
+import itertools
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SKILL_TOOLS = {"skill_view", "skill_manage"}
@@ -427,7 +428,7 @@ class InsightsEngine:
         if daily_counts:
             dates = [datetime.strptime(d, "%Y-%m-%d") for d in sorted(daily_counts)]
             current_streak = max_streak = 1
-            for prev, cur in zip(dates, dates[1:]):
+            for prev, cur in itertools.pairwise(dates):
                 current_streak = current_streak + 1 if (cur - prev).days == 1 else 1
                 max_streak = max(max_streak, current_streak)
         return {"by_day": day_breakdown, "by_hour": hour_breakdown, "busiest_day": max(day_breakdown, key=lambda x: x["count"]),
