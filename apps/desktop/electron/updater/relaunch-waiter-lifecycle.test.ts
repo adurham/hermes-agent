@@ -195,3 +195,56 @@ test('missing scripts refuse startup before spawning a waiter', async (): Promis
   )
   assert.equal(spawned, false)
 })
+
+test('every failed start tells the log why it failed', async (): Promise<void> => {
+  const logs: string[] = []
+  const log = (message: string): void => void logs.push(message)
+
+  await startRelaunchWaiter(
+    {
+      processId: process.pid,
+      processStartTimeMs: 1_000_000,
+      identityName: 'disposable-waiter-test',
+      scriptPath: path.join(scriptPath, 'absent.ps1')
+    },
+    { log }
+  )
+  assert.match(logs.join('\n'), /cannot copy .*absent\.ps1/)
+
+  logs.length = 0
+  await startRelaunchWaiter(
+    { processId: process.pid, processStartTimeMs: 1_000_000, identityName: 'disposable-waiter-test', scriptPath },
+    {
+      log,
+      spawn: (): never => {
+        throw new Error('EACCES fixture')
+      }
+    }
+  )
+  assert.match(logs.join('\n'), /spawning .*powershell\.exe threw: Error: EACCES fixture/)
+
+  logs.length = 0
+  await startRelaunchWaiter(
+    { processId: process.pid, processStartTimeMs: 1_000_000, identityName: 'disposable-waiter-test', scriptPath },
+    {
+      log,
+      pollMs: 20,
+      spawn: (_command, _args, options): ChildProcess =>
+        spawn(process.execPath, ['-e', 'process.exit(2)'], { ...options, stdio: 'ignore' })
+    }
+  )
+  assert.match(logs.join('\n'), /exited before its handshake after \d+ms \(exit code 2/)
+
+  logs.length = 0
+  await startRelaunchWaiter(
+    { processId: process.pid, processStartTimeMs: 1_000_000, identityName: 'disposable-waiter-test', scriptPath },
+    {
+      log,
+      pollMs: 20,
+      handshakeTimeoutMs: 200,
+      spawn: (_command, _args, options): ChildProcess =>
+        spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { ...options, stdio: 'ignore' })
+    }
+  )
+  assert.match(logs.join('\n'), /no handshake within 200ms \(pid \d+\); stopping it/)
+}, 20_000)
