@@ -207,18 +207,22 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
             _mark_misrouted(operation)
             return
+        # A named account is checked on its own row, read before force so a label resolves to its
+        # account either way: the connector-wide flag reports any account.
+        named = _alias_status(operation.targets)
         if force:
             # The re-mint names a new account; the watcher reads that one, never the old row.
-            mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
+            account = next((s["connection_id"] for s in (named or {}).values() if s.get("connection_id")), None)
+            mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher, connection_id=account)
             _mark_misrouted(operation)
             return
-        # A named account is checked on its own row: the connector-wide flag reports any account.
-        status = _alias_status(operation.targets) or _status_by_slug(client)
+        status = named or _status_by_slug(client)
         repair = []
         for name in names:
             target = operation.target(name)
-            if target is not None and target.repair_id:
-                # Asked to repair one account by id: the connector's other accounts say nothing about it.
+            if target is not None and target.repair_id and name not in (named or {}):
+                # A surface asked to repair one account by id: its Reconnect is the user's choice, and
+                # the connector's other accounts say nothing about this one.
                 repair.append(name)
             elif status.get(name, {}).get("connected"):
                 operation.transition(name, TargetState.initiated, Actor.backend_watcher)
