@@ -170,6 +170,7 @@ export class GatewayClient extends EventEmitter {
   private localGeneration = 0
   isCanonical = false
   private creationContract?: CreationContract
+  private describeFlight?: Promise<void>
 
   constructor(private bootstrap: (start: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway) {
     super()
@@ -545,9 +546,8 @@ export class GatewayClient extends EventEmitter {
             this.connectSidecarMirror()
 
             if (this.isCanonical) {
-              void this.requestOverWebSocket<{session_create: CreationContract}>('runtime.describe').then(description => {
-                this.creationContract = description.session_create
-
+              this.describeFlight = undefined
+              void this.describeRuntime().then(() => {
                 // The canonical gateway has no ready frame (readiness is the discovery
                 // grant + runtime.describe); publish a client-local ready with no skin so
                 // the renderer boots on its default theme.
@@ -765,6 +765,24 @@ export class GatewayClient extends EventEmitter {
 
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
+  /** The owner's session.create contract. A failed read is not cached: the next
+   * session.create asks again instead of reporting an outdated gateway forever. */
+  private describeRuntime(): Promise<void> {
+    if (!this.describeFlight) {
+      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract }>('runtime.describe').then(
+        description => { this.creationContract = description.session_create },
+        error => {
+          if (this.describeFlight === flight) { this.describeFlight = undefined }
+
+          throw error
+        })
+
+      this.describeFlight = flight
+    }
+
+    return this.describeFlight
+  }
+
   private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     return this.ensureAttachedWebSocket(method).then(() =>
       this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method)))
@@ -788,8 +806,10 @@ export class GatewayClient extends EventEmitter {
 
     if (!this.bootstrapFlight) { this.start() }
 
-    return this.bootstrapFlight!.then(() => {
+    return this.bootstrapFlight!.then(async () => {
       if (this.bootstrapError) { throw this.bootstrapError }
+
+      if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
       const request = canonicalRequest(method, params, this.creationContract)
 
       return this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)

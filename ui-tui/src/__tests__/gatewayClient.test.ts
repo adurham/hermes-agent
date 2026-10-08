@@ -178,6 +178,38 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('re-reads a failed runtime.describe on the next session.create instead of bricking creation', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    gw.on('event', () => undefined)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+      const first = frames().find(frame => frame.method === 'runtime.describe')!
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: first.id, error: { code: -32000, message: 'owner busy' } }))
+      await vi.advanceTimersByTimeAsync(0)
+
+      const created = gw.request<{ session_id: string }>('session.create', { model: 'm' })
+      await vi.advanceTimersByTimeAsync(0)
+      const retry = frames().filter(frame => frame.method === 'runtime.describe')
+      expect(retry).toHaveLength(2)
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: retry[1]!.id, result: {
+        session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      const create = frames().find(frame => frame.method === 'session.create')!
+      expect(create.params).toMatchObject({ source: 'tui', model: 'm' })
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
+      await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
   it('keeps discovery-only retries alive and delivers readiness to the mounted subscriber', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
