@@ -194,7 +194,8 @@ def _account_connector_connect(rid, request):
 
     action = "reconnect" if request.reconnect else "connect"
     try:
-        start = account.find_or_start_operation(request.connectors, action=action, profile_home=_account_home(request))
+        start = account.find_or_start_operation(
+            request.connectors, action=action, profile_home=_account_home(request), alias=request.alias)
         if not start.started:
             from tools.connectors.contract import TargetState
 
