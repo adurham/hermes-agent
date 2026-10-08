@@ -7,8 +7,7 @@ from gateway.session import SessionEntry, SessionSource, _is_path_unsafe
 from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
-_BINDING_PREFIX = 'gateway.api.binding.v1.'
-_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
+from hermes_state_local import API_BINDING_PREFIX as _BINDING_PREFIX, API_DECLARED_PREFIX as _DECLARED_PREFIX
 
 
 def declared_api_session(db, key):
@@ -76,6 +75,9 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
 
     def write(conn):
         _epoch(conn, authority.epoch)
+        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
+            raise RuntimeStoreError('not_found')
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (_BINDING_PREFIX + session_id,)).fetchone()
         if saved is not None:

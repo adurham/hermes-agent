@@ -87,6 +87,8 @@ def retire_sessions(conn, session_ids):
     ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once."""
     retire_terminal_receipts(conn, session_ids)
     retire_routes(conn, session_ids)
+    from hermes_state_local import retire_local_receipts
+    retire_local_receipts(conn, session_ids)
 
 
 def retire_prunable(conn, session_ids):

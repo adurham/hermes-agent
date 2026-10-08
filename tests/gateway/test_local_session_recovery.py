@@ -134,3 +134,41 @@ async def test_branch_and_local_entries_keep_the_routing_prune_sweep_running(tmp
         cold._entries[telegram.session_key].updated_at -= timedelta(days=90)
     assert cold.prune_old_entries(30) == 1
     assert cold.lookup_by_session_key(telegram.session_key) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_path, monkeypatch):
+    """The deletion fence takes the local policy receipt (a cron policy's ``request_json`` holds
+    the job and raw prompt) and the API binding + declared conversation key with the transcript;
+    a later create/cron/API retry of the same deterministic id is refused instead of recreating it."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_api import bind_api_session
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from gateway.session_mutations import mutate_session
+    from gateway import run
+    from hermes_state_runtime import RuntimeStoreError
+
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
+    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    params = {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []}
+    local = create_local_session(authority, actor, params)
+    api = bind_api_session(authority, 'api-owner', declared_key='conversation')
+    for ref in (local, api):
+        await mutate_session(authority, actor, ref, dict(session_id=ref.session_id, request_id='delete',
+            expected_revision=0, expected_generation=0, operation='delete', payload={}))
+    with authority.db._read_ctx() as conn:
+        left = [k for (k,) in conn.execute("SELECT key FROM state_meta WHERE key LIKE 'gateway.local_policy.v1:%' "
+                                           "OR key LIKE 'gateway.api.%'")]
+    assert left == []
+    with pytest.raises(RuntimeStoreError, match='not_found'):
+        create_local_session(authority, actor, params)
+    with pytest.raises(RuntimeStoreError, match='not_found'):
+        bind_api_session(authority, 'api-owner')
+    assert authority.db.get_session(local.session_id) is None
+    assert authority.db.get_session('api-owner') is None

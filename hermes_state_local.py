@@ -5,6 +5,8 @@ import time
 from hermes_state_runtime import RuntimeStoreError, _epoch, _json
 
 POLICY_PREFIX = 'gateway.local_policy.v1:'
+API_BINDING_PREFIX = 'gateway.api.binding.v1.'
+API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
 def commit_local_session(db, *, epoch, receipt):
@@ -27,6 +29,11 @@ def commit_local_session(db, *, epoch, receipt):
             if not same:
                 raise RuntimeStoreError('invalid_params')
             return saved
+        from hermes_state_mutation_retirement import RETIRED_PREFIX
+        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + sid,)).fetchone():
+            # Deleted: its receipt was retired with the transcript; a create/cron retry must not
+            # resurrect the row (and re-fire its prompt) under the same deterministic id.
+            raise RuntimeStoreError('not_found')
         if ('legacy_session_id' not in receipt and
                 conn.execute('SELECT 1 FROM sessions WHERE id=?', (sid,)).fetchone()):
             raise RuntimeStoreError('storage_unavailable')
@@ -48,6 +55,25 @@ def commit_local_session(db, *, epoch, receipt):
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
         return receipt
     return db._execute_write(write)
+
+
+def retire_local_receipts(conn, session_ids):
+    """Deletion fence half for owner receipts. A local creation policy carries the launch request
+    (``request_json``: a cron fire's job and raw prompt), so it goes exactly when its route does:
+    when the receipt's current physical target is deleted (a pruned reset ancestor whose logical
+    session lives on in a child keeps it). An API binding and the declared conversation key that
+    resolves to it go with their id, so that key starts a fresh session."""
+    targets = set(session_ids)
+    if not targets:
+        return
+    # Prefix scans (GLOB uses the key index), not one LIKE per id: a prune retires thousands.
+    gone = [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
+                                               (POLICY_PREFIX + '*',))
+            if json.loads(value).get('entry', {}).get('session_id') in targets]
+    gone += [key for key, value in conn.execute('SELECT key,value FROM state_meta WHERE key GLOB ?',
+                                                (API_DECLARED_PREFIX + '*',)) if value in targets]
+    gone += [API_BINDING_PREFIX + sid for sid in targets]
+    conn.executemany('DELETE FROM state_meta WHERE key=?', [(key,) for key in gone])
 
 
 def local_receipt(db, session_id):
