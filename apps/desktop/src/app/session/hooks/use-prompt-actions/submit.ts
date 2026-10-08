@@ -1264,7 +1264,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           throw submitErr
         }
 
-        await removePreparedSubmission(retryKey)
+        // The gateway admitted it: a failed journal retirement (ENOSPC/EIO) must not report a
+        // delivered prompt as failed and invite a resend. The identity is retired in memory.
+        await removePreparedSubmission(retryKey).catch(error => console.warn('[prepared-submission-retire]', error))
 
         // The prompt is now accepted. Report the EXACT identity it landed on
         // (recovered id included) so a caller that must prove delivery — the

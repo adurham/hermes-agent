@@ -16,6 +16,11 @@ export interface PreparedSubmission {
   legacyAttempted?: boolean
 }
 
+// Admitted entries whose durable removal failed (ENOSPC/EIO). Their identity is spent: this
+// window never adopts, lists or slots them again, so a later send is never deduplicated
+// into an earlier admission. The entry's Web Lock stays held until the removal lands.
+const retired = new Set<string>()
+
 // A journal, not an automatic outbox. Only an explicit retry may reuse an
 // uncertain admission. Read storage each time so a remount cannot lose it.
 async function readJournal(): Promise<Record<string, PreparedSubmission>> {
@@ -28,6 +33,8 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Invalid prepared submission journal')
   }
+
+  for (const key of retired) {delete (parsed as Record<string, PreparedSubmission>)[key]}
 
   return parsed as Record<string, PreparedSubmission>
 }
@@ -133,6 +140,7 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
 
   if (native) {
     await native.update(key, JSON.stringify(entry))
+    retired.delete(key)
 
     return
   }
@@ -142,10 +150,14 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
   // Browser-only clients retain reload recovery, not a process-crash guarantee.
   // Native write failures never fall back here: sending requires their ACK.
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
+  retired.delete(key)
 }
 
+/** Retire an admitted entry. Its identity is spent before the durable write is attempted, so a
+ *  failed removal can only leave a stale file entry, never a reusable one. */
 export async function removePreparedSubmission(key: string): Promise<void> {
   const native = window.hermesDesktop?.preparedSubmissions
+  retired.add(key)
 
   if (native) {
     await native.update(key, null)
@@ -155,6 +167,7 @@ export async function removePreparedSubmission(key: string): Promise<void> {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
   }
 
+  retired.delete(key)
   owned.get(key)?.()
   owned.delete(key)
 }
