@@ -89,7 +89,10 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
             continue  # The derived retry committed while the receipt was being read.
         if interim:
             current['status'] = 'claimed'  # the retry is being admitted
-        if live is None or current['status'] not in _PENDING or (should_stop is not None and should_stop()):
+        if live is None or current['status'] not in _PENDING:
+            await _owner_published(authority, record, deadline)
+            return current
+        if should_stop is not None and should_stop():
             return current
         remaining = None if deadline is None else deadline - loop.time()
         if remaining is not None and remaining <= 0:
@@ -99,6 +102,16 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
             await asyncio.sleep(tick if remaining is None else min(tick, remaining))
         else:
             await asyncio.wait([waiter], timeout=tick if remaining is None else min(tick, remaining))
+
+
+async def _owner_published(authority, record, deadline):
+    """Answer only once the owner's reply watcher published the outcome this waiter read from the
+    FIFO: its receipt write runs off-loop, and a re-read of the delivery must not say ``queued``
+    after the sender already holds the reply."""
+    watcher = getattr(authority, '_bot_reply_watchers', {}).get(record['delivery_id'])
+    if watcher is not None and not watcher[1].done():
+        remaining = None if deadline is None else max(0.0, deadline - asyncio.get_running_loop().time())
+        await asyncio.wait([watcher[1]], timeout=remaining)
 
 
 def _receipt(authority, record):

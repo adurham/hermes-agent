@@ -455,10 +455,7 @@ async def _deliver(connection, params):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             await _maybe_retry(authority, home, path, record)
-            record.update(_delivery_result(authority, record))
-            await write_receipt(home, record)
-            remember_receipt(authority, home, record)
-            return _delivery_result(authority, record)
+            return await _publish_result(authority, home, record)
         await _migrate(authority, actor, home, root)
         _, record = await read_receipt(home, key)
         if record is not None and record.get('admission_id'):
@@ -468,10 +465,7 @@ async def _deliver(connection, params):
                 raise RuntimeStoreError('admission_conflict')
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             await _maybe_retry(authority, home, path, record)
-            record.update(_delivery_result(authority, record))
-            await write_receipt(home, record)
-            remember_receipt(authority, home, record)
-            return _delivery_result(authority, record)
+            return await _publish_result(authority, home, record)
         if record is not None:
             raise RuntimeStoreError('unknown_execution')
         ref, live, entry = _target(authority, actor)
@@ -511,6 +505,16 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
         _watch_reply(authority, home, key, receipt.admission_id)
     if record['status'] not in {'queued', 'claimed'}:
         await _maybe_retry(authority, home, path, record)
+    return await _publish_result(authority, home, record)
+
+
+async def _publish_result(authority, home, record):
+    """Publish the delivery's projection and answer with exactly that projection. The write is
+    off-loop, so the admission may settle while it runs; re-deriving the answer afterwards would
+    hand the sender a reply the receipt file does not hold yet (the reply watcher publishes it
+    once this delivery releases the mailbox lock)."""
+    result = _delivery_result(authority, record)
+    record.update(result)
     await write_receipt(home, record)
     remember_receipt(authority, home, record)
-    return _delivery_result(authority, record)
+    return result
