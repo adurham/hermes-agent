@@ -9,9 +9,21 @@ param(
 )
 
 # The parent runs this detached with no stdio, so this file is the only record of why it gave up.
+# It is shared across attempts: lines carry the stage dir name so the parent can pick out its own,
+# and it restarts when it passes 64KB so it cannot grow without bound.
 $LogFile = Join-Path $env:TEMP 'hermes-relaunch-waiter.log'
+$Attempt = Split-Path -Leaf (Split-Path -Parent $ReadyFile)
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+try { if ((Test-Path -LiteralPath $LogFile) -and (Get-Item -LiteralPath $LogFile).Length -gt 65536) { Remove-Item -LiteralPath $LogFile -Force } } catch {}
 function Write-WaiterLog([string]$Message) {
-  try { Add-Content -LiteralPath $LogFile -Value ('{0} [{1}] {2}' -f (Get-Date -Format o), $PID, $Message) } catch {}
+  # Tag every physical line: a multi-line error (message, location, details) must survive the parent's attempt filter.
+  try {
+    $stamp = Get-Date -Format o
+    $lines = @($Message -split '\r?\n' | Where-Object { $_.Trim() })
+    if (-not $lines) { return }
+    $text = ($lines | ForEach-Object { '{0} [{1}] pid={2} {3}' -f $stamp, $Attempt, $PID, $_ }) -join "`n"
+    [IO.File]::AppendAllText($LogFile, $text + "`n", $Utf8NoBom)
+  } catch {}
 }
 
 try {
