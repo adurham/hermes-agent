@@ -16,9 +16,13 @@ def retire_media(conn, payload):
 
 
 def collect_retired_media(db):
+    """Release retired candidates no admission or retained transcript row owns; drop collected keys.
+    Synchronous SQLite plus one messages pass: async callers must run it off the event loop."""
     from gateway.session_ingress_media import release_unheld_media
     with db._read_ctx() as conn:
-        rows = conn.execute('SELECT key,value FROM state_meta WHERE key LIKE ?', (PREFIX + '%',)).fetchall()
+        # Primary-key range, not LIKE: the common no-candidate case costs one index probe.
+        rows = conn.execute('SELECT key,value FROM state_meta WHERE key>=? AND key<?',
+                            (PREFIX, PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1))).fetchall()
     if rows:
         release_unheld_media(db, [json.loads(row['value']) for row in rows])
         from pathlib import Path

@@ -278,23 +278,65 @@ def collect_unheld_api_images(db):
         if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
 
 
+def _history_mentions(conn, references, after_id=0):
+    """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped, in ONE
+    messages pass. Rows are prefiltered in SQL on the literal text before each candidate's digest
+    directory, so only rows that could name a candidate reach Python's exact substring test."""
+    needles = {}
+    for reference in references:
+        raw = reference['path']
+        needles[raw] = needles[json.dumps(raw)[1:-1]] = raw
+    prefixes = sorted({needle[:needle.rfind(reference['sha256'])] for reference in references
+                       for needle in (reference['path'], json.dumps(reference['path'])[1:-1])})
+    match = ' OR '.join(['instr(content,?)'] * len(prefixes))
+    query = f'SELECT content FROM messages WHERE ({match})' + (' AND id>?' if after_id else '')
+    mentioned = set()
+    for (content,) in conn.execute(query, (*prefixes, *((after_id,) if after_id else ()))):
+        text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
+        mentioned.update(raw for needle, raw in needles.items() if needle in text)
+    return mentioned
+
+
+def _collectable(references, root):
+    return [reference for reference in references if Path(reference['path']).parent.parent == root
+            and Path(reference['path']).parent.name == reference['sha256'] and Path(reference['path']).exists()]
+
+
 def release_unheld_media(db, references, *, retain_history=True):
-    """Delete unowned references, preserving accepted admission and retained transcript owners."""
+    """Delete unowned references, preserving accepted admission and retained transcript owners.
+
+    The history owner check is one read-snapshot pass over messages, outside the write lock; under
+    the lock only rows inserted after that snapshot (an indexed id range) are re-checked. A new
+    transcript mention of a retained image comes from an admission holding it (re-checked under the
+    lock) or from a copied row (branch/compress insert, caught by the range)."""
+    root = _media_root()
+    references = _collectable(references or (), root)
     if not references:
         return 0
-    root = _media_root()
+    seen, last_id = set(), 0
+    if retain_history:
+        with db._read_ctx() as conn:
+            conn.execute('BEGIN')  # one snapshot: the id watermark and the scan agree
+            try:
+                last_id = conn.execute('SELECT coalesce(max(id), 0) FROM messages').fetchone()[0]
+                seen = _history_mentions(conn, references)
+            finally:
+                if conn.in_transaction:
+                    conn.execute('ROLLBACK')
+        references = [reference for reference in references if reference['path'] not in seen]
+        if not references:
+            return 0
     def collect(conn):
         held = _held_media_paths(conn)
         identities = _held_file_identities(held, root)
         if identities is None:
             return 0
+        if retain_history:
+            held |= _history_mentions(conn, references, after_id=last_id)
         released = 0
         for reference in references:
             path = Path(reference['path'])
-            if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
-                continue
-            if retain_history and conn.execute("SELECT 1 FROM messages WHERE instr(content,?) OR instr(content,?) LIMIT 1",
-                    (reference['path'], json.dumps(reference['path'])[1:-1])).fetchone():
+            if reference['path'] in held:
                 continue
             try:
                 if path.parent.resolve() != path.parent or _file_identity(path) in identities:

@@ -157,6 +157,11 @@ async def _mutate_session(authority, actor, ref, params):
             authority.runner._evict_cached_agent(live.route)
         if applied:
             live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+    if operation == 'delete':
+        # After the synchronous projections (no yield before retirement), off the loop: the
+        # retired-media owner check is a messages-table pass (exact retries repeat it too).
+        from hermes_state_media import collect_retired_media
+        await asyncio.to_thread(collect_retired_media, authority.db)
     return result
 
 
@@ -188,8 +193,6 @@ def _project_committed(authority, ref, operation, result):
             entry.origin = authority.sessions[ref.session_id].source
             store._entries[entry.session_key] = entry
     if operation == 'delete':
-        from hermes_state_media import collect_retired_media
-        collect_retired_media(authority.db)
         # Repeat local retirement on an exact retry too: publication may have
         # failed after the transaction committed. Never repeat the event.
         store = getattr(authority.runner, 'session_store', None)
