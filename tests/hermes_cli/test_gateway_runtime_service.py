@@ -296,3 +296,20 @@ def test_gateway_wrapper_requires_actual_python_entrypoint(outer, tmp_path):
             verify_gateway_argv(argv, tmp_path)
     else:
         verify_gateway_argv(argv, tmp_path)
+
+
+def test_android_python_reaches_the_unmanaged_start(tmp_path, monkeypatch):
+    """Termux is supported and has no service manager; Python 3.13+ there reports
+    sys.platform == "android". Ensure must start the gateway unmanaged, not refuse the platform."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    spawned = []
+    monkeypatch.setattr(service.sys, "platform", "android")
+    monkeypatch.setattr(service, "_run", lambda *a, **k: pytest.fail("no supervisor to query on Android"))
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+    result = runtime.ensure_gateway_runtime(home, timeout=0.3)
+    assert result.reason_code != "unsupported_supervisor_platform"
+    assert spawned == [home.resolve()]

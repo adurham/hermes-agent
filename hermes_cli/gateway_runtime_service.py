@@ -212,8 +212,16 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
     return None
 
 
+def _no_supervisor(home: Path, deadline: float) -> None:
+    """Android/Termux has no service manager (main refuses `gateway install/start` there and says
+    "Run manually: hermes gateway"): an unmanaged detached start is its only owner. Python 3.13+
+    reports ``sys.platform == "android"``; older Termux interpreters report linux and reach the
+    systemd probe, which finds no unit and lands on the same unmanaged start."""
+
+
 def discover_existing_gateway_service(home: Path, *, deadline: float) -> ExistingService | None:
-    backend = {"linux": _systemd, "darwin": _launchd, "win32": _windows}.get(sys.platform)
+    backend = {"linux": _systemd, "darwin": _launchd, "win32": _windows,
+               "android": _no_supervisor}.get(sys.platform)
     if backend is None:
         raise RuntimeStartError("unsupported_supervisor_platform")
     try:
