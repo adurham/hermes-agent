@@ -71,6 +71,8 @@ class SessionAuthority:
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
         self.delivered_stops = {}
+        # Queued admissions whose cancellation may have committed before its observers settled.
+        self.cancel_obligations = set()
         # Set by profile retirement (unserve): the drain claims no successor after its running turn.
         self.retiring = False
 
@@ -381,12 +383,28 @@ class SessionAuthority:
 
     async def cancel_queued(self, actor, ref, admission_id):
         before = await self.receipt(actor, ref, admission_id)
-        row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
+        if before.status == 'queued':
+            # Owed from before the write: a commit that reports failure, or anything raising
+            # between the commit and observer settlement, leaves it for an exact retry to pay.
+            self.cancel_obligations.add(admission_id)
+        try:
+            row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
+        except RuntimeStoreError:
+            self.cancel_obligations.discard(admission_id)  # a definite refusal: nothing committed
+            raise
+        if (row['status'], row['outcome']) == ('terminal', 'cancelled') and admission_id in self.cancel_obligations:
+            self._settle_cancelled(ref, admission_id)
+        else:
+            if row['status'] != 'queued':
+                self.cancel_obligations.discard(admission_id)
+            self._publish_pending(ref)
+        # Media collection is its own write txn after the committed, settled cancellation: its
+        # failure surfaces to the caller, and an exact retry collects again without re-settling.
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(self.db, admission_id)
-        if before.status != 'queued' or row['status'] != 'terminal':
-            self._publish_pending(ref)
-            return self._receipt(row)
+        return self._receipt(row)
+
+    def _settle_cancelled(self, ref, admission_id):
         # The only place a queued row becomes terminal: every observer kind that waits on
         # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
         # settles here, or a cancelled row that never reaches _drain blocks them forever.
@@ -402,6 +420,8 @@ class SessionAuthority:
                     'text': '', 'content': '', 'admission_id': admission_id, 'outcome': 'cancelled'})
             finally:
                 live.event_stream.execution = running
+        # Published once: a later exact retry re-collects media but never repeats the completion.
+        self.cancel_obligations.discard(admission_id)
         self.native_waiters.discard(admission_id)
         waiter = self.waiters.pop(admission_id, None)
         if waiter is not None and not waiter.done():
@@ -409,7 +429,6 @@ class SessionAuthority:
         # A paused drain (preclaim refusal on this head) ended its task; the successors
         # need a fresh drain that revalidates them on their own merits.
         self._schedule(ref)
-        return self._receipt(row)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
         """Operator acknowledgement that a turn lost across an owner restart will not

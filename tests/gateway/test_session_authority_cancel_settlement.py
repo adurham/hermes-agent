@@ -269,3 +269,36 @@ async def test_storage_lock_during_claim_retries_in_place_and_keeps_waiters(tmp_
     assert ran == ['head']
     row, = list_session_admissions(db, session_id='s', pending_only=False)
     assert (row['status'], row['outcome']) == ('terminal', 'completed')
+
+
+@pytest.mark.asyncio
+async def test_cancel_committed_before_a_failed_media_cleanup_still_settles_observers_once(tmp_path, monkeypatch):
+    """Media collection is a separate write after the cancellation commits. Its failure must not
+    withhold observer settlement, and an exact retry (which collects again) must neither leave the
+    waiter parked nor publish a second completion."""
+    from gateway import session_ingress_media
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    scheduled, frames = [], []
+    monkeypatch.setattr(authority, '_schedule', scheduled.append)
+    collect = session_ingress_media.release_admission_media
+    def fail_once(db, admission_id):
+        monkeypatch.setattr(session_ingress_media, 'release_admission_media', collect)
+        raise OSError('media cleanup write failed')
+    with db:
+        receipt = await _submit(authority, 'cancel-then-cleanup-fails')
+        scheduled.clear()
+        authority.native_waiters.add(receipt.admission_id)
+        waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
+        authority.sessions['s'].event_stream.observers.add(frames.append)
+        monkeypatch.setattr(session_ingress_media, 'release_admission_media', fail_once)
+        with pytest.raises(OSError, match='media cleanup'):
+            await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
+        retried = await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
+        await authority.cancel_queued(ACTOR, REF, receipt.admission_id)
+
+    assert (retried.status, retried.outcome) == ('terminal', 'cancelled')
+    assert waiter.done() and receipt.admission_id not in authority.native_waiters
+    completions = [f for f in frames if f['params']['type'] == 'message.complete']
+    assert len(completions) == 1 and completions[0]['params']['payload']['outcome'] == 'cancelled'
+    assert len(scheduled) == 1, 'the successors of a paused head need exactly one fresh drain'
