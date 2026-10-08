@@ -3,10 +3,17 @@ import crypto from 'node:crypto'
 
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
+// `hermes gateway ensure` answers with a protocol verdict (ready, or `starting: deadline`) within
+// its own startup deadline: `--timeout` defaults to 60 s (hermes_cli/gateway_runtime.py
+// DEFAULT_ENSURE_TIMEOUT). The client is killed only after that deadline plus interpreter start
+// and verdict output, so a slow-but-valid cold start is never reported as "produced no result".
+const GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS = 60_000
+const GATEWAY_ENSURE_CLIENT_GRACE_MS = 15_000
+
 /** Run one bounded `hermes ... gateway <verb>` client (`ensure` by default; `restart` for a stale owner). */
 export function runGatewayEnsure(
   backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env,
-  { timeoutMs = 40_000, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
+  { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // shell: true hands cmd.exe one command line it cuts at the first unquoted space,
