@@ -398,3 +398,18 @@ test('a ?profile= request on the shared host descriptor mints for the sibling pr
   expect(routedGatewayEndpoint({ ...endpoint, profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' }, 'http://127.0.0.1:1/x?profile=default', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes' })
   expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', '/h/.hermes')).toThrow('Invalid profile route')
 })
+
+// A native gateway grant is minted only by main's shared transport (fetchJsonForBackend), which
+// also carries the descriptor's configured headers; a call site that hands fetchJson a
+// gatewayDescriptor itself silently drops them. Source guard over the one module that issues them.
+test('main issues native-gateway REST calls only through the shared descriptor transport', async () => {
+  const fs = await import('node:fs/promises')
+  const source = await fs.readFile(new URL('./main.ts', import.meta.url), 'utf8')
+  const transport = source.indexOf('async function fetchJsonForBackend(')
+  const transportEnd = source.indexOf('\n}\n', transport)
+  const outside = source.slice(0, transport) + source.slice(transportEnd)
+
+  expect(transport).toBeGreaterThan(0)
+  expect(source.slice(transport, transportEnd)).toContain('headers: descriptor.headers')
+  expect(outside.match(/fetchJson\([^)]*\{[^}]*gatewayDescriptor\b/g) ?? []).toEqual([])
+})
