@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent.managed_worker import encode_frame, read_frame
+from agent.managed_worker import accept_result, encode_frame, read_frame
 from gateway.session_worker_reservation import reserve_admission_worker
 from hermes_state_runtime import RuntimeStoreError
 
@@ -292,7 +292,7 @@ async def execute_managed(authority, ref, row, policy):
     # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
     # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
     authority.adopt_agent(ref.session_id, row['generation'], worker)
-    accepted = None
+    accepted = usage = None
     scope = None
     try:
         # The interpreter behind the handle introduces itself first; the owner verifies that
@@ -325,11 +325,10 @@ async def execute_managed(authority, ref, row, policy):
             if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
-                result = frame['result']
-                if (not isinstance(result, dict) or set(result) - {'final_response', 'failed', 'interrupted'}
-                        or not isinstance(result.get('final_response'), str)):
-                    raise RuntimeStoreError('invalid_worker_result')
-                accepted = result
+                try:
+                    accepted, usage = accept_result(frame['result'])
+                except ValueError as exc:
+                    raise RuntimeStoreError('invalid_worker_result') from exc
                 authority.sessions[ref.session_id].controls.snapshot(ref.session_id, None)
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
                 continue
@@ -339,7 +338,7 @@ async def execute_managed(authority, ref, row, policy):
                     raise RuntimeStoreError('managed_worker_lost')
                 # Like in-process execution, settlement belongs to the drain's stream lock.
                 # The worker must acknowledge its durable finish before that boundary.
-                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': {}}
+                authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
     except (Exception, asyncio.CancelledError) as exc:

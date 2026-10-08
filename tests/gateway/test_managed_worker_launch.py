@@ -217,6 +217,11 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
             restored = await rpc(ws, 'session.resume', session_id=sid)
             history = restored['result']['messages']
             assert 'MANAGED_TOOL_DONE' in json.dumps(history), restored
+            # The committed receipt keeps the worker's spend (what `-z --usage-file` reads).
+            [(admission,)] = query('SELECT admission_id FROM session_admissions WHERE request_id=?', ('managed-input',))
+            receipt = (await rpc(ws, 'prompt.receipt', session_id=sid, admission_id=admission, include_result=True))['result']
+            assert receipt['usage']['total_tokens'] == 15 * len(peer.requests), receipt
+            assert receipt['result']['model'] == 'managed-model' and receipt['result']['api_calls'] == len(peer.requests), receipt
             replay = await rpc(ws, 'session.events.since', session_id=sid,
                                replay_epoch=restored['result']['replay_epoch'], last_sequence=0)
             tools = [e for e in replay['result']['events'] if e['type'] in {'tool.start', 'tool.complete'}]

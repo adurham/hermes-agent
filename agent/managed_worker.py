@@ -25,6 +25,35 @@ logger = logging.getLogger(__name__)
 MAX_FRAME = 4 * 1024 * 1024
 BOOTSTRAP_FIELDS = {'version', 'home', 'scope', 'policy', 'api_key', 'text', 'route', 'user_id', 'chat_id',
                     'turn_author', 'safe_mode', 'ignore_user_config'}
+# The bounded run_conversation fields a turn receipt keeps (outcome, exit reason, tokens, cost,
+# model): what the in-process projection commits and ``-z --usage-file`` reads.
+RESULT_FIELDS = ('final_response', 'failed', 'interrupted', 'completed', 'partial', 'error', 'turn_exit_reason',
+                 'api_calls', 'model', 'provider', 'prompt_tokens', 'completion_tokens', 'total_tokens',
+                 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens',
+                 'estimated_cost_usd', 'cost_status', 'cost_source', 'service_tier')
+
+
+def result_frame(result):
+    """Worker side: the receipt fields of ``run_conversation``'s result, scalars only, text bounded."""
+    return {k: (v[:4096] if isinstance(v, str) and k != 'final_response' else v) for k, v in result.items()
+            if k in RESULT_FIELDS and (v is None or type(v) in (bool, int, float, str))}
+
+
+def accept_result(result):
+    """Owner side of the worker's result frame: ``(result, usage)`` in the in-process turn's shape
+    (gateway projection: prompt/completion tokens as input/output), or ValueError."""
+    if (not isinstance(result, dict) or set(result) - set(RESULT_FIELDS) or not isinstance(result.get('final_response'), str)
+            or any(not (value is None or type(value) in (bool, int, float) or (isinstance(value, str) and len(value) <= 4096))
+                   for key, value in result.items() if key != 'final_response')):
+        raise ValueError('invalid_worker_result')
+    accepted = dict(result)
+    incoming, outgoing = accepted.pop('prompt_tokens', None), accepted.pop('completion_tokens', None)
+    if incoming is None and outgoing is None:
+        return accepted, {}
+    usage = {'input_tokens': incoming or 0, 'output_tokens': outgoing or 0}
+    usage['total_tokens'] = usage['input_tokens'] + usage['output_tokens']
+    accepted.update(input_tokens=usage['input_tokens'], output_tokens=usage['output_tokens'])
+    return accepted, usage
 
 
 def read_frame(stream):
@@ -301,8 +330,7 @@ def execute(frame, channel):
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
                 result['final_response'] = ''
-            channel.send('result', result={k: result[k] for k in
-                ('final_response', 'failed', 'interrupted') if k in result})
+            channel.send('result', result=result_frame(result))
             if not controls.finish.wait(30):
                 raise ValueError('managed_finish_timeout')
             store.finish()
