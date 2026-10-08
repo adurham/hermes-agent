@@ -14,7 +14,13 @@ import {
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
-import { canonicalEvent, canonicalRequest, canonicalResult, type CreationContract } from './canonicalGateway.js'
+import {
+  canonicalEvent,
+  canonicalRequest,
+  canonicalResult,
+  type CreationContract,
+  launchToolProgress
+} from './canonicalGateway.js'
 import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { t } from './i18n/runtime.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
@@ -834,9 +840,17 @@ export class GatewayClient extends EventEmitter {
 
       if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
       const request = canonicalRequest(method, params, this.creationContract)
+      const toolProgress = method === 'session.create' ? launchToolProgress() : undefined
+      const value = await this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
 
-      return this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
-        .then(value => canonicalResult(method, value, request.params))
+      if (toolProgress) {
+        // Launch pin, before the caller can submit: a refusal fails this create visibly.
+        const sid = (value as { session_id?: string } | null)?.session_id
+
+        await this.requestOverWebSocket('config.set', { key: 'verbose', session_id: sid, value: toolProgress })
+      }
+
+      return canonicalResult(method, value, request.params)
     })
   }
 

@@ -237,6 +237,48 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); vi.useRealTimers() }
   })
 
+  it('pins the launcher tool-progress mode (hermes --tui -v) on the created session before returning it', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    vi.stubEnv('HERMES_TUI_TOOL_PROGRESS', 'verbose')
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    gw.on('event', () => undefined)
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+
+      const reply = (method: string, result: unknown) => {
+        const frame = frames().filter(f => f.method === method).at(-1)!
+
+        socket.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
+      }
+
+      reply('runtime.describe', { session_create: { sources: ['tui'], parameters: ['source', 'request_id'] } })
+      await vi.advanceTimersByTimeAsync(0)
+      let settled = false
+
+      const created = gw.request<{ session_id: string }>('session.create', {}).then(r => {
+        settled = true
+
+        return r
+      })
+
+
+      await vi.advanceTimersByTimeAsync(0)
+      reply('session.create', { session_id: 'fresh', info: {} })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+      expect(frames().at(-1)).toMatchObject({ method: 'config.set', params: { key: 'verbose', session_id: 'fresh', value: 'verbose' } })
+      reply('config.set', { key: 'verbose', value: 'verbose', scope: 'session' })
+      await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
+    } finally { gw.kill(); vi.unstubAllEnvs(); vi.useRealTimers() }
+  })
+
   it('re-ensures a crashed owner on a bounded number of reconnects, then stays discovery-only', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL

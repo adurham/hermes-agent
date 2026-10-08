@@ -115,3 +115,18 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
 
   return options
 }
+
+const TOOL_PROGRESS_MODES = new Set(['off', 'new', 'all', 'verbose'])
+
+/** `hermes --tui -v` / `-Q` export HERMES_TUI_TOOL_PROGRESS (verbose / off). The owner carries it as the
+ * session-scoped tool-progress mode (`config.set key=verbose`, the same control `/verbose` writes), so a
+ * fresh session is pinned right after creation. An unreadable value refuses the launch, never drops it. */
+export function launchToolProgress(env = process.env): string | undefined {
+  const raw = env.HERMES_TUI_TOOL_PROGRESS?.trim().toLowerCase()
+
+  if (!raw) { return undefined }
+
+  if (!TOOL_PROGRESS_MODES.has(raw)) { throw new Error(`invalid HERMES_TUI_TOOL_PROGRESS: ${raw}`) }
+
+  return raw
+}
