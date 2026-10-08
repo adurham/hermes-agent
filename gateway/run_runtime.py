@@ -112,7 +112,7 @@ async def initialize_gateway_runtime(runner):
         'served_profiles': [],
     }
     runner.session_runtime_descriptor = descriptor
-    registry = SessionAuthorities(homes[0][1])
+    registry = SessionAuthorities(homes[0][1], multiplexed=getattr(runner.config, 'multiplex_profiles', False))
     runner.session_authorities = registry
     for index, (name, home) in enumerate(homes):
         try:
