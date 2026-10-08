@@ -380,10 +380,13 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
             envelope = json.loads(path.read_text(encoding="utf-8-sig"))
             if not isinstance(envelope, dict):
                 raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
-            if envelope.get("canonical_delivery_v1") is not True or envelope.get("id") in seen:
+            if envelope.get("id") in seen:
                 continue
             env_id = str(envelope.get("id") or "")
             label = f"@{envelope.get('target_handle') or '?'} on {envelope.get('target_connection') or '?'}"
+            if envelope.get("canonical_delivery_v1") is not True:
+                _settle_pre_upgrade_claim(root, path, env_id, label, now)
+                continue
             created = float(envelope.get("created_at") or path.stat().st_mtime)
             if now - created > REPLY_WAIT_SECONDS:
                 write_reply(root, env_id, reason="delivery_timeout", error=(
@@ -392,6 +395,23 @@ def _replay_unanswered(root: Path | str, base: Path, seen: set, now: float) -> l
                 continue
             out.append((_queued_at(path), envelope))
     return out
+
+
+def _settle_pre_upgrade_claim(root: Path | str, path: Path, env_id: str, label: str, now: float) -> None:
+    """A ``claimed/`` envelope from before canonical delivery (no ``canonical_delivery_v1``) is never
+    replayed: its old lane ran a CLI turn the authority has no record of, so re-admitting the id could
+    run the DM twice. Left alone, though, its sender's waiter watched a reply that never came. Once the
+    old drain's own re-offer point passes (``REOFFER_AFTER_SECONDS`` after its claim — the claim mtime
+    — by which time a live delivery has posted the Desktop's timeout reply) the outcome is settled as
+    ``unknown``: the waiter resolves, the envelope is never offered again, and nothing auto-resends."""
+    from tools.bot_failure_reasons import UNKNOWN
+
+    if now - path.stat().st_mtime < REOFFER_AFTER_SECONDS:
+        return
+    write_reply(root, env_id, reason=UNKNOWN, error=(
+        f"the message to {label} was picked up before this gateway was upgraded and its delivery was "
+        "never reported — it may or may not have been delivered. It will not be retried; check with "
+        "the recipient before resending."))
 
 
 def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:

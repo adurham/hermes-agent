@@ -636,6 +636,32 @@ def test_replayed_unanswered_dm_precedes_mail_queued_after_it(root):
     assert [e["id"] for e in drained] == [first["id"], second["id"]]  # stable ids, no re-mint
 
 
+def test_pre_upgrade_claim_settles_unknown_instead_of_stranding_its_waiter(root):
+    """A claimed envelope from the old lane (no ``canonical_delivery_v1``) is never replayed into the
+    authority, but its waiter must still resolve: once the old drain's re-offer point passes it gets
+    a terminal ``unknown`` reply (not auto-retryable) and is never handed out again."""
+    from tools.bot_failure_reasons import UNKNOWN, is_auto_retryable
+
+    base = bot_relay._ensure_dirs(root)
+    legacy = {"id": "a" * 32, "created_at": int(_time2.time()) - 60, "from_profile": "default",
+              "from_handle": "hermes", "target_connection": "cloud-1", "target_profile": "default",
+              "target_handle": "hermes", "message": "legacy"}
+    path = base / bot_relay.CLAIMED_DIR / f"{legacy['id']}.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    reply_path = base / bot_relay.REPLIES_DIR / f"{legacy['id']}.json"
+    claimed_at = _time2.time() - 60
+    _os2.utime(path, (claimed_at, claimed_at))
+    assert bot_relay.claim_pending_envelopes(root) == []
+    assert not reply_path.exists()  # inside the old lane's in-flight window: no verdict yet
+
+    claimed_at = _time2.time() - bot_relay.REOFFER_AFTER_SECONDS - 10
+    _os2.utime(path, (claimed_at, claimed_at))
+    assert bot_relay.claim_pending_envelopes(root) == []
+    reply = json.loads(reply_path.read_text(encoding="utf-8"))
+    assert reply["reason"] == UNKNOWN and not is_auto_retryable(reply["reason"])
+    assert reply["error"] and not reply["reply"]
+
+
 def test_drain_delivers_fresh_envelope_under_ttl(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="on time",
