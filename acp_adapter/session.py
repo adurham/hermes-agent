@@ -74,7 +74,7 @@ def _updated_at_sort_key(value: Any) -> float:
     raw = str(value).strip() if value is not None else ""
     if not raw:
         return float("-inf")
-    for parse in (lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(), float):
+    for parse in (lambda s: datetime.fromisoformat(s).timestamp(), float):
         try:
             return parse(raw)
         except Exception:

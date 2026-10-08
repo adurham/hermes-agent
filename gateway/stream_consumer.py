@@ -771,7 +771,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # preview later deltas extend, so a kept indicator ends up embedded mid-reply.
             tail = chunks[-1]
             indicator = f" ({len(chunks)}/{len(chunks)})"
-            self._accumulated = tail[: -len(indicator)] if tail.endswith(indicator) else tail
+            self._accumulated = tail.removesuffix(indicator)
             # Flag BEFORE the tail send: fresh-final replaces every tracked preview
             # with one message, which is only valid while the active message holds
             # the whole answer — deleting sealed heads drops delivered text.

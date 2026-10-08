@@ -238,7 +238,7 @@ def _format_time_ago(iso_ts: str) -> str:
     """Render an ISO timestamp as `Xh ago` / `Xd ago` / `Xm ago`. Best effort."""
     try:
         from datetime import datetime, timezone
-        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        ts = datetime.fromisoformat(iso_ts)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         secs = int((datetime.now(timezone.utc) - ts).total_seconds())

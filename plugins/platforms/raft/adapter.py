@@ -150,7 +150,7 @@ def _validate_activity_event(value: Any) -> dict[str, Any]:
     if value.get("schema") != ACTIVITY_EVENT_SCHEMA:
         raise ValueError("unsupported activity event schema")
     if unknown := set(value) - _ACTIVITY_ALLOWED_FIELDS:
-        raise ValueError(f"activity event field {sorted(unknown)[0]} is not allowed")
+        raise ValueError(f"activity event field {min(unknown)} is not allowed")
     for key in ("eventId", "sessionId", "hookEventName", "occurredAt"):
         if not _safe_scalar(value.get(key)):
             raise ValueError(f"activity event {key} must be a safe non-empty string")

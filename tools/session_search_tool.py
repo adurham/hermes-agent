@@ -141,7 +141,7 @@ def _parse_iso_bound(value: Optional[str]) -> Optional[int]:
     if rel := _RELATIVE_BOUND_RE.match(text):
         return int(time.time()) - int(rel.group(1)) * _RELATIVE_UNIT_SECONDS[rel.group(2).lower()]
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         raise ValueError(f"invalid time bound: {value!r} (expected ISO date/datetime like "
                          "2026-07-01, or a relative duration like 7d, 24h, 2w)") from None

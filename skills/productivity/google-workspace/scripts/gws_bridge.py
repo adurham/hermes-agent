@@ -92,7 +92,7 @@ def get_valid_token() -> str:
 
     expiry = token_data.get("expiry", "")
     if expiry:
-        exp_dt = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        exp_dt = datetime.fromisoformat(expiry)
         now = datetime.now(timezone.utc)
         if now >= exp_dt:
             token_data = refresh_token(token_data)

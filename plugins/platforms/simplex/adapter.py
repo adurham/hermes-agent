@@ -385,7 +385,7 @@ class SimplexAdapter(BasePlatformAdapter):
                             MessageType.DOCUMENT)
         ts_str = meta.get("itemTs") or meta.get("createdAt", "")
         try:
-            timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(tz=timezone.utc)
+            timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=timezone.utc)
         except (ValueError, AttributeError):
             timestamp = datetime.now(tz=timezone.utc)
         msg_event = MessageEvent(

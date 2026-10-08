@@ -291,7 +291,7 @@ def _is_fork(origin_url: Optional[str]) -> bool:
 
     def _norm(url: str) -> str:
         url = url.rstrip("/")
-        return url[:-4] if url.endswith(".git") else url
+        return url.removesuffix(".git")
 
     return _norm(origin_url) not in {_norm(official) for official in OFFICIAL_REPO_URLS}
 

@@ -670,7 +670,7 @@ _TELEGRAM_INCOMPLETE_RESPONSE = "Telegram setup service returned an incomplete r
 
 def _parse_expiry_ts(value: str) -> float:
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.timestamp()

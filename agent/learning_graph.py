@@ -73,7 +73,7 @@ def _to_int_ts(value: Any) -> Optional[int]:
         try:
             return int(float(s))
         except ValueError:
-            parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(s)
             return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).timestamp())
     except Exception:
         return None

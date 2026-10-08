@@ -208,7 +208,7 @@ class FactRetriever:
         if not self.half_life or not timestamp_str:
             return 1.0
         try:
-            ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")) if isinstance(timestamp_str, str) else timestamp_str
+            ts = datetime.fromisoformat(timestamp_str) if isinstance(timestamp_str, str) else timestamp_str
             age_days = (datetime.now(timezone.utc) - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
             return 1.0 if age_days < 0 else math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):

@@ -202,8 +202,7 @@ def _parse_provider_sse_events(text: str) -> list[dict]:
             current["fields"][field.strip().lower()] = ""
             continue
         field = field.strip().lower()
-        if value.startswith(" "):
-            value = value[1:]
+        value = value.removeprefix(" ")
         if field == "event":
             current["event"] = value.strip()
         elif field == "data":

@@ -745,7 +745,7 @@ def translate_stream_event(event: dict[str, Any], model: str, tool_call_indices:
             last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
-                     "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
+                     "arguments": args_str.removeprefix(last_arguments)}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
         finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")

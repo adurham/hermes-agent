@@ -4185,7 +4185,7 @@ def _to_epoch(val) -> Optional[int]:
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
         from datetime import datetime
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s)
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None

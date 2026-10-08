@@ -442,7 +442,7 @@ def _live_generated_time(data: dict[str, Any]) -> Optional[float]:
         return None
     try:
         from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw)
         return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
     except ValueError:
         return None

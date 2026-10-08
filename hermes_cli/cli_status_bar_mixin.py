@@ -202,8 +202,7 @@ class CLIStatusBarMixin:
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
             from hermes_cli.model_switch import format_model_for_display
             model_short = format_model_for_display(model_short)
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
+        model_short = model_short.removesuffix(".gguf")
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 

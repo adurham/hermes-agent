@@ -58,7 +58,7 @@ def parse_date(value: str | None) -> str | None:
         dt = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(value)
         except ValueError:
             return value
     if dt.tzinfo is None:
@@ -193,7 +193,7 @@ def read(url: str) -> dict:
 
 def filter_entries(entries: list[dict], limit: int, since: str | None) -> list[dict]:
     if since:
-        cutoff = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if "T" not in since else datetime.fromisoformat(since.replace("Z", "+00:00"))
+        cutoff = datetime.fromisoformat(since).replace(tzinfo=timezone.utc) if "T" not in since else datetime.fromisoformat(since)
         if cutoff.tzinfo is None:
             cutoff = cutoff.replace(tzinfo=timezone.utc)
         entries = [e for e in entries if e["published"] and datetime.fromisoformat(e["published"]) >= cutoff]

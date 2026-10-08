@@ -1060,10 +1060,7 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
-            if line.startswith("export "):
-                # Strip the bash-compatible ``export `` prefix so lines like ``export API_KEY=...`` parse as
-                # ``API_KEY`` rather than being stored under the wrong key ``"export API_KEY"`` (#6659).
-                line = line[7:]
+            line = line.removeprefix("export ")
             key, _, val = line.partition("=")
             if key.strip() in provider_env_vars and val.strip().strip("'\""):
                 return True

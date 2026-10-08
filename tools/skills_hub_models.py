@@ -307,7 +307,7 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         raw = match.group(1).rstrip(".,;:")
         # Canonicalize like the support-dir branch (drop query/fragment, percent-decode), strip leading ``./``.
         name = unquote(urlsplit(raw).path)
-        name = name[2:] if name.startswith("./") else name
+        name = name.removeprefix("./")
         # External URLs, anchors, mailto and site-absolute targets are not same-directory file links.
         if not name or "://" in raw or raw.startswith(("mailto:", "#", "/")):
             continue

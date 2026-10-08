@@ -64,7 +64,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     if not message_id or not isinstance(message_text, str):
         return message_text
     prefix = f"{discord_triggering_note(message_id)}\n\n"
-    return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
+    return message_text.removeprefix(prefix)
 
 
 class GatewayInboundMixin(GatewayPluginInjectionMixin):

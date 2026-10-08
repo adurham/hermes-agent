@@ -227,7 +227,7 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
         # ClawHub URLs require the owner handle: https://clawhub.ai/{owner}/skills/{slug}.
         # Without the owner we cannot build a valid URL — return "" rather than
         # a broken link (the card will simply omit the "View source" button).
-        slug = identifier[len("clawhub/"):] if identifier.startswith("clawhub/") else identifier
+        slug = identifier.removeprefix("clawhub/")
         owner = extra.get("owner", "") if isinstance(extra, dict) else ""
         if owner:
             return f"https://clawhub.ai/{owner}/skills/{slug}"
@@ -235,16 +235,16 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
 
     if src in {"skills.sh", "skills-sh"}:
         # "skills-sh/owner/repo/skill" -> the skills.sh detail page
-        rest = identifier[len("skills-sh/"):] if identifier.startswith("skills-sh/") else identifier
+        rest = identifier.removeprefix("skills-sh/")
         return f"https://skills.sh/skills/{rest}"
 
     if src == "lobehub":
-        slug = identifier[len("lobehub/"):] if identifier.startswith("lobehub/") else identifier
+        slug = identifier.removeprefix("lobehub/")
         return f"https://lobehub.com/agent/{slug}"
 
     if src in {"browse.sh", "browse-sh"}:
         # "browse-sh/<hostname>/<task-id>" -> browse.sh task page
-        rest = identifier[len("browse-sh/"):] if identifier.startswith("browse-sh/") else identifier
+        rest = identifier.removeprefix("browse-sh/")
         return f"https://browse.sh/skills/{rest}"
 
     return ""

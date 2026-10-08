@@ -107,7 +107,7 @@ def _parse_timestamp(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except (ValueError, OverflowError):
         return None
     if parsed.tzinfo is None:

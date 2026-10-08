@@ -426,7 +426,7 @@ def _is_richlink_preview_content(content: dict[str, Any]) -> bool:
 
 def _parse_timestamp(ts_str: str) -> datetime:
     try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if ts_str else datetime.now(tz=timezone.utc)
+        return datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=timezone.utc)
     except ValueError:
         return datetime.now(tz=timezone.utc)
 

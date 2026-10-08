@@ -1248,7 +1248,7 @@ def _junction_target(path: str) -> Optional[str]:
     # readlink hands back the substitute name; CreateJunction rejects the ``\\?\`` spelling.
     if target.startswith("\\\\?\\UNC\\"):
         return "\\" + target[7:]
-    return target[4:] if target.startswith("\\\\?\\") else target
+    return target.removeprefix("\\\\?\\")
 
 
 def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool = False) -> None:

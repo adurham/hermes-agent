@@ -726,8 +726,7 @@ def _codex_usage_probe_url(base_url: Optional[str]) -> str:
     module does not import the auxiliary account-usage module.
     """
     normalized = _stripped(base_url).rstrip("/") or _codex_base_url()
-    if normalized.endswith("/codex"):
-        normalized = normalized[: -len("/codex")]
+    normalized = normalized.removesuffix("/codex")
     prefix = normalized + ("/wham" if "/backend-api" in normalized else "/api/codex")
     return prefix + "/usage"
 

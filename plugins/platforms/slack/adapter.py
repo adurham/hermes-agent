@@ -184,8 +184,8 @@ def _pad(cell: str, width: int) -> str:
 def _split_table_row(line: str) -> list[str]:
     """Split a ``| a | b | c |`` row into trimmed cells (outer pipes optional)."""
     s = line.strip()
-    s = s[1:] if s.startswith("|") else s
-    s = s[:-1] if s.endswith("|") else s
+    s = s.removeprefix("|")
+    s = s.removesuffix("|")
     return [c.strip() for c in s.split("|")]
 
 

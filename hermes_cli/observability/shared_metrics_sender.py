@@ -70,7 +70,7 @@ MAX_OBS_ADVANCE_SECONDS = 30 * 24 * 3600
 
 def _parse_stamp(value: str) -> datetime:
     """Parse a stamp this module itself wrote (Z-suffixed ISO-8601, UTC)."""
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value).astimezone(timezone.utc)
 
 
 @dataclass

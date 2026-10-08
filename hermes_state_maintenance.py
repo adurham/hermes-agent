@@ -223,7 +223,7 @@ class SessionMaintenanceMixin:
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
-                            f"keyword argument {sorted(unknown)[0]!r}")
+                            f"keyword argument {min(unknown)!r}")
         clauses = ["s.ended_at IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")

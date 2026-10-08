@@ -1570,7 +1570,7 @@ def _probe_state_file(state_path: Path) -> None:
         age_str = ""
         if updated_at:
             try:
-                updated_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                updated_dt = datetime.fromisoformat(updated_at)
                 age_seconds = int((datetime.now(timezone.utc) - updated_dt).total_seconds())
                 age_str = f" (updated {age_seconds}s ago)"
             except Exception:

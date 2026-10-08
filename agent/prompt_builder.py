@@ -96,8 +96,7 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
     ``load_soul_md`` passes ``user_authored=False`` when ``distribution.yaml`` owns the file).
     """
     # A leading UTF-8 BOM is a Windows-editor artifact, not an injection.
-    if content.startswith("\ufeff"):
-        content = content[1:]
+    content = content.removeprefix("\ufeff")
     findings = _scan_for_threats(content, scope="context")
     if not findings:
         return content

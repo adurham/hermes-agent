@@ -748,8 +748,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         base_url = base_url.rstrip("/")
         if not base_url:
             return ""
-        if base_url.endswith("/v1"):  # fetch_models_with_pricing appends /v1/models
-            base_url = base_url[:-3]
+        base_url = base_url.removesuffix("/v1")
         # Nous-only args must match the pickers' or the seeded cache loses sale chrome and
         # policy-catalog expiry.
         _nous_kwargs = {}

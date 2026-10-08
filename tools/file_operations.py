@@ -494,8 +494,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # gutter line on every newline-terminated file (`cat -n` semantics).
         # Exactly ONE terminator is dropped, so a genuinely selected trailing
         # blank line in a page keeps its own number.
-        if content.endswith('\n'):
-            content = content[:-1]
+        content = content.removesuffix('\n')
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))

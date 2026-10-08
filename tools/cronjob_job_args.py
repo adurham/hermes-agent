@@ -42,7 +42,7 @@ def _first_fire_within_thread_horizon(
     if not run_at:
         return False
     try:
-        fire_at = datetime.fromisoformat(str(run_at).replace("Z", "+00:00"))
+        fire_at = datetime.fromisoformat(str(run_at))
     except ValueError:
         return False
     now = hermes_time.now()

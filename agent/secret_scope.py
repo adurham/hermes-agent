@@ -324,8 +324,7 @@ def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
 def _decode_env_bytes(raw: bytes) -> str:
     """BOM stripped; invalid UTF-8 falls back to latin-1 exactly as
     ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``."""
-    if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8):]
+    raw = raw.removeprefix(codecs.BOM_UTF8)
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:

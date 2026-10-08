@@ -925,7 +925,7 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
         except ValueError:
             pass
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(text).timestamp()
         except ValueError:
             return None
     return None
