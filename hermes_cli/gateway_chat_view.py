@@ -249,6 +249,23 @@ class GatewayChatView:
             return self.emitter.emit_result({"failed": True, "error": message}, session_id=self.session_id, exit_code=3)
         return 3
 
+    def _finite_block(self, admission):
+        """Why a finite viewer cannot keep waiting for *admission*, or None. Its own lost turn
+        settles as the unknown completion would, so the exit code never depends on frame order;
+        only a still-queued input behind someone else's unknown turn is retained and detached."""
+        own = next((row["status"] for row in self.pending if row["admission_id"] == admission), None)
+        if own == "unknown":
+            self.completions[admission] = {"outcome": "unknown", "text": (
+                "Execution outcome is unknown. Resume this session to inspect the lost turn "
+                "and /discard it; do not resend the input.")}
+            return None
+        if own == "queued" and self.unknown_admissions():
+            return ("Unknown execution blocks this session; your accepted input is retained. "
+                    "Resume interactively to resolve the lost turn; do not resend the input.")
+        if self.prompts:
+            return "Input required; detached without cancelling. Resume this session interactively."
+        return None
+
     async def _settled_result(self, admission):
         """The structured result the owner committed with this admission's settlement — the same
         dict the in-process one-shot got from ``run_conversation`` (best-effort, never raises)."""
@@ -300,14 +317,11 @@ class GatewayChatView:
                     self.changed.clear()
                     if self.failure:
                         raise self.failure
-                    if self.unknown_admissions() and any(
-                            row["admission_id"] == admission and row["status"] in {"queued", "unknown"}
-                            for row in self.pending):
-                        return self._detach("Unknown execution blocks this session; your accepted input is retained. "
-                                            "Resume interactively to resolve the lost turn; do not resend the input.")
-                    if self.prompts:
-                        return self._detach("Input required; detached without cancelling. Resume this session interactively.")
-                    await self.changed.wait()
+                    blocked = self._finite_block(admission)
+                    if blocked:
+                        return self._detach(blocked)
+                    if admission not in self.completions:
+                        await self.changed.wait()
                 terminal = self.completions[admission]
                 outcome = terminal.get("outcome")
                 text = terminal.get("text") or terminal.get("content") or ""

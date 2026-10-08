@@ -49,3 +49,28 @@ async def test_editor_refuses_new_prompt_until_lost_turn_is_resolved():
     with pytest.raises(GatewayClientError, match='unknown_execution'):
         await asyncio.wait_for(agent.prompt([acp.text_block('new input')], 's'), 5)
     agent._gateway.rpc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('yield_between', [False, True])
+async def test_editor_own_lost_turn_reports_unknown_not_end_turn(yield_between):
+    # The prompt's own started turn is lost: whichever frame wakes the prompt first, the
+    # editor gets the unknown-execution error, never a successful end_turn.
+    agent = GatewayACPAgent()
+    agent._gateway = AsyncMock()
+    agent._snapshots['s'] = {}
+
+    async def lose_worker():
+        await agent._project({'session_id': 's', 'type': 'session.info',
+                              'payload': {'pending': [{'admission_id': 'ours', 'status': 'unknown'}]}})
+        if yield_between:
+            await asyncio.sleep(0.01)
+        await agent._project({'session_id': 's', 'type': 'message.complete', 'admission_id': 'ours',
+                              'payload': {'outcome': 'unknown', 'text': 'Worker execution is unknown.'}})
+
+    agent._gateway.rpc.return_value = {'admission_id': 'ours'}
+    submitted = asyncio.create_task(agent.prompt([acp.text_block('work')], 's'))
+    await asyncio.sleep(0)
+    await lose_worker()
+    with pytest.raises(GatewayClientError, match='unknown_execution'):
+        await asyncio.wait_for(submitted, 5)

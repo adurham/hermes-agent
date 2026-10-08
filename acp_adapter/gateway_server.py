@@ -325,6 +325,10 @@ class GatewayACPAgent(acp.Agent):
             if self._admissions.get(session_id) == admission_id:
                 self._admissions.pop(session_id, None)
         outcome = terminal.get("outcome")
+        if outcome == "unknown":
+            # Our own lost turn: the same refusal whether session.info or this completion woke us.
+            raise GatewayClientError("unknown_execution: do not resend accepted input; "
+                                     "resolve the lost turn before continuing")
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn")
