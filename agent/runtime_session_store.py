@@ -74,8 +74,9 @@ class WorkerRPC:
             ticket = _session_ticket(self.home, endpoint,
                 purpose='interactive' if method == 'worker.register' else 'worker-adoption')
             url = endpoint.api_origin.replace('https:', 'wss:').replace('http:', 'ws:') + '/api/ws'
+            # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
             with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + ticket],
-                         open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024) as ws:
+                         open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024, proxy=None) as ws:
                 ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}))
                 import time
                 deadline = time.monotonic() + 20
