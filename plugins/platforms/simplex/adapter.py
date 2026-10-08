@@ -18,7 +18,7 @@ import os
 import random
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -385,9 +385,9 @@ class SimplexAdapter(BasePlatformAdapter):
                             MessageType.DOCUMENT)
         ts_str = meta.get("itemTs") or meta.get("createdAt", "")
         try:
-            timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=timezone.utc)
+            timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=UTC)
         except (ValueError, AttributeError):
-            timestamp = datetime.now(tz=timezone.utc)
+            timestamp = datetime.now(tz=UTC)
         msg_event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp, raw_message=chat_item)

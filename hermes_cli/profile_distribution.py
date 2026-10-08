@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -332,7 +332,7 @@ def plan_install(source: str, workdir: Path, override_name: Optional[str] = None
     manifest.name = canon
     manifest.source = provenance
     # Stamped once here so both fresh install and update propagate a fresh timestamp.
-    manifest.installed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest.installed_at = datetime.now(UTC).isoformat(timespec="seconds")
     target_dir = get_profile_dir(canon)
     existing = target_dir.is_dir()
     return InstallPlan(

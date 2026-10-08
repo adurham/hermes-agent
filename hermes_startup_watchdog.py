@@ -34,7 +34,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -287,7 +287,7 @@ class StartupWatchdogHandle:
         )
         _write_dump_record(
             {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "tag": "startup_watchdog.fired",
                 "pid": os.getpid(),
                 "timeout_s": self.timeout_s,

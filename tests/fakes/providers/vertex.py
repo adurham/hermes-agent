@@ -128,7 +128,7 @@ def _write_pem(path: Path, data: bytes) -> Path:
 def make_tls_material(root: Path, hosts: list[str]) -> tuple[Path, Path, Path]:
     """A throwaway CA (PEM for ``SSL_CERT_FILE``) and a leaf for ``hosts`` signed by it."""
     root.mkdir(parents=True, exist_ok=True)
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
     ca_cert = (

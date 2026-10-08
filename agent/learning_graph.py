@@ -13,7 +13,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -74,7 +74,7 @@ def _to_int_ts(value: Any) -> Optional[int]:
             return int(float(s))
         except ValueError:
             parsed = datetime.fromisoformat(s)
-            return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).timestamp())
+            return int((parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)).timestamp())
     except Exception:
         return None
 

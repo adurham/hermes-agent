@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1380,7 +1380,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _iso_timestamp(timestamp: Optional[float]) -> Optional[str]:
         if timestamp is None:
             return None
-        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+        return datetime.fromtimestamp(timestamp, UTC).isoformat()
 
     def _reset_metrics_if_needed(self) -> None:
         current_day = self._metrics_day_key()

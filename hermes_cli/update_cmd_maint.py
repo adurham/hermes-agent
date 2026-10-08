@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli.update_cmd_common import _best_effort
+from datetime import UTC
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -240,8 +241,8 @@ def _format_time_ago(iso_ts: str) -> str:
         from datetime import datetime, timezone
         ts = datetime.fromisoformat(iso_ts)
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        secs = int((datetime.now(timezone.utc) - ts).total_seconds())
+            ts = ts.replace(tzinfo=UTC)
+        secs = int((datetime.now(UTC) - ts).total_seconds())
         if secs < 60:
             return "just now"
         if secs < 3600:

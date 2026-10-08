@@ -117,6 +117,7 @@ from hermes_cli.update_cmd_maint import (
     _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
+from datetime import UTC
 logger = logging.getLogger(__name__)
 
 
@@ -887,7 +888,7 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
         kind = "diverged" if has_common_ancestor else "orphan"
         rescue_ref = (
             f"refs/hermes-update-backups/{kind}-{branch}-"
-            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
+            f"{_dt.now(UTC).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
         head = (
             f"  ⚠ Local history has diverged from origin/{branch} — "
             if has_common_ancestor else

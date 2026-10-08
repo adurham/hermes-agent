@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field, fields
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Literal, Optional
 
 
@@ -518,7 +518,7 @@ def _info_from_valid_jwt(
         inference_base_url=_coerce_str(state.get("inference_base_url")),
         inference_credential_present=True,
         credential_source=_coerce_str(state.get("credential_source")) or "auth_store",
-        expires_at=datetime.fromtimestamp(exp, tz=timezone.utc),
+        expires_at=datetime.fromtimestamp(exp, tz=UTC),
         paid_service_access=paid_access, paid_service_access_info=access_info,
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),

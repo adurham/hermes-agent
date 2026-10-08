@@ -22,7 +22,7 @@ import json
 import os
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO_ROOT)
@@ -666,7 +666,7 @@ def main():
     # without changing the shape of skills.json.
     by_source = Counter(s["source"] for s in all_skills)
     meta = {
-        "extractedAt": datetime.now(timezone.utc).isoformat(),
+        "extractedAt": datetime.now(UTC).isoformat(),
         "totalSkills": len(all_skills),
         "localSkills": len(local),
         "externalSkills": len(external),

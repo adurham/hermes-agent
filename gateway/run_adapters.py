@@ -18,7 +18,7 @@ import time
 import weakref as _weakref
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from gateway.config import (
     ON_ALL_ADAPTERS_DOWN_POLICIES,
     SHARED_LISTENER_MIRROR_PLATFORMS,
@@ -753,7 +753,7 @@ class GatewayAdapterLifecycleMixin:
         )
         self._update_platform_runtime_status(
             status_key or platform.value, platform_state="retrying", needs_attention=True,
-            retrying_since=(datetime.now(timezone.utc) - timedelta(seconds=queued_for)).isoformat(),
+            retrying_since=(datetime.now(UTC) - timedelta(seconds=queued_for)).isoformat(),
         )
 
     def _mark_platform_fatal(self, status_key: str, adapter) -> None:

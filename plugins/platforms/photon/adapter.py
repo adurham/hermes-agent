@@ -18,7 +18,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -426,9 +426,9 @@ def _is_richlink_preview_content(content: dict[str, Any]) -> bool:
 
 def _parse_timestamp(ts_str: str) -> datetime:
     try:
-        return datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=timezone.utc)
+        return datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=UTC)
     except ValueError:
-        return datetime.now(tz=timezone.utc)
+        return datetime.now(tz=UTC)
 
 
 _Normalized = tuple[str, MessageType, list[str], list[str]]  # text, type, media_urls, media_types

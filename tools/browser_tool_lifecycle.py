@@ -10,7 +10,7 @@ import signal
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -41,7 +41,7 @@ def _session_expiry_timestamp(session_info: dict[str, Any]) -> Optional[float]:
         _bt.logger.warning("Ignoring invalid cloud browser session expiry timestamp")
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed.timestamp()
 
 

@@ -7,6 +7,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+from datetime import UTC
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
@@ -265,7 +266,7 @@ def _apply_limits(rows: list[dict]) -> None:
     from hermes_cli.auth import read_credential_pool
 
     def iso(epoch: float) -> str:
-        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+        return datetime.fromtimestamp(epoch, UTC).isoformat()
 
     pooled = {slug for slug, entries in read_credential_pool().items() if entries}
     for row in rows:
@@ -361,7 +362,7 @@ _EXHAUSTED_WINDOW_PERCENT = 100.0
 def _iso_from_epoch(epoch: float) -> str:
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+    return datetime.fromtimestamp(float(epoch), UTC).isoformat()
 
 
 def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,

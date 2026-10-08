@@ -554,7 +554,7 @@ class _DiscordNonConversationalMessageTracker:
 
 def _discord_snowflake_time(snowflake: int) -> dt.datetime:
     """UTC creation time encoded in a Discord snowflake (ms since 2015-01-01 in the top 42 bits)."""
-    return dt.datetime.fromtimestamp(((snowflake >> 22) + 1420070400000) / 1000, tz=dt.timezone.utc)
+    return dt.datetime.fromtimestamp(((snowflake >> 22) + 1420070400000) / 1000, tz=dt.UTC)
 
 
 def _metadata_marks_nonconversational(metadata: Optional[dict[str, Any]]) -> bool:
@@ -2625,7 +2625,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     async def _iter_missed_message_backfill_candidates(self, channel_ids: set[str]):
         if not self._client:
             return
-        after = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+        after = dt.datetime.now(dt.UTC) - dt.timedelta(
             seconds=self._missed_message_backfill_window_seconds()
         )
         limit = self._missed_message_backfill_limit()
@@ -2809,7 +2809,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     @staticmethod
     def _utc_now_iso() -> str:
         import datetime as _dt
-        return _dt.datetime.now(_dt.timezone.utc).isoformat()
+        return _dt.datetime.now(_dt.UTC).isoformat()
 
     def _message_channel_ids(self, message: Any) -> tuple[str, Optional[str], Optional[str]]:
         channel = getattr(message, "channel", None)
@@ -2992,7 +2992,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
     def _discord_message_has_active_claim(self, message_id: str) -> bool:
         if not message_id:
             return False
-        cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)).isoformat()
+        cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
 
         def _op(conn):
             row = conn.execute(

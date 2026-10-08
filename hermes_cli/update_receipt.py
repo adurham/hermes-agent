@@ -40,7 +40,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -108,7 +108,7 @@ def current_correlation_id() -> Optional[str]:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _code_identity(refresh: bool = False) -> dict[str, Any]:

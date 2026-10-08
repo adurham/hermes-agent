@@ -14,7 +14,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional
 
 try:
@@ -256,9 +256,9 @@ class NtfyAdapter(BasePlatformAdapter):
         topic = event.get("topic") or self._topic
         source = self.build_source(
             chat_id=topic, chat_name=topic, chat_type="dm", user_id=topic, user_name=topic, message_id=msg_id)
-        unix_ts, timestamp = event.get("time"), datetime.now(tz=timezone.utc)
+        unix_ts, timestamp = event.get("time"), datetime.now(tz=UTC)
         try:
-            timestamp = datetime.fromtimestamp(int(unix_ts), tz=timezone.utc) if unix_ts else timestamp
+            timestamp = datetime.fromtimestamp(int(unix_ts), tz=UTC) if unix_ts else timestamp
         except (ValueError, OSError, TypeError):
             pass
         message_event = MessageEvent(

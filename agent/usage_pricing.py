@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
@@ -133,7 +133,7 @@ class CostResult:
     notes: tuple[str, ...] = ()
 
 
-_UTC_NOW = lambda: datetime.now(timezone.utc)
+_UTC_NOW = lambda: datetime.now(UTC)
 _INCLUDED_ENTRY = PricingEntry(
     input_cost_per_million=_ZERO, output_cost_per_million=_ZERO, cache_read_cost_per_million=_ZERO,
     cache_write_cost_per_million=_ZERO, source="none", pricing_version="included-route",

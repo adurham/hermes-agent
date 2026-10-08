@@ -8,7 +8,7 @@ if unset). The bridge owns Raft message cursors/bodies; the agent uses the Raft 
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 import functools
 import hmac
 import json
@@ -124,7 +124,7 @@ def _make_activity_event(*, hook_event_name: str, session_id: Any, status: str =
     event: dict[str, Any] = {"schema": ACTIVITY_EVENT_SCHEMA, "eventId": f"hermes-{uuid.uuid4()}",
                              "sessionId": _safe_scalar(session_id, "unknown") or "unknown",
                              "hookEventName": hook_event_name, "status": "error" if status == "error" else "ok",
-                             "occurredAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+                             "occurredAt": datetime.now(UTC).isoformat().replace("+00:00", "Z")}
     for key, raw in (("toolName", tool_name), ("errorClass", error_class)):
         if safe := _safe_scalar(raw):
             event[key] = safe

@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -60,8 +60,8 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if when is None:  # older stdlib returns None instead of raising
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the

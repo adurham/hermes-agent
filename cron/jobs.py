@@ -26,7 +26,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
@@ -845,7 +845,7 @@ def parse_schedule(schedule: str) -> dict[str, Any]:
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
         now = _hermes_now()
         # Durations measure elapsed time, not wall-clock hours across a DST transition.
-        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
+        run_at = (now.astimezone(UTC) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -872,28 +872,28 @@ def _ensure_aware(dt: datetime) -> datetime:
 
 def _elapsed_seconds(later: datetime, earlier: datetime) -> float:
     """Return elapsed seconds between aware instants, independent of wall time."""
-    return (later.astimezone(timezone.utc) - earlier.astimezone(timezone.utc)).total_seconds()
+    return (later.astimezone(UTC) - earlier.astimezone(UTC)).total_seconds()
 
 
 def _instant_after(left: datetime, right: datetime) -> bool:
     """Whether *left* is a later absolute instant than *right*."""
-    return left.astimezone(timezone.utc) > right.astimezone(timezone.utc)
+    return left.astimezone(UTC) > right.astimezone(UTC)
 
 
 def _instant_at_or_before(left: datetime, right: datetime) -> bool:
     """Whether *left* is at or before *right* as an absolute instant."""
-    return left.astimezone(timezone.utc) <= right.astimezone(timezone.utc)
+    return left.astimezone(UTC) <= right.astimezone(UTC)
 
 
 def _instant_before(left: datetime, right: datetime) -> bool:
     """Whether *left* is an earlier absolute instant than *right*."""
-    return left.astimezone(timezone.utc) < right.astimezone(timezone.utc)
+    return left.astimezone(UTC) < right.astimezone(UTC)
 
 
 def _seconds_after(dt: datetime, seconds: float) -> datetime:
     """*dt* plus real *seconds*, in *dt*'s zone. Aware ``+ timedelta`` is wall-clock arithmetic
     that drops ``fold``, so inside a fall-back hour it lands an hour off."""
-    return (dt.astimezone(timezone.utc) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
+    return (dt.astimezone(UTC) + timedelta(seconds=seconds)).astimezone(dt.tzinfo)
 
 
 def _parse_aware(value: Any) -> Optional[datetime]:
@@ -1190,7 +1190,7 @@ def compute_next_run(schedule: dict[str, Any], last_run_at: Optional[str] = None
         if minutes is None:
             return None
         # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
-        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        next_run = base_time.astimezone(UTC) + timedelta(minutes=minutes)
         return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")

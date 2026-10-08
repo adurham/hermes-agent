@@ -11,7 +11,7 @@ import html as _html
 import re
 import time
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
 from hermes_cli import setup_platforms
 
@@ -6343,7 +6343,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             session_entry = store.get_or_create_session(self._telegram_group_observe_shared_source(event.source))
             entry = {
                 "role": "user", "content": self._telegram_group_observe_attributed_text(event),
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True}
+                "timestamp": datetime.now(tz=UTC).isoformat(), "observed": True}
             if event.message_id:
                 entry["message_id"] = str(event.message_id)
             self._accept_update()

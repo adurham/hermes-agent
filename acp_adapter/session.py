@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -63,7 +63,7 @@ def _format_updated_at(value: Any) -> str | None:
     if value is None or (isinstance(value, str) and value.strip()):
         return value
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
     except Exception:
         return None
 

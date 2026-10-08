@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 # fcntl is Unix-only; Windows uses msvcrt
 try:
@@ -1257,7 +1257,7 @@ def _usage_audit_path() -> Path:
 
 def _utcnow_iso_ms() -> str:
     """RFC3339 UTC timestamp with millisecond precision and 'Z' suffix."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 

@@ -12,7 +12,7 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import Future
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,7 +53,7 @@ def max_pingpong_turns() -> int:
 
 def now_iso() -> str:
     """ISO 8601 UTC timestamp with millisecond precision (A2A v1.0)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,

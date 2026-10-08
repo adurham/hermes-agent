@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Union
 
 from hermes_state_common import _BOUNDARY_END_REASONS
@@ -146,7 +146,7 @@ def _parse_iso_bound(value: Optional[str]) -> Optional[int]:
         raise ValueError(f"invalid time bound: {value!r} (expected ISO date/datetime like "
                          "2026-07-01, or a relative duration like 7d, 24h, 2w)") from None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return int(parsed.timestamp())
 
 

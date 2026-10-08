@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, unquote
@@ -475,10 +475,10 @@ class SignalAdapter(BasePlatformAdapter):
             (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
             MessageType.DOCUMENT)
         ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
-        timestamp = datetime.now(tz=timezone.utc)
+        timestamp = datetime.now(tz=UTC)
         if ts_ms:
             with suppress(ValueError, OSError):
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
         # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,

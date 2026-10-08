@@ -306,7 +306,7 @@ def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
     from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
     directory.mkdir(parents=True, exist_ok=True)
-    now = _dt.datetime.now(_dt.timezone.utc)
+    now = _dt.datetime.now(_dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes e2e test CA")])
     ca_cert = (
