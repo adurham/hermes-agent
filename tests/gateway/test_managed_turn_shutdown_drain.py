@@ -49,11 +49,12 @@ def test_settlement_stops_a_silent_managed_worker_instead_of_waiting_unbounded(m
         return original([sys.executable, '-c', 'import time\nwhile True: time.sleep(1)'], **kwargs)
     monkeypatch.setattr(managed.subprocess, 'Popen', silent_child)
     ref = SessionRef('profile', 's')
-    live = SimpleNamespace(task=None)
+    live = SimpleNamespace(task=None, route='r', event_stream=SimpleNamespace(execution={}))
     authority = SimpleNamespace(profile_id='profile', pending_results={}, waiters={}, sessions={'s': live},
-                                check_approval_generation=lambda *a: None,
+                                check_approval_generation=lambda *a: None, pending_stops={},
                                 adopt_agent=lambda session_id, generation, worker: None)
     runner = SimpleNamespace(session_authority=authority)
+    authority.runner = runner  # settle also hard-stops in-process turns through the runner
     row = {'admission_id': 'adm', 'principal_id': 'owner', 'generation': 3, 'payload': {'text': 'go'}}
 
     async def scenario():
