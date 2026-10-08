@@ -20,6 +20,8 @@ async def mailbox_lock(authority):
             yield
         finally:
             active.discard(task)
+            from gateway.session_runtime_workers import persist_work_count
+            persist_work_count(authority)
 
 
 async def _mailbox_io(operation, *args):

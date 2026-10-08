@@ -219,6 +219,8 @@ class SessionAuthority:
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
             live.task.add_done_callback(_log_drain_failure)
+            from gateway.session_runtime_workers import persist_work_count
+            live.task.add_done_callback(lambda task: persist_work_count(self, task))
 
     def wake_after_worker(self, session_id):
         """A worker execution on ``session_id`` (a logical owner or its compression continuation)

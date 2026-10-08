@@ -23,6 +23,16 @@ def uncounted_runtime_work(runner):
             + sum(len(mutation_tasks(authority)) for authority in authorities))
 
 
+def persist_work_count(authority, _task=None):
+    """Re-publish the runner's in-flight count when owner work it counts (a drain, a tracked
+    mutation, a mailbox operation) ends: the agent-slot release that last wrote
+    ``gateway_state.json`` ran while that work was still live, so without this write the
+    persisted count never returns to zero."""
+    persist = getattr(getattr(authority, 'runner', None), '_persist_active_agents', None)
+    if persist is not None:
+        persist()
+
+
 def mutation_tasks(authority):
     tasks = {*getattr(authority, '_mutation_tasks', ()), *getattr(authority, '_bot_mailbox_operations', ())}
     return [task for task in tasks if not task.done()]
@@ -38,6 +48,7 @@ def track_mutation(authority, operation):
         tasks.discard(done)
         if not done.cancelled():
             done.exception()  # the observer may already have disconnected
+        persist_work_count(authority)
     task.add_done_callback(finished)
     return task
 

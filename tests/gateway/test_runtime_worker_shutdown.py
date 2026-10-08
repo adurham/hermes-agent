@@ -137,3 +137,31 @@ async def test_unserve_keeps_ownership_without_aborting_the_reconcile(tmp_path, 
     assert result['removed'] == ['stuck', 'gone']
     assert released == [gone] and closed == [gone], 'ownership of the stuck profile was released'
     assert runner._served_profile_homes == {}
+
+
+@pytest.mark.asyncio
+async def test_persisted_work_count_returns_to_zero_when_the_drain_ends():
+    """gateway_state.json's active_agents is written at the agent-slot release, while the owner's
+    drain (counted until it ends) is still live; the drain's end must write it again, or the
+    persisted count stays at 1 after every messaging turn and the gateway never reads idle."""
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_runtime_workers import uncounted_runtime_work
+
+    persisted, release = [], asyncio.Event()
+    authority = SessionAuthority.__new__(SessionAuthority)
+    runner = SimpleNamespace(_running_agents={}, session_authority=authority,
+                             _persist_active_agents=lambda: persisted.append(uncounted_runtime_work(runner)))
+    live = SimpleNamespace(task=None, route='route', event_stream=SimpleNamespace(execution={'execution_generation': 1}))
+    authority.runner, authority.sessions, authority._managed_workers = runner, {'s': live}, {}
+
+    async def drain(_ref):
+        await release.wait()
+
+    authority._drain = drain
+    authority._schedule(SimpleNamespace(session_id='s'))
+    await asyncio.sleep(0)
+    assert uncounted_runtime_work(runner) == 1
+    release.set()
+    await live.task
+    await asyncio.sleep(0)
+    assert persisted and persisted[-1] == 0
