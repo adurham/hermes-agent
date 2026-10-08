@@ -9,7 +9,6 @@ import asyncio
 import json
 import os
 from pathlib import Path
-import tempfile
 import threading
 
 
@@ -157,21 +156,9 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         if len(encoded) > self.max_bytes:
             self.failure = 'outbox_full'
             raise WorkerPersistenceError(self.failure)
-        fd, temporary = tempfile.mkstemp(prefix='.pending-', dir=self.path.parent)
-        try:
-            with os.fdopen(fd, 'wb') as stream:
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            if os.name != 'nt':
-                directory = os.open(self.path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+        from utils import atomic_write_bytes
+        # Owner-only journal (the dir is 0700 too); the rename and its directory entry are durable.
+        atomic_write_bytes(self.path, encoded, tmp_prefix='.pending-', mode=0o600, fsync_dir=True)
 
     def _session(self, session_id):
         if session_id != self.scope['session_id']:

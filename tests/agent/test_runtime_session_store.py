@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -87,6 +88,28 @@ def test_outbox_filesystem_failure_is_sticky(tmp_path, monkeypatch):
         with pytest.raises(OSError, match='disk unavailable'):
             store.queue_token_counts('s', input_tokens=1)
         assert store.failure == 'disk unavailable'
+    finally:
+        store._outbox_owner.close()
+
+
+def test_outbox_journal_survives_a_cross_device_rename(tmp_path, monkeypatch):
+    """The journal publishes through utils.atomic_replace: a bind-mounted outbox whose rename
+    fails EXDEV falls back to copy+fsync instead of failing every worker write, and the
+    journal stays owner-only."""
+    import errno
+    import stat
+    real_replace = os.replace
+    def exdev_replace(src, dst):
+        if str(dst).endswith('pending.json'):
+            raise OSError(errno.EXDEV, 'cross-device link')
+        return real_replace(src, dst)
+    monkeypatch.setattr(os, 'replace', exdev_replace)
+    store = RuntimeSessionStore(lambda *a, **k: {}, {'session_id': 's'}, tmp_path / 'private')
+    try:
+        journal = store.path
+        assert json.loads(journal.read_text())['scope'] == {'session_id': 's'}
+        assert stat.S_IMODE(journal.stat().st_mode) == 0o600
+        assert [p.name for p in journal.parent.iterdir() if p.name.startswith('.pending-')] == []
     finally:
         store._outbox_owner.close()
 

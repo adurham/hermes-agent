@@ -14,6 +14,7 @@ import stat
 import tempfile
 
 from hermes_state_runtime import RuntimeStoreError
+from utils import fsync_directory
 
 
 def _media_root():
@@ -115,16 +116,6 @@ def restore_attachments(payload):
     return {'media_urls': restore_native_media(data['media']), 'media_types': list(data['media_types'])}
 
 
-def _sync_directory(path):
-    # Windows cannot open directories through os.open; file fsync still precedes ACK.
-    if os.name != 'nt':
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-
 def _open_regular(path):
     if not path.is_absolute() or path.is_symlink():
         raise ValueError('native media must be a local regular file')
@@ -160,7 +151,7 @@ def capture_native_media(paths):
             else:
                 os.replace(temporary, target)
             for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
-                _sync_directory(directory)
+                fsync_directory(directory)
     finally:
         for temporary in staged:
             temporary.unlink(missing_ok=True)

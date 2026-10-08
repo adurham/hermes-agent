@@ -447,29 +447,9 @@ class HostedRoomAttachmentStore:
         return self.blob_root / blob_id
 
     def _write_blob(self, target: Path, data: bytes) -> None:
-        temp = self.blob_root / f".tmp-{secrets.token_hex(16)}"
-        descriptor = None
-        try:
-            descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                descriptor = None
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp, target)
-            os.chmod(target, 0o600)
-            try:
-                directory = os.open(self.blob_root, os.O_RDONLY)
-                try:
-                    os.fsync(directory)
-                finally:
-                    os.close(directory)
-            except OSError:
-                pass
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-            temp.unlink(missing_ok=True)
+        from utils import atomic_write_bytes
+        # ``.tmp-`` staging names are what the orphan sweep reclaims after a crash.
+        atomic_write_bytes(target, data, tmp_prefix=".tmp-", mode=0o600, fsync_dir=True)
 
     def _open_blob(self, *, blob_id: str, size: int) -> int:
         """Open the regular blob file and fence its size against the durable row."""
