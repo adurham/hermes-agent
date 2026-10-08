@@ -407,21 +407,8 @@ def _in_progress_runs(inspect, repository: str, tag: str) -> list[dict]:
     return [row for row in rows if row["status"] != "completed"]
 
 
-def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, inspect=None) -> dict:
-    """Clear the outstanding attempt of ``version``. The attempt ref stays; the marker is the record.
-
-    Its in-progress runs are cancelled and its draft deleted before the marker
-    exists: a live run can autopublish the draft, a cleared attempt with a live
-    draft could still be published by hand, and once the marker is written
-    there is no outstanding attempt left to retry the cleanup against. This
-    reads every outstanding attempt, not the one-attempt view, so it still
-    clears one when a concurrent cut left two.
-    """
-    _refresh_claims(repo, remote)
-    matching = [found for found in _outstanding_attempts(repo, remote) if found[0] == version]
-    if len(matching) != 1:
-        raise ReleaseRefused(f"stable {version} has no outstanding attempt to abandon")
-    _version, attempt, tag = matching[0]
+def _abandon_attempt(version: str, attempt: int, tag: str, *, repo: Path, remote: str,
+                     repository: str, execute, inspect=None) -> dict:
     cancelled: list[str] = []
     if inspect is not None:
         draft = _release_view(tag, repository, inspect)
@@ -443,6 +430,27 @@ def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, 
         raise _claim_collision(repo, remote, marker, error) from error
     return {"version": version, "tag": tag, "marker": marker, "repository": repository,
             "cancelled": cancelled}
+
+
+def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, inspect=None) -> list[dict]:
+    """Clear every outstanding attempt of ``version``, oldest first. Attempt refs stay; markers are the record.
+
+    Each attempt's in-progress runs are cancelled and its draft deleted before
+    its marker exists: a live run can autopublish the draft, a cleared attempt
+    with a live draft could still be published by hand, and once the marker is
+    written there is no outstanding attempt left to retry the cleanup against.
+    This reads every outstanding attempt, not the one-attempt view, so it
+    clears all of them when a concurrent cut left more than one. An attempt
+    that fails stops the loop; the ones already cleared stay cleared and a
+    rerun picks up the rest.
+    """
+    _refresh_claims(repo, remote)
+    matching = sorted(found for found in _outstanding_attempts(repo, remote) if found[0] == version)
+    if not matching:
+        raise ReleaseRefused(f"stable {version} has no outstanding attempt to abandon")
+    return [_abandon_attempt(version, attempt, tag, repo=repo, remote=remote,
+                             repository=repository, execute=execute, inspect=inspect)
+            for _version, attempt, tag in matching]
 
 
 def next_steps(result: dict, *, bold: bool = False) -> str:
@@ -551,15 +559,16 @@ def publish_steps(result: dict) -> str:
     return "\n".join(lines)
 
 
-def abandon_steps(result: dict) -> str:
-    """Say which attempt is cleared and which attempt the next cut takes."""
-    version, tag = result["version"], result["tag"]
-    _version, attempt = parse_attempt_ref(tag)
-    return "\n".join([
-        f"Cleared {tag}. The marker {result['marker']} records it.",
-        *(f"Cancelled {url}" for url in result.get("cancelled", [])),
-        f"v{version} is not spent. The next cut is rc.{attempt + 1}-v{version}.",
-    ])
+def abandon_steps(results: list[dict]) -> str:
+    """Say which attempts are cleared and which attempt the next cut takes."""
+    version = results[0]["version"]
+    lines = []
+    for result in results:
+        lines.append(f"Cleared {result['tag']}. The marker {result['marker']} records it.")
+        lines.extend(f"Cancelled {url}" for url in result.get("cancelled", []))
+    _version, last = parse_attempt_ref(results[-1]["tag"])
+    lines.append(f"v{version} is not spent. The next cut is rc.{last + 1}-v{version}.")
+    return "\n".join(lines)
 
 
 def cmd_publish(args) -> None:
