@@ -39,7 +39,7 @@ def manage_connections(
         )
 
     return run_managed_action(
-        action, [t.name for t in managed], args,
+        action, managed, args,
         client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id,
         connection_callback=connection_callback, connectors_available=connectors_available,
     )
