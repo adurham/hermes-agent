@@ -355,7 +355,7 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
                 entry = tags.get(name)
                 sha, target = (entry[0], entry[1]) if entry else ("", "")
                 if sha:
-                    lines.append(f"{sha}\t{ref if ref.endswith('^{}') else ref}")
+                    lines.append(f"{sha}\t{ref}")
                     if ref.endswith("^{}"):
                         lines[-1] = f"{target}\t{ref}"
             return "\n".join(lines)
