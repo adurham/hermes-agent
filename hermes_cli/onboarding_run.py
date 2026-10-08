@@ -54,11 +54,12 @@ def _named_profiles(root: Path) -> list[Path]:
 
 
 def should_run() -> bool:
-    """The root file's explicit ``onboarding.run`` when it is a bool, else whether the install is fresh."""
-    from hermes_cli.config import read_user_config_raw
+    """The root config's explicit ``onboarding.run`` (managed overlay included) when it is a bool,
+    else whether the install is fresh."""
+    from hermes_cli.config_effective import load_user_config_effective
 
-    # Raw read on purpose: load_config() resolves the launch profile and fills the default None.
-    section = read_user_config_raw(_root_config()).get("onboarding")
+    # Not load_config(): it resolves the launch profile and fills the default None for an unset flag.
+    section = load_user_config_effective(_root_config()).get("onboarding")
     value = section.get("run") if isinstance(section, dict) else None
     return value if isinstance(value, bool) else not install_has_history(get_default_hermes_root())
 
