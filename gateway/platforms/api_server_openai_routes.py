@@ -80,8 +80,20 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None) 
 
 _RESPONSES_FINGERPRINT_KEYS = (
     "input", "instructions", "previous_response_id", "conversation", "conversation_history", "model",
-    "provider", "model_options", "tools", "truncation",
+    "provider", "model_options", "tools",
 )
+
+
+def _settled(record):
+    """A stored idempotency record that carries its answer. A claim written without one (an
+    older release recorded the claim before the run) has an unknown outcome and never replays."""
+    return record is not None and record.get('response') is not None
+
+
+def _responses_fingerprint_keys(body):
+    """``truncation`` joins the fingerprint only when sent, so an exact retry of a request
+    recorded before it was fingerprinted keeps matching its stored key."""
+    return _RESPONSES_FINGERPRINT_KEYS + (("truncation",) if body.get("truncation") is not None else ())
 
 
 def _response_identity(store, durable_key):
@@ -333,7 +345,7 @@ class _ResponsesStream:
     def persist_snapshot(self, response_env: dict[str, Any], *, history=None, session_id=None):
         if not self.store:
             return
-        if self.durable_key and self.response_store.get(self.durable_key[0]) is not None:
+        if self.durable_key and _settled(self.response_store.get(self.durable_key[0])):
             return  # A concurrent observer already committed the exact terminal envelope.
         advance_conversation = self.conversation and (not self.terminal_replay
             or self.response_store.get_conversation(self.conversation) in (None, self.response_id))
@@ -626,7 +638,9 @@ class _ResponsesStream:
             self.response_store.put(self.durable_key[0], {
                 'fingerprint': self.durable_key[1], 'response': env, 'headers': headers,
                 'events': [*self.recorded_events, ('response.' + status, terminal_event)]})
-            env = self.response_store.get(self.durable_key[0])['response']
+            stored = self.response_store.get(self.durable_key[0])
+            if _settled(stored):
+                env = stored['response']
             status = env['status']
         await self.write_event(
             'response.' + status, {'type': 'response.' + status, 'response': env})
@@ -1224,7 +1238,7 @@ class OpenAICompatRoutesMixin:
             from gateway.platforms.api_server import _make_request_fingerprint
             idempotency_scope = self._run_idempotency_scope(request)
             durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
-                           _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
+                           _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
             from gateway.platforms.api_server import _openai_error
             from gateway.platforms.api_server_response_admissions import request_binding
             response_store = self._current_response_store()
@@ -1237,6 +1251,10 @@ class OpenAICompatRoutesMixin:
                 if replay.get('fingerprint') != durable_key[1]:
                     return durable_key, idempotency_scope, idempotency_key, web.json_response(
                         _openai_error('admission_conflict', code='admission_conflict'), status=409)
+                if not _settled(replay):
+                    # Never re-run a request whose earlier attempt may have executed.
+                    return durable_key, idempotency_scope, idempotency_key, web.json_response(
+                        _openai_error('unknown_execution', code='unknown_execution'), status=409)
                 if stream:
                     return (durable_key, idempotency_scope, idempotency_key,
                             await self._replay_sse_responses(request, replay))
@@ -1330,13 +1348,13 @@ class OpenAICompatRoutesMixin:
             return await run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=list(_RESPONSES_FINGERPRINT_KEYS), route="responses",
+            fingerprint_keys=list(_responses_fingerprint_keys(body)), route="responses",
         )
         if err is not None:
             return err
         if durable_key is not None:
             replay = self._current_response_store().get(durable_key[0])
-            if replay is not None:
+            if _settled(replay):
                 return web.json_response(replay['response'], headers=replay.get('headers') or {})
         result, usage = outcome
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
