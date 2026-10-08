@@ -29,6 +29,13 @@ class PreparedMutations:
                                 'unsupported_compress_options'}:
                     self.pending.pop(key)
                 raise
+            if entry['result'].get('status') == 'confirmation_required':
+                # The owner wrote nothing: a guarded model target needs the user's confirmation
+                # (payload ``confirm`` = the returned token). These surfaces cannot collect it
+                # yet, so say so instead of reporting the switch as done.
+                self.pending.pop(key)
+                raise GatewayClientError(entry['result']['confirm_message'] + '\n\nModel not switched: '
+                                         'this target needs a confirmation this client cannot collect yet.')
         return entry['result']
 
     def acknowledge(self, session_id, operation, payload):

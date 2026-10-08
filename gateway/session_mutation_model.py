@@ -21,6 +21,9 @@ async def prepare_model(authority, live, payload, prepared):
         custom_providers=get_compatible_custom_providers(config))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')
+    refusal = await _selection_guard_refusal(authority, live, payload, prepared['snapshot'], old, result, runtime)
+    if refusal is not None:
+        return refusal
     frozen = old.config()
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
@@ -43,3 +46,39 @@ async def prepare_model(authority, live, payload, prepared):
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
     return dict(prepared, policy=asdict(policy))
+
+
+async def _selection_guard_refusal(authority, live, payload, snapshot, old, result, runtime):
+    """The shared selection-guard registry (cost, data-policy, large-context switch) runs before the
+    commit. A flagged target is refused with ``status: confirmation_required`` and a ``confirm``
+    token bound to the resolved target, the selection it replaces and the session revision; nothing
+    is written. Only that exact token in ``payload['confirm']`` applies it: a stale or foreign
+    token (target re-resolved elsewhere, another switch landed, a turn settled) gets a fresh
+    refusal, never a silent apply."""
+    import hashlib
+    from hermes_cli.model_selection_guards import combined_message, selection_context_for_agent, selection_warnings
+    from hermes_cli.route_identity import normalize_route_base_url
+    lookup = (getattr(authority.runner, '_resident_agent_for', None)
+              or getattr(authority.runner, '_cached_agent_for', None))
+    agent = lookup(live.route) if live is not None and callable(lookup) else None
+    # Off-loop: pricing lookups may hit models.dev on a cache miss.
+    warnings = await asyncio.to_thread(
+        selection_warnings, result.new_model, provider=result.target_provider,
+        base_url=result.base_url or old.base_url or '', api_key=result.api_key or runtime.get('api_key') or '',
+        model_info=result.model_info, selection_context=selection_context_for_agent(agent))
+    if not warnings:
+        return None
+    binding = {'target': [result.new_model, result.target_provider, normalize_route_base_url(result.base_url),
+                          result.api_mode or ''],
+               'current': [old.model, old.provider or '', normalize_route_base_url(old.base_url)],
+               'session': [snapshot['target'], snapshot['target_revision']],
+               'guards': sorted(w.kind for w in warnings)}
+    token = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    if payload.get('confirm') == token:
+        return None
+    # A fresh dict: the prepared snapshot carries the frozen policy and never leaves the owner. No
+    # ``model`` key: a client that predates the exchange must not paint the target as applied.
+    return {'status': 'confirmation_required', 'confirm_required': True, 'confirm': token,
+            'target_model': result.new_model, 'target_provider': result.target_provider,
+            'confirm_message': combined_message(warnings),
+            'warnings': [{'kind': w.kind, 'title': w.title, 'message': w.message} for w in warnings]}

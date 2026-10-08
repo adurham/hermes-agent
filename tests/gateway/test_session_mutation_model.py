@@ -234,3 +234,70 @@ async def test_committed_model_selection_is_the_next_resolved_runtime(tmp_path, 
         same, runtime = await switch(old_url, 'chat_completions')
         assert same.credential_ref is not None and same.config()['model']['key_env'] == 'ENDPOINT_A_KEY'
         assert (runtime['base_url'].rstrip('/'), runtime['api_key']) == (old_url, 'sk-endpoint-a')
+
+
+@pytest.mark.asyncio
+async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp_path, monkeypatch):
+    """The shared selection guards run before the commit: an unconfirmed (or wrongly confirmed)
+    guarded target writes nothing; its own token applies it exactly once; a token for another
+    target or a superseded selection gets a fresh decision."""
+    from types import SimpleNamespace
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_local import create_local_session
+    from hermes_cli import model_cost_guard, model_switch
+    import hermes_state_runtime as rt
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
+    monkeypatch.setattr(model_cost_guard, 'expensive_model_warning', lambda model, **k: (
+        model_cost_guard.ExpensiveModelWarning(model, 'custom', None, None, 'test', f'{model} IS EXPENSIVE')
+        if model.startswith('pricey') else None))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
+                                                            model='frozen', toolsets=[]))
+    calls = iter(range(100))
+
+    async def mutate(payload, retry=None):
+        snap = db.get_session(ref.session_id)
+        params = retry or {'session_id': ref.session_id, 'request_id': f'switch-{next(calls)}', 'operation': 'model',
+                           'payload': payload, 'expected_revision': snap['runtime_revision'],
+                           'expected_generation': snap['runtime_generation']}
+        response = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': params})
+        assert 'result' in response, response
+        return response['result'], params
+
+    def state():
+        row = db.get_session(ref.session_id)
+        return row['runtime_revision'], row['runtime_generation'], row['model'], authority.sessions[ref.session_id]
+    try:
+        before = state()
+        refused, _ = await mutate({'model': 'pricey'})
+        assert refused['status'] == 'confirmation_required' and 'pricey IS EXPENSIVE' in refused['confirm_message']
+        assert 'model' not in refused, 'a refusal must not read as an applied switch'
+        wrong, _ = await mutate({'model': 'pricey', 'confirm': '0' * 64})
+        other, _ = await mutate({'model': 'pricey-xl', 'confirm': refused['confirm']})
+        assert wrong['status'] == other['status'] == 'confirmation_required'
+        assert other['confirm'] != refused['confirm'], 'a token must not carry to another target'
+        assert state() == before, 'an unconfirmed selection changed revision/generation/policy'
+        confirmed = {'model': 'pricey', 'confirm': refused['confirm']}
+        applied, params = await mutate(confirmed)
+        assert applied['model'] == 'pricey' and applied['execution_generation'] == before[1] + 1
+        assert (await mutate(confirmed, params))[0] == applied  # exact retry: applied once
+        assert db.get_session(ref.session_id)['runtime_generation'] == before[1] + 1
+        stale, _ = await mutate(confirmed)  # same target, but the selection it replaced is gone
+        assert stale['status'] == 'confirmation_required' and stale['confirm'] != refused['confirm']
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

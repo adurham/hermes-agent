@@ -8,7 +8,8 @@ METADATA_FIELDS = {'title': str, 'archived': bool, 'hidden': bool, 'pinned': boo
 def validate_action(operation, payload):
     if not isinstance(payload, dict) or not isinstance(operation, str):
         raise RuntimeStoreError('invalid_params')
-    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider'}
+    # ``confirm``: the owner's selection-guard token for this exact resolved target (session_mutation_model).
+    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm'}
             and all(isinstance(v, str) and v.strip() for v in payload.values())):
         return
     if operation == 'branch' and (not payload or (set(payload) == {'title'} and isinstance(payload['title'], str))):
