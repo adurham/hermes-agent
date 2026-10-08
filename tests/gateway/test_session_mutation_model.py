@@ -103,3 +103,61 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
         peer.shutdown()
         peer.server_close()
         thread.join(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, monkeypatch):
+    """A drain that runs while the model receipt commits off-loop sees the new stored policy beside
+    the old live one and pauses; publishing the policy must wake it, or the input stays queued
+    until another submit or a restart."""
+    import time
+    from types import SimpleNamespace
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import Submission
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_local import create_local_session
+    import hermes_cli.model_switch as model_switch
+    import hermes_state_runtime as rt
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1'))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    executed = []
+
+    async def handle(event):
+        executed.append(event.text)
+        return 'ok'
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _handle_message=handle,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
+                                                            model='frozen', toolsets=[]))
+    # A contended receipt transaction: the commit thread holds it open while the loop runs.
+    entered = threading.Event()
+    db._conn.create_function('hold_receipt', 1, lambda s: (entered.set(), time.sleep(s))[1] or 0)
+    db._execute_write(lambda c: c.execute("CREATE TRIGGER hold_receipt AFTER INSERT ON state_meta "
+                                          "WHEN NEW.key LIKE 'gateway.mutation.v1.%' BEGIN SELECT hold_receipt(0.4); END"))
+    snap = db.get_session(ref.session_id)
+    try:
+        mutation = asyncio.create_task(owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'switch', 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': 'switched'}}}))
+        await asyncio.to_thread(entered.wait, 5)
+        queued = await authority.submit(owner.actor, Submission('during-switch', ref, {'text': 'FOLLOWER'}, 'queue'))
+        assert (await mutation)['result']['model'] == 'switched'
+        async with asyncio.timeout(10):
+            while rt.get_session_admission(db, admission_id=queued.admission_id)['status'] != 'terminal':
+                await asyncio.sleep(0.05)
+        assert executed == ['FOLLOWER']
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+

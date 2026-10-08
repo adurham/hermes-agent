@@ -141,6 +141,10 @@ def _project_committed(authority, ref, operation, result):
     if operation == 'model':
         from gateway.session_local import publish_local_policy
         publish_local_policy(authority, ref.session_id)
+        # A drain that ran while the receipt committed off-loop saw the new stored policy beside
+        # the old live one and paused; with both now equal, queued input must run, not wait for
+        # the next submit or restart.
+        authority._schedule(ref)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])
