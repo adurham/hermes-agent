@@ -1,7 +1,6 @@
 """An independent local route, transcript and frozen policy in one receipt commit."""
 import json
 import uuid
-from datetime import datetime, timezone
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
@@ -26,7 +25,8 @@ def branch_in_transaction(db, conn, session_id, payload):
     source = SessionSource(Platform.LOCAL, child, user_id=saved['principal_id'], chat_type='dm')
     from gateway.session import build_session_key, SessionStore
     route = build_session_key(source, profile=SessionStore._profile_from_session_key(saved['route']))
-    now = datetime.now(timezone.utc)
+    from gateway.session_lifecycle import _now
+    now = _now()
     entry = SessionEntry(route, child, now, now, origin=source, platform=Platform.LOCAL)
     parent = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     policy = saved['policy']

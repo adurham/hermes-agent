@@ -97,3 +97,40 @@ def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeyp
         contents = [m['content'] for m in local_history(authority, SessionRef('owned', 'root'))]
         assert 'AFTER_COMPRESSION' in contents
         assert 'BEFORE_COMPRESSION' not in contents
+
+
+@pytest.mark.asyncio
+async def test_branch_and_local_entries_keep_the_routing_prune_sweep_running(tmp_path, monkeypatch):
+    """Every producer of canonical routing entries (local create, API bind, ``session.mutate``
+    branch) stamps the store clock: one aware-UTC entry makes ``prune_old_entries`` raise against
+    its naive cutoff, and the watcher swallows that, so no stale route is ever pruned again."""
+    from datetime import timedelta
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionSource, SessionStore
+    from gateway.session_api import bind_api_session
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from gateway.session_mutations import mutate_session
+    from gateway import run
+
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
+    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read', 'session:control'}), 'socket')
+    ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path),
+                                                  'model': 'frozen', 'toolsets': []})
+    bind_api_session(authority, 'api-owner')
+    branched = await mutate_session(authority, actor, ref, dict(session_id=ref.session_id, request_id='branch',
+        expected_revision=0, expected_generation=0, operation='branch', payload={}))
+    telegram = store.get_or_create_session(
+        SessionSource(platform=Platform.TELEGRAM, chat_id='7', user_id='7', chat_type='dm'))
+    # Cold store: only the durable index feeds the sweep.
+    cold = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    with cold._lock:
+        cold._ensure_loaded_locked()
+        assert any(e.session_id == branched['branched_session_id'] for e in cold._entries.values())
+        cold._entries[telegram.session_key].updated_at -= timedelta(days=90)
+    assert cold.prune_old_entries(30) == 1
+    assert cold.lookup_by_session_key(telegram.session_key) is None
