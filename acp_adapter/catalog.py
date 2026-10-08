@@ -15,10 +15,23 @@ def read_catalog_rows(path):
         return {str(row["id"]): dict(row) for row in db.list_sessions_rich(source="acp", limit=1000)}
 
 
+def logical_session_id(path, session_id):
+    """The authority's logical id for an id an editor already holds: compression advances the
+    physical transcript, never the session identity (``SessionAuthority.logical_owner``)."""
+    path = Path(path)
+    if not path.exists():
+        return session_id
+    with SessionDB(db_path=path, read_only=True) as db:
+        lineage = db.get_compression_lineage(session_id)
+    return lineage[0] if lineage else session_id
+
+
 def catalog_sessions(path, cwd=None):
     normalized = _normalize_cwd_for_compare(cwd) if cwd else None
     results = []
     for sid, row in read_catalog_rows(path).items():
+        # The listing projects a compressed chat's tip; the editor must hold the logical id.
+        sid = row.get("_lineage_root_id") or sid
         count = int(row.get("message_count") or 0)
         session_cwd = row.get('cwd') or _parse_model_config(row.get("model_config")).get("cwd", ".")
         if count <= 0 or (normalized and _normalize_cwd_for_compare(session_cwd) != normalized):

@@ -81,6 +81,8 @@ class GatewayACPAgent(acp.Agent):
         self._submitting = set()
         self._pending_cancels = set()
         self._tool_args = {}
+        # Editor-held compression-tip id -> logical session id (see ``_resume``).
+        self._aliases = {}
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
 
@@ -133,13 +135,22 @@ class GatewayACPAgent(acp.Agent):
         self._snapshots[snapshot["session_id"]] = snapshot
         return NewSessionResponse(session_id=snapshot["session_id"])
 
-    async def _resume(self, cwd, session_id, mcp_servers):
+    def _editor_id(self, session_id):
+        return next((held for held, sid in self._aliases.items() if sid == session_id), session_id)
+
+    async def _resume(self, cwd, held_id, mcp_servers):
         client = await self._client()
+        from acp_adapter.catalog import logical_session_id
+        session_id = await asyncio.to_thread(logical_session_id, self._home / "state.db", held_id)
+        # The latest load names the id this editor addresses the conversation by.
+        self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
+        if session_id != held_id:
+            self._aliases[held_id] = session_id
         info = await client.rpc("session.info", session_id=session_id)
         if "cwd" in info and _normalize_cwd_for_compare(info["cwd"]) != _normalize_cwd_for_compare(_translate_acp_cwd(cwd)):
             raise GatewayClientError("cwd_policy_conflict")
         if "cwd" not in info and self._conn:
-            await self._conn.session_update(session_id=session_id, update=acp.update_agent_message_text(
+            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
                 "Attached to the gateway's existing session policy; editor cwd is not applied.\n"))
         resume_params = {}
         if mcp_servers:
@@ -152,7 +163,7 @@ class GatewayACPAgent(acp.Agent):
         from acp_adapter.server import _history_replay_updates
         if self._conn:
             for update in _history_replay_updates(snapshot["messages"]):
-                await self._conn.session_update(session_id=session_id, update=update)
+                await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
         return snapshot
@@ -192,6 +203,7 @@ class GatewayACPAgent(acp.Agent):
                     raise
 
     async def cancel(self, session_id, **kwargs):
+        session_id = self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
         admission_id = self._admissions.get(session_id)
@@ -203,6 +215,7 @@ class GatewayACPAgent(acp.Agent):
 
     async def fork_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         from acp.schema import ForkSessionResponse
+        session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
         info = await client.rpc('session.info', session_id=session_id)
         if (mcp_servers or _normalize_cwd_for_compare(info.get('cwd', '')) !=
@@ -216,6 +229,7 @@ class GatewayACPAgent(acp.Agent):
 
     async def set_session_model(self, model_id, session_id, **kwargs):
         from acp.schema import SetSessionModelResponse
+        session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
         payload = {'model': model_id}
         await self._mutations.apply(client, session_id, 'model', payload)
@@ -241,6 +255,7 @@ class GatewayACPAgent(acp.Agent):
         return ListSessionsResponse(sessions=page, next_cursor=page[-1].session_id if len(rows) > 50 else None)
 
     async def prompt(self, prompt, session_id, **kwargs):
+        held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
         from acp_adapter.content import _content_blocks_to_openai_user_content
@@ -255,7 +270,7 @@ class GatewayACPAgent(acp.Agent):
             result = await self._mutations.apply(client, session_id, operation, payload)
             if result.get('status') == 'preview':
                 # Read-only report: nothing changed, so the editor's snapshot is still current.
-                await self._conn.session_update(session_id=session_id,
+                await self._conn.session_update(session_id=held_id,
                     update=acp.update_agent_message_text('\n'.join(result['lines']) + '\n'))
             else:
                 self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
@@ -323,7 +338,8 @@ class GatewayACPAgent(acp.Agent):
                 self._changed.notify_all()
 
     async def _project(self, event):
-        sid, kind, payload = event["session_id"], event.get("type"), event.get("payload", {})
+        kind, payload = event.get("type"), event.get("payload", {})
+        sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
         if kind == "session.replay_gap":
             raise GatewayClientError("session_replay_gap")
@@ -342,7 +358,7 @@ class GatewayACPAgent(acp.Agent):
             args = coerce_tool_args(payload.get("args"))
             self._tool_args[(sid, payload["tool_call_id"])] = (tool_name, args)
             if self._conn:
-                await self._conn.session_update(session_id=sid,
+                await self._conn.session_update(session_id=editor_id,
                     update=build_tool_start(payload["tool_call_id"], tool_name, args))
             return
         if kind == "tool.complete":
@@ -350,7 +366,7 @@ class GatewayACPAgent(acp.Agent):
             name, args = self._tool_args.pop((sid, payload["tool_call_id"]), (tool_name, {}))
             result = payload.get("result")
             if self._conn:
-                await self._conn.session_update(session_id=sid, update=build_tool_complete(
+                await self._conn.session_update(session_id=editor_id, update=build_tool_complete(
                     payload["tool_call_id"], name, result=result if isinstance(result, str) else None,
                     function_args=args))
             return
@@ -358,7 +374,7 @@ class GatewayACPAgent(acp.Agent):
             text = payload.get("text", "")
             self._streamed[aid] = self._streamed.get(aid, "") + text
             if text and self._conn:
-                await self._conn.session_update(session_id=sid, update=acp.update_agent_message_text(text))
+                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text))
         elif kind == "message.complete":
             from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
@@ -369,7 +385,7 @@ class GatewayACPAgent(acp.Agent):
             prefix = self._streamed.pop(aid, "")
             remainder = text[len(prefix):] if text.startswith(prefix) else text
             if remainder and self._conn:
-                await self._conn.session_update(session_id=sid, update=acp.update_agent_message_text(remainder))
+                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(remainder))
             async with self._changed:
                 self._terminals[aid] = payload
                 if len(self._terminals) > 256:
@@ -398,7 +414,7 @@ class GatewayACPAgent(acp.Agent):
                 tool_call = build_acp_edit_tool_call(EditProposal(**prompt['edit']))
             else:
                 tool_call = _build_permission_tool_call(prompt.get('command', ''), prompt.get('description', ''))
-            response = await self._conn.request_permission(session_id=session_id,
+            response = await self._conn.request_permission(session_id=self._editor_id(session_id),
                 tool_call=tool_call, options=options)
             # Transport loss/cancel is not a denial: the canonical waiter belongs
             # to the execution and may still be answered by another viewer.
