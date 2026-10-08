@@ -57,7 +57,11 @@ def test_used_history_retirement_is_atomic_and_exact(tmp_path, monkeypatch):
         worker_args = dict(execution_id='worker', session_id='used', generation=row['generation'], sequence=1,
             adoption_secret='owned-proof', payload_digest=rt.admission_fingerprint(canonical_target='used',
                 payload={'operation': 'transcript.append', 'payload': worker_append}))
-        assert terminal_worker_receipt(db, **worker_args) == worker_result
+        # The worker was terminalized by settlement, never by an execution.finish receipt: its
+        # last result is not a closing receipt, so it is redacted like every earlier one (W5).
+        assert worker_result['count'] == 1
+        with pytest.raises(rt.RuntimeStoreError, match='stale_generation'):
+            terminal_worker_receipt(db, **worker_args)
         with pytest.raises(rt.RuntimeStoreError, match='permission_denied'):
             terminal_worker_receipt(db, **(worker_args | {'adoption_secret': 'foreign'}))
         for change in ({'payload': {'text': 'changed'}}, {'principal_id': 'foreign'}, {'request_id': 'fresh'}):
@@ -221,3 +225,49 @@ def test_a_malformed_unrelated_route_or_policy_row_cannot_abort_a_delete(tmp_pat
         with db._read_ctx() as c:  # the unrelated row is left exactly as it was
             assert c.execute("SELECT (SELECT COUNT(*) FROM gateway_routing) + (SELECT COUNT(*) FROM state_meta "
                              "WHERE key GLOB 'gateway.local_policy.v1:*')").fetchone()[0] == 1
+
+
+def test_deleted_history_is_not_recoverable_from_worker_or_mutation_receipts(tmp_path):
+    """W5 / pastels 2.3: a failed worker is terminalized by settlement without an execution.finish
+    receipt, so its last receipt may be a history read; a rewind/compress receipt copies the
+    rewound message / summary. Neither may replay the deleted transcript after the delete."""
+    import json
+    from hermes_state_terminal import terminal_worker_receipt
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('gone', source='cli')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        db.append_message('gone', 'user', 'first')
+        db.append_message('gone', 'assistant', 'a1')
+        rewound = db.append_message('gone', 'user', 'SECRET_REWOUND')
+        db.append_message('gone', 'assistant', 'a2')
+        snap = db.get_session('gone')
+        rewind = dict(principal_id='human', session_id='gone', request_id='rw', operation='rewind',
+                      payload={'target_message_id': rewound}, expected_revision=snap['runtime_revision'],
+                      expected_generation=snap['runtime_generation'])
+        receipt = rt.mutate_runtime_session(db, epoch=epoch, **rewind)
+        assert 'SECRET_REWOUND' in json.dumps(receipt)
+        db.append_message('gone', 'user', 'SECRET_HISTORY_LINE')
+        rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id='gone', request_id='r',
+                               payload={'text': 'x'})
+        row = rt.claim_session_input(db, epoch=epoch, session_id='gone')
+        rt.register_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=row['generation'], kind='compute', adoption_secret='proof')
+        history = {'target': 'gone', 'include_ancestors': False, 'include_inactive': False,
+                   'repair_alternation': False, 'include_row_ids': False, 'include_compacted': False}
+        rt.mutate_worker_execution(db, epoch=epoch, execution_id='worker', session_id='gone',
+            generation=row['generation'], sequence=1, operation='compression.history', payload=history)
+        rt.settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
+                                generation=row['generation'], outcome='failed')
+        snap = db.get_session('gone')
+        rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='gone', request_id='d',
+            operation='delete', payload={}, expected_revision=snap['runtime_revision'],
+            expected_generation=snap['runtime_generation'])
+        with db._read_ctx() as c:
+            blobs = ''.join(v for (v,) in c.execute('SELECT value FROM state_meta'))
+        assert 'SECRET_REWOUND' not in blobs and 'SECRET_HISTORY_LINE' not in blobs
+        replay = rt.mutate_runtime_session(db, epoch=epoch, **rewind)
+        assert replay == {**receipt, 'target_message': None}
+        with pytest.raises(rt.RuntimeStoreError, match='stale_generation'):
+            terminal_worker_receipt(db, execution_id='worker', session_id='gone', generation=row['generation'],
+                sequence=1, adoption_secret='proof', payload_digest=rt.admission_fingerprint(
+                    canonical_target='gone', payload={'operation': 'compression.history', 'payload': history}))

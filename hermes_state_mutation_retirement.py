@@ -62,11 +62,15 @@ def retire_terminal_receipts(conn, session_ids):
             receipts = [dict(r) for r in conn.execute(
                 'SELECT sequence,payload_digest,result_json FROM worker_receipts WHERE execution_id=? ORDER BY sequence',
                 (row['execution_id'],))]
-            # A terminal worker can only replay its closing receipt. Earlier results
-            # (history/context reads) are user data that must not outlive the delete;
-            # their digests stay so a late duplicate is still recognised as a conflict.
-            for receipt in receipts[:-1]:
-                receipt['result_json'] = None
+            # A terminal worker can only replay an explicit ``execution.finish`` receipt. Every
+            # other result (history/context reads) is user data that must not outlive the delete,
+            # even when it is the last one: settlement terminalizes a failed worker without a
+            # finish receipt. Digests stay so a late duplicate is still recognised as a conflict.
+            closing = admission_fingerprint(canonical_target=sid,
+                payload={'operation': 'execution.finish', 'payload': {}})
+            for receipt in receipts:
+                if receipt['payload_digest'] != closing:
+                    receipt['result_json'] = None
             row['receipts'] = receipts
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                          (WORKER_PREFIX + row['execution_id'], _json(row)))
@@ -88,9 +92,31 @@ def retire_sessions(conn, session_ids):
     admitted a second time against it. Every delete path (canonical mutate, legacy
     ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once."""
     retire_terminal_receipts(conn, session_ids)
+    retire_mutation_receipts(conn, session_ids)
     retire_routes(conn, session_ids)
     from hermes_state_local import retire_local_receipts
     retire_local_receipts(conn, session_ids)
+
+
+# Mutation-receipt fields that copy transcript content: the rewound message and a compaction summary.
+_MUTATION_TRANSCRIPT_FIELDS = ('target_message', 'summary')
+
+
+def retire_mutation_receipts(conn, session_ids):
+    """Keep each exact-retry mutation receipt (digest, ids, revision) but drop the transcript
+    copies a rewind/compress result carries, so a retry after the delete cannot read them back."""
+    if not session_ids:
+        return
+    rows = conn.execute(
+        "SELECT key,value FROM state_meta WHERE key GLOB 'gateway.mutation.v1.*' AND "
+        "CASE WHEN json_valid(value) THEN json_extract(value,'$.result.session_id') END "
+        "IN (SELECT value FROM json_each(?))", (json.dumps(list(session_ids)),)).fetchall()
+    for key, raw in rows:
+        receipt = json.loads(raw)
+        result = receipt.get('result')
+        if isinstance(result, dict) and any(f in result for f in _MUTATION_TRANSCRIPT_FIELDS):
+            receipt['result'] = {k: (None if k in _MUTATION_TRANSCRIPT_FIELDS else v) for k, v in result.items()}
+            conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
 
 
 def retire_prunable(conn, session_ids):
