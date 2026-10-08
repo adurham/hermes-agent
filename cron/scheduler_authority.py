@@ -106,6 +106,7 @@ def reconcile_pending(*, allow_connect=True):
     from gateway.session_cron import owner_for_home, operation
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
+    from cron.executions import execution_owner_live
     from cron.jobs import pause_job
     from cron.scheduler import _RunDelivery, _FireOwnership, _save_compose_deliver, _finish_completed_run
     from utils import atomic_json_write
@@ -118,6 +119,10 @@ def reconcile_pending(*, allow_connect=True):
             params = record['params']
             if journal != journal_path(params['job_id'], params['request_id']):
                 raise ValueError('cron journal identity conflict')
+            if execution_owner_live(params['request_id'], params['job_id']):
+                # Its firer (this process included) still owns the row and its tail: re-saving the
+                # output or re-marking the job on every tick would duplicate its side effects.
+                continue
             if 'refusal' in record:
                 state = {'status': 'terminal', 'result': record['refusal'], 'job': record['job']}
             else:

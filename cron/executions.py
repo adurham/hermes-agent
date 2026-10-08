@@ -355,16 +355,13 @@ def finish_execution(
 def recover_receipted_execution(execution_id, job_id, *, success, error=None, delivery_outcome=None):
     """Settle a verified canonical receipt after owner loss, including its unknown audit row.
 
-    Terminal verdicts stay immutable. A live foreign firing process still owns its bookkeeping.
+    Terminal verdicts stay immutable. A live firer still owns its bookkeeping
+    (``execution_owner_live``).
     """
     now = _hermes_now().isoformat()
     with _transaction() as conn:
-        row = conn.execute(
-            """SELECT process_id, pid, process_started_at FROM executions
-               WHERE id=? AND job_id=? AND status IN ('claimed','running','unknown')""",
-            (execution_id, job_id)).fetchone()
-        if row is None or (row['process_id'] != _PROCESS_ID
-                           and _owner_is_live(int(row['pid']), row['process_started_at'])):
+        row = _recoverable_row(conn, execution_id, job_id)
+        if row is None or _row_owner_live(row):
             return None
         conn.execute(
             """UPDATE executions SET status=?, finished_at=?, error=?, handoff_pending=0,
@@ -376,6 +373,29 @@ def recover_receipted_execution(execution_id, job_id, *, success, error=None, de
     _emit_execution_state(record, delivery_outcome=delivery_outcome)
     record_cron_finish(record, delivery_outcome)
     return record
+
+
+def _recoverable_row(conn, execution_id, job_id):
+    return conn.execute(
+        """SELECT status, process_id, pid, process_started_at FROM executions
+           WHERE id=? AND job_id=? AND status IN ('claimed','running','unknown')""",
+        (str(execution_id), str(job_id))).fetchone()
+
+
+def _row_owner_live(row) -> bool:
+    if row['process_id'] == _PROCESS_ID:
+        # The in-gateway ticker fires on pool threads: a claimed/running row of THIS process is
+        # still in flight here. Only an unknown row was given up by its own firer.
+        return row['status'] != 'unknown'
+    return _owner_is_live(int(row['pid']), row['process_started_at'])
+
+
+def execution_owner_live(execution_id: str, job_id: str) -> bool:
+    """True while the attempt's own firer (this process included) can still finish it, so receipt
+    recovery must not act for it: no output re-save, no job mark, no ledger write."""
+    with _transaction() as conn:
+        row = _recoverable_row(conn, execution_id, job_id)
+    return row is not None and _row_owner_live(row)
 
 
 def settle_delivery_outcome(execution_id: str, outcome: str) -> bool:

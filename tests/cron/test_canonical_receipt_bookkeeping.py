@@ -55,10 +55,35 @@ def test_definite_refusal_is_booked_and_journal_retired(tmp_path, monkeypatch):
         result = scheduler_authority.run_canonical_job(job, execution_id=execution['id'])
         assert result[0] is False and 'invalid_workdir' in result[3]
         # Recovery must also finish a refusal if the scheduler exited before its normal tail.
+        with executions._transaction() as conn:
+            conn.execute('UPDATE executions SET process_id=?,pid=? WHERE id=?', ('old-owner', 999999, execution['id']))
         scheduler_authority.reconcile_pending()
         assert executions.get_execution(execution['id'])['status'] == 'failed'
         assert jobs.get_job(job['id'])['state'] != 'paused'
         assert not scheduler_authority.journal_path(job['id'], execution['id']).exists()
+
+
+def test_in_process_firer_keeps_its_row_journal_and_output(tmp_path, monkeypatch):
+    """The in-gateway ticker fires on pool threads: a tick must not act for a firer still in flight
+    in THIS process (770b5924a61's "never this process" fence), nor redo its side effects."""
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')
+        fire = executions.create_execution(job['id'], source='test')['id']
+        executions.mark_execution_running(fire)
+        params = {'job_id': job['id'], 'request_id': fire, 'extra_prompt': None}
+        journal = scheduler_authority.journal_path(job['id'], fire)
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        journal.write_text(json.dumps({'params': params, 'receipt': {'x': 1}}))
+        calls = []
+        peer(monkeypatch, lambda method, params: calls.append(method) or {
+            'status': 'terminal', 'job': job, 'result': [True, 'document', 'answer', None]})
+        scheduler_authority.reconcile_pending()
+        assert executions.get_execution(fire)['status'] == 'running'
+        assert journal.exists() and calls == []
+        assert not list(jobs._job_output_dir(job['id']).glob('*.md'))
+        assert jobs.get_job(job['id'])['last_run_at'] is None
+        # The firer's own tail still finishes its row with its real outcome.
+        assert executions.finish_execution(fire, success=False, error='interrupted') is not None
 
 
 def test_resume_survives_recovery_of_old_unknown_journal(tmp_path, monkeypatch):

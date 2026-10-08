@@ -33,9 +33,13 @@ def test_live_firer_journal_survives_until_its_execution_can_settle(tmp_path, mo
             async def connect():
                 yield Peer()
             monkeypatch.setattr('hermes_cli.gateway_client.connect_gateway', connect)
-            scheduler_authority.reconcile_pending()
+            for _ in range(2):
+                scheduler_authority.reconcile_pending()
             assert journal.exists(), 'the live firer left running execution without its recovery receipt'
             assert executions.get_execution(fire)['status'] == 'running'
+            # Retaining the journal must not replay the receipt's side effects on every tick.
+            assert not list(jobs._job_output_dir(job['id']).glob('*.md'))
+            assert jobs.get_job(job['id'])['last_run_at'] is None
             child.stdin.close()
             child.wait(timeout=10)
             scheduler_authority.reconcile_pending()
