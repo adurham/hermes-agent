@@ -63,6 +63,10 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # session -> generation of the last Stop delivered to a live agent. A repeated
+        # Stop can land on the session's reusable cached agent after that turn's finalizer
+        # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
+        self.delivered_stops = {}
         # Set by profile retirement (unserve): the drain claims no successor after its running turn.
         self.retiring = False
 
@@ -432,6 +436,7 @@ class SessionAuthority:
             agent = self.agent(ref)
             if agent is not None:
                 agent.interrupt()
+                self.delivered_stops[ref.session_id] = generation
             else:
                 # Accepted for this exact claim; the turn must not construct its agent
                 # afterwards and run the work as if no Stop had arrived.
@@ -440,7 +445,13 @@ class SessionAuthority:
 
     def adopt_agent(self, session_id, generation, agent):
         """The turn installs its agent for the running claim; a Stop latched while there
-        was no agent to deliver it to fires now, never against a later generation."""
+        was no agent to deliver it to fires now, never against a later generation. A Stop
+        delivered to the cached agent for an earlier generation may have landed after that
+        turn's finalizer cleared it, so it is dropped rather than cancelling this turn. A managed
+        worker is a fresh process per turn and carries no earlier flag to drop."""
+        clear = getattr(agent, 'clear_interrupt', None)
+        if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
+            clear()
         if self.pending_stops.get(session_id) == generation:
             del self.pending_stops[session_id]
             agent.interrupt()
