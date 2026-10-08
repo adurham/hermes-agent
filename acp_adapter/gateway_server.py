@@ -83,11 +83,23 @@ class GatewayACPAgent(acp.Agent):
         self._tool_args = {}
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
         self._aliases = {}
+        self._form_elicitation = False
         from hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
 
     def on_connect(self, conn):
         self._conn = conn
+        add_observer = getattr(getattr(conn, "_conn", None), "add_observer", None)
+        if callable(add_observer):
+            add_observer(self._observe_client_message)
+
+    def _observe_client_message(self, event):
+        """``initialize``'s raw capabilities (the SDK's typed model drops ``elicitation``)."""
+        message = getattr(event, "message", None)
+        if getattr(event, "direction", None) == "incoming" and isinstance(message, dict) \
+                and message.get("method") == "initialize":
+            from acp_adapter.elicitation import client_supports_form_elicitation
+            self._form_elicitation = client_supports_form_elicitation(message.get("params"))
 
     async def initialize(self, **kwargs):
         from hermes_cli import __version__
@@ -343,10 +355,10 @@ class GatewayACPAgent(acp.Agent):
         aid = event.get("admission_id")
         if kind == "session.replay_gap":
             raise GatewayClientError("session_replay_gap")
-        if kind == "approval.request":
+        if kind in {"approval.request", "clarify.request"}:
             self._permission(sid, payload)
             return
-        if kind == "approval.settled":
+        if kind in {"approval.settled", "clarify.settled"}:
             task = self._permissions.pop((sid, payload["prompt_id"], payload["execution_generation"]), None)
             if task:
                 task.cancel()
@@ -393,11 +405,37 @@ class GatewayACPAgent(acp.Agent):
                 self._changed.notify_all()
 
     def _permission(self, session_id, prompt):
-        if prompt.get("kind") != "approval" or self._conn is None:
+        answer = {"approval": self._answer_permission, "clarify": self._answer_clarify}.get(prompt.get("kind"))
+        if answer is None or self._conn is None:
             return
         key = (session_id, prompt["prompt_id"], prompt["execution_generation"])
         if key not in self._permissions:
-            self._permissions[key] = asyncio.create_task(self._answer_permission(session_id, prompt))
+            self._permissions[key] = asyncio.create_task(answer(session_id, prompt))
+
+    async def _answer_clarify(self, session_id, prompt):
+        from acp.schema import AllowedOutcome
+        from acp_adapter.elicitation import (
+            ELICITATION_METHOD, build_clarify_elicitation, build_clarify_permission, elicited_answer,
+        )
+        editor_id = self._editor_id(session_id)
+        try:
+            if self._form_elicitation:
+                answer = elicited_answer(await self._conn._conn.send_request(
+                    ELICITATION_METHOD, build_clarify_elicitation(editor_id, prompt)))
+            else:
+                tool_call, options, answers = build_clarify_permission(prompt)
+                response = await self._conn.request_permission(
+                    session_id=editor_id, tool_call=tool_call, options=options)
+                answer = (answers.get(response.outcome.option_id)
+                          if isinstance(response.outcome, AllowedOutcome) else None)
+            # No answer (transport loss, editor cancel) leaves the canonical waiter to other viewers.
+            if answer is None:
+                return
+            await self._gateway.rpc("clarify.respond", session_id=session_id, prompt_id=prompt["prompt_id"],
+                execution_generation=prompt["execution_generation"], answer=answer)
+        except Exception:
+            # Boundary: as for approvals, a detached editor or expired prompt is not an answer.
+            logger.info("ACP clarify viewer detached or control expired", exc_info=True)
 
     async def _answer_permission(self, session_id, prompt):
         from acp.schema import AllowedOutcome
