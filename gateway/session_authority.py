@@ -381,12 +381,12 @@ class SessionAuthority:
         finish; the paused FIFO behind it resumes. Never requeues the lost input."""
         self.authorize(actor, ref, 'session:control')
         await self.receipt(actor, ref, admission_id)
-        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
-                                            generation=generation)
-        # Before the follower is scheduled: its request must not carry the discarded text merged in.
-        from gateway.session_local_recovery import transcript_target
+        # The transcript boundary commits WITH the terminal transition: a follower can never be
+        # claimed with the discarded text left open to be merged into its request.
         from gateway.session_results import close_discarded_turn
-        close_discarded_turn(self.db, transcript_target(self, ref))
+        row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
+                                            generation=generation,
+                                            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost))
         self._publish_pending(ref)
         self._schedule(ref)
         return self._receipt(row)

@@ -70,18 +70,26 @@ def admission_result(db, admission_id):
         return json.loads(saved[0]) if saved else None
 
 
-def close_discarded_turn(db, target_id):
-    """Close a discarded ``unknown`` turn the way a failed turn is closed.
+def close_discarded_turn(db, conn, row):
+    """Close a discarded ``unknown`` turn the way a failed turn is closed, on the resolution's
+    own transaction (``resolve_unknown_session_input(_terminal_write=...)``).
 
     The lost input stays in the transcript for the user to resend, but an open ``user`` tail would be
     merged into the follower's provider request by consecutive-user repair, re-sending the discarded
     turn as context. A Hermes-authored boundary (``display_kind=failed_turn``, stripped of its type
-    before the wire) ends it. Its side effects are unknown, so the hedged copy. Idempotent on the
-    durable tail, like the gateway and core failed-turn closers."""
-    if db.latest_conversation_role(target_id) != 'user':
-        return False
+    before the wire) ends it. Its side effects are unknown, so the hedged copy. The boundary lands on
+    the CURRENT physical transcript (local reset/compression lineage tip), resolved on this
+    connection. Idempotent on the durable tail, like the gateway and core failed-turn closers."""
     import time
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
-    db.append_message(target_id, 'assistant', PARTIAL_FAILED_TURN_NOTICE, timestamp=time.time(),
-                      display_kind=FAILED_TURN_DISPLAY_KIND)
+    from hermes_state_local_lineage import local_physical_target
+    from hermes_state_runtime import _canonical_chain
+    target = _canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1]
+    tail = conn.execute("SELECT role FROM messages WHERE session_id=? AND active=1 "
+                        "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (target,)).fetchone()
+    if tail is None or tail[0] != 'user':
+        return False
+    db._append_messages_in_transaction(conn, target, [{
+        'role': 'assistant', 'content': PARTIAL_FAILED_TURN_NOTICE, 'timestamp': time.time(),
+        'display_kind': FAILED_TURN_DISPLAY_KIND}])
     return True

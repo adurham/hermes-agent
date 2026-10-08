@@ -10,7 +10,7 @@ from gateway.session import SessionSource, SessionStore
 from gateway.session_authority import LiveSession, initialize_session_authority
 from gateway.session_contract import SessionRef, Submission
 from gateway.session_controls import AuthorityConnection
-from hermes_state_runtime import claim_session_input, list_session_admissions
+from hermes_state_runtime import RuntimeStoreError, claim_session_input, list_session_admissions
 
 
 class Peer:
@@ -117,6 +117,40 @@ async def test_resolve_unknown_is_fenced_by_generation_and_capability(tmp_path, 
     finally:
         await owner.close()
         await reader.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_discard_and_its_transcript_boundary_commit_atomically_on_the_physical_tip(tmp_path, monkeypatch):
+    """R1: a failure writing the boundary must not leave the lost admission terminal (its exact
+    Discard retry refused, the follower claimable onto an open user tail). The boundary lands on
+    the rotated physical transcript, not the logical owner."""
+    store, authority, ref, unknown, follower = await _restarted_owner_with_unknown_head(tmp_path, monkeypatch, [])
+    db = authority.db
+    db.create_session('s-tip', source='telegram', parent_session_id='s')
+    db.end_session('s', 'compression')
+    db.append_message('s-tip', 'user', 'LOST_OPERATION')
+    authority._schedule = lambda ref: None
+    db._execute_write(lambda c: c.execute("CREATE TRIGGER deny_boundary BEFORE INSERT ON messages "
+                                          "WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'boundary failed'); END"))
+    viewer = AuthorityConnection(authority, Peer(), {'user_id': 'human'})
+    params = {'session_id': 's', 'admission_id': unknown['admission_id'], 'execution_generation': unknown['generation']}
+    try:
+        await viewer.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        failed = await viewer.dispatch({'id': 2, 'method': 'prompt.resolve_unknown', 'params': params})
+        assert 'error' in failed, failed
+        rows = {r['admission_id']: r['status'] for r in list_session_admissions(db, session_id='s')}
+        assert rows.get(unknown['admission_id']) == 'unknown', 'Discard committed without its transcript boundary'
+        with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+            claim_session_input(db, epoch=authority.epoch, session_id='s')
+        db._execute_write(lambda c: c.execute('DROP TRIGGER deny_boundary'))
+        retried = await viewer.dispatch({'id': 3, 'method': 'prompt.resolve_unknown', 'params': params})
+        assert retried['result']['outcome'] == 'interrupted', retried
+        assert db.latest_conversation_role('s-tip') == 'assistant'
+        assert [m['role'] for m in db.get_messages('s') if m['role'] == 'assistant'] == []
+        assert claim_session_input(db, epoch=authority.epoch, session_id='s')['admission_id'] == follower.admission_id
+    finally:
+        await viewer.close()
         store.close_all_db_handles()
 
 

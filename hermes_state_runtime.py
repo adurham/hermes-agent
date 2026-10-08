@@ -368,13 +368,20 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
         return db._execute_write(write)
 
 
-def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int) -> dict:
-    """Explicit operator acknowledgement; resolves uncertainty, never requeues it."""
+def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int,
+                                  _terminal_write=None) -> dict:
+    """Explicit operator acknowledgement; resolves uncertainty, never requeues it.
+
+    ``_terminal_write(conn, row)`` is the owner's same-transaction effect (the discarded turn's
+    transcript boundary): it must not commit, may run again on SQLite retry, and raising rolls
+    the whole resolution back, so the FIFO can never advance past an unclosed lost turn."""
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
         if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
             raise RuntimeStoreError('stale_generation')
+        if _terminal_write is not None:
+            _terminal_write(conn, row)
         _retire_admission_workers(conn, row, row['owner_epoch'])
         conn.execute("UPDATE session_admissions SET status='terminal',outcome='interrupted' WHERE admission_id=?", (admission_id,))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
