@@ -4157,6 +4157,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                 stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
+                interim_assistant_callback=interim_assistant_callback, reasoning_callback=reasoning_callback,
+                status_callback=status_callback,
                 agent_ref=agent_ref, active_run_id=active_run_id, gateway_session_key=gateway_session_key,
                 requested_model=requested_model, requested_provider=requested_provider, model_options=model_options,
                 route=route, session_model=session_model, requested_runtime=requested_runtime,

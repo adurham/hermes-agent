@@ -277,3 +277,53 @@ def test_run_status_reports_waiting_for_approval_while_a_prompt_is_pending(api, 
     projected = run_projection(api, 'run_wait')
     assert [p['prompt_id'] for p in projected['pending_controls']] == ['approve-me']
     assert projected['status'] == 'waiting_for_approval'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path,body,marker', [
+    ('/v1/chat/completions', {'messages': [{'role': 'user', 'content': 'hi'}], 'stream': True},
+     '"reasoning_content": "THINKING"'),
+    ('/v1/responses', {'input': 'hi', 'stream': True}, 'response.reasoning_summary_text.delta'),
+])
+async def test_canonical_sse_projects_the_turn_reasoning(api, owner, path, body, marker):
+    """Chat and Responses SSE under the authority get the agent's reasoning, like the direct
+    path: the real per-turn wiring hands the admission's observers the reasoning callback."""
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session_api_turn import api_execution
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        sid = event.source.chat_id
+        turn = _turn_runner(owner, SimpleNamespace(session_id=sid))
+        agent = SimpleNamespace(reasoning_callback=None)  # AIAgent's own default
+        holder = SimpleNamespace(
+            _ctx=SimpleNamespace(
+                progress_callback=None, native_tool_start_callback=None, voice_ack_callback=None,
+                _voice_ack_guild=[None], voice_turn=False, _native_slack_task_cards=False,
+                native_tool_complete_callback=None, _step_callback_sync=None,
+                _hooks_ref=SimpleNamespace(loaded_hooks=[]), _status_callback_sync=None, _event_callback_sync=None,
+                _status_adapter=None, session_key='', user_config={}, source=event.source,
+                mute_notification_reply=False, _thinking_enabled=False, agent_holder=[None], tools_holder=[None],
+                process_task_id=None, process_baseline=None, run_generation=0),
+            _approval_owner=turn._approval_owner, combined_tool_start_callback=None,
+            combined_tool_complete_callback=None,
+            _runner=SimpleNamespace(_service_tier=None, _consume_pending_turn_sidecar_notes=lambda key: []),
+            _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
+            _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
+            _clarify_callback_sync=None, _notice_callback_sync=None,
+            _attach_session_title_callback=lambda agent, ctx: None)
+        assert api_execution.get() is not None
+        TurnRunner._wire_turn_agent_callbacks(holder, agent, {}, None, None, None, False)
+        if agent.reasoning_callback:  # AIAgent._fire_reasoning_delta calls it only when wired
+            agent.reasoning_callback('THINKING')
+        execution_result.get()['result'] = {'final_response': 'ANSWER', 'messages': []}
+        return 'ANSWER'
+    owner.runner._handle_message = handle
+    owner.adopt_agent = lambda *args: None
+    app = web.Application()
+    app.router.add_post(path, getattr(api, '_handle_chat_completions' if 'chat' in path else '_handle_responses'))
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(path, json=body)
+        text = await response.text()
+    assert response.status == 200, text
+    assert marker in text and 'THINKING' in text, text

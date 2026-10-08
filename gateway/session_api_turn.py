@@ -14,6 +14,9 @@ from hermes_state_runtime import RuntimeStoreError, admit_session_input, _epoch,
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
+# Request-owned sinks an API observer may register for its admission's execution.
+_OBSERVER_KEYS = ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback',
+                  'reasoning_callback', 'status_callback', 'interim_assistant_callback')
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
@@ -249,8 +252,7 @@ async def observe_api_turn(admitted, **kwargs):
     observers = getattr(authority, 'api_observers', None)
     if observers is None:
         observers = authority.api_observers = {}
-    observer = {key: kwargs[key] for key in ('stream_delta_callback', 'tool_start_callback', 'tool_complete_callback')
-                if kwargs.get(key) is not None}
+    observer = {key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None}
     registered = observers.setdefault(row['admission_id'], [])
     registered.append(observer)
     try:
@@ -325,7 +327,7 @@ def _api_observers(authority, session_id):
     return tuple(getattr(authority, 'api_observers', {}).get(admission_id, ()))
 
 
-def _notify_observers(authority, session_id, key, *args):
+def _notify_observers(authority, session_id, key, *args, **kwargs):
     """Observer callbacks are request-owned sinks; one that raises (closed socket, torn-down
     loop) must not abort canonical execution or starve the other observers. Returns whether
     any observer accepted the event."""
@@ -335,11 +337,43 @@ def _notify_observers(authority, session_id, key, *args):
         callback = observer.get(key)
         if callback:
             try:
-                callback(*args)
+                callback(*args, **kwargs)
                 accepted = True
             except Exception:
                 logging.getLogger(__name__).warning('API observer %s failed for %s', key, session_id, exc_info=True)
     return accepted
+
+
+def wire_api_observers(agent, owner, want_interim):
+    """Hand this admission's API observers (Chat/Responses SSE, runs) the agent's reasoning,
+    status and commentary callbacks, the ones the direct API path gave the agent itself. Each
+    event is fenced to the exact running claim, so a settled worker's late callback is inert;
+    the turn's own status/commentary sinks keep running after the observers."""
+    authority, session_id, generation = owner
+
+    def publish(key, *args, **kwargs):
+        with authority.sessions[session_id].event_stream.lock:
+            try:
+                authority.check_approval_generation(session_id, generation)
+            except RuntimeStoreError:
+                return False
+            return _notify_observers(authority, session_id, key, *args, **kwargs)
+
+    status, interim = agent.status_callback, agent.interim_assistant_callback
+
+    def status_callback(kind, message=None):
+        publish('status_callback', kind, message)
+        if status is not None:
+            status(kind, message)
+
+    def interim_assistant_callback(text, *, already_streamed=False):
+        publish('interim_assistant_callback', text, already_streamed=already_streamed)
+        if interim is not None:
+            interim(text, already_streamed=already_streamed)
+    agent.reasoning_callback = lambda text: publish('reasoning_callback', text)
+    agent.status_callback = status_callback
+    if want_interim:
+        agent.interim_assistant_callback = interim_assistant_callback
 
 
 def publish_api_event(authority, session_id, event_type, payload):

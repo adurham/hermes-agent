@@ -382,6 +382,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
+        agent.reasoning_callback = None  # per turn: a reused agent never keeps an earlier API turn's sink
+        if self._approval_owner is not None:
+            from gateway.session_api_turn import api_execution, wire_api_observers
+            if api_execution.get() is not None:
+                # The API request's SSE observes reasoning/status/commentary through its admission.
+                wire_api_observers(agent, self._approval_owner, want_interim_messages)
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
