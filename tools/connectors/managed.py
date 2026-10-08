@@ -64,13 +64,18 @@ def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reini
     """Mint links for ``names`` and apply the gateway's per-app answer to the operation. ``actor`` is
     the watcher on the first mint and the user on Try again. The operation id rides along so the
     vendor's done page can name it on the way back to the desktop. ``connection_id`` names the one
-    existing account a repair restarts; the gateway then needs no alias to find it."""
+    existing account a repair restarts; the gateway then needs no alias to find it. A repair without
+    one (Try again) reuses the account the named target already minted, so a rename in between
+    cannot point the retry at another login."""
     from tools.connectors.gateway.client import return_to_args
 
     if not names:
         return
-    # One aliased target per call, so the alias of the first named target is the request's.
-    alias = None if connection_id else next((t.alias for t in operation.targets if t.name in names and t.alias), None)
+    # One aliased target per call, so the first named target is the request's.
+    named = next((t for t in operation.targets if t.name in names and t.alias), None)
+    if reinitiate and connection_id is None and named is not None:
+        connection_id = named.connection_id
+    alias = None if connection_id or named is None else named.alias
     response = client.connections(names, reinitiate=reinitiate, alias=alias, connection_id=connection_id,
                                   **return_to_args(op=operation.op_id))
     for entry in response.get("results", []):
