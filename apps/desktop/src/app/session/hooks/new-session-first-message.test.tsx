@@ -3,7 +3,6 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getLatestSessionMessages } from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { requestGatewayForProfile } from '@/store/gateway'
 import {
@@ -17,29 +16,20 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
+import { installRestBridge } from '@/test/rest-bridge'
 
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
-// The persisted transcript is HTTP; the first user row is not readable there yet when the route lands.
-vi.mock('@/hermes', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  getLatestSessionMessages: vi.fn(),
-  getSession: vi.fn()
-}))
-
-// Profile-owned rows route session RPCs over a per-profile socket; the test routes them to its fake.
+// The row is default-profile owned, so its session RPCs ride the profile socket; route those to the fake.
 vi.mock('@/store/gateway', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
+  ...(await importOriginal<typeof import('@/store/gateway')>()),
   requestGatewayForProfile: vi.fn()
 }))
 
-vi.mock('@/store/profile', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
-}))
-
 const PROMPT = 'Plan my week.\n\nAbout me:\n- Call me Sid.'
+
+type Options = Parameters<typeof useSessionActions>[0]
 
 interface Ready {
   messagesOf: (runtimeId: string) => readonly ChatMessage[]
@@ -53,7 +43,7 @@ function Harness({
   requestGateway
 }: {
   onReady: (ready: Ready) => void
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: Options['requestGateway']
 }) {
   const activeSessionId = useStore($activeSessionId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -77,7 +67,7 @@ function Harness({
     getRouteToken: () => 'new-session',
     getRoutedStoredSessionId: () => null,
     holdSessionTranscriptView: cache.holdSessionTranscriptView,
-    navigate: vi.fn() as never,
+    navigate: vi.fn<Options['navigate']>(),
     requestGateway,
     routedSessionId: null,
     resetViewSync: cache.resetViewSync,
@@ -102,43 +92,55 @@ function Harness({
 
 const userRows = (messages: readonly ChatMessage[]) => messages.filter(message => message.role === 'user')
 
-async function mount({ refuse = false } = {}) {
-  const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
-    if (method === 'session.create') {
-      return { session_id: 'rt-new', stored_session_id: 'stored-new' } as never
-    }
+const ACTIVATED = {
+  info: {},
+  message_count: 0,
+  messages: [],
+  messages_omitted: true,
+  resumed: 'stored-new',
+  running: true,
+  session_id: 'rt-new',
+  session_key: 'stored-new'
+}
 
+// GET /api/sessions/stored-new/messages: the first user row is not readable there yet when the route lands.
+let persisted: object[] = []
+
+async function mount({ refuse = false } = {}) {
+  const wire = (method: string): object => {
     if (method === 'prompt.submit' && refuse) {
       throw new Error('refused')
     }
 
-    if (method === 'session.activate') {
-      return {
-        info: {},
-        message_count: 0,
-        messages: [],
-        messages_omitted: true,
-        resumed: 'stored-new',
-        running: true,
-        session_id: 'rt-new',
-        session_key: 'stored-new'
-      } as never
-    }
+    return method === 'session.create'
+      ? { session_id: 'rt-new', stored_session_id: 'stored-new' }
+      : method === 'session.activate'
+        ? ACTIVATED
+        : {}
+  }
 
-    return {} as never
+  const requestGateway = vi.fn(async <T,>(method: string): Promise<T> => {
+    const answer = wire(method)
+
+    // SAFETY: each answer above is the wire shape of the method that asked for it.
+    return answer as T
   })
+
+  const rest = installRestBridge(request =>
+    request.path.endsWith('/messages') ? { messages: persisted, session_id: 'stored-new' } : {}
+  )
 
   let ready!: Ready
   render(<Harness onReady={value => (ready = value)} requestGateway={requestGateway} />)
   await waitFor(() => expect(ready).toBeDefined())
-  vi.mocked(requestGatewayForProfile).mockImplementation((_profile, method, params) => requestGateway(method, params))
+  vi.mocked(requestGatewayForProfile).mockImplementation((_profile, method) => requestGateway(method))
 
-  return { ready, requestGateway }
+  return { ready, requestGateway, rest }
 }
 
 describe('submitTextToNewSession first message', () => {
   beforeEach(() => {
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-new' } as never)
+    persisted = []
   })
 
   afterEach(() => {
@@ -169,11 +171,8 @@ describe('submitTextToNewSession first message', () => {
   })
 
   it('keeps one first message when the persisted transcript already has it', async () => {
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({
-      messages: [{ content: PROMPT, role: 'user', timestamp: 1 }],
-      session_id: 'stored-new'
-    } as never)
-    const { ready } = await mount()
+    persisted = [{ content: PROMPT, role: 'user', timestamp: 1 }]
+    const { ready, rest } = await mount()
 
     await act(async () => {
       await ready.submitNew(PROMPT)
@@ -183,7 +182,9 @@ describe('submitTextToNewSession first message', () => {
       await ready.resume('stored-new', true)
     })
 
-    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith(expect.objectContaining({ path: expect.stringContaining('/messages') }))
+    )
     await waitFor(() => expect(userRows($messages.get())).toHaveLength(1))
   })
 
