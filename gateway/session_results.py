@@ -8,6 +8,17 @@ execution_result: ContextVar[dict | None] = ContextVar("execution_result", defau
 from hermes_state_terminal import RESULT_PREFIX as _RESULT_PREFIX
 
 
+def record_unexecuted_failure(reply):
+    """The admitted turn never ran because it failed (agent initialization raised, history
+    unreadable): commit a failed result for the executing admission, so no surface settles it
+    ``completed`` with the apology as the turn's output. Returns ``reply`` unchanged."""
+    captured = execution_result.get()
+    if captured is not None and 'result' not in captured:
+        captured['result'] = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
+                              'error': str(reply or 'The admitted turn failed.')}
+    return reply
+
+
 def _redacted(value):
     """The stored result is a state.db copy of the model's answer and history: redacted at this
     storage boundary like every transcript row (``security.redact_secrets``). The live viewer

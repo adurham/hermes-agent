@@ -687,7 +687,8 @@ class GatewayTurnPrepareMixin:
             )
         except TranscriptReadError:
             self._clear_session_env(_session_env_tokens)
-            return t("gateway.errors.history_unavailable"), _session_env_tokens
+            from gateway.session_results import record_unexecuted_failure
+            return record_unexecuted_failure(t("gateway.errors.history_unavailable")), _session_env_tokens
 
         await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes, event.text, internal=event.internal)
 

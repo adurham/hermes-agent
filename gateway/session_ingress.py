@@ -126,9 +126,11 @@ async def execute_admission(authority, ref, row):
             response = await authority.runner._handle_message(event)
             result = captured.get('result')
             if result is None:
-                # No TurnRunner result means the handler answered without executing the turn
-                # (agent initialization failure, refusal notice). An API caller asked for work,
-                # so its receipt is a failure, never a completed turn with an apology as output.
+                # No TurnRunner result means the handler answered without executing the turn.
+                # A turn that never ran because it failed (agent initialization raised, history
+                # unreadable) recorded its own failure via ``record_unexecuted_failure`` on every
+                # surface; any other reply here is a deliberate notice. An API caller asked for
+                # work, so its receipt is a failure either way, never a completed apology.
                 result = {'final_response': response or '', 'messages': []}
                 if is_api:
                     result = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
