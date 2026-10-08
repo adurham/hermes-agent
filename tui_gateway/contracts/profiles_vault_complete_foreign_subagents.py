@@ -394,9 +394,32 @@ class OnboardingStateResult(Result):
     profile: str | None = None
 
 
-method("onboarding.state", params=Params, result=OnboardingStateResult)
 method("onboarding.record_failed_start", params=Params, result=OnboardingStateResult)
 method("onboarding.mark_seen", params=Params, result=OnboardingStateResult)
+
+
+class OnboardingRunStateResult(Result):
+    """``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh
+    install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``)."""
+
+    run: bool
+    eligible: bool
+
+
+method("onboarding.state", params=Params, result=OnboardingRunStateResult,
+       doc="Whether the desktop first-run questionnaire is due; reads the root profile's config.")
+
+
+class OnboardingSetRunParams(Params):
+    """``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,
+    so the first chat after the questionnaire gets the plain intro instead of the profile offer."""
+
+    run: bool
+    mark_profile_offered: bool = False
+
+
+method("onboarding.set_run", params=OnboardingSetRunParams, result=OnboardingRunStateResult,
+       doc="Write onboarding.run in the root profile's config.yaml; answers the new state.")
 
 
 class OnboardingResetSetupProfileResult(Result):

@@ -2202,6 +2202,16 @@ export interface OnboardingStateResult {
   profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
+/** ``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). */
+export interface OnboardingRunStateResult {
+  run: boolean
+  eligible: boolean
+}
+/** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after the questionnaire gets the plain intro instead of the profile offer. */
+export interface OnboardingSetRunParams {
+  run: boolean
+  mark_profile_offered?: boolean
+}
 export interface OnboardingResetSetupProfileResult {
   name: string
   path: string
@@ -5284,7 +5294,10 @@ export interface RpcMethods {
   'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
   'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
-  'onboarding.state': { params: Params; result: OnboardingStateResult }
+  /** Write onboarding.run in the root profile's config.yaml; answers the new state. */
+  'onboarding.set_run': { params: OnboardingSetRunParams; result: OnboardingRunStateResult }
+  /** Whether the desktop first-run questionnaire is due; reads the root profile's config. */
+  'onboarding.state': { params: Params; result: OnboardingRunStateResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -5689,6 +5702,7 @@ export const RPC_METHODS = [
   'onboarding.mark_seen',
   'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',
+  'onboarding.set_run',
   'onboarding.state',
   'paste.collapse',
   'pdf.attach',

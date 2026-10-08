@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import random
 import shutil
 from datetime import datetime, timezone, UTC
@@ -140,8 +139,8 @@ def _live_owner(owner: str) -> str:
 
 
 def onboarding_eligible() -> bool:
-    from hermes_cli.anon_auth import GUEST_ONBOARDING_ENV
-    return os.environ.get(GUEST_ONBOARDING_ENV, "").strip() == "1"
+    from hermes_cli.anon_auth import guest_enabled
+    return guest_enabled()
 
 
 def read_state() -> dict:
