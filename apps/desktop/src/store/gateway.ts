@@ -21,6 +21,7 @@ import {
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
+import { isPermanentLocalGatewayEnsureError } from '@/lib/local-gateway-ensure-failure'
 import {
   isTimeoutError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
@@ -990,10 +991,18 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
       return
     }
 
-    // Only a successful open resets the stall budget (the 'open' state
-    // listener): a treadmill that alternates slot-wait timeouts with a
-    // spawned-but-unresponsive socket must still run out of budget.
-    if (isStalledDialError(error)) {
+    // An ensure refusal no redial can fix (incompatible runtime, no ensure protocol, an invalid
+    // endpoint, an unsafe control path): each automatic redial would spawn another
+    // `hermes gateway ensure` against the same install forever. Park at once, keeping the entry:
+    // an explicit open, focus/wake nudge or Reconnect re-arms it after the user's repair.
+    if (isPermanentLocalGatewayEnsureError(error)) {
+      console.warn(`[gateway] parking scope="${entry.scope}": local gateway ensure refused permanently`, error)
+      entry.wantOpen = false
+      entry.stalledDials = 0
+    } else if (isStalledDialError(error)) {
+      // Only a successful open resets the stall budget (the 'open' state
+      // listener): a treadmill that alternates slot-wait timeouts with a
+      // spawned-but-unresponsive socket must still run out of budget.
       entry.stalledDials += 1
 
       if (entry.stalledDials >= SECONDARY_STALLED_DIAL_BUDGET) {
