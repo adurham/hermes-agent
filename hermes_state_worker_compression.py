@@ -201,7 +201,7 @@ def worker_history(db, conn, sid, payload):
 
 
 
-def archive_on_connection(db, conn, session_id: str, compacted_messages: List[Dict[str, Any]], model_config_patch: Optional[Dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[List[Dict[str, Any]]]=None, covered_ids: Optional[List[int]]=None, unresolved_held: Optional[List[Dict[str, Any]]]=None):
+def archive_on_connection(db, conn, session_id: str, compacted_messages: list[dict[str, Any]], model_config_patch: Optional[dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[list[dict[str, Any]]]=None, covered_ids: Optional[list[int]]=None, unresolved_held: Optional[list[dict[str, Any]]]=None):
     # The owner's in-place compaction body, on this receipt's connection: one implementation, so
     # main's coverage/merge/timestamp/display-order fixes reach worker and mutation verbs too.
     return db._archive_and_compact_on_conn(conn, session_id, compacted_messages,
@@ -209,7 +209,7 @@ def archive_on_connection(db, conn, session_id: str, compacted_messages: List[Di
         tail_count=tail_count, carried_messages=carried_messages, covered_ids=covered_ids,
         unresolved_held=unresolved_held)
 
-def publish_on_connection(db, conn, *, parent_session_id: str, child_session_id: str, source: str, messages: List[Dict[str, Any]], model: str=None, model_config: Dict[str, Any]=None, system_prompt: str=None, cwd: str=None, profile_name: str=None, compression_lock_holder: str=None, require_compression_lease: bool=True, require_lease_refresh: bool=False, lease_ttl_seconds: float=300.0, watermark: Optional[int]=None, watermark_ceiling: Optional[int]=None):
+def publish_on_connection(db, conn, *, parent_session_id: str, child_session_id: str, source: str, messages: list[dict[str, Any]], model: str=None, model_config: dict[str, Any]=None, system_prompt: str=None, cwd: str=None, profile_name: str=None, compression_lock_holder: str=None, require_compression_lease: bool=True, require_lease_refresh: bool=False, lease_ttl_seconds: float=300.0, watermark: Optional[int]=None, watermark_ceiling: Optional[int]=None):
     # The owner's rotation body (lease, closure, child row, timestamps, tail clone, local target,
     # auto-archive lift) on this receipt's connection, so the two paths cannot drift.
     db._publish_compression_child_on_conn(conn, parent_session_id=parent_session_id,
@@ -226,11 +226,11 @@ def worker_watermark(db, conn, sid, payload):
 
 
 def _handoff_messages(conn, sid, messages):
-    from hermes_state_runtime import _MESSAGE_FIELDS
+    from hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
     if not isinstance(messages, list) or len(messages) > 1000:
         raise RuntimeStoreError('invalid_params')
     for msg in messages:
-        if not isinstance(msg, dict) or set(msg) - _MESSAGE_FIELDS - {'_compressed_summary_has_user_turn'} or msg.get('role') not in ('user', 'assistant', 'system', 'tool'):
+        if not isinstance(msg, dict) or set(msg) - HANDOFF_MESSAGE_FIELDS or msg.get('role') not in ('user', 'assistant', 'system', 'tool'):
             raise RuntimeStoreError('invalid_params')
         if '_row_id' in msg and not conn.execute('SELECT 1 FROM messages WHERE session_id=? AND id=?',
                                                  (sid, msg['_row_id'])).fetchone():

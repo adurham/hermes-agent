@@ -509,6 +509,9 @@ _MESSAGE_FIELDS = frozenset({
     # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
     # repair's row counts ride every persisted dict; the owner's insert and coverage read them.
 }) | PERSISTENCE_ONLY_MESSAGE_FIELDS | {ABSORBED_ROW_IDS}
+# Compaction handoffs (archive/publish) also carry the summary's user-turn flag. This is the closed
+# boundary the owner validates AND the projection the worker facade applies to live dicts first.
+HANDOFF_MESSAGE_FIELDS = _MESSAGE_FIELDS | {'_compressed_summary_has_user_turn'}
 # Row state the owner's transcript repair stamps on each message (main mutates the caller's dict
 # in place; a worker gets it back as an annotation). None = absent, so a stale adoption is cleared.
 _ROW_ANNOTATION_KEYS = ('_row_id', 'timestamp', DB_ROW_SNAPSHOT, CANONICAL_ROW)
