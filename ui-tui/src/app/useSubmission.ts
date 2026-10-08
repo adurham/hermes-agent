@@ -331,6 +331,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
 
+      // The composer is the only copy of a draft until the pending-input
+      // journal holds it, so it is cleared after that first durable write and
+      // kept — text and image tokens — when the write fails.
+      const journaled = <T,>(write: () => T): { value: T } | undefined => {
+        try {
+          const value = write()
+          composerActions.clearIn()
+
+          return { value }
+        } catch (error) {
+          sys(`input not saved: ${(error as Error).message} — draft kept`)
+          patchUiState({ status: 'input not saved' })
+
+          return undefined
+        }
+      }
+
       if (looksLikeSlashCommand(full)) {
         const slash = prepareSlashSubmission(full, submissionTokens)
 
@@ -342,17 +359,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
         const queued =
           parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
-        // Attachment commands capture the cleared composer's revision.
-        composerActions.clearIn()
-
         if (queued) {
           // Handled here, before the slash handler, so it is counted here.
           reportSlashCommand(gw, parsed.name, getUiState().sid)
-          const retained = composerActions.enqueue(queued.text, queued.display, destination)
 
-          if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
-          sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
+          const saved = journaled(() => {
+            const retained = composerActions.enqueue(queued.text, queued.display, destination)
+
+            if (retained) { retained.attachments = submission.attachments; savePendingInput(retained) }
+          })
+
+          if (saved) { sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`) }
         } else {
+          // Attachment commands capture the cleared composer's revision.
+          composerActions.clearIn()
           // Image tokens are labels in the command; the descriptors and their
           // expander ride along so a skill/alias send still carries the image.
           slashRef.current(slash.command, { attachments: submission.attachments, expand: expandTokens(submissionTokens) })
@@ -374,23 +394,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
       // the first session.create lands seconds after the composer accepts input, so an Enter
       // in that window must not be refused.
       const unbound = !live.sid || live.gatewayConnected === false
-
-      // The composer is the only copy of a draft until the pending-input
-      // journal holds it, so it is cleared after that first durable write and
-      // kept — text and image tokens — when the write fails.
-      const journaled = <T,>(write: () => T): { value: T } | undefined => {
-        try {
-          const value = write()
-          composerActions.clearIn()
-
-          return { value }
-        } catch (error) {
-          sys(`input not saved: ${(error as Error).message} — draft kept`)
-          patchUiState({ status: 'input not saved' })
-
-          return undefined
-        }
-      }
 
       if (unbound) {
         composerActions.pushHistory(toHistory)

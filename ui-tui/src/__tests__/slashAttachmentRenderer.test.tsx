@@ -240,6 +240,24 @@ it('keeps the caption and its image token in the composer when the pending-input
   } finally { chmodSync(journal, 0o700); h.close() }
 })
 
+it('keeps `/queue` text in the composer until the pending-input journal holds it', async () => {
+  const h = mount(true)
+  const journal = join(h.home, 'tui-pending-inputs')
+  mkdirSync(journal, { recursive: true })
+
+  try {
+    chmodSync(journal, 0o500)
+    await h.submit('/queue later please')
+    expect(h.composer.state.input).toBe('/queue later please')
+    expect(h.composer.refs.queueRef.current).toEqual([])
+    expect(getUiState().status).toBe('input not saved')
+    chmodSync(journal, 0o700)
+    await h.submit('/queue later please')
+    expect(h.composer.state.input).toBe('')
+    expect(h.composer.refs.queueRef.current.map(item => item.text)).toEqual(['later please'])
+  } finally { chmodSync(journal, 0o700); h.close() }
+})
+
 it('a failed attempt write leaves the queue head claimable instead of wedged in flight', async () => {
   const h = mount(true)
   const journal = join(h.home, 'tui-pending-inputs')
