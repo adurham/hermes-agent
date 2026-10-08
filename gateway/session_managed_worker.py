@@ -1,5 +1,6 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 import json
 import queue
@@ -50,9 +51,13 @@ def _bootstrap(authority, ref, row, policy, scope):
         for path, value in recover_config_secrets(authority, policy).items():
             if path[0] is None:
                 terminal[path[1]] = value
-    hydrated = replace(policy, config_json=json.dumps(policy.config(authority)),
-                       terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     live = authority.sessions[ref.session_id]
+    # This turn's facts ride the per-turn hydrated request (the bootstrap field set is closed):
+    # the admission's one-shot flags, bound in the owner only for in-process turns.
+    request = dict(json.loads(policy.request_json), turn_v1={
+        'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True})
+    hydrated = replace(policy, config_json=json.dumps(policy.config(authority)), request_json=json.dumps(request),
+                       terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
             'text': row['payload']['text'], 'route': live.route,
@@ -60,6 +65,23 @@ def _bootstrap(authority, ref, row, policy, scope):
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
+
+
+@contextmanager
+def worker_turn_scope(frame):
+    """Child side of ``turn_v1``: bind what the in-process turn binds on the owner
+    (execute_finite_admission), so ``chat -q``/``-z`` never park a prompt. Frames without it
+    bind nothing."""
+    from gateway.session_finite import finite_turn_scope
+    turn = json.loads(frame['policy'].get('request_json') or '{}').get('turn_v1')
+    if turn is None:
+        yield
+        return
+    if (not isinstance(turn, dict) or set(turn) != {'finite', 'unattended'}
+            or any(type(v) is not bool for v in turn.values()) or (turn['unattended'] and not turn['finite'])):
+        raise ValueError('invalid_managed_worker_bootstrap')
+    with finite_turn_scope(turn['finite'], turn['unattended']):
+        yield
 
 
 class ManagedWorker:

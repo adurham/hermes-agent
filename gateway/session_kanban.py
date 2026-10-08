@@ -203,6 +203,12 @@ def _watch_submitter(db, run_id):
 
 
 def run_worker_turns(agent, frame, history):
+    from gateway.session_managed_worker import worker_turn_scope
+    with worker_turn_scope(frame):
+        return _run_worker_turns(agent, frame, history)
+
+
+def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
         author = frame.get('turn_author')
