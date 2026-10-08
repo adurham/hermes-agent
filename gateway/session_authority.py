@@ -305,8 +305,17 @@ class SessionAuthority:
         from gateway.session_finite import admit_finite
         from gateway.session_surface import admit_surface
         finite = admit_finite(request.payload)
+        def admitted():
+            # The exact durable identity (authenticated principal + target + request id); the
+            # attachment fields it yields still pass the full payload-digest comparison below.
+            with self.db._read_ctx() as conn:
+                row = conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND '
+                                   'target_session_id=? AND request_id=?', (actor.subject,
+                                   request.ref.session_id, request.request_id)).fetchone()
+            from hermes_state_runtime import _row
+            return _row(row) if row is not None else None
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
-                   **admit_attachments(request.payload.get('attachments'))}
+                   **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
         source = self.sessions[request.ref.session_id].source
         if source is not None and source.user_id != actor.subject:
             # Durable server authorization, not a client payload field. The original

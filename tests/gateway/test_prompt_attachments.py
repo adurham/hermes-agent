@@ -69,3 +69,33 @@ async def test_staged_attachment_reaches_message_event_media(tmp_path, monkeypat
     assert 'native-inputs' in path
     # Retained bytes are exact-retry evidence by digest only; settlement releases them.
     assert not os.path.exists(path)
+
+
+@pytest.mark.asyncio
+async def test_lost_ack_retry_reconciles_a_queued_image_after_staging_is_gone(tmp_path, monkeypatch):
+    """Lost-ACK recovery of a still-queued image admission must not depend on the client's
+    disposable staging file: the committed bytes and digest are the evidence. A changed payload
+    under the same request id still conflicts, and a fresh request id still needs real staging."""
+    from gateway.platforms.base import cache_image_from_bytes
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_authority import SessionAuthority
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    staged = cache_image_from_bytes(_ONE_PX_PNG, '.png')
+    actor = Principal('human', 'p', frozenset({'session:submit'}), 't')
+    def submit(request_id, text='look', path=staged):
+        return authority.submit(actor, Submission(request_id, SessionRef('p', 's'),
+            {'text': text, 'attachments': [{'path': path, 'mime': 'image/png'}]}, 'queue'))
+    first = await submit('r-lost')
+    assert (await submit('r-lost')).admission_id == first.admission_id
+    os.unlink(staged)
+    assert (await submit('r-lost')).admission_id == first.admission_id
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        await submit('r-lost', text='changed')
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        await submit('r-fresh')
+    assert [row['request_id'] for row in list_session_admissions(authority.db, session_id='s')] == ['r-lost']

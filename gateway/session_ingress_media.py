@@ -42,8 +42,11 @@ def sniff_image_mime(data):
     return None
 
 
-def admit_attachments(attachments):
-    """Wire ``attachments: [{path, mime}]`` -> committed payload fields (``{}`` when absent)."""
+def admit_attachments(attachments, *, admitted=None):
+    """Wire ``attachments: [{path, mime}]`` -> committed payload fields (``{}`` when absent).
+
+    ``admitted()`` returns the durable admission already holding this request's identity (or
+    ``None``): a lost-ACK retry whose disposable staging file is gone reconciles against it."""
     if attachments is None:
         return {}
     if (not isinstance(attachments, list) or not attachments or len(attachments) > _ATTACHMENT_LIMIT
@@ -60,6 +63,17 @@ def admit_attachments(attachments):
     try:
         if any(path.lstat().st_nlink != 1 for path in paths):
             raise RuntimeStoreError('invalid_params')
+    except FileNotFoundError as exc:
+        row = admitted() if admitted is not None else None
+        committed = row['payload'].get('attachments_v1') if row is not None else None
+        if (row is None or committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
+                or committed['media_types'] != [item['mime'] for item in attachments]):
+            raise RuntimeStoreError('invalid_params') from exc
+        # A live row still executes these bytes, so they must verify; a terminal row is
+        # exact-retry evidence by digest only. ``admit_session_input`` still checks the digest.
+        if row['status'] != 'terminal':
+            restore_native_media(committed['media'])
+        return {'attachments_v1': committed}
     except OSError as exc:
         raise RuntimeStoreError('invalid_params') from exc
     return {'attachments_v1': {'media': capture_native_media(paths),
