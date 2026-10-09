@@ -978,6 +978,8 @@
   "slashCmd.session.indicator.switched",
   "slashCmd.session.indicator.usage",
   "slashCmd.session.model.cancel",
+  "slashCmd.session.model.confirmStale",
+  "slashCmd.session.model.confirmTitle",
   "slashCmd.session.model.expensiveDetail",
   "slashCmd.session.model.expensiveTitle",
   "slashCmd.session.model.invalidResponse",

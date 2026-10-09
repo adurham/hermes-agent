@@ -4,6 +4,7 @@ import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
+import { patchOverlayState } from '../overlayStore.js'
 import { getUiState, patchUiState } from '../uiStore.js'
 
 import type { SlashRunCtx } from './types.js'
@@ -131,10 +132,15 @@ export async function mutateCanonicalSession(
   sid: string,
   operation: 'model' | 'branch' | 'compress',
   arg: string,
-  stale: () => boolean = () => false
+  stale: () => boolean = () => false,
+  confirm?: string
 ) {
-  const payload =
-    operation === 'model' ? modelPayload(arg) : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}
+  // `confirm`: the owner's one-time token for a guarded model target the user accepted. It keys a
+  // separate retained request, so an ambiguous reply to the confirmed send retries that exact one.
+  const payload = {
+    ...(operation === 'model' ? modelPayload(arg) : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}),
+    ...(confirm ? { confirm } : {})
+  }
 
   const mutation = await mutateCanonical(gw, sid, operation, payload, stale)
 
@@ -142,6 +148,37 @@ export async function mutateCanonicalSession(
 }
 
 type CanonicalControlResult = NonNullable<Awaited<ReturnType<typeof mutateCanonicalSession>>>['result']
+
+interface ModelConfirmation {
+  confirm: string
+  confirm_message?: string
+  status: 'confirmation_required'
+  target_model?: string
+}
+
+const needsModelConfirmation = (result: CanonicalControlResult): result is ModelConfirmation =>
+  result.status === 'confirmation_required' && typeof result.confirm === 'string'
+
+/** The owner refused a guarded model target (cost / data policy / large context) and wrote
+ *  nothing. Ask with the same dialog the legacy `config.set` path used; only "switch anyway"
+ *  re-sends, once, with the owner's token. A confirmed send refused again (a turn or another
+ *  switch landed first) is reported, never re-asked in a loop. */
+function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: SlashRunCtx, confirmed: boolean) {
+  if (confirmed) {
+    throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
+  }
+
+  patchOverlayState({
+    confirm: {
+      cancelLabel: t('slashCmd.session.model.cancel'),
+      confirmLabel: t('slashCmd.session.model.switchAnyway'),
+      danger: true,
+      detail: refusal.confirm_message || t('slashCmd.session.model.expensiveDetail'),
+      onConfirm: () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm),
+      title: t('slashCmd.session.model.confirmTitle', refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '')
+    }
+  })
+}
 
 function isSupersededControl(
   operation: 'model' | 'branch' | 'compress',
@@ -223,7 +260,8 @@ async function applyCompressResult(gw: MutationGateway, sid: string, result: Can
 export async function runCanonicalSessionControl(
   operation: 'model' | 'branch' | 'compress',
   arg: string,
-  ctx: SlashRunCtx
+  ctx: SlashRunCtx,
+  confirm?: string
 ) {
   const gw = ctx.gateway.gw
 
@@ -232,7 +270,7 @@ export async function runCanonicalSessionControl(
       throw new Error(t('slashCmd.core.status.noActiveSession'))
     }
 
-    const mutation = await mutateCanonicalSession(gw, ctx.sid, operation, arg, ctx.stale)
+    const mutation = await mutateCanonicalSession(gw, ctx.sid, operation, arg, ctx.stale, confirm)
 
     if (!mutation) {
       return
@@ -248,7 +286,9 @@ export async function runCanonicalSessionControl(
       return
     }
 
-    if (operation === 'branch') {
+    if (operation === 'model' && needsModelConfirmation(result)) {
+      askModelConfirmation(result, arg, ctx, Boolean(confirm))
+    } else if (operation === 'branch') {
       applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
       applyModelResult(result, ctx)
