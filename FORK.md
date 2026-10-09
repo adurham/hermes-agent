@@ -278,6 +278,13 @@ in the `version-details` and `boot-failure-overlay` tests (adurham); the fork's 
 aligned in the fallback-label tests; the new delegate-role test switched to `hermes_yaml` (PyYAML
 is not in the CI env). Verified: 9/9 desktop files + 56 tests green, renderer tsc rc 0.
 
+**Suite (final):** full run on amd-workstation against this head — 61,122 passed / 411 failed /
+959 skipped (5,611 files); every one of the 100 failing files is the pre-existing
+upstream/backlog set (compare5: 0 regressions, 13 cleared vs run 4); renderer + electron `tsc`
+rc 0; vitest ui 1,217/1,217 files, 10,781/10,781 tests passed. The earlier run's 7 flags
+(6 crash-killed tui_gateway files + connectors catalog) re-ran green (767/767) — transient load
+flakes, not regressions.
+
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 
 **Problem (recurrence ~6 of the spinner/status-line timer saga):** screenshot showed the status bar's
