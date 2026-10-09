@@ -135,11 +135,36 @@ API, ACP, cron, Bot Chat). What an existing install sees on its first update:
   with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent), or from a
   script with `hermes sessions discard <session> --yes`, before later inputs run. A cron delivery a gateway had claimed but not finished is likewise
   fenced `unknown` and recorded `delivery_failed`.
-- **Rolling back after the new gateway has written `state.db`:** the new runtime-ledger
-  tables reference `sessions` with `ON DELETE RESTRICT`, so an older release that deletes
-  or prunes such a session fails with `FOREIGN KEY constraint failed`. To go back, restore
-  the pre-update snapshot (`hermes update --backup` takes a full one) rather than running
-  the older release on the upgraded database.
+- **Rolling back is unsupported once the new gateway has written `state.db`.** See
+  [Rolling back to an older release](#rolling-back-to-an-older-release).
+
+### Rolling back to an older release
+
+An older release cannot run on a `state.db` the gateway runtime has written. Each place
+that could do it refuses instead of corrupting history:
+
+- **`hermes update`** refuses a target (`--branch`, a channel switch, a pinned release)
+  that predates the gateway runtime while any profile's `state.db` holds gateway runtime
+  history. It stops before touching the checkout, lists the affected stores and the way
+  back.
+- **An older release run on the upgraded store** (a hand `git checkout` of an old tag)
+  cannot delete or prune sessions with gateway runtime history. `hermes sessions delete`
+  and `prune` stop with `Refused to delete a session that has gateway runtime history`.
+  Older releases still print this inside a traceback, and `prune` rolls back its whole
+  batch.
+- **A running gateway** whose checkout is moved back to such a release stops itself
+  within about 30 seconds, so the older release can start its own.
+
+To go back anyway, restore the state from before the update instead of running the
+older release on the upgraded database:
+
+1. `hermes gateway stop`
+2. Check out the older release.
+3. Restore the newest pre-update snapshot (`/snapshot restore <id>`), or a full backup
+   taken with `hermes update --backup` (`hermes import <backup.zip>`). Quick snapshots
+   skip a `state.db` larger than 1 GiB; large stores need the full backup.
+
+Sessions and messages created after the update are not in that snapshot.
 
 ### Why the gateway restart can take a while
 
