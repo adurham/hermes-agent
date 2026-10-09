@@ -1264,6 +1264,11 @@ def _refuse_before_commit_point(git_cmd, target_ref, _windows_gateway_resume) ->
     """Preconditions that used to fail AFTER the swap: refuse with the install untouched."""
     reason = _commit.preflight_refusal(git_cmd, _m().PROJECT_ROOT, target_ref, _UPDATE_CRITICAL_FILES)
     if reason is None:
+        from hermes_cli.update_downgrade_guard import downgrade_refusal
+        reason = downgrade_refusal(git_cmd, _m().PROJECT_ROOT, target_ref)
+        if reason is not None:
+            _record_stop("downgrade_refused")
+    if reason is None:
         return
     print(reason)
     print("  No update was applied; your install is unchanged.")
