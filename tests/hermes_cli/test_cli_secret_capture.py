@@ -154,20 +154,32 @@ def test_clarify_callback_fires_attention_signals():
 
     Regression: clarify prompts used to appear silently with no
     bell/notification. Mirrors the coverage test_cli_clarify_batch.py pins for
-    the batch path.
+    the batch path. Upstream #127760 made clarify batch-only, so this drives
+    ``_clarify_callback`` with a ``questions`` list (the batch shape) rather
+    than the retired single-question ``(question, choices)`` signature.
     """
     cli = _make_cli_stub(with_app=True)
     cli._clarify_state = None
-    cli._clarify_deadline = None
     cli._clarify_freetext = False
+    cli._clarify_multi_base = None
+    cli._clarify_prefill = ""
+    cli._clarify_deadline = None
     cli._fire_attention_signals = MagicMock()
     cli._paint_now = MagicMock()
     cli._persist_prompt_summary = MagicMock()
 
+    questions = [{
+        "qid": "q0",
+        "question": "Which timezone?",
+        "choices": ["utc", "pst"],
+        "choices_offered": ["utc", "pst"],
+        "multi_select": False,
+    }]
+
     result = {}
 
     def _run():
-        result["value"] = cli._clarify_callback("Which timezone?", ["utc", "pst"])
+        result["value"] = cli._clarify_callback(questions)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -181,6 +193,8 @@ def test_clarify_callback_fires_attention_signals():
     summary = cli._fire_attention_signals.call_args.args[0]
     assert "Which timezone?" in summary
 
-    cli._clarify_state["response_queue"].put("utc")
+    # The batch queue carries the locked-answers dict on submit
+    # (``_clarify_batch_lock`` puts ``dict(state["answers"])``).
+    cli._clarify_state["response_queue"].put({"q0": "utc"})
     thread.join(timeout=2)
-    assert result["value"] == "utc"
+    assert result["value"]["answers"]["q0"] == "utc"

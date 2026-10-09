@@ -142,7 +142,7 @@ class Persona:
         file if there's no frontmatter, or an empty string on read error.
         """
         try:
-            text = Path(self.path).read_text(encoding="utf-8", errors="replace")
+            text = Path(self.path).read_text(encoding="utf-8-sig", errors="replace")
         except (OSError, UnicodeDecodeError):
             return ""
         return _strip_frontmatter(text)
@@ -190,7 +190,7 @@ def discover_personas(
         if name in seen:
             continue  # dedupe — first encounter wins
         try:
-            with md.open("r", encoding="utf-8", errors="replace") as f:
+            with md.open("r", encoding="utf-8-sig", errors="replace") as f:
                 head = f.read(2048)
         except OSError:
             continue

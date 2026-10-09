@@ -33,7 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
+from hermes_cli import __release_date__ as RELEASE_DATE
 
 
 # Constants (_CANONICAL_REPO, _FALLBACK_RELEASE_URL_BASE, _UPSTREAM_BEHIND_NUDGE)
@@ -74,8 +74,9 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
         # build SHA — a built image is pinned to one commit, so it is a frozen
         # ``local == origin`` state with no carried/behind counts.
         try:
-            from hermes_cli.build_info import get_build_sha
-            baked = get_build_sha(short=8)
+            # v0.21.6: build_info.get_build_sha is gone; version_info owns code identity.
+            from hermes_cli.version_info import get_code_identity
+            baked = get_code_identity().get("short_sha")
             if baked:
                 return {"local": baked, "origin": baked, "upstream": None,
                         "carried": 0, "upstream_behind": 0}
@@ -88,8 +89,9 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
         # Live-git lookup failed (e.g. shallow clone without HEAD resolvable).
         # Fall back to the baked build SHA if available.
         try:
-            from hermes_cli.build_info import get_build_sha
-            baked = get_build_sha(short=8)
+            # v0.21.6: build_info.get_build_sha is gone; version_info owns code identity.
+            from hermes_cli.version_info import get_code_identity
+            baked = get_code_identity().get("short_sha")
             if baked:
                 return {"local": baked, "origin": baked, "upstream": None,
                         "carried": 0, "upstream_behind": 0}
@@ -271,7 +273,9 @@ def format_banner_version_label() -> str:
             head_date = _banner._git_head_date(repo_dir)
             if head_date:
                 date_label = head_date
-    base = f"{_banner._resolve_agent_name()} v{VERSION} ({date_label})"
+    # v0.21.6: no literal __version__; the derived identity is what upstream's label shows too.
+    from hermes_cli.version_info import get_version_info
+    base = f"{_banner._resolve_agent_name()} v{get_version_info().derived_version} ({date_label})"
     state = _banner.get_git_banner_state()
     if not state:
         return base

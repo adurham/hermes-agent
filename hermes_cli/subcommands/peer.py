@@ -297,7 +297,7 @@ def _message_from_args(args) -> str:
     message = (getattr(args, "message", None) or "").strip()
     # Fork: --file, carried over from the retired `hermes submit -f task.md`.
     if not message and (path := getattr(args, "file", None)):
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             message = handle.read().strip()
     if not message and not sys.stdin.isatty():
         message = sys.stdin.read().strip()

@@ -1120,6 +1120,7 @@ class TestAnthropicStreamCallbacks:
                 type="content_block_start",
                 content_block=SimpleNamespace(type="tool_use", name="terminal"),
             ),
+            SimpleNamespace(type="message_stop"),
         ]
 
         final_message = SimpleNamespace(
@@ -1183,7 +1184,7 @@ class TestAnthropicStreamCallbacks:
         good_stream = MagicMock()
         good_stream.__enter__ = MagicMock(return_value=good_stream)
         good_stream.__exit__ = MagicMock(return_value=False)
-        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.__iter__ = MagicMock(return_value=iter([SimpleNamespace(type="message_stop")]))
         good_stream.get_final_message.return_value = final_message
 
         agent._anthropic_client = spec_anthropic_client
@@ -1245,7 +1246,7 @@ class TestAnthropicStreamCallbacks:
         good_stream = MagicMock()
         good_stream.__enter__ = MagicMock(return_value=good_stream)
         good_stream.__exit__ = MagicMock(return_value=False)
-        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.__iter__ = MagicMock(return_value=iter([SimpleNamespace(type="message_stop")]))
         good_stream.get_final_message.return_value = repaired_message
 
         seen_tools = []
@@ -1315,7 +1316,8 @@ class TestAnthropicStreamCallbacks:
             {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
 
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert "old_tool" not in (response.choices[0].message.content or "")
+        # anthropic_messages partial stubs are Messages-shaped (#45908).
+        assert "old_tool" not in "".join(getattr(b, "text", "") for b in response.content)
         assert not any("old_tool" in t for t in emitted)
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")

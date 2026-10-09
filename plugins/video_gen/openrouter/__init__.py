@@ -172,7 +172,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
 
     def _headers(self, api_key: str) -> Dict[str, str]:
         return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent", "X-Title": "Hermes Agent"}
+                "HTTP-Referer": "https://github.com/adurham/hermes-agent", "X-Title": "Hermes Agent"}
 
     def _session(self) -> Any:
         import requests

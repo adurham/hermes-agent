@@ -10,7 +10,6 @@ gap fixed in agent/display.py's "todo" branch).
 import json
 from agent.display import get_cute_tool_message, set_tool_preview_max_len
 
-
 def _todo_result(total: int, completed: int) -> str:
     """Build a fake todo_tool return value."""
     return json.dumps({
@@ -66,9 +65,6 @@ class TestTodoRead:
 class TestTodoCreate:
     """get_cute_tool_message when merge=False (new plan creation)."""
 
-
-
-
     def test_create_with_result_zero_done(self):
         """New plan with 0 done — plain count, no progress fraction."""
         msg = get_cute_tool_message("todo_list",
@@ -81,11 +77,8 @@ class TestTodoCreate:
         assert "2 task(s)" in msg
         assert "/" not in msg
 
-
 class TestTodoUpdate:
     """get_cute_tool_message when merge=True (incremental update)."""
-
-
 
     def test_update_halfway(self):
         """2/4 — midpoint progress."""
@@ -96,10 +89,6 @@ class TestTodoUpdate:
                                     result=_todo_result(4, 2))
         assert "2/4" in msg
         assert "✓" in msg
-
-
-
-
 
     def test_update_total_not_in_summary(self):
         """Result summary missing total key."""
@@ -223,7 +212,6 @@ class TestWebExtractDisplay:
     caused AttributeError when web_extract tried to extract domain names.
     """
 
-
     def test_web_extract_with_dict_href_field(self):
         """Dict with 'href' field (alternate key)."""
         args = {
@@ -233,9 +221,6 @@ class TestWebExtractDisplay:
         }
         msg = get_cute_tool_message("web_extract", args, 0.3)
         assert "test.org" in msg
-
-
-
 
     def test_web_extract_with_mixed_types(self):
         """Mix of string URLs and dict objects."""
@@ -248,4 +233,3 @@ class TestWebExtractDisplay:
         msg = get_cute_tool_message("web_extract", args, 0.4)
         # First item is a string, so domain should come from it
         assert "direct.com" in msg
-

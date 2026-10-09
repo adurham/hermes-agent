@@ -165,7 +165,7 @@ def scan_file(path: Path, only_lines: set[int] | None = None) -> list[tuple[int,
     "stop the count from growing," not "retrofix on touch").
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return []
     lines = text.splitlines()

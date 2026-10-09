@@ -118,7 +118,7 @@ def _read_manifest() -> Dict[str, str]:
         return {}
     try:
         result = {}
-        for line in _manifest_file().read_text(encoding="utf-8").splitlines():
+        for line in _manifest_file().read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line:
                 continue

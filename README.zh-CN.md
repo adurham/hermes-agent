@@ -5,9 +5,9 @@
 # Hermes Agent ☤
 
 <p align="center">
-  <a href="https://github.com/adurham/hermes-agent/tree/main/website/docs"><img src="https://img.shields.io/badge/Docs-website%2Fdocs-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/adurham/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
@@ -32,16 +32,16 @@
 ## 快速安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adurham/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-支持 Linux、macOS、WSL2 和 Android (Termux)。安装程序会自动处理平台特定的配置。
+支持 Linux、macOS 和 WSL2。安装程序会自动处理平台特定的配置。
 
-> **Android / Termux：** 已测试的手动安装路径请参考 [Termux 指南](https://github.com/adurham/hermes-agent/blob/main/website/docs/getting-started/termux.md)。在 Termux 上，Hermes 会安装精选的 `.[termux]` 扩展，因为完整的 `.[all]` 扩展会拉取 Android 不兼容的语音依赖。
+> **Android / Termux：** aarch64 设备可使用预发布的 APT 软件包，其中包含 Python、Node.js 和 TUI。请按照 [Termux 指南](https://github.com/adurham/hermes-agent/blob/main/website/docs/getting-started/termux.md)安装，不要使用桌面和服务器的安装脚本。
 >
 > **Windows：** 在 PowerShell 中运行：
 > ```powershell
-> iex (irm https://raw.githubusercontent.com/adurham/hermes-agent/main/scripts/install.ps1)
+> iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 > ```
 > 安装完成后，可能需要重启终端，然后运行 `hermes` 开始对话。
 
@@ -77,7 +77,7 @@ hermes doctor       # 诊断问题
 Hermes 始终允许你使用任意服务商，这点不会改变。但如果你不想为模型、网页搜索、图像生成、TTS、云浏览器分别去申请五个不同的 API Key，**[Nous Portal](https://portal.nousresearch.com)** 用一个订阅就能覆盖全部：
 
 - **300+ 模型** — 用 `/model <name>` 随时切换
-- **Tool Gateway** — 网页搜索（Firecrawl）、图像生成（FAL）、文本转语音（OpenAI）、云浏览器（Browser Use），全部通过订阅托管。无需额外注册任何账户。
+- **Tool Gateway** — 网页搜索、图像生成（FAL）、文本转语音（OpenAI）、云浏览器（Browser Use），全部通过订阅托管。无需额外注册任何账户。
 
 全新安装时一条命令即可：
 
@@ -113,7 +113,7 @@ Hermes 有两种入口：用 `hermes` 启动终端 UI，或运行网关从 Teleg
 
 ## 文档
 
-所有文档位于 **[github.com/adurham/hermes-agent/website/docs](https://github.com/adurham/hermes-agent/tree/main/website/docs)**：
+所有文档位于 **[hermes-agent.nousresearch.com/docs](https://github.com/adurham/hermes-agent/tree/main/website/docs)**：
 
 | 章节 | 内容 |
 |------|------|
@@ -168,26 +168,8 @@ hermes claw migrate --overwrite  # 覆盖已有冲突
 
 欢迎贡献！请参阅 [贡献指南](https://github.com/adurham/hermes-agent/blob/main/website/docs/developer-guide/contributing.md) 了解开发设置、代码风格和 PR 流程。
 
-贡献者快速开始——使用标准安装器，然后在它创建的完整 git checkout 中开发：
-`$HERMES_HOME/hermes-agent`（通常是 `~/.hermes/hermes-agent`）。这会匹配
-`hermes update`、托管 venv、lazy dependencies、gateway 和 docs tooling 使用的布局。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/adurham/hermes-agent/main/scripts/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
-手动克隆备用路径（用于一次性 clone / CI，或你明确不想使用 managed install layout 时）：
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv venv --python 3.11
-source venv/bin/activate
-uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
-```
+PM 引导、Python 3.14 测试环境和规范验证命令见
+[开发环境配置](CONTRIBUTING.md#development-setup)。
 
 ---
 

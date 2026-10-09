@@ -14,7 +14,6 @@ pytest.importorskip("numpy")  # retrieval module imports numpy indirectly
 from plugins.memory.holographic.retrieval import FactRetriever
 from plugins.memory.holographic.store import MemoryStore
 
-
 # ---------------------------------------------------------------------------
 # _sanitize_fts_query — unit tests (no DB required)
 # ---------------------------------------------------------------------------
@@ -60,7 +59,6 @@ def test_sanitize_fts_query_extracts_content_tokens(query, expected_tokens):
     matches = re.findall(r'"([^"]+)"', result)
     assert set(matches) == expected_tokens, f"got {result!r}"
 
-
 # ---------------------------------------------------------------------------
 # Integration test — actually run _fts_candidates against an in-memory DB
 # ---------------------------------------------------------------------------
@@ -86,7 +84,6 @@ def retriever_with_facts(tmp_path):
     yield retriever
     store.close()
 
-
 def test_prefetch_recovers_prose_query(retriever_with_facts):
     """A natural-language query should now match the relevant fact.
 
@@ -100,9 +97,6 @@ def test_prefetch_recovers_prose_query(retriever_with_facts):
     # The top hit should be the deployment rollback fact
     assert "deployment rollback" in results[0]["content"].lower()
 
-
-
-
 # ---------------------------------------------------------------------------
 # Loop-invariant encode hoists (perf) — search/probe/related must encode
 # constant vectors ONCE per call, not once per candidate/row.
@@ -111,7 +105,6 @@ def test_prefetch_recovers_prose_query(retriever_with_facts):
 # ---------------------------------------------------------------------------
 
 from plugins.memory.holographic import holographic as hrr
-
 
 def test_encode_functions_are_deterministic():
     """Soundness premise of the hoists: same input -> identical vector."""
@@ -360,3 +353,4 @@ def test_reason_requires_all_entities_to_co_occur(tmp_path):
         assert set(r["fact_id"] for r in neither) != both
     finally:
         store.close()
+

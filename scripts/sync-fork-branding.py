@@ -255,7 +255,7 @@ def process_file(path: Path, *, dry_run: bool, verbose: bool, unresolved: list[s
         return 0
 
     try:
-        original = path.read_text(encoding="utf-8")
+        original = path.read_text(encoding="utf-8-sig")
     except (UnicodeDecodeError, OSError):
         return 0
 

@@ -4,18 +4,15 @@ import pytest
 
 from tools.process_registry import ProcessRegistry
 
-
 @pytest.fixture
 def registry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     return ProcessRegistry()
 
-
 def _spawn_sleeper(registry, notify=False):
     session = registry.spawn_local("sleep 30", cwd="/tmp", task_id="t-waitclar")
     session.notify_on_complete = notify
     return session.id
-
 
 class TestWaitTimeoutClarity:
     def test_wait_timeout_marks_process_running(self, registry):
@@ -26,8 +23,6 @@ class TestWaitTimeoutClarity:
             assert r["process_running"] is True
         finally:
             registry.kill_process(sid)
-
-
 
     def test_clamped_wait_keeps_clamp_note_and_running_semantics(self, registry, monkeypatch):
         # The clamp ceiling is TERMINAL_WAIT_MAX_TIMEOUT, a DISTINCT knob
@@ -195,4 +190,3 @@ class TestWaitYieldRelease:
             assert not is_thread_yield_requested(t.ident)
         finally:
             registry.kill_process(sid)
-

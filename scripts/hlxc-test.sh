@@ -33,10 +33,9 @@ if [ "${1:-}" = "--sync" ]; then
     exit 2
   }
   git -C "$REPO" log --oneline -1
-  echo "==> uv sync"
-  (cd "$REPO" && uv sync --locked --python 3.11 --extra all --extra dev \
-      --extra anthropic --extra mistral --extra fal --extra modal \
-      --extra daytona --extra hindsight --extra parallel-web 2>&1 | tail -3)
+  # No manual dependency sync: since v0.21.6 the lock is python>=3.14 only and `dev` is a dependency group, so
+  # scripts/run_tests.sh provisions the pinned interpreter + dev/test groups itself via PM
+  # (scripts/run-in-hermes-env) and rebuilds when pyproject.toml/uv.lock change.
 fi
 
 cd "$REPO" || { echo "!! no checkout at $REPO — clone it first" >&2; exit 2; }

@@ -1,30 +1,12 @@
-"""FORK/recovery: salvage must recognise every session-id shape this repo really mints.
+"""Session recovery must recognise every session-id shape this repo really mints.
 
-Follow-up to 21c5547faa. That commit taught salvage the fork's physical column
-layouts so ``hermes sessions recover`` maps cells by NAME. It still classified a
-row as a session only when the id matched ``SESSION_ID_PATTERN``
-(``^\\d{8}_\\d{6}_``) -- but several first-class surfaces DERIVE an id instead of
-minting through ``new_session_id``:
+``hermes sessions recover`` classifies schema-less lost_and_found rows by the id cell. Ids that
+surfaces DERIVE (cron, /bg, rooms, API server, ACP) instead of minting via ``new_session_id`` were
+dropped, and as a ``parent_session_id`` one of them vetoed layout inference for the whole table.
 
-* ``cron/scheduler.py``     f"cron_{job_id}_{now:%Y%m%d_%H%M%S}"
-* ``cli_commands_mixin.py`` f"bg_{now:%H%M%S}_{uuid4().hex[:6]}"   (``/bg``)
-* ``api_server_room_dispatch.py`` f"room_{sha256(seed)[:32]}"
-
-Measured on a real 3,373-session store: 379 rows (11.2%) -- 375 cron, 1 bg, plus
-junk -- failed the pattern. Two distinct consequences, both covered here:
-
-1. DROPPED ROWS. ``classify_lost_and_found_row`` returned None for those rows, so
-   ``hermes sessions recover`` silently discarded every cron/bg/room session.
-2. POISONED LAYOUT INFERENCE. ``parent_session_id`` is a text-shape rule checked
-   with the same predicate, so an ordinary timestamp-id CHILD of a cron job (which
-   classifies fine) carried an unrecognised parent id -- and because one bad
-   sampled value vetoes a candidate layout, a single such row collapsed inference
-   for the WHOLE table to empty, i.e. the positional-guessing fallback #101409
-   exists to avoid.
-
-The widened recognizers are layout SENTINELS, so they stay anchored: the
-adversarial test below pins that near-misses and arbitrary text are still
-rejected and that a wrong layout is still vetoed.
+The widened recognizers are layout SENTINELS, so they stay anchored: the adversarial
+tests below pin that near-misses and arbitrary text are still rejected and that a
+wrong layout is still vetoed.
 """
 
 from __future__ import annotations
@@ -43,6 +25,7 @@ from hermes_state_ids import (
     is_known_session_id,
     new_session_id,
 )
+from hermes_cli.session_recovery import _quoted_columns, _table_columns
 from hermes_cli.session_lost_and_found import (
     LayoutEvidence,
     _cell_fits,
@@ -51,6 +34,7 @@ from hermes_cli.session_lost_and_found import (
     _row_invariants_hold,
     classify_lost_and_found_row,
     infer_physical_layouts,
+    map_lost_and_found_rows,
 )
 
 # Exactly as the minting sites build them (see module docstring for file/line).
@@ -59,7 +43,13 @@ CRON_SLUG_ID = "cron_job-1_20260707_195958"      # legacy/user job id, real in l
 BG_ID = "bg_124526_be5bed"
 ROOM_ID = "room_" + "0123456789abcdef" * 2
 
-DERIVED_IDS = [CRON_ID, CRON_SLUG_ID, BG_ID, ROOM_ID]
+TUI_BG_ID = "bg_be5bed"
+API_ID = "api_1790000000_0123abcd"
+API_CHAT_ID = "api-0123456789abcdef"
+RUN_ID = "run_" + "0123456789abcdef" * 2
+UUID_ID = "0b36145a-e5c7-4d2a-9f00-0123456789ab"
+
+DERIVED_IDS = [CRON_ID, CRON_SLUG_ID, BG_ID, ROOM_ID, TUI_BG_ID, API_ID, API_CHAT_ID, RUN_ID, UUID_ID]
 
 # Near-misses and arbitrary cell values. These sit at the id position of a candidate
 # layout, so accepting any of them costs real wrong-column-mapping safety.
@@ -74,21 +64,41 @@ NOT_SESSION_IDS = [
     "/Users/adam/some/path", "https://example.com", "hello world",
     '{"json": true}', "claude-opus-5", "assistant",
     "20260101_100500",
+    "bg_abcde", "api_123_0123abcd", "api-0123", "run_" + "a" * 31,
+    "0b36145a-e5c7-1d2a-9f00-0123456789ab",
 ]
+
+
+@pytest.mark.parametrize("value,expected", [(v, True) for v in DERIVED_IDS] + [(v, False) for v in NOT_SESSION_IDS])
+def test_salvage_recognizes_minted_ids_and_rejects_arbitrary_cells(value: str, expected: bool) -> None:
+    assert _is_session_id(value) is expected
+
+
+def _sessions_rows(conn: sqlite3.Connection) -> tuple[list[str], list[tuple]]:
+    columns = _table_columns(conn, "sessions")
+    quoted = _quoted_columns(columns)[0]
+    return columns, [tuple(r) for r in conn.execute(f"SELECT {quoted} FROM sessions")]
+
+
+def _map_as_salvage(tmp_path, columns: list[str], rows: list[tuple]) -> dict:
+    """Feed the rows to the real salvage mapper as schema-less lost_and_found records."""
+    lf = sqlite3.connect(str(tmp_path / "lost_and_found.db"), isolation_level=None)
+    SessionDB(db_path=tmp_path / "mapped.db").close()
+    dest = sqlite3.connect(str(tmp_path / "mapped.db"), isolation_level=None)
+    try:
+        cells = ", ".join(f"c{i}" for i in range(len(columns)))
+        lf.execute(f"CREATE TABLE lost_and_found (rootpgno INTEGER, pgno INTEGER, nfield INTEGER, id INTEGER, {cells})")
+        lf.executemany(f"INSERT INTO lost_and_found VALUES ({', '.join('?' * (4 + len(columns)))})",
+                       [(2, 5, len(columns), rowid, *row) for rowid, row in enumerate(rows, 1)])
+        dest.execute("PRAGMA foreign_keys=OFF")
+        return map_lost_and_found_rows(lf, dest)
+    finally:
+        lf.close()
+        dest.close()
 
 
 def _timestamp_id() -> str:
     return new_session_id(datetime(2026, 1, 2, 3, 4, 5))
-
-
-def _physical_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
-    return tuple(str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")'))
-
-
-def _sessions_rows(conn: sqlite3.Connection) -> tuple[tuple[str, ...], list[tuple]]:
-    columns = _physical_columns(conn, "sessions")
-    quoted = ", ".join(f'"{c}"' for c in columns)
-    return columns, [tuple(r) for r in conn.execute(f"SELECT {quoted} FROM sessions")]
 
 
 def _infer_like_recovery(conn: sqlite3.Connection, columns: tuple[str, ...],
@@ -108,21 +118,20 @@ def _infer_like_recovery(conn: sqlite3.Connection, columns: tuple[str, ...],
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
-    """A real fork-schema store; the factory seeds sessions through the real SessionDB."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(db_path=tmp_path / "state.db")
+def store(tmp_path):
+    """A real post-upgrade store; the factory seeds sessions through the real SessionDB."""
+    with SessionDB(db_path=tmp_path / "state.db") as db:
 
-    def add(session_id: str, **kwargs) -> str:
-        db.create_session(session_id, source=kwargs.pop("source", "cli"),
-                          model="claude-opus-5", cwd=str(tmp_path), **kwargs)
-        return session_id
+        def add(session_id: str, **kwargs) -> str:
+            db.create_session(session_id, source=kwargs.pop("source", "cli"),
+                              model="claude-opus-5", cwd=str(tmp_path), **kwargs)
+            return session_id
 
-    def bulk(count: int) -> None:
-        for _ in range(count):
-            add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}")
+        def bulk(count: int) -> None:
+            for _ in range(count):
+                add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}")
 
-    return db, add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db"))
+        yield add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db"))
 
 
 # ── 1. recognition contract ────────────────────────────────────────────
@@ -165,7 +174,7 @@ def test_minted_timestamp_ids_still_recognized() -> None:
 def test_derived_id_sessions_are_not_dropped_by_salvage(store, session_id: str) -> None:
     """Before the fix ``classify_lost_and_found_row`` returned None for these rows,
     so recovery discarded the session entirely."""
-    _db, add, _bulk, connect = store
+    add, _bulk, connect = store
     add(session_id, source="cron" if session_id.startswith("cron_") else "cli")
     conn = connect()
     try:
@@ -178,7 +187,7 @@ def test_derived_id_sessions_are_not_dropped_by_salvage(store, session_id: str) 
 
 def test_real_world_id_mix_is_fully_classified(store) -> None:
     """The measured real-store mix (~11% derived ids) must survive salvage intact."""
-    _db, add, bulk, connect = store
+    add, bulk, connect = store
     bulk(20)
     for sid in DERIVED_IDS:
         add(sid, source="cron" if sid.startswith("cron_") else "cli")
@@ -204,7 +213,7 @@ def test_child_of_a_cron_job_does_not_poison_layout_inference(store) -> None:
     candidate, so inference returned {} and recovery fell back to positional
     guessing for the entire table.
     """
-    _db, add, bulk, connect = store
+    add, bulk, connect = store
     bulk(20)
     add(CRON_ID, source="cron")
     add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_child1", parent_session_id=CRON_ID)
@@ -228,9 +237,10 @@ def test_child_of_a_cron_job_does_not_poison_layout_inference(store) -> None:
         conn.close()
 
 
-def test_layout_inference_survives_every_derived_id_shape(store) -> None:
-    """Each derived shape, present as a parent id, must leave inference intact."""
-    _db, add, bulk, connect = store
+def test_layout_inference_survives_every_derived_id_shape(store, tmp_path) -> None:
+    """Each derived shape, present as a parent id, must leave inference intact -- both the
+    pass-1 inference the salvage lane runs and the real end-to-end salvage mapper."""
+    add, bulk, connect = store
     bulk(20)
     for index, parent in enumerate(DERIVED_IDS):
         add(parent, source="cron" if parent.startswith("cron_") else "cli")
@@ -244,6 +254,10 @@ def test_layout_inference_survives_every_derived_id_shape(store) -> None:
         assert all(mapping[i] == columns[i] for i in range(len(columns)))
     finally:
         conn.close()
+    report = _map_as_salvage(tmp_path, columns, rows)
+    assert report["mapped"]["sessions"] == len(rows)
+    assert report["unrecognized_layout_rows"] == 0
+    assert report["inferred_layouts"]["sessions"][str(len(columns))] == columns
 
 
 # ── 4. the safety property the fix must not weaken ─────────────────────
@@ -253,7 +267,7 @@ def test_a_wrong_layout_is_still_rejected(store) -> None:
     """Adversarial: the TRUE layout is accepted and rotated (wrong) layouts are
     still vetoed, with derived-id rows present. Widening the recognizers must buy
     recall, never wrong-column mappings."""
-    _db, add, bulk, connect = store
+    add, bulk, connect = store
     bulk(10)
     add(CRON_ID, source="cron")
     add(BG_ID)
@@ -281,7 +295,7 @@ def test_a_wrong_layout_is_still_rejected(store) -> None:
 def test_a_genuinely_corrupt_id_still_fails_classification(store) -> None:
     """Torn/garbled cells must NOT be waved through. Recall for real shapes is not
     tolerance for junk -- the predicate stays an exact-shape check."""
-    _db, _add, bulk, connect = store
+    _add, bulk, connect = store
     bulk(5)
     conn = connect()
     try:

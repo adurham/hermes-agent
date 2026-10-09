@@ -56,7 +56,7 @@ def _resolve_token() -> tuple[str, str]:
         return env_token, "env CLAUDE_CODE_OAUTH_TOKEN"
 
     if ENV_PATH.exists():
-        for raw in ENV_PATH.read_text(encoding="utf-8").splitlines():
+        for raw in ENV_PATH.read_text(encoding="utf-8-sig").splitlines():
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
@@ -67,7 +67,7 @@ def _resolve_token() -> tuple[str, str]:
 
     if CREDS_PATH.exists():
         try:
-            with open(CREDS_PATH, encoding="utf-8") as f:
+            with open(CREDS_PATH, encoding="utf-8-sig") as f:
                 data = json.load(f)
             tok = (data.get("claudeAiOauth") or {}).get("accessToken")
             if tok:
@@ -83,7 +83,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
     DirectSDK plugin uses to resolve its own declared vars."""
     values: dict[str, str] = {}
     try:
-        for raw in path.read_text(encoding="utf-8").splitlines():
+        for raw in path.read_text(encoding="utf-8-sig").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

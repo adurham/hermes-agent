@@ -93,7 +93,7 @@ def record(stat: DelegationStat) -> bool:
         existing: list[dict] = []
         if path.exists():
             try:
-                with path.open("r", encoding="utf-8") as f:
+                with path.open("r", encoding="utf-8-sig") as f:
                     raw = json.load(f)
                 if isinstance(raw, list):
                     # Filter out obviously-bad entries so a partial write
@@ -130,7 +130,7 @@ def load_all() -> list[DelegationStat]:
     if not path.exists():
         return []
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             raw = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []

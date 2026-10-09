@@ -31,21 +31,25 @@ class TestMatrixMaxMessageLength:
         assert adapter._SPLIT_THRESHOLD == 11900
 
     def test_env_override(self, monkeypatch):
-        monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "20000")
+        monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "9000")
         adapter = _make_adapter()
-        assert adapter.max_message_length == 20000
+        assert adapter.max_message_length == 9000
 
 
     def test_invalid_values_fall_back_to_default(self, monkeypatch):
         monkeypatch.setenv("MATRIX_MAX_MESSAGE_LENGTH", "not-a-number")
+        from plugins.platforms.matrix.adapter import DEFAULT_MAX_MESSAGE_LENGTH
+
         adapter = _make_adapter()
-        assert adapter.max_message_length == 16000
+        assert adapter.max_message_length == DEFAULT_MAX_MESSAGE_LENGTH
 
     def test_values_are_clamped(self):
         adapter = _make_adapter(max_message_length=100)
         assert adapter.max_message_length == 500
+        from plugins.platforms.matrix.adapter import MATRIX_MAX_MESSAGE_LENGTH_CEILING
+
         adapter = _make_adapter(max_message_length=999999)
-        assert adapter.max_message_length == 65535
+        assert adapter.max_message_length == MATRIX_MAX_MESSAGE_LENGTH_CEILING
 
     def test_apply_yaml_config_sets_env(self, monkeypatch):
         from plugins.platforms.matrix.adapter import _apply_yaml_config

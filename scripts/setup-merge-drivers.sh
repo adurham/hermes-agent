@@ -1,31 +1,11 @@
 #!/usr/bin/env bash
-# Register the fork's custom git merge drivers in THIS clone's .git/config.
+# Retired 2026-10-09 (upstream sync v0.21.6). The `uvlock-ours` merge driver regenerated uv.lock with raw
+# `uv lock`, which cannot resolve v0.21.6's dependency graph (neutts and kittentts pin different soundfile
+# versions; only PM's resolver reconciles them). .gitattributes now uses `merge=ours` for uv.lock; regenerate
+# after a merge with `hermes pm lock` (see the lock procedure in FORK.md's v0.21.6 sync entry).
 #
-# Merge drivers live in .git/config (not version-controlled), so each clone
-# must run this once. .gitattributes (committed) names the drivers; this script
-# defines what they do.
-#
-# Driver: uvlock-ours
-#   On an uv.lock merge conflict, keep our version of the lockfile, then
-#   regenerate it with `uv lock` so it reflects the MERGED pyproject.toml
-#   (which git merges normally). This turns a guaranteed every-merge conflict
-#   into a no-op. If `uv` isn't on PATH we keep our lockfile unchanged and warn
-#   — the merge still completes; you just regenerate manually afterward.
-#
-# Idempotent: safe to re-run.
+# Idempotent: removes the stale driver from THIS clone's .git/config if a previous run registered it.
 set -euo pipefail
-
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
-
-# %A = our version (current branch), %P = pathname of the file in the work tree.
-# The driver script: keep %A as-is, then `uv lock` regenerates against merged
-# pyproject. Exit 0 = resolved.
-git config merge.uvlock-ours.name "uv.lock: keep ours, then regenerate from merged pyproject"
-git config merge.uvlock-ours.driver \
-  'sh -c '"'"'if command -v uv >/dev/null 2>&1; then uv lock --quiet >/dev/null 2>&1 && echo "[merge-driver] uv.lock regenerated from merged pyproject" || echo "[merge-driver] uv lock failed; kept ours — run uv lock manually"; else echo "[merge-driver] uv not found; kept our uv.lock — run uv lock manually"; fi; exit 0'"'"' %A'
-
-echo "✓ Registered merge driver 'uvlock-ours' in $REPO_ROOT/.git/config"
-echo "  uv.lock conflicts will now auto-resolve (ours + regenerate) on merge."
-echo ""
-echo "Verify with:  git config --get merge.uvlock-ours.driver"
+cd "$(git rev-parse --show-toplevel)"
+git config --remove-section merge.uvlock-ours 2>/dev/null && echo "removed stale 'uvlock-ours' merge driver from .git/config" || true
+echo "uv.lock now merges as 'ours'; regenerate with: hermes pm lock"

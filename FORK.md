@@ -3,6 +3,152 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Upstream sync — 2026-10-09 (v2026.9.24 → v0.21.6, 9180 commits, 172 conflict files)
+
+Merged tag `v0.21.6` (released 2026-10-08; tag commit `818c13be1dc4fd28987e1e881a9408224afd4535`)
+into `main` via a merge performed in the isolated clone `~/repos/hermes-agent-sync` (branch
+`sync/upstream-v0.21.6`). Range `v2026.9.24..v0.21.6`: 9180 upstream commits. The merge-base of
+the fork tip and the tag is the previous sync tag `v2026.9.24` (`f97608f178d1`), so this merge is
+exactly the upstream delta since the last sync. Pre-merge fork tip `51626702418` (597 commits
+ahead of `upstream/main`) was tagged `pre-upstream-sync-v0.21.6` as the rollback point. 172 files
+initially conflicted (296 hunks) across `tools/`, `agent/`, `hermes_cli/`, `tests/`, `gateway/`,
+`plugins/`, `apps/desktop/`, `web/`, CI and docs; 8,365 files in the staged diff.
+
+Tag-scheme note: upstream changed release tags from `v2026.*` to `v0.21.*`; this is the first
+`v0.21.*` sync. Any resolver still globbing `v2026.*` silently returns the previous tag.
+
+**Resolution approach.** Conflicts split into bounded area groups (hermes_state/session DB,
+CLI+agent plumbing, tools/gateway/plugins, tests, frontend TS, CI/docs) and resolved in parallel
+by delegated edit-only resolver subagents against three-way base↔ours↔theirs exports, then
+parent-verified and staged. Standing rule applied throughout: adopt upstream's refactor as the
+new base and re-home the fork's additive feature on top. Every wave was gated on `ast.parse` +
+a zero conflict-marker grep + the undef/shadow scans before staging.
+
+**Notable resolutions.**
+
+1. `uv.lock` — the `uvlock-ours` merge driver regenerated with RAW `uv lock`, which cannot
+   resolve v0.21.6's multi-extra graph (neutts `soundfile==0.13.1` vs kittentts
+   `soundfile==0.14.0` → unsatisfiable). New procedure (now in the sync skill): seed `uv.lock`
+   from the tag, then `python -m pm.build_env --source . --lock-only` and `--check-lock` (both
+   rc 0), run with `HERMES_HOME`/`HERMES_RUNTIME_DIR` set OUTSIDE `~/.hermes`. The lock keeps the
+   fork pins (anthropic 0.100.0, httpx2 2.12.0, anyio ≥4.14.2, hindsight-client 0.6.1,
+   pytest-randomly/-cov, coverage). `scripts/setup-merge-drivers.sh` is now a retirement stub;
+   the raw-`uv lock` driver is not re-registered.
+2. `pyproject.toml` — upstream moved the `dev` extra to `[dependency-groups]`; the fork's test
+   tooling re-homed into the `dev`/`test` groups. New `trafilatura = ["trafilatura==2.2.0"]`
+   extra (fork, see defects). `exclude-newer` absolute-UTC pin kept, cutoff bumped to 2026-09-25.
+3. Session DB (`hermes_state*.py`) — `hermes_state_ids.py` took upstream verbatim: upstream's
+   `SESSION_ID_RECOGNIZERS` now independently cover the fork's PR-branch content (cron/bg/room +
+   api_/run_/uuid shapes; the fork's 12 filed upstream PRs remain closed unmerged). The
+   `anthropic_content_blocks` fork column was re-threaded into upstream's new 28-column INSERT
+   (after `codex_message_items`, matching `_message_row_params`). `hermes_state_sessions.py`:
+   union (fork lineage-cost rollup + upstream `continuation_kind`).
+4. CI — the fork's large-runner gate idiom re-applied to every caller in `ci.yaml`, including
+   the NEW ungated `e2e-desktop-update`; the `installer-tests` job dropped (workflow deleted
+   upstream); `tests.yml` keeps 2×32-core slicing; `uv-lockfile-check.yml` took upstream (PM
+   pins the toolchain; the fork's setup-uv version pin is superseded). Large-runner workflows at
+   the tag that are NOT reached from `ci.yaml` on the fork stay ungated by upstream design:
+   desktop-bundled-release, windows-install-update-e2e, windows-venv-e2e,
+   install-e2e-windows-run, docker release-publish, tests-os e2e-windows.
+5. Docs/installers/branding — README*/CONTRIBUTING/install.sh/install.ps1/skills SKILL.md taken
+   from upstream; `scripts/sync-fork-branding.py` re-applies the fork URL rebrand and was re-run
+   at the end of the merge (0 further changes — the rebrand survived).
+6. Root `AGENTS.md` — upstream added a blocking 12,000-char cap (`scripts/ci/check_agents_md_size.py`,
+   wired into lint.yml). The merged root file sits at 11,952 chars, so the fork's
+   "Vendor-Identifying Strings" policy moved verbatim into FORK.md **"## Standing policies"**
+   (above "Merging upstream"). The vendor-string scan of the full staged diff remains a
+   mandatory pre-commit step there.
+
+**Merge defects caught and fixed (each was invisible to conflict markers and py_compile).**
+
+1. `hermes_cli/tools_config_post_setup.py` — the merge kept the fork's `trafilatura` entry in the
+   OLD `_pip_hook(...)` shape inside upstream's NEW `_PYTHON_POST_SETUP_HOOKS` dict; `_pip_hook`
+   no longer exists (upstream moved post-setup installs to `_python_hook` + pyproject EXTRA via
+   `pm.sync_venv`). NameError at import of a module with ~30 non-test importers. Ported to
+   `_python_hook("trafilatura", "trafilatura", "trafilatura", ...)`, declared the
+   `trafilatura==2.2.0` extra, and rewrote `tests/hermes_cli/test_post_setup_hooks_cover_declared_keys.py`
+   as data contracts (every declared key resolves to a hook; every hook extra is declared in
+   pyproject; trafilatura installs via `pm.sync_venv(["trafilatura"], explicit=True)`).
+2. `agent/auxiliary_client.py` `_try_anthropic` — the fork's `sk-ant-` placeholder-key filter was
+   skipped for ANY `explicit_base_url`, and the auto path hands the canonical
+   `https://api.anthropic.com` as `explicit_base_url`, so the filter was effectively disabled on
+   the primary path. Now skipped only for a non-canonical gateway host (`_names_gateway_endpoint`),
+   preserving upstream's #121359 gateway contract. 2 new tests: canonical host discards a
+   placeholder key; an explicit gateway keeps its own key.
+3. `apps/desktop/src/app/right-sidebar/terminal/persistent.tsx` — imported `$projectScope` /
+   `ALL_PROJECTS` from `@/store/projects`, but upstream moved both to `@/store/project-scope`
+   (import break would fail tsc/vite). Import split. A new TS named-import resolver
+   (`scripts/ts_import_resolve.py`, kept with the sync tools) now covers this class.
+4. `tests/gateway/test_matrix_message_length.py` — asserted the old 16000/65535 limits while
+   upstream's adapter moved DEFAULT/CEILING to `45_000//3`. Now asserts the exported constants.
+5. `tests/tui_gateway/test_slash_worker_mcp_discovery.py` — duplicate `mcp_discovery_timeout`
+   dict key (fork 15.0 vs tag 30; kept the tag value); duplicate import in
+   `tests/hermes_cli/test_doctor.py`.
+6. `tests/tools/test_browser_chromium_autoinstall.py` — `git rm`; upstream retired the
+   direct-subprocess chromium install (`pm.ensure` now) and `tests/tools/test_browser_pm.py`
+   covers the behavior.
+
+**Scan suite** (each run as a 3-tree diff — merged vs pristine tag vs pre-merge tip; only
+findings NEW in merged vs BOTH count): conflict-marker grep clean (the only match is the known
+`<<<<<<< HEAD` fixture string in `tests/test_audit_old_updater_imports.py`, identical at the
+tag); 4,546 changed .py files all AST-parse; `undef_scan` 0; ruff F811/F821/F601 diff = exactly
+defect #1 plus two duplicate-name rows (all fixed); Python import resolver 0 unresolved; TS
+named-import resolver 0 unresolved; vendor-string scan of the staged diff: 6 added lines, all
+the relocated policy text itself (net-zero, expected).
+
+**Suite:** full run on amd-workstation (scripts/run_tests.sh against this commit) — results
+appended below when complete.
+
+### De-fork audit — 2026-10-09 (post-v0.21.6: 12-slice read-only sweep of 263 FORK.md entries; restores + retirements await owner approval)
+
+Companion to the v0.21.6 sync entry above. Read-only audit of both halves — the fork's fixes and
+features documented in FORK.md, and its fork-only code files — against the tag's code, under the
+standing standard (SUPERSEDED requires upstream doing the same observable thing, verified by
+reading code on both sides; "still in use / has callers / has tests" is not proof of need; a fix
+retires only when its bug no longer exists upstream; a fix that is absent/inert in the merged
+tree while the need exists at the tag is FIX-MISSING and outranks every retirement).
+
+**Method:** 12 parallel read-only subagents (10 area slices + 2 fork-only-file slices, ~10–30
+entries each), each running `tools/entry_show.py` first for mechanical state (FORKONLY /
+IDENTICAL-TO-TAG / DIVERGES / UPSTREAM-DELETED / ABSENT-IN-MERGED, plus whether upstream changed
+the file before→tag), then reading code on both sides; one JSON verdict line per entry appended
+as they went. Result tally: KEEP-NEEDED 94, DOC-ONLY 33, PARTIAL 38, FORKONLY-KEEP 28,
+SUPERSEDED 15, CONVERGED 14, FIX-MISSING 9, DEAD 6, ESCAPES-TAXONOMY 0; feature half: 24
+fork-only clusters kept (NOT-COVERED), 4 partial, 2 DEAD, 2 COVERED-BY-UPSTREAM. Nothing was
+edited by the auditors. The consolidated decision record (per-item evidence + exact actions)
+lives at `~/.hermes/cache/scratch/sync-v0.21.6/DEFORK_CONSOLIDATED.md`; all retirements stop at
+the owner's approval gate.
+
+**FIX-MISSING (separate RESTORE list — never mixed into the retirement list):**
+
+- 4600 + 17316 — `delegation.reasoning_effort_by_role` and `delegation.max_iterations_by_role`:
+  the per-role lookups still exist (`hermes_cli/personas.py`) but their CALL SITES were dropped
+  by the v2026.9.14 sync merge when `delegate_tool` was decomposed (reader has zero non-test
+  callers in pre-merge and merged; config keys still advertised). The live config's per-role
+  values are silently ignored. Same root cause for both; re-apply at
+  `tools/delegate_tool_config.py` (~579) and `tools/delegate_tool.py` (~1305).
+- 13127 — tool-loop guardrails "block by default": the fork's dataclass default True is shadowed
+  by `DEFAULT_CONFIG`'s explicit False (`hermes_cli/config_defaults.py`), so `from_mapping`
+  always reads False. One-line fix (flip the DEFAULT_CONFIG value) or retire the claim.
+- 14717 — `security.blocked_features` per-feature lazy-install veto: lost in THIS merge (the
+  `lazy_deps` shim took the runtime check with it; `pm/install.ensure()` has only the
+  all-or-nothing switch). Port a `_is_feature_blocked` read into `pm/install.ensure()`'s lazy
+  path, or retire the claim (nothing in the live configs sets the key).
+- 8152 — pet voice: `display.pet.voice_provider` dropped at three layers (voice-playback rungs,
+  `/api/audio/speak` request model, tts_tool per-call provider). 4252 — four retired Anthropic
+  model IDs reinstated in the /model picker (`models_catalog_static.py`; cosmetic). 5864 +
+  16309 — TUI todo board widget: call site lost in the v2026.9.14 merge (`todo_board_widget=`
+  accepted but never passed).
+- Fixed DURING this audit: 19499 (defect #1 above), 8036 (defect #3 above), and the
+  `_try_anthropic` filter (defect #2 above).
+
+**Retirement candidates (awaiting owner approval — NOT applied):** 15 SUPERSEDED rows, 6 DEAD
+code items (incl. the ~950-line orphaned duplicate block in `agent/anthropic_adapter.py` copied
+from `anthropic_message_convert.py` — AST-import analysis, not name-grep, is the authority after
+god-file splits), 2 COVERED-BY-UPSTREAM clusters (client-side lazy MCP loading, med confidence),
+~50 text-only FORK.md rows, and a set of PARTIAL-retire hunks. Full list + per-item actions:
+`DEFORK_CONSOLIDATED.md` (same scratch dir).
+
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 
 **Problem (recurrence ~6 of the spinner/status-line timer saga):** screenshot showed the status bar's
@@ -6100,6 +6246,40 @@ Files touched: `package-lock.json` (regenerated), `agent/cc_aliases.py`,
 Verification: `npm ci --ignore-scripts` (exit 0),
 `scripts/check-windows-footguns.py --all` (0 footguns, was 1),
 `pytest tests/test_session_db_read_path_split.py tests/hermes_cli/test_web_server.py tests/tools/test_zombie_process_cleanup.py -v` (all pass/skip as expected, 0 unexpected failures).
+
+## Standing policies
+
+Moved here verbatim from the root `AGENTS.md` during the v0.21.6 sync. Upstream added a blocking cap
+(`scripts/ci/check_agents_md_size.py`, run from `lint.yml`: root `AGENTS.md` <= 12,000 chars) and the
+merged root file sits at 11,952, so fork-only policy no longer fits there. The vendor-string scan of the
+full staged diff is also a mandatory step of every upstream sync (see "Merging upstream").
+
+### Vendor-Identifying Strings Must Not Land Without Approval
+
+This repo is mirrored to a personal GitHub account. Do **not** commit
+changes that introduce strings tied to the author's employer without
+explicit per-commit approval from the user. Specifically:
+
+- Case-insensitive match on `tanium` (covers `Tanium`, `TANIUM`,
+  `tanium-*` skill prefixes, `tanium_gateway` examples, etc.).
+- Any other obvious work-identity leakage: `@tanium.com` emails,
+  `git.corp.tanium.com` URLs, `TanOS` / Tanium product names.
+
+**Workflow before any commit on this repo:**
+
+```bash
+git diff --cached | grep -iE 'tanium|@tanium\.com|corp\.tanium|tanos'
+```
+
+If the grep finds anything in the staged diff, surface the hits to the
+user and get explicit approval before committing. The same check applies
+to changes you propose to stage. Existing references already in tree are
+out of scope unless the current task touches them.
+
+This rule was added 2026-05-04 after a public-fork audit that found six
+Tanium references in the code (3 illustrative comments, 3 in the
+`delegate_task` skills-awareness prompt). Items got cleaned up in the
+same session; future drift should be caught at commit time.
 
 ## Merging upstream
 

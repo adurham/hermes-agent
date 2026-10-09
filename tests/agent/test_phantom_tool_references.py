@@ -4,7 +4,9 @@ session can't call (Blank Slate audit, Aug 2026).
 Covers:
   * HERMES_AGENT_HELP_GUIDANCE degrades to the docs-only variant when the
     skill tools aren't loaded.
-  * execution_guidance_text() never names a web tool (guidance is toolset-neutral).
+  * execution_guidance_text() never names a web tool, and drops the
+    terminal/execute_code/read_file/search_files lines the session's toolset
+    can't back (#106506).
   * The coding operating brief drops the `todo` sentence when the todo tool
     isn't loaded.
   * ESSENTIAL_SKILLS can't be disabled via config, and the CLI writer strips
@@ -39,6 +41,24 @@ class TestHermesAgentHelpGuidance:
 
 
 class TestExecutionGuidanceText:
+    def test_full_text_when_toolset_has_every_named_tool_or_is_unknown(self):
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, execution_guidance_text
+        assert execution_guidance_text(None) == OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert execution_guidance_text(
+            {"terminal", "execute_code", "read_file", "search_files"}
+        ) == OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    def test_lean_toolset_is_not_told_to_use_absent_tools(self):
+        # #106506: a toolset with none of terminal/execute_code/read_file/search_files must not be told to
+        # reach for them (GPT models then refused plain arithmetic as "prohibited mental computation").
+        from agent.prompt_builder import execution_guidance_text
+        text = execution_guidance_text({"memory"})
+        mandatory = text.split("<mandatory_tool_use>")[1].split("</mandatory_tool_use>")[0]
+        for tool in ("terminal", "execute_code", "read_file", "search_files", "Arithmetic"):
+            assert tool not in mandatory
+        assert "an appropriate permitted retrieval/search tool" in mandatory
+        assert "run `date`" not in text.split("<act_dont_ask>")[1].split("</act_dont_ask>")[0]
+
     def test_no_web_tool_named_without_web_tools(self):
         # #39797: naming web_search here overrode SOUL.md and dangled when the web toolset was off.
         from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, execution_guidance_text
@@ -48,6 +68,8 @@ class TestExecutionGuidanceText:
         # The surrounding structure survives.
         assert "<mandatory_tool_use>" in text
         assert "<missing_context>" in text
+
+
 class TestCodingBriefTodoGating:
     def _brief(self, valid_tool_names):
         from agent.coding_context import CODING_PROFILE, RuntimeMode

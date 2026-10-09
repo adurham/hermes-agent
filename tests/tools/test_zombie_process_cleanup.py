@@ -10,6 +10,8 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -26,7 +28,6 @@ def _pid_alive(pid: int) -> bool:
         return True
     except (ProcessLookupError, PermissionError):
         return False
-
 
 
 
@@ -195,12 +196,16 @@ class TestGatewayCleanupWiring:
         import threading
         from unittest.mock import MagicMock, patch
 
+        from gateway.config import GatewayConfig
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         runner._running = True
         runner._running_agents = {}
         runner._running_agents_ts = {}
+        # __init__ always binds ``config``; the shutdown notice now walks every served
+        # profile's configured home channels from it, not just the live adapters.
+        runner.config = GatewayConfig()
         runner.adapters = {}
         runner._background_tasks = set()
         runner._pending_messages = {}
@@ -378,14 +383,7 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        # 0.3s (not 0.1s): under real CI parallelism (8 concurrent test-file
-        # subprocesses contending for CPU), a 100ms window is sometimes too
-        # short for the worker thread to even get scheduled before
-        # future.result(timeout=...) expires, so `child_started` isn't set
-        # yet and the very first assertion below flakes. Same fix already
-        # applied in test_delegate_subagent_timeout_diagnostic.py's
-        # `_invoke_with_short_timeout` for the identical race.
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.3)
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 2)
 
         # The parent's cap must not elapse before the worker thread has opened the child's turn, or
         # the "late result" scenario degrades into "child never started" on a loaded runner. Gate the
@@ -419,7 +417,7 @@ class TestDelegationCleanup:
             )
             child_started.set()
             try:
-                release_child.wait(timeout=5)
+                assert release_child.wait(timeout=30), "test did not release the child"
                 return {
                     "final_response": "late result",
                     "completed": True,
@@ -460,5 +458,7 @@ class TestDelegationCleanup:
             )
         finally:
             release_child.set()
+            if child_started.is_set():
+                assert child_finished.wait(timeout=10)
             reset_hermes_home_override(profile_token)
             relay_runtime._reset_for_tests()
