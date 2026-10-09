@@ -54,6 +54,14 @@ async def test_failed_commit_retains_result_and_releases_fifo_for_explicit_disca
         assert not any(frame['params']['type'] == 'message.complete' for frame in frames)
         await authority.resolve_unknown(ACTOR, REF, head.admission_id, row['generation'])
         assert head.admission_id not in authority.pending_results
+        # The answer was produced in this owner; only its receipt write failed. Resolution
+        # commits that exact result instead of discarding it, and viewers get its completion.
+        from gateway.session_results import admission_result
+        resolved = get_session_admission(db, admission_id=head.admission_id)
+        assert (resolved['status'], resolved['outcome']) == ('terminal', 'completed')
+        assert admission_result(db, head.admission_id)['result']['final_response'] == 'head done'
+        complete, = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
+        assert (complete['admission_id'], complete['text']) == (head.admission_id, 'head done')
         await asyncio.wait_for(authority._drain(REF), 5)
         assert calls == ['head', 'follower']
         assert get_session_admission(db, admission_id=follower.admission_id)['status'] == 'terminal'

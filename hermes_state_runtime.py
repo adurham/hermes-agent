@@ -378,24 +378,40 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
 
 
 def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int,
-                                  _terminal_write=None) -> dict:
+                                  _terminal_write=None, _captured=None) -> dict:
     """Explicit operator acknowledgement; resolves uncertainty, never requeues it.
 
     ``_terminal_write(conn, row)`` is the owner's same-transaction effect (the discarded turn's
     transcript boundary): it must not commit, may run again on SQLite retry, and raising rolls
-    the whole resolution back, so the FIFO can never advance past an unclosed lost turn."""
+    the whole resolution back, so the FIFO can never advance past an unclosed lost turn.
+    ``_captured=(outcome, stored_result)`` is the exact result this owner captured for the turn
+    before its settlement write failed; it commits with the resolution (only for an ``unknown``
+    row stamped by this same owner epoch), so the finished answer is not thrown away."""
+    from hermes_state_terminal import RESULT_PREFIX
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
-        if (type(generation) is int and row['generation'] == generation
-                and row['status'] == 'terminal' and row['outcome'] == 'interrupted'):
+        if (type(generation) is int and row['generation'] == generation and row['status'] == 'terminal'
+                and (row['outcome'] == 'interrupted' or conn.execute(
+                    'SELECT 1 FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone())):
             return _row(row)
         if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
             raise RuntimeStoreError('stale_generation')
+        outcome = 'interrupted'
+        if _captured is not None and row['owner_epoch'] == epoch:
+            outcome, stored = _captured
+            if outcome not in ('completed', 'interrupted', 'failed'):
+                raise RuntimeStoreError('invalid_params')
+            from hermes_state_terminal import compact_result
+            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
+                         'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                         (RESULT_PREFIX + admission_id, _json(compact_result(
+                             stored, user_message=json.loads(row['payload_json']).get('text')))))
         if _terminal_write is not None:
             _terminal_write(conn, row)
         _retire_admission_workers(conn, row, row['owner_epoch'])
-        conn.execute("UPDATE session_admissions SET status='terminal',outcome='interrupted' WHERE admission_id=?", (admission_id,))
+        conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?",
+                     (outcome, admission_id))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)

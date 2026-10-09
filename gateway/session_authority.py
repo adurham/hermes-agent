@@ -477,17 +477,36 @@ class SessionAuthority:
         self._schedule(ref)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
-        """Operator acknowledgement that a turn lost across an owner restart will not
-        finish; the paused FIFO behind it resumes. Never requeues the lost input."""
+        """Operator acknowledgement that an ``unknown`` turn will not finish; the paused FIFO behind
+        it resumes. Never requeues the input. A turn that finished in THIS owner but whose
+        settlement write failed (its exact result is still in ``pending_results``) commits that
+        result instead of discarding it: the answer was produced, only its receipt was lost."""
         self.authorize(actor, ref, 'session:control')
-        await self.receipt(actor, ref, admission_id)
+        before = await self.receipt(actor, ref, admission_id)
+        captured = self.pending_results.get(admission_id)
+        prepared = None
+        if captured is not None and before.status == 'unknown':
+            from gateway.session_results import prepare_result
+            row = get_session_admission(self.db, admission_id=admission_id)
+            prepared = prepare_result(row, captured['result'].get('final_response') or '', 'completed', captured)
         # The transcript boundary commits WITH the terminal transition: a follower can never be
-        # claimed with the discarded text left open to be merged into its request.
+        # claimed with the discarded text left open to be merged into its request. With a captured
+        # result the answer is normally already the transcript tail, so the closer is a no-op.
         from gateway.session_results import close_discarded_turn
         row = resolve_unknown_session_input(self.db, epoch=self.epoch, admission_id=admission_id,
-                                            generation=generation,
+                                            generation=generation, _captured=prepared,
                                             _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost))
         self.pending_results.pop(admission_id, None)
+        if prepared is not None and row['owner_epoch'] == self.epoch:
+            # The captured result committed: viewers told the turn is unknown get its completion,
+            # unless the drain still owns the claim (resolution raced its recovery stamp) and
+            # publishes the committed result itself.
+            from gateway.session_settlement_recovery import _publish_completion
+            live = self.sessions[ref.session_id]
+            with live.event_stream.lock:
+                if live.event_stream.execution.get('admission_id') != admission_id:
+                    _publish_completion(self, live, ref, row, row,
+                                        captured['result'].get('final_response') or '', captured)
         # Its own write txn + unlink, so it runs after the resolution commits; a discarded image
         # would otherwise stay on disk forever (the drain releases only settled turns).
         from gateway.session_ingress_media import release_admission_media
