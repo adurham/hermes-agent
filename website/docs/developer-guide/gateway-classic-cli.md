@@ -23,9 +23,15 @@ admission lost across an owner restart (`prompt.resolve_unknown`). `/branch [tit
 `/model <model> [--provider name]` and `/compress [here [N] | <focus>] [--preview]`
 are revision-fenced `session.mutate` operations (`hermes_cli/gateway_mutations.py`);
 `/yolo [on|off]` toggles this session's approval bypass on the owner (`config.set`
-key `yolo`). Every other slash command is refused (`Unsupported gateway CLI
-command; use /help.`) instead of running a local mutation; use `hermes --tui` for
-the full registry.
+key `yolo`). `/title [name]` (`session.mutate rename`), `/undo [N]` and `/retry`
+(`session.mutate rewind`; `/undo` puts the removed message back in the composer),
+`/new [title]` / `/reset` (`session.create` with this session's frozen launch
+request), `/usage` (the owner's report plus the last committed turn) and `/tools`
+(launch toolsets) run in the view (`hermes_cli/gateway_chat_commands.py`). Every
+other command goes to the owner as `slash.exec`: the reviewed reads run there and the
+rest print `/x is not available on the shared gateway yet` with a link to the
+[command parity table](gateway-command-parity.md), which lists what every local
+client does with every command.
 
 One-shot stdout contains only the final reply. Exit status is 0 for a completed
 admission, 1 for failed execution/connection, 2 for unsupported frontend options,
@@ -54,7 +60,11 @@ rejects.
 `--model`; safe mode runs the turn in an isolated worker that never reads the
 profile). Also accepted: `--source <label>`, `--resume <id-or-title>`, `-c <title>`,
 `-c <title> --create-if-missing`, `--in <dir>`, `--query-file`, `--format
-stream-json`, and `-z ... --usage-file`.
+stream-json`, `-z ... --usage-file`, bare `-c` (this terminal's breadcrumb session,
+else the most recent CLI session), `--resume latest` (most recent CLI session, this
+workspace first; both resolved by the owner, `session.resume latest='cli'`) and
+`--list-tools` / `--list-toolsets` (print the catalog and exit; no session). `chat -q`
+without `-Q` ends with main's `Resume this session with: hermes --resume <id>` block.
 
 **Refused with exit 2** (`_UNSUPPORTED` plus the selection checks in
 `validate_options`); the error names where each capability lives now:
@@ -66,12 +76,10 @@ stream-json`, and `-z ... --usage-file`.
 | `--run-budget` | No per-launch run budget in the creation contract | `agent.run_budget_seconds` in config.yaml |
 | `-v` / `--verbose` | Display-only; the client has no verbose renderer | `hermes logs --follow` (the refusal also names `hermes chat --tui -v`, whose canonical Ink path does not yet carry the flag) |
 | `--no-restore-cwd` | The gateway keeps the session's frozen cwd | `--in <dir>` |
-| bare `-c`, `--resume latest` | Need a breadcrumb/MRU lookup the authority does not expose | `-c <name>`, or `hermes --tui -c` |
 | `--create-if-missing` without `-c <name>` | Nothing to create by name | `-c <name> --create-if-missing` |
 
-`--compact`, `--list-tools` and `--list-toolsets` are not `hermes chat` options at
-all (argparse rejects them); the client keeps refusal text for direct `cli.main`
-hand-offs (`display.compact`, `hermes tools list`).
+`--compact` is not a `hermes chat` option (argparse rejects it); a direct `cli.main`
+hand-off refuses it and names `display.compact`.
 
 ## Current parity limits — not full classic CLI parity
 
