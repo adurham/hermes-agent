@@ -287,7 +287,9 @@ def _entry_record_unless_vanished(rel: str, abs_path: str) -> dict | None:
         if _volatile_sidecar(rel) and not _is_link(abs_path):
             if not _lexists(abs_path):
                 return None
-            return {"kind": "dir" if os.path.isdir(abs_path) else "file"}
+            if os.path.isdir(abs_path):
+                return {"kind": "dir"}
+            return {"kind": "lock"} if abs_path.endswith(".lock") else {"kind": "file"}
         return _entry_record(abs_path)
     except FileNotFoundError:
         if _volatile_sidecar(rel):

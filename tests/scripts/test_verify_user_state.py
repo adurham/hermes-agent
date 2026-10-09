@@ -482,7 +482,7 @@ def test_a_held_lock_file_is_recorded_without_reading_it(tmp_path, monkeypatch):
 
     monkeypatch.setattr(vus, "_sha256_file", locked)
     snap = vus.snapshot_home(str(home))
-    assert snap["entries"]["profiles/p/gateway.lock"] == {"kind": "file"}
+    assert snap["entries"]["profiles/p/gateway.lock"] == {"kind": "lock"}
     os.remove(home / "profiles" / "p" / "gateway.lock")
     report = vus.verify_home(str(home), snap)
     assert report["ok"] is True and report["tolerated_deleted"] == ["profiles/p/gateway.lock"]
