@@ -1,6 +1,6 @@
 name: nexus
 repo: https://github.com/Neboy72/nexus-memory
-sha: 965afe84b5664402d142360cdcec06f693fcd5e5
+sha: 3f77b2a1b8ac272ed4002aa9bcc71e6f90d524c6
 subdir: plugins/memory/nexus
 version: "0.22.13"
 description: "Self-hosted long-term memory on Qdrant with automatic per-turn prefetch and write-back, plus recall/remember/forget/guardrail tools and a knowledge graph. Runs fully local with Ollama or sentence-transformers embeddings; cloud embedders (Voyage, OpenAI, Google, Jina) are opt-in via their own API keys, and query rewriting plus paid consolidation stations stay off until enabled. Note that an embedding key already present in the environment is auto-detected, so the README's egress section is the authoritative list of what can leave the machine. Hermes and any MCP-connected agent share one collection, so they read and write the same memories. Since v0.22.13 the embedding model is stored in the collection itself as a named Qdrant vector; an existing unnamed collection needs one `legacy_collections` entry, and `scripts/detect-legacy-collection.py` prints the exact value. Disclosure — an embedding key already in Hermes' environment (VOYAGE/OPENAI/GOOGLE/JINA_API_KEY) is auto-detected and sends turn text to that provider for embedding; session-end fact extraction sends conversation text to the model endpoint in Hermes config.yaml; reads ~/.hermes/.env and config.yaml; state and daily backups under ~/.nexus-memory; an opt-in NEXUS_UPDATE_CHECK=1 adds a GitHub release check and an upgrade nudge to the system prompt."
@@ -8,8 +8,8 @@ maintainer: Neboy72
 tier: community
 category: memory
 requires_hermes: ">=0.19"
-docs_url: https://github.com/Neboy72/nexus-memory/blob/965afe84b5664402d142360cdcec06f693fcd5e5/plugins/memory/nexus/README.md
-image: https://raw.githubusercontent.com/Neboy72/nexus-memory/965afe84b5664402d142360cdcec06f693fcd5e5/docs/images/nexus-logo-square.png
+docs_url: https://github.com/Neboy72/nexus-memory/blob/3f77b2a1b8ac272ed4002aa9bcc71e6f90d524c6/plugins/memory/nexus/README.md
+image: https://raw.githubusercontent.com/Neboy72/nexus-memory/3f77b2a1b8ac272ed4002aa9bcc71e6f90d524c6/docs/images/nexus-logo-square.png
 capabilities:
   provides_tools:
     - nexus_recall
