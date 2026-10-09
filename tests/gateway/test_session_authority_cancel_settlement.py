@@ -81,12 +81,15 @@ async def test_cancelling_the_head_of_a_paused_fifo_resumes_its_successor(tmp_pa
         head = await _submit(authority, 'blocked')
         await _submit(authority, 'follower')
         # The drain pauses on the head's preclaim refusal and its task ends.
-        await asyncio.wait_for(authority.sessions['s'].task, 5)
+        paused = authority.sessions['s'].task
+        await asyncio.wait_for(paused, 5)
         assert executed == []
 
         await authority.cancel_queued(ACTOR, REF, head.admission_id)
+        # cancel_queued awaits its off-loop media release after rescheduling, so the new drain
+        # may already have finished: assert it is a NEW task, not that it is still running.
         task = authority.sessions['s'].task
-        assert task is not None and not task.done(), 'cancelling the blocking head must reschedule the drain'
+        assert task is not None and task is not paused, 'cancelling the blocking head must reschedule the drain'
         await asyncio.wait_for(task, 5)
         assert executed == ['follower']
         statuses = {r['request_id']: (r['status'], r['outcome'])
