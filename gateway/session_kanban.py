@@ -175,8 +175,6 @@ def bind_worker_context(frame):
     _watch_submitter(Path(context['db']), context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
-    from agent.shell_hooks import register_from_config
-    register_from_config(json.loads(frame['policy']['config_json']), accept_hooks=context['accept_hooks'])
 
 
 _TURNS_DONE = threading.Event()

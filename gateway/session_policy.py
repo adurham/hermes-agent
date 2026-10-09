@@ -278,6 +278,23 @@ def accept_launch_hooks(policy):
         register_from_config(policy.config(), accept_hooks=True)
 
 
+def register_worker_hooks(policy):
+    """Worker side of the same contract: tools run in the managed child, so its own plugin
+    manager needs the session's shell hooks and outbound webhooks, registered from the frozen
+    config with the launch's consent (a Kanban attempt always consents), as the classic one-shot
+    CLI registered both at startup. Bypass sessions register nothing (the safe policy also
+    refuses inside both registrars)."""
+    if policy.ignore_user_config:
+        return
+    kanban = json.loads(policy.kanban_json or 'null') or {}
+    accept = json.loads(policy.request_json).get('accept_hooks') is True or kanban.get('accept_hooks') is True
+    from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+    from agent.shell_hooks import register_from_config
+    config = policy.config()
+    register_from_config(config, accept_hooks=accept)
+    register_outbound_webhooks(config)
+
+
 def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None):
     """CLI keys live only in this authority lifetime, never its durable receipt.
 

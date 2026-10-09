@@ -73,7 +73,7 @@ def _serve(cls):
     return server
 
 
-def run_pair(tmp_path, extra_config, turn):
+def run_pair(tmp_path, extra_config, turn, **create_params):
     """Boot one ordinary daemon; create an in-process and a managed session from the same config;
     run ``turn(ws, sid, name, settle, servers)`` for each and return its results by session."""
     root = Path(__file__).resolve().parents[2]
@@ -117,7 +117,7 @@ def run_pair(tmp_path, extra_config, turn):
                     (home / 'config.yaml').write_text(json.dumps(edited))
                 created = await rpc(ws, 'session.create', request_id=name, source='cli', cwd=str(home),
                                     model='primary-model', provider='custom', base_url=purl,
-                                    api_key='loopback-only', toolsets=[])
+                                    api_key='loopback-only', toolsets=[], **create_params)
                 assert 'result' in created, created
                 sid = created['result']['session_id']
                 results[name] = await turn(ws, sid, name, settle, SimpleNamespace(primary=primary, backup=backup, query=query))
