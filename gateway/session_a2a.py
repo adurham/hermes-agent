@@ -49,8 +49,14 @@ def forward_author(policy):
 def storage_source(db, source, session_id, fallback):
     """Retain the owner's creation label when its LOCAL transport refreshes peer metadata."""
     from gateway.config import Platform
-    if source.platform != Platform.LOCAL or not str(source.chat_id).startswith('local-'):
+    if source.platform != Platform.LOCAL:
         return fallback
+    if not str(source.chat_id).startswith('local-'):
+        # An adopted pre-authority row keeps its historical id as the route (session_local_migration).
+        from hermes_state_local_migration import LEGACY_PREFIX
+        with db._read_ctx() as conn:
+            if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (LEGACY_PREFIX + str(source.chat_id),)).fetchone() is None:
+                return fallback
     from hermes_state_local import local_receipt
     receipt = local_receipt(db, source.chat_id)
     if session_id not in receipt.get('lineage', [receipt['session_id']]):

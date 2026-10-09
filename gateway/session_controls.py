@@ -351,8 +351,9 @@ class AuthorityConnection:
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         if 'title' not in params:
             from gateway.session_local_migration import resolve_local_target
+            from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             row = self.authority.db.get_session(ref.session_id)
-            if row and row['source'] in {'cli', 'tui', 'gui'}:
+            if row and row['source'] in LEGACY_LOCAL_SOURCES:
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
         if params.get('editor') is not None:
