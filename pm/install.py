@@ -193,6 +193,39 @@ def lazy_installs_allowed() -> bool:
         return False
 
 
+def _is_feature_blocked(name: str) -> bool:
+    """Policy: does ``security.blocked_features`` veto lazily installing *name*?
+
+    Narrower than :func:`lazy_installs_allowed` (an all-or-nothing switch):
+    the list names individual pm packages / extras (e.g. ``"tts-premium"``)
+    a user never wants pulled in on demand, while everything else still
+    lazy-installs. Applies to the lazy path only — an explicit
+    ``hermes pm install`` is the user's deliberate override. Fails open
+    (not blocked) when the config cannot be read, like the original
+    tools/lazy_deps.py check.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        blocked = cfg_get(load_config_readonly(), "security", "blocked_features", default=None) or []
+    except Exception:
+        return False
+    if isinstance(blocked, str):
+        blocked = [blocked]
+    return isinstance(blocked, (list, tuple, set)) and name in blocked
+
+
+def _refuse_blocked(name: str) -> InstallError:
+    from pm import receipt
+
+    error = InstallError(
+        name,
+        f"feature {name!r} is blocked by security.blocked_features in config.yaml",
+        f"remove {name!r} from security.blocked_features or run `hermes pm install`",
+    )
+    receipt.record_refusal("blocked-feature", str(error))
+    return error
+
+
 def enabled_extras() -> list[str]:
     """The venv extras recorded in the installed state."""
     fact = Facts(paths.runtime_facts_path()).get("venv") or _facts().get("venv") or {}
@@ -562,6 +595,12 @@ def ensure(
             checked.add(identity)
     if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
+    if missing and not explicit:
+        # Per-feature veto (security.blocked_features): the requested name or any
+        # missing package in its chain being listed refuses the lazy install.
+        for blocked_name in [name] + [p.name for p in missing]:
+            if _is_feature_blocked(blocked_name):
+                raise _refuse_blocked(blocked_name)
     if missing:
         store = _operation.lock() if _operation is not None else Store(paths.writable_store_root())
         facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
@@ -820,6 +859,11 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("repair restores the recorded environment; it cannot change features or plugins")
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
+        if extras and not explicit and not repair:
+            # Lazy extras (pm.extras.ensure_import) honour the per-feature veto too.
+            for extra in extras:
+                if _is_feature_blocked(extra):
+                    raise _refuse_blocked(extra)
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication

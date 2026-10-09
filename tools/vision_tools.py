@@ -448,11 +448,6 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         if len(data_url) <= max_base64_bytes:
             return data_url
-    # Oversized images must be downscaled here: Pillow is not in the core dependency set,
-    # it's lazy-installed the first time an oversized image actually needs downscaling.
-    # Without this a single large photo 413s the request (Anthropic 32 MB body / 5 MB
-    # per-image) and no compression can recover it — the oversized payload is one
-    # protected image, not history.
 
     def _raw() -> str:
         return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)

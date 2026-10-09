@@ -168,12 +168,6 @@ interface SidebarSessionsSectionProps {
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
   onReorderSessions?: (ids: string[]) => void
-  // True when `sessions` is already under an ACTIVE manual drag-order (Pinned
-  // is always explicit; Recents only once the user has dragged). Tells
-  // flattenSessionsWithBranches to keep that order instead of re-sorting
-  // top-level rows by recency — otherwise a drop's new order gets silently
-  // discarded on the very next render.
-  manualOrder?: boolean
   // Drag-to-reorder for the project overview list (top-level projects).
   onReorderProjects?: (ids: string[]) => void
   // Rendered atop the entered-project body (a "back to overview" row).
@@ -240,7 +234,6 @@ export function SidebarSessionsSection({
   sortable = false,
   manualOrderIds,
   onReorderSessions,
-  manualOrder = false,
   onReorderProjects,
   projectBackRow,
   dndSensors,

@@ -135,10 +135,20 @@ class TestExplicitEmptySelection:
         )
 
     def test_explicit_empty_list_yields_no_toolsets(self, no_desktop_env):
+        """FORK pin: the fork's ``consult`` toolset survives an explicit empty list.
+
+        ``consult`` is a core tool (``toolsets._HERMES_CORE_TOOLS``) inside the
+        ``hermes-cli`` composite but is NOT in ``CONFIGURABLE_TOOLSETS``, so
+        ``hermes_cli.tools_config._recover_platform_native_toolsets`` re-adds it like any
+        non-configurable platform-native toolset, even on ``cli: []``. Because the
+        resolved set is then non-empty, ``_load_enabled_toolsets`` takes the
+        ``if enabled:`` branch and the client-surface fold-in follows. Still never None
+        (#82010's fail-open is closed): no other configurable toolset comes back.
+        """
         self._config(no_desktop_env, {"cli": []})
 
-        assert server._load_enabled_toolsets("desktop") == []
-        assert server._load_enabled_toolsets("tui") == []
+        assert server._load_enabled_toolsets("desktop") == ["catalog", "consult", "desktop_ui", "project"]
+        assert server._load_enabled_toolsets("tui") == ["consult", "project"]
 
     def test_absent_key_keeps_the_default_selection(self, no_desktop_env):
         self._config(no_desktop_env, {})

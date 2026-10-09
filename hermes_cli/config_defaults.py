@@ -594,12 +594,15 @@ DEFAULT_CONFIG = {
     # max_line_length: per-line cap in read_file's line-numbered view (chars).
     "tool_output": {"max_bytes": 50000, "max_lines": 2000, "max_line_length": 2000},
     # Tool loop guardrails nudge models that repeat failed/non-progressing tool calls. Soft warnings
-    # are always on; hard stops are opt-in so interactive sessions keep flowing.
+    # are always on; hard stops are on by default too (fork) — see hard_stop_enabled below.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
-        "hard_stop_enabled": False,
-        # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
-        # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
+        # FORK: hard stops are ON everywhere (matches ToolCallGuardrailConfig.hard_stop_enabled in
+        # agent/tool_guardrails.py): warn-only guardrails were routinely ignored by the model.
+        # Opt out with `tool_loop_guardrails.hard_stop_enabled: false`.
+        "hard_stop_enabled": True,
+        # Upstream's escalation for unattended gateway/cron platforms (nobody can /stop a model that
+        # ignores warnings); a no-op while hard_stop_enabled is True.
         "non_interactive_hard_stop_enabled": True,
         "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
         "hard_stop_after": {
@@ -739,12 +742,7 @@ DEFAULT_CONFIG = {
     # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
     # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
     # "disabled", "no", "none") disables caching.
-    # Fork — main_session_cache_ttl: optional override applied ONLY to the top-level interactive
-    # session (agent.platform != "subagent"). Null/empty = use cache_ttl everywhere (historical
-    # single-tier behavior). Subagents and auxiliary tasks always use cache_ttl: their calls are
-    # short-lived and one-shot, so the cheaper 5m write tier wins. A long-lived interactive chat
-    # with 5-60 minute idle gaps amortizes the 1h tier's 2x write cost instead.
-    "prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": None},
+    "prompt_caching": {"cache_ttl": "5m"},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
     # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):
@@ -1915,6 +1913,10 @@ DEFAULT_CONFIG = {
         # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
         # the base set (restricted/audited/air-gapped environments).
         "allow_lazy_installs": True,
+        # Per-feature veto for lazy installs: pm package / extra names (e.g. "tts-premium") that are
+        # never installed on demand even while allow_lazy_installs is True. Explicit
+        # `hermes pm install` still works. Enforced in pm/install.py (_is_feature_blocked).
+        "blocked_features": [],
     },
 
     "cron": {

@@ -501,6 +501,7 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
     routing_cfg: Optional[Dict[str, Any]] = None,
+    agent_type: Optional[str] = None, role: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -576,11 +577,24 @@ def _resolve_child_runtime(
             getattr(parent_agent, "requested_provider", None) or effective_provider
         )
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
-    # YAML ``false`` must disable thinking, not coerce to "" and inherit.
+    # Reasoning precedence: delegation.reasoning_effort_by_role[agent_type]
+    # (persona, e.g. "coder") > reasoning_effort_by_role[role] (spawn role,
+    # e.g. "orchestrator") > global delegation.reasoning_effort > parent
+    # inherit. Lets an orchestrator child run at max depth while the leaf
+    # workers it dispatches run cheaper. Keep the raw global value — a YAML
+    # ``false`` must disable thinking, not coerce to "" and inherit.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
-        delegation_effort = delegation_cfg.get("reasoning_effort")
+        delegation_effort = None
+        try:
+            from hermes_cli.personas import lookup_reasoning_for_role
+            delegation_effort = lookup_reasoning_for_role(agent_type) or (
+                lookup_reasoning_for_role(role) if role else None
+            )
+        except Exception:
+            logger.debug("Could not load delegation.reasoning_effort_by_role", exc_info=True)
+        if not delegation_effort:
+            delegation_effort = delegation_cfg.get("reasoning_effort")
         if delegation_effort or delegation_effort is False:
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)

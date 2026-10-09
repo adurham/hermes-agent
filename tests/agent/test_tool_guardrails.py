@@ -525,10 +525,15 @@ def test_other_tools_keep_duration_and_execution_count_as_real_output():
 
 
 def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
-    # #124072: on an interactive surface hard stops are off, so the appended notice is
-    # the only signal the model gets. 186 no-op print("...") cells whose results differed
-    # only in kernel.execution_count / duration_seconds produced zero notices.
-    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="desktop"))
+    # #124072: on a warn-only surface the appended notice is the only signal the model
+    # gets. 186 no-op print("...") cells whose results differed only in
+    # kernel.execution_count / duration_seconds produced zero notices.
+    # FORK: hard stops default ON everywhere, so the warn-only precondition is made
+    # explicit through the documented opt-out instead of relying on the upstream
+    # "interactive desktop is warn-only by default" premise the fork changed.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig.from_mapping({"hard_stop_enabled": False}, platform="desktop")
+    )
     args = {"code": 'print("...")'}
 
     def result(n):
@@ -547,3 +552,25 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+def test_real_config_loader_defaults_hard_stop_on_and_honours_opt_out():
+    # FORK: the shipped DEFAULT_CONFIG (not just the dataclass) must carry
+    # hard_stop_enabled=True, since agent_init feeds the merged loader output into
+    # from_mapping and a False there overrides the dataclass default. Interactive
+    # "cli" is used so non_interactive_hard_stop_enabled cannot mask the value.
+    from hermes_cli.config import get_config_path, load_config
+
+    config_path = get_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    config_path.write_text("{}\n", encoding="utf-8")
+    section = load_config()["tool_loop_guardrails"]
+    assert section["hard_stop_enabled"] is True
+    assert ToolCallGuardrailConfig.from_mapping(section, platform="cli").hard_stop_enabled is True
+
+    config_path.write_text("tool_loop_guardrails:\n  hard_stop_enabled: false\n", encoding="utf-8")
+    section = load_config()["tool_loop_guardrails"]
+    assert section["hard_stop_enabled"] is False
+    assert section["non_interactive_hard_stop_enabled"] is True
+    assert ToolCallGuardrailConfig.from_mapping(section, platform="cli").hard_stop_enabled is False

@@ -723,7 +723,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // routes each send to its owner; a disconnected foreground is not a global gate.
   useBackgroundQueueDrain({
     enabled: true,
-    getRuntimeIdForStoredSession,
+    runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     submitText
   })

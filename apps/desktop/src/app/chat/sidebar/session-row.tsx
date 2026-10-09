@@ -54,7 +54,6 @@ import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
 import { SessionRowSlot } from './session-row-slots'
-import { splitDragHandleProps } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -356,16 +355,6 @@ function SidebarSessionRowImpl({
     </div>
   )
 
-  // Split dnd-kit's dragHandleProps ({...attributes, ...listeners}) so the
-  // POINTER activator (onPointerDown) can cover the wide dot+label area —
-  // "drag from the name" — while the KEYBOARD activator stays on the small
-  // dot alone. See splitDragHandleProps for why (display:contents strips the
-  // wide wrapper from the accessibility tree, so it can't be the KeyboardSensor's
-  // focusable activator node).
-  const { keyboardProps: reorderKeyboardProps, pointerDown: reorderPointerDown } = splitDragHandleProps(
-    dragHandleProps as undefined | Record<string, unknown>
-  )
-
   const handoffBadge =
     handoffSource && handoffLabel ? (
       <Tip label={r.handoffOrigin(handoffLabel)}>
@@ -527,32 +516,21 @@ function SidebarSessionRowImpl({
         >
           {(() => {
             const leadNode = reorderable ? (
-              // Wide pointer-drag surface: dot + grab handle are "the handle"
-              // now — drag starts from anywhere in that cluster, not just the
-              // tiny dot. `display: contents` keeps the layout exactly as if
-              // this span weren't here; only the POINTER activator (no
-              // `attributes`/tabIndex) lives here, so a plain click still
-              // bubbles to the button's onClick (resume/pin) untouched —
-              // dnd-kit's 6px movement threshold decides "drag" vs "click",
-              // not this wrapper. The real, focusable keyboard handle stays
-              // on the dot below (SidebarRowGrab).
-              <span className="contents" data-reorder-handle onPointerDown={reorderPointerDown}>
-                <SidebarRowGrab
-                  ariaLabel={handleLabel}
-                  dragging={dragging}
-                  dragHandleProps={reorderKeyboardProps}
-                  leadClassName={dotState === 'needs-input' ? 'overflow-visible' : undefined}
-                >
-                  {lead ?? (
-                    <SessionStatusDot
-                      branchStem={branchStem}
-                      className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                      session={session}
-                      storedSessionId={session.id}
-                    />
-                  )}
-                </SidebarRowGrab>
-              </span>
+              <SidebarRowGrab
+                ariaLabel={handleLabel}
+                dragging={dragging}
+                dragHandleProps={dragHandleProps}
+                leadClassName={dotState === 'needs-input' ? 'overflow-visible' : undefined}
+              >
+                {lead ?? (
+                  <SessionStatusDot
+                    branchStem={branchStem}
+                    className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                    session={session}
+                    storedSessionId={session.id}
+                  />
+                )}
+              </SidebarRowGrab>
             ) : (
               <SidebarRowLead className={dotState === 'needs-input' ? 'overflow-visible' : 'overflow-hidden'}>
                 {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}

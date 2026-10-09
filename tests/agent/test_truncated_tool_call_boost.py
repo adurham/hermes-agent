@@ -59,12 +59,20 @@ def test_retry_raises_budget_above_large_requested_cap(site, requested_cap):
 
 @pytest.mark.parametrize("site", SITES)
 def test_boost_clamped_to_known_model_output_limit(site):
-    # claude-sonnet-4-5 outputs at most 64000: never ask for more, and don't double a
-    # request that already sits at the ceiling (the provider would 400).
+    # FORK: _ANTHROPIC_OUTPUT_LIMITS caps claude-sonnet-4-5 at 16_000 (Claude Code
+    # main-chat parity, see the table in agent/anthropic_adapter.py), not upstream's
+    # 64000. A request already at/above the known limit is never doubled
+    # (boosted_output_cap returns the anchor), so both caps come back unchanged —
+    # the retry never asks for MORE than the failed request when it sits past the cap.
+    from agent.anthropic_adapter import _get_anthropic_max_output
+    assert _get_anthropic_max_output("claude-sonnet-4-5") == 16_000
     below = site(_agent(None, 40000, api_mode="anthropic_messages", model="claude-sonnet-4-5"))
     at_limit = site(_agent(None, 64000, api_mode="anthropic_messages", model="claude-sonnet-4-5"))
-    assert below == [64000] * 4
+    assert below == [40000] * 4
     assert at_limit == [64000] * 4
+    # Below the fork's 16k limit the boost is still clamped to it, never past it.
+    under = site(_agent(None, 12000, api_mode="anthropic_messages", model="claude-sonnet-4-5"))
+    assert under == [16000] * 4
 
 
 def test_small_explicit_max_tokens_ladder_still_capped_at_floor():
