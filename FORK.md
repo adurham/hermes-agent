@@ -8494,6 +8494,8 @@ risk.
 
 ### Fork-only feature — 2026-07-24 (desktop: pet voice via Miku RVC voice-conversion pipeline)
 
+**Status (2026-10-09 de-fork pass):** LOSS DOCUMENTED (owner call: document, revisit later) — the per-call provider path is gone at three layers: `voice-playback.ts`'s client-direct / speak-stream rungs run first and never read `options.provider` (the pet's `playSpeechText(text, {provider, source: 'pet'})` call is ignored there); `/api/audio/speak`'s `TTSSpeakRequest` has no `provider` field (`speak_text` calls `text_to_speech_tool(text)` without one — lost pre-merge in the `web_server → web_routers` split); and `tools/tts_tool.py` now deliberately ignores a per-call provider that disagrees with `tts.provider` (upstream #90109, taken in the v0.21.6 sync). Net: `display.pet.voice_provider` (e.g. 'miku') is inert — pet speech always uses `tts.provider`. Re-apply recipe when revisited: add `provider: Optional[str] = None` to `TTSSpeakRequest`, forward it on a trusted-desktop path that bypasses `_apply_call_overrides`' ignore rule (do NOT re-open the model-facing override), and skip the client-direct/stream rungs when set. Kept for history.
+
 **Request:** user has the Hatsune Miku petdex mascot active in Hermes Desktop
 and asked to wire its status-bubble lines (PetBubble's "working…"/"thinking…"
 text) up to actual Miku-voiced audio, based on her real voicebank rather than
@@ -9847,6 +9849,8 @@ reorder) — should apply cleanly on future syncs; re-check
 `--tool-group-scroll-max-h`'s value if upstream retunes it independently.
 
 ### Fork-only fix — 2026-07-23 (desktop: review pane never showed by default — hidden behind an undiscoverable ⌘G)
+
+**Status (2026-10-09 de-fork pass):** REVERTED to upstream by owner call — upstream has since given the pane visible affordances (`CodingStatusRow` open button on the composer coding row + `openReviewForPath` on the changed-files card, #2e3e9c17654), so discoverability no longer depends on the first-run default. `$reviewOpenPref` is back to `false` (upstream's) and both `controller.tsx` comment rows reverted to upstream wording. Kept for history.
 
 **Symptom:** the review pane (git working-tree diff / uncommitted-changes
 list) never appeared in the app, even on layouts (e.g. Default) whose zone
@@ -17313,6 +17317,8 @@ check` clean on both touched files.
 cleanup-pass feature, which upstream doesn't have.
 
 ### Fork-only fix — 2026-08-23 (nested delegation: orchestrator subagent's blocking `delegate_task` killed at 420s by the generic tool deadline, orphaning its own grandchildren for ~7h)
+
+**Status (2026-10-09 de-fork pass):** PARTIAL — `delegate_task`'s own registration/predicate (`_is_blocking_spawn_call` / `_delegate_owns_own_deadline`) was dropped as redundant: upstream's static `_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS` floor (kept in the merged tree; checked BEFORE the registry hook) independently grants the exemption on the only path delegate_task can take. The generic registry hook, `_resolve_call_tool_timeout`, the concurrent-batch drop and the `_owner_abandoned` teardown all stay (consult_tool still uses the hook). Kept for history.
 
 **Symptom:** An orchestrator subagent (depth 1) dispatched a nested batch
 via `delegate_task(tasks=[...])`. It reported itself `completed` to its

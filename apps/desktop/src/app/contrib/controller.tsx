@@ -294,9 +294,8 @@ registry.registerMany([
     id: 'review',
     area: 'panes',
     title: translateNow('sidebar.review'),
-    // The second right sidebar: visible by default (any workspace with a
-    // cwd), toggled off via ⌘G ($reviewOpen) — bound below like the other
-    // chrome toggles; its zone collapses while hidden.
+    // The second right sidebar: hidden until ⌘G ($reviewOpen) — bound below
+    // like the other chrome toggles; its zone collapses while hidden.
     data: {
       placement: 'right',
       collapsible: true,

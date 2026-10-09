@@ -1670,55 +1670,6 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
 
 
-def _is_blocking_spawn_call(args: dict, parent_agent: Any = None) -> bool:
-    """True when this delegate_task call BLOCKS on child agents it supervises.
-
-    Consumed by the tool registry's ``owns_own_deadline`` hook so the generic
-    per-call executor deadline is not applied to a call whose runtime is, by
-    design, the runtime of the whole child agent tree beneath it.
-
-    Only the SPAWN form qualifies, and only when it actually blocks:
-
-    * ``action`` in {list, steer, stop} and the ``cancel=`` form are cheap
-      in-turn control calls that return immediately — they keep the deadline.
-    * A top-level (depth 0) spawn is forced ``background=True``: it dispatches
-      and returns a handle in milliseconds, and the persistent CLI/gateway
-      process drains the completion later. It keeps the deadline too.
-    * A NESTED spawn from an orchestrator subagent (depth > 0) is forced
-      synchronous — it must block until its own workers finish, because a
-      bounded subagent turn is not a persistent listener that could ever
-      consume an async completion. That is the call this exemption exists for.
-
-    Depth is read from the live parent agent rather than the args, so the
-    exemption tracks the same signal the sync/async decision itself uses
-    (``run_agent._dispatch_delegate_task`` / ``_model_background_value``).
-
-    The incident this closes (2026-08-23): a depth-1 orchestrator's nested
-    batch hit the 420s generic deadline at 07:00 into a legitimate multi-child
-    run. The executor abandoned the worker but could NOT cancel it, so the
-    aggregation kept running headless, its children finished ~70s later, and
-    the consolidated result was returned into a Future nobody would ever read.
-    The orchestrator meanwhile reported "completed" to its own parent. Work
-    stalled silently for ~7 hours.
-    """
-    if not isinstance(args, dict):
-        return False
-    action = str(args.get("action") or "").strip().lower()
-    if action in {"list", "steer", "stop"}:
-        return False
-    if str(args.get("cancel") or "").strip():
-        return False
-    if not (args.get("goal") or args.get("tasks")):
-        return False
-    # Only the synchronous (nested, depth > 0) spawn blocks. A top-level spawn
-    # returns a handle immediately and must stay bounded.
-    return not _model_background_value(args, parent_agent)
-
-
-def _delegate_owns_own_deadline(args: dict, parent_agent: Any = None) -> bool:
-    """Registry hook: blocking spawns own their bound, everything else doesn't."""
-    return _is_blocking_spawn_call(args, parent_agent)
-
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -1732,7 +1683,6 @@ registry.register(
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
-    owns_own_deadline=_delegate_owns_own_deadline,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
 )
