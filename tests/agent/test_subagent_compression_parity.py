@@ -86,9 +86,9 @@ def hermes_home(tmp_path, monkeypatch):
 
 def _make_agent(platform: str, parent_session_id: str | None = None):
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         from run_agent import AIAgent
 

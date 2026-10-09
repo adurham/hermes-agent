@@ -2760,7 +2760,11 @@ def build_anthropic_kwargs(
             # the user keeps paying for it. Send the disable explicitly.
             # Mandatory-thinking models reject it with a 400, so they keep the
             # omission: a silently-ignored disable beats a dead turn.
-            if _accepts_thinking_disable(model):
+            # Families whose documented off is ``between_tools`` 400 on
+            # ``disabled`` (upstream v0.21.6 _thinking_kwargs contract).
+            if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
+                kwargs["thinking"] = {"type": "between_tools"}
+            elif _accepts_thinking_disable(model):
                 kwargs["thinking"] = {"type": "disabled"}
         elif "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
@@ -3184,6 +3188,9 @@ def create_anthropic_message(
             _progress_deadline = None
             stream_kwargs = {k: v for k, v in api_kwargs.items() if k != "stream"}
             with stream_fn(**stream_kwargs) as stream:
+                # MiniMax usage:null (#60683): patch raw events before the SDK accumulates them,
+                # same as the main turn and upstream's _stream_final_message.
+                stream = normalize_stream_usage(stream)
                 if callable(on_response):
                     try:
                         on_response(getattr(stream, "response", None))

@@ -48,6 +48,10 @@ def _agent():
     agent.api_mode = "anthropic_messages"
     agent._interrupt_requested = False
     agent._anthropic_client = MagicMock()
+    # FORK: production prefers ``.beta.messages.stream`` when the client exposes it; a bare
+    # MagicMock auto-vivifies ``.beta.messages``, so pin the plain ``.messages.stream`` path
+    # these tests configure (same pattern as test_anthropic_stream_pool_cleanup.py).
+    agent._anthropic_client.beta = None
     agent._anthropic_api_key = "test-key"
     agent._create_request_anthropic_client = lambda *args, **kwargs: agent._anthropic_client
     return agent

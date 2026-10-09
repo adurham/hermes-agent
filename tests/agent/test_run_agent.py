@@ -695,9 +695,9 @@ class TestInit:
         """prompt_caching.main_session_cache_ttl overrides cache_ttl for the
         top-level interactive session (platform != "subagent")."""
         with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": "1h"}},
@@ -722,9 +722,9 @@ class TestInit:
         main_session_cache_ttl — short-lived, one-shot delegated turns
         should not pay the 1h tier's higher write cost."""
         with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": "1h"}},
@@ -749,9 +749,9 @@ class TestInit:
         """With no main_session_cache_ttl configured, the main session must
         reproduce the historical single-tier behavior exactly."""
         with (
-            patch("run_agent.get_tool_definitions", return_value=[]),
-            patch("run_agent.check_toolset_requirements", return_value={}),
-            patch("run_agent.OpenAI"),
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": "5m"}},
@@ -6204,8 +6204,8 @@ class TestAnthropicCredentialRefresh:
 
     def test_anthropic_messages_create_honors_disable_streaming(self):
         with (
-            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
@@ -6231,8 +6231,8 @@ class TestAnthropicCredentialRefresh:
 
     def test_anthropic_messages_create_does_not_mask_bedrock_stream_validation_errors(self):
         with (
-            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
@@ -6258,8 +6258,8 @@ class TestAnthropicCredentialRefresh:
 
     def test_anthropic_messages_create_falls_back_for_bedrock_stream_access_denied(self):
         with (
-            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
