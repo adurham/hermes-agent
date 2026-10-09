@@ -374,6 +374,11 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "hermes_state",
+        # Messaging-gated gateway cases: only the e2e job installs the real
+        # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_native_role_reauthorization.py",
+        "tests/gateway/test_native_telegram_startup_recovery.py",
+        "tests/gateway/test_native_pause_notice.py",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,
