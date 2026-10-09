@@ -37,19 +37,33 @@ export function preparedJournal(userData: string, origin: string) {
     return {}
   }
 
+  const write = (journal: Record<string, unknown>, key: string, entry: unknown | null) => {
+    if (entry === null) {delete journal[key]}
+    else {Object.defineProperty(journal, key, { value: entry, enumerable: true, configurable: true })}
+
+    fs.mkdirSync(userData, { recursive: true })
+    // Same private atomic replacement used for native connection settings.
+    // Return only after write+rename: process termination cannot lose an ACKed
+    // entry to Chromium's deferred localStorage commit. Not a power-loss promise.
+    writeSecretFileAtomic(file, JSON.stringify(journal), { encoding: 'utf8' })
+  }
+
   return {
     read,
     update(key: string, entry: unknown | null) {
+      write(read(), key, entry)
+    },
+    /** Replace `key` only while it still holds exactly `expected` (null = absent): create-if-absent
+     *  and compare-and-delete in one synchronous main-process step, so windows sharing the origin's
+     *  journal cannot interleave between the check and the write. Returns the record now stored. */
+    compareAndSet(key: string, expected: unknown | null, entry: unknown | null): { applied: boolean; current: unknown | null } {
       const journal = read()
+      const current = Object.hasOwn(journal, key) ? journal[key] : null
 
-      if (entry === null) {delete journal[key]}
-      else {Object.defineProperty(journal, key, { value: entry, enumerable: true, configurable: true })}
+      if (JSON.stringify(current) !== JSON.stringify(expected)) {return { applied: false, current }}
+      write(journal, key, entry)
 
-      fs.mkdirSync(userData, { recursive: true })
-      // Same private atomic replacement used for native connection settings.
-      // Return only after write+rename: process termination cannot lose an ACKed
-      // entry to Chromium's deferred localStorage commit. Not a power-loss promise.
-      writeSecretFileAtomic(file, JSON.stringify(journal), { encoding: 'utf8' })
+      return { applied: true, current: entry }
     }
   }
 }
@@ -65,5 +79,15 @@ export function registerPreparedSubmissions() {
     }
 
     store(event).update(key, entry === null ? null : JSON.parse(entry))
+  })
+  ipcMain.handle('hermes:prepared-submissions:compare-and-set', (event, key: string, expected: string | null, entry: string | null) => {
+    if (typeof key !== 'string' || [expected, entry].some(value => value !== null && typeof value !== 'string')) {
+      throw new Error('Invalid prepared submission comparison')
+    }
+
+    const parse = (value: string | null) => value === null ? null : JSON.parse(value)
+    const { applied, current } = store(event).compareAndSet(key, parse(expected), parse(entry))
+
+    return { applied, current: current === null ? null : JSON.stringify(current) }
   })
 }
