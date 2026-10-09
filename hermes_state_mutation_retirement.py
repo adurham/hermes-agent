@@ -119,11 +119,37 @@ def retire_mutation_receipts(conn, session_ids):
             conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(receipt), key))
 
 
+def _retained_local_owners(conn, swept):
+    """Ids a kept local conversation still needs: the creation id (policy, FIFO, generation) and
+    every earlier segment of its receipt lineage, while the current physical target survives.
+    A reset/compression ends the root and the sweep would age it alone; the retained child would
+    then have history but no owner to admit into or restore from. Malformed receipts name nothing."""
+    from hermes_state_local import POLICY_PREFIX
+    kept = set()
+    for (raw,) in conn.execute('SELECT value FROM state_meta WHERE key GLOB ?', (POLICY_PREFIX + '*',)):
+        try:
+            receipt = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        entry = receipt.get('entry') if isinstance(receipt, dict) else None
+        target = entry.get('session_id') if isinstance(entry, dict) else None
+        if not isinstance(target, str) or target in swept:
+            continue
+        lineage = receipt.get('lineage')
+        kept.update(x for x in [receipt.get('session_id'), *(lineage if isinstance(lineage, list) else [])]
+                    if isinstance(x, str))
+    return kept
+
+
 def retire_prunable(conn, session_ids):
     """Sweep variant of :func:`retire_sessions`: fence the idle sessions and return only those ids.
     A session with live or unknown work is skipped, so one busy row cannot abort a whole
-    prune/empty-session sweep (explicit deletes still refuse with ``session_busy``)."""
-    quiet = [sid for sid in session_ids if conn.execute(_LIVE_LEDGER_SQL, (sid, sid)).fetchone() is None]
+    prune/empty-session sweep (explicit deletes still refuse with ``session_busy``). The logical
+    owner of a kept local reset/compression target is skipped too (explicit deletes remove the
+    whole conversation through :func:`delete_in_transaction`)."""
+    owners = _retained_local_owners(conn, set(session_ids))
+    quiet = [sid for sid in session_ids if sid not in owners
+             and conn.execute(_LIVE_LEDGER_SQL, (sid, sid)).fetchone() is None]
     retire_sessions(conn, quiet)
     return quiet
 
