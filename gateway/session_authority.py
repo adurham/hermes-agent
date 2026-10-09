@@ -422,12 +422,23 @@ class SessionAuthority:
 
     async def cancel_queued(self, actor, ref, admission_id):
         before = await self.receipt(actor, ref, admission_id)
+        from gateway.session_runtime_workers import track_mutation
+        # Write off the shared loop; commit and observer settlement are one tracked task the
+        # caller cannot cancel between (an exact retry still pays a left-over obligation).
+        row = await asyncio.shield(track_mutation(self, self._commit_cancel(ref, admission_id, before)))
+        # Media collection is its own write txn after the committed, settled cancellation: its
+        # failure surfaces to the caller, and an exact retry collects again without re-settling.
+        from gateway.session_ingress_media import release_admission_media
+        await asyncio.to_thread(release_admission_media, self.db, admission_id)
+        return self._receipt(row)
+
+    async def _commit_cancel(self, ref, admission_id, before):
         if before.status == 'queued':
             # Owed from before the write: a commit that reports failure, or anything raising
             # between the commit and observer settlement, leaves it for an exact retry to pay.
             self.cancel_obligations.add(admission_id)
         try:
-            row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
+            row = await asyncio.to_thread(cancel_session_input, self.db, epoch=self.epoch, admission_id=admission_id)
         except RuntimeStoreError:
             self.cancel_obligations.discard(admission_id)  # a definite refusal: nothing committed
             raise
@@ -437,11 +448,7 @@ class SessionAuthority:
             if row['status'] != 'queued':
                 self.cancel_obligations.discard(admission_id)
             self._publish_pending(ref)
-        # Media collection is its own write txn after the committed, settled cancellation: its
-        # failure surfaces to the caller, and an exact retry collects again without re-settling.
-        from gateway.session_ingress_media import release_admission_media
-        release_admission_media(self.db, admission_id)
-        return self._receipt(row)
+        return row
 
     def _settle_cancelled(self, ref, admission_id):
         # The only place a queued row becomes terminal: every observer kind that waits on

@@ -92,3 +92,32 @@ async def test_pending_publication_during_a_contended_settlement_keeps_idle_afte
         start, complete = kinds.index(('message.start', None)), kinds.index(('message.complete', None))
         assert ('session.info', False) not in kinds[start:complete], kinds
         assert ('session.info', False) in kinds[complete:], kinds
+
+
+@pytest.mark.asyncio
+async def test_cancel_behind_a_held_writer_leaves_the_loop_free_and_still_settles_its_observer(
+        tmp_path, monkeypatch):
+    """``prompt.cancel`` / Delete on a queued card: its write waits on the writer, never on the loop."""
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        receipt = await authority.submit(ACTOR, Submission('queued', REF, {'text': 'queued'}, 'queue'))
+        waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
+        released = threading.Event()
+        writer = sqlite3.connect(str(tmp_path / 'state.db'), isolation_level=None, check_same_thread=False)
+        writer.execute('BEGIN IMMEDIATE')
+
+        def release():
+            time.sleep(_HOLD_S)
+            released.set()
+            writer.rollback()
+            writer.close()
+        threading.Thread(target=release, daemon=True).start()
+        ticks = []
+        asyncio.get_running_loop().call_later(0.05, lambda: ticks.append(released.is_set()))
+        cancel = asyncio.create_task(authority.cancel_queued(ACTOR, REF, receipt.admission_id))
+        await asyncio.sleep(0.3)
+        assert ticks == [False], 'an unrelated 50 ms callback waited for the held writer'
+        cancelled = await asyncio.wait_for(cancel, 10)
+        assert (cancelled.status, cancelled.outcome) == ('terminal', 'cancelled')
+        assert waiter.done() and receipt.admission_id not in authority.cancel_obligations
