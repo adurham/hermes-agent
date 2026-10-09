@@ -102,6 +102,12 @@ class GatewayACPAgent(acp.Agent):
         self._segments = {}
         self._changed = asyncio.Condition()
         self._failure = None
+        # Connection generation: a waiter whose transport was replaced reports that transport's
+        # ambiguous failure (``_lost_failure``) instead of waiting on a connection it never used.
+        self._link = 0
+        self._lost_failure = None
+        # Session -> editor MCP servers a replacement connection must re-attach.
+        self._editor_mcp = {}
         self._permissions = {}
         self._admissions = {}
         self._submitting = set()
@@ -144,6 +150,11 @@ class GatewayACPAgent(acp.Agent):
 
     async def _client(self):
         async with self._connect_lock:
+            if self._failure is not None or self._transport_closed():
+                # The event pump died with this transport (gateway restart, socket loss, replay gap).
+                # Its waiters hold the ambiguous failure; the next call gets a fresh, re-verified
+                # connection instead of the stale error forever.
+                await self._teardown()
             if self._gateway is None:
                 connection = connect_gateway()
                 gateway = await connection.__aenter__()
@@ -151,6 +162,7 @@ class GatewayACPAgent(acp.Agent):
                     descriptor = await gateway.rpc("runtime.describe")
                     if descriptor.get("profile_id") != str(self._home):
                         raise GatewayClientError("profile_mismatch")
+                    await self._reattach(gateway)
                 except BaseException:
                     await connection.__aexit__(None, None, None)
                     raise
@@ -159,6 +171,55 @@ class GatewayACPAgent(acp.Agent):
             if self._failure:
                 raise self._failure
             return self._gateway
+
+    async def _reattach(self, gateway):
+        """Subscribe a replacement connection to every session this editor holds.
+
+        The fresh snapshot carries the new replay epoch/sequence and the authority's current
+        pending rows (a turn lost in the restart is ``unknown`` there, never resubmitted); the
+        editor's borrowed MCP servers are re-attached because a restarted owner has none."""
+        from hermes_cli.gateway_client import GatewayRPCError
+        for session_id in list(self._snapshots):
+            params = {"editor": self._editor_mcp[session_id]} if session_id in self._editor_mcp else {}
+            try:
+                snapshot = await gateway.rpc("session.resume", session_id=session_id, **params)
+            except GatewayRPCError:
+                # A definitive refusal for this session (deleted, retired) must not keep the
+                # editor's other sessions offline; its next prompt reports not_found.
+                logger.info("ACP session %s not re-attached after reconnect", session_id, exc_info=True)
+                self._snapshots.pop(session_id, None)
+                continue
+            self._snapshots[session_id] = snapshot
+            for pending in snapshot.get("prompts", []):
+                self._permission(session_id, pending)
+
+    def _transport_closed(self):
+        # The socket reader settles every pending RPC before the pump sees its disconnect frame,
+        # so an editor retry can arrive while ``_failure`` is still unset.
+        reader = getattr(self._gateway, "reader", None)
+        return isinstance(reader, asyncio.Future) and reader.done()
+
+    async def _teardown(self):
+        task, connection = self._event_task, self._connection
+        self._event_task = self._connection = self._gateway = None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if connection is not None:
+            await connection.__aexit__(None, None, None)
+        # Partial reply segments belonged to admissions whose waiters already failed.
+        self._streamed.clear()
+        self._segments.clear()
+        async with self._changed:
+            # Every waiter on the old transport wakes to its ambiguous failure, even one that had
+            # not yet observed ``_failure`` before it is cleared here.
+            self._link += 1
+            self._lost_failure = self._failure or GatewayClientError(
+                "Gateway disconnected; turn outcome is unknown. Resume the session to check whether "
+                "it completed or was interrupted; do not resend the work.")
+            self._failure = None
+            self._changed.notify_all()
 
     async def new_session(self, cwd, mcp_servers=None, **kwargs):
         client = await self._client()
@@ -171,6 +232,9 @@ class GatewayACPAgent(acp.Agent):
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
                     "edit_approval_policy": "ask"})
         self._snapshots[snapshot["session_id"]] = snapshot
+        if mcp_servers:
+            self._editor_mcp[snapshot["session_id"]] = {
+                "mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers]}
         return NewSessionResponse(session_id=snapshot["session_id"])
 
     def _editor_id(self, session_id):
@@ -198,6 +262,8 @@ class GatewayACPAgent(acp.Agent):
             resume_params['editor'] = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]}
         snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
         self._snapshots[session_id] = snapshot
+        if 'editor' in resume_params:
+            self._editor_mcp[session_id] = resume_params['editor']
         from acp_adapter.server import _history_replay_updates
         if self._conn:
             for update in _history_replay_updates(snapshot["messages"]):
@@ -318,6 +384,7 @@ class GatewayACPAgent(acp.Agent):
             self._mutations.acknowledge(session_id, operation, payload)
             return PromptResponse(stop_reason='end_turn')
         client = await self._client()
+        link = self._link
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
@@ -338,9 +405,14 @@ class GatewayACPAgent(acp.Agent):
                 await self._cancel_admission(session_id, admission_id)
             async with self._changed:
                 await self._changed.wait_for(lambda: admission_id in self._terminals or self._failure is not None
+                                            or self._link != link
                                             or self._blocked_admission(session_id, admission_id))
                 # A successor's unknown state cannot replace our committed terminal result.
                 if admission_id not in self._terminals:
+                    if self._link != link:
+                        # Our transport died before this turn's outcome reached us: ambiguous,
+                        # never retried on the replacement connection.
+                        raise self._lost_failure
                     if self._failure:
                         raise self._failure
                     raise GatewayClientError("unknown_execution: do not resend accepted input; "
@@ -370,9 +442,10 @@ class GatewayACPAgent(acp.Agent):
             for row in self._snapshots[session_id].get("pending", []))
 
     async def _events(self):
+        gateway = self._gateway
         try:
             while True:
-                frame = await self._gateway.events.get()
+                frame = await gateway.events.get()
                 if isinstance(frame, Exception):
                     raise frame
                 event = frame.get("params", {})
@@ -560,11 +633,4 @@ class GatewayACPAgent(acp.Agent):
         if self._permissions:
             await asyncio.gather(*self._permissions.values(), return_exceptions=True)
             self._permissions.clear()
-        if self._event_task:
-            self._event_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._event_task
-        if self._connection:
-            await self._connection.__aexit__(None, None, None)
-            self._connection = None
-        self._gateway = None
+        await self._teardown()
