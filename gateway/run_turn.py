@@ -2357,11 +2357,18 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
         if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
+            result = await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )
+            # The remote turn is this admission's executed turn (``TurnRunner.run_sync`` records
+            # the local one): without it a finite run would settle as a no-execution refusal.
+            from gateway.session_results import execution_result
+            captured = execution_result.get()
+            if captured is not None and 'result' not in captured:
+                captured['result'] = result
+            return result
 
         from run_agent import AIAgent
 

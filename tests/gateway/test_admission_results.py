@@ -106,3 +106,43 @@ async def test_a_turn_that_failed_before_running_settles_failed_on_every_surface
         assert complete[-1]['status'] == ('error' if fails else 'complete')
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text,outcome', [('do the work', 'failed'), ('/status', 'completed')],
+                         ids=['refused-prompt', 'command-answer'])
+async def test_a_finite_prompt_answered_without_running_settles_failed(tmp_path, monkeypatch, text, outcome):
+    """``hermes chat -q`` exits on the committed outcome. A handler that answers a finite prompt
+    with a notice and never runs the turn (drain gate, lease timeout, any stub refusal) did not do
+    the asked work, so the admission settles failed and the CLI exits non-zero; a finite slash
+    command's reply IS its answer and still completes."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_results import admission_result
+    from hermes_cli.turn_exit import turn_exit_code
+    from hermes_state_runtime import get_session_admission
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    db = SessionDB(tmp_path / 'state.db')
+    db.create_session('s', source='cli')
+
+    async def handle(event):
+        return 'Gateway is draining for maintenance; your message was not processed.'
+    runner = SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False),
+                             _adapter_for_source=lambda source: None, _handle_message=handle)
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='owner'))
+    authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='c', user_id='human'), 'route')
+    try:
+        receipt = await authority.submit(Principal('human', 'p', frozenset({'session:submit'}), 't'),
+                                         Submission('r1', SessionRef('p', 's'), {'text': text, 'finite': True}, 'queue'))
+        await asyncio.wait_for(authority.sessions['s'].task, 10)
+        assert get_session_admission(db, admission_id=receipt.admission_id)['outcome'] == outcome
+        result = admission_result(db, receipt.admission_id)['result']
+        assert turn_exit_code(result, kanban_worker=False) == (1 if outcome == 'failed' else 0)
+    finally:
+        db.close()

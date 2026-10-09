@@ -126,9 +126,11 @@ async def execute_admission(authority, ref, row):
                 # A turn that never ran because it failed (agent initialization raised, history
                 # unreadable) recorded its own failure via ``record_unexecuted_failure`` on every
                 # surface; any other reply here is a deliberate notice. An API caller asked for
-                # work, so its receipt is a failure either way, never a completed apology.
+                # work, so its receipt is a failure either way, never a completed apology; so did
+                # a finite (``chat -q`` / ``-z``) prompt, whose exit code is the only verdict a
+                # script reads, unless the prompt was a command and the reply is its answer.
                 result = {'final_response': response or '', 'messages': []}
-                if is_api:
+                if is_api or (row['payload'].get('finite') is True and not event.get_command()):
                     result = {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
                               'error': response or 'The admitted turn failed.'}
             # The drain commits this under the stream lock so no viewer reads `terminal`
