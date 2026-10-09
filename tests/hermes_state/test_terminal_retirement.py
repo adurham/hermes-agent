@@ -271,3 +271,41 @@ def test_deleted_history_is_not_recoverable_from_worker_or_mutation_receipts(tmp
             terminal_worker_receipt(db, execution_id='worker', session_id='gone', generation=row['generation'],
                 sequence=1, adoption_secret='proof', payload_digest=rt.admission_fingerprint(
                     canonical_target='gone', payload={'operation': 'compression.history', 'payload': history}))
+
+
+def test_mutation_receipts_naming_a_deleted_physical_target_drop_its_text(tmp_path):
+    """D7 / pastels M07: a local owner's rewind receipt is keyed by the logical id but copies the
+    rewound turn from the physical reset child. Deleting only that child (``hermes sessions delete``
+    on the dashboard row) must still strip it, and a full delete also drops the user-set title."""
+    import json
+    from tests.hermes_state.test_target_advance_fence import _local_session
+
+    def args(db, sid, operation, request_id, payload):
+        snap = db.get_session(sid)
+        return dict(principal_id='human', session_id=sid, request_id=request_id, operation=operation,
+                    payload=payload, expected_revision=snap['runtime_revision'],
+                    expected_generation=snap['runtime_generation'])
+
+    with SessionDB(tmp_path / 'state.db') as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        sid = _local_session(db, epoch, tmp_path)
+        child = rt.mutate_runtime_session(db, epoch=epoch, **args(db, sid, 'reset', 'reset', {}))['target_session_id']
+        db.append_message(child, 'user', 'first')
+        db.append_message(child, 'assistant', 'a1')
+        target = db.append_message(child, 'user', 'SECRET_CHILD_TURN')
+        db.append_message(child, 'assistant', 'a2')
+        rewind = args(db, sid, 'rewind', 'rw', {'target_message_id': target})
+        assert 'SECRET_CHILD_TURN' in json.dumps(rt.mutate_runtime_session(db, epoch=epoch, **rewind))
+        rename = args(db, sid, 'rename', 'rn', {'title': 'SECRET_TITLE'})
+        rt.mutate_runtime_session(db, epoch=epoch, **rename)
+        assert db.delete_session(child) and db.get_session(sid) is not None
+
+        def blobs():
+            with db._read_ctx() as c:
+                return ''.join(v for (v,) in c.execute('SELECT value FROM state_meta'))
+        assert 'SECRET_CHILD_TURN' not in blobs()
+        replay = rt.mutate_runtime_session(db, epoch=epoch, **rewind)
+        assert replay['target_message'] is None and replay['rewound_count'] == 2
+        rt.mutate_runtime_session(db, epoch=epoch, **args(db, sid, 'delete', 'del', {}))
+        assert 'SECRET_TITLE' not in blobs()
+        assert rt.mutate_runtime_session(db, epoch=epoch, **rename)['title'] is None

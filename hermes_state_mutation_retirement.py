@@ -98,19 +98,26 @@ def retire_sessions(conn, session_ids):
     retire_local_receipts(conn, session_ids)
 
 
-# Mutation-receipt fields that copy transcript content: the rewound message and a compaction summary.
-_MUTATION_TRANSCRIPT_FIELDS = ('target_message', 'summary')
+# Mutation-receipt fields that copy user content: the rewound message, a compaction summary and
+# a user-set title (rename/sidebar).
+_MUTATION_TRANSCRIPT_FIELDS = ('target_message', 'summary', 'title')
+# Every session a receipt result can name. A local owner's receipt is keyed by its logical id, but
+# its rewind/compress content comes from the PHYSICAL target (a reset child): deleting only that
+# child must strip it too, or the surviving owner's exact retry replays the deleted text.
+_RECEIPT_SESSION_PATHS = ('$.result.session_id', '$.result.target_message.session_id',
+                          '$.result.target_session_id', '$.result.previous_target_session_id')
 
 
 def retire_mutation_receipts(conn, session_ids):
-    """Keep each exact-retry mutation receipt (digest, ids, revision) but drop the transcript
-    copies a rewind/compress result carries, so a retry after the delete cannot read them back."""
+    """Keep each exact-retry mutation receipt (digest, ids, revision) but drop the user content
+    a rewind/compress/rename result carries, so a retry after the delete cannot read it back."""
     if not session_ids:
         return
+    named = ' OR '.join(f"json_extract(value,'{path}') IN (SELECT value FROM json_each(?1))"
+                        for path in _RECEIPT_SESSION_PATHS)
     rows = conn.execute(
         "SELECT key,value FROM state_meta WHERE key GLOB 'gateway.mutation.v1.*' AND "
-        "CASE WHEN json_valid(value) THEN json_extract(value,'$.result.session_id') END "
-        "IN (SELECT value FROM json_each(?))", (json.dumps(list(session_ids)),)).fetchall()
+        f"CASE WHEN json_valid(value) THEN ({named}) END", (json.dumps(list(session_ids)),)).fetchall()
     for key, raw in rows:
         receipt = json.loads(raw)
         result = receipt.get('result')
