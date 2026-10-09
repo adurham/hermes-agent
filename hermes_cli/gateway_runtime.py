@@ -301,7 +301,9 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                     child = spawn_unmanaged_gateway(target, deadline=deadline, idle_exit=idle_exit)
                 requested = True
             time.sleep(min(delay, remaining(deadline)))
-            delay = min(delay * 1.5, 0.25)
+            # Capped low: each probe is a lock-file read or one local identify, and READY is noticed
+            # within ~50 ms instead of up to 250 ms later on every cold start.
+            delay = min(delay * 1.5, 0.05)
     except TimeoutError:
         return GatewayDiscovery("starting", reason_code="deadline")
     except RuntimeStartError as exc:
