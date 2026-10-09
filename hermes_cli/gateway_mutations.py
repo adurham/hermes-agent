@@ -16,14 +16,22 @@ class PreparedMutations:
         retained mutation once with ``payload.confirm`` = the owner's token (under the original
         key, so an ambiguous reply to the confirmed send retries that exact request); no answers
         ``status: cancelled``. Without a prompt (non-interactive) the refusal is an error, and a
-        confirmed send refused again (another switch or a turn landed first) is never re-asked."""
-        encoded = json.dumps(payload, sort_keys=True)
-        key = (session_id, operation, encoded)
+        confirmed send refused again (another switch or a turn landed first) is never re-asked.
+
+        ``payload`` may be a function of the snapshot the CAS tuple is read from (a rewind names
+        its target row from that same transcript); returning None means "nothing to do" and is
+        answered ``status: nothing``. A derived payload is keyed by operation alone, so a lost-reply
+        retry re-presents the original target instead of re-deriving one from an already-rewound
+        transcript. Metadata edits (``rename``) carry no generation fence, as on Ink/Desktop."""
+        key = _key(session_id, operation, payload)
         if key not in self.pending:
             snapshot = await client.rpc('session.resume', session_id=session_id)
-            self.pending[key] = {'params': dict(session_id=session_id, operation=operation,
-                payload=json.loads(encoded), request_id=uuid.uuid4().hex,
-                expected_revision=snapshot['revision'], expected_generation=snapshot['execution_generation'])}
+            body = payload(snapshot) if callable(payload) else json.loads(key[2])
+            if body is None:
+                return {'status': 'nothing', 'session_id': session_id, 'operation': operation}
+            fence = {} if operation in _METADATA else {'expected_generation': snapshot['execution_generation']}
+            self.pending[key] = {'params': dict(session_id=session_id, operation=operation, payload=body,
+                request_id=uuid.uuid4().hex, expected_revision=snapshot['revision'], **fence)}
         entry = self.pending[key]
         while 'result' not in entry:
             try:
@@ -61,7 +69,14 @@ class PreparedMutations:
         return entry['result']
 
     def acknowledge(self, session_id, operation, payload):
-        self.pending.pop((session_id, operation, json.dumps(payload, sort_keys=True)), None)
+        self.pending.pop(_key(session_id, operation, payload), None)
+
+
+_METADATA = frozenset({'rename'})
+
+
+def _key(session_id, operation, payload):
+    return (session_id, operation, None if callable(payload) else json.dumps(payload, sort_keys=True))
 
 
 def model_refusal_text(refusal, *, confirmed=False):

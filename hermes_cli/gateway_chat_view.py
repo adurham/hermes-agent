@@ -45,6 +45,8 @@ class GatewayChatView:
         # The interactive composer (set by ``run``); None in one-shot / non-TTY runs, where a
         # guarded model switch stays a refusal instead of a prompt.
         self._composer = None
+        # `/undo` puts the removed message back in the composer for the next prompt.
+        self.prefill = ""
 
     def unknown_admissions(self):
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
@@ -111,7 +113,8 @@ class GatewayChatView:
         """The next composer line, or ``""`` once the event stream failed first (``self.failure``
         is then set). The pending read is cancelled (prompt_toolkit restores the terminal) so the
         caller reports the unknown outcome without waiting for a keypress."""
-        reader = asyncio.ensure_future(prompt.prompt_async(symbol))
+        default, self.prefill = self.prefill, ""
+        reader = asyncio.ensure_future(prompt.prompt_async(symbol, **({"default": default} if default else {})))
         failed = asyncio.ensure_future(self.failed.wait())
         try:
             await asyncio.wait({reader, failed}, return_when=asyncio.FIRST_COMPLETED)
@@ -248,10 +251,7 @@ class GatewayChatView:
                 print('\n'.join(result['lines']))
                 return True
             target = result.get('branched_session_id', original)
-            snapshot = await self.client.rpc('session.resume', session_id=target)
-            self.session_id = target
-            self.generation = snapshot['execution_generation']
-            self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
+            await self.adopt(await self.client.rpc('session.resume', session_id=target))
             self.mutations.acknowledge(original, operation, payload)
             if operation == 'model' and result.get('model'):
                 self.model = str(result['model']).split('/')[-1]
@@ -266,10 +266,19 @@ class GatewayChatView:
                                            **({"value": "1" if word == "on" else "0"} if word else {}))
             print(f"YOLO {'on' if result.get('value') == '1' else 'off'} for this session")
             return True
+        from hermes_cli import gateway_chat_commands
         if command == "/help":
-            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /yolo [on|off], /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
+            print(gateway_chat_commands.help_text())
             return True
-        raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
+        return await gateway_chat_commands.run_command(self, command, rest)
+
+    async def adopt(self, snapshot):
+        """Attach this view to another session's snapshot (a branch, /new)."""
+        self.session_id = snapshot['stored_session_id']
+        self.generation = snapshot['execution_generation']
+        self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
+        self.pending = snapshot.get('pending', [])
+        self.model = str((snapshot.get('info') or {}).get('model') or self.model).split('/')[-1]
 
     async def _confirm_model_switch(self, refusal):
         """The owner refused a guarded model target (cost / data policy / large context): ask as
