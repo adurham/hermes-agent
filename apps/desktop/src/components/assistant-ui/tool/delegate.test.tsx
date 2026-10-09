@@ -141,7 +141,7 @@ describe('DelegateTool — fallback model indicator', () => {
 
     render(<DelegateTool args={{ tasks: [{ goal: 'Research Cursor' }] }} result={undefined} toolCallId="call-2" />)
 
-    expect(screen.getByText('⚠ Opus 5 (fallback from Glm 5.3)')).toBeTruthy()
+    expect(screen.getByText('⚠ Opus 5 (fallback from GLM 5.3)')).toBeTruthy()
   })
 
   it('shows no glyph for an older backend that never sends the new fields', () => {

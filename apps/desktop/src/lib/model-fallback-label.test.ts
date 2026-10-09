@@ -16,7 +16,7 @@ describe('fallbackModelLabel', () => {
   it('renders the glyph + verbose swap when fallbackActive is true, through displayModelName', () => {
     expect(
       fallbackModelLabel({ fallbackActive: true, model: 'anthropic/claude-opus-5', primaryModel: 'glm-5.3' })
-    ).toBe('⚠ Opus 5 (fallback from Glm 5.3)')
+    ).toBe('⚠ Opus 5 (fallback from GLM 5.3)')
   })
 
   it('prefers the backend-provided modelLabel over local composition', () => {
@@ -47,6 +47,6 @@ describe('fallbackModelLabelCompact', () => {
   it('renders the glyph + compact arrow swap when fallbackActive is true', () => {
     expect(
       fallbackModelLabelCompact({ fallbackActive: true, model: 'anthropic/claude-opus-5', primaryModel: 'glm-5.3' })
-    ).toBe('⚠ Glm 5.3→Opus 5')
+    ).toBe('⚠ GLM 5.3→Opus 5')
   })
 })
