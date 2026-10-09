@@ -141,7 +141,7 @@ describe('useBackgroundQueueDrain', () => {
     Object.defineProperty(window.navigator, 'locks', { configurable: true, value: { request } })
 
     try {
-      const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+      const runtimeMap = new Map([['stored-session-a', 'rt-session-a']])
       let accept!: (accepted: boolean) => void
       const submitText = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
 
@@ -149,8 +149,8 @@ describe('useBackgroundQueueDrain', () => {
       clearAllSessionStates()
 
       // Two windows, each viewing another chat, share session A's queue.
-      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-b" submitText={submitText} />)
-      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-c" submitText={submitText} />)
+      render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} selectedStoredSessionId="stored-session-b" submitText={submitText} />)
+      render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} selectedStoredSessionId="stored-session-c" submitText={submitText} />)
 
       await waitFor(() => expect(submitText).toHaveBeenCalled())
       await new Promise(resolve => window.setTimeout(resolve, 0))
@@ -169,7 +169,7 @@ describe('useBackgroundQueueDrain', () => {
   })
 
   it('forwards queued displayText so frozen @terminal chips render in the bubble', async () => {
-    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const runtimeMap = new Map([['stored-session-a', 'rt-session-a']])
     const submitText = vi.fn(async () => true)
 
     enqueueQueuedPrompt('stored-session-a', {
@@ -180,7 +180,7 @@ describe('useBackgroundQueueDrain', () => {
     })
     clearAllSessionStates()
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('```terminal\nselection A\n```\n\nlook at', {
@@ -421,12 +421,12 @@ describe('useBackgroundQueueDrain', () => {
     // the conversation is gone from this backend (reaped runtime whose stored
     // resume refuses — the post-restart shape the issue reports).
     setSessions([])
-    const runtimeMap = { current: new Map<string, string>() }
+    const runtimeMap = new Map<string, string>()
     const submitText = vi.fn(async () => false)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'never sends', attachments: [] })
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} submitText={submitText} />)
 
     await act(async () => {
       await Promise.resolve()
@@ -454,12 +454,12 @@ describe('useBackgroundQueueDrain', () => {
     vi.useFakeTimers()
 
     setSessions([lineageSession({ id: 'stored-session-a' })])
-    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const runtimeMap = new Map([['stored-session-a', 'rt-session-a']])
     const submitText = vi.fn(async () => false)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'retry from the panel', attachments: [] })
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} submitText={submitText} />)
 
     await act(async () => {
       await Promise.resolve()
@@ -489,12 +489,12 @@ describe('useBackgroundQueueDrain', () => {
     setSessions([])
     setSessionOwnerHint('stored-session-a', { connectionId: 'conn-cloud', profile: 'default' })
     setSessionOwnerHint('stored-session-a', { connectionId: 'conn-local', profile: 'work' })
-    const runtimeMap = { current: new Map<string, string>() }
+    const runtimeMap = new Map<string, string>()
     const submitText = vi.fn(async () => false)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'still alive', attachments: [] })
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} submitText={submitText} />)
 
     await act(async () => {
       await Promise.resolve()
@@ -519,12 +519,12 @@ describe('useBackgroundQueueDrain', () => {
     // entry there destroyed real data.
     setSessionProfilesTruncated({ default: true })
     setSessions([])
-    const runtimeMap = { current: new Map<string, string>() }
+    const runtimeMap = new Map<string, string>()
     const submitText = vi.fn(async () => false)
 
     enqueueQueuedPrompt('stored-session-a', { text: 'below the fold', attachments: [] })
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} submitText={submitText} />)
 
     await act(async () => {
       await Promise.resolve()
@@ -547,7 +547,7 @@ describe('useBackgroundQueueDrain', () => {
     // A queue restored from localStorage with the persisted drain budget
     // already spent: no attempts, no notice — the every-boot replay of four
     // rejections plus a banner is the reported symptom.
-    const runtimeMap = { current: new Map<string, string>() }
+    const runtimeMap = new Map<string, string>()
     const submitText = vi.fn(async () => true)
 
     setSessions([lineageSession({ id: 'stored-session-a' })])
@@ -563,7 +563,7 @@ describe('useBackgroundQueueDrain', () => {
       ]
     })
 
-    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    render(<Harness getRuntimeIdForStoredSession={runtimeGetterFrom(runtimeMap)} submitText={submitText} />)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(750 * 6)
