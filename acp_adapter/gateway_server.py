@@ -69,6 +69,24 @@ def _text(payload):
     return text if isinstance(text, str) else ""
 
 
+def _slash_command(text):
+    """Canonical Hermes command name ``text`` invokes, or None for ordinary text.
+
+    Only a registered command (or alias) is a command: ``/etc/hosts is wrong`` or ``/tmp/x``
+    (a path, the same rule ``MessageEvent.get_command`` applies) and unknown ``/words`` are
+    prompt text for the model. A registered command this surface does not carry still raises
+    ``unsupported_command`` in ``slash_mutation`` rather than reaching the owner as text."""
+    stripped = text.lstrip()
+    if not stripped.startswith('/'):
+        return None
+    name = stripped.split(None, 1)[0][1:]
+    if not name or '/' in name:
+        return None
+    from hermes_cli.commands import resolve_command
+    command = resolve_command(name)
+    return command.name if command is not None else None
+
+
 class GatewayACPAgent(acp.Agent):
     def __init__(self):
         self._conn = None
@@ -282,10 +300,11 @@ class GatewayACPAgent(acp.Agent):
             raise GatewayClientError("unknown_execution")
         from acp_adapter.content import _content_blocks_to_openai_user_content
         text, attachments = _stage_user_content(_content_blocks_to_openai_user_content(prompt))
-        if text.lstrip().startswith('/') and not attachments:
+        command = _slash_command(text) if not attachments else None
+        if command is not None:
             from hermes_cli.gateway_mutations import slash_mutation
             parts = text.strip().split(None, 1)
-            operation, payload = slash_mutation(parts[0], parts[1] if len(parts) > 1 else '')
+            operation, payload = slash_mutation('/' + command, parts[1] if len(parts) > 1 else '')
             if operation == 'branch':
                 raise GatewayClientError('use_acp_fork_session')
             client = await self._client()
