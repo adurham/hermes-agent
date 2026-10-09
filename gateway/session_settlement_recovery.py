@@ -60,38 +60,54 @@ def completion_payload(row, settled, response, captured):
 
 
 def _publish_completion(authority, live, ref, row, settled, response, captured):
-    """Thread-safe half of terminal publication; the caller holds the stream lock."""
+    """Thread-safe half of terminal publication; the caller holds the stream lock. No SQLite write
+    happens here: loop-side readers wait on this lock, so it never spans storage I/O."""
     try:
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
+    live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
+
+
+def _release_media(authority, row):
+    """Terminal media cleanup: its own write txn after publication, never under the stream lock."""
     try:
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(authority.db, row['admission_id'])
     except Exception:
         logger.exception('Terminal media cleanup failed for admission %s', row['admission_id'])
-    live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
 
 
 def commit_and_publish(authority, live, ref, row, response, outcome, captured, settlement):
     """Worker-thread settlement: redaction, encoding and the SQLite write never stall the owner loop.
 
-    The commit and its completion frame share one stream-lock hold, so replay/attach (which take
-    that lock) never see the terminal row without its completion. ``settlement`` receives the
-    committed ``(settled, response)`` before publication, so a publish failure is not a lost commit.
+    The write runs OUTSIDE ``event_stream.lock``: attach, replay, receipts and pending publication
+    take that lock on the loop, and a writer held by another process (up to ``_WRITE_PATIENCE_S``)
+    would stall every session behind it. Ordering is kept by ``live.settling``: from before the
+    write until the completion frame is published, lock holders read this claim as still started,
+    so none sees the terminal row without its completion. ``settlement`` receives the committed
+    ``(settled, response)`` before publication, so a publish failure is not a lost commit.
     The caller publishes idle ``session.info`` on the loop afterwards (bot receipt wakeups are tasks).
     """
     from gateway.session_results import finish_result, prepare_result
-    # Compaction, redaction and outcome flags are CPU-only: outside the lock, which then
-    # covers only the transaction and the completion frame.
+    # Compaction, redaction and outcome flags are CPU-only.
     prepared = prepare_result(row, response, outcome, captured)
+    admission_id = row['admission_id']
     # ``live`` is the drain's own entry: a delete committing on the loop after this write may
     # already have dropped it from ``authority.sessions``.
     with live.event_stream.lock:
+        live.settling[admission_id] = row
+    try:
         settlement['settled'], settlement['response'] = finish_result(
             authority.db, epoch=authority.epoch, row=row, response=response, outcome=outcome,
             result=captured, prepared=prepared)
-        _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)
+        with live.event_stream.lock:
+            live.settling.pop(admission_id, None)
+            _publish_completion(authority, live, ref, row, settlement['settled'], settlement['response'], captured)
+    finally:
+        with live.event_stream.lock:
+            live.settling.pop(admission_id, None)
+    _release_media(authority, row)
 
 
 # Pauses between settlement attempts after a transient storage error (held writer past its
@@ -121,6 +137,9 @@ async def settle_with_retry(authority, live, ref, row, response, outcome, captur
 
 def publish_terminal(authority, ref, row, settled, response, captured):
     """Cleanup cannot withhold a committed outcome; publication is attempted once."""
-    _publish_completion(authority, authority.sessions[ref.session_id], ref, row, settled, response, captured)
+    live = authority.sessions[ref.session_id]
+    with live.event_stream.lock:
+        _publish_completion(authority, live, ref, row, settled, response, captured)
+    _release_media(authority, row)
     # Idle follows the completion so a viewer cannot mistake a settled turn for a lost frame.
     authority._publish_pending(ref)

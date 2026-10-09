@@ -39,6 +39,11 @@ class LiveSession:
     # preflight refusal), not per message; the drain clears it when the FIFO moves again.
     pause_notified: bool = False
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # admission id -> its started claim, from the moment the settlement worker starts the terminal
+    # write until the completion frame is published. The write runs outside ``event_stream.lock``
+    # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
+    # still see the claim as started, so no snapshot shows a terminal row without its completion.
+    settling: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -137,9 +142,22 @@ class SessionAuthority:
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
         return lookup(self.sessions[ref.session_id].route)
 
+    def _pending_rows(self, ref):
+        """Pending admissions as the event stream presents them: a settlement committed but not yet
+        published (``LiveSession.settling``) still reads as its started claim. Callers that pair the
+        result with stream state hold ``event_stream.lock``, under which ``settling`` changes."""
+        rows = list_session_admissions(self.db, session_id=ref.session_id)
+        live = self.sessions.get(ref.session_id)
+        masked = dict(live.settling) if live is not None else {}
+        if not masked:
+            return rows
+        rows = {row['admission_id']: row for row in rows}
+        rows.update(masked)
+        return sorted(rows.values(), key=lambda row: row['seq'])
+
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)
-        pending = list_session_admissions(self.db, session_id=ref.session_id)
+        pending = self._pending_rows(ref)
         state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
             'running' if any(r['status'] == 'started' for r in pending) else 'idle')
         return SessionHandle(ref, self.instance_id, self.epoch, row['runtime_revision'],
@@ -167,8 +185,7 @@ class SessionAuthority:
             epoch, sequence = live.event_stream.watermark()
             return SubscriptionSnapshot(subscription, handle, epoch,
                                         sequence, tuple(local_history(self, ref)),
-                                        tuple(self._pending_receipt(r) for r in list_session_admissions(
-                                            self.db, session_id=ref.session_id)), prompts)
+                                        tuple(self._pending_receipt(r) for r in self._pending_rows(ref)), prompts)
 
     def _retire_overflowed(self, session_id, transport):
         """The fanout dropped this peer's backlog: its subscription is over even though the
@@ -211,8 +228,7 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         with live.event_stream.lock:
             handle = self._handle(ref)
-            pending = [asdict(self._pending_receipt(row)) for row in
-                       list_session_admissions(self.db, session_id=ref.session_id)]
+            pending = [asdict(self._pending_receipt(row)) for row in self._pending_rows(ref)]
             # Turns bump runtime_revision without any session.updated event, so
             # this is the only place a viewer learns the CAS revision a later
             # prepared mutation must present.
@@ -397,6 +413,11 @@ class SessionAuthority:
             raise RuntimeStoreError('not_found')
         if row['principal_id'] != actor.subject and 'session:control' not in actor.capabilities:
             raise RuntimeStoreError('permission_denied')
+        live = self.sessions[ref.session_id]
+        with live.event_stream.lock:
+            # Read after the row: a terminal row whose completion is not yet published reads as
+            # its claim, so a receipt poller never replays events that lack the completion frame.
+            row = live.settling.get(admission_id, row)
         return self._receipt(row)
 
     async def cancel_queued(self, actor, ref, admission_id):
