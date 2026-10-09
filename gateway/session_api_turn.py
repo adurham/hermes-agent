@@ -337,9 +337,17 @@ _CONTROL_EVENTS = frozenset({'approval.request', 'approval.settled', 'clarify.re
 @contextmanager
 def observe_api_controls(admitted, sink):
     """Project the same approval/clarify prompts WS viewers receive to ``sink(type, payload)``
-    for the admission's lifetime; ``sink`` runs on the publishing thread under the stream lock."""
+    for the admission's lifetime; ``sink`` runs under the stream lock.
+
+    An exact retry joins an admission whose prompt may already be pending: it was published
+    before this observer existed, so it is replayed from the shared pending controls (the
+    source ``GET /v1/runs/{id}`` reports). Subscribing and snapshotting in ONE stream-lock hold
+    is the consistent cut: prompts are registered and answered under that lock, so each one is
+    either in the snapshot or arrives live (never both), and one already answered is absent."""
+    from hermes_state_runtime import get_session_admission
     authority, ref, row = admitted
-    events = authority.sessions[ref.session_id].event_stream
+    live = authority.sessions[ref.session_id]
+    events = live.event_stream
 
     def observer(frame):
         params = frame['params']
@@ -347,6 +355,10 @@ def observe_api_controls(admitted, sink):
             sink(params['type'], params.get('payload') or {})
     with events.lock:
         events.observers.add(observer)
+        current = get_session_admission(authority.db, admission_id=row['admission_id']) or row
+        if current['status'] == 'started':
+            for prompt in live.controls.snapshot(ref.session_id, current['generation']):
+                sink(prompt['kind'] + '.request', prompt)
     try:
         yield
     finally:
