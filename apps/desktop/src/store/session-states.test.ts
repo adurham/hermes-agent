@@ -41,7 +41,6 @@ import {
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
   frontMainIfSelected,
-  goToSession,
   isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
@@ -1104,60 +1103,6 @@ describe('selectionHomesToWorkspace', () => {
 
   it('skips homing when the selected id is already an open tile', () => {
     expect(selectionHomesToWorkspace('a', tiles)).toBe(false)
-  })
-})
-
-describe('goToSession', () => {
-  afterEach(() => {
-    $sessionTiles.set([])
-    $selectedStoredSessionId.set(null)
-    $layoutTree.set(null)
-  })
-
-  // Regression coverage for the duplicate-tab bug: any navigation entry point
-  // (session switcher, hotkeys, command palette, notifications, cron/command
-  // center) that bypasses this dedup check produces two tabs for one session —
-  // one tile tab + one workspace tab — because the workspace pane renders
-  // whatever $selectedStoredSessionId points to regardless of $sessionTiles.
-  it('fronts the existing tile instead of navigating when the session is already tiled', () => {
-    $sessionTiles.set([tile('already-open')])
-    // focusOpenSession's tile branch now gates on the pane actually being
-    // visible in the layout tree (upstream's lineage-alias + visibility fix)
-    // — a tile with no matching, active, unminimized pane falls through to
-    // null and goToSession navigates instead. Set up a tree where the tile's
-    // pane is the active one in its group, matching what a real open tile
-    // looks like.
-    $layoutTree.set(group(['workspace', tilePane('already-open')], { active: tilePane('already-open'), id: 'main' }))
-    const navigate = vi.fn()
-
-    goToSession(navigate, 'already-open')
-
-    expect(navigate).not.toHaveBeenCalled()
-  })
-
-  it('fronts the workspace instead of re-navigating when the session is already the main session', () => {
-    $selectedStoredSessionId.set('main-session')
-    const navigate = vi.fn()
-
-    goToSession(navigate, 'main-session')
-
-    expect(navigate).not.toHaveBeenCalled()
-  })
-
-  it('navigates when the session has no open tab yet', () => {
-    const navigate = vi.fn()
-
-    goToSession(navigate, 'fresh-session')
-
-    expect(navigate).toHaveBeenCalledWith('/fresh-session', undefined)
-  })
-
-  it('forwards navigate options (e.g. replace) on the fallback path', () => {
-    const navigate = vi.fn()
-
-    goToSession(navigate, 'fresh-session', { replace: true })
-
-    expect(navigate).toHaveBeenCalledWith('/fresh-session', { replace: true })
   })
 })
 

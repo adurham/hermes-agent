@@ -1287,30 +1287,6 @@ def _apply_platform_gating(items):
             item.add_marker(pytest.mark.skip(reason=reason))
 
 
-@pytest.fixture(autouse=True)
-def _keychain_write_guard(monkeypatch):
-    """Never let tests write the real macOS Keychain credential entry.
-
-    ``_write_claude_code_credentials`` mirrors refreshed OAuth credentials
-    into the live "Claude Code-credentials" Keychain item via ``security``.
-    Tests exercise the file-write path against tmp dirs (monkeypatched
-    Path.home), but the Keychain sync targets the real Keychain regardless
-    of cwd/home — a test run must never clobber the user's live credential.
-
-    The sync lives in ``agent.anthropic_credentials`` (where the write path
-    was consolidated in the v2026.8.31 sync); the adapter re-exports it, so
-    both namespaces are patched to cover either call path.
-    """
-    monkeypatch.setattr(
-        "agent.anthropic_credentials._sync_claude_code_credentials_to_keychain",
-        lambda oauth_data: None,
-    )
-    monkeypatch.setattr(
-        "agent.anthropic_adapter._sync_claude_code_credentials_to_keychain",
-        lambda oauth_data: None,
-    )
-
-
 # ── Known-failing list ───────────────────────────────────────────────────────
 #
 # Tests listed in ``tests/known_failing.txt`` are skipped at collection time.

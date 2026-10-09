@@ -317,13 +317,16 @@ class TestSendMessageTool:
         )
 
     def test_a2a_direct_channel_target_bypasses_misleading_home_channel_error(self):
-        """#78396: 'a2a:<context_id>' has no channel-directory entry (A2A never
-        populates one) and no ``_parse_target_ref`` rule (its ids are opaque
-        A2A context ids, not a parseable format). Before the fix, this fell
-        through to the "No home channel set for a2a" error even though the
-        user supplied a direct channel exactly as the error text recommends.
-        The fix passes the raw ref through as chat_id for platforms with no
-        parser rule and no directory match, instead of erroring."""
+        """#78396: 'a2a:<context_id>' must not fall through to the misleading
+        "No home channel set for a2a" error.
+
+        Pinned to v0.21.6's resolver (``tools/send_message_targets.resolve_send_target``,
+        identical to the tag): ``action='send'`` resolves strictly
+        (``pass_unresolved_references`` is False), and A2A is a plugin platform with no
+        ``parse_target_ref_fn`` and no channel-directory entries, so an opaque context id
+        yields an actionable "Could not resolve ... plugin parser" error naming the target
+        — never the home-channel error, and nothing is sent. (Raw passthrough is limited to
+        react/unreact, which opt into ``pass_unresolved_references``.)"""
         a2a_platform = Platform("a2a")
         a2a_cfg = SimpleNamespace(enabled=True, token=None, extra={})
         config = SimpleNamespace(
@@ -347,16 +350,13 @@ class TestSendMessageTool:
                 )
             )
 
-        assert result["success"] is True, result
-        send_mock.assert_awaited_once_with(
-            a2a_platform,
-            a2a_cfg,
-            "some-context-id-1234",
-            "hello peer",
-            thread_id=None,
-            media_files=[],
-            force_document=False,
+        assert "success" not in result, result
+        assert result["error"] == (
+            "Could not resolve 'some-context-id-1234' on a2a. The plugin parser did not "
+            "recognize it and no channel-directory entry matched."
         )
+        assert "home channel" not in result["error"].lower()
+        send_mock.assert_not_awaited()
 
 
     def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):

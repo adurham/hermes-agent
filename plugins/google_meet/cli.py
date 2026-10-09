@@ -65,17 +65,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     p["transcript"].add_argument("--last", type=int, default=None)
     p["say"].add_argument("text", help="what to say")
     p["say"].add_argument("--node", default=None)
-    try:
-        _register_node_cli(p["node"])
-    except Exception as e:  # pragma: no cover — defensive
-        # If the node module fails to register for any reason (optional dep missing etc.),
-        # leave the subparser present but flag it — argparse dispatch surfaces a clear error.
-        _import_error = e
-
-        def _node_unavailable(args):
-            print(f"hermes meet node: module unavailable ({_import_error})")
-            return 1
-        p["node"].set_defaults(func=_node_unavailable)
+    _register_node_cli(p["node"])
     subparser.set_defaults(func=meet_command)
 
 

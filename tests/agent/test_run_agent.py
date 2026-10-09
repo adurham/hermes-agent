@@ -691,87 +691,6 @@ class TestInit:
             assert use_native is False
             assert a._use_prompt_caching is False
 
-    def test_main_session_cache_ttl_override_applies_to_main_session(self):
-        """prompt_caching.main_session_cache_ttl overrides cache_ttl for the
-        top-level interactive session (platform != "subagent")."""
-        with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch(
-                "hermes_cli.config.load_config",
-                return_value={"prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": "1h"}},
-            ),
-            patch(
-                "hermes_cli.config.load_config_readonly",
-                return_value={"prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": "1h"}},
-            ),
-        ):
-            a = AIAgent(
-                api_key="test-k...7890",
-                model="anthropic/claude-sonnet-4-20250514",
-                base_url="https://openrouter.ai/api/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            assert a._cache_ttl == "1h"
-
-    def test_main_session_cache_ttl_override_ignored_for_subagent(self):
-        """Subagents must always stay on cache_ttl regardless of
-        main_session_cache_ttl — short-lived, one-shot delegated turns
-        should not pay the 1h tier's higher write cost."""
-        with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch(
-                "hermes_cli.config.load_config",
-                return_value={"prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": "1h"}},
-            ),
-            patch(
-                "hermes_cli.config.load_config_readonly",
-                return_value={"prompt_caching": {"cache_ttl": "5m", "main_session_cache_ttl": "1h"}},
-            ),
-        ):
-            a = AIAgent(
-                api_key="test-k...7890",
-                model="anthropic/claude-sonnet-4-20250514",
-                base_url="https://openrouter.ai/api/v1",
-                platform="subagent",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            assert a._cache_ttl == "5m"
-
-    def test_main_session_cache_ttl_unset_falls_back_to_cache_ttl(self):
-        """With no main_session_cache_ttl configured, the main session must
-        reproduce the historical single-tier behavior exactly."""
-        with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
-            patch(
-                "hermes_cli.config.load_config",
-                return_value={"prompt_caching": {"cache_ttl": "5m"}},
-            ),
-            patch(
-                "hermes_cli.config.load_config_readonly",
-                return_value={"prompt_caching": {"cache_ttl": "5m"}},
-            ),
-        ):
-            a = AIAgent(
-                api_key="test-k...7890",
-                model="anthropic/claude-sonnet-4-20250514",
-                base_url="https://openrouter.ai/api/v1",
-                quiet_mode=True,
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            assert a._cache_ttl == "5m"
-
-
     def test_constructor_max_tokens_wins_over_config(self):
         """Explicit constructor max_tokens keeps programmatic callers stable."""
         with (
@@ -2326,9 +2245,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("manage_catalog", {"action": "search", "query": "blender"}),
         ("gui_tour", {"action": "stop"}),
         ("delegate_task", {"goal": "Check the child path"}),
-        # Fork-only inline dispatch branch (see AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
-        # fork note in agent/agent_runtime_helpers.py).
-        ("hermes_load_tools", {"names": ["web_search"]}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
@@ -2365,10 +2281,6 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_terminal_tool.read_terminal_tool",
-            lambda **kwargs: '{"ok":true}',
-        )
-        monkeypatch.setattr(
-            "tools.hermes_load_tools.load_tools",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(

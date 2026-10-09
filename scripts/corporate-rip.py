@@ -65,11 +65,6 @@ TOOLSET_FILES: dict[str, list[str]] = {
         "tests/gateway/test_yuanbao_pipeline.py",
         "tests/gateway/test_yuanbao_proto.py",
     ],
-    "homeassistant": [
-        "tools/homeassistant_tool.py",
-        "tests/tools/test_homeassistant_tool.py",
-        "tests/gateway/test_homeassistant.py",
-    ],
     # ``moa`` and ``rl`` were removed rather than renamed: MoA became a virtual
     # provider (agent/moa_*.py — no toolset module left to rip; upstream
     # c6575df927 deleted tools/mixture_of_agents_tool.py and its test) and the

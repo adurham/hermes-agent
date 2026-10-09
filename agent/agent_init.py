@@ -700,17 +700,6 @@ def _init_prompt_cache_config(agent):
         from agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
-        # Main-session-only override: only consulted for the top-level
-        # session, never for delegated subagents or auxiliary calls (see
-        # comment above). Falls back to cache_ttl when unset/empty, which
-        # reproduces the historical single-tier behavior exactly.
-        # FORK: main-session-only override — never for delegated subagents or auxiliary calls
-        # (those are short-lived one-shots where the cheaper 5m write tier wins). Falls back to
-        # cache_ttl when unset, reproducing the historical single-tier behavior exactly.
-        if getattr(agent, "platform", None) != "subagent":
-            _main_ttl = _pc_cfg.get("main_session_cache_ttl")
-            if _main_ttl in {"5m", "1h"}:
-                _ttl = _main_ttl
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
         elif _ttl == AUTO_CACHE_TTL:
@@ -1271,12 +1260,11 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     from agent.fork import memory_recall as _fork_memory_recall
     from agent.fork import memory_session_pin as _fork_session_pin
     from agent.fork import rate_limit_tracker as _fork_rl
-    from agent.fork import tool_search_lazy as _fork_ts
     from agent.fork import diagnostics as _fork_diag
     from agent.fork import consult_nudge as _fork_consult
     for _fork_mod in (
         _fork_skill_recall, _fork_memory_recall, _fork_session_pin, _fork_rl,
-        _fork_ts, _fork_diag, _fork_consult,
+        _fork_diag, _fork_consult,
     ):
         _fork_mod.init_state(agent)
 

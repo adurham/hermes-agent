@@ -331,14 +331,27 @@ def build_prompt_cache_plan(
     api_messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] | None, *,
     cache_ttl: str = "5m", native_anthropic: bool = False, static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False, tool_part_markers: bool = True,
+    downstream_tools_marker: bool | None = None,
 ) -> PromptCachePlan:
     """Build copy-on-write cache sections for one resolved request destination
-    (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes)."""
+    (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes).
+
+    FORK: ``downstream_tools_marker`` says whether the transport will itself put a
+    ``cache_control`` marker on ``tools[-1]`` after this plan (the Anthropic adapter's
+    ``cache_tools`` path, ``chat_completion_helpers._build_anthropic_kwargs``). Only then is a
+    message-side breakpoint reserved for it. ``None`` derives it the way the main loop wires
+    ``cache_tools=agent._use_native_cache_layout``: native layout (always the anthropic_messages
+    wire) with a non-empty tools list. Senders that never emit a tools marker (chat_completions
+    envelope routes, the auxiliary/MoA Anthropic client) must not reserve one — doing so left
+    those requests on 3 of Anthropic's 4 breakpoints."""
     planned_tools = strip_anthropic_tool_cache_control(tools)
     if not direct_native_tool_cache or not planned_tools:
+        if downstream_tools_marker is None:
+            downstream_tools_marker = bool(native_anthropic and planned_tools)
         # apply_anthropic_cache_control re-canonicalises prior decoration itself.
         planned_messages = apply_anthropic_cache_control(
             list(api_messages or []), cache_ttl=cache_ttl, native_anthropic=native_anthropic,
+            reserve_tools_breakpoint=downstream_tools_marker,
             static_system_prefix=static_system_prefix, tool_part_markers=tool_part_markers)
         return PromptCachePlan(messages=planned_messages, tools=planned_tools)
 

@@ -454,7 +454,6 @@ class AIAgent(
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        self._tools_hash_cache = None
 
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None

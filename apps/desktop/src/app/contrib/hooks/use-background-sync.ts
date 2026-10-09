@@ -689,7 +689,6 @@ const TYPING_BURST_QUIET_MS = 1_500
 // socket the window just regained.
 export const TRANSCRIPT_RETURN_REFRESH_MIN_GAP_MS = 5_000
 
-
 interface LiveSessionStatusItem {
   id?: string
   last_active?: number

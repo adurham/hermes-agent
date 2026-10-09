@@ -47,9 +47,8 @@ _BUILD_KWARG_DEFAULTS = {
     "max_tokens": 16384, "reasoning_config": None, "tool_choice": None, "is_oauth": False, "preserve_dots": False,
     "context_length": None, "base_url": None, "fast_mode": False, "drop_context_1m_beta": False,
     # FORK params (see agent/anthropic_adapter.py::build_anthropic_kwargs):
-    # tool_search_config — see _apply_tool_search; None/disabled = no transformation.
     # cache_tools / cache_ttl — native tools[] cache-control layout.
-    "tool_search_config": None, "cache_tools": False, "cache_ttl": "5m",
+    "cache_tools": False, "cache_ttl": "5m",
 }
 
 

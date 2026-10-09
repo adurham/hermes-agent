@@ -1772,21 +1772,6 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(lambda next_args: inline_executor(agent, next_args, inline_ctx), finish_in_finally=False)
-    if function_name == "hermes_load_tools":
-        # FORK: client-side lazy tool loading. Not in INLINE_TOOL_EXECUTORS (fork-only tool) and
-        # its registry handler deliberately refuses to run outside the agent loop, so it needs
-        # its own branch. Mutates agent._promoted_tools; schemas for the promoted names ship on
-        # the NEXT API call (_apply_tool_search, client_side mode). Mirrors the invoke_tool
-        # branch in agent/agent_runtime_helpers.py so both paths behave identically.
-        def _load_tools_execute(next_args: dict) -> Any:
-            from tools.hermes_load_tools import load_tools as _load_tools
-            return _load_tools(
-                names=next_args.get("names") or [],
-                promoted=agent._promoted_tools,
-                available_names=set(agent.valid_tool_names or ()),
-                deferred_names=agent._currently_deferred_names(),
-            )
-        return _SequentialDispatch(_load_tools_execute, finish_in_finally=False)
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner

@@ -1771,7 +1771,6 @@ export function ChatSidebar({
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
-                manualOrder
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
@@ -1953,7 +1952,6 @@ export function ChatSidebar({
                   ) : undefined
                 }
                 liveSessions={inProject ? enteredProjectOverlaySessions : undefined}
-                manualOrder={!showAllProfiles && agentOrderManual}
                 manualOrderIds={agentOrderManual ? agentOrderIds : sortOrderIds}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}

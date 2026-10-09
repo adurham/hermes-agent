@@ -1420,13 +1420,9 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
-        # FORK: wire MCP-tool deferral (client-side lazy loading) and the native tools[] cache
-        # breakpoint. The transport and _apply_tool_search support both, but this builder was the
-        # one live call site that never passed them — without tool_search_config every MCP tool
-        # ships its full schema (observed: 253 tools / ~399KB / ~100K tokens cold-cached).
-        # getattr-guarded like its neighbors, so plugin engines / test doubles without the fork's
-        # deferral builder simply skip deferral.
-        tool_search_config=getattr(agent, "_build_tool_search_config", lambda: None)(),
+        # FORK: wire the native tools[] cache breakpoint (the transport supports it, but this
+        # builder was the one live call site that never passed it). getattr-guarded like its
+        # neighbors for plugin engines / test doubles.
         cache_tools=bool(getattr(agent, "_use_native_cache_layout", False)),
         cache_ttl=getattr(agent, "_cache_ttl", "5m"))
     # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook

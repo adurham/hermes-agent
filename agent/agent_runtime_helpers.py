@@ -90,10 +90,6 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "manage_catalog", "setup_mcp",
     "gui_tour",
     "delegate_task",
-    # FORK: hermes_load_tools is a fork-only inline dispatch branch (client-side lazy tool
-    # loading) that goes through the same middleware path, so it must be listed here or the
-    # executor double-fires its post_tool_call hook.
-    "hermes_load_tools",
 })
 
 _TRAJECTORY_SYSTEM_PROMPT = (
@@ -1706,6 +1702,9 @@ def plan_cache_sections_for_destination(
         # LiteLLM-style envelope routes forward part-level markers into tool_result.content[] →
         # non-retryable 400.
         tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
+        # FORK: these senders (AnthropicAuxiliaryClient / OpenAI-wire call_llm) never pass
+        # cache_tools, so no tools[] marker follows the plan — don't reserve a breakpoint for one.
+        downstream_tools_marker=False,
     )
     return plan.messages, plan.tools
 
@@ -2618,27 +2617,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
             return result
 
-    elif function_name == "hermes_load_tools":
-        # FORK: client-side lazy tool loading. Not in INLINE_TOOL_EXECUTORS (fork-only tool), and
-        # its registry handler deliberately refuses to run outside the agent loop, so it needs its
-        # own branch here. Mutates agent._promoted_tools; schemas for promoted names ship on the
-        # NEXT API call (handled by _apply_tool_search in client_side mode).
-        def _execute(next_args: dict) -> Any:
-            from tools.hermes_load_tools import load_tools as _load_tools
-            result = _load_tools(
-                names=next_args.get("names") or [],
-                promoted=agent._promoted_tools,
-                available_names=set(agent.valid_tool_names or ()),
-                deferred_names=agent._currently_deferred_names(),
-            )
-            emit_terminal_post_tool_call(
-                agent, function_name=function_name,
-                function_args=next_args if isinstance(next_args, dict) else function_args,
-                result=result, effective_task_id=effective_task_id, tool_call_id=tool_call_id,
-                duration_ms=int((time.monotonic() - tool_start_time) * 1000),
-                middleware_trace=_tool_middleware_trace,
-            )
-            return result
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

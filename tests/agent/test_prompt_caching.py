@@ -243,6 +243,52 @@ class TestPromptCachePlan:
         assert len(plan.tools) == 0
 
 
+class TestToolsBreakpointReservationFollowsTheTransport:
+    """FORK: a message-side breakpoint is reserved for ``tools[-1]`` only when the
+    transport will actually emit that marker (native Messages ``cache_tools`` path).
+    The chat_completions envelope wire never marks tools[], so reserving there left
+    Claude-on-OpenRouter/Portal requests on 3 of 4 breakpoints."""
+
+    _MESSAGES = [
+        {"role": "system", "content": "You are a test agent."},
+        {"role": "user", "content": "list files"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {
+            "name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "a.txt"},
+        {"role": "user", "content": "thanks, now summarize"},
+    ]
+    _TOOLS = [{"type": "function", "function": {"name": "terminal", "parameters": {}}}]
+
+    def test_envelope_route_spends_all_four_breakpoints_on_messages(self):
+        plan = build_prompt_cache_plan(copy.deepcopy(self._MESSAGES), self._TOOLS, native_anthropic=False)
+        assert _count_cache_markers(plan.messages, plan.tools) == 4
+        assert not any("cache_control" in t for t in plan.tools)
+
+    def test_native_layout_reserves_one_for_the_adapter_tools_marker(self):
+        plan = build_prompt_cache_plan(copy.deepcopy(self._MESSAGES), self._TOOLS, native_anthropic=True)
+        # 3 here + the adapter's cache_tools marker on tools[-1] == 4 on the wire.
+        assert _count_cache_markers(plan.messages, plan.tools) == 3
+        assert _count_cache_markers(plan.messages, apply_anthropic_tools_cache_control(plan.tools)) == 4
+
+    def test_native_layout_without_tools_reserves_nothing(self):
+        plan = build_prompt_cache_plan(copy.deepcopy(self._MESSAGES), [], native_anthropic=True)
+        assert _count_cache_markers(plan.messages, plan.tools) == 4
+
+    def test_explicit_no_downstream_marker_overrides_native_default(self):
+        plan = build_prompt_cache_plan(
+            copy.deepcopy(self._MESSAGES), self._TOOLS, native_anthropic=True, downstream_tools_marker=False,
+        )
+        assert _count_cache_markers(plan.messages, plan.tools) == 4
+
+    def test_direct_native_tool_cache_still_totals_four(self):
+        plan = build_prompt_cache_plan(
+            copy.deepcopy(self._MESSAGES), self._TOOLS, native_anthropic=True,
+            static_system_prefix="You are", direct_native_tool_cache=True,
+        )
+        assert "cache_control" in plan.tools[-1]
+        assert _count_cache_markers(plan.messages, plan.tools) == 4
+
+
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker_on_native_anthropic(self):
         """Native Anthropic path: cache_control injected top-level (adapter moves it inside tool_result)."""

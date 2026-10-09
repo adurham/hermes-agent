@@ -367,6 +367,9 @@ def _maybe_apply_moa_cache_control(
         return apply_anthropic_cache_control(
             messages, cache_ttl=effective_cache_ttl(cache_ttl, provider=provider, model=model),
             native_anthropic=native_layout,
+            # FORK: advisor/synthesis calls carry no tools[], so nothing downstream spends a
+            # tools breakpoint — keep the documented system-and-3 layout.
+            reserve_tools_breakpoint=False,
             tool_part_markers=envelope_tool_part_cache_markers_supported(provider, base_url),
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call

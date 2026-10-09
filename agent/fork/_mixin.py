@@ -13,8 +13,7 @@ The real implementations live in the sibling modules:
   ``agent.fork.consult_nudge``       — second-opinion (consult tool) reminder
   ``agent.fork.rate_limit_tracker``  — rate-limit observability
   ``agent.fork.anthropic_recovery``  — refusal retry (content-filter scrub; CC alias translation retired 2026-09-25 with the CC alias layer)
-  ``agent.fork.tool_search_lazy``    — lazy MCP tool gating
-  ``agent.fork.diagnostics``         — tools-signature hash (xAI hint retired to upstream)
+  ``agent.fork.diagnostics``         — per-turn overload/cache-strip state
 
 Each forwarder is a 4-line method that imports and dispatches. Why a
 mixin instead of methods on ``AIAgent`` directly?
@@ -55,25 +54,10 @@ class ForkForwardersMixin:
         from agent.fork.skill_recall import record_loaded_skill
         return record_loaded_skill(self, name, tool_result)
 
-    def _tools_signature(self) -> str:
-        """Forwarder — see ``agent.fork.diagnostics.tools_signature``."""
-        from agent.fork.diagnostics import tools_signature
-        return tools_signature(self)
-
-    def _build_tool_search_config(self) -> Optional[Dict[str, Any]]:
-        """Forwarder — see ``agent.fork.tool_search_lazy.build_tool_search_config``."""
-        from agent.fork.tool_search_lazy import build_tool_search_config
-        return build_tool_search_config(self)
-
     def _capture_rate_limits_from_headers(self, headers: Any) -> None:
         """Forwarder — see ``agent.fork.rate_limit_tracker.capture_rate_limits_from_headers``."""
         from agent.fork.rate_limit_tracker import capture_rate_limits_from_headers
         return capture_rate_limits_from_headers(self, headers)
-
-    def _currently_deferred_names(self) -> Optional[Set[str]]:
-        """Forwarder — see ``agent.fork.tool_search_lazy.currently_deferred_names``."""
-        from agent.fork.tool_search_lazy import currently_deferred_names
-        return currently_deferred_names(self)
 
     def _log_rate_limit_first_capture(self, state: "RateLimitState") -> None:
         """Forwarder — see ``agent.fork.rate_limit_tracker.log_rate_limit_first_capture``."""

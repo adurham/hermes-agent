@@ -80,7 +80,6 @@ import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession
 import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { goToSession } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import {
   $backendUpdateApply,
@@ -96,6 +95,7 @@ import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
+import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
@@ -754,10 +754,16 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
   const go = useCallback((path: string) => () => navigateToWorkspacePage(navigate, path), [navigate])
 
-  // Session-specific goto: routes through `goToSession` so a palette pick on a
-  // session that's already open (tile or main) fronts its tab instead of
-  // loading a second copy into the workspace — same guard as a sidebar click.
-  const goSession = useCallback((sessionId: string) => () => goToSession(navigate, sessionId), [navigate])
+  // Sessions: plain select = open beside what's already loaded (focus existing
+  // tile/main, else a new tab — main only when it's a blank draft);
+  // ⌘/⌃-select / ⌘-Enter = force a new tab; ⇧⌘ = own window. Same door as the
+  // sidebar, minus the sidebar's licence to spend main.
+  const goSession = useCallback(
+    (sessionId: string) => (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+      openSessionFromPicker(sessionId, navigate, openSessionIntentFromModifiers(event, 'stack'))
+    },
+    [navigate]
+  )
 
   // Step up one nested page (or back to the root list), clearing the filter so
   // the parent page doesn't reopen mid-search.
@@ -1114,7 +1120,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             id: `goto-${directId}`,
             keywords: ['session', 'id', 'go to', directId],
             label: `${t.commandCenter.goToSession} ${directId}`,
-            run: goSession(directId)
+            runWithEvent: goSession(directId)
           }
         ]
       })
@@ -1248,7 +1254,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: `session-${session.id}`,
           keywords: sessionKeywords(session),
           label: session.title,
-          run: goSession(session.id)
+          runWithEvent: goSession(session.id)
         }))
       })
     }

@@ -341,6 +341,9 @@ def _build_child_agent(
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
+        # Per-role reasoning (delegation.reasoning_effort_by_role): persona
+        # first, then the caller's per-task spawn role.
+        agent_type=agent_type, role=role,
     )
     # A role's own fallback bundle REPLACES the inherited/pinned chain resolution above
     # (including an empty list, which means "no runtime fallback for this hop" — used when
@@ -955,10 +958,24 @@ def _build_children(
     )
     if err:
         return [], err
+    try:
+        from hermes_cli.personas import lookup_max_iterations_for_role
+    except Exception:
+        lookup_max_iterations_for_role = None
     children = []
     for i, t in enumerate(task_list):
         _route = routes[i]
         _creds = _route["creds"]
+        # Per-task iteration budget (delegation.max_iterations_by_role): agent_type entry beats the
+        # spawn-role entry beats max_iterations (global default with the top-level role cap folded in).
+        task_max_iter = max_iterations
+        if lookup_max_iterations_for_role is not None:
+            with _quiet("Could not resolve max_iterations_by_role for child %d", i):
+                _task_cap = lookup_max_iterations_for_role(_route["agent_type"])
+                if _task_cap is None:
+                    _task_cap = lookup_max_iterations_for_role(_route["role"])
+                if _task_cap is not None:
+                    task_max_iter = _task_cap
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -967,7 +984,7 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=_route["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=_route["model"], max_iterations=task_max_iter, task_count=len(task_list),
                 parent_agent=parent_agent, role=_route["role"], agent_type=_route["agent_type"],
                 override_provider=_creds["provider"], override_base_url=_creds["base_url"],
                 override_api_key=_creds["api_key"], override_api_mode=_creds["api_mode"],
@@ -1310,6 +1327,15 @@ def delegate_task(
             "delegate_task: ignoring caller-supplied max_iterations=%s; using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
+    # Per-role iteration budgets: delegation.max_iterations_by_role[top_role]
+    # overrides the global default; per-task agent_type/role entries are
+    # applied in _build_children on top of this folded-in value.
+    effective_max_iter = default_max_iter
+    with _quiet("Could not load delegation.max_iterations_by_role"):
+        from hermes_cli.personas import lookup_max_iterations_for_role
+        _role_cap = lookup_max_iterations_for_role(top_role)
+        if _role_cap is not None:
+            effective_max_iter = _role_cap
     # credentials_cfg (internal callers only, e.g. /review → auxiliary.review) is
     # a per-call routing owner shaped like the delegation config section. Keep
     # the route and its fallback policy together through child construction.
@@ -1386,7 +1412,7 @@ def delegate_task(
     origin = _capture_origin()
 
     children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+        task_list, task_schemas, creds, top_role=top_role, max_iterations=effective_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
         cfg=cfg, roster_warnings=_roster_warnings,
     )
