@@ -409,7 +409,7 @@ _INTERACTIVE = frozenset({"session:create", "session:read", "session:submit", "s
 def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
     """One RPC through handle_ws on an authority connection whose dispatch answers -32601, so the
     request takes the legacy-fallback branch (R2-M3). Returns the reply frame for id 1."""
-    import gateway.session_controls as session_controls
+    from gateway import session_controls
 
     class FakeConnection:
         def __init__(self, authority, transport, identity, operator=False):
@@ -444,6 +444,44 @@ def _drive_authority_fallback(monkeypatch, *, capabilities, profile_id, method):
 
     asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
     return next(frame for frame in sent if frame.get("id") == 1)
+
+
+def test_ready_frame_advertises_a_session_authority_only_when_one_is_bound(monkeypatch):
+    """An explicit TUI attach (HERMES_TUI_GATEWAY_URL) negotiates the canonical wire from this flag."""
+    from gateway import session_controls
+
+    class FakeConnection:
+        def __init__(self, authority, transport, identity, operator=False):
+            self.actor = type("Actor", (), {"capabilities": frozenset(), "profile_id": "p"})()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(session_controls, "AuthorityConnection", FakeConnection)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    def ready(scope):
+        sent = []
+
+        class FakeWS:
+            async def accept(self, **_kw):
+                pass
+
+            async def send_text(self, line):
+                sent.extend(json.loads(part) for part in line.splitlines() if part.strip())
+
+            async def receive_text(self):
+                raise ws_mod._WebSocketDisconnect()
+
+            async def close(self, **_kw):
+                pass
+
+        FakeWS.scope = scope
+        asyncio.run(ws_mod.handle_ws(FakeWS(), auth_identity={"user_id": "u"}))
+        return sent[0]["params"]["payload"]
+
+    assert ready({"hermes.session_authority": object()})["session_authority"] is True
+    assert "session_authority" not in ready({})
 
 
 def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):

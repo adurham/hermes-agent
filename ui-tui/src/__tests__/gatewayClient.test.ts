@@ -299,6 +299,40 @@ describe('GatewayClient websocket attach mode', () => {
     } finally { gw.kill(); vi.useRealTimers() }
   })
 
+  it('negotiates the canonical wire on an explicit attach whose listener advertises a session authority', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const events: any[] = []
+
+    gw.on('event', event => events.push(event))
+    gw.start()
+    gw.drain()
+    const socket = FakeWebSocket.instances[0]!
+    const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+
+    socket.open()
+    socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready',
+      payload: { skin: { name: 'mono' }, session_authority: true } } }))
+    await vi.waitFor(() => expect(frames().some(frame => frame.method === 'runtime.describe')).toBe(true))
+    expect(events.some(event => event.type === 'gateway.ready')).toBe(false)
+    socket.message(JSON.stringify({ jsonrpc: '2.0', id: frames().find(f => f.method === 'runtime.describe')!.id,
+      result: { session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+    await vi.waitFor(() => expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1))
+    expect(events.find(event => event.type === 'gateway.ready').payload.skin).toEqual({ name: 'mono' })
+    expect(gw.isCanonical).toBe(true)
+
+    const created = gw.request<{ session_id: string }>('session.create', { cols: 80, model: 'm' })
+
+    await vi.waitFor(() => expect(frames().some(frame => frame.method === 'session.create')).toBe(true))
+    const create = frames().find(frame => frame.method === 'session.create')!
+
+    expect(create.params).toMatchObject({ source: 'tui', model: 'm' })
+    expect(create.params).not.toHaveProperty('cols')
+    socket.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
+    await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
+    gw.kill()
+  })
+
   it('waits for websocket open and resolves RPC requests', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()

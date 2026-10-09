@@ -17149,6 +17149,18 @@
             ],
             "default": null,
             "title": "Heartbeat"
+          },
+          "session_authority": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Authority"
           }
         },
         "required": [

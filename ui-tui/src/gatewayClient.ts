@@ -211,6 +211,13 @@ export class GatewayClient extends EventEmitter {
    * `gateway.ready` itself after `runtime.describe`, so the listener's ready would be a
    * second one) while still negotiating the transport's heartbeat capability. */
   private publishWire(ev: AnyGatewayEvent) {
+    if (!this.isCanonical && ev.type === 'gateway.ready' && this.attachUrl !== null &&
+        (ev as { payload?: { session_authority?: boolean } }).payload?.session_authority === true) {
+      // An explicit HERMES_TUI_GATEWAY_URL endpoint whose session verbs belong to an authority:
+      // negotiate the canonical wire exactly like a local grant, keeping the listener's skin.
+      return this.adoptCanonicalAttach(ev as GatewayEvent<'gateway.ready'>)
+    }
+
     if (this.isCanonical && ev.type === 'gateway.ready') {
       if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
         this.channel.startHeartbeat()
@@ -226,6 +233,27 @@ export class GatewayClient extends EventEmitter {
     }
 
     this.publish(ev)
+  }
+
+  private adoptCanonicalAttach(ev: GatewayEvent<'gateway.ready'>) {
+    const ws = this.ws
+
+    this.isCanonical = true
+
+    if (ev.payload?.heartbeat && ws?.readyState === WS_OPEN) {
+      this.channel.startHeartbeat()
+    }
+
+    this.describeFlight = undefined
+    void this.describeRuntime().then(() => {
+      if (this.ws === ws) {
+        this.publish({ type: 'gateway.ready', payload: { skin: ev.payload?.skin } } as unknown as AnyGatewayEvent)
+      }
+    }).catch(error => {
+      this.publish({ type: 'gateway.start_timeout', payload: {
+        python: 'runtime.describe', cwd: '', stderr_tail: String(error)
+      } })
+    })
   }
 
   private publish(ev: AnyGatewayEvent) {
@@ -687,6 +715,9 @@ export class GatewayClient extends EventEmitter {
     this.closeSidecarSocket()
 
     if (attachUrl) {
+      // Each explicit connection negotiates its wire from the listener's ready frame.
+      this.isCanonical = false
+      this.creationContract = undefined
       this.startAttachedGateway(attachUrl)
 
       return
@@ -830,14 +861,23 @@ export class GatewayClient extends EventEmitter {
         this.start()
       }
 
-      return this.requestOverWebSocket<T>(method, params, timeoutMs)
+      return this.isCanonical
+        ? this.requestCanonical<T>(method, params, timeoutMs)
+        : this.requestOverWebSocket<T>(method, params, timeoutMs)
     }
 
     if (!this.bootstrapFlight) { this.start() }
 
-    return this.bootstrapFlight!.then(async () => {
+    return this.bootstrapFlight!.then(() => {
       if (this.bootstrapError) { throw this.bootstrapError }
 
+      return this.requestCanonical<T>(method, params, timeoutMs)
+    })
+  }
+
+  /** One request through the canonical wire adapter (local grant or negotiated explicit attach). */
+  private requestCanonical<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    return (async () => {
       if (method === 'session.create' && !this.creationContract) { await this.describeRuntime() }
       const request = canonicalRequest(method, params, this.creationContract)
       const toolProgress = method === 'session.create' ? launchToolProgress() : undefined
@@ -851,7 +891,7 @@ export class GatewayClient extends EventEmitter {
       }
 
       return canonicalResult(method, value, request.params)
-    })
+    })()
   }
 
   kill(reason = 'requested') {
