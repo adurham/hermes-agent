@@ -29,6 +29,7 @@ import { applyConnectionRequest, clearConnectionOperation } from './connectionOp
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
+import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
 import { captureDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -403,10 +404,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         closed?.messages?.forEach(message => sys(message))
 
         if (requestedTitle) {
-          rpc<SessionTitleResponse>('session.title', {
-            session_id: r.session_id,
-            title: requestedTitle
-          })
+          ;(gw.isCanonical
+            ? renameCanonicalSession(gw, r.session_id, requestedTitle).then(title =>
+                title === undefined ? null : ({ title } as SessionTitleResponse)
+              )
+            : rpc<SessionTitleResponse>('session.title', { session_id: r.session_id, title: requestedTitle })
+          )
             .then(result => {
               if (!result || getUiState().sid !== r.session_id) {
                 return
@@ -441,7 +444,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       colsRef,
       discardStaleAttachment,
       finishAttachment,
-      gw.isCanonical,
+      gw,
       onFreshSessionStarted,
       panel,
       resetSession,

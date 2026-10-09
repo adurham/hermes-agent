@@ -45,6 +45,7 @@ import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlay
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
+import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
@@ -551,7 +552,7 @@ function handleErrorEvent(
 ): void {
   // Build/RPC failures are not authority to settle a versioned turn.
   if (versionedGenericError) {
-    sys(`error: ${String(payload?.message || 'unknown error')}`)
+    sys(`error: ${String(payload?.message || t('gatewayMsg.error.unknown'))}`)
 
     return
   }
@@ -877,7 +878,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       // launches, `hermes --tui -q "…"`) — submit LITERALLY, bypassing the
       // slash/!/interpolation dispatcher, matching one-shot's semantics.
       if (!isCurrentDestination(destination)) {
-        return sys('startup query skipped: active session changed')
+        return sys(t('canonical.submit.startupQuerySwitched'))
       }
 
       submitLiteralRef.current(STARTUP_QUERY || 'What do you see in this image?', attachments)
@@ -1689,6 +1690,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.complete': {
+        // `/usage` on the shared gateway reads this admission's committed result.
+        noteCanonicalCompletion(ev.session_id, (ev.payload as { admission_id?: unknown } | undefined)?.admission_id)
+
         const { finalMessages, finalText, interruptedReply, wasInterrupted } = turnController.recordMessageComplete(
           ev.payload ?? {}
         )

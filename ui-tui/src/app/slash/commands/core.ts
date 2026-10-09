@@ -26,6 +26,7 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
+import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
@@ -246,6 +247,10 @@ export const coreCommands: SlashCommand[] = [
       }
 
       const title = arg.trim()
+
+      if (ctx.gateway.gw?.isCanonical && (!arg || title)) {
+        return canonicalTitle(title, ctx)
+      }
 
       if (!arg) {
         ctx.gateway
@@ -753,6 +758,10 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
       }
 
+      if (ctx.gateway.gw?.isCanonical) {
+        return canonicalRewind('undo', ctx)
+      }
+
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) > 0) {
@@ -772,6 +781,11 @@ export const coreCommands: SlashCommand[] = [
     help: 'retry last user message',
     name: 'retry',
     run: (_arg, ctx) => {
+      // The durable transcript names the turn to retry, so a resumed session retries too.
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        return canonicalRewind('retry', ctx)
+      }
+
       const last = ctx.local.getLastUserMsg()
 
       if (!last) {

@@ -20,6 +20,7 @@ import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
+import { canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -761,6 +762,10 @@ export const sessionCommands: SlashCommand[] = [
     help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        return canonicalUsage(ctx)
+      }
+
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
         if (ctx.stale()) {
           return
