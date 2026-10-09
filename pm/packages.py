@@ -313,7 +313,16 @@ def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.
             return dst
     except FileNotFoundError:
         pass
-    return shutil.copy2(src, dst)
+    # Other profiles share this cache: publish only a complete copy, without
+    # truncating the live entry or leaving a failed copy visible to readers.
+    fd, staging = tempfile.mkstemp(prefix=".seed-", dir=Path(dst).parent)
+    os.close(fd)
+    try:
+        shutil.copy2(src, staging)
+        os.replace(staging, dst)
+    finally:
+        Path(staging).unlink(missing_ok=True)
+    return dst
 
 
 def uv_cache_dir() -> Path:

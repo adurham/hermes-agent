@@ -44,7 +44,7 @@ def test_update_merges_the_new_payload_into_an_existing_seed(payload_cache, tmp_
 
     added = paths.store_root().parent / "uv-cache" / "archive-v0" / "bucket" / "new.py"
     added.write_text("new pin\n", encoding="utf-8")
-    (code / "uv.lock").write_text("version = 1  # new\n", encoding="utf-8")
+    (code / "uv.lock").write_text("version = 1  # updated\n", encoding="utf-8")
     packages.uv_cache_dir()
     assert (payload_cache / "archive-v0" / "bucket" / "new.py").read_text(encoding="utf-8-sig") == "new pin\n"
 
