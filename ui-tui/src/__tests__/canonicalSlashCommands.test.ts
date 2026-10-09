@@ -47,23 +47,28 @@ function harness() {
       return { launch_request: { toolsets: ['terminal', 'web'] } }
     }
 
+    if (method === 'slash.exec' && params.command === 'status') {
+      return { output: 'Session: owner' }
+    }
+
     throw new Error(`unknown_method: ${method}`)
   })
 
   const sys = vi.fn()
   const send = vi.fn()
   const panel = vi.fn()
+  const page = vi.fn()
 
   const ctx = {
     slashFlightRef: { current: 0 },
     gateway: { gw: { isCanonical: true, request }, rpc: request },
-    transcript: { panel, send, sys, setHistoryItems: vi.fn(), trimLastExchange: (items: unknown[]) => items },
-    local: { getLastUserMsg: () => 'typed elsewhere', maybeWarn: vi.fn() },
+    transcript: { page, panel, send, sys, setHistoryItems: vi.fn(), trimLastExchange: (items: unknown[]) => items },
+    local: { getHistoryItems: () => messages, getLastUserMsg: () => 'typed elsewhere', maybeWarn: vi.fn() },
     session: { resumeById: vi.fn() },
     composer: { enqueue: vi.fn() }
   }
 
-  return { panel, request, send, slash: createSlashHandler(ctx as any), sys }
+  return { page, panel, request, send, slash: createSlashHandler(ctx as any), sys }
 }
 
 beforeEach(() => {
@@ -130,4 +135,31 @@ it('/usage renders the committed turn result and /tools says what the shared gat
   expect(sys).toHaveBeenCalledWith('/tools is not available on the shared gateway yet')
   expect(sys.mock.calls.some(([line]) => /request_failed|unsupported_command|unknown_method/.test(line))).toBe(false)
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
+})
+
+it('/status reads through the gateway; /save, /bg and /btw refuse instead of calling sidecar-only RPCs', async () => {
+  const { page, request, slash, sys } = harness()
+
+  slash('/status')
+  await flush()
+  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'status', session_id: 'owner' })
+  expect(page).toHaveBeenCalledWith('Session: owner', expect.any(String))
+
+  for (const cmd of ['/save', '/bg check the logs', '/btw what was that']) {
+    slash(cmd)
+  }
+
+  await flush()
+
+  const methods = request.mock.calls.map(([method]) => method)
+
+  for (const method of ['session.status', 'session.save', 'prompt.background', 'prompt.btw']) {
+    expect(methods).not.toContain(method)
+  }
+
+  const notices = sys.mock.calls.map(([text]) => String(text))
+
+  for (const name of ['save', 'bg', 'btw']) {
+    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
+  }
 })

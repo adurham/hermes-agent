@@ -12,6 +12,7 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
+  SlashExecResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
@@ -225,6 +226,20 @@ export const coreCommands: SlashCommand[] = [
     run: (_arg, ctx) => {
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.core.status.noActiveSession'))
+      }
+
+      if (ctx.gateway.gw?.isCanonical) {
+        // The shared gateway serves /status as a session read; session.status is a legacy sidecar RPC.
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'status', session_id: ctx.sid })
+          .then(r => {
+            if (!ctx.stale()) {
+              ctx.transcript.page(r?.output || t('slashCmd.core.status.empty'), t('slashCmd.core.status.pageTitle'))
+            }
+          })
+          .catch(ctx.guardedErr)
+
+        return
       }
 
       ctx.gateway
@@ -571,6 +586,10 @@ export const coreCommands: SlashCommand[] = [
 
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
+      }
+
+      if (ctx.gateway.gw?.isCanonical) {
+        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'save'))
       }
 
       ctx.gateway
