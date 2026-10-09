@@ -93,10 +93,17 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    admit = None
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
-        room_authorizer(actor.subject, params['room_id'], create=method == 'groups.create')
+        if method == 'groups.create':
+            # Claim ownership inside the room insert's transaction: a create rejected by
+            # validation or storage must not leave an owner-only reservation behind.
+            def admit(conn):
+                room_authorizer(actor.subject, params['room_id'], create=True, conn=conn)
+        else:
+            room_authorizer(actor.subject, params['room_id'])
     if method in {'groups.attachment.upload', 'groups.attachment.download'}:
         if service is None:
             raise RuntimeStoreError('runtime_coordination_required')
@@ -138,7 +145,7 @@ def _group(authority, actor, home, method, params):
 
     def create():
         if service is not None:
-            return {'room': service.create_room(**params)}
+            return {'room': service.create_room(**params, admit=admit)}
         from gateway.hosted_room_discussion import validate_roster
         from gateway.session_authorities import served_profile_name
         name = served_profile_name(home)
@@ -150,7 +157,8 @@ def _group(authority, actor, home, method, params):
                        'target': dict(m.target or {}),
                        **({'display_name': m.display_name} if m.display_name else {})} for m in members]
         return {'room': rooms.create_room(db_path, room_id=params.get('room_id'),
-                name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
+                name=params.get('name'), members=normalized, authority_gateway_id=gateway_id,
+                admit=admit)}
 
     def disband():
         from gateway.hosted_room_driver import list_tasks

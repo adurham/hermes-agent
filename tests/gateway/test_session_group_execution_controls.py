@@ -14,15 +14,15 @@ class RoomService:
         self.calls = []
         self.runtime = SimpleNamespace(status=lambda: {'running': True, 'stopping': False})
 
-    def authorize_room(self, actor_subject, room_id, *, create=False):
+    def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
         if actor_subject != self.owner or room_id != 'owned':
             raise RuntimeStoreError('permission_denied')
 
-    def create_room(self, *, room_id, name, members):
+    def create_room(self, *, room_id, name, members, admit=None):
         from gateway.hosted_rooms import create_room, local_authority_gateway_id
         self.calls.append(('create', room_id))
         return create_room(self.db_path, room_id=room_id, name=name, members=members,
-                           authority_gateway_id=local_authority_gateway_id())
+                           authority_gateway_id=local_authority_gateway_id(), admit=admit)
 
     def status(self, room_id):
         return {'running': True, 'working': False, 'blocked': True, 'counts': {}, 'peer_routes': [],
