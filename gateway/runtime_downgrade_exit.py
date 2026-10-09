@@ -30,7 +30,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 def tree_predates_runtime(root: Path = _PROJECT_ROOT) -> bool:
     """True only when the checkout's state-store modules are readable and none defines the ledger."""
     try:
-        sources = [path.read_text(encoding="utf-8", errors="replace") for path in root.glob("hermes_state*.py")]
+        sources = [path.read_text(encoding="utf-8-sig", errors="replace") for path in root.glob("hermes_state*.py")]
     except OSError:
         return False  # mid-checkout or unreadable: proves nothing
     return bool(sources) and not any(_RUNTIME_SCHEMA_MARKER in text for text in sources)
