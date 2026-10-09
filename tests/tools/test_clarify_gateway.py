@@ -156,9 +156,10 @@ class TestClarifyPrimitive:
                 cm._notify_cbs.pop("sk9", None)
             cm.clear_session("sk9")
 
-            # clear_session unwinds the blocked thread
+            # clear_session unwinds the blocked thread with the upstream
+            # CANCELLED sentinel (was "" before upstream's sentinel split).
             result = fut.result(timeout=10.0)
-            assert result == ""
+            assert result == cm.CANCELLED
 
 
 class TestGatewayTextIntercept:

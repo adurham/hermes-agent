@@ -496,7 +496,7 @@ def test_set_role_model_none_deletes_dict_entry(monkeypatch, tmp_path):
 
 def _read_by_role(tmp_path) -> dict:
     """Read back what actually landed in ``delegation.model_by_role``."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8")) or {}
     return cfg.get("delegation", {}).get("model_by_role", {})

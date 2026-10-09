@@ -176,6 +176,9 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
         # is passed for notification-ownership routing — see the 2026-08-31
         # owner_task_id fix in process_registry.py / terminal_tool.py.
         "owner_task_id": task_id,
+        # Upstream #41225: terminal_tool_background._spawn forwards the
+        # background-only persist_on_release flag (default False) to spawn_local.
+        "persist_on_release": False,
     }]
 
 

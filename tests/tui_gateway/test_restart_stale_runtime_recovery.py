@@ -153,7 +153,10 @@ def test_resume_by_stored_id_mints_usable_fresh_runtime(restart_server):
     fresh_id = resp["result"]["session_id"]
     assert fresh_id and fresh_id != stored_id
     assert fresh_id in srv._sessions
-    assert db.reopened == [stored_id]
+    # Mounting a session is a READ: upstream #85303 moved the finalized-row reopen to
+    # the first real prompt.submit (methods_prompt._reopen_if_finalized), so resume
+    # itself must not reopen the stored row.
+    assert db.reopened == []
 
     # The fresh runtime is immediately usable: a session-scoped RPC against
     # it resolves instead of 4001-ing. (prompt.submit would then run the

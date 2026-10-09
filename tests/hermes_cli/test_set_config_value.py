@@ -558,7 +558,7 @@ class TestSchemaValidation:
         enumerated by the schema validator.
         """
         set_config_value(f"delegation.model_by_role.{role}", "claude-sonnet-5")
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["delegation"]["model_by_role"][role] == "claude-sonnet-5"
         assert "not a recognized config key" not in capsys.readouterr().out
@@ -573,7 +573,7 @@ class TestSchemaValidation:
         Guards the backward-compat half of the two-form value contract.
         """
         set_config_value("delegation.model_by_role.coder", "claude-opus-5")
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = saved["delegation"]["model_by_role"]["coder"]
         assert isinstance(entry, str)
@@ -596,7 +596,7 @@ class TestSchemaValidation:
         set_config_value(
             "delegation.model_by_role.jr-coder.provider", "ollama-cloud"
         )
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = saved["delegation"]["model_by_role"]["jr-coder"]
         assert entry == {
@@ -622,7 +622,7 @@ class TestSchemaValidation:
         set_config_value(
             "delegation.model_by_role.mid-coder.provider", "ollama-cloud"
         )
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["delegation"]["model_by_role"]["mid-coder"] == {
             "model": "deepseek-v4-flash:0731-cloud",
@@ -648,7 +648,7 @@ class TestSchemaValidation:
         )
         assert "not a recognized config key" not in capsys.readouterr().out
 
-        import yaml
+        import hermes_yaml as yaml
         by_role = yaml.safe_load(_read_config(_isolated_hermes_home))[
             "delegation"
         ]["model_by_role"]

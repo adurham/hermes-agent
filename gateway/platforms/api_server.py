@@ -1578,7 +1578,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             data = json.loads(raw)
         except json.JSONDecodeError:
             try:
-                import yaml  # type: ignore[import-not-found]
+                import hermes_yaml as yaml
             except ImportError:
                 logger.warning(
                     "API_SERVER_KEYS_FILE %s is not JSON and PyYAML isn't installed",

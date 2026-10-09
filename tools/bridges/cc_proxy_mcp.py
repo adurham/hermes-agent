@@ -131,7 +131,7 @@ def _resolve_keychain_service() -> Optional[str]:
     try:
         result = subprocess.run(
             ["security", "dump-keychain"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -156,7 +156,7 @@ def _resolve_keychain_service() -> Optional[str]:
         try:
             out = subprocess.run(
                 ["security", "find-generic-password", "-s", service],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
             ).stdout
         except (OSError, subprocess.TimeoutExpired):
             return ""
@@ -174,7 +174,7 @@ def _keychain_account(service: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", service],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -250,7 +250,7 @@ class CredStore:
             result = subprocess.run(
                 ["security", "find-generic-password",
                  "-s", self._service, "-w"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise FileNotFoundError(
@@ -291,7 +291,7 @@ class CredStore:
                  "-s", self._service,
                  "-a", account,
                  "-w", payload],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(

@@ -53,7 +53,15 @@ def get_personas_path(config_path: Optional[str] = None) -> Path:
     env = os.environ.get("HERMES_PERSONAS_PATH")
     if env:
         return Path(os.path.expanduser(env)).resolve()
-    return Path(os.path.expanduser(DEFAULT_PERSONAS_PATH)).resolve()
+    # Resolve the native Hermes root through hermes_constants rather than a literal
+    # ``~/.hermes`` so the default honors HERMES_DATA_DIR_SUFFIX / the Windows layout and is
+    # sandboxable. Same directory as DEFAULT_PERSONAS_PATH on a standard POSIX install.
+    try:
+        from hermes_constants import _get_platform_default_hermes_home
+
+        return (_get_platform_default_hermes_home() / "personas").resolve()
+    except ImportError:
+        return Path(os.path.expanduser(DEFAULT_PERSONAS_PATH)).resolve()
 
 
 # ---------------------------------------------------------------------------

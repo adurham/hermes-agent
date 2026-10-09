@@ -510,7 +510,7 @@ def test_get_config_reads_the_real_config_file(isolated_hermes_home):
     no matter what the config said. Every other test patches _get_config, so
     none of them could see it.
     """
-    import yaml
+    import hermes_yaml as yaml
     from tools.memory_auto_feedback import audit as A
 
     cfg_path = isolated_hermes_home / "config.yaml"

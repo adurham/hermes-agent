@@ -22,6 +22,17 @@ DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 MCP_TOOL_PREFIX: str = "mcp_"
 
 
+def _is_registered_mcp_tool(tool_name: str) -> bool:
+    """FORK: MCP tools register as bare ``<server>_<tool>`` (no ``mcp_`` prefix — see
+    ``tools/mcp_tool_schema.py::mcp_registered_tool_name``), so the prefix test alone never
+    matches them. Use the registration provenance map instead. Read via ``sys.modules`` so this
+    hot path never imports the MCP stack: if it is not loaded, no MCP tool is registered."""
+    import sys
+    mcp_core = sys.modules.get("tools.mcp_tool")
+    names = getattr(mcp_core, "_mcp_tool_server_names", None)
+    return bool(names) and tool_name in names
+
+
 def _configured_mcp_result_size() -> int:
     """Read ``tool_budget.mcp_result_size_chars`` via ``load_config_readonly`` (the
     sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
@@ -66,7 +77,7 @@ class BudgetConfig:
             return PINNED_THRESHOLDS[tool_name]
         if tool_name in self.tool_overrides:
             return self.tool_overrides[tool_name]
-        if tool_name.startswith(MCP_TOOL_PREFIX):
+        if tool_name.startswith(MCP_TOOL_PREFIX) or _is_registered_mcp_tool(tool_name):
             return min(self.mcp_result_size, self.default_result_size)
         from tools.registry import registry
         registry_value = registry.get_max_result_size(tool_name, default=self.default_result_size)

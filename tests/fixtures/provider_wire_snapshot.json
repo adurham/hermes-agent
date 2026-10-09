@@ -655,6 +655,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -713,6 +714,7 @@
   },
   "model": "qwen3.5-plus",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -770,6 +772,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -831,6 +834,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -889,6 +893,7 @@
   },
   "model": "qwen3-coder-plus",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -946,6 +951,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1007,6 +1013,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://coding.dashscope.aliyuncs.com/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1065,6 +1072,7 @@
   },
   "model": "qwen3-coder-plus",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1122,6 +1130,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1183,6 +1192,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1241,6 +1251,7 @@
   },
   "model": "qwen3.5-plus",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1298,6 +1309,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1359,6 +1371,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1417,6 +1430,7 @@
   },
   "model": "qwen3.5-plus",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -1474,6 +1488,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -3019,6 +3034,7 @@
   "api_mode": "chat_completions",
   "base_url": "http://127.0.0.1:1234/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -3077,6 +3093,7 @@
   },
   "model": "qwen/qwen3-8b",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -3134,6 +3151,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -3661,6 +3679,7 @@
   "api_mode": "chat_completions",
   "base_url": "http://127.0.0.1:11434/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -3719,6 +3738,7 @@
   },
   "model": "qwen3:8b",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -3776,6 +3796,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -4127,6 +4148,10 @@
   "api_mode": "chat_completions",
   "base_url": "https://portal.qwen.ai/v1",
   "high": {
+   "extra_body": {
+    "vl_high_resolution_images": true
+   },
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -4185,6 +4210,10 @@
   },
   "model": "qwen3-coder-plus",
   "off": {
+   "extra_body": {
+    "vl_high_resolution_images": true
+   },
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -4242,6 +4271,10 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "vl_high_resolution_images": true
+   },
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -4951,6 +4984,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://api.commandcode.ai/provider/v1",
   "high": {
+   "max_tokens": 16000,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -5009,6 +5043,7 @@
   },
   "model": "claude-sonnet-4-6",
   "off": {
+   "max_tokens": 16000,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -5066,6 +5101,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 16000,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -6387,6 +6423,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://router.huggingface.co/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -6445,6 +6482,7 @@
   },
   "model": "Qwen/Qwen3.5-72B-Instruct",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -6502,6 +6540,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -7125,6 +7164,7 @@
   "api_mode": "chat_completions",
   "base_url": "http://127.0.0.1:1234/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -7183,6 +7223,7 @@
   },
   "model": "qwen/qwen3-8b",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -7240,6 +7281,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -8032,6 +8074,7 @@
   "api_mode": "chat_completions",
   "base_url": "https://api.tokenfactory.nebius.com/v1",
   "high": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -8091,6 +8134,7 @@
   },
   "model": "Qwen/Qwen3.5-397B-A17B-fast",
   "off": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",
@@ -8148,6 +8192,7 @@
    ]
   },
   "unset": {
+   "max_tokens": 65536,
    "messages": [
     {
      "content": "You are a test agent.",

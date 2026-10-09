@@ -95,6 +95,17 @@ def _on(workflow: dict) -> dict:
     return workflow.get("on", workflow.get(True)) or {}
 
 
+# FORK: every large-runner caller in ci.yaml (and the called workflows' own jobs) is gated on
+# ``github.repository == 'NousResearch/hermes-agent'`` -- personal forks are not provisioned for
+# ``*-core`` runners (FORK.md "CI: large GitHub-hosted runners not provisioned on this fork", and
+# the v0.21.6 sync entry: "the fork's large-runner gate idiom re-applied to every caller in
+# ci.yaml"). The replay therefore models ``github.repository``: upstream's routing contract is
+# asserted as the canonical repository sees it, and the fork's own lanes are pinned separately
+# (``test_fork_repository_*`` below).
+_UPSTREAM_REPO = "NousResearch/hermes-agent"
+_FORK_REPO = "adurham/hermes-agent"
+
+
 def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
     """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs."""
     raw = {k: gha.to_string(v) for k, v in lanes.items()}
@@ -106,7 +117,7 @@ def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
     steps = {"classify": {"outputs": action_out}}
-    ctx = {"steps": steps, "github": {"event_name": "pull_request"}, "inputs": {}}
+    ctx = {"steps": steps, "github": {"event_name": "pull_request", "repository": _UPSTREAM_REPO}, "inputs": {}}
     steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
@@ -118,7 +129,8 @@ def _inputs_for(called: str, given: dict[str, Any]) -> dict[str, Any]:
     return {name: given.get(name, spec.get("default")) for name, spec in declared.items()}
 
 
-def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None) -> dict:
+def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None,
+                  repository: str = _UPSTREAM_REPO) -> dict:
     """Which jobs of ``rel`` run on a pull request, recursing into called workflows.
 
     Returns ``{job: {"inputs": ..., "jobs": <child result>}}`` for every job that runs.
@@ -145,7 +157,7 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
             all_ran = all(n in ran for n in needs)
             ctx = {
                 "inputs": inputs,
-                "github": {"event_name": "pull_request", "ref_type": "branch"},
+                "github": {"event_name": "pull_request", "ref_type": "branch", "repository": repository},
                 "needs": {n: {"outputs": (ran.get(n) or {}).get("outputs", {}),
                               "result": "success" if n in ran else "skipped"} for n in needs},
                 "__status__": {"always": True, "success": all_ran, "failure": False, "cancelled": False},
@@ -166,14 +178,16 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
                 called = uses[2:]
                 given = {k: gha.render(v, ctx) for k, v in (body.get("with") or {}).items()}
                 entry["inputs"] = _inputs_for(called, given)
-                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"])
+                # Inside a workflow_call, github.repository is the CALLER's repository.
+                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"], repository=repository)
             ran[name] = entry
         assert progressed, f"{rel}: unresolvable needs among {pending}"
     return ran
 
 
-def _ci_run(lanes: dict[str, bool]) -> dict:
-    return _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes))
+def _ci_run(lanes: dict[str, bool], repository: str = _UPSTREAM_REPO) -> dict:
+    return _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes),
+                         repository=repository)
 
 
 def _reached(run: dict, *path: str) -> dict | None:
@@ -835,3 +849,34 @@ def test_run_tests_forwards_the_strict_switch():
     text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
     allow = re.search(r"for _test_var in (.*?); do", text, re.S)
     assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()
+
+
+# -- FORK: the large-runner gate and the fork's standard-runner lanes ---------------------------
+
+# ci.yaml callers that dispatch a ``*-core`` runner workflow (FORK.md "CI: large GitHub-hosted
+# runners not provisioned on this fork"; v0.21.6 sync entry item 4).
+_LARGE_RUNNER_CALLERS = ("tests", "tests-os", "js-tests", "rust-tests", "e2e-desktop", "e2e-desktop-core",
+                         "e2e-desktop-update")
+# The fork's replacements on standard ubuntu/macos/windows-latest runners, and the lane each keys on.
+_FORK_LANES = {"tests-fork": "python", "tests-os-macos-fork": "python", "tests-os-windows-fork": "python",
+               "js-tests-fork": "frontend"}
+
+
+def test_fork_repository_never_dispatches_a_large_runner_caller():
+    """Every lane on (a dispatch has no diff): on the fork no ``*-core`` caller may run, or it
+    queues forever with runner_id 0 and holds the ci-<ref> concurrency group."""
+    run = _ci_run(cc.classify([]), repository=_FORK_REPO)
+    ran = sorted(job for job in _LARGE_RUNNER_CALLERS if job in run)
+    assert ran == [], f"large-runner caller(s) dispatched on the fork: {ran}"
+
+
+def test_fork_repository_runs_its_standard_runner_lanes_and_only_there():
+    lanes = cc.classify([])
+    fork_run = _ci_run(lanes, repository=_FORK_REPO)
+    upstream_run = _ci_run(lanes)
+    for job, lane in _FORK_LANES.items():
+        assert lanes[lane], f"{job}: its lane {lane} is off on a full dispatch"
+        assert job in fork_run, f"{job}: never runs on the fork with {lane}=true"
+        assert job not in upstream_run, f"{job}: fork-only lane ran on {_UPSTREAM_REPO}"
+        off = dict(lanes, **{lane: False})
+        assert job not in _ci_run(off, repository=_FORK_REPO), f"{job}: runs with {lane}=false"

@@ -76,6 +76,7 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     a = _make_home(tmp_path / "A", {**main,
                                     "auxiliary": {"vision": {"provider": "auto"}, "summary": {"max_concurrency": 2}}})
     b = _make_home(tmp_path / "A" / "profiles" / "B", {**main,
+                                                       "agent": {"image_input_mode": "text"},
                                                        "auxiliary": {"vision": {"provider": "openai", "model": "gpt-4o-mini"},
                                                                      "summary": {"max_concurrency": 7}}})
     monkeypatch.setenv("HERMES_HOME", str(a))
@@ -98,7 +99,7 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
         lock_a = cookie._fh.name
         cookie.release()
     with _scoped(b):
-        assert cu._should_route_through_aux_vision() is True  # B named a dedicated vision model
+        assert cu._should_route_through_aux_vision() is True  # B pins image_input_mode: text (FORK: aux vision never preempts a vision main model)
         assert itc.learned_image_token_cost("m", "http://gw.example/v1") == 3000
         sem_b = ac._acquire_sync_aux_semaphore("summary")
         cookie = mcp_tool_loop._try_acquire_mcp_discovery_lock()

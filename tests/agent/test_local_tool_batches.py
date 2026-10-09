@@ -60,8 +60,13 @@ for line in sys.stdin:
 def test_local_batch_runs_once_per_entry_through_agent_and_persists_pairs(mcp_server, mode):
     from run_agent import AIAgent
 
+    from tools.tool_search import ToolSearchConfig
+
     names, call_log = mcp_server
-    with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+    # FORK: tool_search "auto" keeps a token threshold (FORK.md "thresholded ToolSearch auto
+    # mode"); two tiny MCP tools never clear it, so pin "on" to expose the tool_call bridge.
+    with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+            patch("tools.tool_search.load_config", return_value=ToolSearchConfig.from_raw({"enabled": "on"})):
         agent = AIAgent(
             model="test/model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
             enabled_toolsets=["mcp-batchfixture"], quiet_mode=True,

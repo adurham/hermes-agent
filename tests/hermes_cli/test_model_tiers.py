@@ -201,7 +201,7 @@ def _seed_gen6_roster(tmp_path: Path) -> None:
             },
         }
     }
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False),
@@ -303,7 +303,7 @@ def _seed_local_roster(tmp_path: Path, *, pm_fallback: bool = True) -> None:
             }
         }
     }
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False),
@@ -447,7 +447,7 @@ def _seed_anthropic_pm_roster(tmp_path: Path) -> None:
             }
         }
     }
-    import yaml
+    import hermes_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False),

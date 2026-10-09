@@ -163,8 +163,8 @@ class TestNativeImageAttach:
              patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"), \
              patch("agent.auxiliary_client._read_main_model", return_value="claude-opus-4-5"), \
              patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            assert "mcp__srv__snap" in _register_server_tools("srv", server, {})
-            return registry.dispatch("mcp__srv__snap", {})
+            assert "srv_snap" in _register_server_tools("srv", server, {})
+            return registry.dispatch("srv_snap", {})
 
     def test_vision_route_gets_a_resized_envelope_and_keeps_the_media_path(self, tmp_path, monkeypatch):
         out = self._call(monkeypatch, tmp_path, {})
@@ -185,7 +185,7 @@ class TestNativeImageAttach:
         out = self._call(monkeypatch, tmp_path, {})
         first_text = next(p for p in out["content"] if p.get("type") == "text")
         first_text["text"] = first_text["text"].replace("snapshot", "snapshot" + "x" * 200_000, 1)
-        bounded = _persist_multimodal_text_parts(out, "mcp__srv__snap", "call-1", None, BudgetConfig())
+        bounded = _persist_multimodal_text_parts(out, "srv_snap", "call-1", None, BudgetConfig())
         texts = [p["text"] for p in bounded["content"] if p.get("type") == "text"]
         assert len(texts[0]) < 50_000  # the tool text was spilled ...
         assert any("multiply any coordinates you report by 2.00" in t for t in texts)  # ... the map was not
@@ -194,7 +194,7 @@ class TestNativeImageAttach:
         # A tiny tool_budget.mcp_result_size_chars spills BOTH text parts: each gets its own file, so the notes'
         # spill cannot overwrite the tool text's.
         import re
-        both = _persist_multimodal_text_parts(out, "mcp__srv__snap", "call-2", None, BudgetConfig(mcp_result_size=50))
+        both = _persist_multimodal_text_parts(out, "srv_snap", "call-2", None, BudgetConfig(mcp_result_size=50))
         paths = {re.search(r"saved to: (\S+)", p["text"]).group(1) for p in both["content"] if p.get("type") == "text"}
         assert len(paths) == 2
 

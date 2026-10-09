@@ -1381,14 +1381,19 @@ def _handle_patch(args, **kw):
             "'old_string': ..., 'new_string': ..., 'replace_all': bool} "
             "OR {'mode': 'patch', 'path': ..., 'patch': '<unified diff>'}."
         )
-    if not args.get("path") or not isinstance(args.get("path"), str):
+    mode = args.get("mode", "replace")
+    # V4A mode carries its target paths in the patch's ``*** <Op> File:``
+    # headers (upstream's V4A schema requires only ``mode``), so the explicit
+    # ``path`` is optional there. Only the replace shape needs it.
+    _v4a = mode == "patch" and bool(args.get("patch"))
+    _path = args.get("path")
+    if not _v4a and (not _path or not isinstance(_path, str)):
         return tool_error(
             "patch: missing required field 'path'. Re-emit the tool call "
             "with 'path' set to an absolute file path, plus mode + "
             "old_string/new_string (mode='replace') or patch text "
             "(mode='patch')."
         )
-    mode = args.get("mode", "replace")
     return record_file_edit("patch", mode, lambda: patch_tool(
         mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),

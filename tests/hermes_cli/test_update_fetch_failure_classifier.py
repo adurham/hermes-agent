@@ -76,7 +76,10 @@ class TestClassifyFetchFailure:
             "fatal: Could not read from remote repository."
         )
         assert "SSH authentication failed" in msg
-        assert "https://github.com/NousResearch/hermes-agent.git" in msg
+        # Fork: scripts/sync-fork-branding.py repoints this "set origin to"
+        # hint at the fork (FORK.md "Merging upstream" step 3) — suggesting
+        # NousResearch here would silently revert a fork checkout to upstream.
+        assert "https://github.com/adurham/hermes-agent.git" in msg
 
     def test_ssh_host_key_failure_reports_ssh_auth(self):
         msg = update_cmd._classify_fetch_failure(

@@ -199,7 +199,9 @@ def test_cloud_stream_budget_preserves_explicit_deadlines(
     payload = {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
     call = helpers._StreamingCall(agent, payload, None)
     call._resolve_stale_timeout()
-    assert call._stream_stale_timeout == expected
+    # FORK: ``_stream_stale_timeout`` adds the cold-start grace before the first event
+    # (agent/fork/stream_recovery.py); the resolved deadline under test is the base.
+    assert call._stream_stale_timeout_base == expected
 
 
 def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_path):
@@ -214,10 +216,11 @@ def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_pat
     )
     call = helpers._StreamingCall(agent, {"model": agent.model}, None)
     call._resolve_stale_timeout()
-    without_clock = call._stream_stale_timeout
+    # FORK: read the base — the property layers the cold-start grace on top of it.
+    without_clock = call._stream_stale_timeout_base
     agent._run_budget_started_at = time.time() - 800
     call._resolve_stale_timeout()
-    assert call._stream_stale_timeout == without_clock == 900.0
+    assert call._stream_stale_timeout_base == without_clock == 900.0
 
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────
