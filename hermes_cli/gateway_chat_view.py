@@ -31,6 +31,7 @@ class GatewayChatView:
         self.quiet = quiet or emitter is not None
         self.finite = False
         self.unattended = False  # `-z`: the classic one-shot auto-approves; `-q` stays single-query
+        self.resume_footer = False  # `chat -q` without -Q: main's "Resume this session with:" block
         self.finite_admission = None
         self._finite_events = []
         self.streams = {}
@@ -406,6 +407,8 @@ class GatewayChatView:
                 # durable id from this line, and it names the physical row (a compaction may have
                 # advanced it past the row printed at start).
                 print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
+                if self.resume_footer:
+                    print(resume_footer(self.session_id), flush=True)
                 return exit_code
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
@@ -443,3 +446,13 @@ class GatewayChatView:
             renderer.cancel()
             with suppress(asyncio.CancelledError):
                 await renderer
+
+
+def resume_footer(session_id):
+    """The classic single-query exit block (``_print_exit_summary``): how to continue this session.
+    A non-default profile needs ``-p`` because session ids are profile-scoped."""
+    from agent.i18n import t
+    from hermes_cli.profiles import get_active_profile_name
+    profile = get_active_profile_name()
+    flag = "" if profile in ("default", "custom") else f" -p {profile}"
+    return f"\n{t('cli.session.exit_resume_hint')}\n  hermes --resume {session_id}{flag}"

@@ -4758,6 +4758,8 @@ export interface CanonicalResumeParams {
   profile?: string | null
   session_id?: string
   title?: string | null
+  latest?: 'cli' | 'tui' | null
+  workspace?: string | null
   source?: string | null
   editor?: Record<string, unknown> | null
   defer_history?: boolean

@@ -42,6 +42,10 @@ class CanonicalCreateParams(ProfileParams):
 class CanonicalResumeParams(ProfileParams):
     session_id: str = ''
     title: str | None = None
+    # Bare `-c` / `--resume latest`: the owner resolves the most recent session of this surface
+    # family (``workspace`` = the caller's git root / cwd, tried first).
+    latest: Literal['cli', 'tui'] | None = None
+    workspace: str | None = None
     source: str | None = None
     editor: dict[str, JsonValue] | None = None
     defer_history: bool = False

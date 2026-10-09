@@ -9357,6 +9357,34 @@
             "default": null,
             "title": "Title"
           },
+          "latest": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cli",
+                  "tui"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Latest"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Workspace"
+          },
           "source": {
             "anyOf": [
               {

@@ -346,10 +346,15 @@ class AuthorityConnection:
 
     async def resume(self, ref, params):
         from gateway.session_local import local_session_info
-        if 'title' in params:
+        if 'latest' in params:
+            # Bare `-c` / `--resume latest`: the most recent session of that surface family the
+            # actor may read (workspace first), resolved by the owner like a title.
+            from gateway.session_local_title import resolve_latest_session
+            ref = resolve_latest_session(self.authority, self.actor, params['latest'], params.get('workspace'))
+        elif 'title' in params:
             from gateway.session_local_title import resolve_titled_session
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
-        if 'title' not in params:
+        else:
             from gateway.session_local_migration import resolve_local_target
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
             row = self.authority.db.get_session(ref.session_id)

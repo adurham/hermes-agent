@@ -12,10 +12,8 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
         args = argparse.Namespace(**{option: True})
         assert gateway_chat.launch_from_args(args) == 2
         assert option.replace("_", "-") in capsys.readouterr().err
-    # Bare -c (breadcrumb/MRU) and a nameless --create-if-missing stay refused; only a
-    # titled -c is a gateway-resolvable selector.
-    assert gateway_chat.launch_from_args(argparse.Namespace(continue_last=True)) == 2
-    assert "--continue" in capsys.readouterr().err
+    # A nameless --create-if-missing stays refused (bare -c resolves on the owner, see
+    # test_gateway_chat_flags_live.py).
     assert gateway_chat.launch_from_args(argparse.Namespace(create_if_missing=True)) == 2
     assert "create-if-missing" in capsys.readouterr().err
     # Creation flags on resume are judged against the frozen route: repeating the launch
