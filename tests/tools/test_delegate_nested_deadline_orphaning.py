@@ -25,8 +25,10 @@ seam BETWEEN the executor and the tool, not inside either one).
 Coverage:
 1. The nested blocking call is not killed by the generic deadline, and its
    real child results survive.                       [the incident itself]
-2. The exemption is NARROW: sibling tools and a top-level (async) delegation
-   keep the deadline.                                [no blanket disable]
+2. The exemption mechanism is pinned: delegate_task rides the static
+   _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS floor and has NO registry predicate
+   (retired as redundant 2026-10-09); sibling tools keep the deadline.
+                                                      [no blanket disable]
 3. If the owner DOES walk away, the failure is OBSERVABLE — a distinct
    ``abandoned`` status and torn-down children, never silent orphaning.
 """
@@ -82,10 +84,10 @@ def _mock_response(content="child work done"):
 def _make_agent(tmp_path: Path, *, depth: int) -> "object":
     """A real AIAgent standing in for the orchestrator subagent (depth > 0).
 
-    ``_delegate_depth`` is the exact signal both the sync/async decision
-    (``_model_background_value`` / ``run_agent._dispatch_delegate_task``) and
-    the new ``owns_own_deadline`` predicate read, so setting it here drives
-    the real production branch rather than a test-only one.
+    ``_delegate_depth`` is the exact signal the sync/async decision
+    (``_model_background_value`` / ``run_agent._dispatch_delegate_task``)
+    reads, so setting it here drives the real production branch rather than
+    a test-only one.
     """
     from run_agent import AIAgent
 
@@ -315,35 +317,31 @@ def test_generic_deadline_still_applies_to_sibling_tools(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.parametrize(
-    "depth,args,expect_exempt",
-    [
-        # The incident's shape: nested batch → blocks → owns its bound.
-        (1, {"tasks": [{"goal": "a"}, {"goal": "b"}]}, True),
-        # Nested single task → also blocks → also owns its bound.
-        (1, {"goal": "a"}, True),
-        # Top-level → forced background=True, returns a handle in ms →
-        # must stay bounded.
-        (0, {"tasks": [{"goal": "a"}]}, False),
-        (0, {"goal": "a"}, False),
-        # Cheap in-turn control calls return immediately → stay bounded.
-        (1, {"action": "list"}, False),
-        (1, {"action": "stop", "subagent_id": "s-1"}, False),
-        (1, {"cancel": "deleg-123"}, False),
-    ],
-)
-def test_owns_own_deadline_predicate_is_narrow(depth, args, expect_exempt):
-    """Only a call that actually BLOCKS on supervised work is exempt.
-
-    Asserts the registry-level contract directly (behavior, not internals):
-    the same query the executor makes, over the real registered entry.
+def test_delegate_task_exemption_is_the_static_floor_not_a_registry_predicate():
+    """2026-10-09: delegate_task's narrow registry predicate was retired as
+    redundant (upstream's static set independently fixes the incident on the
+    only path delegate_task can take). The sequential middleware checks the
+    static floor BEFORE the registry hook, so the registry query reports False
+    for every delegate_task shape — no hidden second mechanism — while the
+    incident stays fixed (asserted end-to-end by the first test in this
+    module).
     """
     from tools.registry import registry
+    from agent.tool_executor import _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
 
-    agent = SimpleNamespace(_delegate_depth=depth)
-    assert (
-        registry.tool_owns_own_deadline("delegate_task", args, agent) is expect_exempt
-    )
+    assert "delegate_task" in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
+    for depth in (0, 1):
+        agent = SimpleNamespace(_delegate_depth=depth)
+        for args in (
+            {"tasks": [{"goal": "a"}, {"goal": "b"}]},
+            {"goal": "a"},
+            {"action": "list"},
+            {"action": "stop", "subagent_id": "s-1"},
+            {"cancel": "deleg-123"},
+        ):
+            assert (
+                registry.tool_owns_own_deadline("delegate_task", args, agent) is False
+            )
 
 
 def test_unregistered_and_raising_predicates_fail_closed():

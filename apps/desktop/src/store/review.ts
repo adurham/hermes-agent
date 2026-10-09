@@ -41,11 +41,10 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-// Defaults to true (fork fix: the pane is the only at-a-glance signal for
-// uncommitted changes, and ⌘G is undiscoverable) — Simple mode rests it closed
-// via policy without touching the preference, and ⌘G still opens it for the
-// session.
-const $reviewOpenPref = persistentAtom(OPEN_KEY, true, Codecs.bool)
+// Persisted so the pane stays open across reloads (like the other rail panes).
+// Simple mode rests it closed without touching the preference; ⌘G still opens
+// it for the session.
+const $reviewOpenPref = persistentAtom(OPEN_KEY, false, Codecs.bool)
 
 export const $reviewOpen = modeBound('reviewOpen', $reviewOpenPref, open => $reviewOpenPref.set(open))
 
