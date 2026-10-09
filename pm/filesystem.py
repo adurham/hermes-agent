@@ -26,6 +26,8 @@ def is_junction(path: Path) -> bool:
     probe slots that do not exist yet (a first plugin install) and must get False, not a crash.
     POSIX stat results carry no reparse tag, which lands in the same False.
     """
+    if os.name != "nt":
+        return False
     try:
         return path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
     except (OSError, AttributeError):
