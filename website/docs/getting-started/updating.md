@@ -115,6 +115,32 @@ On Linux and macOS, `hermes update` stops every gateway running from this instal
 
 Windows already paused its gateways before the update (they lock files the dependency sync replaces) and restarts them once the update completes, after the builds.
 
+### Upgrading to the gateway-owned session runtime
+
+From this release one gateway per host owns every local session (CLI, TUI, Desktop,
+API, ACP, cron, Bot Chat). What an existing install sees on its first update:
+
+- **`cron.bot_chat_delivery_timeout_seconds` is retired.** Bot Chat deliveries are
+  admitted to the target profile's running gateway and tracked by receipt; there is no
+  cron-side turn left to time out. Config migration v51 removes the key with a one-time
+  note (also from an unversioned `config.yaml`). Without a running gateway the run is
+  recorded `delivery_failed`; it is not redelivered automatically.
+- **Legacy Bot Chat pending records** (`cron/bot_chat_pending/*.json`, left by the
+  retired `hermes chat` delivery lane) are handed to the target's live owner on later
+  scheduler ticks under their own IDs. A `claimed` record was an uncertain CLI turn and
+  is never resent. Records are kept with their final status as evidence.
+- **Work interrupted by the cutover restart is never replayed.** On the first gateway
+  start, an input that was mid-turn (`started`) and any managed worker that was running
+  become `unknown`; queued inputs behind it wait. Inspect the session, then acknowledge
+  with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent) before
+  later inputs run. A cron delivery a gateway had claimed but not finished is likewise
+  fenced `unknown` and recorded `delivery_failed`.
+- **Rolling back after the new gateway has written `state.db`:** the new runtime-ledger
+  tables reference `sessions` with `ON DELETE RESTRICT`, so an older release that deletes
+  or prunes such a session fails with `FOREIGN KEY constraint failed`. To go back, restore
+  the pre-update snapshot (`hermes update --backup` takes a full one) rather than running
+  the older release on the upgraded database.
+
 ### Why the gateway restart can take a while
 
 The restart is drain-first: the running gateway refuses new turns, then waits for in-flight work (chat turns, cron jobs, API runs) to finish before exiting, capped by `agent.restart_after_turn_timeout` (30 minutes by default) so a long-running job is never cut off mid-run. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:
