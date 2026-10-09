@@ -2502,8 +2502,8 @@ def save_config(
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
         _raw_for_paths = require_readable_config_before_write(config_path)
-        if merge_existing and _raw_for_paths:
-            config = _merge_partial_save(_raw_for_paths, config)
+        from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
+        config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized

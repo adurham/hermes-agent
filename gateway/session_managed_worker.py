@@ -64,7 +64,7 @@ def _bootstrap(authority, ref, row, policy, scope):
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy)})
-    hydrated = replace(policy, config_json=json.dumps(policy.config(authority)), request_json=json.dumps(request),
+    hydrated = replace(policy, config_json=json.dumps(_worker_config(authority, policy)), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
             'policy': asdict(hydrated), 'api_key': launch_key(authority, policy),
@@ -73,6 +73,24 @@ def _bootstrap(authority, ref, row, policy, scope):
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
             'turn_author': row_turn_author(policy, row),
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
+
+
+def _worker_config(authority, policy):
+    """The frozen session config the child binds as its only config (``bind_worker_policy``).
+    ``command_allowlist`` is approval state rather than launch policy: an ``always`` grant an
+    earlier worker of an ordinary session persisted, or one the operator removed by hand, comes
+    from the live profile file, as it did before the child's config was frozen. Bypass sessions
+    never read the profile."""
+    config = policy.config(authority)
+    home = Path(str(authority.profile_id))
+    if policy.ignore_user_config or not home.is_absolute():
+        return config
+    from gateway.run import _load_gateway_config
+    live = _load_gateway_config(home / 'config.yaml')
+    config.pop('command_allowlist', None)
+    if live.get('command_allowlist') is not None:
+        config['command_allowlist'] = live['command_allowlist']
+    return config
 
 
 def _session_yolo(authority, route, policy):

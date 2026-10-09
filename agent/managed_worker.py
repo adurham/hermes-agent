@@ -100,17 +100,21 @@ def validate_bootstrap(frame):
     return frame
 
 
-def bind_bypass_policy(frame):
-    """Freeze the owner's bypass assignment process-wide before any config/provider/agent import.
+def bind_worker_policy(frame):
+    """Freeze the owner's assignment process-wide before any config/provider/agent import.
 
-    Ordinary assignments bind nothing; the frozen explicit config (never the profile) is what
-    every config reader in this process returns afterwards.
+    The session's frozen config (never the live profile file) is what every config reader in
+    this process returns afterwards, so a profile edit after creation cannot reshape it (MCP
+    server definitions included). Ordinary sessions keep plugins, MCP and hooks; bypass sessions
+    also bind the safe / ignore-user-config policy.
     """
+    config = json.loads(frame['policy']['config_json'])
     if not frame['ignore_user_config']:
+        from agent.safe_worker_policy import _bind_worker_config
+        _bind_worker_config(config)
         return
     from agent.safe_worker_policy import _bind_safe_worker_policy
-    _bind_safe_worker_policy(safe_mode=frame['safe_mode'], ignore_user_config=True,
-                             config=json.loads(frame['policy']['config_json']))
+    _bind_safe_worker_policy(safe_mode=frame['safe_mode'], ignore_user_config=True, config=config)
 
 
 class WorkerChannel:
@@ -275,7 +279,7 @@ def tool_frame(call_id, name, args, *result):
 def execute(frame, channel):
     # The owner RPC below imports gateway/config modules (hermes_cli.config, providers,
     # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
-    bind_bypass_policy(frame)
+    bind_worker_policy(frame)
     from agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
     rpc = WorkerRPC(frame['home'])
