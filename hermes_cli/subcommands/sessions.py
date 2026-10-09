@@ -12,6 +12,15 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
+def _add_rename_and_discard(sessions_subparsers) -> None:
+    sessions_rename = sessions_subparsers.add_parser(
+        "rename", help="Set or change a session's title")
+    sessions_rename.add_argument("session_id", help="Session ID to rename")
+    sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+    from hermes_cli.sessions_discard import add_discard_parser
+    add_discard_parser(sessions_subparsers)
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -263,21 +272,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         "--report", type=Path, help="JSON report path (defaults to <output>.recovery.json)")
 
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
-
-    sessions_discard = sessions_subparsers.add_parser(
-        "discard", help="Acknowledge turns lost in a gateway crash (unknown admissions) so the session runs again",
-        description="After a gateway crash mid-turn, the lost turn is fenced 'unknown' and blocks the "
-            "session: `hermes chat --resume <id> -q` exits 3 until it is acknowledged. This is the "
-            "non-interactive form of `/discard <admission>`. The lost input is not replayed.")
-    sessions_discard.add_argument("session", help="Session ID or title")
-    sessions_discard.add_argument("--admission", action="append", metavar="ID",
-        help="Discard only this unknown admission (repeatable; default: every unknown admission)")
-    add_yes_flag(sessions_discard, "Do not ask for confirmation (required when stdin is not a TTY)")
-
-    sessions_rename = sessions_subparsers.add_parser(
-        "rename", help="Set or change a session's title")
-    sessions_rename.add_argument("session_id", help="Session ID to rename")
-    sessions_rename.add_argument("title", nargs="+", help="New title for the session")
+    _add_rename_and_discard(sessions_subparsers)
 
     sessions_pin = sessions_subparsers.add_parser(
         "pin", help="Pin session(s) — durable keep flag, exempt from auto-archive",
