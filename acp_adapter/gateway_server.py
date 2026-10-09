@@ -270,6 +270,10 @@ class GatewayACPAgent(acp.Agent):
                 await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
+        if self._has_unknown(session_id) and self._conn:
+            # The classic chat's resume notice: say why the next prompt will be refused and how to recover.
+            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
+                self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: ") + "\n"))
         return snapshot
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
@@ -363,7 +367,7 @@ class GatewayACPAgent(acp.Agent):
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
         if self._has_unknown(session_id):
-            raise GatewayClientError("unknown_execution")
+            raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         from acp_adapter.content import _content_blocks_to_openai_user_content
         text, attachments = _stage_user_content(_content_blocks_to_openai_user_content(prompt))
         command = _slash_command(text) if not attachments else None
@@ -415,8 +419,7 @@ class GatewayACPAgent(acp.Agent):
                         raise self._lost_failure
                     if self._failure:
                         raise self._failure
-                    raise GatewayClientError("unknown_execution: do not resend accepted input; "
-                                             "resolve the lost turn before continuing")
+                    raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
                 terminal = self._terminals.pop(admission_id)
         finally:
             # Do not let one prompt tear down a newer mapping if the session has
@@ -426,11 +429,26 @@ class GatewayACPAgent(acp.Agent):
         outcome = terminal.get("outcome")
         if outcome == "unknown":
             # Our own lost turn: the same refusal whether session.info or this completion woke us.
-            raise GatewayClientError("unknown_execution: do not resend accepted input; "
-                                     "resolve the lost turn before continuing")
+            raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn")
+
+    def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
+        """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
+
+        ACP has no discard affordance; the classic chat's fenced ``/discard`` (``prompt.resolve_unknown``)
+        acknowledges the exact lost admission without replaying it, and the queue then continues."""
+        from hermes_constants import profile_name_for_home
+        lost = [row["admission_id"] for row in self._snapshots.get(session_id, {}).get("pending", [])
+                if row.get("status") == "unknown"] or [admission_id]
+        profile = profile_name_for_home(self._home)
+        command = "hermes" + (f" -p {profile}" if profile not in (None, "default") else "")
+        state = ("your input is accepted and kept" if submitted else "nothing was submitted")
+        return (f"unknown_execution: do not resend accepted input; a turn in this session was lost when the "
+                f"gateway restarted and its outcome is unknown ({state}). Resolve it in a terminal with "
+                f"`{command} chat --cli --resume {session_id}` then "
+                + " and ".join(f"`/discard {lost_id}`" for lost_id in lost) + ", then continue here.")
 
     def _has_unknown(self, session_id):
         return any(row.get("status") == "unknown"
