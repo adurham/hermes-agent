@@ -52,3 +52,40 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float) -> subproces
     except OSError as exc:
         reason = "windows_breakaway_unavailable" if sys.platform == "win32" else "spawn_failed"
         raise RuntimeStartError(reason) from exc
+
+
+def stdio_log_path(profile_home: Path) -> Path:
+    return profile_home / "logs" / "gateway-stdio.log"
+
+
+def stdio_log_size(profile_home: Path) -> int:
+    """Where this launch's output will start in the append-only stdio log."""
+    try:
+        return stdio_log_path(profile_home).stat().st_size
+    except OSError:
+        return 0
+
+
+_BANNER_PREFIXES = ("┌", "│", "├", "└")
+_TAIL_LINES = 15
+_TAIL_BYTES = 64 * 1024
+
+
+def startup_failure_report(profile_home: Path, offset: int, status: int) -> str:
+    """What a client prints when the gateway it started died before serving: the exit status, the
+    redacted tail of THIS launch's stdio (the traceback lives there, written before logging is up and
+    before the detached-stdio redactor is installed) and the command that shows the whole log."""
+    path = stdio_log_path(profile_home)
+    try:
+        with path.open("rb") as log:
+            log.seek(max(offset, path.stat().st_size - _TAIL_BYTES))
+            text = log.read().decode("utf-8", errors="replace")
+    except OSError:
+        text = ""
+    lines = [line.rstrip() for line in text.splitlines()
+             if line.strip() and not line.lstrip().startswith(_BANNER_PREFIXES)][-_TAIL_LINES:]
+    from agent.redact import redact_sensitive_text
+    tail = redact_sensitive_text("\n".join(lines), force=True, redact_url_credentials=True)
+    see = f'type "{path}"' if sys.platform == "win32" else f"tail -n 200 '{path}'"
+    body = "\n".join("  " + line for line in tail.splitlines()) if tail else "  (it wrote no output)"
+    return f"the gateway exited with status {status} before it could serve:\n{body}\nFull log: {see}"

@@ -44,7 +44,8 @@ class GatewayDiscovery:
     endpoint: GatewayEndpoint | None = None
     reason_code: str | None = None
     # Human-readable cause behind a bounded ``reason_code`` when the owner published one (the
-    # multiplexer's park reason); never raw peer data.
+    # multiplexer's park reason), or the redacted output tail of a start this call made that died
+    # (``runtime_exited``); never raw peer data.
     detail: str | None = None
 
 
@@ -231,6 +232,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
     home = Path(_canonical_home(profile_home))
     requested = False
     child = None
+    child_home, child_offset = home, 0
     delay = 0.025
     try:
         while True:
@@ -248,8 +250,10 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
             if status is not None and observed.state == "absent":
                 # The one start this invocation requested died without leaving an owner: waiting
                 # out the deadline cannot change that, and this call never launches a second one.
-                return GatewayDiscovery("inaccessible", reason_code="runtime_exited", detail=(
-                    f"gateway exited with status {status}; see logs/gateway-stdio.log of the started profile"))
+                # Its own (redacted) output is the answer the user needs, not a pointer to a file.
+                from hermes_cli.gateway_runtime_start import startup_failure_report
+                return GatewayDiscovery("inaccessible", reason_code="runtime_exited",
+                                        detail=startup_failure_report(child_home, child_offset, status))
             if observed.state == "starting":
                 requested = True
             # A default multiplexer that is still starting will serve this named profile; never
@@ -275,7 +279,8 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 if service is not None:
                     start_existing_gateway_service(service, deadline=deadline)
                 else:
-                    from hermes_cli.gateway_runtime_start import spawn_unmanaged_gateway
+                    from hermes_cli.gateway_runtime_start import spawn_unmanaged_gateway, stdio_log_size
+                    child_home, child_offset = target, stdio_log_size(target)
                     child = spawn_unmanaged_gateway(target, deadline=deadline)
                 requested = True
             time.sleep(min(delay, remaining(deadline)))

@@ -45,7 +45,8 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     if not start and recover and receipt.state == "absent" and owner_crashed(home):
         receipt = ensure_gateway_runtime(home, timeout=30)
     if receipt.state != "ready" or receipt.endpoint is None:
-        raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}")
+        detail = f"\n{receipt.detail}" if receipt.reason_code == "runtime_exited" and receipt.detail else ""
+        raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}{detail}")
     endpoint = receipt.endpoint
     # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
     control = control_home_for(home, endpoint)

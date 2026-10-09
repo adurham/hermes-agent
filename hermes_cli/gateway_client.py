@@ -199,7 +199,11 @@ async def connect_gateway():
         home = get_hermes_home().resolve()
         result = await asyncio.to_thread(ensure_gateway_runtime, home)
         if result.state != "ready" or result.endpoint is None:
-            detail = f" ({result.detail})" if getattr(result, "detail", None) else ""
+            detail = getattr(result, "detail", None)
+            if result.reason_code == "runtime_exited" and detail:
+                # A multi-line startup report (redacted traceback tail + where the full log is).
+                raise GatewayUnavailableError(f"Gateway could not start: {detail}", result.state)
+            detail = f" ({detail})" if detail else ""
             raise GatewayUnavailableError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}{detail}",
                                           result.state)
         endpoint = result.endpoint
