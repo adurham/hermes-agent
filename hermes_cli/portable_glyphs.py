@@ -137,13 +137,16 @@ PORTABLE_EXTRA_CODEPOINTS: dict[int, str] = {
     0x02714: NARROW_SOLID,  # ✔
     0x02718: NARROW_SOLID,  # ✘
     0x0274c: WIDE_SOLID,  # ❌
+    0x02754: WIDE_SOLID,  # ❔ (todo board: unknown-status marker)
     0x0276f: NARROW_SOLID,  # ❯
     0x1f3a4: WIDE_SOLID,  # 🎤
     0x1f465: WIDE_SOLID,  # 👥
     0x1f4be: WIDE_SOLID,  # 💾
+    0x1f4cb: WIDE_SOLID,  # 📋 (todo board header)
     0x1f4cc: WIDE_SOLID,  # 📌
     0x1f4dd: WIDE_SOLID,  # 📝
     0x1f500: WIDE_SOLID,  # 🔀
+    0x1f504: WIDE_SOLID,  # 🔄 (todo board in_progress, via tools.todo_tool._STATUS_MARKERS)
     0x1f510: WIDE_SOLID,  # 🔐
     0x1f511: WIDE_SOLID,  # 🔑
     0x1f512: WIDE_SOLID,  # 🔒
