@@ -1,5 +1,6 @@
 """Managed execution gets the same owner-resolved agent-construction inputs as the in-process
-turn (``construct_v1``): the configured fallback chain (andrexibiza N3).
+turn (``construct_v1``): the configured fallback chain (andrexibiza N3) and the configured
+instruction + prefill examples (andrexibiza N4).
 
 One ordinary daemon, two sessions: in-process and ``gateway.managed_workers``. The loopback
 primary refuses with 429 ``insufficient_quota``; a healthy loopback backup is configured in
@@ -119,7 +120,7 @@ def run_pair(tmp_path, extra_config, turn):
                                     api_key='loopback-only', toolsets=[])
                 assert 'result' in created, created
                 sid = created['result']['session_id']
-                results[name] = await turn(ws, sid, name, settle, SimpleNamespace(primary=primary, backup=backup))
+                results[name] = await turn(ws, sid, name, settle, SimpleNamespace(primary=primary, backup=backup, query=query))
                 results[name]['workers'] = query('SELECT COUNT(*) FROM worker_executions WHERE session_id=?', (sid,))[0][0]
     try:
         with daemon(root, home, env, barrier=False) as (_owner, desc):
@@ -147,27 +148,58 @@ def test_managed_turn_falls_back_like_the_in_process_turn(tmp_path):
     assert (results['inproc']['workers'], results['managed']['workers']) == (0, 1), results
 
 
+@pytest.mark.platforms("linux")
+def test_managed_turn_sends_configured_instruction_and_prefill(tmp_path):
+    """``agent.system_prompt`` and ``prefill_messages_file`` reach the managed model request in
+    the same places as in process, and stay out of the persisted system prompt."""
+    def extra(home):
+        (home / 'prefill.json').write_text(json.dumps([{'role': 'user', 'content': 'PREFILL_Q_MARK'},
+                                                       {'role': 'assistant', 'content': 'PREFILL_A_MARK'}]))
+        return {'agent': {'system_prompt': 'SYS_PROMPT_MARK'}, 'prefill_messages_file': str(home / 'prefill.json')}
+
+    async def turn(ws, sid, name, settle, servers):
+        start = len(servers.primary.requests)
+        assert (await settle(ws, sid, name + '-plain', 'PLAIN_TURN'))['final_response'] == 'PRIMARY_OK'
+        [request] = servers.primary.requests[start:]
+        system = [m['content'] for m in request['messages'] if m['role'] == 'system']
+        prefill = [m['content'] for m in request['messages'] if 'PREFILL_' in str(m.get('content'))]
+        [(stored,)] = servers.query('SELECT p.prompt FROM sessions s JOIN system_prompts p '
+                                    'ON p.hash = s.system_prompt_hash WHERE s.id=?', (sid,))
+        return {'system_mark': [('SYS_PROMPT_MARK' in s) for s in system], 'prefill': prefill,
+                'stored': 'SYS_PROMPT_MARK' in stored}
+    results = run_pair(tmp_path, extra, turn)
+    for name in ('inproc', 'managed'):
+        found = {k: results[name][k] for k in ('system_mark', 'prefill', 'stored')}
+        assert found == {'system_mark': [True], 'prefill': ['PREFILL_Q_MARK', 'PREFILL_A_MARK'], 'stored': False}, (name, results)
+
+
 def test_construct_inputs_follow_the_session_mode(tmp_path, monkeypatch):
-    """Ordinary: the owner's per-turn profile refresh; config-only: the frozen snapshot, never the
-    profile; safe mode: no chain. The child accepts only the closed shape."""
+    """Ordinary: the owner's per-turn profile refresh, configured prompt and prefill; config-only:
+    the frozen snapshot's chain and launch skills only, never the profile; safe mode: nothing.
+    The child accepts only the closed shape."""
     from gateway.session_local import _bypass_policy
     from gateway.session_policy import build_policy
     from gateway.session_worker_construct import construct_inputs, construct_kwargs
     chain = [{'provider': 'custom', 'model': 'b', 'base_url': 'http://127.0.0.1:9/v1'}]
-    refreshed = []
-    runner = SimpleNamespace(_refresh_fallback_model=lambda: refreshed.append(1) or chain, config=None)
+    profile_reads = []
+    runner = SimpleNamespace(config=None, _prefill_messages=[{'role': 'user', 'content': 'P'}],
+                             _refresh_fallback_model=lambda: profile_reads.append('fallback') or chain,
+                             _get_system_prompt_for_channel=lambda *a: profile_reads.append('prompt') or 'SYS')
     authority = SimpleNamespace(runner=runner, profile_id=str(tmp_path))
     launch = {'cwd': str(tmp_path), 'model': 'm', 'provider': 'custom', 'base_url': 'http://127.0.0.1:9/v1'}
-    ordinary = build_policy(launch, {'fallback_providers': [{'provider': 'custom', 'model': 'frozen'}]})
+    ordinary = build_policy(launch, {})
     config_only = _bypass_policy({**launch, 'ignore_user_config': True}, private_secrets={})
     safe = _bypass_policy({**launch, 'safe_mode': True}, private_secrets={})
-    assert construct_inputs(authority, ordinary)['fallback_model'] == chain and refreshed == [1]
-    assert construct_inputs(authority, config_only)['fallback_model'] is None
-    assert construct_inputs(authority, safe)['fallback_model'] is None and refreshed == [1]
-    request = {'construct_v1': construct_inputs(authority, ordinary)}
-    frame = {'policy': {'request_json': json.dumps(request)}}
+    assert construct_inputs(authority, ordinary, 'c') == {
+        'fallback_model': chain, 'ephemeral_system_prompt': 'SYS', 'prefill_messages': runner._prefill_messages}
+    assert profile_reads == ['fallback', 'prompt']
+    empty = {'fallback_model': None, 'ephemeral_system_prompt': None, 'prefill_messages': None}
+    assert construct_inputs(authority, config_only, 'c') == empty
+    assert construct_inputs(authority, safe, 'c') == empty and profile_reads == ['fallback', 'prompt']
+    frame = {'policy': {'request_json': json.dumps({'construct_v1': construct_inputs(authority, ordinary, 'c')})}}
     assert construct_kwargs(frame)['fallback_model'] == chain
     assert construct_kwargs({'policy': {'request_json': '{}'}}) == {}
-    for bad in ({'fallback_model': 'x'}, {'fallback_model': None, 'extra': 1}, []):
+    for bad in ({**empty, 'fallback_model': 'x'}, {**empty, 'extra': 1}, {**empty, 'ephemeral_system_prompt': 1},
+                {**empty, 'prefill_messages': ['x']}, []):
         with pytest.raises(ValueError):
             construct_kwargs({'policy': {'request_json': json.dumps({'construct_v1': bad})}})

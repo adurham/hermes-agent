@@ -303,7 +303,7 @@ def execute(frame, channel):
     set_current_session_key(frame['route'])
     os.environ['HERMES_GATEWAY_SESSION'] = '1'
     from gateway.session_worker_construct import construct_kwargs
-    construct = construct_kwargs(frame)
+    construct = {'ephemeral_system_prompt': policy.skills_prompt, **construct_kwargs(frame)}
     controls = WorkerControls(channel, frame['route'])
     register_gateway_notify(frame['route'], controls.approval)
     agent = None
@@ -318,7 +318,7 @@ def execute(frame, channel):
                 gateway_session_key=frame['route'], user_id=frame['user_id'], chat_id=frame['chat_id'],
                 skip_context_files=policy.ignore_rules, load_soul_identity=not policy.ignore_rules,
                 skip_memory=policy.ignore_rules, skip_background_review=True, quiet_mode=True,
-                ephemeral_system_prompt=policy.skills_prompt, pass_session_id=policy.pass_session_id,
+                pass_session_id=policy.pass_session_id,
                 checkpoints_enabled=policy.checkpoints_enabled, **construct,
                 stream_delta_callback=lambda text: channel.send('delta', text=text) if text else None,
                 clarify_callback=controls.clarify,

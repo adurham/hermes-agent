@@ -7,12 +7,16 @@ and they ride the hydrated request beside ``turn_v1``. The child validates the c
 """
 import json
 
-KEYS = frozenset({'fallback_model'})
+KEYS = frozenset({'fallback_model', 'ephemeral_system_prompt', 'prefill_messages'})
 
 
-def construct_inputs(authority, policy):
+def construct_inputs(authority, policy, chat_id):
     """Owner side, per turn (off the owner loop: config reads)."""
-    return {'fallback_model': _fallback_chain(authority, policy)}
+    from gateway.session_authorities import owner_scope
+    with owner_scope(authority):
+        return {'fallback_model': _fallback_chain(authority, policy),
+                'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id),
+                'prefill_messages': _prefill(authority, policy)}
 
 
 def _fallback_chain(authority, policy):
@@ -25,11 +29,28 @@ def _fallback_chain(authority, policy):
         from hermes_cli.fallback_config import get_fallback_chain
         return get_fallback_chain(policy.config(authority)) or None
     refresh = getattr(authority.runner, '_refresh_fallback_model', None)
-    if refresh is None:
+    return refresh() if refresh is not None else None
+
+
+def _ephemeral_prompt(authority, policy, chat_id):
+    """``TurnRunner``'s combined ephemeral prompt for a LOCAL turn (no platform context block):
+    the gateway prompt (``agent.system_prompt`` / ``display.personality`` / channel override) plus
+    the frozen ``-s`` skills blocks. API-time only, never part of the persisted system prefix.
+    A bypass session never reads the profile: only its frozen launch additions apply."""
+    configured = None
+    resolve = getattr(authority.runner, '_get_system_prompt_for_channel', None)
+    if not policy.ignore_user_config and resolve is not None:
+        from gateway.config import Platform
+        configured = resolve(Platform.LOCAL, chat_id or '')
+    return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
+
+
+def _prefill(authority, policy):
+    """The runner's prefill examples, exactly as the in-process constructor passes them. A bypass
+    session never loads the profile's prefill file (and the safe policy drops prefill anyway)."""
+    if policy.ignore_user_config:
         return None
-    from gateway.session_authorities import owner_scope
-    with owner_scope(authority):
-        return refresh()
+    return getattr(authority.runner, '_prefill_messages', None) or None
 
 
 def construct_kwargs(frame):
@@ -38,8 +59,12 @@ def construct_kwargs(frame):
     inputs = json.loads(frame['policy'].get('request_json') or '{}').get('construct_v1')
     if inputs is None:
         return {}
-    chain = inputs.get('fallback_model') if isinstance(inputs, dict) else None
     if (not isinstance(inputs, dict) or set(inputs) != KEYS
-            or not (chain is None or (isinstance(chain, list) and all(isinstance(e, dict) for e in chain)))):
+            or not _dict_list(inputs['fallback_model']) or not _dict_list(inputs['prefill_messages'])
+            or not isinstance(inputs['ephemeral_system_prompt'], (str, type(None)))):
         raise ValueError('invalid_managed_worker_bootstrap')
-    return {'fallback_model': chain}
+    return dict(inputs)
+
+
+def _dict_list(value):
+    return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
