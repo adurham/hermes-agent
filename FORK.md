@@ -194,7 +194,10 @@ the owner's approval gate.
   `/api/audio/speak` request model, tts_tool per-call provider). 4252 — four retired Anthropic
   model IDs reinstated in the /model picker (`models_catalog_static.py`; cosmetic). 5864 +
   16309 — TUI todo board widget: call site lost in the v2026.9.14 merge (`todo_board_widget=`
-  accepted but never passed).
+  accepted but never passed). **(2026-10-09 de-fork pass):** restored — the board renderer
+  (`get_todo_board_text` / `_select_todo_display_items` / `_todo_board_max_rows`), the
+  `'todo-border'` style, the wired caller and the 📋/❔/🔄 chrome-glyph allowlist entries are
+  back; 33 tests in `tests/hermes_cli/test_todo_board_widget.py` (32 red on base).
 - Fixed DURING this audit: 19499 (defect #1 above), 8036 (defect #3 above), and the
   `_try_anthropic` filter (defect #2 above).
 
@@ -259,8 +262,9 @@ hard-stop default + opt-out test in `test_tool_guardrails.py`; the upstream warn
 replay test retargeted to the explicit opt-out (fork default = hard stops ON everywhere).
 
 **Owner dispositions (2026-10-09, same day):** 8152 — documented as a loss and parked for a
-revisit (re-apply recipe in the audit entry above); 5864 + 16309 — approved, todo-board port in a
-follow-up commit; 4252 — the 4 IDs re-removed; 9492 — review pane aligned to upstream (closed by
+revisit (re-apply recipe in the audit entry above); 5864 + 16309 — approved and restored in the follow-up
+commit (`cli_tui_mixin.py` renderer + border + pending-first truncation + the dynamic 8..30 row cap
++ caller wiring; 33 tests); 4252 — the 4 IDs re-removed; 9492 — review pane aligned to upstream (closed by
 default); 16926 — redundant exemption dropped; live-config dead keys pruned (top-level
 `tool_search:` block, `main_session_cache_ttl`).
 
