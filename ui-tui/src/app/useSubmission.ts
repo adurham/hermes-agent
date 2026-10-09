@@ -7,6 +7,7 @@ import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
+import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
@@ -340,8 +341,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
           return { value }
         } catch (error) {
-          sys(`input not saved: ${(error as Error).message} — draft kept`)
-          patchUiState({ status: 'input not saved' })
+          sys(t('canonical.queue.notSavedDraftKept', (error as Error).message))
+          patchUiState({ status: t('canonical.queue.statusInputNotSaved') })
 
           return undefined
         }

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { t } from './i18n/runtime.js'
+
 export interface SharedControl { session_id: string; execution_generation: number; prompt_id: string }
 export const sharedControlParams = (prompt?: { sharedControl?: SharedControl } | null) => prompt?.sharedControl ?? {}
 
@@ -13,10 +15,10 @@ export function canonicalRequest(method: string, original: Record<string, unknow
     params.source = 'tui'
     params.request_id ??= randomUUID()
 
-    if (!contract?.sources.includes('tui')) { throw new Error('gateway does not support tui session policy; update/restart the gateway') }
+    if (!contract?.sources.includes('tui')) { throw new Error(t('canonical.launch.noTuiPolicy')) }
     const unsupported = Object.keys(params).filter(key => !contract.parameters.includes(key))
 
-    if (unsupported.length) { throw new Error(`gateway does not support TUI launch options: ${unsupported.join(', ')}`) }
+    if (unsupported.length) { throw new Error(t('canonical.launch.unsupportedOptions', unsupported.join(', '))) }
   }
 
   if (['prompt.submit', 'session.steer', 'session.redirect'].includes(method) && params.submission_id) {
@@ -126,7 +128,7 @@ export function launchToolProgress(env = process.env): string | undefined {
 
   if (!raw) { return undefined }
 
-  if (!TOOL_PROGRESS_MODES.has(raw)) { throw new Error(`invalid HERMES_TUI_TOOL_PROGRESS: ${raw}`) }
+  if (!TOOL_PROGRESS_MODES.has(raw)) { throw new Error(t('canonical.launch.invalidToolProgress', raw)) }
 
   return raw
 }

@@ -13,6 +13,7 @@ import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropRespon
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
+import { t } from '../i18n/runtime.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
 import { stageClipboardImage, stageImagePath } from '../lib/imageAttachments.js'
@@ -302,7 +303,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
             })
         ).catch((error: Error) => {
           if (!quiet) {
-            sys(`clipboard image failed: ${error.message}`)
+            sys(t('canonical.queue.clipboardImageFailed', error.message))
           }
 
           return null

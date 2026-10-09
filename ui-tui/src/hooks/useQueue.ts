@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isServerQueued } from '../app/pendingBubbles.js'
 import { captureDestination, type SubmissionDestination } from '../app/submissionDestination.js'
 import { $uiState, getUiState, patchUiState } from '../app/uiStore.js'
+import { t } from '../i18n/runtime.js'
 import {
   loadPendingInputs,
   pendingDestinationKey,
@@ -185,8 +186,8 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   const serverRows = (ui.info?.pending_submissions ?? []).filter(isServerQueued)
 
   const queuedDisplay = [
-    ...queueRef.current.map(item => `${item.failed ? '[unconfirmed · Alt+K retry] ' : ''}${item.display}`),
-    ...serverRows.map(row => `[${row.status}] ${row.user}`)
+    ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
+    ...serverRows.map(row => t('canonical.queue.serverRow', String(row.status), String(row.user)))
   ]
 
   // Indexes past the local items address server rows (read live, not from
@@ -217,7 +218,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         session_id, admission_id: row.admission_id,
         ...(unknown ? { execution_generation: row.execution_generation } : {})
       }) ?? Promise.resolve()).catch((error: Error) => {
-        if (getUiState().sid === session_id) { patchUiState({ status: `discard failed: ${error.message}` }) }
+        if (getUiState().sid === session_id) { patchUiState({ status: t('canonical.queue.discardFailed', error.message) }) }
 
         throw error
       })
@@ -307,7 +308,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
 
         if (accepted) {
           try { removePendingInput(item) } catch (error) {
-            patchUiState({ status: `input delivered; journal cleanup failed: ${(error as Error).message}` })
+            patchUiState({ status: t('canonical.queue.journalCleanupFailed', (error as Error).message) })
           }
 
           for (const pending of queues.current.values()) {
@@ -383,7 +384,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       try {
         return claim(queue, item)
       } catch (error) {
-        patchUiState({ status: `input not saved: ${(error as Error).message} — queue kept` })
+        patchUiState({ status: t('canonical.queue.notSavedQueueKept', (error as Error).message) })
 
         return undefined
       }
@@ -402,7 +403,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
       // draft (Alt+K) instead of admitting a second copy behind the original.
       if (server) {
         if (server.status === 'unknown') {
-          patchUiState({ status: 'unknown execution — Ctrl+X to discard before retrying' })
+          patchUiState({ status: t('canonical.queue.unknownExecution') })
 
           return undefined
         }
