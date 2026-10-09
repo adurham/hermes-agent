@@ -76,6 +76,18 @@ export function siblingRoute(profile: unknown): string | null {
   return typeof profile === 'string' && profile && profile !== 'default' ? profile : null
 }
 
+// A message-level branch (`count` = the selected prefix) keeps rows through `through_message_id`.
+// Without that durable id the authority would copy the whole history, so it refuses instead.
+function branchBoundary(params: Record<string, unknown>): Record<string, unknown> {
+  const through = params.through_message_id
+
+  if (typeof through === 'number' && Number.isInteger(through) && through > 0) { return { through_message_id: through } }
+
+  if (params.count !== undefined) { throw new Error('This message is not saved yet; wait for it to settle, then branch from it again') }
+
+  return {}
+}
+
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
 
@@ -186,7 +198,7 @@ export class CanonicalDesktopProtocol {
 
     // Branch and compress fence the execution generation like the slash directives.
     const fenced = ({
-      'session.branch': () => ({ operation: 'branch', payload: {} }),
+      'session.branch': () => ({ operation: 'branch', payload: branchBoundary(params) }),
       'session.compress': () => ({ operation: 'compress', payload: params.focus_topic ? { focus: String(params.focus_topic) } : {} })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 

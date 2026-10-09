@@ -159,6 +159,7 @@ import {
 } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
@@ -865,6 +866,7 @@ export function useSessionActions({
         if (createIntentRef.current === createIntent) {
           createIntentRef.current = null
         }
+
         activeSessionIdRef.current = created.session_id
         selectedStoredSessionIdRef.current = stored
         ensureSessionState(created.session_id, stored)
@@ -2737,7 +2739,7 @@ export function useSessionActions({
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
-            ...(branchCount !== undefined ? { count: branchCount } : {})
+            ...(branchCount !== undefined ? { count: branchCount, through_message_id: branchThroughRowId(branchMessages) } : {})
           }
 
           const createParams = {

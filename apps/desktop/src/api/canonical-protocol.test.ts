@@ -226,3 +226,16 @@ test('the composer model picker travels as the canonical model mutation, not an 
   expect(protocol.wire('config.set', protocol.prepare('config.set', { session_id: 's', key: 'busy', value: 'queue' }))).toBe('config.set')
   expect(protocol.wire('config.set', protocol.prepare('config.set', { session_id: 's', key: 'model', value: 'gpt-5 --global' }))).toBe('config.set')
 })
+
+test('a message-level branch carries its durable boundary row; a whole-chat branch copies everything', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 1 })
+  const selected = protocol.prepare('session.branch', { session_id: 's', idempotency_key: 'k', count: 2, through_message_id: 41 })
+  expect(protocol.wire('session.branch', selected)).toBe('session.mutate')
+  expect(selected).toMatchObject({ operation: 'branch', payload: { through_message_id: 41 } })
+  // A lost-response retry presents the identical mutation (the boundary is part of its identity).
+  expect(protocol.prepare('session.branch', { session_id: 's', idempotency_key: 'k', count: 2, through_message_id: 41 })).toEqual(selected)
+  // A selected message with no durable row yet must never fall back to a whole-history copy.
+  expect(() => protocol.prepare('session.branch', { session_id: 's', count: 2 })).toThrow(/not saved yet/)
+  expect(protocol.prepare('session.branch', { session_id: 's' })).toMatchObject({ payload: {} })
+})
