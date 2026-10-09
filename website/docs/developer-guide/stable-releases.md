@@ -415,6 +415,9 @@ local helper suite. Never store the bootstrap output as a repo channel list.
 The last successful stable release that shipped bundles records
 `releases/stable/release-candidates.json` on the configured R2 public origin.
 A release that skipped bundles does not replace it.
+The first release that ships bundles has no baseline. It still runs every
+native smoke but skips the signed-package upgrade arms. A missing baseline
+after any final tag records a candidate manifest is a blocker.
 It identifies actual Windows universal MSIX bundles, macOS ZIPs and package
 provenance. The next run combines those records with its candidate manifest
 and uses the existing native bundled-update drivers.

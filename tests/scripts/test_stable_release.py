@@ -937,6 +937,45 @@ def test_transitions_from_the_bundle_receipt_emit_two_windows_rows(tmp_path, r2_
     assert macos["include"] == []
 
 
+def test_first_bundle_release_plans_no_upgrade_arm_until_a_bundle_release_shipped(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    from scripts.releases import stable
+
+    url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-arm64")
+    env = {**_transitions_env(tmp_path, https_origin.base, "darwin-arm64", url, digest),
+           "BASELINE_MANIFEST_URL": ""}
+    # The latest final tag skipped bundles; an older tag predates the claim pipeline.
+    tags = {"v1.2.2": json.dumps({"candidateManifestSha256": None}), "v1.2.1": "Weekly release"}
+
+    def git(argv):
+        return " ".join(tags) if argv[3] == "v*" else tags[argv[3]]
+
+    monkeypatch.setattr(stable, "output", git)
+    stable.main(["transitions"], env)
+    emitted = dict(line.split("=", 1)
+                   for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
+    assert emitted["baseline"] == "none"
+    assert json.loads(emitted["macos"]) == json.loads(emitted["windows"]) == {"include": []}
+    tags["v1.2.2"] = json.dumps({"candidateManifestSha256": "3" * 64})
+    with pytest.raises(ValueError, match="No published stable package baseline"):
+        stable.main(["transitions"], env)
+
+
+def test_gate_excuses_an_upgrade_arm_only_for_its_planners_first_release_output():
+    from scripts.releases.stable import PACKAGED_BY, require_gate
+
+    required = [*PACKAGED_BY, *PACKAGED_BY.values()]
+    needs = {name: {"result": "skipped"} for name in PACKAGED_BY}
+    needs.update({name: {"result": "success", "outputs": {"baseline": "none"}}
+                  for name in PACKAGED_BY.values()})
+    require_gate(needs, required, skip_bundles=False, skip_tests=False)
+    for packaged, planner in PACKAGED_BY.items():
+        for planned in ({"result": "success", "outputs": {"baseline": "published"}},
+                        {"result": "success"}, {"result": "failure", "outputs": {"baseline": "none"}}):
+            with pytest.raises(ValueError, match=packaged):
+                require_gate({**needs, planner: planned}, required, skip_bundles=False, skip_tests=False)
+
+
 def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
