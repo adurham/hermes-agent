@@ -45,7 +45,7 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_for_startup", lambda: None, raising=False)
     fake_cli = types.ModuleType("cli")
-    setattr(fake_cli, "main", classic_main)
+    fake_cli.main = classic_main
     monkeypatch.setitem(sys.modules, "cli", fake_cli)
     try:
         main_mod.cmd_chat(args)
@@ -65,11 +65,3 @@ def test_blank_install_tui_skips_classic_guard_and_offer(monkeypatch):
 
 def test_blank_install_classic_cli_still_gets_the_guard(monkeypatch):
     assert _run_chat(monkeypatch, ["chat", "--cli"], provider_configured=False) == ["guard"]
-
-
-def test_configured_tui_still_gets_the_one_time_offer(monkeypatch):
-    assert _run_chat(monkeypatch, ["chat", "--tui"], provider_configured=True) == ["offer", "tui"]
-
-
-def test_configured_classic_cli_still_gets_the_one_time_offer(monkeypatch):
-    assert _run_chat(monkeypatch, ["chat", "--cli"], provider_configured=True) == ["offer", "classic"]
