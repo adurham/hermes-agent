@@ -40,7 +40,7 @@ def completion_admission(runner, event):
     return None
 
 
-def _owner(runner, event):
+def _owner(runner, event, authority):
     route = event.metadata.get('gateway_session_key') or runner.session_store._generate_session_key(event.source)
     entry = runner.session_store.lookup_by_session_key(route)
     if entry is None or entry.suspended:
@@ -52,8 +52,7 @@ def _owner(runner, event):
         raise RuntimeStoreError('admission_conflict')
     if expected != entry.session_id:
         # A completed child may follow compression, but never /new or an unrelated resume.
-        from gateway.session_authorities import active_authority
-        if active_authority(runner).db.get_compression_tip(expected) != entry.session_id:
+        if authority.db.get_compression_tip(expected) != entry.session_id:
             raise RuntimeStoreError('admission_conflict')
     return entry
 
@@ -96,7 +95,7 @@ def snapshot_automation(authority, adapter, event, identity):
             or set(event.metadata) - _AUTOMATION_METADATA):
         raise RuntimeStoreError('invalid_params')
     notification = automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
-    entry = _owner(runner, event)
+    entry = _owner(runner, event, authority)
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
@@ -137,10 +136,13 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
     from gateway.session_envelope import restore_native
     event = restore_native(payload, runner)
     envelope = payload['native_text_v1']
-    entry = _owner(runner, event)
     from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    if authority is None:  # a late preflight for a profile this runtime no longer serves
+        raise RuntimeStoreError('not_found')
+    entry = _owner(runner, event, authority)
     if (entry.session_id != session_id
-            or envelope['automation']['owner'] != active_authority(runner).logical_owner(session_id)
+            or envelope['automation']['owner'] != authority.logical_owner(session_id)
             or runner.session_store._generate_session_key(available_source) != entry.session_key
             or adapter is None or runner._adapter_for_source(event.source) is not adapter):
         raise RuntimeStoreError('admission_conflict')
