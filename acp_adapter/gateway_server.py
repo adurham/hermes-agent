@@ -63,6 +63,12 @@ def _stage_user_content(content):
     return "\n".join(texts), attachments
 
 
+def _text(payload):
+    """Reply text of a message frame; ``text`` may be present and null (a suppressed delivery)."""
+    text = payload.get("text")
+    return text if isinstance(text, str) else ""
+
+
 class GatewayACPAgent(acp.Agent):
     def __init__(self):
         self._conn = None
@@ -74,6 +80,8 @@ class GatewayACPAgent(acp.Agent):
         self._event_task = None
         self._terminals = {}
         self._streamed = {}
+        # Admission -> closed reply segments already shown (interim commentary, pre-tool deltas).
+        self._segments = {}
         self._changed = asyncio.Condition()
         self._failure = None
         self._permissions = {}
@@ -392,6 +400,9 @@ class GatewayACPAgent(acp.Agent):
         # In-process turns publish ``tool_name``; managed workers publish ``name``.
         tool_name = payload.get("tool_name") or payload.get("name") or "tool"
         if kind == "tool.start":
+            # Deltas before a tool call are commentary the final reply does not repeat: close
+            # that segment so ``message.complete`` measures only the final's own stream.
+            self._close_segment(aid)
             from acp_adapter.tools import build_tool_start, coerce_tool_args
             args = coerce_tool_args(payload.get("args"))
             self._tool_args[(sid, payload["tool_call_id"])] = (tool_name, args)
@@ -409,19 +420,22 @@ class GatewayACPAgent(acp.Agent):
                     function_args=args))
             return
         if kind == "message.delta":
-            text = payload.get("text", "")
+            text = _text(payload)
             self._streamed[aid] = self._streamed.get(aid, "") + text
             if text and self._conn:
                 await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text))
+        elif kind == "message.interim":
+            # Commentary the owner could not stream (``already_streamed`` false) reaches viewers
+            # only here; streamed commentary is already on screen. Either way it is its own segment.
+            self._close_segment(aid)
+            text = _text(payload)
+            if not payload.get("already_streamed") and text.strip():
+                self._segments.setdefault(aid, []).append(text)
+                if self._conn:
+                    await self._conn.session_update(session_id=editor_id,
+                                                    update=acp.update_agent_message_text(text + "\n\n"))
         elif kind == "message.complete":
-            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-
-            text = payload.get("text", "")
-            # Local interrupt status is metadata; ACP carries it in stop_reason.
-            if payload.get("outcome") == "cancelled" and text.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
-                text = ""
-            prefix = self._streamed.pop(aid, "")
-            remainder = text[len(prefix):] if text.startswith(prefix) else text
+            remainder = self._final_remainder(aid, payload)
             if remainder and self._conn:
                 await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(remainder))
             async with self._changed:
@@ -429,6 +443,33 @@ class GatewayACPAgent(acp.Agent):
                 if len(self._terminals) > 256:
                     self._terminals.pop(next(iter(self._terminals)))
                 self._changed.notify_all()
+
+    def _close_segment(self, aid):
+        streamed = self._streamed.pop(aid, "")
+        if streamed.strip():
+            self._segments.setdefault(aid, []).append(streamed)
+
+    def _final_remainder(self, aid, payload):
+        """The part of the settled reply the editor has not been shown yet (exactly-once text)."""
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        text = _text(payload)
+        streamed = self._streamed.pop(aid, "")
+        shown = self._segments.pop(aid, [])
+        # Local interrupt status is metadata; ACP carries it in stop_reason.
+        if not text or (payload.get("outcome") == "cancelled"
+                        and text.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)):
+            return ""
+        if payload.get("response_reused") is True and (streamed or shown):
+            # The owner names the final as the reply already painted (never inferred from text).
+            return ""
+        if text.startswith(streamed):
+            remainder = text[len(streamed):]
+            # An unstreamed final the owner already published as an interim segment.
+            return "" if not streamed and text.strip() in {s.strip() for s in shown} else remainder
+        if text.strip() == streamed.strip():
+            return ""
+        return "\n\n" + text
 
     def _permission(self, session_id, prompt):
         answer = {"approval": self._answer_permission, "clarify": self._answer_clarify}.get(prompt.get("kind"))
