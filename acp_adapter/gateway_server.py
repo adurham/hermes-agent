@@ -87,6 +87,17 @@ def _slash_command(text):
     return command.name if command is not None else None
 
 
+def _submit_fingerprint(session_id, text, attachments):
+    """Content identity of one logical prompt: its text and the staged image bytes (staging names
+    are disposable; the authority reconciles a retry by the same digests)."""
+    import hashlib
+    digest = hashlib.sha256(text.encode())
+    for item in attachments:
+        with open(item['path'], 'rb') as staged:
+            digest.update(item['mime'].encode() + b'\0' + hashlib.sha256(staged.read()).digest())
+    return session_id, digest.hexdigest()
+
+
 class GatewayACPAgent(acp.Agent):
     def __init__(self):
         self._conn = None
@@ -111,6 +122,11 @@ class GatewayACPAgent(acp.Agent):
         self._permissions = {}
         self._admissions = {}
         self._submitting = set()
+        # (session, content fingerprint) -> input_id of a submit whose ack never arrived. The
+        # editor's retry of that prompt reuses it, so the authority returns the same admission.
+        self._unacked = {}
+        # Admissions whose message.complete the pump is projecting right now.
+        self._settling = set()
         self._pending_cancels = set()
         self._tool_args = {}
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
@@ -392,17 +408,32 @@ class GatewayACPAgent(acp.Agent):
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
+        retry_key = await asyncio.to_thread(_submit_fingerprint, session_id, text, attachments)
+        input_id = self._unacked.pop(retry_key, None) or uuid.uuid4().hex
         self._submitting.add(session_id)
         try:
-            receipt = await client.rpc("prompt.submit", session_id=session_id,
-                                       input_id=uuid.uuid4().hex, **submit)
-        except BaseException:
+            receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
+        except BaseException as exc:
+            from hermes_cli.gateway_client import GatewayRPCError
+            if not isinstance(exc, GatewayRPCError):
+                # Transport loss, timeout or cancel before the ack: the owner may hold this admission.
+                # Keep its identity for the editor's retry of the same prompt (latest 64 kept).
+                self._unacked[retry_key] = input_id
+                while len(self._unacked) > 64:
+                    self._unacked.pop(next(iter(self._unacked)))
             self._pending_cancels.discard(session_id)
             raise
         finally:
             self._submitting.discard(session_id)
         admission_id = receipt["admission_id"]
         self._admissions[session_id] = admission_id
+        if receipt.get("status") == "terminal":
+            # A retry of an un-acked submit whose turn already settled: report that turn once.
+            await self._settled_receipt(client, held_id, session_id, receipt)
+        elif receipt.get("status") == "unknown":
+            # A retry of an un-acked submit the owner lost in a restart: never a second turn.
+            self._admissions.pop(session_id, None)
+            raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         try:
             if session_id in self._pending_cancels:
                 self._pending_cancels.discard(session_id)
@@ -433,6 +464,20 @@ class GatewayACPAgent(acp.Agent):
         if outcome == "failed":
             raise GatewayClientError("admitted_turn_failed")
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn")
+
+    async def _settled_receipt(self, client, held_id, session_id, receipt):
+        admission_id = receipt["admission_id"]
+        saved = await client.rpc("prompt.receipt", session_id=session_id, admission_id=admission_id,
+                                 include_result=True)
+        if admission_id in self._terminals or admission_id in self._settling:
+            return  # this connection's pump carried the completion itself
+        text = (saved.get("result") or {}).get("final_response") or ""
+        if text and self._conn:
+            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(text))
+        outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+        async with self._changed:
+            self._terminals[admission_id] = {"outcome": outcome}
+            self._changed.notify_all()
 
     def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
         """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
@@ -545,14 +590,19 @@ class GatewayACPAgent(acp.Agent):
                     await self._conn.session_update(session_id=editor_id,
                                                     update=acp.update_agent_message_text(text + "\n\n"))
         elif kind == "message.complete":
-            remainder = self._final_remainder(aid, payload)
-            if remainder and self._conn:
-                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(remainder))
-            async with self._changed:
-                self._terminals[aid] = payload
-                if len(self._terminals) > 256:
-                    self._terminals.pop(next(iter(self._terminals)))
-                self._changed.notify_all()
+            self._settling.add(aid)
+            try:
+                remainder = self._final_remainder(aid, payload)
+                if remainder and self._conn:
+                    await self._conn.session_update(session_id=editor_id,
+                                                    update=acp.update_agent_message_text(remainder))
+                async with self._changed:
+                    self._terminals[aid] = payload
+                    if len(self._terminals) > 256:
+                        self._terminals.pop(next(iter(self._terminals)))
+                    self._changed.notify_all()
+            finally:
+                self._settling.discard(aid)
 
     def _close_segment(self, aid):
         streamed = self._streamed.pop(aid, "")
