@@ -12,7 +12,7 @@ def validate_action(operation, payload):
     if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm'}
             and all(isinstance(v, str) and v.strip() for v in payload.values())):
         return
-    if operation == 'branch' and (not payload or (set(payload) == {'title'} and isinstance(payload['title'], str))):
+    if operation == 'branch' and _valid_branch_payload(payload):
         return
     if operation == 'compress' and _valid_compress_payload(payload):
         return
@@ -32,6 +32,17 @@ def validate_action(operation, payload):
         valid = operation in required and set(payload) == required[operation]
     if not valid or any(type(value) is not METADATA_FIELDS[key] for key, value in payload.items()):
         raise RuntimeStoreError('invalid_params')
+
+
+def _valid_branch_payload(payload):
+    # ``through_message_id``: the physical row id of the last message the branch keeps (a stable
+    # boundary, never a visible-message count); absent means the whole active transcript.
+    if set(payload) - {'title', 'through_message_id'}:
+        return False
+    if 'title' in payload and not isinstance(payload['title'], str):
+        return False
+    return 'through_message_id' not in payload or (
+        type(payload['through_message_id']) is int and payload['through_message_id'] > 0)
 
 
 _COMPRESS_FIELDS = {'focus': str, 'preview': bool, 'partial': bool, 'keep_last': int}

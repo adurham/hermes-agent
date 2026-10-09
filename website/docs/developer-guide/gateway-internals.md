@@ -217,7 +217,10 @@ different contents returns `admission_conflict`. A competing edit with a stale
 revision returns `revision_conflict`. Draining rejects new mutations and fresh
 session registration before routing or transcript creation. These edits
 do not interrupt a running turn. Canonical reset, delete, rewind, model, branch,
-and compression operations use the same receipt boundary. A request disconnect
+and compression operations use the same receipt boundary. `branch` accepts an optional
+`title` and `through_message_id` (the row id of the last message to keep; tool results
+answering an assistant boundary come with it); without it the whole active transcript is
+copied. A request disconnect
 does not cancel its owner-held mutation: the commit, live projection and queue
 wakeup finish together, and profile retirement joins that work before releasing
 the store. An exact old receipt cannot evict a newer running agent.
