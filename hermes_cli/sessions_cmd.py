@@ -1185,10 +1185,16 @@ def _cmd_set_journal_mode(args):
     return cmd_set_journal_mode(args)
 
 
+def _cmd_discard(args):
+    from hermes_cli.sessions_discard import cmd_discard
+    return cmd_discard(args)
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
     "set-journal-mode": _cmd_set_journal_mode,  # offline: must not open the store it converts
+    "discard": _cmd_discard,  # a gateway control (prompt.resolve_unknown), never a direct store write
 }
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {

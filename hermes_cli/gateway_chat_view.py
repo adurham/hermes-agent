@@ -350,7 +350,8 @@ class GatewayChatView:
             # submitting so nothing is left queued for the next interactive resume to find.
             lost = " ".join(self.unknown_admissions())
             return self._detach("Unknown execution blocks this session; nothing was submitted. Resolve it "
-                                f"interactively with /discard {lost} (prompt.resolve_unknown), then retry.")
+                                f"with `hermes sessions discard {self.session_id} --yes` (or /discard {lost} "
+                                "interactively; both are prompt.resolve_unknown), then retry.")
         renderer = asyncio.create_task(self.render())
         try:
             receipt = await self.submit(query) if query else None

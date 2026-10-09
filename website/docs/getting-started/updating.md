@@ -132,8 +132,8 @@ API, ACP, cron, Bot Chat). What an existing install sees on its first update:
 - **Work interrupted by the cutover restart is never replayed.** On the first gateway
   start, an input that was mid-turn (`started`) and any managed worker that was running
   become `unknown`; queued inputs behind it wait. Inspect the session, then acknowledge
-  with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent) before
-  later inputs run. A cron delivery a gateway had claimed but not finished is likewise
+  with `/discard <admission_id>` in `hermes chat` (or the Desktop/TUI equivalent), or from a
+  script with `hermes sessions discard <session> --yes`, before later inputs run. A cron delivery a gateway had claimed but not finished is likewise
   fenced `unknown` and recorded `delivery_failed`.
 - **Rolling back after the new gateway has written `state.db`:** the new runtime-ledger
   tables reference `sessions` with `ON DELETE RESTRICT`, so an older release that deletes
