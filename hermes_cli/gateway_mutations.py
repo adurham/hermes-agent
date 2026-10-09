@@ -8,7 +8,15 @@ class PreparedMutations:
     def __init__(self):
         self.pending = {}
 
-    async def apply(self, client, session_id, operation, payload):
+    async def apply(self, client, session_id, operation, payload, *, confirm=None):
+        """The owner's answer for this prepared mutation (retained across ambiguous replies).
+
+        A guarded model target answers ``status: confirmation_required`` and writes nothing.
+        ``confirm`` (``async (refusal) -> bool``) is the surface's prompt: yes re-sends the same
+        retained mutation once with ``payload.confirm`` = the owner's token (under the original
+        key, so an ambiguous reply to the confirmed send retries that exact request); no answers
+        ``status: cancelled``. Without a prompt (non-interactive) the refusal is an error, and a
+        confirmed send refused again (another switch or a turn landed first) is never re-asked."""
         encoded = json.dumps(payload, sort_keys=True)
         key = (session_id, operation, encoded)
         if key not in self.pending:
@@ -17,7 +25,7 @@ class PreparedMutations:
                 payload=json.loads(encoded), request_id=uuid.uuid4().hex,
                 expected_revision=snapshot['revision'], expected_generation=snapshot['execution_generation'])}
         entry = self.pending[key]
-        if 'result' not in entry:
+        while 'result' not in entry:
             try:
                 # A compression answers after its summary + commit; the default budget would report
                 # a timeout while the owner (which shields the mutation) still commits it.
@@ -32,17 +40,53 @@ class PreparedMutations:
                                 'unsupported_compress_options'}:
                     self.pending.pop(key)
                 raise
-            if entry['result'].get('status') == 'confirmation_required':
-                # The owner wrote nothing: a guarded model target needs the user's confirmation
-                # (payload ``confirm`` = the returned token). These surfaces cannot collect it
-                # yet, so say so instead of reporting the switch as done.
+            refusal = entry['result']
+            if refusal.get('status') != 'confirmation_required':
+                break
+            # The owner wrote nothing (no receipt): the same tuple may be re-sent with the token.
+            del entry['result']
+            if confirm is None or 'confirm' in entry['params']['payload']:
                 self.pending.pop(key)
-                raise GatewayClientError(entry['result']['confirm_message'] + '\n\nModel not switched: '
-                                         'this target needs a confirmation this client cannot collect yet.')
+                raise GatewayClientError(model_refusal_text(refusal, confirmed=confirm is not None))
+            try:
+                accepted = await confirm(refusal)
+            except BaseException:
+                self.pending.pop(key)
+                raise
+            if not accepted:
+                self.pending.pop(key)
+                return {'status': 'cancelled', 'session_id': session_id, 'operation': operation}
+            entry['params'] = {**entry['params'], 'request_id': uuid.uuid4().hex,
+                               'payload': {**entry['params']['payload'], 'confirm': refusal['confirm']}}
         return entry['result']
 
     def acknowledge(self, session_id, operation, payload):
         self.pending.pop((session_id, operation, json.dumps(payload, sort_keys=True)), None)
+
+
+def model_refusal_text(refusal, *, confirmed=False):
+    """Why a guarded model target was not applied (the owner's guard text first)."""
+    reason = ('the session changed before the confirmation landed; run /model again.' if confirmed else
+              'this target needs a confirmation; run /model in an interactive session to confirm it.')
+    return f"{refusal['confirm_message']}\n\nModel not switched: {reason}"
+
+
+def confirmation_title(refusal):
+    """The one prompt title for the owner's guard warnings (as ``combined_selection_warning``)."""
+    warnings = refusal.get('warnings') or []
+    return warnings[0]['title'] if len(warnings) == 1 else 'Model Selection Warning'
+
+
+def confirm_choice(raw, choices):
+    """``once`` / ``cancel`` (or None) for a typed answer: the choice's number or the classic
+    CLI's confirm aliases (y/yes/once, n/no/cancel)."""
+    from hermes_cli.cli_modal_mixin import _CONFIRM_ALIASES
+    answer = (raw or '').strip().lower()
+    if answer.isdigit() and 0 < int(answer) <= len(choices):
+        return choices[int(answer) - 1][0]
+    allowed = {choice[0] for choice in choices}
+    normalized = _CONFIRM_ALIASES.get(answer, answer)
+    return normalized if normalized in allowed else None
 
 
 def compress_payload(arg):

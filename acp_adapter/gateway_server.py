@@ -356,10 +356,40 @@ class GatewayACPAgent(acp.Agent):
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
         payload = {'model': model_id}
-        await self._mutations.apply(client, session_id, 'model', payload)
+        result = await self._mutations.apply(client, session_id, 'model', payload,
+                                             confirm=self._model_confirmer(session_id))
+        if result.get('status') == 'cancelled':
+            # Declined: nothing was written; the editor's picker must not show the target as active.
+            raise GatewayClientError('model_switch_cancelled')
         self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
         self._mutations.acknowledge(session_id, 'model', payload)
         return SetSessionModelResponse()
+
+    def _model_confirmer(self, session_id):
+        """The owner's guarded-model confirmation as an ACP permission request (the mechanism
+        approvals use): "Switch anyway" re-sends the mutation once with the owner's token; deny,
+        dismissal or a lost editor keeps the current model. None without an editor connection."""
+        if self._conn is None:
+            return None
+
+        async def confirm(refusal):
+            from acp.schema import AllowedOutcome, PermissionOption
+            from agent.i18n import t
+            from hermes_cli.gateway_mutations import confirmation_title
+            title = confirmation_title(refusal)
+            tool_call = acp.update_tool_call(
+                f"model-confirm-{uuid.uuid4().hex[:12]}", title=f"{title}: {refusal.get('target_model', '')}",
+                kind="other", status="pending",
+                content=[acp.tool_content(acp.text_block(refusal['confirm_message']))],
+                raw_input={'model': refusal.get('target_model'), 'provider': refusal.get('target_provider'),
+                           'guards': [w.get('kind') for w in refusal.get('warnings') or []]})
+            options = [PermissionOption(option_id="allow_once", kind="allow_once",
+                                        name=t("cli.model.choice_switch_anyway")),
+                       PermissionOption(option_id="deny", kind="reject_once", name=t("cli.model.choice_cancel"))]
+            response = await self._conn.request_permission(session_id=self._editor_id(session_id),
+                                                           tool_call=tool_call, options=options)
+            return isinstance(response.outcome, AllowedOutcome) and response.outcome.option_id == "allow_once"
+        return confirm
 
     async def set_session_mode(self, mode_id, session_id, **kwargs):
         raise GatewayClientError("acp_edit_policy_mutation_unavailable")
@@ -394,8 +424,13 @@ class GatewayACPAgent(acp.Agent):
             if operation == 'branch':
                 raise GatewayClientError('use_acp_fork_session')
             client = await self._client()
-            result = await self._mutations.apply(client, session_id, operation, payload)
-            if result.get('status') == 'preview':
+            result = await self._mutations.apply(client, session_id, operation, payload,
+                                                 confirm=self._model_confirmer(session_id) if operation == 'model' else None)
+            if result.get('status') == 'cancelled':
+                from agent.i18n import t
+                await self._conn.session_update(session_id=held_id,
+                    update=acp.update_agent_message_text(t('cli.model.switch_cancelled') + '\n'))
+            elif result.get('status') == 'preview':
                 # Read-only report: nothing changed, so the editor's snapshot is still current.
                 await self._conn.session_update(session_id=held_id,
                     update=acp.update_agent_message_text('\n'.join(result['lines']) + '\n'))

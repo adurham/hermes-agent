@@ -42,6 +42,9 @@ class GatewayChatView:
         self.failed = asyncio.Event()
         from hermes_cli.gateway_mutations import PreparedMutations
         self.mutations = PreparedMutations()
+        # The interactive composer (set by ``run``); None in one-shot / non-TTY runs, where a
+        # guarded model switch stays a refusal instead of a prompt.
+        self._composer = None
 
     def unknown_admissions(self):
         return [row["admission_id"] for row in self.pending if row["status"] == "unknown"]
@@ -236,7 +239,10 @@ class GatewayChatView:
             from hermes_cli.gateway_mutations import slash_mutation
             operation, payload = slash_mutation(command, rest.strip())
             original = self.session_id
-            result = await self.mutations.apply(self.client, original, operation, payload)
+            confirm = self._confirm_model_switch if operation == 'model' and self._composer is not None else None
+            result = await self.mutations.apply(self.client, original, operation, payload, confirm=confirm)
+            if result.get('status') == 'cancelled':
+                return True
             if result.get('status') == 'preview':
                 self.mutations.acknowledge(original, operation, payload)
                 print('\n'.join(result['lines']))
@@ -247,6 +253,8 @@ class GatewayChatView:
             self.generation = snapshot['execution_generation']
             self.prompts = {p['prompt_id']: p for p in snapshot.get('prompts', [])}
             self.mutations.acknowledge(original, operation, payload)
+            if operation == 'model' and result.get('model'):
+                self.model = str(result['model']).split('/')[-1]
             print(f"{operation}: {target}")
             return True
         if command == "/yolo":
@@ -262,6 +270,26 @@ class GatewayChatView:
             print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /yolo [on|off], /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
             return True
         raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
+
+    async def _confirm_model_switch(self, refusal):
+        """The owner refused a guarded model target (cost / data policy / large context): ask as
+        the in-process CLI does (``_confirm_expensive_model_switch``: switch anyway once, or cancel)
+        on this composer. Only an explicit yes applies; anything else keeps the current model."""
+        from agent.i18n import t
+        from hermes_cli.gateway_mutations import confirm_choice, confirmation_title
+        choices = [("once", t("cli.model.choice_switch_anyway"), t("cli.model.desc_switch_anyway")),
+                   ("cancel", t("cli.model.choice_cancel"), t("cli.model.desc_keep_current_model"))]
+        print(f"\n!!! {confirmation_title(refusal)} !!!\n{refusal['confirm_message']}\n")
+        for index, (_, label, detail) in enumerate(choices, 1):
+            print(f"  {index}. {label} \u2014 {detail}")
+        try:
+            raw = await self._read_line(self._composer, t("cli.model.confirm_choice_prompt"))
+        except (KeyboardInterrupt, EOFError):
+            raw = ""
+        if not self.failure and confirm_choice(raw, choices) == "once":
+            return True
+        print(t("cli.model.switch_cancelled"))
+        return False
 
     def _detach(self, message):
         """One-shot cannot go on without a human: say why on stderr, exit 3, and in stream-json
@@ -378,6 +406,7 @@ class GatewayChatView:
             prompt = PromptSession(erase_when_done=True,
                                    bottom_toolbar=lambda: f" \u2624 {self.model} \u2502 {self.session_id} ")
             prompt_symbol = get_active_prompt_symbol("❯ ")
+            self._composer = prompt if sys.stdin.isatty() else None
             with patch_stdout():
                 while not self.failure:
                     try:
