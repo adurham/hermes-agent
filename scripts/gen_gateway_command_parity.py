@@ -94,7 +94,7 @@ def _ink_commands():
     """``{name_or_alias: (canonical_ink_name, block_text)}`` from the static Ink tables."""
     table = {}
     for path in sorted((ROOT / "ui-tui" / "src" / "app" / "slash" / "commands").glob("*.ts")):
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         for block in re.split(r"\n  \{\n", text)[1:]:
             block = block.split("\n  },", 1)[0]
             match = re.search(r"^    name: '([\w-]+)'", block, re.MULTILINE)
@@ -132,7 +132,7 @@ def _rpc_cell(methods, served):
 
 
 def _desktop_specs():
-    text = (ROOT / "apps" / "desktop" / "src" / "lib" / "desktop-slash-commands.ts").read_text(encoding="utf-8")
+    text = (ROOT / "apps" / "desktop" / "src" / "lib" / "desktop-slash-commands.ts").read_text(encoding="utf-8-sig")
     body = text.split("const DESKTOP_COMMAND_SPECS", 1)[1].split("\n]\n", 1)[0]
     specs = {}
     for chunk in re.split(r"\n  \{", body)[1:]:
@@ -213,7 +213,7 @@ def render() -> str:
 
 
 def check(out: Path = OUT) -> int:
-    committed = out.read_text(encoding="utf-8") if out.exists() else ""
+    committed = out.read_text(encoding="utf-8-sig") if out.exists() else ""
     if committed == render():
         return 0
     print(f"{out.relative_to(ROOT)} is stale; run scripts/gen_gateway_command_parity.py", file=sys.stderr)

@@ -342,6 +342,13 @@ class GatewayChatView:
             logger.debug("settled result for %s unavailable: %s", admission, exc)
             return {}
 
+    def _print_exit_ids(self):
+        """The finite run's durable id on stderr (automation wrappers parse it; it names the
+        physical row a compaction may have advanced) and, for `chat -q`, main's resume block."""
+        print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
+        if self.resume_footer:
+            print(resume_footer(self.session_id), flush=True)
+
     def _write_usage_file(self, result, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
         from hermes_cli.oneshot import _write_usage_file
@@ -406,9 +413,7 @@ class GatewayChatView:
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have
                 # advanced it past the row printed at start).
-                print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
-                if self.resume_footer:
-                    print(resume_footer(self.session_id), flush=True)
+                self._print_exit_ids()
                 return exit_code
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
