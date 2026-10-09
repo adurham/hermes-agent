@@ -64,6 +64,8 @@ def _bootstrap(authority, ref, row, policy, scope):
     request = dict(json.loads(policy.request_json), turn_v1={
         'finite': row['payload'].get('finite', False), 'unattended': row['payload'].get('unattended') is True,
         'yolo': _session_yolo(authority, live.route, policy)})
+    from gateway.session_worker_construct import construct_inputs
+    request['construct_v1'] = construct_inputs(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(_worker_config(authority, policy)), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)
     return {'version': 1, 'home': authority.profile_id, 'scope': scope,
