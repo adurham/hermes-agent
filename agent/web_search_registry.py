@@ -32,7 +32,6 @@ _registry: ProviderRegistry[WebSearchProvider] = ProviderRegistry(
 )
 _registry.export(globals())
 
-
 def _read_config_key(*path: str) -> Optional[str]:
     """Resolve a dotted config key from ``config.yaml``. Returns None on miss."""
     try:
@@ -50,9 +49,19 @@ def _read_config_key(*path: str) -> Optional[str]:
     return None
 
 
+def _map_managed_web_backend(configured: Optional[str], capability: str) -> Optional[str]:
+    """The managed ``nous`` selection names no provider: it is served by Perplexity (search) and
+    Firecrawl (extract). Shared by the top-level keys and the fork's ``web.by_provider`` blocks."""
+    if configured and configured.lower() == "nous":
+        return "perplexity" if capability == "search" else "firecrawl"
+    return configured
+
+
 def _configured_backend(capability: str) -> Optional[str]:
-    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback)."""
-    return _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    """``web.<capability>_backend`` (preferred) or ``web.backend`` (shared fallback). The managed ``nous``
+    selection names no provider: it is served by Perplexity (search) and Firecrawl (extract)."""
+    configured = _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
+    return _map_managed_web_backend(configured, capability)
 
 
 # Paid providers first so existing paid setups don't get downgraded to a free
@@ -175,18 +184,17 @@ def _read_web_config_key(capability: str) -> Optional[str]:
                         cap_key = f"{capability}_backend"
                         val = block.get(cap_key)
                         if isinstance(val, str) and val.strip():
-                            return val.strip()
+                            return _map_managed_web_backend(val.strip(), capability)
                         # Shared backend in the provider block
                         val = block.get("backend")
                         if isinstance(val, str) and val.strip():
-                            return val.strip()
+                            return _map_managed_web_backend(val.strip(), capability)
         except Exception as exc:
             logger.debug("Could not read web.by_provider config: %s", exc)
 
-    # Step 3: fall back to top-level web config
-    cap_key = f"{capability}_backend"
-    explicit = _read_config_key("web", cap_key) or _read_config_key("web", "backend")
-    return explicit
+    # Step 3: fall back to top-level web config (upstream's resolver, incl. the managed
+    # ``nous`` -> perplexity/firecrawl mapping).
+    return _configured_backend(capability)
 
 
 def _keyless_tier_enabled() -> bool:
@@ -259,28 +267,3 @@ def get_active_extract_provider() -> Optional[WebSearchProvider]:
     """
     explicit = _read_web_config_key("extract")
     return _resolve(explicit, capability="extract")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import List  # noqa: F401,E402
-import threading  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -77,7 +77,7 @@ def _read_hermes_env(name: str) -> str:
     require Claude Code's env: block to be populated."""
     path = os.path.expanduser("~/.hermes/.env")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             for raw in f:
                 line = raw.strip()
                 if not line or line.startswith("#"):

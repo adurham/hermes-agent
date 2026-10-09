@@ -1,17 +1,43 @@
+import {
+  assertPackagedBackendReadyArtifact,
+  assertBackendReadyArtifactSourceAcceptsBothTokens,
+  resolvePackagedAsarPath
+} from './backend-ready-artifact.mjs'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
-import { Platform } from 'app-builder-lib'
-import { PlatformPackager } from 'app-builder-lib/out/platformPackager.js'
+import { Platform, PlatformPackager } from 'app-builder-lib'
 import { expect, it, vi } from 'vitest'
 
-import pkg from '../package.json' with { type: 'json' }
+// Fork: the Windows exe identity stamp runs from afterPack (resedit), so this
+// suite observes the stamp at the binding after-pack.mjs imports. The darwin
+// and linux tests never reach the win32 branch, so the mock is inert for them.
+const stampExeIdentity = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+vi.mock('./set-exe-identity.mjs', () => ({ stampExeIdentity }))
+
+const require = createRequire(import.meta.url)
+const desktopRoot = path.resolve(import.meta.dirname, '..')
+// The builder config is electron-builder.config.cjs (package.json carries no `build` block).
+const builderConfig = require(path.join(desktopRoot, 'electron-builder.config.cjs'))
 
 async function configuredHook(context) {
-  if (pkg.build.afterPack) {
-    const hook = await import(new URL(`../${pkg.build.afterPack}`, import.meta.url).href)
-    await hook.default(context)
-  }
+  const hook = await import(new URL(`../${builderConfig.afterPack}`, import.meta.url).href)
+  await hook.default(context)
+}
+
+// The afterPack readiness guard reads the packaged bundle's unpacked main;
+// every fixture here packs a valid dual-token matcher so the tests keep
+// exercising the locale/signing paths the hook also performs.
+async function seedPackagedMain(context) {
+  const asarPath = resolvePackagedAsarPath(context)
+  await mkdir(path.dirname(asarPath), { recursive: true })
+  await writeFile(asarPath, 'stub archive')
+  await mkdir(path.join(`${asarPath}.unpacked`, 'dist'), { recursive: true })
+  await writeFile(
+    path.join(`${asarPath}.unpacked`, 'dist', 'electron-main.mjs'),
+    'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
+  )
 }
 
 function context(appOutDir, productFilename = 'Hermes Preview') {
@@ -28,6 +54,7 @@ it('restores app localizations from the filtered framework without copying local
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
   try {
     const ctx = context(root)
+    await seedPackagedMain(ctx)
     const framework = ctx.packager.getMacOsElectronFrameworkResourcesDir(root)
     const resources = ctx.packager.getResourcesDir(root)
     await mkdir(resources, { recursive: true })
@@ -39,7 +66,9 @@ it('restores app localizations from the filtered framework without copying local
     await mkdir(path.join(framework, 'other'), { recursive: true })
     await configuredHook(ctx)
     await configuredHook(ctx)
-    expect((await readdir(resources)).sort()).toEqual(['en_GB.lproj', 'nb.lproj'])
+    expect((await readdir(resources)).filter(name => name.endsWith('.lproj')).sort())
+      .toEqual(['en_GB.lproj', 'nb.lproj'])
+    expect(await readdir(resources)).toContain('icon.icns')
     expect(await readdir(path.join(resources, 'nb.lproj'))).toEqual([])
     expect(await readFile(path.join(framework, 'nb.lproj', 'locale.pak'), 'utf8')).toBe('untouched locale data')
   } finally {
@@ -47,26 +76,80 @@ it('restores app localizations from the filtered framework without copying local
   }
 })
 
-it('leaves other platforms alone and reports a missing framework without failing packaging', async () => {
+it('puts the full-resolution .icns back after electron-builder packaged the layered icon', async () => {
+  // With `mac.icon` pointing at the Icon Composer package, electron-builder
+  // bundles actool's 256px fallback as icon.icns; macOS <= 15 shows that file.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-mac-icon-'))
+  try {
+    const ctx = context(root)
+    await seedPackagedMain(ctx)
+    const resources = ctx.packager.getResourcesDir(root)
+    await mkdir(ctx.packager.getMacOsElectronFrameworkResourcesDir(root), { recursive: true })
+    await mkdir(resources, { recursive: true })
+    await writeFile(path.join(resources, 'icon.icns'), 'actool fallback')
+    await configuredHook(ctx)
+    const restored = await readFile(path.join(resources, 'icon.icns'))
+    expect(restored.equals(await readFile(path.join(desktopRoot, 'assets', 'icon.icns')))).toBe(true)
+    expect(restored.subarray(0, 4).toString('latin1')).toBe('icns')
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it('leaves Linux alone and reports a missing framework without failing packaging', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-  // This hook now also runs the Windows exe-identity stamp (fork feature). That
-  // branch is best-effort by design — a missing/unstampable exe logs a warning
-  // and packaging continues — so "no warnings at all" is no longer the right
-  // predicate here. What this test is about is the macOS locale path, so assert
-  // on THAT message being absent for the foreign platforms and present for the
-  // missing-framework case.
-  const localeWarnings = () => warn.mock.calls.filter(([m]) => String(m).includes('[after-pack] macOS locale markers'))
   try {
-    for (const electronPlatformName of ['linux', 'win32']) {
-      await configuredHook({ appOutDir: root, electronPlatformName })
-    }
-    expect(await readdir(root)).toEqual([])
-    expect(localeWarnings()).toEqual([])
-    await configuredHook(context(root))
+    // win32 is not a no-op here: the same hook sanitizes and batch-signs the PE tree.
+    const linuxCtx = { appOutDir: root, electronPlatformName: 'linux' }
+    await seedPackagedMain(linuxCtx)
+    await configuredHook(linuxCtx)
+    expect(warn).not.toHaveBeenCalled()
+    const ctx = context(root)
+    await seedPackagedMain(ctx)
+    await configuredHook(ctx)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('macOS locale markers were not restored'))
-    expect(await readdir(root)).toEqual([])
+    expect((await readdir(root)).sort()).toEqual(['Hermes Preview.app', 'resources'])
+    expect(await readdir(ctx.packager.getResourcesDir(root))).toContain('icon.icns')
   } finally {
+    warn.mockRestore()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Fork divergence (FORK.md "Desktop exe-stamping"): the stamp is resedit-based,
+// survives electron-builder's ASAR-integrity PE rewrite, and therefore stays on
+// afterPack — upstream's rcedit-only afterExtract hook is not wired. Keep the
+// integrity check on (no disableAsarIntegrity workaround) either way.
+it('wires the exe identity stamp to afterPack, with no afterExtract hook and ASAR integrity kept on', () => {
+  expect(builderConfig.afterPack).toBe('scripts/after-pack.mjs')
+  expect(builderConfig.afterExtract).toBeUndefined()
+  expect(builderConfig.disableAsarIntegrity).toBeUndefined()
+})
+
+it('stamps the packed product exe on win32, and a stamp failure never fails packaging', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-win-pack-'))
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  // Unsigned lane: batchSignAppTree is a logged no-op without the Azure env.
+  for (const key of ['AZURE_SIGN_ENDPOINT', 'AZURE_SIGN_ACCOUNT', 'AZURE_SIGN_PROFILE']) vi.stubEnv(key, '')
+  try {
+    const ctx = {
+      appOutDir: root,
+      electronPlatformName: 'win32',
+      packager: { appInfo: { productFilename: 'Hermes' }, config: {}, buildResourcesDir: root }
+    }
+    await seedPackagedMain(ctx)
+    stampExeIdentity.mockClear()
+    await configuredHook(ctx)
+    expect(stampExeIdentity.mock.calls).toEqual([[path.join(root, 'Hermes.exe'), desktopRoot]])
+
+    stampExeIdentity.mockClear()
+    stampExeIdentity.mockRejectedValueOnce(new Error('bad PE'))
+    await configuredHook(ctx)
+    expect(stampExeIdentity).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exe identity stamp failed (bad PE)'))
+  } finally {
+    vi.unstubAllEnvs()
     warn.mockRestore()
     await rm(root, { recursive: true, force: true })
   }

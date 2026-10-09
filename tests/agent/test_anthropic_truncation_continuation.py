@@ -23,7 +23,6 @@ import pytest
 def _make_anthropic_text_block(text: str) -> SimpleNamespace:
     return SimpleNamespace(type="text", text=text)
 
-
 def _make_anthropic_response(blocks, stop_reason: str = "max_tokens"):
     return SimpleNamespace(
         id="msg_01",
@@ -35,7 +34,6 @@ def _make_anthropic_response(blocks, stop_reason: str = "max_tokens"):
         stop_sequence=None,
         usage=SimpleNamespace(input_tokens=100, output_tokens=200),
     )
-
 
 class TestTruncatedAnthropicResponseNormalization:
     """AnthropicTransport.normalize_response() gives us the shape _build_assistant_message expects."""
@@ -59,7 +57,6 @@ class TestTruncatedAnthropicResponseNormalization:
             "branch (not the tool-retry branch) fires"
         )
         assert nr.finish_reason == "length", "max_tokens stop_reason must map to OpenAI-style 'length'"
-
 
     def test_empty_content_does_not_crash(self):
         """Empty response.content — defensive: treat as a truncation with no text."""

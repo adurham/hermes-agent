@@ -68,7 +68,7 @@ class TestAttentionSignals:
         assert not any("\a" in s for s in write_calls), \
             f"bell still fired despite opt-out; writes were {write_calls!r}"
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_notification_fires_on_darwin(self):
         """osascript subprocess must spawn on macOS when notify_on_prompt is True."""
         cli = _make_cli({"bell_on_prompt": False, "notify_on_prompt": True})
@@ -85,7 +85,7 @@ class TestAttentionSignals:
         assert "display notification" in script
         assert "sound name" in script  # we want it audible, not silent
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_notification_silenced_when_disabled(self):
         """notify_on_prompt=False must skip the osascript spawn."""
         cli = _make_cli({"bell_on_prompt": False, "notify_on_prompt": False})
@@ -102,7 +102,7 @@ class TestAttentionSignals:
             cli._fire_attention_signals("test")
         assert not mock_popen.called
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_notification_failure_does_not_raise(self):
         """A failing osascript spawn must NEVER block the prompt path."""
         cli = _make_cli({"bell_on_prompt": False, "notify_on_prompt": True})
@@ -111,7 +111,7 @@ class TestAttentionSignals:
             # Should swallow and return normally, not raise.
             cli._fire_attention_signals("test")
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_quote_in_summary_does_not_break_applescript(self):
         """Embedded quotes must be escaped so AppleScript syntax stays valid."""
         cli = _make_cli({"bell_on_prompt": False, "notify_on_prompt": True})

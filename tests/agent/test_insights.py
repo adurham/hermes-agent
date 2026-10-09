@@ -15,7 +15,6 @@ from agent.usage_pricing import (
     has_known_pricing as _has_known_pricing,
 )
 
-
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -23,7 +22,6 @@ def db(tmp_path):
     session_db = SessionDB(db_path=db_path)
     yield session_db
     session_db.close()
-
 
 @pytest.fixture()
 def populated_db(db):
@@ -138,7 +136,6 @@ def populated_db(db):
     db._conn.commit()
     return db
 
-
 class TestHasKnownPricing:
     def test_known_commercial_model(self):
         assert _has_known_pricing("gpt-4o", provider="openai") is True
@@ -155,7 +152,6 @@ class TestHasKnownPricing:
     def test_heuristic_matched_models_are_not_considered_known(self):
         assert _has_known_pricing("some-opus-model") is False
         assert _has_known_pricing("future-sonnet-v2") is False
-
 
 class TestEstimateCost:
     def test_basic_cost(self):
@@ -186,7 +182,6 @@ class TestEstimateCost:
         expected = (1000 * 3.0 + 500 * 15.0 + 2000 * 0.30 + 400 * 3.75) / 1_000_000
         assert cost == pytest.approx(expected, abs=0.0001)
 
-
 # =========================================================================
 # Format helpers
 # =========================================================================
@@ -195,13 +190,9 @@ class TestFormatDuration:
     def test_seconds(self):
         assert _format_duration(45) == "45s"
 
-
     def test_hours_with_minutes(self):
         result = _format_duration(5400)  # 1.5 hours
         assert result == "1h 30m"
-
-
-
 
 class TestBarChart:
     def test_basic_bars(self):
@@ -211,12 +202,9 @@ class TestBarChart:
         assert len(bars[0]) == 5   # half of max
         assert bars[2] == ""       # zero gets empty
 
-
     def test_all_zeros(self):
         bars = _bar_chart([0, 0, 0], max_width=10)
         assert all(b == "" for b in bars)
-
-
 
 # =========================================================================
 # InsightsEngine — empty DB
@@ -250,7 +238,6 @@ class TestInsightsEmpty:
 # =========================================================================
 
 class TestInsightsPopulated:
-
 
     def test_overview_token_totals(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -322,7 +309,6 @@ class TestInsightsPopulated:
         assert models["deepseek-v4-pro"]["total_tokens"] == 48000
         assert models["claude-opus-4.8"]["total_tokens"] == 54000
 
-
     def test_overview_cost_matches_per_model_stored_cost(self, db):
         db.create_session(session_id="cost", source="cli", model="model-a")
         db.update_token_counts(
@@ -342,7 +328,6 @@ class TestInsightsPopulated:
         assert sum(m["cost"] for m in report["models"]) == pytest.approx(3.75)
         assert report["overview"]["estimated_cost"] == pytest.approx(3.75)
         assert report["overview"]["actual_cost"] == pytest.approx(3.0)
-
 
     def test_tool_usage_sums_disjoint_sessions_without_double_counting_pairs(self, db):
         """One session records a call as tool_name only, another as tool_calls only: both count.
@@ -570,7 +555,6 @@ class TestInsightsPopulated:
         assert focused["summary"]["total_skill_actions"] == 0
         assert focused["top_skills"] == []
 
-
 # =========================================================================
 # Formatting
 # =========================================================================
@@ -692,7 +676,6 @@ class TestTerminalFormatting:
         # No known pricing => no estimate line.
         assert "Est. (this window)" not in text
 
-
 class TestGatewayFormatting:
     def test_gateway_format_is_shorter(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -723,7 +706,6 @@ class TestGatewayFormatting:
 # =========================================================================
 
 class TestEdgeCases:
-
 
     def test_session_with_no_model(self, db):
         """Sessions with NULL model should not crash."""
@@ -789,8 +771,6 @@ class TestEdgeCases:
         assert llama["has_pricing"] is False
         assert llama["cost"] == 0.0
 
-
-
     def test_only_one_platform(self, db):
         """Single-platform usage should still work."""
         db.create_session(session_id="s1", source="cli", model="test")
@@ -805,7 +785,6 @@ class TestEdgeCases:
         text = engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
-
 
     def test_cost_buckets_displayed_in_terminal_format(self, db):
         """#77223: included/estimated/unknown cost buckets surface in terminal."""

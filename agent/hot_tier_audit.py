@@ -113,7 +113,7 @@ def _read_entries(path: Path) -> List[str]:
     """
     if not path.exists():
         return []
-    raw = path.read_text(encoding="utf-8")
+    raw = path.read_text(encoding="utf-8-sig")
     if not raw.strip():
         return []
     return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]

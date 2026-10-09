@@ -128,6 +128,7 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
+@pytest.mark.platforms("linux")
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO + modes the helper lays down."""
     import os
@@ -213,7 +214,7 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
     assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
     """The event dirs carry setgid so s6-supervise's EEXIST path leaves them alone.
 
@@ -331,6 +332,7 @@ def _log_run_setup_fragment(rendered: str) -> str:
     return "#!/bin/sh\n" + "".join(keep)
 
 
+@pytest.mark.platforms("linux")
 def test_s6_log_run_creates_leaf_as_hermes_without_chown(
     s6_scandir, fake_subprocess_run,
 ) -> None:

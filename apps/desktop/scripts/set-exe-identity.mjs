@@ -5,8 +5,10 @@
 //
 // WHY THIS EXISTS
 // ---------------
-// apps/desktop/package.json sets build.win.signAndEditExecutable=false. That
-// flag is load-bearing: turning electron-builder's own exe-editing ON also
+// The fork's builder config historically set win.signAndEditExecutable=false
+// (the old inline package.json `build` block; upstream v0.21.6 moved the whole
+// config to electron-builder.config.cjs and no longer sets it). That flag was
+// load-bearing: turning electron-builder's own exe-editing ON also
 // re-enables its signtool step, which fetches winCodeSign-2.6.0.7z, whose
 // macOS symlinks crash 7-Zip on non-admin Windows (no Developer Mode = no
 // SeCreateSymbolicLinkPrivilege). That is an unfixable dead end — we do NOT

@@ -7,7 +7,8 @@ import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { $paneStates } from '@/store/panes'
-import { $projectScope, $projectTree, ALL_PROJECTS, projectRootCwd } from '@/store/projects'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectTree, projectRootCwd } from '@/store/projects'
 
 import { $terminalTakeover } from '../store'
 

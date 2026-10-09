@@ -44,7 +44,7 @@ def main() -> int:
         print(f"no cache at {cache_path} (nothing to do; it is CI-cache-backed, not committed)")
         return 0
 
-    data = json.loads(cache_path.read_text(encoding="utf-8"))
+    data = json.loads(cache_path.read_text(encoding="utf-8-sig"))
     repo_root = Path(".")
     index = _index_by_basename(Path(args.tests_root))
 

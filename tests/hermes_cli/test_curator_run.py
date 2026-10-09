@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-
 def _args(**kwargs):
     values = {
         "dry_run": False,
@@ -13,7 +12,6 @@ def _args(**kwargs):
     }
     values.update(kwargs)
     return SimpleNamespace(**values)
-
 
 def test_run_defaults_to_synchronous(monkeypatch, capsys):
     import agent.curator as curator_state

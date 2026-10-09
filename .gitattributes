@@ -1,13 +1,14 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
+uv.lock text eol=lf
 
-# Lockfiles are generated artifacts, never hand-merged. On an upstream merge
-# conflict, take our side then regenerate (`uv lock` / npm install) so the
-# resolved tree reflects the merged pyproject.toml/package.json. The custom
-# "ours-then-regen" driver below (configured per-clone via
-# scripts/setup-merge-drivers.sh) handles uv.lock automatically; if the driver
-# isn't installed git falls back to a normal conflict and you regenerate by hand.
-uv.lock              merge=uvlock-ours linguist-generated=true
+# Lockfiles are generated artifacts, never hand-merged. On an upstream merge conflict, keep our side and
+# regenerate: uv.lock with `hermes pm lock` (or `python -m pm.build_env --source . --lock-only`), npm with
+# `npm install --package-lock-only`. NOT raw `uv lock`: v0.21.6's multi-extra graph (neutts vs kittentts pin
+# different soundfile versions) only resolves under PM, so the old `uvlock-ours` driver (which shelled out to
+# raw `uv lock`) made every merge unsatisfiable. Seed from the target tag's lock first
+# (`git show <tag>:uv.lock > uv.lock`), then relock, then `--check-lock`.
+uv.lock              merge=ours linguist-generated=true
 web/package-lock.json merge=ours
 
 # Enforce LF for scripts that run inside Linux containers.
@@ -31,6 +32,8 @@ docker/entrypoint.sh text eol=lf
 *.js    text eol=lf
 *.mjs   text eol=lf
 *.cjs   text eol=lf
+*.cts   text eol=lf
+*.mts   text eol=lf
 *.jsx   text eol=lf
 *.json  text eol=lf
 *.yaml  text eol=lf

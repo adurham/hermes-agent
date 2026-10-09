@@ -240,7 +240,7 @@ def _save_to_config_yaml(key_path: str, value: object) -> bool:
     try:
         cfg_path.parent.mkdir(parents=True, exist_ok=True)
         if cfg_path.exists():
-            with cfg_path.open("r", encoding="utf-8") as f:
+            with cfg_path.open("r", encoding="utf-8-sig") as f:
                 cfg = yaml.safe_load(f) or {}
         else:
             cfg = {}

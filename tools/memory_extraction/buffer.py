@@ -67,7 +67,7 @@ def _load() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
         if not text.strip():
             return {}
         data = json.loads(text)
