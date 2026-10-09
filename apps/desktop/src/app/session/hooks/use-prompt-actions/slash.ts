@@ -20,6 +20,7 @@ import {
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { type GuardedModelSwitchResult, surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
@@ -486,10 +487,28 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         try {
-          const result = await requestGateway<unknown>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
+          const execParams = { session_id: sessionId, command: command.replace(/^\/+/, '') }
+          const result = await requestGateway<unknown>('slash.exec', execParams)
+
+          if (name === 'model' && (result as GuardedModelSwitchResult | null)?.confirm_required) {
+            // A guarded target (cost / data policy / large context) was NOT applied: ask with the
+            // shared model-switch dialog (the picker's), resend once on "switch anyway".
+            const refusal = result as GuardedModelSwitchResult & { target_model?: string }
+
+            void surfaceModelSwitchConfirm<GuardedModelSwitchResult & SlashExecResponse>({
+              confirmMessage: refusal.confirm_message,
+              failureMessage: copy.modelSwitchFailed,
+              finish: confirmed => renderSlashOutput(confirmed?.output || `/${name}: no output`),
+              model: refusal.target_model,
+              requestConfirmed: () =>
+                requestGateway<GuardedModelSwitchResult & SlashExecResponse>('slash.exec', {
+                  ...execParams,
+                  confirm_expensive_model: true
+                })
+            })
+
+            return
+          }
 
           const dispatch = parseCommandDispatch(result)
 

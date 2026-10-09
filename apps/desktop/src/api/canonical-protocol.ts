@@ -89,6 +89,11 @@ export class CanonicalDesktopProtocol {
   // (owner died mid-turn). Only these rows may be acknowledged, and only with
   // the generation the authority stamped on them, never the live one.
   private unknownAdmissions = new Map<string, { session_id: string; profile: string; generation: number }>()
+  // [owner, model payload] → the owner's one-time token from a `confirmation_required` model
+  // answer (a guarded target: cost / data policy / large context; nothing was written). The
+  // dialog's resend (`confirm_expensive_model: true`, the legacy handshake every Desktop surface
+  // speaks) carries it as `payload.confirm`; consumed once, so a re-refusal is never auto-confirmed.
+  private modelConfirmations = new Map<string, string>()
 
   failure(params: Record<string, unknown>, error: unknown) {
     if ((error as { data?: { reason?: string } })?.data?.reason !== 'revision_conflict') { return }
@@ -198,16 +203,38 @@ export class CanonicalDesktopProtocol {
     if (method === 'config.set' && params.key === 'model') {
       const pick = pickerModelMutation(params.value)
 
-      if (pick) { return this.retainedMutation(params.session_id, params.profile, 'model', pick, true) }
+      if (pick) { return this.retainedMutation(params.session_id, params.profile, 'model', this.confirmedModel(params, pick), true) }
     }
 
     if (method === 'slash.exec') {
       const directive = slashMutation(String(params.command ?? ''))
 
-      if (directive) { return this.retainedMutation(params.session_id, params.profile, directive.operation, directive.payload, true) }
+      if (directive) {
+        const payload = directive.operation === 'model' ? this.confirmedModel(params, directive.payload) : directive.payload
+
+        return this.retainedMutation(params.session_id, params.profile, directive.operation, payload, true)
+      }
     }
 
     return null
+  }
+
+  private modelConfirmationKey(params: Record<string, unknown>, payload: Record<string, unknown>): string {
+    const { confirm: _token, ...target } = payload
+
+    return JSON.stringify([canonicalSessionKey(params.session_id, params.profile), target])
+  }
+
+  // A user-confirmed resend of a guarded model target presents the owner's token once.
+  private confirmedModel(params: Record<string, unknown>, payload: Record<string, unknown>): Record<string, unknown> {
+    if (!params.confirm_expensive_model) { return payload }
+    const key = this.modelConfirmationKey(params, payload)
+    const token = this.modelConfirmations.get(key)
+
+    if (!token) { return payload }
+    this.modelConfirmations.delete(key)
+
+    return { ...payload, confirm: token }
   }
 
   private prepareCreate(params: Record<string, unknown>): Record<string, unknown> {
@@ -340,6 +367,15 @@ export class CanonicalDesktopProtocol {
     if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+
+    if (params.operation === 'model' && value.status === 'confirmation_required' && typeof value.confirm === 'string') {
+      // The owner wrote nothing: answer in the legacy handshake (`confirm_required` +
+      // `confirm_message`) so the shared confirm dialog asks, and keep the token for its resend.
+      this.modelConfirmations.set(this.modelConfirmationKey(params, params.payload as Record<string, unknown>), value.confirm)
+      const refusal = { ...value, confirm_required: true }
+
+      return method === 'slash.exec' ? { ...refusal, type: 'exec', output: value.confirm_message } : refusal
+    }
 
     if (BRANCH_METHODS.has(method)) {
       return { ...value, session_id: value.branched_session_id, stored_session_id: value.branched_session_id, parent_session_id: params.session_id, message_count: value.copied_messages }
