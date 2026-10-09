@@ -23,7 +23,7 @@ def _forced_install_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_cli, "_launchctl_label_supervising_process", lambda _label: True)
     monkeypatch.setattr(gateway_cli, "_launchctl_supervised_pid", lambda _label: 4242)
     monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "<new/>")
-    monkeypatch.setattr(gateway_cli, "_refuse_temp_home_service_write", lambda *_a: False)
+    monkeypatch.setattr(gateway_cli.gateway_service_owner, "refuse_temp_home_service_write", lambda *_a: False)
     monkeypatch.setattr(gateway_cli, "_clear_launchd_unsupported_marker", lambda: None)
     monkeypatch.setattr(gateway_cli, "_launchd_reload_budget", lambda: 45.0)
     monkeypatch.setattr(
