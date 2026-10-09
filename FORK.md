@@ -99,6 +99,61 @@ the relocated policy text itself (net-zero, expected).
 **Suite:** full run on amd-workstation (scripts/run_tests.sh against this commit) — results
 appended below when complete.
 
+### Sync triage + repairs — 2026-10-09 (52 merge-caused test files fixed in 3 commits; 7 items parked at owner decisions)
+
+Follow-up to the v0.21.6 sync above. After the merge landed, a THREE-TREE failure triage
+(merged vs pristine tag vs pre-merge fork tip, each with its own CI-parity test env) classified
+the full suite's 158 failing files: 97 fail on the tag too (upstream red), 40 fail on the pre
+tip too (fork backlog), 58 fail ONLY on merged = merge-caused. A second full-suite run after the
+repairs (commits `daf0fd57938`, `cacfe4cb871`) cleared 51 of the 58; the remaining 7 are exactly
+the owner-decision items below — zero unexplained failures.
+
+**Production fixes in the repair batch.** These were fork behavior the merge or upstream's refactor
+silently lost (each invisible to conflict markers):
+- `hermes_cli/personas.py` + `gateway/platforms/api_server.py`: PyYAML was dropped upstream in
+  v0.21.6 (ruamel via `hermes_yaml`); the bare `import yaml` ImportError was SWALLOWED, silently
+  turning every per-role model/effort/max_iterations save into a no-op. Now `import hermes_yaml as yaml`.
+- `hermes_cli/persona_library.py`: default personas path was the literal `~/.hermes/personas`; the
+  new home-IO guard raised, `_persona_exists()` swallowed it into True, and the unknown-agent_type
+  refusal became inert. Now resolves via `hermes_constants._get_platform_default_hermes_home()`.
+- `tools/file_tools.py`: the fork's CC-alias `path` guard rejected EVERY path-less V4A patch call
+  (upstream's V4A schema requires only `mode`; paths ride in `*** <Op> File:` headers).
+- `agent/anthropic_adapter.py` (helper-shadowing class, found twice): the fork's inline
+  `build_anthropic_kwargs` never called upstream's refactored `_thinking_kwargs`, so Sonnet 5.5's
+  `between_tools` thinking-off contract stopped running ({type: disabled} → 400); and the fork's
+  `create_anthropic_message` never called upstream's `normalize_stream_usage`, so the MiniMax
+  `usage:null` SDK crash (#60683) returned on the aux path. Both contracts ported into the fork's
+  inline code. NOTE for future syncs: upstream's `_thinking_kwargs` and `_stream_final_message`
+  helpers exist in the merged file as DEAD CODE — upstream fixes landing only there will silently
+  not apply until the fork code calls them (tracked in the de-fork gate).
+- `tools/skill_manager_guards.py` + `skill_manager_tool.py`: restored the fork block on
+  background-review writes to `skills.external_dirs` (upstream #134289 narrowed it to delete-only;
+  the fork's incident rationale — session artifacts, incl. a secret, landing in a team-shared
+  repo's `git status` — stands). FORK.md:19337 ("upstream covers this") is now FALSE at v0.21.6.
+- `tools/budget_config.py`: MCP result-size setting keyed on the `mcp_` prefix never matched the
+  fork's `<server>_<tool>` MCP names; now consults the registry.
+- Misc: `fork_banner.py` utf-8 pins (×2 subprocess calls); `agent/credential_sources.py` +
+  `tools/bridges/cc_proxy_mcp.py` stdin=DEVNULL (×6, upstream's stricter guard); `cli.py` +
+  `cli_config_load.py` stale env-map removal (restores vercel_image); `web_server_config.py`
+  task-slot vs provider check; `cli.py` Chinese reasoning-tag lists (local copies hid upstream's);
+  `scripts/corporate-rip.py` hermes_yaml.
+
+**Test repairs** (42 files): patch-target retargets from the removed `run_agent` PLUGIN-COMPAT
+re-export to the modules production reads (`model_tools`, `agent.process_bootstrap`); pyyaml→
+hermes_yaml imports; CI-routing replay now models `github.repository` (+2 fork-repo pins: large
+runners never on the fork; fork lanes only on the fork); wire-snapshot fixture: 12 cells pinned
+to documented fork behavior; fixture staleness (beta-namespace mock; zero-event 'good' stream now
+correctly raises EmptyStreamError per upstream #121320); race/staleness fixes.
+
+**Owner decisions parked (the 7 remaining red files + 3 wire rulings):**
+1. `tests/acp_adapter/test_registry_manifest.py` — acp_registry manifest 0.21.5 vs pyproject 0.0.0 (retirement item).
+2. `tests/agent/test_tool_guardrails.py` — de-fork gate 13127 (`hard_stop_enabled` default shadowed).
+3. `tests/agent/test_truncated_tool_call_boost.py` — fork's 16k Claude output cap vs upstream's boost.
+4. `tests/agent/transports/test_provider_wire_snapshot.py` — 11 cells: leftover CC wire-shape (owner previously approved Slice B removal), cache_control 4th-breakpoint reservation (probable real bug: reserved for a `tools[]` marker the chat wire never emits), portal `extra_body.tags`.
+5. `tests/hermes_cli/test_shared_metrics_efficiency.py` — telemetry enum lacks fork toolsets (consult, cross_session, agent_visibility).
+6. `tests/tools/test_send_message_tool.py` — a2a target parsing (already flagged FORK.md:16827).
+7. `tests/tui_gateway/test_gui_surface_toolsets.py` — consult toolset re-added on explicit empty list.
+
 ### De-fork audit — 2026-10-09 (post-v0.21.6: 12-slice read-only sweep of 263 FORK.md entries; restores + retirements await owner approval)
 
 Companion to the v0.21.6 sync entry above. Read-only audit of both halves — the fork's fixes and
