@@ -137,6 +137,126 @@ def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
     return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
+# ── Live todo board (fork; restored after the v2026.9.14 merge dropped it) ────────────────────────
+# Row-budget clamp for the board: ``terminal_rows // 2`` bounded to [MIN, MAX] so a short terminal
+# still shows something useful and a huge plan can't eat the whole screen.
+_TODO_BOARD_MIN_ROWS = 8
+_TODO_BOARD_MAX_ROWS = 30
+_TODO_BOARD_CONTENT_CHARS = 70
+
+
+def _todo_board_markers() -> dict:
+    """Status → marker for the terminal board.
+
+    Reuses ``tools.todo_tool._STATUS_MARKERS`` (✅/🔄/❌) but overrides *pending* with ASCII
+    ``[ ]`` — same terminal-specific divergence ``agent/display.py``'s checklist makes: U+2B1C is
+    Emoji_Presentation=Yes and paints as a solid white block on dark themes.
+    """
+    from tools.todo_tool import _STATUS_MARKERS
+    return {**_STATUS_MARKERS, "pending": "[ ]"}
+
+
+def _todo_board_max_rows(term_rows: Optional[int] = None) -> int:
+    """Row budget for board items: ``term_rows // 2`` clamped to [MIN, MAX]."""
+    if term_rows is None:
+        try:
+            term_rows = _term_rows()
+        except Exception:
+            term_rows = 24
+    return max(_TODO_BOARD_MIN_ROWS, min(_TODO_BOARD_MAX_ROWS, term_rows // 2))
+
+
+def _select_todo_display_items(items: list, max_rows: int):
+    """Pick which items to show when the list won't fit ``max_rows``.
+
+    Priority: in_progress (never hidden, may exceed the cap) → pending (trimmed from the tail,
+    priority order kept) → completed/cancelled (dropped first; the header's done/total count
+    already preserves that progress). Shown items keep their original list order.
+
+    Returns ``(shown_items, hidden_done_count, hidden_active_count)`` so the footer reports what
+    was actually hidden instead of unconditionally blaming "completed".
+    """
+    if len(items) <= max_rows:
+        return items, 0, 0
+    in_progress = [i for i in items if i.get("status") == "in_progress"]
+    pending = [i for i in items if i.get("status") == "pending"]
+    done = [i for i in items if i.get("status") in ("completed", "cancelled")]
+
+    budget = max_rows - len(in_progress)
+    if budget > 0:
+        shown_pending = pending[:budget]
+        budget -= len(shown_pending)
+    else:
+        shown_pending, budget = [], 0
+    hidden_active = len(pending) - len(shown_pending)
+    shown_done = done[:budget] if budget > 0 else []
+    hidden_done = len(done) - len(shown_done)
+
+    kept = {id(i) for i in in_progress + shown_pending + shown_done}
+    return [i for i in items if id(i) in kept], hidden_done, hidden_active
+
+
+def _todo_board_rows(items: list, max_rows: int) -> list[str]:
+    """Raw (unpadded) rows: header + one per shown item + optional overflow footer."""
+    if not items:
+        return []
+    from agent.display import _oneline, _tail_trunc
+    from hermes_cli.cli_render import _panel_cwidth
+    from hermes_cli.portable_glyphs import normalize_for_chrome
+
+    markers = _todo_board_markers()
+    # "[ ]" is 3 cells, emoji are 2 — pad every marker to the widest so content columns align.
+    marker_width = max(_panel_cwidth(m) for m in markers.values())
+    done = sum(1 for i in items if i.get("status") in ("completed", "cancelled"))
+    rows = [f"📋 tasks {done}/{len(items)}"]
+    shown, hidden_done, hidden_active = _select_todo_display_items(items, max_rows)
+    for item in shown:
+        marker = markers.get(item.get("status"), "❔")
+        pad = " " * max(0, marker_width - _panel_cwidth(marker))
+        # Model-written content is dynamic text in pt chrome: strip VS-16/ZWJ/etc. so its painted
+        # width matches pt's model (portable_glyphs stale-cell rule).
+        content = _tail_trunc(
+            _oneline(normalize_for_chrome(str(item.get("content", "")))), _TODO_BOARD_CONTENT_CHARS)
+        rows.append(f"{marker}{pad} {content}")
+    bits = []
+    if hidden_active > 0:
+        bits.append(f"{hidden_active} pending")
+    if hidden_done > 0:
+        bits.append(f"{hidden_done} completed")
+    if bits:
+        rows.append(f"… +{' / '.join(bits)} hidden")
+    return rows
+
+
+def get_todo_board_text(items: list, term_cols: int = 100, term_rows: Optional[int] = None) -> list:
+    """Bordered ``(style, text)`` fragments for the board; ``[]`` when there are no items."""
+    from hermes_cli.cli_render import _panel_cwidth, _panel_ljust
+    from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
+
+    rows = _todo_board_rows(items, _todo_board_max_rows(term_rows))
+    if not rows:
+        return []
+    longest = max([_panel_cwidth(r) for r in rows] + [20])
+    box_width = min(longest + 4, max(24, term_cols - 6)) + 2
+    inner_width = max(0, box_width - 2)
+    frags = [('class:todo-border', '╭' + ('─' * box_width) + '╮\n')]
+    for row in rows:
+        # Trim BEFORE padding: on a narrow terminal inner_width can be below a row's natural
+        # width and _panel_ljust never shrinks, so an untrimmed row would push the right border out.
+        text = CLIStatusBarMixin._trim_status_bar_text(row, inner_width)
+        frags.append(('class:todo-border', '│ '))
+        frags.append(('class:hint', _panel_ljust(text, inner_width)))
+        frags.append(('class:todo-border', ' │\n'))
+    frags.append(('class:todo-border', '╰' + ('─' * box_width) + '╯\n'))
+    return frags
+
+
+def get_todo_board_height(items: list, term_rows: Optional[int] = None) -> int:
+    """Rows the board occupies: its text rows + 2 border lines (0 when empty)."""
+    rows = _todo_board_rows(items, _todo_board_max_rows(term_rows))
+    return len(rows) + 2 if rows else 0
+
+
 class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
@@ -403,6 +523,17 @@ class CLITuiMixin:
 
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Extension hook: wrapper CLIs add bindings to ``kb`` (``input_area`` is the main TextArea)."""
+
+    def _todo_board_items(self) -> list:
+        """Current agent's todo items for the live board (``[]`` with no agent/store or on error)."""
+        agent = getattr(self, "agent", None)
+        store = getattr(agent, "_todo_store", None) if agent is not None else None
+        if store is None:
+            return []
+        try:
+            return list(store.read() or [])
+        except Exception:
+            return []
 
     def _build_tui_layout_children(
         self,
@@ -2287,6 +2418,15 @@ class CLITuiMixin:
             Window(FormattedTextControl(self._get_stash_panel_display_fragments), wrap_lines=False),
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
+        # Live todo board — pending-first, bordered, row cap = terminal_rows // 2 clamped to
+        # [_TODO_BOARD_MIN_ROWS, _TODO_BOARD_MAX_ROWS]. Hidden whenever the agent has no todos.
+        todo_board_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(
+                    lambda: get_todo_board_text(cli_ref._todo_board_items(), cli_ref._get_tui_terminal_width())),
+                height=lambda: get_todo_board_height(cli_ref._todo_board_items()),
+                wrap_lines=False),
+            filter=Condition(lambda: bool(cli_ref._todo_board_items())))
         self._register_extra_tui_keybindings(kb, input_area=input_area)
         layout = Layout(FooterSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
@@ -2299,6 +2439,7 @@ class CLITuiMixin:
             reasoning_picker_widget=reasoning_picker_widget,
             command_palette_widget=command_palette_widget,
             spinner_widget=spinner_widget,
+            todo_board_widget=todo_board_widget,
             spacer=spacer,
             status_bar=status_bar,
             input_rule_top=input_rule_top,
@@ -2431,6 +2572,7 @@ class CLITuiMixin:
             'sudo-title': '#FF6B6B bold',
             'sudo-text': '#FFF8DC',
             'approval-border': '#CD7F32',
+            'todo-border': '#CD7F32',
             'approval-title': '#FF8C00 bold',
             'approval-desc': '#FFF8DC bold',
             'approval-cmd': '#AAAAAA italic',
