@@ -336,6 +336,36 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // `exec` commands (and unknown skill / quick commands the backend owns)
       // run on the gateway and render their text output inline. This is the only
       // path that talks to slash.exec / command.dispatch.
+      // A typed `/model` the owner refused as a guarded target (cost / data policy / large
+      // context) was NOT applied: ask with the shared model-switch dialog (the picker's) and
+      // resend once on "switch anyway". True when the answer was such a refusal.
+      const confirmGuardedModelExec = (
+        name: string,
+        result: unknown,
+        execParams: Record<string, unknown>,
+        render: (text: string) => void
+      ): boolean => {
+        const refusal = result as (GuardedModelSwitchResult & { target_model?: string }) | null
+
+        if (name !== 'model' || !refusal?.confirm_required) {
+          return false
+        }
+
+        void surfaceModelSwitchConfirm<GuardedModelSwitchResult & SlashExecResponse>({
+          confirmMessage: refusal.confirm_message,
+          failureMessage: copy.modelSwitchFailed,
+          finish: confirmed => render(confirmed?.output || '/model: no output'),
+          model: refusal.target_model,
+          requestConfirmed: () =>
+            requestGateway<GuardedModelSwitchResult & SlashExecResponse>('slash.exec', {
+              ...execParams,
+              confirm_expensive_model: true
+            })
+        })
+
+        return true
+      }
+
       async function runExec(ctx: SlashActionCtx): Promise<void> {
         const { arg, command, name } = ctx
         const resolved = await withSlashOutput(ctx)
@@ -490,23 +520,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           const execParams = { session_id: sessionId, command: command.replace(/^\/+/, '') }
           const result = await requestGateway<unknown>('slash.exec', execParams)
 
-          if (name === 'model' && (result as GuardedModelSwitchResult | null)?.confirm_required) {
-            // A guarded target (cost / data policy / large context) was NOT applied: ask with the
-            // shared model-switch dialog (the picker's), resend once on "switch anyway".
-            const refusal = result as GuardedModelSwitchResult & { target_model?: string }
-
-            void surfaceModelSwitchConfirm<GuardedModelSwitchResult & SlashExecResponse>({
-              confirmMessage: refusal.confirm_message,
-              failureMessage: copy.modelSwitchFailed,
-              finish: confirmed => renderSlashOutput(confirmed?.output || `/${name}: no output`),
-              model: refusal.target_model,
-              requestConfirmed: () =>
-                requestGateway<GuardedModelSwitchResult & SlashExecResponse>('slash.exec', {
-                  ...execParams,
-                  confirm_expensive_model: true
-                })
-            })
-
+          if (confirmGuardedModelExec(name, result, execParams, renderSlashOutput)) {
             return
           }
 
