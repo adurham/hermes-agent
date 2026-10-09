@@ -106,6 +106,9 @@ def build_gateway_parser(
             "gateway. In-chat restarts and updates exit back to that manager "
             "instead of spawning a detached replacement. Use this when a "
             "launchd/systemd wrapper strips its native environment markers.")
+    # Internal: set only by a client that auto-starts its own gateway (chat, TUI, cron/kanban
+    # clients). Never in service units, Desktop's `gateway ensure` start or a hand-run gateway.
+    _flag(gateway_run, "--idle-exit", help=argparse.SUPPRESS)
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 

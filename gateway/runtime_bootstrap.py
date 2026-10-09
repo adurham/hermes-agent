@@ -67,6 +67,12 @@ class TicketStore:
             del self._entries[key]
             return dict(grant)
 
+    def outstanding(self) -> bool:
+        """An unexpired ticket was minted and not yet redeemed: a client is attaching right now."""
+        with self._lock:
+            now = time.monotonic()
+            return any(expires > now for expires, _grant in self._entries.values())
+
     def revoke(self) -> None:
         with self._lock:
             self._entries.clear()

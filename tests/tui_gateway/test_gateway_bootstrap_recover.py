@@ -39,9 +39,9 @@ def test_recover_reensures_only_a_crashed_owner(monkeypatch, tmp_path, record, e
                         lambda h, timeout=5: SimpleNamespace(state="absent", endpoint=None, reason_code=None))
     calls = []
 
-    def ensure(h, timeout=30):
+    def ensure(h, timeout=30, idle_exit=False):
         calls.append(Path(h))
-        return SimpleNamespace(state="starting", endpoint=None, reason_code="deadline")
+        return SimpleNamespace(state="starting", endpoint=None, reason_code="deadline", detail=None)
 
     monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", ensure)
 

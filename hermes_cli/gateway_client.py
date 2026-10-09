@@ -197,7 +197,9 @@ async def connect_gateway():
         url = remote
     else:
         home = get_hermes_home().resolve()
-        result = await asyncio.to_thread(ensure_gateway_runtime, home)
+        # A client's own start: the daemon it may launch ends itself once idle (no client, adapter,
+        # cron/kanban work or admission), and the next client starts a fresh one.
+        result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
         if result.state != "ready" or result.endpoint is None:
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:

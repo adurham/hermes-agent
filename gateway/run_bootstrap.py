@@ -261,6 +261,8 @@ async def _start_gateway_start_control_socket(runner):
                 "served_profiles", "parked_profiles", "capabilities") if key in descriptor})
             if getattr(runner, '_draining', False):
                 payload.update(state='draining', capabilities=[])
+            if payload.get('state') == 'draining' and descriptor.get('drain_reason'):
+                payload['drain_reason'] = descriptor['drain_reason']
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
                 payload.get("supervisor"), payload.get("supervisor", "none"))
             return payload
@@ -612,10 +614,11 @@ async def _start_gateway_run_runner(runner, _signal_initiated_shutdown: list) ->
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
-                        verbosity: Optional[int] = 0, force: bool = False) -> bool:
+                        verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
     systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
-    deadlocks); ``force`` starts without consulting the host owner at all."""
+    deadlocks); ``force`` starts without consulting the host owner at all; ``idle_exit`` arms the
+    unmanaged idle exit (``gateway.run_idle_exit``) for a client-started daemon."""
     from gateway.run import (
         GatewayRunner,
         _best_effort,
@@ -775,6 +778,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from gateway.run_runtime import publish_gateway_runtime_ready
         publish_gateway_runtime_ready(runner)
         runner._start_systemd_watchdog()
+        if idle_exit:
+            from gateway.run_idle_exit import arm_unmanaged_idle_exit
+            arm_unmanaged_idle_exit(runner)
 
         from gateway.run_runtime import wait_gateway_runtime
         try:

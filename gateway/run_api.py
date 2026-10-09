@@ -124,7 +124,9 @@ class GatewayRuntimeAPI:
         if scope['type'] == 'http':
             # Capture before Uvicorn's proxy middleware rewrites scope.client.
             scope['hermes.gateway_socket_peer'] = scope.get('client')
+        from gateway.run_idle_exit import attached_client, note_client_activity
         if scope['type'] != 'websocket' or scope['path'] != '/api/ws':
+            note_client_activity(self.runner)  # dashboard/API traffic keeps an idle-exit gateway up
             return await self.app(scope, receive, send)
         original_receive = receive
         allow_draining = False
@@ -181,7 +183,7 @@ class GatewayRuntimeAPI:
         from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
         from tui_gateway.ws import handle_ws
         from gateway.session_authorities import owner_scope
-        with owner_scope(authority):
+        with owner_scope(authority), attached_client(self.runner):
             await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
                                               'profile_id': grant['profile_id'],
                                               'instance_id': grant['instance_id'],

@@ -40,10 +40,10 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
                 "HERMES_CWD", "TERMINAL_CWD", "HERMES_YOLO", "HERMES_ACCEPT_HOOKS",
                 "HERMES_TUI_CHECKPOINTS", "HERMES_TUI_PASS_SESSION_ID"):
         os.environ.pop(key, None)
-    receipt = (ensure_gateway_runtime(home, timeout=30) if start
+    receipt = (ensure_gateway_runtime(home, timeout=30, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=5))
     if not start and recover and receipt.state == "absent" and owner_crashed(home):
-        receipt = ensure_gateway_runtime(home, timeout=30)
+        receipt = ensure_gateway_runtime(home, timeout=30, idle_exit=True)
     if receipt.state != "ready" or receipt.endpoint is None:
         detail = f"\n{receipt.detail}" if receipt.reason_code == "runtime_exited" and receipt.detail else ""
         raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}{detail}")

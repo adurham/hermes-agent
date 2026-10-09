@@ -2098,6 +2098,11 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # A gateway a client auto-started (no service installed: `hermes chat`, `chat -q`, the TUI)
+        # exits after this many seconds with no attached client, no messaging adapter, no cron /
+        # kanban work due and no queued turn; the next client starts it again. Never applies to an
+        # installed service, a Desktop-started or a hand-run `hermes gateway run`. 0 disables.
+        "unmanaged_idle_exit_seconds": 600,
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,

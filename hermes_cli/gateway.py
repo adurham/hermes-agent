@@ -4539,9 +4539,12 @@ def _respawn_storm_backoff() -> None:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
 
-def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False,
+                idle_exit: bool = False):
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
-    kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard."""
+    kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard;
+    idle_exit: a client auto-started this unsupervised gateway, so it exits once idle
+    (``gateway.unmanaged_idle_exit_seconds``)."""
     _guard_official_docker_root_gateway()
     _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
@@ -4608,7 +4611,8 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     success = False
     try:
-        success = asyncio.run(start_gateway(replace=replace, force=force, verbosity=verbosity))
+        success = asyncio.run(start_gateway(replace=replace, force=force, verbosity=verbosity,
+                                            idle_exit=idle_exit))
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # Detached Windows runs absorb SIGINT above; keep the handler for console runs.
@@ -5035,6 +5039,7 @@ def _cmd_run(args):
     run_gateway(
         getattr(args, "verbose", 0), quiet=getattr(args, "quiet", False),
         replace=getattr(args, "replace", False), force=getattr(args, "force", False),
+        idle_exit=getattr(args, "idle_exit", False),
     )
 
 
