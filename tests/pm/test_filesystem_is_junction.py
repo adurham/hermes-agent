@@ -8,6 +8,7 @@ import pytest
 from pm.filesystem import is_junction
 
 
+@pytest.mark.platforms("any")
 def test_missing_path_is_not_a_junction(tmp_path: Path) -> None:
     # A first plugin install probes plugins/<name> before anything is there.
     assert is_junction(tmp_path / "absent") is False
