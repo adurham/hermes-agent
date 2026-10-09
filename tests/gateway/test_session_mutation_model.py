@@ -82,7 +82,11 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
             fork = await agent.fork_session(cwd=(await call('session.info', session_id=sid))['cwd'], session_id=sid)
             child = fork.session_id
             branched = await call('session.resume', session_id=child)
-            assert branched['messages'] == after['messages']
+            # Same logical history; each copy has its own physical ``row_id`` (rewind target).
+            def logical(rows):
+                return [{k: v for k, v in row.items() if k != 'row_id'} for row in rows]
+            assert logical(branched['messages']) == logical(after['messages'])
+            assert {r['row_id'] for r in branched['messages']}.isdisjoint(r['row_id'] for r in after['messages'])
             await turn(child, 'ONLY_BRANCH')
             parent = await call('session.resume', session_id=sid)
             assert 'ONLY_BRANCH' not in json.dumps(parent['messages'])
