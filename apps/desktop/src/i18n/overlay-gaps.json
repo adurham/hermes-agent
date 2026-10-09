@@ -985,6 +985,10 @@
   "settings.appearance.chatFontTitle": ["ar"],
   "settings.appearance.pet.roamDesc": ["ar"],
   "settings.appearance.pet.roamTitle": ["ar"],
+  "settings.appearance.pet.voiceDesc": ["ar","de","es","fr","ru"],
+  "settings.appearance.pet.voiceTitle": ["ar","de","es","fr","ru"],
+  "settings.appearance.pet.zoneDesc": ["ar","de","es","fr","ru"],
+  "settings.appearance.pet.zoneTitle": ["ar","de","es","fr","ru"],
   "settings.appearance.sessionDensityComfortable": ["ar"],
   "settings.appearance.sessionDensityCompact": ["ar"],
   "settings.appearance.sessionDensityDesc": ["ar"],
@@ -2225,6 +2229,7 @@
   "zones.closeRunningBody": ["ja","zh-hant"],
   "zones.closeRunningConfirm": ["ja","zh-hant"],
   "zones.closeRunningTitle": ["ja","zh-hant"],
+  "zones.closeTab": ["ar","de","es","fr","ru"],
   "zones.newSessionTab": ["ar"],
   "zones.newTab": ["ar","ru"],
   "zones.zoneMenuLabel": ["ja","zh-hant"]

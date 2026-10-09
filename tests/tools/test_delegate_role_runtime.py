@@ -20,7 +20,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import yaml
+import hermes_yaml as yaml
 
 import tools.async_delegation as ad
 import tools.delegate_tool as dt

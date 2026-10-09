@@ -258,10 +258,21 @@ max_iterations wiring through the real entry points; red on the pre-wave base),
 hard-stop default + opt-out test in `test_tool_guardrails.py`; the upstream warn-only-desktop
 replay test retargeted to the explicit opt-out (fork default = hard stops ON everywhere).
 
-**Open at execution time (owner notified; dispositions pending):** 8152 (pet voice, 3 layers),
-5864 + 16309 (TUI todo board widget call site), 4252 (4 stale catalog IDs), 9492 (review-pane
-default), 16926 (delegated deadline exemption); live-config dead keys (top-level `tool_search:`
-block, `main_session_cache_ttl`).
+**Owner dispositions (2026-10-09, same day):** 8152 — documented as a loss and parked for a
+revisit (re-apply recipe in the audit entry above); 5864 + 16309 — approved, todo-board port in a
+follow-up commit; 4252 — the 4 IDs re-removed; 9492 — review pane aligned to upstream (closed by
+default); 16926 — redundant exemption dropped; live-config dead keys pruned (top-level
+`tool_search:` block, `main_session_cache_ttl`).
+
+**Post-suite repair round (same-day; the full amd-workstation run flagged 9 failing desktop
+files):** `use-background-queue-preservation.test.tsx` restored verbatim from the tag (the ref
+shape; the fork's getter shape was superseded by the 10058 restore); fork-branded URLs retargeted
+in the `version-details` and `boot-failure-overlay` tests (adurham); the fork's `pet.*` /
+`zones.closeTab` keys added to `overlay-gaps.json` (ar/de/es/fr/ru); the `@/store/session` +
+`./surfaces` mocks completed (`$connection`, `$workspaceCwdOwner`, `$unlistedSessionOwnerRows`,
+`$lastReadAtBySessionId`, `$currentServiceTier`, session fn no-ops; `PetZoneSurface`); GLM casing
+aligned in the fallback-label tests; the new delegate-role test switched to `hermes_yaml` (PyYAML
+is not in the CI env). Verified: 9/9 desktop files + 56 tests green, renderer tsc rc 0.
 
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 

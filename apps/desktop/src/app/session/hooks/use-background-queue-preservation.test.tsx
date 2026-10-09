@@ -46,12 +46,12 @@ it.each(['rejection', 'transport error'])(
       submitText.mockResolvedValue(false)
     }
 
-    const runtimeMap = new Map([['hidden-bot-chat', 'live-runtime']])
+    const runtimeMap = { current: new Map([['hidden-bot-chat', 'live-runtime']]) }
 
     renderHook(() =>
       useBackgroundQueueDrain({
         enabled: true,
-        getRuntimeIdForStoredSession: storedSessionId => runtimeMap.get(storedSessionId) ?? null,
+        runtimeIdByStoredSessionIdRef: runtimeMap,
         selectedStoredSessionId: 'foreground',
         submitText
       })
