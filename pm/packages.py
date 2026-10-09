@@ -320,24 +320,33 @@ def uv_cache_dir() -> Path:
     """The hermes-owned uv cache: machine-scoped and shared (keyed by
     content — two profiles reuse one cache), anchored to the DEFAULT
     hermes root like partials_root(). A bundle ships a seeded copy at
-    the payload root (uv-cache/); the first call on a sealed install
-    copies it out to the writable machine cache (the read-only payload
+    the payload root (uv-cache/); the first call under each uv.lock
+    merges it into the writable machine cache (the read-only payload
     can't serve uv's working cache), and a warm `uv sync --offline`
     from it is near-free (probed: 0.4s vs 1.2s cold) — the blow-away-
     on-update contract depends on it. uv's default cache location is
     per-user/platform-opinionated and never used by pm."""
     from hermes_constants import get_default_hermes_root
 
+    from pm.paths import repo_root, store_root
+
     machine_cache = get_default_hermes_root() / "cache" / "uv"
     marker = machine_cache / ".seeded"
-    if not marker.is_file():
+    # The marker names the lock whose payload was merged. An update ships a new payload cache for
+    # a new lock; a bare "done" marker skipped it forever, so plugin rebuilds fetched the new pins
+    # from the network (and built sdists where the index has no wheel for the target).
+    lock = repo_root() / "uv.lock"
+    seed = _uv_lock_digest(lock).hex() if lock.is_file() else "1"
+    try:
+        current = marker.read_text(encoding="utf-8-sig").strip() == seed
+    except OSError:
+        current = False
+    if not current:
         # Seed from a shipped bundle cache when present (payload root =
         # store_root().parent on a sealed install). Record completion ONLY after a clean copy: a
         # partial seed that marked itself done would never be retried, and every later offline
         # sync that needs the missing entries fails closed.
         try:
-            from pm.paths import store_root
-
             # uv's cache trees run deep; both roots get the long spelling so
             # the copy is not cut at MAX_PATH. The returned path stays ordinary.
             payload_cache = long_root(store_root().parent / "uv-cache")
@@ -359,7 +368,7 @@ def uv_cache_dir() -> Path:
         else:
             try:
                 marker.parent.mkdir(parents=True, exist_ok=True)
-                marker.write_text("1", encoding="utf-8")
+                marker.write_text(seed, encoding="utf-8")
             except OSError:
                 pass
     return machine_cache
