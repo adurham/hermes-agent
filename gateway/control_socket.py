@@ -314,12 +314,13 @@ class GatewayControlServer:
         if set(request) - {"protocol", "verb", "id", "params"} or request.get("protocol") != 1:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
-        if not isinstance(params, dict) or set(params) != {"profile_id", "instance_id", "purpose"}:
+        if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope"}):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
-        ticket = self.ticket_store.mint(profile_id=params["profile_id"],
-                                       subject=peer_subject, purpose=params["purpose"])
+        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=peer_subject,
+                                       purpose=params["purpose"], scope=params.get("scope", "profile"))
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,
                 "profile_id": params["profile_id"], "runtime_protocol": 1}

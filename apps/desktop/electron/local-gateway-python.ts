@@ -35,7 +35,8 @@ while True:
                 raise ValueError('invalid ticket endpoint')
             if os.name != 'nt':
                 _private_node(home, kind='directory', home=True)
-            ticket = _session_ticket(home, endpoint, purpose=request['purpose'])
+            ticket = _session_ticket(home, endpoint, purpose=request['purpose'],
+                                     scope='host' if request['purpose'] == 'interactive' else None)
         reply = {'id': request['id'], 'ticket': ticket}
     except DiscoveryError as exc:
         reply = {'id': request['id'], 'error': exc.reason}

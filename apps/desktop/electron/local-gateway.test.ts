@@ -87,6 +87,10 @@ test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HT
     expect(requests.map(r => r.params)).toEqual([1, 2].map(() => ({ profile_id: home, instance_id: 'owner', purpose: 'native-http' })))
     await expect(nativeGatewayHttpHeaders(descriptor, 'http://127.0.0.1:4567/api/config')).rejects.toThrow('origin')
     expect(requests).toHaveLength(2)
+    // The shared-primary WS socket alone asks for a host-scoped grant (sibling `profile` routing).
+    const { mintLocalGatewayTicket } = await import('./local-gateway')
+    await mintLocalGatewayTicket(endpoint)
+    expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive', scope: 'host' })
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })

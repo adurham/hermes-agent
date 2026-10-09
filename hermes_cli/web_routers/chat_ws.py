@@ -722,6 +722,10 @@ async def gateway_ws(ws: WebSocket) -> None:
                     'profile_id': authority.profile_id, 'instance_id': authority.instance_id,
                     'capabilities': ['session:create', 'session:read', 'session:submit',
                                      'session:control', 'session:approve', 'session:respond']}
+    if identity is not None:
+        # The dashboard gate authorizes the whole host (its REST routes take ``?profile=`` for
+        # every profile), so its socket may select any served sibling too.
+        identity = {**identity, 'profile_scope': 'host'}
     await handle_ws(
         ws,
         auth_identity=identity,

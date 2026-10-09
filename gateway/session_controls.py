@@ -46,11 +46,14 @@ class AuthorityConnection:
 
     def _sibling_for(self, profile):
         """Connection bound to the sibling authority a ``profile`` param names, or None for our own
-        home. One native socket serves every profile this process multiplexes (the Desktop's
-        shared-primary route); a profile nobody here serves is a mismatch, never a fallback."""
+        home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
+        reaches a sibling; a profile-bound ticket naming any other profile is a mismatch, exactly
+        like a profile nobody here serves. Never a fallback, never a rewritten profile_id."""
         from hermes_cli.profiles import profile_matches_home
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
+        if self._identity.get('profile_scope') != 'host':
+            raise RuntimeStoreError('profile_mismatch')
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         for sibling in (registry or ()):
             if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):

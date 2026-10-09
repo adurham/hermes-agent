@@ -379,6 +379,13 @@ async function resolveControlSocket(home: string): Promise<string> {
   return socketPath
 }
 
+/** The Desktop's interactive socket is the one shared-primary route: its renderer selects every
+ *  served sibling with a `profile` param, so it asks for a host-scoped grant explicitly. Every
+ *  other ticket (and every other client's) stays bound to the one profile it names. */
+export function ticketScope(purpose: 'interactive' | 'native-http'): { scope?: 'host' } {
+  return purpose === 'interactive' ? { scope: 'host' } : {}
+}
+
 export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' = 'interactive'): Promise<string> {
   if (process.platform === 'win32') {
     if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
@@ -417,7 +424,7 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
     const deadline = setTimeout(() => socket.destroy(new Error('Gateway ticket deadline')), 5000)
     socket.on('error', () => reject(new Error('Gateway ticket bootstrap failed')))
     socket.on('close', () => { clearTimeout(deadline); reject(new Error('Gateway ticket connection closed')) })
-    socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose } }) + '\n'))
+    socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose, ...ticketScope(purpose) } }) + '\n'))
     socket.on('data', chunk => {
       buffer += chunk.toString()
 

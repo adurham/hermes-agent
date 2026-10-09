@@ -185,5 +185,6 @@ class GatewayRuntimeAPI:
             await handle_ws(ws, auth_identity={'user_id': grant['subject'], 'provider': 'local',
                                               'profile_id': grant['profile_id'],
                                               'instance_id': grant['instance_id'],
-                                              'capabilities': grant['capabilities'], 'native_bootstrap': True},
+                                              'capabilities': grant['capabilities'], 'native_bootstrap': True,
+                                              'profile_scope': grant.get('scope', 'profile')},
                             subprotocol=CANONICAL_GATEWAY_PROTOCOL, operator=operator)

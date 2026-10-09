@@ -38,7 +38,8 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   try {
     for (const purpose of ['interactive', 'native-http'] as const) {
       await expect(mintGatewayTicketWithPython(backend, cwd, endpoint, purpose)).resolves.toBe('private-grant')
-      expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose })
+      // Only the interactive (shared-primary) socket asks for host scope; native-http stays profile-bound.
+      expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose, ...(purpose === 'interactive' ? { scope: 'host' } : {}) })
     }
 
     for (const invalid of [{ instance_id: 'other' }, { profile_id: '/other' }, { runtime_protocol: 2 }, { ticket: '' }]) {
@@ -85,7 +86,7 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
     await new Promise<void>(resolve => server.listen(path.join(mux, 'gateway.sock'), resolve))
     await fs.chmod(path.join(mux, 'gateway.sock'), 0o600)
     await expect(mintGatewayTicketWithPython(backend, cwd, { ...endpoint, control_home: mux }, 'interactive')).resolves.toBe('private-grant')
-    expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive' })
+    expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive', scope: 'host' })
   } finally {
     closeGatewayTicketBridges()
     await new Promise<void>(resolve => server.close(() => resolve()))
