@@ -937,31 +937,24 @@ def test_transitions_from_the_bundle_receipt_emit_two_windows_rows(tmp_path, r2_
     assert macos["include"] == []
 
 
-def test_first_bundle_release_plans_no_upgrade_arm_until_a_bundle_release_shipped(
+def test_missing_baseline_plans_no_upgrade_arm_but_a_missing_supplied_one_blocks(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
     url, digest = _staged_receipt(tmp_path, r2_server, https_origin, monkeypatch, "darwin-arm64")
     env = {**_transitions_env(tmp_path, https_origin.base, "darwin-arm64", url, digest),
            "BASELINE_MANIFEST_URL": ""}
-    # The latest final tag skipped bundles; an older tag predates the claim pipeline.
-    tags = {"v1.2.2": json.dumps({"candidateManifestSha256": None}), "v1.2.1": "Weekly release"}
-
-    def git(argv):
-        return " ".join(tags) if argv[3] == "v*" else tags[argv[3]]
-
-    monkeypatch.setattr(stable, "output", git)
     stable.main(["transitions"], env)
     emitted = dict(line.split("=", 1)
                    for line in (tmp_path / "output").read_text(encoding="utf-8").splitlines())
     assert emitted["baseline"] == "none"
     assert json.loads(emitted["macos"]) == json.loads(emitted["windows"]) == {"include": []}
-    tags["v1.2.2"] = json.dumps({"candidateManifestSha256": "3" * 64})
-    with pytest.raises(ValueError, match="No published stable package baseline"):
+    env["BASELINE_MANIFEST_URL"] = f"{https_origin.base}/baseline.json"
+    with pytest.raises(ValueError, match="supplied baseline-manifest does not exist"):
         stable.main(["transitions"], env)
 
 
-def test_gate_excuses_an_upgrade_arm_only_for_its_planners_first_release_output():
+def test_gate_excuses_an_upgrade_arm_only_for_its_planners_no_baseline_output():
     from scripts.releases.stable import PACKAGED_BY, require_gate
 
     required = [*PACKAGED_BY, *PACKAGED_BY.values()]

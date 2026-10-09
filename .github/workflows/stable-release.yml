@@ -415,7 +415,7 @@ jobs:
   windows-packaged:
     name: Windows signed-package acceptance
     needs: transitions-win32
-    # The first bundle release has no OLD package to upgrade from.
+    # Without a published stable baseline there is no OLD package to upgrade from.
     if: needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -433,7 +433,7 @@ jobs:
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
     needs: transitions-darwin-arm64
-    # The first bundle release has no OLD package to upgrade from.
+    # Without a published stable baseline there is no OLD package to upgrade from.
     if: needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
@@ -451,7 +451,7 @@ jobs:
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
     needs: transitions-darwin-x64
-    # The first bundle release has no OLD package to upgrade from.
+    # Without a published stable baseline there is no OLD package to upgrade from.
     if: needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
