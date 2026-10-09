@@ -48,6 +48,14 @@ async def prepare_model(authority, live, payload, prepared):
     return dict(prepared, policy=asdict(policy))
 
 
+def _persisted_selection_context(authority, snapshot, old):
+    from agent.usage_anchor import persisted_anchor_tokens
+    from hermes_cli.model_selection_guards import SelectionContext
+    target = snapshot.get('target') or snapshot['receipt']['session_id']
+    tokens = persisted_anchor_tokens(authority.db, target, authority.db.get_messages_as_conversation(target))
+    return SelectionContext(context_tokens=tokens, current_model=old.model or None) if tokens else None
+
+
 async def _selection_guard_refusal(authority, live, payload, snapshot, old, result, runtime):
     """The shared selection-guard registry (cost, data-policy, large-context switch) runs before the
     commit. A flagged target is refused with ``status: confirmation_required`` and a ``confirm``
@@ -61,11 +69,17 @@ async def _selection_guard_refusal(authority, live, payload, snapshot, old, resu
     lookup = (getattr(authority.runner, '_resident_agent_for', None)
               or getattr(authority.runner, '_cached_agent_for', None))
     agent = lookup(live.route) if live is not None and callable(lookup) else None
+    context = selection_context_for_agent(agent)
+    if context is None:
+        # No resident agent (evicted by the previous switch, or an owner restart): the session's
+        # persisted usage anchor still measures the context at stake, so the large-context guard
+        # does not go quiet on exactly the switch that follows another one.
+        context = await asyncio.to_thread(_persisted_selection_context, authority, snapshot, old)
     # Off-loop: pricing lookups may hit models.dev on a cache miss.
     warnings = await asyncio.to_thread(
         selection_warnings, result.new_model, provider=result.target_provider,
         base_url=result.base_url or old.base_url or '', api_key=result.api_key or runtime.get('api_key') or '',
-        model_info=result.model_info, selection_context=selection_context_for_agent(agent))
+        model_info=result.model_info, selection_context=context)
     if not warnings:
         return None
     binding = {'target': [result.new_model, result.target_provider, normalize_route_base_url(result.base_url),

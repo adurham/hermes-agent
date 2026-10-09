@@ -305,3 +305,53 @@ async def test_guarded_model_target_commits_only_with_its_confirmation_token(tmp
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_agent(tmp_path, monkeypatch):
+    """The cached agent is evicted by every applied switch and absent after an owner restart, so the
+    large-context guard must measure from the session's persisted usage anchor; reading only a live
+    agent let the switch right after another one apply with no prompt."""
+    from types import SimpleNamespace
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_local import create_local_session
+    from hermes_cli import model_selection_guards, model_switch
+    import hermes_state_runtime as rt
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
+    monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
+                                 epoch=rt.begin_runtime_epoch(db, instance_id='owner'))
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='m', source='cli', cwd=str(tmp_path),
+                                                            model='frozen', toolsets=[]))
+    try:
+        db.append_message(ref.session_id, role='user', content='hello')
+        db.append_message(ref.session_id, role='assistant', content='hi')
+        messages = db.get_messages_as_conversation(ref.session_id)
+        db.patch_session_model_config(ref.session_id, {
+            USAGE_ANCHOR_MODEL_CONFIG_KEY: capture_usage_anchor(250_000, 10, messages)})
+        snap = db.get_session(ref.session_id)
+        response = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'switch', 'operation': 'model',
+            'payload': {'model': 'other-model'}, 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation']}})
+        result = response['result']
+        assert result['status'] == 'confirmation_required', result
+        assert 'LARGE CONTEXT' in result['confirm_message']
+        assert db.get_session(ref.session_id)['model'] == snap['model']
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
