@@ -590,7 +590,7 @@ def test_worker_client_reports_the_owner_exit_and_reply(owner_worker, monkeypatc
     from hermes_cli import gateway_client, kanban_worker_client
     from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
-    run, entered, context = owner_worker(_failed, recovery=1)
+    run, _entered, context = owner_worker(_failed, recovery=1)
     assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
     submitted = []
 
