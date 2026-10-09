@@ -900,7 +900,13 @@ def _aux_provider_first_context(aux: dict, cfg: dict) -> tuple[bool, str]:
     """
     try:
         from hermes_cli.config import _auxiliary_is_provider_first
-        if not _auxiliary_is_provider_first(aux):
+        # Every slot this dashboard assigns is a TASK key, never a provider block. The detector
+        # only knows the built-in task-first keys, so a ``{provider, model}`` pin on a slot outside
+        # that set (``review``/``voice_chat`` after a broadcast, any plugin task) would otherwise
+        # flip the map to provider-first and route ``__reset__`` through the block reset, which
+        # pops the slots instead of returning them to ``auto``.
+        task_slots = set(_aux_task_slots())
+        if not _auxiliary_is_provider_first({k: v for k, v in aux.items() if k not in task_slots}):
             return False, ""
     except Exception:
         return False, ""

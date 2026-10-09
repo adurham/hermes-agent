@@ -189,12 +189,18 @@ def test_clarify_callback_fires_attention_signals():
         time.sleep(0.01)
     assert cli._clarify_state is not None
 
+    # The state dict is published before the bell/i18n lookup and the
+    # attention call run on the agent thread — poll rather than race it.
+    deadline = time.time() + 2
+    while not cli._fire_attention_signals.called and time.time() < deadline:
+        time.sleep(0.01)
     cli._fire_attention_signals.assert_called_once()
     summary = cli._fire_attention_signals.call_args.args[0]
     assert "Which timezone?" in summary
 
-    # The batch queue carries the locked-answers dict on submit
-    # (``_clarify_batch_lock`` puts ``dict(state["answers"])``).
-    cli._clarify_state["response_queue"].put({"q0": "utc"})
+    # Lock the answer through the real keybinding helper: upstream's
+    # ``_clarify_callback`` returns ``state["answers"]`` (populated by
+    # ``_clarify_batch_lock``), not the queue payload.
+    cli._clarify_batch_lock(cli._clarify_state, "utc")
     thread.join(timeout=2)
     assert result["value"]["answers"]["q0"] == "utc"

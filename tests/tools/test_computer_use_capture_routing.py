@@ -212,22 +212,25 @@ class TestRoutingDecisionWiring:
     """Verify _should_route_through_aux_vision wires the right config + helper."""
 
     def test_explicit_aux_vision_in_config_routes_to_aux(self):
+        """FORK: explicit auxiliary.vision delegation is exo-scoped (agent/image_routing.py
+        ``decide_image_input_mode``; FORK.md "DECIDED ... exo-scoped vision delegation")."""
         from tools.computer_use import tool as cu_tool
 
         cfg = {
-            "model": {"default": "tencent/hy3-preview", "provider": "openrouter"},
+            "model": {"default": "deepseek-v4-flash", "provider": "exo"},
             "auxiliary": {
                 "vision": {
-                    "provider": "openrouter",
-                    "model": "google/gemini-2.5-flash",
+                    "provider": "exo",
+                    "model": "qwen3.6-vl",
                 }
             },
         }
         with patch("agent.auxiliary_client._read_main_provider",
-                   return_value="openrouter"), \
+                   return_value="exo"), \
              patch("agent.auxiliary_client._read_main_model",
-                   return_value="tencent/hy3-preview"), \
-             patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+                   return_value="deepseek-v4-flash"), \
+             patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+             patch("agent.image_routing._lookup_supports_vision", return_value=False):
             assert cu_tool._should_route_through_aux_vision() is True
 
 
@@ -259,10 +262,16 @@ def _route(provider, model, cfg, *, catalog, provider_takes_media, veto=False):
 class TestRouteDecision:
     """True = pre-analyse via auxiliary.vision, False = the multimodal envelope (#115248)."""
 
-    def test_explicit_aux_backend_wins_over_a_vision_main_model(self):
-        """#24015: a configured auxiliary.vision backend is the de-facto image route in auto mode."""
+    def test_vision_main_model_beats_an_explicit_aux_backend(self):
+        """FORK (deliberate divergence from upstream's #24015 'aux is the de-facto route'): native vision is
+        checked first; an explicit auxiliary.vision backend is only a fallback for text-only main models,
+        and only on the local exo cluster. See FORK.md "DECIDED ... exo-scoped vision delegation"."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
-        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is True
+        assert _route("anthropic", "claude-opus-4-5", cfg, catalog=True, provider_takes_media=True) is False
+
+    def test_explicit_aux_backend_takes_a_text_only_exo_model(self):
+        cfg = {"auxiliary": {"vision": {"provider": "exo", "model": "qwen3.6-vl"}}}
+        assert _route("exo", "deepseek-v4-flash", cfg, catalog=False, provider_takes_media=True) is True
 
     def test_vision_main_model_without_aux_backend_stays_native(self):
         assert _route("anthropic", "claude-opus-4-5", {}, catalog=True, provider_takes_media=True) is False

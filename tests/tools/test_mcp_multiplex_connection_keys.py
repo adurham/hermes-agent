@@ -136,7 +136,7 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     two_profiles("b")
     assert secret_scope.current_secret_scope() is None
     assert reg.register_connected_into_current_scope({"s": dict(cfg_s)}) == 1
-    assert registry.get_tool_names_for_toolset("mcp-s") == ["mcp__s__t"]
+    assert registry.get_tool_names_for_toolset("mcp-s") == ["s_t"]
     assert "s" not in disc._select_new_servers({"s": dict(cfg_s)})
 
 

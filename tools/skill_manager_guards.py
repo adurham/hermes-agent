@@ -221,6 +221,29 @@ def _background_review_read_before_write_guard(
         _read_before_write_required=True)
 
 
+def _background_review_external_write_guard(
+    name: str, skill_dir: Path, action: str) -> Optional[Dict[str, Any]]:
+    """FORK (0e73b1ca1f): the review fork never mutates skills.external_dirs content.
+
+    Upstream #134289 narrowed the ownership guard to delete only (the review may improve any
+    skill). External dirs are the exception the fork keeps: they are typically a team-shared
+    repo's working tree, and an autonomous write there lands session artifacts (incl. a secret,
+    in the originating incident) in someone else's ``git status``. Foreground writes are
+    unaffected; this runs before read-before-write so the refusal names the real reason."""
+    if not _is_background_review():
+        return None
+    try:
+        from agent.skill_utils import is_external_skill_path
+        if is_external_skill_path(skill_dir):
+            return _refusal(
+                f"Refusing background curator {action} for skill '{name}': the skill lives in "
+                f"skills.external_dirs, which are externally owned and read-only to autonomous "
+                f"curation.")
+    except Exception:
+        logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
+    return None
+
+
 def _background_review_preflight(action: str, name: str) -> Optional[Dict[str, Any]]:
     if action != "delete":
         return None

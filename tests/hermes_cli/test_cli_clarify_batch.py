@@ -30,6 +30,16 @@ def _make_cli_stub():
     return cli
 
 
+def _wait_for_attention(cli, timeout=2.0):
+    """Poll for the attention-signal call. ``_clarify_state`` is published
+    before the bell/i18n lookup and ``_fire_attention_signals`` run on the
+    agent thread, so asserting on the first state sighting races (same
+    pattern as FORK.md 2f882c9bf for the modal-paint assertion)."""
+    deadline = time.time() + timeout
+    while not cli._fire_attention_signals.called and time.time() < deadline:
+        time.sleep(0.01)
+
+
 def _q(index, question, choices=None, multi_select=False):
     """One normalized batch entry, shaped like _normalize_questions output."""
     return {
@@ -278,6 +288,7 @@ class TestClarifyBatchPanel:
             _q(1, "Size?", ["small", "large"]),
         ]
         thread, result = _start_batch(cli, questions)
+        _wait_for_attention(cli)
 
         cli._fire_attention_signals.assert_called_once()
         summary = cli._fire_attention_signals.call_args.args[0]
@@ -298,6 +309,7 @@ class TestClarifyBatchPanel:
             _q(1, "Size?", ["small", "large"]),
         ]
         thread, result = _start_batch(cli, questions)
+        _wait_for_attention(cli)
 
         cli._fire_attention_signals.assert_called_once()
         summary = cli._fire_attention_signals.call_args.args[0]

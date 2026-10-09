@@ -22,7 +22,7 @@ import shutil
 import sys
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 
 # Map toolset key (as listed in agent.disabled_toolsets) to the source

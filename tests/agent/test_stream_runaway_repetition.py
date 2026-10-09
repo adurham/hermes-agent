@@ -73,7 +73,10 @@ class _FakeEndpoint:
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Connection", "close")
                 self.end_headers()
-                frames = endpoint._anthropic_frames() if self.path.endswith("/messages") else endpoint._chat_frames()
+                # FORK: Anthropic streams go through ``.beta.messages.stream`` (POST /v1/messages?beta=true);
+                # route on the path without the query string.
+                path = self.path.split("?", 1)[0]
+                frames = endpoint._anthropic_frames() if path.endswith("/messages") else endpoint._chat_frames()
                 try:
                     for frame in frames:
                         self.wfile.write(frame.encode())

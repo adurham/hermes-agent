@@ -356,10 +356,9 @@ _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
 
-_REASONING_TAGS = ("REASONING_SCRATCHPAD", "think", "thinking", "reasoning", "thought")
-# FORK: "invoke"/"parameter" appended — some backends leak Anthropic-style tool XML.
-_TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls",
-                   "invoke", "parameter")
+# FORK: _REASONING_TAGS / _TOOL_CALL_TAGS (incl. the fork's "invoke"/"parameter") now live in
+# hermes_cli.cli_render and are re-exported via the import above; do not redefine them here
+# (a local copy shadows upstream's THINK_TAG_NAMES binding and drops the CJK reasoning tags).
 
 
 def _resolve_reasoning_for_model(
@@ -382,23 +381,9 @@ def _resolve_reasoning_for_model(
     return _parse_reasoning_config(global_effort)
 
 
-# terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
-# singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
-_TERMINAL_ENV_MAPPINGS = {
-    key: f"TERMINAL_{key.upper()}"
-    for key in (
-        "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "wait_max_timeout",  # FORK
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
-        "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
-        "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
-        "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
-        "docker_snap_compat",
-        "docker_persist_across_processes", "docker_shared_container_key", "docker_orphan_reaper",
-        "sandbox_dir", "persistent_shell",
-    )
-}
-_TERMINAL_ENV_MAPPINGS = {"env_type": "TERMINAL_ENV", **_TERMINAL_ENV_MAPPINGS, "sudo_password": "SUDO_PASSWORD"}
+# FORK: _TERMINAL_ENV_MAPPINGS (incl. the fork's "wait_max_timeout") lives in
+# hermes_cli.cli_config_load and is re-exported via the import above; a local copy here
+# shadowed it and dropped upstream's later keys (e.g. "vercel_image").
 # Per-task auxiliary endpoint tuples (config key -> env var).
 _AUXILIARY_TASK_ENV = {
     "vision": {

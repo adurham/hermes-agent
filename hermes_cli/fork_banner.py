@@ -131,6 +131,8 @@ def _parse_github_origin(repo_dir: Path) -> Optional[tuple]:
             ["git", "config", "--get", "remote.origin.url"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
             cwd=str(repo_dir),
         )
@@ -195,6 +197,8 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
             ["git", "describe", "--tags", "--abbrev=0"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
             cwd=str(repo_dir),
         )

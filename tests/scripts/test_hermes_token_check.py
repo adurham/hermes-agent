@@ -56,21 +56,31 @@ def test_native_env_without_config_dir_override(tmp_path, monkeypatch):
     assert "CLAUDE_CONFIG_DIR" not in env
 
 
+def _isolate_env_file(mod, tmp_path, monkeypatch):
+    """Point ENV_PATH at an empty temp .env — native_login_state() reads it via
+    _native_env(), and the suite's home I/O guard forbids touching the real home."""
+    envfile = tmp_path / ".env"
+    envfile.write_text("", encoding="utf-8")
+    monkeypatch.setattr(mod, "ENV_PATH", envfile)
+
+
 def _fake_run(stdout: str):
     def run(*_args, **_kwargs):
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
     return run
 
 
-def test_native_login_state_logged_out(monkeypatch):
+def test_native_login_state_logged_out(tmp_path, monkeypatch):
     mod = _load()
+    _isolate_env_file(mod, tmp_path, monkeypatch)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/claude")
     monkeypatch.setattr(mod.subprocess, "run", _fake_run('{"loggedIn": false, "authMethod": "none"}'))
     assert mod.native_login_state() == (False, "none", "")
 
 
-def test_native_login_state_logged_in(monkeypatch):
+def test_native_login_state_logged_in(tmp_path, monkeypatch):
     mod = _load()
+    _isolate_env_file(mod, tmp_path, monkeypatch)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/claude")
     monkeypatch.setattr(mod.subprocess, "run", _fake_run('{"loggedIn": true, "authMethod": "claude.ai"}'))
     assert mod.native_login_state() == (True, "claude.ai", "")
@@ -85,8 +95,9 @@ def test_native_login_state_missing_cli(monkeypatch):
     assert "skipped" in detail
 
 
-def test_native_login_state_survives_run_failure(monkeypatch):
+def test_native_login_state_survives_run_failure(tmp_path, monkeypatch):
     mod = _load()
+    _isolate_env_file(mod, tmp_path, monkeypatch)
     monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/claude")
 
     def boom(*_args, **_kwargs):

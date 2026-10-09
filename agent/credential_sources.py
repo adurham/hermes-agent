@@ -145,6 +145,7 @@ def _remove_keychain_longlived(provider: str, removed) -> RemovalResult:
         proc = subprocess.run(
             ["security", "delete-generic-password", "-s", "claude-code-oauth-longlived"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             timeout=5,
         )
         if proc.returncode == 0:

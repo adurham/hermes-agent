@@ -122,7 +122,7 @@ def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(tw
             "secrets": {"command": {"enabled": True, "command": f"cat {home / 'secrets.env'}"}},
             "mcp_servers": {"gh": {"command": sys.executable, "args": [str(server)]}}}), encoding="utf-8")
 
-    results = _discover_and_call(two_profile_homes, "mcp__gh__whoami", {})
+    results = _discover_and_call(two_profile_homes, "gh_whoami", {})
 
     assert results == {"default": "GH_TOKEN=fake-token-default", "worker": "GH_TOKEN=fake-token-worker"}
 
@@ -142,7 +142,7 @@ def test_profile_with_other_profile_identity_header_gets_its_own_http_connection
         for home in two_profile_homes.values():
             (home / "config.yaml").write_text(yaml.safe_dump({"model": _MODEL, "mcp_servers": {"team": team}}), encoding="utf-8")
 
-        _discover_and_call(two_profile_homes, "mcp__team__save_note", {"text": "hi"})
+        _discover_and_call(two_profile_homes, "team_save_note", {"text": "hi"})
 
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8-sig").splitlines()]
         assert [profile for method, profile in calls if method == "tools/call"] == ["default", "worker"]

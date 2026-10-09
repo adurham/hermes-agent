@@ -97,7 +97,7 @@ class TestStreamStaleCircuitBreaker:
         with pytest.raises(RuntimeError, match="unresponsive"):
             agent._interruptible_streaming_api_call({})
 
-        agent._anthropic_client.messages.stream.assert_not_called()
+        agent._anthropic_client.beta.messages.stream.assert_not_called()
         # The streak is NOT reset on the short-circuit so subsequent turns
         # keep failing fast instead of re-attempting forever.
         assert agent._consecutive_stale_streams == 3
@@ -110,7 +110,7 @@ class TestStreamStaleCircuitBreaker:
 
         agent = _make_anthropic_agent()
         agent._consecutive_stale_streams = 2  # below the giveup=3 threshold
-        agent._anthropic_client.messages.stream.return_value = _good_stream_cm()
+        agent._anthropic_client.beta.messages.stream.return_value = _good_stream_cm()
 
         resp = agent._interruptible_streaming_api_call({})
         assert resp is not None
@@ -174,6 +174,10 @@ class TestStreamStaleCircuitBreaker:
         monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
         monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "50")
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        # FORK: no event ever arrives here, so the cold-start grace (agent/fork/stream_recovery.py
+        # effective_stale_timeout: max(3x base, HERMES_STREAM_COLD_START_TIMEOUT=600s)) would keep
+        # the timer from firing at all; shrink it so the window is 0.3s and the timer re-fires.
+        monkeypatch.setenv("HERMES_STREAM_COLD_START_TIMEOUT", "0")
         agent = _make_anthropic_agent()
         agent._consecutive_stale_streams = 0
         unblock = threading.Event()
@@ -203,7 +207,7 @@ class TestStreamStaleCircuitBreaker:
             cm.__exit__ = MagicMock(return_value=False)
             return cm
 
-        agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
+        agent._anthropic_client.beta.messages.stream.side_effect = _stream_side_effect
         with caplog.at_level("WARNING", logger="agent.chat_completion_helpers"), pytest.raises(Exception):
             agent._interruptible_streaming_api_call({})
 

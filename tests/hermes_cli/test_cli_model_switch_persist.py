@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import importlib
 
-import yaml
+import hermes_yaml as yaml
 import pytest
 
 

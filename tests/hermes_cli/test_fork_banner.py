@@ -42,12 +42,24 @@ class TestForkBanner:
             "hermes_cli.banner._resolve_repo_dir",
             lambda: None,
         )
+        # No baked build SHA either: neutralise the Docker build-SHA fallback
+        # (FORK.md: fork's rich schema folds upstream's build-SHA fallback in).
+        # tests/conftest.py seeds version_info with a "0"*40 commit, which the
+        # fallback would otherwise report as a frozen 00000000 state.
+        monkeypatch.setattr(
+            "hermes_cli.version_info.get_code_identity",
+            lambda *a, **k: {"short_sha": None},
+        )
         state = get_git_banner_state(repo_dir=None)
         assert state is None
 
-    def test_get_git_banner_state_returns_none_for_bad_path(self):
-        """get_git_banner_state returns None for a non-git directory."""
+    def test_get_git_banner_state_returns_none_for_bad_path(self, monkeypatch):
+        """get_git_banner_state returns None for a non-git directory (no baked SHA)."""
         from hermes_cli.fork_banner import get_git_banner_state
+        monkeypatch.setattr(
+            "hermes_cli.version_info.get_code_identity",
+            lambda *a, **k: {"short_sha": None},
+        )
         with tempfile.TemporaryDirectory() as td:
             # Create a non-git dir that looks like a repo (has .gitignore but no .git)
             d = Path(td) / "not-a-repo"

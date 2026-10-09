@@ -45,9 +45,9 @@ def _make_role_child(fallback_chain):
     sub-key (delegate_task passes this straight through as
     ``override_fallback_chain`` -> ``fallback_model=``)."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI", return_value=MagicMock()),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         agent = AIAgent(
             api_key="ollama-role-key",
@@ -128,7 +128,7 @@ class TestRetryableFailureActivatesRoleFallback:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
             patch(
                 "agent.auxiliary_client.resolve_provider_client",
@@ -198,7 +198,7 @@ class TestNonRetryableFailureDoesNotActivateFallback:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
             patch(
                 "agent.auxiliary_client.resolve_provider_client"
@@ -238,7 +238,7 @@ class TestFallbackAlsoFailingRaisesLoud:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
             patch("agent.agent_runtime_helpers.time.sleep"),
             patch(
                 "agent.auxiliary_client.resolve_provider_client",

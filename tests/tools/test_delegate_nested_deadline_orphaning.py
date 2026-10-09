@@ -91,7 +91,7 @@ def _make_agent(tmp_path: Path, *, depth: int) -> "object":
 
     with (
         patch(
-            "run_agent.get_tool_definitions",
+            "model_tools.get_tool_definitions",
             return_value=[
                 {
                     "type": "function",
@@ -103,9 +103,9 @@ def _make_agent(tmp_path: Path, *, depth: int) -> "object":
                 }
             ],
         ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", tmp_path),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
@@ -144,10 +144,10 @@ def _make_slow_child(tmp_path: Path, index: int, *, runtime: float, started=None
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", tmp_path),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):

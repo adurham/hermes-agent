@@ -181,7 +181,7 @@ def test_chrome_codepoints_are_allowlisted():
     width-engine matrix (test_width_engine_matrix.py) re-verifies each entry's
     widths; this is the front door.
     """
-    from hermes_cli.portable_glyphs import is_portable_codepoint
+    from hermes_cli.portable_glyphs import BANNED_CODEPOINTS, is_portable_codepoint
 
     offenders: list[str] = []
     for rel in _CHROME_FILES:
@@ -210,6 +210,11 @@ def test_chrome_codepoints_are_allowlisted():
                 continue
             for ch in node.value:
                 if ord(ch) < 0x80:
+                    continue
+                # A lone banned codepoint literal is a sanitizer argument
+                # (``t(...).replace("\ufe0f", "")`` on upstream i18n titles),
+                # never emitted content — same exemption as the ban sweep.
+                if node.value == ch and ord(ch) in BANNED_CODEPOINTS:
                     continue
                 if not is_portable_codepoint(ch):
                     offenders.append(f"{p.name}:{node.lineno}: {ch!r} (U+{ord(ch):04X}) "

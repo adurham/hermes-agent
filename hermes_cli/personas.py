@@ -221,7 +221,7 @@ def lookup_agent(name: str) -> Optional[Persona]:
 def _save_to_config_yaml(key_path: str, value: object) -> bool:
     """Persist ``value`` at ``key_path`` (dot-separated) in active config.yaml."""
     try:
-        import yaml  # type: ignore
+        import hermes_yaml as yaml
     except Exception:
         return False
 

@@ -154,9 +154,12 @@ class TestAutostashGuard:
             called.append(list(args))
             return _Result()
 
-        import hermes_cli.update_cmd as update_cmd
+        # Upstream moved _git_run to update_cmd_git; _stash_local_changes_if_needed
+        # imports it from there at call time, so patch that module (patching
+        # update_cmd's re-export no longer intercepts and real git runs on tmp_path).
+        import hermes_cli.update_cmd_git as update_cmd_git
 
-        monkeypatch.setattr(update_cmd, "_git_run", _spy_git_run)
+        monkeypatch.setattr(update_cmd_git, "_git_run", _spy_git_run)
         update_cmd_stash._stash_local_changes_if_needed(["git"], tmp_path)
         assert called, "sandboxed stash must reach git"
         assert called[0][:2] == ["status", "--porcelain"]
