@@ -498,7 +498,8 @@ export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
 
-    return !/^\S+ \(.*\) Z /.test(readText(`/proc/${pid}/stat`))
+    // Zombie check needs procfs; elsewhere a signalable pid is alive.
+    return !fs.existsSync(`/proc/${pid}/stat`) || !/^\S+ \(.*\) Z /.test(readText(`/proc/${pid}/stat`))
   } catch {
     return false
   }

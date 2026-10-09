@@ -19,6 +19,10 @@ import { _electron, type ElectronApplication, expect, type Page } from '@playwri
 
 import { resolveElectronBinary } from '../electron-binary'
 
+import { isSandboxProcess, procfsCensus, type ProcInfo, readProc, sandboxProcessesOf } from './process-census'
+
+export type { ProcInfo } from './process-census'
+
 export const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..', '..')
 export const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
 
@@ -86,7 +90,11 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-function processHomeUnder(pid: number, root: string): boolean {
+function processHomeUnder(pid: number, root: string, hermesHome: string): boolean {
+  if (!procfsCensus) {
+    return isSandboxProcess(pid, hermesHome)
+  }
+
   const info = readProc(pid)
 
   return Boolean(info?.cmdline) && info!.environ.split('\0').some(entry => entry.startsWith(`HERMES_HOME=${root}`))
@@ -112,7 +120,7 @@ function stopSandboxGatewayDaemons(root: string, hermesHome: string): void {
     try {
       const pid = Number(JSON.parse(fs.readFileSync(path.join(home, 'gateway.lock'), 'utf8'))?.pid)
 
-      if (Number.isInteger(pid) && pid > 0 && processHomeUnder(pid, root)) {
+      if (Number.isInteger(pid) && pid > 0 && processHomeUnder(pid, root, hermesHome)) {
         pids.add(pid)
       }
     } catch {
@@ -136,7 +144,7 @@ function stopSandboxGatewayDaemons(root: string, hermesHome: string): void {
     sleepSync(100)
 
     for (const pid of [...pids]) {
-      if (!processHomeUnder(pid, root)) {
+      if (!processHomeUnder(pid, root, hermesHome)) {
         pids.delete(pid)
       }
     }
@@ -261,53 +269,9 @@ export function appLogTail(app: ElectronApplication, n = 60): string {
 
 // ─── Process census ─────────────────────────────────────────────────────
 
-export interface ProcInfo {
-  pid: number
-  ppid: number
-  cmdline: string
-}
-
-function readProc(pid: number): null | { environ: string; cmdline: string; ppid: number } {
-  try {
-    const environ = fs.readFileSync(`/proc/${pid}/environ`, 'utf8')
-    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' ').trim()
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
-    // Field 4 (ppid) follows the parenthesised comm, which may contain spaces.
-    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
-
-    return { environ, cmdline, ppid }
-  } catch {
-    return null
-  }
-}
-
-/** Every live process whose environment carries this sandbox's HERMES_HOME (orphans included). */
+/** Every live process carrying this sandbox's HERMES_HOME (orphans included); see process-census.ts. */
 export function sandboxProcesses(sandbox: CoreSandbox): ProcInfo[] {
-  const needle = `HERMES_HOME=${sandbox.hermesHome}\0`
-  const out: ProcInfo[] = []
-
-  for (const entry of fs.readdirSync('/proc')) {
-    const pid = Number(entry)
-
-    if (!Number.isInteger(pid) || pid === process.pid) {
-      continue
-    }
-
-    const info = readProc(pid)
-
-    if (!info || !(info.environ + '\0').includes(needle)) {
-      continue
-    }
-
-    // Zombies have an empty cmdline and are already dead for our purposes.
-    if (!info.cmdline) {
-      continue
-    }
-
-    out.push({ pid, ppid: info.ppid, cmdline: info.cmdline })
-  }
-
-  return out
+  return sandboxProcessesOf(sandbox.hermesHome)
 }
 
 /**
@@ -342,7 +306,8 @@ export function backendProcesses(sandbox: CoreSandbox): ProcInfo[] {
  */
 export function stopSandboxGateway(sandbox: CoreSandbox): { code: number | null; output: string } {
   const [backend] = backendProcesses(sandbox)
-  const python = backend?.cmdline.split(' ')[0] || 'python3'
+  // argv[0], unquoted (a Windows command line quotes a path with spaces).
+  const python = /^"([^"]+)"|^(\S+)/.exec(backend?.cmdline ?? '')?.slice(1).find(Boolean) || 'python3'
 
   const result = spawnSync(python, ['-m', 'hermes_cli.main', 'gateway', 'stop'], {
     cwd: REPO_ROOT,
