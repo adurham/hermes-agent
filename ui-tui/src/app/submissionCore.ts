@@ -52,11 +52,11 @@ export function markNextSubmitVoice(text: string): void {
   pendingVoiceTranscript = text
 }
 
-function takeVoiceTurn(submitText: string): boolean {
-  const voice = pendingVoiceTranscript !== null && pendingVoiceTranscript === submitText.trim()
+function takeVoiceTranscript(): null | string {
+  const transcript = pendingVoiceTranscript
   pendingVoiceTranscript = null
 
-  return voice
+  return transcript
 }
 
 interface SubmitPromptOpts {
@@ -119,7 +119,8 @@ function submitParams(
   sid: string,
   item: QueueItem | undefined,
   submitText: string,
-  attachments: SubmitPromptOpts['attachments']
+  attachments: SubmitPromptOpts['attachments'],
+  voice: boolean
 ) {
   return {
     session_id: sid,
@@ -128,7 +129,7 @@ function submitParams(
     ...(item?.controlMethod ? { execution_generation: item.executionGeneration } : {}),
     ...(item && !item.controlMethod ? { submission_id: item.submissionId, queued: item.queued !== false } : {}),
     // A busy correction (steer/redirect) is not a turn: it never claims the voice route.
-    ...(!item?.controlMethod && takeVoiceTurn(submitText) && { voice_turn: true })
+    ...(!item?.controlMethod && voice && { voice_turn: true })
   }
 }
 
@@ -286,6 +287,9 @@ export function submitPrompt(
   displayOverride?: string,
   opts: SubmitPromptOpts = {}
 ): void {
+  // The voice marker belongs to the input submitted right after it, whatever happens to that input
+  // (busy correction, refusal): consumed here, so a later identical typed prompt never inherits it.
+  const voiceTranscript = takeVoiceTranscript()
   const destination = opts.destination ?? captureDestination()
   const owner = pendingInputOwner(opts.queueItem?.ownerDestination ?? destination)
   const { sid } = owner
@@ -340,7 +344,7 @@ export function submitPrompt(
     deps.gw
       .request<PromptSubmitResponse>(
         item?.controlMethod ?? 'prompt.submit',
-        submitParams(sid, item, submitText, opts.attachments)
+        submitParams(sid, item, submitText, opts.attachments, voiceTranscript === submitText.trim())
       )
       .then(r => {
         if (item?.controlMethod) {
