@@ -551,7 +551,11 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
 _AUX_TASK_SLOTS: tuple[str, ...] = (
     "vision", "compression", "skills_hub", "approval", "mcp", "title_generation", "review", "voice_chat",
     "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
+    "memory_query_rewrite", "tts_audio_tags", "goal_judge", "monitor", "background_review",
 )
+# DEFAULT_CONFIG["auxiliary"] blocks that are not assignable slots: MoA call sites pass the preset's
+# provider/model explicitly (a pin here would be silently ignored); /api/model/moa owns them.
+_AUX_NON_SLOT_TASKS: frozenset[str] = frozenset({"moa_reference", "moa_aggregator"})
 
 
 def _plugin_aux_tasks() -> list[dict[str, Any]]:

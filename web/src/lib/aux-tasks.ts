@@ -25,6 +25,11 @@ export const BUILTIN_AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: "kanban_decomposer", label: "Kanban Decomposer", hint: "Task decomposition" },
   { key: "profile_describer", label: "Profile Describer", hint: "Auto profile descriptions" },
   { key: "curator", label: "Curator", hint: "Skill-usage review" },
+  { key: "memory_query_rewrite", label: "Memory Query Rewrite", hint: "Memory retrieval queries" },
+  { key: "tts_audio_tags", label: "TTS Audio Tags", hint: "Gemini TTS tag insertion" },
+  { key: "goal_judge", label: "Goal Judge", hint: "/goal satisfaction checks" },
+  { key: "monitor", label: "Monitor", hint: "Important-mail scoring" },
+  { key: "background_review", label: "Background Review", hint: "Post-turn memory/skill review" },
 ] as const;
 
 /**
