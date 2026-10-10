@@ -35,8 +35,7 @@ interface SidebarWorkspaceGroupProps {
   renderRows: (
     sessions: SessionInfo[],
     draggable?: boolean,
-    sortData?: Record<string, unknown>,
-    preserveOrder?: boolean
+    sortData?: Record<string, unknown>
   ) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
@@ -207,8 +206,7 @@ export function SidebarWorkspaceGroup({
       renderRows(
         visibleSessions,
         sessionsSortable,
-        sessionsSortable ? { laneId: group.id, type: 'session' } : undefined,
-        Boolean(laneSessionOrder?.length)
+        sessionsSortable ? { laneId: group.id, type: 'session' } : undefined
       )
     )
 

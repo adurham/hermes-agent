@@ -67,8 +67,7 @@ export function EnteredProjectContent({
   renderRows: (
     sessions: SessionInfo[],
     draggable?: boolean,
-    sortData?: Record<string, unknown>,
-    preserveOrder?: boolean
+    sortData?: Record<string, unknown>
   ) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
@@ -149,8 +148,7 @@ function RepoFlatSection({
   renderRows: (
     sessions: SessionInfo[],
     draggable?: boolean,
-    sortData?: Record<string, unknown>,
-    preserveOrder?: boolean
+    sortData?: Record<string, unknown>
   ) => React.ReactNode
   onNewSession?: (path: null | string) => void
   onNewSessionSplit?: NewSessionSplitHandler
