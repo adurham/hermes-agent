@@ -313,6 +313,26 @@ flakes, not regressions.
 
 **Suite (this head, run locally — the workstation went unreachable mid-verification and the owner directed the run to the Mac):** Python 60,580 passed / 312 failed / 4 crashed / 1,457 skipped across 5,608 files (27.5 min, 14 workers); desktop renderer tsc rc 0, electron tsc rc 0, vitest 10,782/10,782. The 127 broad-run-failing files were re-run SINGLY at both this head and the pre-round-2 base (81e4f8e2833): 123 pass at both arms (the broad-run failures are macOS broad-run context artifacts — live-venv/updater self-detection, 3.11-vs-3.14 PM env, home-guard classes), and 4 fail at both arms with identical crash marking (test_update_ci_routing, test_cron_script, test_bundle_payload, test_termux_build_driver — pre-existing). REGRESSIONS: 0.
 
+### Personal MacBook updated to the synced head + pm-runtime bootstrap fix — 2026-10-10
+
+**Update:** `hermes update` took the personal live install from v0.21.5 @ 51626702 to
+v0.21.6+614 @ 660eecfbda. **Blocker hit:** the new PM updater's bootstrap (`pm/runtime.py`
+`runtime_python`) dead-ends on any pre-3.14 install — when the staged uv exists it hands
+`sys.executable` (3.11.15) to `prepare_runtime`, and uv rejects it against `pm/pyproject.toml`'s
+`>=3.14,<3.15` while `UV_PYTHON_DOWNLOADS=never` forbids a fetch — so `hermes update`,
+`hermes pm install` and `hermes pm doctor` all failed identically. **Workaround (done):** realize
+the pinned toolchain directly — `ensure('python', explicit=True)` + `ensure('uv', explicit=True)`
+from the app venv; the runtime then builds; `pm doctor` green (python 3.14.7 · uv 0.12.3 · node ·
+npm · ripgrep realized) and `update --yes` completes ("Already up to date"). **Fork fix (this
+commit):** the staged-uv branch realizes the pinned python before building — zero impact where
+the toolchain is already resolved; fixes every 3.11-era box (the gateway + corp boxes would hit
+the same wall on their next PM-path update). **Also:** the 6 stale hermes-update autostashes
+(Sep 24-25) were archived with checksums to `~/.hermes/backups/hermes-autostash-archive-20261010/`
+and dropped (4 trivial version bumps; 2 Sep-era code sets superseded by later committed sync
+work). **Note:** the isolated PM runtime prints "Failed to load bundled provider plugin
+solstice: No module named 'httpx'" on PM-invoked CLI runs (minimal runtime env); the main venv
+is unaffected.
+
 ### Upstream-filing attempt — 2026-10-10 (round-3 queue: 4 branches ready, filing BLOCKED at the account level)
 
 **Prepared + pushed (signed, on origin for manual pickup; PR bodies in `scratch/sync-v0.21.6/upstream-prs/`):**

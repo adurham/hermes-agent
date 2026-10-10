@@ -244,7 +244,18 @@ def runtime_python(*, bootstrap: bool = True, cache: Path | None = None) -> Path
         target = current_target()
         staged = package.binary(store_root() / package.store_entry(version, target), target) if version else None
         if staged is not None and staged.is_file():
-            tools = staged, Path(sys.executable)
+            # FORK FIX (2026-10-10): the staged uv was acquired for its TLS transport
+            # support; the pinned interpreter must then be realized before it can build
+            # the >=3.14 runtime. Handing the CURRENT interpreter to the build dead-ends
+            # every 3.11-era install: uv rejects it against pm/pyproject's
+            # requires-python and UV_PYTHON_DOWNLOADS=never forbids a fetch (observed
+            # live on a v0.21.5 -> v0.21.6 upgrade). Realize the pinned python first,
+            # then prefer the fully resolved toolchain pair.
+            from pm.install import ensure as _ensure_pm_python
+
+            _ensure_pm_python("python", explicit=True)
+            realized = _toolchain(realize=False)
+            tools = realized if realized is not None else (staged, Path(sys.executable))
         else:
             # Non-shell bootstrap callers (CI) already have a host interpreter.
             tools = _toolchain(explicit=True)
